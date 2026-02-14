@@ -44,8 +44,16 @@ jobs:
       - name: Build (debug, CPU only)
         run: docker compose run --rm -T dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
 
+      - name: Verify tools built
+        run: |
+          test -f build/native-linux-debug/bin/tools/rust/bench
+          test -f build/native-linux-debug/bin/tools/py/bench-plot
+
       - name: Run C++ tests
         run: docker compose run --rm -T dev make testp
 
       - name: Run Rust tests
         run: docker compose run --rm -T dev make test-rust
+
+      - name: Run Python tests
+        run: docker compose run --rm -T dev make test-py

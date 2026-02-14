@@ -303,6 +303,7 @@ function (vernier_print_config_summary)
   _vernier_yesno("${ENABLE_COVERAGE}" _enable_cov)
   _vernier_yesno("${ENABLE_CLANG_TIDY}" _enable_tidy)
   _vernier_yesno("${VERNIER_BUILD_GPU}" _build_gpu)
+  _vernier_yesno("${VERNIER_BUILD_TOOLS}" _build_tools)
 
   # Paths
   set(_sysroot "${CMAKE_SYSROOT}")
@@ -458,6 +459,7 @@ function (vernier_print_config_summary)
   message(STATUS "  ENABLE_UPX          : ${_enable_upx}")
   message(STATUS "  ENABLE_COVERAGE     : ${_enable_cov}")
   message(STATUS "  ENABLE_CLANG_TIDY   : ${_enable_tidy}")
+  message(STATUS "  VERNIER_BUILD_TOOLS : ${_build_tools}")
 
   # Build acceleration info (if module was included)
   if (DEFINED CMAKE_C_COMPILER_LAUNCHER AND CMAKE_C_COMPILER_LAUNCHER)

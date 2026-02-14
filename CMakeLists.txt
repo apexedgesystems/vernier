@@ -13,6 +13,7 @@ cmake_minimum_required(VERSION 3.24)
 #   -DCUDA_ARCHS="80;86;89"     Ampere + Ada
 #   -DENABLE_COVERAGE=ON        Enable coverage (Debug + Clang only)
 #   -DENABLE_CLANG_TIDY=ON      Enable clang-tidy
+#   -DVERNIER_BUILD_TOOLS=ON     Build CLI tools (Rust + Python)
 #   -DSANITIZER=asan|tsan|ubsan Enable sanitizers
 #
 # ==============================================================================
@@ -58,6 +59,7 @@ option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 # Feature toggles
 # ------------------------------------------------------------------------------
 option(VERNIER_BUILD_GPU "Build GPU/CUDA support (requires CUDA toolkit)" ON)
+option(VERNIER_BUILD_TOOLS "Build CLI tools (Rust + Python, requires cargo and poetry)" OFF)
 option(PROJECT_BUILD_DOCS "Enable Doxygen doc targets" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy integration" OFF)
 
@@ -171,6 +173,10 @@ endif ()
 # ------------------------------------------------------------------------------
 
 add_subdirectory(src)
+
+if (VERNIER_BUILD_TOOLS AND NOT CMAKE_SYSTEM_NAME STREQUAL "Generic")
+  add_subdirectory(tools)
+endif ()
 
 # ------------------------------------------------------------------------------
 # Package configuration (find_package support)

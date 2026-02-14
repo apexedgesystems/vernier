@@ -72,7 +72,7 @@ install-tools: release
 	@mkdir -p $(INSTALL_TOOLS_PREFIX)/rust $(INSTALL_TOOLS_PREFIX)/py
 	@cp -r $(HOST_RELEASE_DIR)/bin/tools/rust/* $(INSTALL_TOOLS_PREFIX)/rust/
 	@cp LICENSE tools/README.md $(INSTALL_TOOLS_PREFIX)/rust/
-	@cp $(HOST_RELEASE_DIR)/wheels/vernier_py_tools-*.whl $(INSTALL_TOOLS_PREFIX)/py/
+	@cp $(HOST_RELEASE_DIR)/vernier-wheels/*.whl $(INSTALL_TOOLS_PREFIX)/py/
 	$(call log,install,Tools ready at $(INSTALL_TOOLS_PREFIX))
 
 install-jetson: jetson-release
