@@ -52,7 +52,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml")
     set(_RUST_OUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools/rust")
     set(_CARGO_HOME "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-rust-cargo")
     set(_CARGO_TARGET "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-rust-target")
-    set(_RUST_STAMP "${_RUST_OUT}/.built")
+    set(_RUST_STAMP "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps/rust-tools.built")
 
     # Auto-enable cuda feature if nvcc is available
     set(_CARGO_FEATURES "")
@@ -72,6 +72,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml")
       "mkdir -p '${_RUST_OUT}'\n"
       "find '${_CARGO_TARGET}/release' -maxdepth 1 -type f -executable ! -name '*.*'"
       " -exec cp -f {} '${_RUST_OUT}/' \\;\n"
+      "mkdir -p '${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps'\n"
       "touch '${_RUST_STAMP}'\n"
     )
 
@@ -103,7 +104,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/py/pyproject.toml")
     set(_PY_OUT "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools/py")
     set(_PY_LIB "${CMAKE_BINARY_DIR}/lib/python")
     set(_PY_WHEELS "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-wheels")
-    set(_PY_STAMP "${_PY_OUT}/.built")
+    set(_PY_STAMP "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps/py-tools.built")
 
     # Generate build script (handles shell globs that VERBATIM mode cannot expand)
     set(_PY_BUILD_SCRIPT "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-build-py-tools.sh")
@@ -118,6 +119,7 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/py/pyproject.toml")
       "mv '${_PY_LIB}/bin' '${_PY_OUT}'\n"
       "'${PIP_EXECUTABLE}' install --quiet --target '${_PY_LIB}' --upgrade ${_PY_WHEELS}/*.whl\n"
       "rm -rf '${_PY_LIB}/bin'\n"
+      "mkdir -p '${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps'\n"
       "touch '${_PY_STAMP}'\n"
     )
 
