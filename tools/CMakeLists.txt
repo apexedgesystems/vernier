@@ -27,9 +27,9 @@ file(
   "  local key=\"$1\" line=\"$2\"\n"
   "  grep -q \"$key\" \"$ENV_FILE\" 2>/dev/null || printf '%s\\n' \"$line\" >> \"$ENV_FILE\"\n"
   "}\n"
-  "add_if_missing 'bin/tools/rust' 'export PATH=\"\\$PWD/bin/tools/rust:\\$PATH\"'\n"
-  "add_if_missing 'bin/tools/py' 'export PATH=\"\\$PWD/bin/tools/py:\\$PATH\"'\n"
-  "add_if_missing 'PYTHONPATH.*lib/python' 'export PYTHONPATH=\"\\$PWD/lib/python:\\$PYTHONPATH\"'\n"
+  "add_if_missing 'bin/tools/rust' 'export PATH=\"$PWD/bin/tools/rust:$PATH\"'\n"
+  "add_if_missing 'bin/tools/py' 'export PATH=\"$PWD/bin/tools/py:$PATH\"'\n"
+  "add_if_missing 'PYTHONPATH.*lib/python' 'export PYTHONPATH=\"$PWD/lib/python:$PYTHONPATH\"'\n"
 )
 
 # ------------------------------------------------------------------------------
