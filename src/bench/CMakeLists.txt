@@ -79,12 +79,14 @@ vernier_install_docs("${CMAKE_CURRENT_SOURCE_DIR}/demo/docs" DESTINATION "demos"
 # Subdirectories
 # ------------------------------------------------------------------------------
 
-if (EXISTS "${UTST_DIR}/CMakeLists.txt")
-  add_subdirectory(utst)
-endif ()
-if (EXISTS "${PTST_DIR}/CMakeLists.txt")
-  add_subdirectory(ptst)
-endif ()
-if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/demo/CMakeLists.txt")
-  add_subdirectory(demo)
+if (PROJECT_IS_TOP_LEVEL)
+  if (EXISTS "${UTST_DIR}/CMakeLists.txt")
+    add_subdirectory(utst)
+  endif ()
+  if (EXISTS "${PTST_DIR}/CMakeLists.txt")
+    add_subdirectory(ptst)
+  endif ()
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/demo/CMakeLists.txt")
+    add_subdirectory(demo)
+  endif ()
 endif ()

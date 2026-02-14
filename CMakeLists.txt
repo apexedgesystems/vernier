@@ -27,7 +27,7 @@ project(
   DESCRIPTION "Performance benchmarking framework with profiler integrations"
 )
 
-list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # Build acceleration (ccache, fast linker, split DWARF)
 include(vernier/BuildAcceleration)
@@ -147,7 +147,7 @@ vernier_print_config_summary()
 # ------------------------------------------------------------------------------
 # External dependencies
 # ------------------------------------------------------------------------------
-include("${CMAKE_SOURCE_DIR}/ExternalDependencies.cmake" OPTIONAL)
+include("${PROJECT_SOURCE_DIR}/ExternalDependencies.cmake" OPTIONAL)
 
 # ------------------------------------------------------------------------------
 # Project-wide includes
@@ -180,7 +180,7 @@ include(CMakePackageConfigHelpers)
 include(GNUInstallDirs)
 
 configure_package_config_file(
-  "${CMAKE_SOURCE_DIR}/cmake/vernierConfig.cmake.in" "${CMAKE_BINARY_DIR}/vernierConfig.cmake"
+  "${PROJECT_SOURCE_DIR}/cmake/vernierConfig.cmake.in" "${CMAKE_BINARY_DIR}/vernierConfig.cmake"
   INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/vernier"
 )
 
@@ -193,4 +193,4 @@ install(FILES "${CMAKE_BINARY_DIR}/vernierConfig.cmake"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/vernier"
 )
 
-vernier_install_docs("${CMAKE_SOURCE_DIR}/README.md")
+vernier_install_docs("${PROJECT_SOURCE_DIR}/README.md")

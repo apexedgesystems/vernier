@@ -92,7 +92,7 @@ function (vernier_add_doxygen _target)
   set(EXTRA_DIRS "${DOX_EXTRA_DIRS}")
   set(README_FILE "${DOX_README}")
 
-  configure_file("${CMAKE_SOURCE_DIR}/docs/Doxyfile.common.in" "${DOCS_BASE}/Doxyfile" @ONLY)
+  configure_file("${PROJECT_SOURCE_DIR}/docs/Doxyfile.common.in" "${DOCS_BASE}/Doxyfile" @ONLY)
 
   set(_docs_stamp "${DOCS_BASE}/.doxygen.stamp")
   set(_deps "${DOCS_BASE}/Doxyfile")
@@ -277,7 +277,7 @@ if (NOT DEFINED VERNIER_CLANG_TIDY_CUDA_MUTE_FRONTEND)
   )
 endif ()
 if (NOT DEFINED VERNIER_CLANG_TIDY_CUDA_HEADER_FILTER)
-  string(REPLACE "\\" "\\\\" _vernier_src_root "${CMAKE_SOURCE_DIR}")
+  string(REPLACE "\\" "\\\\" _vernier_src_root "${PROJECT_SOURCE_DIR}")
   set(VERNIER_CLANG_TIDY_CUDA_HEADER_FILTER
       "^${_vernier_src_root}/src/"
       CACHE STRING "Header filter regex for clang-tidy"

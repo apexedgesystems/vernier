@@ -218,7 +218,8 @@ function (vernier_add_library)
 
   target_sources(${AL_NAME} PRIVATE ${AL_SRC})
   target_include_directories(
-    ${AL_NAME} PUBLIC $<BUILD_INTERFACE:${AL_INC}> $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    ${AL_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<BUILD_INTERFACE:${AL_INC}>
+                      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
   if (AL_DEPS_PUBLIC)
