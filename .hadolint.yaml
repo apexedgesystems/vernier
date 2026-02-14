@@ -1,0 +1,34 @@
+# ==============================================================================
+# .hadolint.yaml - Dockerfile linter configuration
+# ==============================================================================
+
+# Ignored rules with justification
+ignored:
+  # DL3008: Pin versions in apt-get
+  # Justification: We use Ubuntu LTS base and want latest security patches
+  - DL3008
+
+  # DL3013: Pin versions in pip
+  # Justification: Versions pinned via ARG in Dockerfiles
+  - DL3013
+
+  # DL4001: COPY with --from should use stable digest
+  # Justification: We control all base images locally
+  - DL4001
+
+  # DL3003: Use WORKDIR to switch directories
+  # Justification: Some cd commands are within RUN for clarity
+  - DL3003
+
+  # SC2046: Quote to prevent word splitting
+  # Justification: Intentional word splitting in some shell commands
+  - SC2046
+
+# Trusted registries (no warning for untagged pulls)
+trustedRegistries:
+  - docker.io
+  - nvcr.io
+  - nvidia
+
+# Stricter rules we want to enforce
+failure-threshold: error

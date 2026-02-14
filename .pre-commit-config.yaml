@@ -1,0 +1,181 @@
+# ============================================
+# Global scope / exclusions
+# ============================================
+files: |
+  (?x)^(
+    src/|
+    cmake/|
+    mk/|
+    docs/|
+    docker/|
+    tools/|
+    (CMakeLists\.txt|
+     ExternalDependencies\.cmake|
+     Makefile|
+     README\.md|
+     LICENSE(\.txt)?|
+     Dockerfile(\..*)?|
+     \.pre-commit-config\.yaml|
+     \.cmake-format\.yaml|
+     \.clang-format|
+     \.clang-tidy|
+     \.hadolint\.yaml|
+     \.markdownlint\.yaml|
+     \.flake8|
+     \.gitignore)
+  )
+
+exclude: |
+  (?x)^(
+    build/|
+    cmake-build.*|
+    dist/|
+    out/|
+    node_modules/|
+    \.git/|
+    \.hg/|
+    \.venv/|
+    \.mypy_cache/|
+    \.pytest_cache/|
+    \.ruff_cache/|
+    \.cache/|
+    compile_commands\.json$
+  )
+
+# ============================================
+# Hooks
+# ============================================
+repos:
+  # -----------------------
+  # General hygiene checks
+  # -----------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-docstring-first
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-toml
+      - id: check-xml
+      - id: check-yaml
+      - id: forbid-new-submodules
+      - id: forbid-submodules
+      - id: mixed-line-ending
+      - id: trailing-whitespace
+
+  # -----------
+  # Python: fmt
+  # -----------
+  - repo: https://github.com/psf/black
+    rev: 24.8.0
+    hooks:
+      - id: black
+        args:
+          - --line-length=100
+
+  - repo: https://github.com/pycqa/isort
+    rev: 7.0.0
+    hooks:
+      - id: isort
+        args:
+          - --profile=black
+          - --line-length=100
+
+  # -----------
+  # Python: lint
+  # -----------
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.1
+    hooks:
+      - id: flake8
+        additional_dependencies:
+          - flake8-bugbear
+          - flake8-comprehensions
+
+  # ----------------
+  # Python: typecheck
+  # ----------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.14.1
+    hooks:
+      - id: mypy
+        args:
+          - --ignore-missing-imports
+          - --no-strict-optional
+          - --allow-untyped-defs
+          - --allow-untyped-calls
+          - --disable-error-code=attr-defined
+          - --disable-error-code=return-value
+          - --disable-error-code=var-annotated
+          - --disable-error-code=assignment
+        additional_dependencies:
+          - types-toml
+
+  # --------------------------------------
+  # JS/CSS/HTML/JSON/YAML via Prettier
+  # --------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v3.1.0
+    hooks:
+      - id: prettier
+
+  # -----------------
+  # Markdown linting
+  # -----------------
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: [--config, .markdownlint.yaml]
+
+  # -----------------
+  # Shell script lint
+  # -----------------
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  # ======================================
+  # Local hooks (system-installed tools)
+  # ======================================
+  - repo: local
+    hooks:
+      - id: clang-format-local
+        name: clang-format (local)
+        entry: clang-format -i
+        language: system
+        files: \.(c|cc|cpp|cxx|cu|cuh|h|hh|hpp|hxx|tpp)$
+
+      - id: cmake-format-local
+        name: cmake-format (local)
+        entry: cmake-format -i
+        language: system
+        files: (CMakeLists\.txt|\.cmake)$
+
+      - id: cmake-lint-local
+        name: cmake-lint (local)
+        entry: cmake-lint
+        language: system
+        files: (CMakeLists\.txt|\.cmake)$
+
+      - id: hadolint-local
+        name: hadolint (local)
+        entry: hadolint
+        language: system
+        files: (Dockerfile|\.Dockerfile)$
+
+      - id: shfmt-local
+        name: shfmt (local)
+        entry: shfmt -w
+        language: system
+        types_or: [shell]
+
+      - id: iwyu-local
+        name: include-what-you-use (local)
+        language: system
+        files: \.(cc|cpp|cxx|h|hh|hpp|hxx|tpp)$
+        pass_filenames: false
+        entry: bash -lc 'command -v iwyu_tool.py >/dev/null 2>&1 || { echo "iwyu_tool.py not found, skipping"; exit 0; }; iwyu_tool.py -p "${BUILD_DIR:-build}" --max-threads=0 --quiet'

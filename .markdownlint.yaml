@@ -1,0 +1,27 @@
+# ==============================================================================
+# Markdownlint Configuration
+# ==============================================================================
+
+# Line length - disabled (too noisy for technical docs with long URLs/code)
+MD013: false
+
+# Duplicate headings - common in structured docs ("Description", "Usage", etc.)
+MD024: false
+
+# Ordered list prefix style - allow any style (1/2/3 or 1/1/1)
+MD029: false
+
+# Inline HTML - sometimes necessary for complex formatting
+MD033: false
+
+# Emphasis as heading - common pattern for sub-sections
+MD036: false
+
+# First line must be heading - not always applicable
+MD041: false
+
+# Keep these enabled (real issues, easy to fix)
+MD010: true # Hard tabs - convert to spaces
+MD018: true # Space after hash in headings
+MD031: true # Blanks around fenced code blocks
+MD040: false # Fenced code language - nice to have but not critical

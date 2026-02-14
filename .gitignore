@@ -1,0 +1,30 @@
+# repo ignores
+compile_commands.json
+/build/
+/output/
+/tmp/
+/.archive/
+/docs/standards/
+.venv
+
+# dev ignores
+/.vscode/
+
+# runtime ignores
+__pycache__/
+*.log
+
+# Python build artifacts
+.pytest_cache/
+dist/
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+
+# Rust build artifacts
+target/
+Cargo.lock.bak
+
+# Dev scripts (not committed)
+tools/py/dev/
+tools/rust/dev/

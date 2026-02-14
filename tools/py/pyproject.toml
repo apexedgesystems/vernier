@@ -1,0 +1,42 @@
+[project]
+name = "vernier-py-tools"
+version = "1.0.0"
+description = "CLI tools for the Vernier benchmarking framework"
+authors = [
+    {name = "Kevin Alexander Gomez"}
+]
+license = "MIT"
+readme = "../README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.2.3,<3.0.0",
+    "numpy>=2.2.4,<3.0.0",
+    "matplotlib>=3.8.0,<4.0.0",
+    "seaborn>=0.13.0,<0.14.0",
+    "scipy>=1.11.0,<2.0.0",
+]
+
+[tool.poetry]
+packages = [{include = "vernier_tools", from = "src"}]
+
+[tool.poetry.scripts]
+# Benchmarking visualization (plotting only; analysis/comparison/validation use Rust bench tool)
+bench-plot = "vernier_tools.benchmarking.bench_plot:main"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.3.5"
+pre-commit = "^4.2.0"
+black = "^25.1.0"
+flake8 = "^7.1.2"
+mypy = "^1.15.0"
+isort = "^6.0.1"
+flake8-bugbear = "^24.12.12"
+flake8-comprehensions = "^3.16.0"
+flake8-docstrings = "^1.7.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+# Note: black, isort, and flake8 configs are managed by root .pre-commit-config.yaml
+# and .flake8 - no local overrides needed here.

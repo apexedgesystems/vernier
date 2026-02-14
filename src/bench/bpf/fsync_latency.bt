@@ -1,0 +1,21 @@
+// Histogram of fsync()/fdatasync() latency (us) for a specific PID.
+// {{PID}} will be replaced by the BpfRunner before execution.
+
+BEGIN { printf("Tracing fsync() latency for pid={{PID}}...\n"); }
+
+kprobe:__x64_sys_fsync /pid == {{PID}}/ { @start[tid] = nsecs; }
+kretprobe:__x64_sys_fsync /@start[tid]/ {
+  $d = (nsecs - @start[tid]) / 1000; @lat_fsync = hist($d); delete(@start[tid]);
+}
+
+kprobe:__x64_sys_fdatasync /pid == {{PID}}/ { @startd[tid] = nsecs; }
+kretprobe:__x64_sys_fdatasync /@startd[tid]/ {
+  $d = (nsecs - @startd[tid]) / 1000; @lat_fdatasync = hist($d); delete(@startd[tid]);
+}
+
+END {
+  printf("\nfsync() latency (us)\n");
+  print(@lat_fsync);
+  printf("\nfdatasync() latency (us)\n");
+  print(@lat_fdatasync);
+}

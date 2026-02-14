@@ -1,0 +1,57 @@
+# EditorConfig - https://editorconfig.org
+root = true
+
+# Default for all files
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# C/C++/CUDA (matches .clang-format)
+[*.{c,cc,cpp,cxx,h,hh,hpp,hxx,tpp,cu,cuh}]
+indent_size = 2
+max_line_length = 100
+
+# CMake (matches .cmake-format.yaml)
+[{CMakeLists.txt,*.cmake}]
+indent_size = 2
+max_line_length = 100
+
+# Python (matches black config)
+[*.py]
+indent_size = 4
+max_line_length = 100
+
+# Makefiles (tabs required)
+[Makefile]
+indent_style = tab
+
+[*.mk]
+indent_style = tab
+
+# Shell scripts
+[*.{sh,bash}]
+indent_size = 2
+
+# YAML
+[*.{yml,yaml}]
+indent_size = 2
+
+# JSON
+[*.json]
+indent_size = 2
+
+# Markdown
+[*.md]
+indent_size = 2
+trim_trailing_whitespace = false
+
+# Dockerfiles
+[*.Dockerfile]
+indent_size = 2
+
+[Dockerfile]
+indent_size = 2

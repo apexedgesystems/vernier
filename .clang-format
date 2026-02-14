@@ -1,0 +1,30 @@
+# .clang-format
+---
+Language: Cpp
+BasedOnStyle: LLVM
+Standard: Latest
+
+# general prefs
+ColumnLimit: 100
+IndentWidth: 2
+UseTab: Never
+
+# pointers/refs
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+
+# braces & short forms
+BreakBeforeBraces: Attach
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortLambdasOnASingleLine: All
+
+# includes — keep file order verbatim to protect CUDA builds
+IncludeBlocks: Preserve
+SortIncludes: false
+
+# whitespace & comments
+SpaceBeforeParens: ControlStatements
+ReflowComments: true
+MaxEmptyLinesToKeep: 1

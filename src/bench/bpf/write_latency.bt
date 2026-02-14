@@ -1,0 +1,19 @@
+// Histogram of write() latency (us) for a specific PID.
+// {{PID}} will be replaced by the BpfRunner before execution.
+
+BEGIN { printf("Tracing write() latency for pid={{PID}}...\n"); }
+
+kprobe:__x64_sys_write /pid == {{PID}}/ {
+  @start[tid] = nsecs;
+}
+
+kretprobe:__x64_sys_write /@start[tid]/ {
+  $d = (nsecs - @start[tid]) / 1000; // us
+  @lat = hist($d);
+  delete(@start[tid]);
+}
+
+END {
+  printf("\nwrite() latency (us)\n");
+  print(@lat);
+}

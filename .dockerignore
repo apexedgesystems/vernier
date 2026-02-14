@@ -1,0 +1,84 @@
+# ==============================================================================
+# .dockerignore - Exclude files from Docker build context
+# ==============================================================================
+
+# Build artifacts
+build/
+output/
+*.o
+*.obj
+*.so
+*.a
+*.exe
+*.out
+*.elf
+*.hex
+*.bin
+*.map
+
+# IDE and editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# Git
+.git/
+.gitignore
+.gitmodules
+.gitattributes
+
+# CI/CD
+.github/
+.gitlab/
+.circleci/
+Jenkinsfile
+
+# Documentation (built separately, but keep Doxyfile template for cmake)
+docs/*.md
+docs/*.pdf
+docs/*.docx
+*.pdf
+*.docx
+
+# Test artifacts
+coverage/
+*.profraw
+*.gcno
+*.gcda
+*.lcov
+
+# ccache (mounted as volume)
+.ccache/
+ccache/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.eggs/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS-specific
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Large test data
+testdata/
+fixtures/

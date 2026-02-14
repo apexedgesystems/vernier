@@ -1,0 +1,209 @@
+# Common dev shell configuration
+x-common: &common
+  working_dir: /home/${USER}/workspace
+  volumes:
+    - .:/home/${USER}/workspace:cached
+    - ccache:/ccache
+    - ~/.gitconfig:/home/${USER}/.gitconfig:ro
+    - ~/.ssh:/home/${USER}/.ssh:ro
+  tty: true
+  stdin_open: true
+
+# Common build arguments
+x-build-args: &build-args
+  USER: ${USER}
+  UID: ${UID:-1000}
+  GID: ${GID:-1000}
+  VERSION: ${PROJECT_VERSION:-1.0.0}
+
+services:
+  # ============================================================================
+  # Base image (build-only, not meant to be run directly)
+  # ============================================================================
+  base:
+    image: vernier.base
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+  # ============================================================================
+  # Toolchain images (build-only layers)
+  # ============================================================================
+  toolchain-aarch64:
+    image: vernier.toolchain.aarch64
+    build:
+      context: .
+      dockerfile: docker/toolchain/aarch64.Dockerfile
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+  toolchain-rpi:
+    image: vernier.toolchain.rpi
+    build:
+      context: .
+      dockerfile: docker/toolchain/rpi.Dockerfile
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+  toolchain-riscv64:
+    image: vernier.toolchain.riscv64
+    build:
+      context: .
+      dockerfile: docker/toolchain/riscv64.Dockerfile
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+  # ============================================================================
+  # Interactive development shells - Primary
+  # ============================================================================
+  dev:
+    <<: *common
+    image: vernier.dev.cpu
+    build:
+      context: .
+      dockerfile: docker/dev/cpu.Dockerfile
+      args:
+        <<: *build-args
+    hostname: vernier-dev-cpu
+    privileged: true
+    command: bash
+
+  dev-cuda:
+    <<: *common
+    image: vernier.dev.cuda
+    build:
+      context: .
+      dockerfile: docker/dev/cuda.Dockerfile
+      args:
+        <<: *build-args
+    hostname: vernier-dev-cuda
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    command: bash
+
+  # ============================================================================
+  # Interactive development shells - Cross-compilation
+  # ============================================================================
+  dev-jetson:
+    <<: *common
+    image: vernier.dev.jetson
+    build:
+      context: .
+      dockerfile: docker/dev/jetson.Dockerfile
+      args:
+        <<: *build-args
+    hostname: vernier-dev-jetson
+    privileged: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: bash
+
+  dev-rpi:
+    <<: *common
+    image: vernier.dev.rpi
+    build:
+      context: .
+      dockerfile: docker/dev/rpi.Dockerfile
+      args:
+        <<: *build-args
+    hostname: vernier-dev-rpi
+    privileged: true
+    command: bash
+
+  dev-riscv64:
+    <<: *common
+    image: vernier.dev.riscv64
+    build:
+      context: .
+      dockerfile: docker/dev/riscv64.Dockerfile
+      args:
+        <<: *build-args
+    hostname: vernier-dev-riscv64
+    privileged: true
+    command: bash
+
+  # ============================================================================
+  # Builder images (CI artifact generation)
+  # ============================================================================
+  builder-cpu:
+    image: vernier.builder.cpu
+    build:
+      context: .
+      dockerfile: docker/builder/cpu.Dockerfile
+      args:
+        <<: *build-args
+
+  builder-cuda:
+    image: vernier.builder.cuda
+    build:
+      context: .
+      dockerfile: docker/builder/cuda.Dockerfile
+      args:
+        <<: *build-args
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  builder-jetson:
+    image: vernier.builder.jetson
+    build:
+      context: .
+      dockerfile: docker/builder/jetson.Dockerfile
+      args:
+        <<: *build-args
+
+  builder-rpi:
+    image: vernier.builder.rpi
+    build:
+      context: .
+      dockerfile: docker/builder/rpi.Dockerfile
+      args:
+        <<: *build-args
+
+  builder-riscv64:
+    image: vernier.builder.riscv64
+    build:
+      context: .
+      dockerfile: docker/builder/riscv64.Dockerfile
+      args:
+        <<: *build-args
+
+  # ============================================================================
+  # Final image (artifact packaging)
+  # ============================================================================
+  final:
+    image: vernier.final
+    build:
+      context: .
+      dockerfile: docker/final.Dockerfile
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+volumes:
+  ccache:
+    name: vernier-ccache

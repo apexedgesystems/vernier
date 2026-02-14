@@ -1,0 +1,43 @@
+# ==============================================================================
+# CMake Format and Lint Configuration
+# ==============================================================================
+
+format:
+  line_width: 100
+  tab_size: 2
+  use_tabchars: false
+
+  separate_ctrl_name_with_space: true
+  separate_fn_name_with_space: false
+
+  dangle_parens: true
+  dangle_align: prefix
+
+  command_case: lower
+  keyword_case: upper
+  enable_sort: false
+
+  always_wrap:
+    - target_link_libraries
+    - target_compile_options
+    - target_link_options
+    - add_custom_command
+    - add_custom_target
+
+  max_pargs_hwrap: 6
+
+markup:
+  enable_markup: false
+  first_comment_is_literal: true
+  canonicalize_hashrulers: false
+
+lint:
+  disabled_codes:
+    - C0103 # Naming conventions - we use _lowercase for local/private vars
+    - C0111 # Missing docstrings - too pedantic
+    - C0113 # Missing COMMENT in add_custom_command
+    - C0301 # Line too long - formatter handles wrapping
+    - C0304 # Final newline
+    - C0305 # Too many newlines between statements
+    - R0912 # Too many branches - complex logic is sometimes necessary
+    - R0915 # Too many statements - some files are legitimately large

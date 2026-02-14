@@ -1,0 +1,28 @@
+# ==============================================================================
+# vernierConfig.cmake - find_package(vernier) support
+#
+# Provides imported targets:
+#   vernier::bench       - CPU benchmarking library
+#   vernier::bench_cuda  - GPU benchmarking library (when CUDA available)
+#
+# Usage:
+#   find_package(vernier REQUIRED)
+#   target_link_libraries(my_bench PRIVATE vernier::bench GTest::gtest_main)
+#
+# Requirements:
+#   GTest must be available (framework macros expand to TEST()).
+# ==============================================================================
+
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# GTest is required -- Vernier's PERF_TEST macros expand to GTest TEST()
+find_dependency(GTest)
+
+# CUDA is optional -- needed only for vernier::bench_cuda
+find_package(CUDAToolkit QUIET)
+
+include("${CMAKE_CURRENT_LIST_DIR}/vernierTargets.cmake")
+
+check_required_components(vernier)

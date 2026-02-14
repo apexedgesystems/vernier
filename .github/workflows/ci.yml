@@ -1,0 +1,51 @@
+# ==============================================================================
+# CI -- Build, test, and lint on push/PR to main
+#
+# Runs format-check, debug build, and test suite inside Docker Compose
+# containers. Uses the CPU dev image (no NVIDIA driver needed).
+# ==============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-build-test:
+    name: Lint, Build, Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh
+          echo "UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Build base and dev images
+        run: |
+          docker compose build base
+          docker compose build dev
+
+      - name: Format check
+        run: docker compose run --rm -T dev make format-check
+
+      - name: Build (debug, CPU only)
+        run: docker compose run --rm -T dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
+
+      - name: Run C++ tests
+        run: docker compose run --rm -T dev make testp
+
+      - name: Run Rust tests
+        run: docker compose run --rm -T dev make test-rust
