@@ -53,8 +53,8 @@ riscv-release: prep
 # Usage: make install            (native release + tools)
 #        make install-jetson     (Jetson cross-compile, libs only)
 
-INSTALL_PREFIX       = $(HOST_RELEASE_DIR)/install
-INSTALL_TOOLS_PREFIX = $(HOST_RELEASE_DIR)/install-tools
+INSTALL_PREFIX       = $(CURDIR)/$(HOST_RELEASE_DIR)/install
+INSTALL_TOOLS_PREFIX = $(CURDIR)/$(HOST_RELEASE_DIR)/install-tools
 
 install: release
 	$(call log,install,Installing native release artifacts)
@@ -77,15 +77,15 @@ install-tools: release
 
 install-jetson: jetson-release
 	$(call log,install,Installing Jetson release artifacts)
-	@cmake --install $(JETSON_RELEASE_DIR) --prefix $(JETSON_RELEASE_DIR)/install
+	@cmake --install $(JETSON_RELEASE_DIR) --prefix $(CURDIR)/$(JETSON_RELEASE_DIR)/install
 
 install-rpi: rpi-release
 	$(call log,install,Installing Raspberry Pi release artifacts)
-	@cmake --install $(RPI_RELEASE_DIR) --prefix $(RPI_RELEASE_DIR)/install
+	@cmake --install $(RPI_RELEASE_DIR) --prefix $(CURDIR)/$(RPI_RELEASE_DIR)/install
 
 install-riscv: riscv-release
 	$(call log,install,Installing RISC-V 64 release artifacts)
-	@cmake --install $(RISCV_RELEASE_DIR) --prefix $(RISCV_RELEASE_DIR)/install
+	@cmake --install $(RISCV_RELEASE_DIR) --prefix $(CURDIR)/$(RISCV_RELEASE_DIR)/install
 
 # ------------------------------------------------------------------------------
 # Configure-Only Targets

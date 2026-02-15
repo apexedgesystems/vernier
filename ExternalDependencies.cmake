@@ -21,7 +21,7 @@ fetchcontent_makeavailable(googletest)
 
 # GTest 1.16 has a char8_t -> char32_t implicit conversion in its printer code
 # that Clang flags with -Wcharacter-conversion. Suppress until upstream fixes it.
-if (TARGET gtest)
+if (TARGET gtest AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   target_compile_options(gtest PRIVATE -Wno-character-conversion)
 endif ()
 

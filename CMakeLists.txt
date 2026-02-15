@@ -169,6 +169,11 @@ if (ENABLE_CLANG_TIDY)
 endif ()
 
 # ------------------------------------------------------------------------------
+# Install directories (needed before subdirectories call vernier_install_docs)
+# ------------------------------------------------------------------------------
+include(GNUInstallDirs)
+
+# ------------------------------------------------------------------------------
 # Subdirectories
 # ------------------------------------------------------------------------------
 
@@ -183,7 +188,6 @@ endif ()
 # ------------------------------------------------------------------------------
 
 include(CMakePackageConfigHelpers)
-include(GNUInstallDirs)
 
 configure_package_config_file(
   "${PROJECT_SOURCE_DIR}/cmake/vernierConfig.cmake.in" "${CMAKE_BINARY_DIR}/vernierConfig.cmake"
