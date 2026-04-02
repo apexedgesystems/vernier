@@ -23,7 +23,7 @@ cmake_minimum_required(VERSION 3.24)
 # ------------------------------------------------------------------------------
 project(
   vernier
-  VERSION 1.0.0
+  VERSION 1.0.1
   LANGUAGES C CXX
   DESCRIPTION "Performance benchmarking framework with profiler integrations"
 )
