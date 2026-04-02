@@ -155,6 +155,114 @@ fn validate_json_output() {
     assert!(parsed.as_array().unwrap().len() >= 5);
 }
 
+/* ----------------------------- GPU Env ----------------------------- */
+
+#[test]
+fn gpu_env_runs_successfully() {
+    let (code, out, _) = run(&["gpu-env"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("GPU Environment Check"));
+    assert!(out.contains("passed"));
+}
+
+#[test]
+fn gpu_env_json_output() {
+    let (code, out, _) = run(&["gpu-env", "--json"]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert!(parsed.is_array());
+    // Should always have at least nvidia-smi, driver, toolkit checks
+    assert!(parsed.as_array().unwrap().len() >= 3);
+}
+
+/* ----------------------------- GPU Lock ----------------------------- */
+
+#[test]
+fn gpu_lock_help_exits_zero() {
+    let (code, out, _) = run(&["gpu-lock", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("Lock") || out.contains("lock") || out.contains("reset"));
+}
+
+#[test]
+fn gpu_lock_lock_help() {
+    let (code, out, _) = run(&["gpu-lock", "lock", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("freq") || out.contains("device"));
+}
+
+#[test]
+fn gpu_lock_reset_help() {
+    let (code, out, _) = run(&["gpu-lock", "reset", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("device"));
+}
+
+/* ----------------------------- GPU Monitor ----------------------------- */
+
+#[test]
+fn gpu_monitor_snapshot_help() {
+    let (code, out, _) = run(&["gpu-monitor", "snapshot", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("output") || out.contains("JSON"));
+}
+
+#[test]
+fn gpu_monitor_diff_help() {
+    let (code, out, _) = run(&["gpu-monitor", "diff", "--help"]);
+    assert_eq!(code, 0);
+    assert!(out.contains("BEFORE") || out.contains("AFTER") || out.contains("snapshot"));
+}
+
+#[test]
+fn gpu_monitor_snapshot_to_stdout() {
+    let (code, out, _) = run(&["gpu-monitor", "snapshot"]);
+    // Will succeed on GPU machines, fail gracefully otherwise
+    if code == 0 {
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        assert!(parsed.get("timestamp").is_some());
+        assert!(parsed.get("devices").is_some());
+    }
+}
+
+#[test]
+fn gpu_monitor_snapshot_to_file_and_diff() {
+    // Create a snapshot, save it, then diff it with itself
+    let (code, out, _) = run(&["gpu-monitor", "snapshot"]);
+    if code != 0 {
+        return; // No GPU, skip
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("snap.json");
+    std::fs::write(&path, &out).expect("write");
+
+    let snap_path = path.to_string_lossy().to_string();
+    let (diff_code, diff_out, _) = run(&["gpu-monitor", "diff", &snap_path, &snap_path]);
+    assert_eq!(diff_code, 0);
+    assert!(diff_out.contains("No significant changes"));
+}
+
+#[test]
+fn gpu_monitor_diff_json_output() {
+    let (code, out, _) = run(&["gpu-monitor", "snapshot"]);
+    if code != 0 {
+        return; // No GPU, skip
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("snap.json");
+    std::fs::write(&path, &out).expect("write");
+
+    let snap_path = path.to_string_lossy().to_string();
+    let (diff_code, diff_out, _) =
+        run(&["gpu-monitor", "diff", &snap_path, &snap_path, "--json"]);
+    assert_eq!(diff_code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&diff_out).expect("valid JSON");
+    assert!(parsed.is_array());
+    assert!(parsed.as_array().unwrap().is_empty()); // No diffs for self-compare
+}
+
 /* ----------------------------- Error Cases ----------------------------- */
 
 #[test]

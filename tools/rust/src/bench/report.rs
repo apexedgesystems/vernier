@@ -273,6 +273,11 @@ pub fn summary_to_json(rows: &[BenchRow]) -> String {
     serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
+/// Format GPU environment results as a JSON array.
+pub fn gpu_env_to_json(checks: &[super::CheckResult]) -> String {
+    validate_to_json(checks)
+}
+
 /// Format validation results as a JSON array.
 pub fn validate_to_json(checks: &[super::CheckResult]) -> String {
     let entries: Vec<serde_json::Value> = checks

@@ -1021,11 +1021,28 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 1. **GPU frequency scaling:**
 
    ```bash
-   # Lock GPU clocks (requires root)
-   sudo nvidia-smi -lgc 1410  # Lock to max clock
+   # Check current clock state
+   bench gpu-env
+
+   # Lock GPU clocks for stable benchmarks (auto-detects max frequency)
+   bench gpu-lock lock
+
+   # Or wrap a benchmark run (auto-resets on exit)
+   bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --csv results.csv
+
+   # Reset when done
+   bench gpu-lock reset
    ```
 
 2. **Thermal throttling:**
+
+   ```bash
+   # Snapshot before and after to detect thermal drift
+   bench gpu-monitor snapshot -o before.json
+   ./bin/ptests/BenchmarkGPU_PTEST --csv results.csv
+   bench gpu-monitor snapshot -o after.json
+   bench gpu-monitor diff before.json after.json
+   ```
 
    ```cpp
    if (result.stats.clocks.isThrottling()) {
@@ -1042,8 +1059,10 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 4. **Background GPU processes:**
 
    ```bash
-   nvidia-smi  # Check for other processes
-   # Kill interfering processes
+   # Check GPU state including memory usage and utilization
+   bench gpu-monitor snapshot
+   # Or use nvidia-smi directly
+   nvidia-smi
    ```
 
 ### Low Occupancy
@@ -1130,6 +1149,7 @@ CUDA_CHECK(cudaMalloc(&d_data, SIZE));
 
 ## See Also
 
+- **[CLI Tools README](../../../tools/README.md)** - Full `bench` tool reference (`gpu-env`, `gpu-lock`, `gpu-monitor`)
 - **[API Reference](API_REFERENCE.md)** - Complete API documentation
 - **[CPU Guide](CPU_GUIDE.md)** - CPU benchmarking guide
 - **[Advanced Guide](ADVANCED_GUIDE.md)** - Deep dives and advanced patterns

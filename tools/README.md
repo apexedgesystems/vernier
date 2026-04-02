@@ -45,7 +45,8 @@ and the tools work.
 
 ## 2. bench (Rust)
 
-Single binary with 5 subcommands for all non-plotting benchmarking tasks.
+Single binary with 8 subcommands for benchmarking analysis, GPU environment management,
+and profiling tasks.
 
 ### summary - Display Results
 
@@ -132,6 +133,109 @@ bench flamegraph candidate.perf/perf.data --baseline baseline.perf/perf.data
 | `--output FILE`   | Output SVG path                          | flamegraph.svg |
 | `--baseline FILE` | Differential flamegraph against baseline | --             |
 
+### gpu-env - GPU Environment Validation
+
+Check GPU readiness for benchmarking: driver, toolkit, devices, clocks, thermals,
+profiler availability, and P2P topology.
+
+```bash
+bench gpu-env
+bench gpu-env --json
+```
+
+**Checks performed:**
+
+| Check            | Severity | Description                                      |
+| ---------------- | -------- | ------------------------------------------------ |
+| nvidia-smi       | FAIL     | Binary exists and runs                           |
+| NVIDIA driver    | FAIL     | Driver version query                             |
+| CUDA toolkit     | WARN     | nvcc version, falls back to driver-reported CUDA |
+| GPU devices      | FAIL     | Device enumeration with name, memory, SM version |
+| Persistence mode | WARN     | Cold-start overhead if disabled                  |
+| GPU clocks       | WARN     | Current vs max, lock recommendation              |
+| ECC memory       | WARN     | Bandwidth impact of ECC                          |
+| Power state      | WARN     | Current draw vs limit headroom                   |
+| Thermal state    | WARN     | Temperature vs throttle point                    |
+| Nsight Systems   | WARN     | nsys version for timeline profiling              |
+| Nsight Compute   | WARN     | ncu version for kernel-level profiling           |
+| P2P topology     | INFO     | NVLink / PCIe topology (multi-GPU only)          |
+
+**Options:**
+
+| Flag     | Description                  | Default |
+| -------- | ---------------------------- | ------- |
+| `--json` | Machine-readable JSON output | --      |
+
+### gpu-lock - Clock Management
+
+Lock GPU clocks to a fixed frequency for reproducible benchmarks. Eliminates
+clock boost/throttle variance that inflates CV%.
+
+```bash
+# Lock clocks (default: max frequency)
+bench gpu-lock lock
+bench gpu-lock lock --freq 1500
+
+# Lock clocks, run a benchmark, then auto-reset on exit
+bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --quick --csv results.csv
+
+# Reset clocks to driver-managed default
+bench gpu-lock reset
+```
+
+**Subcommands:**
+
+| Subcommand | Description                                       |
+| ---------- | ------------------------------------------------- |
+| `lock`     | Lock clocks (reset on exit if wrapping a command) |
+| `reset`    | Reset clocks to driver-managed default            |
+
+**Lock options:**
+
+| Flag         | Description                            | Default   |
+| ------------ | -------------------------------------- | --------- |
+| `--device N` | GPU device index                       | 0         |
+| `--freq MHz` | Target frequency in MHz                | max clock |
+| `-- CMD...`  | Command to run while clocks are locked | --        |
+
+The wrapper mode (`lock -- <command>`) uses a drop guard to guarantee clock
+reset even if the wrapped command fails or is interrupted with Ctrl-C.
+Persistence mode is auto-enabled if needed.
+
+### gpu-monitor - GPU State Snapshots
+
+Capture GPU state before and after a benchmark run, then diff to detect
+environmental drift (thermal throttling, clock changes, memory pressure).
+
+```bash
+# Capture current state
+bench gpu-monitor snapshot
+bench gpu-monitor snapshot -o before.json
+
+# After benchmark run
+bench gpu-monitor snapshot -o after.json
+
+# Compare
+bench gpu-monitor diff before.json after.json
+bench gpu-monitor diff before.json after.json --json
+```
+
+**Snapshot fields per device:** temperature, power draw/limit, graphics/memory
+clocks, memory usage, GPU/memory utilization, throttle reasons, P-state.
+
+**Diff severity thresholds:**
+
+| Field               | Warning threshold | Meaning                       |
+| ------------------- | ----------------- | ----------------------------- |
+| temperature_c       | 5 C               | GPU heated up significantly   |
+| power_draw_w        | 10 W              | Power budget shifted          |
+| clock_graphics_mhz  | 50 MHz            | Clock speed changed           |
+| clock_mem_mhz       | 50 MHz            | Memory clock changed          |
+| memory_used_mib     | 100 MiB           | Other process grabbed GPU mem |
+| gpu_utilization_pct | 20%               | Background GPU load           |
+| pstate              | any change        | Performance state shifted     |
+| throttle_reasons    | any change        | Throttling started or stopped |
+
 ---
 
 ## 3. bench-plot (Python)
@@ -207,6 +311,46 @@ bench compare baseline.csv optimized.csv --threshold 5
 
 # 7. Visualize (optional)
 bench-plot plot optimized.csv --output analysis/
+```
+
+### GPU Benchmark Workflow
+
+Full GPU benchmarking pipeline with environment validation, clock locking,
+and state monitoring:
+
+```bash
+cd build/native-linux-debug
+source .env
+
+# 1. Validate GPU environment
+bench gpu-env
+
+# 2. Lock clocks for reproducibility
+bench gpu-lock lock
+
+# 3. Snapshot before
+bench gpu-monitor snapshot -o before.json
+
+# 4. Run benchmark
+./bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
+
+# 5. Snapshot after
+bench gpu-monitor snapshot -o after.json
+
+# 6. Check for environmental drift
+bench gpu-monitor diff before.json after.json
+
+# 7. Analyze results
+bench summary gpu_results.csv
+
+# 8. Reset clocks
+bench gpu-lock reset
+```
+
+Or use the wrapper mode to combine steps 2, 4, and 8:
+
+```bash
+bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
 ```
 
 ### CI Regression Detection
@@ -295,4 +439,5 @@ cd tools/py && poetry run pytest -v
 
 - `src/bench/docs/CPU_GUIDE.md` - CPU benchmarking patterns
 - `src/bench/docs/GPU_GUIDE.md` - GPU benchmarking patterns
+- `src/monitor/inc/Monitor.hpp` - Runtime performance monitor API
 - `src/bench/docs/TROUBLESHOOTING.md` - Common issues and solutions
