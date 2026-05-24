@@ -3,7 +3,10 @@ x-common: &common
   working_dir: /home/${USER}/workspace
   volumes:
     - .:/home/${USER}/workspace:cached
-    - ccache:/ccache
+    # CCACHE_HOST overrides the default named-volume mount with a bind
+    # mount, so the host directory can be saved/restored across CI runs
+    # (see .github/workflows/ci.yml). Unset locally -> named volume.
+    - ${CCACHE_HOST:-ccache}:/ccache
     - ~/.gitconfig:/home/${USER}/.gitconfig:ro
     - ~/.ssh:/home/${USER}/.ssh:ro
   tty: true
