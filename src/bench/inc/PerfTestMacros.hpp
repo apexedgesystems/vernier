@@ -175,7 +175,35 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
     vernier::bench::setGlobalPerfConfig(&cfg);                                                     \
     vernier::bench::installPerfEventListener(cfg);                                                 \
     ::testing::InitGoogleTest(&argc, argv);                                                        \
-    return RUN_ALL_TESTS();                                                                        \
+    const int _vernier_rc = RUN_ALL_TESTS();                                                       \
+    vernier::bench::warnIfNoTestsRanUnderProfile(cfg);                                             \
+    return _vernier_rc;                                                                            \
   }
+
+namespace vernier {
+namespace bench {
+
+/**
+ * @brief If a profiler was requested but zero tests ran, emit a loud warning.
+ *
+ * Apex_csf flagged this as a footgun: a typo in --gtest_filter silently
+ * produces empty .prof / .nsys-rep / .callgrind files. The user only
+ * discovers the mistake when analysis fails. Surface it at the source.
+ */
+inline void warnIfNoTestsRanUnderProfile(const PerfConfig& cfg) {
+  if (cfg.profileTool.empty()) return;
+  const auto* unitTest = ::testing::UnitTest::GetInstance();
+  if (unitTest == nullptr) return;
+  if (unitTest->test_to_run_count() > 0) return;
+
+  std::fprintf(stderr,
+               "\n[profile] --profile %s requested but the gtest filter matched zero tests.\n"
+               "[profile] Any profiler artifacts written are empty. Run with\n"
+               "[profile] --gtest_list_tests to see available test names.\n\n",
+               cfg.profileTool.c_str());
+}
+
+} // namespace bench
+} // namespace vernier
 
 #endif // VERNIER_PERFTESTMACROS_HPP

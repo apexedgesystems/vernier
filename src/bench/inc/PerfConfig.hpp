@@ -15,6 +15,7 @@
 #include <string_view>
 #include <vector>
 
+#include "src/bench/inc/ProfilerEnv.hpp"      // isInContainer for CSV path warning
 #include "src/bench/inc/ProfilerRegistry.hpp" // backend doctor in --profile-check
 
 namespace vernier {
@@ -133,6 +134,21 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--csv") {
       cfg.csv = std::string(NEED_ARG("--csv", i, *argc, argv));
       ++i;
+      // Inside a container, a relative or /tmp CSV path writes to the
+      // container fs and disappears on exit; warn the user before they
+      // discover that the file isn't visible on the host.
+      if (profiler_env::isInContainer()) {
+        const std::string& p = *cfg.csv;
+        const bool inWorkspace = p.find("/home/") == 0 || p.find("/workspace") == 0;
+        if (!inWorkspace) {
+          std::fprintf(stderr,
+                       "\n[csv] writing to '%s' inside a container; this path is unlikely to be\n"
+                       "[csv] visible on the host. Prefer a path under /home/$USER/workspace/\n"
+                       "[csv] (or wherever your dev volume is mounted) so the file survives the\n"
+                       "[csv] container exit.\n\n",
+                       p.c_str());
+        }
+      }
     }
 
     // ---- Profiling / artifact flags ----
@@ -145,8 +161,11 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--bpf") {
       cfg.bpfScripts = PARSE_LIST(NEED_ARG("--bpf", i, *argc, argv));
       ++i;
-    } else if (a == "--artifact-root") {
-      cfg.artifactRoot = NEED_ARG("--artifact-root", i, *argc, argv);
+    } else if (a == "--artifact-root" || a == "--profile-output-dir") {
+      // --profile-output-dir is the user-friendlier alias; both write the
+      // same field. All registered profiler backends consult artifactRoot
+      // when building their per-test artifact subdirectory.
+      cfg.artifactRoot = NEED_ARG("--profile-output-dir", i, *argc, argv);
       ++i;
     } else if (a == "--profile-frequency") {
       cfg.profileFrequency =

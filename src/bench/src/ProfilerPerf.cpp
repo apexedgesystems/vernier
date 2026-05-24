@@ -46,9 +46,27 @@ void PerfStatProfiler::beforeMeasure() {
   }
 
   pid_t targetPid = ::getpid();
-  bool useRecord = startsWithTrim(cfg_.profileArgs, "record");
+  const bool useRecord = startsWithTrim(cfg_.profileArgs, "record");
+  const bool useMem    = startsWithTrim(cfg_.profileArgs, "mem");
+  const bool useC2c    = startsWithTrim(cfg_.profileArgs, "c2c");
 
-  if (useRecord) {
+  if (useMem) {
+    // perf mem -- memory-access profiling. Captures load/store latency
+    // distribution; useful for finding L1/L2/LLC stalls.
+    dataPath_ = artifactDir_ + "/perf.mem.data";
+    errPath_  = artifactDir_ + "/mem.err.txt";
+    std::string cmd = "perf mem record -p " + std::to_string(targetPid) +
+                      " -o '" + dataPath_ + "'";
+    launchBackground(cmd, /*stdoutPath*/ "", errPath_);
+  } else if (useC2c) {
+    // perf c2c -- cache-line contention profiling. Surfaces false sharing
+    // by attributing HITM events to the source line of the contended write.
+    dataPath_ = artifactDir_ + "/perf.c2c.data";
+    errPath_  = artifactDir_ + "/c2c.err.txt";
+    std::string cmd = "perf c2c record -p " + std::to_string(targetPid) +
+                      " -o '" + dataPath_ + "'";
+    launchBackground(cmd, /*stdoutPath*/ "", errPath_);
+  } else if (useRecord) {
     // perf record mode
     dataPath_ = artifactDir_ + "/perf.data";
     errPath_ = artifactDir_ + "/record.err.txt";
@@ -63,7 +81,7 @@ void PerfStatProfiler::beforeMeasure() {
     cmd += "-p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else {
-    // perf stat mode
+    // perf stat mode (default)
     statPath_ = artifactDir_ + "/stat.txt";
     std::string events = "cpu-cycles,instructions,branches,branch-misses,cache-misses";
     std::string cmd = "perf stat -e " + events + " -p " + std::to_string(targetPid);
