@@ -1,0 +1,219 @@
+# ==============================================================================
+# Docker Images -- Build and push dev images to ghcr.io
+#
+# Dev and base images are infrastructure: they change only when a Dockerfile
+# changes (toolchain version bump, new SDK, new system package). This workflow
+# builds and caches them so CI and release jobs never rebuild toolchains from
+# scratch.
+#
+# Triggers:
+#   - Push to main when docker/ changes  (path filter = free git diff check)
+#   - Manual dispatch with optional force_rebuild flag
+#
+# Selectivity:
+#   - base.Dockerfile changed         -> rebuild everything (base is parent)
+#   - dev/cpu.Dockerfile changed      -> rebuild cpu + cpu-dependents (rpi, riscv64)
+#   - dev/cuda.Dockerfile changed     -> rebuild cuda + jetson
+#   - dev/<x>.Dockerfile changed      -> rebuild only that image
+#   - toolchain/<x>.Dockerfile changed -> rebuild any dev image that COPY-froms it
+#   - No relevant Dockerfile changed  -> each image is pulled from registry
+#
+# Toolchain images (vernier.toolchain.*) are NOT pushed -- they are transient
+# layers consumed via COPY --from by the dev images that need them. They are
+# rebuilt locally whenever the dev image that depends on them is rebuilt.
+#
+# Images pushed (tagged :latest and :{git-sha}):
+#   vernier.base
+#   vernier.dev.cpu   vernier.dev.cuda   vernier.dev.jetson
+#   vernier.dev.rpi   vernier.dev.riscv64
+# ==============================================================================
+name: Docker Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docker/**
+  workflow_dispatch:
+    inputs:
+      force_rebuild:
+        description: "Rebuild all images regardless of Dockerfile changes"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-and-push:
+    name: Build and Push Dev Images
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    env:
+      REGISTRY: ghcr.io/${{ github.repository }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compute per-image rebuild flags and export to GITHUB_ENV so each
+      # subsequent step can read them as plain shell variables.
+      - name: Detect changed Dockerfiles
+        run: |
+          FORCE="${{ github.event.inputs.force_rebuild }}"
+          DIFF=$(git diff --name-only HEAD~1 HEAD -- docker/ 2>/dev/null || echo "docker/base.Dockerfile")
+          echo "Changed docker files: $DIFF"
+
+          changed() { echo "$DIFF" | grep -qF "$1" && echo "true" || echo "false"; }
+
+          BASE=$(changed   "base.Dockerfile")
+          CPU=$(changed    "dev/cpu.Dockerfile")
+          CUDA=$(changed   "dev/cuda.Dockerfile")
+          JETSON=$(changed "dev/jetson.Dockerfile")
+          RPI=$(changed    "dev/rpi.Dockerfile")
+          RISCV64=$(changed "dev/riscv64.Dockerfile")
+
+          TC_AARCH64=$(changed "toolchain/aarch64.Dockerfile")
+          TC_RPI=$(changed     "toolchain/rpi.Dockerfile")
+          TC_RISCV64=$(changed "toolchain/riscv64.Dockerfile")
+
+          # base change cascades to everything; force_rebuild overrides all
+          if [ "$FORCE" = "true" ] || [ "$BASE" = "true" ]; then
+            for v in BASE CPU CUDA JETSON RPI RISCV64; do
+              echo "REBUILD_${v}=true" >> "$GITHUB_ENV"
+            done
+            exit 0
+          fi
+
+          echo "REBUILD_BASE=false" >> "$GITHUB_ENV"
+
+          # cpu change cascades to cpu-dependent images (rpi, riscv64 are
+          # FROM vernier.dev.cpu)
+          if [ "$CPU" = "true" ]; then RPI=true; RISCV64=true; fi
+
+          # cuda change cascades to jetson (jetson is FROM vernier.dev.cuda)
+          if [ "$CUDA" = "true" ]; then JETSON=true; fi
+
+          # toolchain changes cascade to the dev images that COPY --from them.
+          # aarch64 is a parent of rpi toolchain too, so it cascades to both.
+          if [ "$TC_AARCH64" = "true" ]; then JETSON=true; RPI=true; fi
+          if [ "$TC_RPI"     = "true" ]; then RPI=true; fi
+          if [ "$TC_RISCV64" = "true" ]; then RISCV64=true; fi
+
+          echo "REBUILD_CPU=${CPU}"         >> "$GITHUB_ENV"
+          echo "REBUILD_CUDA=${CUDA}"       >> "$GITHUB_ENV"
+          echo "REBUILD_JETSON=${JETSON}"   >> "$GITHUB_ENV"
+          echo "REBUILD_RPI=${RPI}"         >> "$GITHUB_ENV"
+          echo "REBUILD_RISCV64=${RISCV64}" >> "$GITHUB_ENV"
+
+      # --------------------------------------------------------------------------
+      # Base image (parent of all)
+      # --------------------------------------------------------------------------
+      - name: vernier.base
+        run: |
+          if [ "$REBUILD_BASE" = "true" ]; then
+            docker compose build base
+            docker tag vernier.base $REGISTRY/vernier.base:latest
+            docker tag vernier.base $REGISTRY/vernier.base:${{ github.sha }}
+            docker push $REGISTRY/vernier.base:latest
+            docker push $REGISTRY/vernier.base:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.base:latest
+            docker tag $REGISTRY/vernier.base:latest vernier.base
+          fi
+
+      # --------------------------------------------------------------------------
+      # CPU and CUDA dev images (both inherit from base, independent of each other)
+      # --------------------------------------------------------------------------
+      - name: vernier.dev.cpu
+        run: |
+          if [ "$REBUILD_CPU" = "true" ]; then
+            docker compose build dev
+            docker tag vernier.dev.cpu $REGISTRY/vernier.dev.cpu:latest
+            docker tag vernier.dev.cpu $REGISTRY/vernier.dev.cpu:${{ github.sha }}
+            docker push $REGISTRY/vernier.dev.cpu:latest
+            docker push $REGISTRY/vernier.dev.cpu:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.dev.cpu:latest
+            docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu
+          fi
+
+      - name: vernier.dev.cuda
+        run: |
+          if [ "$REBUILD_CUDA" = "true" ]; then
+            docker compose build dev-cuda
+            docker tag vernier.dev.cuda $REGISTRY/vernier.dev.cuda:latest
+            docker tag vernier.dev.cuda $REGISTRY/vernier.dev.cuda:${{ github.sha }}
+            docker push $REGISTRY/vernier.dev.cuda:latest
+            docker push $REGISTRY/vernier.dev.cuda:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.dev.cuda:latest
+            docker tag $REGISTRY/vernier.dev.cuda:latest vernier.dev.cuda
+          fi
+
+      # --------------------------------------------------------------------------
+      # Jetson (FROM vernier.dev.cuda, COPY --from=vernier.toolchain.aarch64)
+      # --------------------------------------------------------------------------
+      - name: vernier.dev.jetson
+        run: |
+          if [ "$REBUILD_JETSON" = "true" ]; then
+            docker compose build toolchain-aarch64
+            docker compose build dev-jetson
+            docker tag vernier.dev.jetson $REGISTRY/vernier.dev.jetson:latest
+            docker tag vernier.dev.jetson $REGISTRY/vernier.dev.jetson:${{ github.sha }}
+            docker push $REGISTRY/vernier.dev.jetson:latest
+            docker push $REGISTRY/vernier.dev.jetson:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.dev.jetson:latest
+            docker tag $REGISTRY/vernier.dev.jetson:latest vernier.dev.jetson
+          fi
+
+      # --------------------------------------------------------------------------
+      # Linux cross-compile dev images (FROM vernier.dev.cpu)
+      # --------------------------------------------------------------------------
+      - name: vernier.dev.rpi
+        run: |
+          if [ "$REBUILD_RPI" = "true" ]; then
+            docker compose build toolchain-aarch64
+            docker compose build toolchain-rpi
+            docker compose build dev-rpi
+            docker tag vernier.dev.rpi $REGISTRY/vernier.dev.rpi:latest
+            docker tag vernier.dev.rpi $REGISTRY/vernier.dev.rpi:${{ github.sha }}
+            docker push $REGISTRY/vernier.dev.rpi:latest
+            docker push $REGISTRY/vernier.dev.rpi:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.dev.rpi:latest
+            docker tag $REGISTRY/vernier.dev.rpi:latest vernier.dev.rpi
+          fi
+
+      - name: vernier.dev.riscv64
+        run: |
+          if [ "$REBUILD_RISCV64" = "true" ]; then
+            docker compose build toolchain-riscv64
+            docker compose build dev-riscv64
+            docker tag vernier.dev.riscv64 $REGISTRY/vernier.dev.riscv64:latest
+            docker tag vernier.dev.riscv64 $REGISTRY/vernier.dev.riscv64:${{ github.sha }}
+            docker push $REGISTRY/vernier.dev.riscv64:latest
+            docker push $REGISTRY/vernier.dev.riscv64:${{ github.sha }}
+          else
+            docker pull $REGISTRY/vernier.dev.riscv64:latest
+            docker tag $REGISTRY/vernier.dev.riscv64:latest vernier.dev.riscv64
+          fi
