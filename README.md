@@ -64,13 +64,21 @@ cmake --build --preset native-linux-debug
 ## 2. Key Features
 
 - GoogleTest integration with CSV export and end-of-run summary tables
-- 6 profiler backends: perf, gperftools, bpftrace, RAPL, callgrind, Nsight
-- CUDA GPU benchmarking with multi-GPU and Unified Memory support
+- 13 self-registering profiler backends covering CPU, heap, off-CPU, energy,
+  and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
+- Per-backend environment doctor (`--profile-check`) with actionable hints
+- SIGALRM per-test watchdog so hung profiler runs fail loudly, not silently
+- CUDA GPU benchmarking with multi-GPU and Unified Memory support, plus
+  in-process CUPTI kernel metrics (register / smem / launch counts) without
+  spawning ncu
+- NVTX timeline annotation API auto-injected into Nsight Systems runs
 - Statistical analysis: median, percentiles, CV%, adaptive stability detection
 - Memory bandwidth analysis with efficiency calculations
 - Multi-threaded contention benchmarking with synchronized start gates
 - Semantic test macros (PERF_THROUGHPUT, PERF_LATENCY, PERF_MEMORY, etc.)
-- CLI tools for analysis, comparison, regression detection, and visualization
+- CLI tools for analysis, comparison, regression detection, visualization,
+  doctor / profile-all / profile-summarize orchestration, project-level
+  defaults via `.bench.yaml`
 
 ---
 
@@ -117,19 +125,46 @@ under `build/native-linux-release/install/`.
 
 ---
 
-## 4. CLI Tools
+## 4. CLI Tools and Backends
 
-Two CLI tools handle post-measurement analysis and visualization. Build with
-`make tools-rust` and `make tools-py`, then source `.env` from the build directory.
+CLI tools build with `make tools-rust` and `make tools-py`; source `.env`
+from the build directory to put them on PATH.
 
-| Tool         | Language | Purpose                                                  |
-| ------------ | -------- | -------------------------------------------------------- |
-| `bench`      | Rust     | Analysis, comparison, validation, execution, flamegraphs |
-| `bench-plot` | Python   | Visualization (plots, dashboards, charts)                |
+| Tool           | Language | Purpose                                                                  |
+| -------------- | -------- | ------------------------------------------------------------------------ |
+| `bench`        | Rust     | Analysis, comparison, validation, run, doctor, profile-all, profile-summarize, init, config-validate, gpu-env, gpu-lock, gpu-monitor, gpu-topo, flamegraph |
+| `bench-plot`   | Python   | Visualization (plots, dashboards, charts)                                |
+| `nsight-parse` | Python   | Turn `.nsys-rep` / `.ncu-rep` reports into a tidy CSV                    |
+
+### Registered profiler backends
+
+`--profile X` dispatches to whichever backend self-registered under that
+name; `bench doctor` lists them all with their environment readiness.
+
+| Backend             | Layer | Wraps                                            |
+| ------------------- | ----- | ------------------------------------------------ |
+| `perf`              | CPU   | Linux perf_events (stat / record / mem / c2c)    |
+| `gperf`             | CPU   | gperftools                                       |
+| `callgrind`         | CPU   | valgrind callgrind                               |
+| `bpftrace`          | CPU   | bpftrace scripts                                 |
+| `rapl`              | CPU   | Intel RAPL MSRs                                  |
+| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)            |
+| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)               |
+| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)     |
+| `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)             |
+| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)      |
+| `nsight`            | GPU   | NVIDIA Nsight Systems / Compute                  |
+| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)          |
+| `rocprof`           | GPU   | AMD ROCm rocprof                                 |
+
+CUPTI kernel metrics populate the GPU CSV section automatically on every
+GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
 
 ```bash
 bench summary results.csv
 bench compare baseline.csv candidate.csv --fail-on-regression
+bench doctor ./build/native-linux-debug/bin/ptests/MyComponent_PTEST
+bench profile-all MyComponent --quick
 bench-plot plot results.csv --output charts/
 ```
 

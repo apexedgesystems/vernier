@@ -839,22 +839,92 @@ ncu --csv --print-summary per-kernel nsight-*.ncu-rep
 
 ### GPU Profiler Integration
 
+`UB_PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is
+selected by `--profile X` fires around the measured window. No manual
+`attachGpuProfilerHooks` call required.
+
 ```cpp
 PERF_GPU_TEST(MyKernel, WithProfiling) {
   UB_PERF_GPU_GUARD(perf);
-  // Profiling automatically enabled if --profile flag passed
 
-  // Setup and measurement as usual
   auto result = perf.cudaKernel([&](cudaStream_t s) {
     myKernel<<<grid, block, 0, s>>>(d_data, N);
   }, "profiled_kernel")
     .withLaunchConfig(grid, block)
     .measure();
-
-  // Profiler data saved automatically
-  // Check CSV for profile_tool and profile_dir columns
 }
 ```
+
+### GPU-side backends
+
+| Backend             | Wraps                       | Use it for                                                            |
+| ------------------- | --------------------------- | --------------------------------------------------------------------- |
+| `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern_sum / api_sum / mem_*  |
+| `compute-sanitizer` | NVIDIA Compute Sanitizer    | GPU memcheck / racecheck / synccheck / initcheck                       |
+| `rocprof`           | AMD ROCm rocprof            | AMD MI / Radeon Instinct profiling (kernel time + Chrome-trace JSON)   |
+
+Each backend follows the wrap-externally pattern: the binary stays passive
+unless wrapping is detected, in which case the backend records the artifact
+path. When run unwrapped, the backend prints the precise invocation including
+the per-test artifact directory.
+
+```bash
+# Timeline profile (auto-stats reports drop next to the .nsys-rep)
+nsys profile -o run.nsys-rep -t cuda,nvtx \
+    ./MyGpuTest --profile nsight --gtest_filter='*'
+
+# GPU memory error detection
+compute-sanitizer --tool=memcheck --log-file=run.sanitizer.log \
+    ./MyGpuTest --profile compute-sanitizer --cycles 5
+
+# AMD GPU (HIP-built binary)
+rocprof --stats -o run.csv \
+    ./MyHipTest --profile rocprof --profile-args stats
+```
+
+### NVTX annotation API
+
+`BENCH_NVTX_SCOPE("name")` pushes a labeled range that nsys / ncu pick up
+automatically. `NsightProfiler` also auto-emits a range named after the
+test, so even unannotated benchmarks show per-test grouping in the
+nsys timeline.
+
+```cpp
+#include "Nvtx.hpp"
+
+void processFrame() {
+  {
+    BENCH_NVTX_SCOPE("phase_decode");
+    decode();
+  }
+  {
+    BENCH_NVTX_SCOPE("phase_render");
+    render();
+  }
+}
+```
+
+Compiles to a no-op on CPU-only builds (no nvtx3 headers needed).
+
+### CUPTI in-process kernel metrics
+
+CUPTI's Activity API populates per-launch register count, static + dynamic
+shared memory, and launch count into the GPU CSV section on every GPU run
+-- no `--profile` flag required. New columns:
+
+| Column                   | Meaning                                                    |
+| ------------------------ | ---------------------------------------------------------- |
+| `cuptiKernelLaunches`    | Number of kernel launches observed in the measured window  |
+| `cuptiRegistersMedian`   | Median registers per thread across launches                |
+| `cuptiRegistersMax`      | Max registers per thread observed                          |
+| `cuptiStaticSmemBytes`   | Median static `__shared__` allocation                      |
+| `cuptiDynamicSmemBytes`  | Median dynamic shared memory passed at launch              |
+
+Removes the need to spawn `ncu` as an external process for the metrics it
+captures (which is fragile inside container PID namespaces). For the
+metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
+cache hit rates), keep `--profile nsight --profile-args replay` or wrap
+externally with `ncu`.
 
 ---
 

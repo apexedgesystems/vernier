@@ -97,24 +97,108 @@ bench validate --json
 
 ### run - Execute Benchmark Binary
 
-Run a benchmark binary with optional CPU pinning and profiling.
+Run a benchmark binary with optional CPU pinning and profiling. The binary
+argument can be a full path OR a short name -- the latter auto-resolves
+under `build/*/bin/{ptests,tests,examples}` (override with
+`VERNIER_BENCH_BIN_ROOTS` / `VERNIER_BENCH_BIN_SUBDIRS` for non-CMake
+layouts).
 
 ```bash
-bench run ./bin/ptests/MyComponent_PTEST
-bench run ./bin/ptests/MyComponent_PTEST --csv results.csv --quick
-bench run ./bin/ptests/MyComponent_PTEST --taskset 2-9 --profile perf
-bench run ./bin/ptests/MyComponent_PTEST --csv results.csv --analyze
+bench run BasicWorkflow                                   # short name auto-resolve
+bench run ./bin/ptests/MyComponent_PTEST                  # full path
+bench run MyComponent --csv results.csv --quick
+bench run MyComponent --taskset 2-9 --profile perf
+bench run MyComponent --csv results.csv --analyze
 ```
 
 **Options:**
 
-| Flag             | Description                             | Default |
-| ---------------- | --------------------------------------- | ------- |
-| `--csv FILE`     | Export results to CSV                   | --      |
-| `--quick`        | Fewer cycles/repeats for fast iteration | --      |
-| `--taskset CPUS` | Pin to specific CPU cores               | --      |
-| `--profile MODE` | Enable profiling (perf, gperf)          | --      |
-| `--analyze`      | Run summary after execution             | --      |
+| Flag             | Description                                          | Default |
+| ---------------- | ---------------------------------------------------- | ------- |
+| `--csv FILE`     | Export results to CSV                                | --      |
+| `--quick`        | Fewer cycles/repeats for fast iteration              | --      |
+| `--taskset CPUS` | Pin to specific CPU cores                            | --      |
+| `--profile MODE` | Enable profiling (any registered backend; see below) | --      |
+| `--analyze`      | Run summary after execution                          | --      |
+
+Unset `--cycles` / `--repeats` are filled in from `.bench.yaml` (see `init`).
+
+### doctor - Backend Environment Check
+
+Runs `--profile-check` against a ptest binary, printing both the binary
+readiness section (frame pointers, DWARF, ASLR, gperftools linkage) and the
+per-backend doctor (whether each registered profiler can actually run here).
+
+```bash
+bench doctor ./build/native-linux-debug/bin/ptests/MyComponent_PTEST
+```
+
+### profile-all - Iterate Every Profiler
+
+Run a benchmark under each profiler in sequence, dropping artifacts under
+per-tool subdirectories.
+
+```bash
+bench profile-all MyComponent                                       # gperf + perf + callgrind
+bench profile-all MyComponent --profilers gperf,callgrind --out out/
+bench profile-all MyComponent --quick --filter '*Hot*'
+```
+
+### profile-summarize - Tabulate Artifacts
+
+Walks an artifact root and reports per-tool file counts + total bytes.
+
+```bash
+bench profile-summarize bench-out/
+```
+
+### init / config-validate - Project Defaults
+
+`bench init` scaffolds a `.bench.yaml` at the project root (cycles, repeats,
+profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read by `run` and
+`profile-all` when the corresponding CLI flag is omitted.
+
+```bash
+bench init                              # writes .bench.yaml in CWD
+bench init --path config.yaml --force   # custom path; overwrite existing
+
+bench config-validate                   # walks up from CWD for .bench.yaml
+bench config-validate path/to/file.yaml
+```
+
+### gpu-topo - GPU/CPU Affinity
+
+Shows the GPU/GPU peer matrix and the NUMA-affine CPU range for each device.
+
+```bash
+bench gpu-topo
+bench gpu-topo --json
+```
+
+### Registered Profiler Backends
+
+`--profile X` dispatches to whichever backend self-registered under name `X`.
+The `doctor` command lists all of them with their environment readiness.
+
+| Backend             | Layer | Wraps                                                |
+| ------------------- | ----- | ---------------------------------------------------- |
+| `perf`              | CPU   | `perf stat` / `record` / `mem` / `c2c`               |
+| `gperf`             | CPU   | gperftools sampling profiler                         |
+| `callgrind`         | CPU   | valgrind callgrind                                   |
+| `bpftrace`          | CPU   | bpftrace scripts                                     |
+| `rapl`              | CPU   | Intel RAPL MSRs                                      |
+| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)                |
+| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                   |
+| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)         |
+| `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                      |
+| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)          |
+| `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)       |
+| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init)    |
+| `rocprof`           | GPU   | AMD ROCm rocprof                                     |
+
+CUPTI activity counters (per-launch register count, shared memory, kernel
+count) populate the GPU section of the CSV automatically on every GPU run --
+no `--profile` flag needed.
 
 ### flamegraph - Generate SVG Flamegraphs
 
@@ -270,6 +354,27 @@ bench-plot report results.csv --output analysis/
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 ```
+
+---
+
+## 3b. nsight-parse (Python)
+
+Turn raw Nsight reports into a tidy CSV the rest of the toolchain can consume.
+
+```bash
+# Single .nsys-rep -> CSV with the four canonical nsys reports
+nsight-parse parse run.nsys-rep --csv kernels.csv
+
+# Single .ncu-rep -> CSV with ncu's per-kernel summary
+nsight-parse parse run.ncu-rep --csv compute.csv
+
+# Directory walk: handle every .nsys-rep / .ncu-rep under the path
+nsight-parse parse bench-out/nsight/ --csv combined.csv
+```
+
+Output columns: `source` (nsys / ncu), `report`, `kernel`, `instances`,
+`time_total_ns`, `time_avg_ns`, `time_pct`, plus per-tool metric columns
+(metric names normalized to snake-case).
 
 ---
 

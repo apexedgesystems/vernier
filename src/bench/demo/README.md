@@ -79,6 +79,13 @@ walkthrough of what the code does and why.
 | 07  | Callgrind Profiler    | Deterministic instruction count | Linear search O(n)      | Binary search O(log n)     | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md)   |
 | 08  | RAPL Profiler         | Energy/power measurement        | Naive dot product       | Vectorized inner product   | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)             |
 | 09  | bpftrace Profiler     | Syscall overhead tracing        | One write() per byte    | Single batched write()     | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)     |
+| 10  | NVTX Annotation       | Timeline labeling for Nsight    | Single opaque region    | Per-phase named ranges     | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)         |
+| 11  | Massif Profiler       | Heap usage timeline             | new[] each iteration    | Pooled buffer reuse        | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
+| 12  | Memcheck Profiler     | Leak / UAF detection            | Raw new[] (leaky)       | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
+| 13  | Off-CPU Profiler      | Where threads go to sleep       | std::mutex contention   | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
+
+The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
+filenames carry their own sequential number across CPU + GPU.
 
 ---
 
@@ -88,9 +95,20 @@ Requires NVIDIA GPU with CUDA support.
 
 | #   | Demo               | Concept                    | Slow Path              | Fast Path               | Walkthrough                                               |
 | --- | ------------------ | -------------------------- | ---------------------- | ----------------------- | --------------------------------------------------------- |
-| 10  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 11  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 12  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 01  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels   | Deliberate OOB write   | Bounds-checked scale    | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+
+Binary names: `BenchDemo_Gpu_NN_*`.
+
+Two GPU profilers ship without a dedicated demo binary because they fire on
+*every* GPU run -- consult the walkthroughs to see what to look for:
+
+| Profiler          | Wraps                  | When to use                              | Walkthrough                                            |
+| ----------------- | ---------------------- | ---------------------------------------- | ------------------------------------------------------ |
+| rocprof (AMD)     | AMD GPU + HIP kernels  | AMD MI / Radeon Instinct profiling       | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)  |
+| CUPTI (in-proc)   | Any GPU benchmark      | Per-launch register / smem / count       | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 

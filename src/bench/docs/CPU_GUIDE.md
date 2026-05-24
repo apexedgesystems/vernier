@@ -608,6 +608,53 @@ sudo ./MyComponent_PTEST --profile bpftrace \
   --profile-args "custom_trace.bt"
 ```
 
+### Heap Profilers (Massif, Heaptrack, jemalloc prof)
+
+Three heap profilers ship with the harness; pick by your overhead budget.
+All three wrap the binary externally and the backend prints the exact
+invocation if you forget to wrap.
+
+```bash
+# Full timeline, lab use (~20x overhead)
+valgrind --tool=massif --massif-out-file=run.massif \
+    ./MyComponent_PTEST --profile massif --cycles 1
+ms_print run.massif | head -40
+
+# Lower-overhead alternative (~1.5x)
+heaptrack -o run.heaptrack ./MyComponent_PTEST --profile heaptrack
+heaptrack_print run.heaptrack.zst | head -40
+
+# Lowest-overhead allocator profiler (~5-10%)
+LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \
+MALLOC_CONF=prof:true,prof_prefix:jeprof \
+    ./MyComponent_PTEST --profile jemalloc
+jeprof --text ./MyComponent_PTEST jeprof.*.heap | head -20
+```
+
+### Memory Correctness with Memcheck
+
+Run alongside benchmarks after an optimization pass to catch leaks / UAF /
+uninit reads introduced by the change.
+
+```bash
+valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
+    --log-file=run.memcheck \
+    ./MyComponent_PTEST --profile memcheck --cycles 1
+grep -A2 "LEAK SUMMARY" run.memcheck
+```
+
+### Off-CPU Profiling (where threads sleep)
+
+All the on-CPU profilers above show where threads burn cycles. `--profile
+offcpu` shows where they *stop* burning cycles -- sleep, mutex wait, I/O
+wait. Requires root + tracefs.
+
+```bash
+sudo ./MyComponent_PTEST --profile offcpu \
+    --gtest_filter="*Concurrency"
+cat MyComponent.Concurrency.offcpu/offcpu.txt
+```
+
 **Example bpftrace script (fsync_latency.bt):**
 
 ```bpftrace
