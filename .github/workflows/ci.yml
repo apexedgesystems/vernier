@@ -3,37 +3,75 @@
 #
 # Runs format-check, debug build, and test suite inside Docker Compose
 # containers. Uses the CPU dev image (no NVIDIA driver needed).
+#
+# The four jobs (format, cpp, rust, python) run in parallel; wall time
+# is the slowest job, not the sum. Each job pulls cached dev images from
+# ghcr.io (published by docker-images.yml on docker/** changes); when the
+# Dockerfiles have not changed the pull is seconds and the subsequent
+# 'docker compose build' is a cache-hit no-op.
 # ==============================================================================
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "LICENSE"
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
-jobs:
-  lint-build-test:
-    name: Lint, Build, Test
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+permissions:
+  contents: read
+  packages: read
 
+env:
+  REGISTRY: ghcr.io/${{ github.repository }}
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Format check -- clang-format, prettier, shfmt etc. via 'make format-check'
+  # ----------------------------------------------------------------------------
+  format:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - uses: actions/checkout@v6
 
       - name: Prepare environment
         run: |
           touch ~/.gitconfig
           mkdir -p ~/.ssh
-          echo "UID=$(id -u)" >> "$GITHUB_ENV"
-          echo "GID=$(id -g)" >> "$GITHUB_ENV"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
 
-      - name: Build base and dev images
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Build dev image
         run: |
           docker compose build base
           docker compose build dev
@@ -41,8 +79,65 @@ jobs:
       - name: Format check
         run: docker compose run --rm -T dev make format-check
 
+  # ----------------------------------------------------------------------------
+  # C++ build + tests -- the long pole; persists ccache between CI runs
+  # ----------------------------------------------------------------------------
+  cpp:
+    name: C++ build and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      # Key on the things that invalidate ccache hits: compiler version
+      # (base.Dockerfile), build flags / preset (cmake/, CMakeLists.txt). The
+      # SHA suffix ensures each run gets a fresh save key; restore-keys do
+      # the actual hit work via prefix match on the most recent saved cache.
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-cpp-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cpp-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-
+            ccache-cpp-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Build dev image
+        run: |
+          docker compose build base
+          docker compose build dev
+
+      - name: ccache stats (pre-build)
+        run: docker compose run --rm -T dev ccache -z
+
       - name: Build (debug, CPU only)
         run: docker compose run --rm -T dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
+
+      - name: ccache stats (post-build)
+        run: docker compose run --rm -T dev ccache -s
 
       - name: Verify tools built
         run: |
@@ -52,8 +147,80 @@ jobs:
       - name: Run C++ tests
         run: docker compose run --rm -T dev make testp
 
+  # ----------------------------------------------------------------------------
+  # Rust tests -- cargo test in tools/rust/
+  # ----------------------------------------------------------------------------
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Build dev image
+        run: |
+          docker compose build base
+          docker compose build dev
+
       - name: Run Rust tests
         run: docker compose run --rm -T dev make test-rust
+
+  # ----------------------------------------------------------------------------
+  # Python tests -- pytest in tools/py/
+  # ----------------------------------------------------------------------------
+  python:
+    name: Python tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Build dev image
+        run: |
+          docker compose build base
+          docker compose build dev
 
       - name: Run Python tests
         run: docker compose run --rm -T dev make test-py

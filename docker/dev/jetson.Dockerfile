@@ -11,8 +11,8 @@
 FROM vernier.dev.cuda:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.dev.jetson" \
       org.opencontainers.image.description="CUDA + AArch64 cross-compilation environment for Jetson"
@@ -100,8 +100,8 @@ ENV PKG_CONFIG_SYSROOT_DIR=${AARCH64_SYSROOT}
 # ==============================================================================
 # User Setup (recreate after COPY overwrites /etc/passwd)
 # ==============================================================================
-RUN setup-user.sh "${USER}" "${UID}" "${GID}" && \
-    setup-prompt.sh "${USER}" "${UID}" "${GID}" "36" "JETSON"
+RUN setup-user.sh "${USER}" "${HOST_UID}" "${HOST_GID}" && \
+    setup-prompt.sh "${USER}" "${HOST_UID}" "${HOST_GID}" "36" "JETSON"
 
 # ==============================================================================
 # Validation

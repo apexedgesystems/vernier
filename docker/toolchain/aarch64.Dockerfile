@@ -8,8 +8,8 @@
 FROM vernier.base:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.toolchain.aarch64" \
       org.opencontainers.image.description="AArch64 cross-compilation toolchain"

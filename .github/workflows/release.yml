@@ -13,12 +13,16 @@ on:
 
 permissions:
   contents: write
+  packages: read
 
 jobs:
   build-artifacts:
     name: Build Release Artifacts
     runs-on: ubuntu-latest
     timeout-minutes: 120
+
+    env:
+      REGISTRY: ghcr.io/${{ github.repository }}
 
     steps:
       - name: Checkout
@@ -28,6 +32,25 @@ jobs:
         run: |
           touch ~/.gitconfig
           mkdir -p ~/.ssh
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pull pre-built dev images so the artifact build chain skips
+      # toolchain rebuilds. Falls back to local build if any pull fails.
+      - name: Pull cached dev images
+        run: |
+          for img in vernier.base vernier.dev.cpu vernier.dev.cuda \
+                     vernier.dev.jetson vernier.dev.rpi vernier.dev.riscv64; do
+            docker pull $REGISTRY/$img:latest \
+              && docker tag $REGISTRY/$img:latest $img || true
+          done
 
       - name: Extract version from tag
         id: version

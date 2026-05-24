@@ -11,8 +11,8 @@
 FROM vernier.base:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.dev.cpu" \
       org.opencontainers.image.description="Native x86_64 development environment"
@@ -22,8 +22,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # ==============================================================================
 # User Setup
 # ==============================================================================
-RUN setup-user.sh "${USER}" "${UID}" "${GID}" && \
-    setup-prompt.sh "${USER}" "${UID}" "${GID}" "34" "CPU"
+RUN setup-user.sh "${USER}" "${HOST_UID}" "${HOST_GID}" && \
+    setup-prompt.sh "${USER}" "${HOST_UID}" "${HOST_GID}" "34" "CPU"
 
 # ==============================================================================
 # Validation

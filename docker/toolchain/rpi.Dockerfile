@@ -7,8 +7,8 @@
 FROM vernier.toolchain.aarch64:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.toolchain.rpi" \
       org.opencontainers.image.description="Raspberry Pi cross-compilation toolchain"

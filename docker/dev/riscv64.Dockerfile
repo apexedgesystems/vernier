@@ -11,8 +11,8 @@
 FROM vernier.dev.cpu:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.dev.riscv64" \
       org.opencontainers.image.description="RISC-V 64-bit development shell"
@@ -28,8 +28,8 @@ COPY --from=vernier.toolchain.riscv64:latest / /
 # ==============================================================================
 # User Setup (recreate after COPY overwrites /etc/passwd)
 # ==============================================================================
-RUN setup-user.sh "${USER}" "${UID}" "${GID}" && \
-    setup-prompt.sh "${USER}" "${UID}" "${GID}" "37" "RISCV"
+RUN setup-user.sh "${USER}" "${HOST_UID}" "${HOST_GID}" && \
+    setup-prompt.sh "${USER}" "${HOST_UID}" "${HOST_GID}" "37" "RISCV"
 
 # ==============================================================================
 # Environment
