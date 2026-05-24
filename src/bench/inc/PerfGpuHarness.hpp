@@ -231,6 +231,7 @@ inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
   });
 }
 
+
 } // namespace bench
 } // namespace vernier
 

@@ -46,12 +46,15 @@
 
 /* ----------------------------- Scoped Guard ----------------------------- */
 
+// Construct a PerfGpuCase and auto-attach profiler hooks. Two-statement form
+// (PerfGpuCase is non-movable, so a return-by-value helper is not possible);
+// the user's trailing semicolon terminates the attach call.
 #define UB_PERF_GPU_GUARD(varName)                                                                 \
-  vernier::bench::PerfGpuCase varName {                                                            \
-    ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +                   \
-        std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),        \
-        vernier::bench::detail::getPerfConfig()                                                    \
-  }
+  vernier::bench::PerfGpuCase varName{                                                             \
+      ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +                 \
+          std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),      \
+      vernier::bench::detail::getPerfConfig()};                                                    \
+  vernier::bench::attachGpuProfilerHooks(varName, vernier::bench::detail::getPerfConfig())
 
 /* ----------------------------- GPU Main Macro ----------------------------- */
 

@@ -87,7 +87,6 @@ static constexpr int BLOCK_SIZE = 256;
 /** @test Safe kernel: clean run; sanitizer report shows 0 errors. */
 PERF_GPU_BANDWIDTH(ComputeSanitizer, SafeKernel) {
   UB_PERF_GPU_GUARD(perf);
-  ub::attachGpuProfilerHooks(perf, perf.cpuConfig());
 
   float *d_in = nullptr, *d_out = nullptr;
   cudaMalloc(&d_in, SIZE);
@@ -126,7 +125,6 @@ PERF_GPU_BANDWIDTH(ComputeSanitizer, SafeKernel) {
  */
 PERF_GPU_BANDWIDTH(ComputeSanitizer, WithDeliberateOob) {
   UB_PERF_GPU_GUARD(perf);
-  ub::attachGpuProfilerHooks(perf, perf.cpuConfig());
 
   float *d_in = nullptr, *d_out = nullptr;
   cudaMalloc(&d_in, SIZE);

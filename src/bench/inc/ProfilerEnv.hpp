@@ -36,12 +36,33 @@ inline bool isOnPath(const char* binaryName) {
 /**
  * @brief Heuristic detection that this process runs inside a container.
  *
- * Checks /proc/1/cgroup for substrings that the major container runtimes
- * leave behind ("docker", "containerd", "kubepods", "podman"). Cheap,
- * portable, and stable across Docker/Podman/k8s. False negatives are
- * possible on exotic runtimes; false positives are unlikely.
+ * Probes in order:
+ *  1. `/.dockerenv` (Docker sentinel; survives cgroups v2 unified hierarchy)
+ *  2. `/run/.containerenv` (Podman sentinel)
+ *  3. CONTAINER env var (set by some runtimes / vernier dev images)
+ *  4. /proc/1/cgroup substring match (cgroups v1 hosts only)
+ *
+ * Cheap, portable, stable across Docker / Podman / k8s. Modern Docker
+ * uses cgroups v2 and `/proc/1/cgroup` reduces to "0::/" with no hint,
+ * which is why the file sentinels run first.
  */
 inline bool isInContainer() {
+  // 1. Docker sentinel file (most reliable; cgroups-version-independent)
+  if (std::FILE* f = std::fopen("/.dockerenv", "r")) {
+    std::fclose(f);
+    return true;
+  }
+  // 2. Podman sentinel
+  if (std::FILE* f = std::fopen("/run/.containerenv", "r")) {
+    std::fclose(f);
+    return true;
+  }
+  // 3. Runtime-set env var
+  if (const char* v = std::getenv("CONTAINER")) {
+    // vernier dev images set CONTAINER=yes; some runtimes set it differently.
+    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0) return true;
+  }
+  // 4. cgroups v1 substring match (fallback)
   std::FILE* fp = std::fopen("/proc/1/cgroup", "r");
   if (!fp) return false;
   char line[512];
