@@ -32,6 +32,7 @@ set(CPU_DEMOS
     10_NvtxAnnotation
     11_MassifProfiler
     12_MemcheckProfiler
+    13_OffCpuProfiler
 )
 
 foreach (DEMO ${CPU_DEMOS})
