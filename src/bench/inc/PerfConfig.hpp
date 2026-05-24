@@ -43,6 +43,13 @@ struct PerfConfig {
   int profileFrequency = 10000;        ///< Sampling frequency for CPU profilers (Hz)
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
 
+  // Per-test watchdog: aborts a measured() loop when total wall time exceeds
+  // the threshold. 0 disables; auto-set to 300 seconds when profileTool is
+  // non-empty so a drain-loop / blocking-recv test under profiler overhead
+  // fails loudly instead of hanging CI indefinitely. Override with
+  // --profile-test-timeout N (seconds).
+  int profileTestTimeoutSecs = 0;
+
   // ---- Quick mode (lighter defaults for fast iteration) ----
   bool quickMode = false; ///< Apply reduced cycles/repeats for development iteration
 };
@@ -173,6 +180,10 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
       ++i;
     } else if (a == "--profile-analyze") {
       cfg.profileAnalyze = true;
+    } else if (a == "--profile-test-timeout") {
+      cfg.profileTestTimeoutSecs =
+          std::max(0, std::atoi(NEED_ARG("--profile-test-timeout", i, *argc, argv)));
+      ++i;
     }
 
     // ---- Quick mode flag ----
@@ -192,6 +203,13 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     }
   }
   *argc = w;
+
+  // Auto-set a generous watchdog when profiling and the user hasn't overridden.
+  // 300 s = 5 min is comfortable headroom for callgrind's 20x overhead while
+  // still being short enough to abort genuinely hung tests during a CI run.
+  if (!cfg.profileTool.empty() && cfg.profileTestTimeoutSecs == 0) {
+    cfg.profileTestTimeoutSecs = 300;
+  }
 
   // Apply quick mode defaults if enabled and user didn't explicitly override
   if (cfg.quickMode) {
