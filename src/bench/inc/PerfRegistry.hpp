@@ -84,6 +84,12 @@ struct PerfRow {
   std::optional<int> smClockMHz;
   std::optional<bool> throttling;
 
+  // Power + thermal (NVML; non-empty when capture is enabled)
+  std::optional<double> powerDrawW;       ///< Avg power draw across the measured window (W)
+  std::optional<double> powerLimitW;      ///< Configured power limit (W)
+  std::optional<int> temperatureC;        ///< End-of-measure GPU core temperature (C)
+  std::optional<int> temperatureDeltaC;   ///< Delta over the measured window (C, positive = warmed up)
+
   // Multi-GPU fields
   std::optional<int> deviceId;              ///< Which GPU (0-N), -1 = single-GPU test
   std::optional<int> deviceCount;           ///< Total GPUs used in this test

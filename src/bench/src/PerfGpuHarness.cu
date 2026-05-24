@@ -222,8 +222,10 @@ public:
     totalTimes.reserve(cpuCfg_.repeats);
 
     ClockSpeedProfile clocks{};
+    PowerThermalProfile powerThermal{};
     if (gpuCfg_.captureClockSpeeds) {
       captureClockSpeed(clocks, true);
+      capturePowerThermal(powerThermal, true);
     }
 
     UnifiedMemoryProfile umProfile{};
@@ -281,6 +283,7 @@ public:
 
     if (gpuCfg_.captureClockSpeeds) {
       captureClockSpeed(clocks, false);
+      capturePowerThermal(powerThermal, false);
     }
 
     auto kernelVals = kernelTimes;
@@ -308,6 +311,7 @@ public:
     result.stats.cpuStats = totalStats;
     result.stats.deviceInfo = deviceInfo_;
     result.stats.clocks = clocks;
+    result.stats.powerThermal = powerThermal;
 
     size_t totalH2D = 0, totalD2H = 0;
     for (const auto& xfer : h2d)
@@ -565,6 +569,37 @@ private:
 #endif
   }
 
+  void capturePowerThermal(PowerThermalProfile& pt, bool isStart) {
+#ifdef COMPAT_NVML_AVAILABLE
+    if (!nvmlInitialized_) return;
+
+    // Power: NVML reports milliwatts.
+    unsigned int powerMw = 0;
+    if (nvmlDeviceGetPowerUsage(nvmlDevice_, &powerMw) == NVML_SUCCESS) {
+      const double watts = static_cast<double>(powerMw) / 1000.0;
+      if (isStart) pt.powerDrawWStart = watts;
+      else         pt.powerDrawWEnd   = watts;
+    }
+
+    // Temperature: NVML reports degrees Celsius for the GPU core.
+    unsigned int tempC = 0;
+    if (nvmlDeviceGetTemperature(nvmlDevice_, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS) {
+      if (isStart) pt.temperatureCStart = static_cast<int>(tempC);
+      else         pt.temperatureCEnd   = static_cast<int>(tempC);
+    }
+
+    if (isStart) {
+      unsigned int limitMw = 0;
+      if (nvmlDeviceGetPowerManagementLimit(nvmlDevice_, &limitMw) == NVML_SUCCESS) {
+        pt.powerLimitW = static_cast<double>(limitMw) / 1000.0;
+      }
+    }
+#else
+    (void)pt;
+    (void)isStart;
+#endif
+  }
+
   void enablePeerToPeer(int deviceCount) {
     for (int i = 0; i < deviceCount; ++i) {
       cudaSetDevice(i);
@@ -660,6 +695,19 @@ private:
     row.occupancy = result.stats.occupancy.achievedOccupancy;
     row.smClockMHz = result.stats.clocks.smClockMHzEnd;
     row.throttling = result.stats.clocks.isThrottling();
+
+    // Populate power + thermal only when we actually sampled non-zero values.
+    const auto& pt = result.stats.powerThermal;
+    if (pt.powerDrawWStart > 0.0 || pt.powerDrawWEnd > 0.0) {
+      row.powerDrawW = pt.avgPowerDrawW();
+    }
+    if (pt.powerLimitW > 0.0) {
+      row.powerLimitW = pt.powerLimitW;
+    }
+    if (pt.temperatureCStart > 0 || pt.temperatureCEnd > 0) {
+      row.temperatureC = pt.temperatureCEnd;
+      row.temperatureDeltaC = pt.temperatureDeltaC();
+    }
 
     if (result.deviceId >= 0) {
       row.deviceId = result.deviceId;
