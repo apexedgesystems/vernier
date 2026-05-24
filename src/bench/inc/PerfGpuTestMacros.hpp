@@ -78,7 +78,7 @@
     vernier::bench::installPerfEventListener(cfg);                                                 \
     ::testing::InitGoogleTest(&argc, argv);                                                        \
     const int _vernier_rc = RUN_ALL_TESTS();                                                       \
-    vernier::bench::warnIfNoTestsRanUnderProfile(cfg);                                             \
+    VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);                                               \
     return _vernier_rc;                                                                            \
   }
 
