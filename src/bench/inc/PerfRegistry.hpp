@@ -90,6 +90,14 @@ struct PerfRow {
   std::optional<int> temperatureC;        ///< End-of-measure GPU core temperature (C)
   std::optional<int> temperatureDeltaC;   ///< Delta over the measured window (C, positive = warmed up)
 
+  // CUPTI in-process kernel metrics (non-empty when libcupti is linked
+  // and the toolkit is recent enough to expose CUpti_ActivityKernel9).
+  std::optional<std::size_t> cuptiKernelLaunches;
+  std::optional<int> cuptiRegistersMedian;
+  std::optional<int> cuptiRegistersMax;
+  std::optional<std::uint32_t> cuptiStaticSmemBytes;
+  std::optional<std::uint32_t> cuptiDynamicSmemBytes;
+
   // Multi-GPU fields
   std::optional<int> deviceId;              ///< Which GPU (0-N), -1 = single-GPU test
   std::optional<int> deviceCount;           ///< Total GPUs used in this test

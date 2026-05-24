@@ -228,6 +228,9 @@ public:
       capturePowerThermal(powerThermal, true);
     }
 
+    // Start in-process kernel metrics; no-op when libcupti is unavailable.
+    cupti_.start();
+
     UnifiedMemoryProfile umProfile{};
     UMSnapshot umBefore, umAfter;
     size_t totalManagedBytes = 0;
@@ -286,6 +289,9 @@ public:
       capturePowerThermal(powerThermal, false);
     }
 
+    // Drain CUPTI activity buffers and aggregate before publishing the result.
+    cupti_.stop();
+
     auto kernelVals = kernelTimes;
     auto h2dVals = h2dTimes;
     auto d2hVals = d2hTimes;
@@ -312,6 +318,7 @@ public:
     result.stats.deviceInfo = deviceInfo_;
     result.stats.clocks = clocks;
     result.stats.powerThermal = powerThermal;
+    result.stats.cupti = cupti_.stats();
 
     size_t totalH2D = 0, totalD2H = 0;
     for (const auto& xfer : h2d)
@@ -709,6 +716,17 @@ private:
       row.temperatureDeltaC = pt.temperatureDeltaC();
     }
 
+    // CUPTI columns are only populated when at least one launch was captured;
+    // otherwise the CSV cells stay empty rather than reporting zeros.
+    const auto& cu = result.stats.cupti;
+    if (cu.kernelLaunches > 0) {
+      row.cuptiKernelLaunches = cu.kernelLaunches;
+      row.cuptiRegistersMedian = cu.registersMedian;
+      row.cuptiRegistersMax = cu.registersMax;
+      row.cuptiStaticSmemBytes = cu.staticSmemBytes;
+      row.cuptiDynamicSmemBytes = cu.dynamicSmemBytes;
+    }
+
     if (result.deviceId >= 0) {
       row.deviceId = result.deviceId;
     }
@@ -787,6 +805,10 @@ private:
   nvmlDevice_t nvmlDevice_{};
   bool nvmlInitialized_ = false;
 #endif
+
+  // In-process kernel metric collector (no-op when libcupti is not linked
+  // or when the CUDA toolkit is too old to expose CUpti_ActivityKernel9).
+  CuptiCollector cupti_{};
 
   friend class PerfGpuCase;
 };

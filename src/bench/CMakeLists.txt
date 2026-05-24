@@ -25,6 +25,7 @@ set(CPP_SOURCES
 
 set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
                  "${SRC_DIR}/ProfilerComputeSanitizer.cu"
+                 "${SRC_DIR}/CuptiCollector.cu"
 )
 
 # ------------------------------------------------------------------------------
@@ -65,6 +66,15 @@ endif ()
 if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
   vernier_add_library_cuda(NAME ${LIB_NAME}_cuda CORE ${LIB_NAME} SRC ${CUDA_SOURCES})
   vernier_standard_optins(${LIB_NAME}_cuda)
+
+  # CUPTI is the CUDA Profiling Tools Interface. find_package(CUDAToolkit)
+  # exposes it as the CUDA::cupti imported target on any system layout
+  # (legacy /usr/local/cuda/extras/CUPTI/ or modern targets/<arch>/), so we
+  # never need a path string here. When the target is missing on older
+  # toolkits, CuptiCollector compiles to a no-op via __has_include.
+  if (TARGET CUDA::cupti)
+    target_link_libraries(${LIB_NAME}_cuda PRIVATE CUDA::cupti)
+  endif ()
 endif ()
 
 # ------------------------------------------------------------------------------

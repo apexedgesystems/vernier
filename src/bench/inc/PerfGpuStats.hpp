@@ -10,6 +10,7 @@
 #include <optional>
 #include <algorithm>
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/CuptiCollector.hpp"
 
 namespace vernier {
 namespace bench {
@@ -217,6 +218,7 @@ struct GpuStats {
   OccupancyMetrics occupancy{};
   ClockSpeedProfile clocks{};
   PowerThermalProfile powerThermal{};
+  CuptiKernelStats cupti{}; ///< In-process kernel metrics; zeroed when CUPTI unavailable
 
   double kernelTimeMedianUs{};
   double transferTimeMedianUs{};
