@@ -21,6 +21,7 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerBpftrace.cpp" "${SRC_DIR}/ProfilerRAPL.cpp"
     "${SRC_DIR}/ProfilerCallgrind.cpp" "${SRC_DIR}/ProfilerMassif.cpp"
     "${SRC_DIR}/ProfilerMemcheck.cpp" "${SRC_DIR}/ProfilerOffCpu.cpp"
+    "${SRC_DIR}/ProfilerRocprof.cpp"
 )
 
 set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
