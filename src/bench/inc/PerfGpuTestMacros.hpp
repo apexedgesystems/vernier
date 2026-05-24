@@ -12,7 +12,6 @@
 #include "src/bench/inc/PerfGpuHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
-#include "src/bench/inc/PerfGpuMode.hpp"
 #include "src/bench/inc/PerfTestMacros.hpp"
 
 /* ----------------------------- Test Declaration Macros ----------------------------- */

@@ -18,7 +18,7 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfCsv.hpp"
-#include "src/bench/inc/PerfGpuMode.hpp"
+#include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 
 namespace vernier {
