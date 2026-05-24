@@ -236,7 +236,41 @@ std::unique_ptr<Profiler> makeNsightProfiler(const PerfConfig& cfg, const std::s
 } // namespace bench
 } // namespace vernier
 
+namespace vernier {
+namespace bench {
+
+EnvReport checkNsightEnvironment() {
+  const bool nsys = std::system("command -v nsys >/dev/null 2>&1") == 0;
+  const bool ncu  = std::system("command -v ncu  >/dev/null 2>&1") == 0;
+  if (!nsys && !ncu) {
+    return EnvReport{EnvReport::Status::Error,
+                     "neither nsys nor ncu found on PATH",
+                     "Install CUDA toolkit + Nsight (devtools repo on Ubuntu)."};
+  }
+  if (!nsys) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "ncu present but nsys missing",
+                     "Install nsight-systems-cli for timeline profiling."};
+  }
+  if (!ncu) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "nsys present but ncu missing",
+                     "Install nsight-compute for kernel analysis."};
+  }
+  // Both present; Docker PID namespace still breaks attach-by-pid (handled later).
+  if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "nsys + ncu available; running in Docker (PID namespace)",
+                     "attach-by-pid will be replaced by direct nsys/ncu wrap."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
+}
+
+} // namespace bench
+} // namespace vernier
+
 VERNIER_REGISTER_PROFILER_BACKEND(
     "nsight",
     ::vernier::bench::makeNsightProfiler,
+    ::vernier::bench::checkNsightEnvironment,
     "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")

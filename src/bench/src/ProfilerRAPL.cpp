@@ -282,7 +282,23 @@ std::unique_ptr<Profiler> makeRAPLProfiler(const PerfConfig& cfg, const std::str
 } // namespace bench
 } // namespace vernier
 
+namespace vernier {
+namespace bench {
+
+EnvReport checkRAPLEnvironment() {
+  if (RAPLProfiler::isAvailable()) {
+    return EnvReport{EnvReport::Status::Ok, "RAPL MSRs accessible", ""};
+  }
+  return EnvReport{EnvReport::Status::Error,
+                   "RAPL not available (Intel CPU + MSR access required)",
+                   "sudo modprobe msr; grant CAP_SYS_RAWIO or run as root."};
+}
+
+} // namespace bench
+} // namespace vernier
+
 VERNIER_REGISTER_PROFILER_BACKEND(
     "rapl",
     ::vernier::bench::makeRAPLProfiler,
+    ::vernier::bench::checkRAPLEnvironment,
     "Requires Intel CPU + 'sudo modprobe msr' + CAP_SYS_RAWIO.")

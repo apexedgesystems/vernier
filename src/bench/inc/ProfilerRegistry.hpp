@@ -22,34 +22,56 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
-
-#include "src/bench/inc/PerfConfig.hpp"
 
 namespace vernier {
 namespace bench {
 
+// Forward declarations to keep this header light and avoid a circular include
+// (PerfConfig.hpp pulls registry-driven diagnostics back in).
+struct PerfConfig;
 class Profiler;
+
+/* ------------------------------ EnvReport ------------------------------ */
+
+/**
+ * @brief Structured result of a backend's environment pre-flight check.
+ *
+ * Status:
+ *  - Ok       backend is fully functional in the current environment
+ *  - Warning  backend works with caveats (e.g. kernel-symbol resolution degraded)
+ *  - Error    backend cannot run as-is; `hint` describes the fix
+ */
+struct EnvReport {
+  enum class Status { Ok, Warning, Error };
+
+  Status status = Status::Ok;
+  std::string message;
+  std::string hint;
+};
 
 /* ------------------------------ Registry ------------------------------ */
 
 class ProfilerRegistry {
 public:
   using Factory = std::function<std::unique_ptr<Profiler>(const PerfConfig&, const std::string&)>;
+  using EnvCheck = std::function<EnvReport()>;
 
   /** @brief Access the process-wide registry singleton. */
   static ProfilerRegistry& instance();
 
   /**
-   * @brief Register a backend factory.
+   * @brief Register a backend factory and its environment check.
    * @param name           Stable backend name (e.g. "perf", "gperf"); also the `--profile` value.
    * @param factory        Callable returning a Profiler or nullptr if unavailable at runtime.
+   * @param check          Pre-flight check returning an EnvReport. Pass {} for a default Ok report.
    * @param unavailableHint Actionable hint printed when the factory returns nullptr
    *                       (e.g. "Install linux-tools-$(uname -r) or run outside Docker.").
    *
    * Registration is idempotent: re-registering the same name replaces the prior entry.
    */
-  void registerBackend(std::string name, Factory factory, std::string unavailableHint);
+  void registerBackend(std::string name, Factory factory, EnvCheck check, std::string unavailableHint);
 
   /**
    * @brief Construct a profiler for the requested backend, or a named no-op.
@@ -71,11 +93,39 @@ public:
   /** @brief Sorted list of registered backend names (for help text, bench doctor, etc.). */
   std::vector<std::string> backendNames() const;
 
+  /**
+   * @brief Run a single backend's environment check.
+   * @param name Registered backend name.
+   * @return EnvReport from the backend, or an Error report if name is unknown.
+   */
+  EnvReport runCheck(const std::string& name) const;
+
+  /**
+   * @brief Run every registered backend's environment check.
+   * @return Map of backend name to its report. Iteration order matches backendNames().
+   */
+  std::vector<std::pair<std::string, EnvReport>> runAllChecks() const;
+
+  /**
+   * @brief Print a human-readable doctor report to stdout.
+   *
+   * For every registered backend, prints one line of the form:
+   *   [OK]   perf       perf available, perf_event_paranoid=1
+   *   [WARN] callgrind  valgrind available; running in Docker (PID namespace)
+   *                     callgrind_control attach will be replaced by direct valgrind wrap.
+   *   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
+   *                     sudo modprobe msr; grant CAP_SYS_RAWIO or run as root.
+   *
+   * @return Number of FAIL-level backends (0 if all backends are usable).
+   */
+  int printDoctor() const;
+
 private:
   ProfilerRegistry() = default;
 
   struct Entry {
     Factory factory;
+    EnvCheck check;
     std::string unavailableHint;
   };
   std::map<std::string, Entry> backends_;
@@ -89,8 +139,12 @@ namespace detail {
  * @brief RAII registrar; one instance per backend at file scope triggers registration.
  */
 struct ProfilerRegistrar {
-  ProfilerRegistrar(std::string name, ProfilerRegistry::Factory factory, std::string hint) {
-    ProfilerRegistry::instance().registerBackend(std::move(name), std::move(factory), std::move(hint));
+  ProfilerRegistrar(std::string name,
+                    ProfilerRegistry::Factory factory,
+                    ProfilerRegistry::EnvCheck check,
+                    std::string hint) {
+    ProfilerRegistry::instance().registerBackend(
+        std::move(name), std::move(factory), std::move(check), std::move(hint));
   }
 };
 
@@ -104,13 +158,16 @@ struct ProfilerRegistrar {
  * VERNIER_REGISTER_PROFILER_BACKEND(
  *     "perf",
  *     makePerfProfiler,
+ *     checkPerfEnvironment,
  *     "Install linux-tools-$(uname -r) or run outside Docker.");
  * @endcode
+ *
+ * The check function should be a `EnvReport(*)()` (no arguments, returns EnvReport).
  */
-#define VERNIER_REGISTER_PROFILER_BACKEND(NAME, FACTORY, HINT)                                         \
+#define VERNIER_REGISTER_PROFILER_BACKEND(NAME, FACTORY, CHECK, HINT)                                  \
   namespace {                                                                                          \
   const ::vernier::bench::detail::ProfilerRegistrar UB_REGISTRAR_##__LINE__{                           \
-      (NAME), (FACTORY), (HINT)};                                                                      \
+      (NAME), (FACTORY), (CHECK), (HINT)};                                                             \
   }
 
 } // namespace bench

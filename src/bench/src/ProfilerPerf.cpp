@@ -237,7 +237,55 @@ std::unique_ptr<Profiler> makePerfProfiler(const PerfConfig& cfg, const std::str
 } // namespace bench
 } // namespace vernier
 
+namespace vernier {
+namespace bench {
+
+EnvReport checkPerfEnvironment() {
+#ifdef __linux__
+  // 1) Is the perf binary even on PATH?
+  if (std::system("command -v perf >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Error,
+                     "perf binary not found on PATH",
+                     "Install linux-tools-$(uname -r) inside the dev container."};
+  }
+  // 2) perf_event_paranoid gates hardware counter access.
+  std::FILE* fp = std::fopen("/proc/sys/kernel/perf_event_paranoid", "r");
+  if (!fp) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "cannot read /proc/sys/kernel/perf_event_paranoid",
+                     "Run inside Linux; non-Linux platforms cannot run perf."};
+  }
+  int paranoid = 4;
+  std::fscanf(fp, "%d", &paranoid);
+  std::fclose(fp);
+  if (paranoid <= 1) {
+    return EnvReport{EnvReport::Status::Ok,
+                     "perf available, perf_event_paranoid=" + std::to_string(paranoid),
+                     ""};
+  }
+  if (paranoid <= 2) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "perf_event_paranoid=" + std::to_string(paranoid) +
+                         " (kernel profiling blocked; userspace counters still work)",
+                     "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1"};
+  }
+  return EnvReport{EnvReport::Status::Error,
+                   "perf_event_paranoid=" + std::to_string(paranoid) +
+                       " (all perf access blocked)",
+                   "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1 "
+                   "(resets on reboot; rerun each session)."};
+#else
+  return EnvReport{EnvReport::Status::Error,
+                   "perf is Linux-only",
+                   "Run on Linux or use a different profiler."};
+#endif
+}
+
+} // namespace bench
+} // namespace vernier
+
 VERNIER_REGISTER_PROFILER_BACKEND(
     "perf",
     ::vernier::bench::makePerfProfiler,
+    ::vernier::bench::checkPerfEnvironment,
     "Install linux-tools-$(uname -r) or run outside Docker.")

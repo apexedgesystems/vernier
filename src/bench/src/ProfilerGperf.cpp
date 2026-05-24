@@ -200,7 +200,27 @@ std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::st
 } // namespace bench
 } // namespace vernier
 
+namespace vernier {
+namespace bench {
+
+EnvReport checkGperfEnvironment() {
+#if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
+  std::string msg = "gperftools linked:";
+  if (UB_HAS_GPERF_CPU) msg += " cpu";
+  if (UB_HAS_GPERF_HEAP) msg += " heap";
+  return EnvReport{EnvReport::Status::Ok, std::move(msg), ""};
+#else
+  return EnvReport{EnvReport::Status::Error,
+                   "gperftools headers not present at build time",
+                   "apt install libgperftools-dev (or equivalent) then rebuild."};
+#endif
+}
+
+} // namespace bench
+} // namespace vernier
+
 VERNIER_REGISTER_PROFILER_BACKEND(
     "gperf",
     ::vernier::bench::makeGperfProfiler,
+    ::vernier::bench::checkGperfEnvironment,
     "Install libgperftools-dev and rebuild.")

@@ -15,6 +15,8 @@
 #include <string_view>
 #include <vector>
 
+#include "src/bench/inc/ProfilerRegistry.hpp" // backend doctor in --profile-check
+
 namespace vernier {
 namespace bench {
 
@@ -356,6 +358,12 @@ inline void runProfileCheck() {
   } else {
     std::fprintf(stdout, "\n  Binary is ready for profiling.\n\n");
   }
+
+  // Backend environment doctor: per-profiler pre-flight (perf_event_paranoid,
+  // valgrind installed, nsys/ncu present, etc.). Linked into this binary
+  // (which transitively includes ProfilerRegistry via Profiler.hpp), so the
+  // call resolves regardless of which backends the user has wired in.
+  ProfilerRegistry::instance().printDoctor();
 }
 
 } // namespace bench

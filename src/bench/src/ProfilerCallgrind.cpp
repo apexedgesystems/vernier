@@ -178,7 +178,30 @@ std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg,
 } // namespace bench
 } // namespace vernier
 
+namespace vernier {
+namespace bench {
+
+EnvReport checkCallgrindEnvironment() {
+  if (std::system("command -v valgrind >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Error,
+                     "valgrind binary not found on PATH",
+                     "apt install valgrind."};
+  }
+  // Docker PID namespace breaks callgrind_control attach; warn so users know to
+  // expect the wrap-mode fallback (handled by the backend in a later commit).
+  if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "valgrind available; running in Docker (PID namespace)",
+                     "callgrind_control attach will be replaced by direct valgrind wrap."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "valgrind available", ""};
+}
+
+} // namespace bench
+} // namespace vernier
+
 VERNIER_REGISTER_PROFILER_BACKEND(
     "callgrind",
     ::vernier::bench::makeCallgrindProfiler,
+    ::vernier::bench::checkCallgrindEnvironment,
     "Install valgrind: apt install valgrind.")
