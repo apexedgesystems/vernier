@@ -54,4 +54,10 @@ if (PROJECT_IS_TOP_LEVEL)
   if (EXISTS "${UTST_DIR}/CMakeLists.txt")
     add_subdirectory(utst)
   endif ()
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt")
+    add_subdirectory(examples)
+  endif ()
 endif ()
+
+# Install the MONITOR_GUIDE alongside the headers in release builds.
+vernier_install_docs("${CMAKE_CURRENT_SOURCE_DIR}/docs")
