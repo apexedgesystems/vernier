@@ -18,6 +18,7 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfCsv.hpp"
+#include "src/bench/inc/PerfGpuMode.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 
 namespace vernier {
@@ -187,21 +188,26 @@ inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest*
 
   const bool INCLUDE_PROFILE = !cfg.profileTool.empty();
 
-  // Auto-detect GPU tests by scanning test names
-  bool hasGpuTests = false;
-  for (int i = 0; i < ut->total_test_suite_count(); ++i) {
-    const auto* suite = ut->GetTestSuite(i);
-    for (int j = 0; j < suite->total_test_count(); ++j) {
-      const auto* info = suite->GetTestInfo(j);
-      std::string name = std::string(suite->name()) + "." + info->name();
-      if (name.find("Gpu") != std::string::npos || name.find("CUDA") != std::string::npos ||
-          name.find("GPU") != std::string::npos) {
-        hasGpuTests = true;
-        break;
+  // Auto-detect GPU tests. The reliable signal is PERF_GPU_MAIN having run
+  // (which flips a global flag); fall back to a test-name substring scan
+  // for legacy / hand-rolled main() functions that don't go through the
+  // PERF_GPU_MAIN macro.
+  bool hasGpuTests = vernier::bench::detail::isGpuModeActive();
+  if (!hasGpuTests) {
+    for (int i = 0; i < ut->total_test_suite_count(); ++i) {
+      const auto* suite = ut->GetTestSuite(i);
+      for (int j = 0; j < suite->total_test_count(); ++j) {
+        const auto* info = suite->GetTestInfo(j);
+        std::string name = std::string(suite->name()) + "." + info->name();
+        if (name.find("Gpu") != std::string::npos || name.find("CUDA") != std::string::npos ||
+            name.find("GPU") != std::string::npos) {
+          hasGpuTests = true;
+          break;
+        }
       }
+      if (hasGpuTests)
+        break;
     }
-    if (hasGpuTests)
-      break;
   }
 
   listeners.Append(new CsvListener(*cfg.csv, INCLUDE_PROFILE, hasGpuTests));

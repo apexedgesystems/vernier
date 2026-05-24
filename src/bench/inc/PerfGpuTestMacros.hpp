@@ -12,6 +12,7 @@
 #include "src/bench/inc/PerfGpuHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/inc/PerfGpuMode.hpp"
 #include "src/bench/inc/PerfTestMacros.hpp"
 
 /* ----------------------------- Test Declaration Macros ----------------------------- */
@@ -94,7 +95,12 @@ inline PerfGpuConfig& gpuConfigSingleton() {
   return cfg;
 }
 
-inline void setGlobalGpuConfig(const PerfGpuConfig& cfg) { gpuConfigSingleton() = cfg; }
+inline void setGlobalGpuConfig(const PerfGpuConfig& cfg) {
+  gpuConfigSingleton() = cfg;
+  // Mark this binary as a GPU run so PerfListener / other CUDA-free
+  // consumers emit the GPU section of the CSV / pick GPU-aware defaults.
+  ::vernier::bench::detail::markGpuMode();
+}
 
 inline const PerfGpuConfig& getGlobalGpuConfig() { return gpuConfigSingleton(); }
 

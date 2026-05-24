@@ -142,6 +142,7 @@ pub mod report;
 pub mod runner;
 pub mod stats;
 pub mod validate;
+pub mod workflow;
 
 /* ----------------------------- Re-exports ----------------------------- */
 

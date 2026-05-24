@@ -145,6 +145,48 @@ enum Command {
         json: bool,
     },
 
+    /// Run --profile-check (binary readiness + per-backend env doctor)
+    Doctor {
+        /// Path to a benchmark binary (any vernier ptest works)
+        binary: PathBuf,
+    },
+
+    /// Run a benchmark binary under each profiler in sequence
+    ProfileAll {
+        /// Benchmark binary (full path or short name; auto-resolves under build/*/bin/)
+        binary: String,
+
+        /// Profilers to run, comma-separated; defaults to gperf,perf,callgrind
+        #[arg(long)]
+        profilers: Option<String>,
+
+        /// Artifact root; per-profiler subdirs land here. Default: bench-out/
+        #[arg(long)]
+        out: Option<PathBuf>,
+
+        /// --gtest_filter to pass through
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// --cycles override
+        #[arg(long)]
+        cycles: Option<u32>,
+
+        /// --repeats override
+        #[arg(long)]
+        repeats: Option<u32>,
+
+        /// --quick mode
+        #[arg(long)]
+        quick: bool,
+    },
+
+    /// Walk an artifact directory and tabulate per-tool output
+    ProfileSummarize {
+        /// Directory containing per-tool subdirectories (e.g. bench-out/)
+        dir: PathBuf,
+    },
+
     /// Generate an SVG flamegraph from perf.data
     Flamegraph {
         /// Input perf.data file
@@ -389,6 +431,45 @@ fn run(args: Args) -> Result<(), Error> {
             } else {
                 bench::gpu_topo::print_results(&report);
             }
+        }
+
+        Command::Doctor { binary } => {
+            let rc = bench::workflow::doctor(Some(&binary))?;
+            std::process::exit(rc);
+        }
+
+        Command::ProfileAll {
+            binary,
+            profilers,
+            out,
+            filter,
+            cycles,
+            repeats,
+            quick,
+        } => {
+            let resolved = bench::workflow::resolve_binary(&binary)?;
+            let parsed_profilers = profilers
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
+                binary: resolved,
+                profilers: parsed_profilers,
+                artifact_root: out,
+                gtest_filter: filter,
+                cycles,
+                repeats,
+                quick,
+            })?;
+        }
+
+        Command::ProfileSummarize { dir } => {
+            let report = bench::workflow::profile_summarize(&dir)?;
+            bench::workflow::print_summary(&report);
         }
 
         Command::Flamegraph {
