@@ -22,7 +22,9 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerCallgrind.cpp"
 )
 
-set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu")
+set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
+                 "${SRC_DIR}/ProfilerComputeSanitizer.cu"
+)
 
 # ------------------------------------------------------------------------------
 # Library

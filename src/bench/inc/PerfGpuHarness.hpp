@@ -216,16 +216,12 @@ MultiGpuKernelBuilder::measureP2PBandwidth(int srcDevice, int dstDevice, size_t 
 /**
  * @brief Attach profiler hooks to a GPU test case.
  *
- * Supports Nsight Systems/Compute profiling via --profile nsight.
+ * Dispatches through the registry so any GPU-aware backend
+ * (nsight, compute-sanitizer, future additions) plugs in automatically
+ * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here.
  */
 inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
-  std::shared_ptr<Profiler> prof;
-
-  if (cfg.profileTool == "nsight") {
-    prof = std::shared_ptr<Profiler>(makeNsightProfiler(cfg, pc.testName()).release());
-  } else {
-    prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
-  }
+  auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
 
   pc.setBeforeMeasureHook([prof](const PerfGpuCase&) { prof->beforeMeasure(); });
 
