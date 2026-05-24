@@ -16,11 +16,18 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+  packages: read
+
 jobs:
   lint-build-test:
     name: Lint, Build, Test
     runs-on: ubuntu-latest
     timeout-minutes: 60
+
+    env:
+      REGISTRY: ghcr.io/${{ github.repository }}
 
     steps:
       - name: Checkout
@@ -30,8 +37,27 @@ jobs:
         run: |
           touch ~/.gitconfig
           mkdir -p ~/.ssh
-          echo "UID=$(id -u)" >> "$GITHUB_ENV"
-          echo "GID=$(id -g)" >> "$GITHUB_ENV"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pull pre-built images from ghcr.io so docker compose build below
+      # skips the expensive toolchain layers. The docker-images.yml workflow
+      # publishes these whenever a Dockerfile changes; in steady state these
+      # pulls take seconds and the subsequent build is a near-no-op cache hit.
+      # Fall back to a full rebuild if a pull fails (first run, missing tag).
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
 
       - name: Build base and dev images
         run: |
