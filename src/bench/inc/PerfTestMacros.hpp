@@ -51,7 +51,18 @@
  * @endcode
  */
 
+#include <cstdio>
 #include <string>
+
+// gtest is only required by binaries that actually invoke PERF_MAIN / PERF_TEST.
+// Library translation units (PerfGpuHarness.cu, etc.) pull this header for the
+// macro chain but don't link gtest, so guard the gtest-dependent helper below.
+#if __has_include(<gtest/gtest.h>)
+#include <gtest/gtest.h>
+#define VERNIER_HAS_GTEST 1
+#else
+#define VERNIER_HAS_GTEST 0
+#endif
 
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
@@ -191,6 +202,7 @@ namespace bench {
  * discovers the mistake when analysis fails. Surface it at the source.
  */
 inline void warnIfNoTestsRanUnderProfile(const PerfConfig& cfg) {
+#if VERNIER_HAS_GTEST
   if (cfg.profileTool.empty()) return;
   const auto* unitTest = ::testing::UnitTest::GetInstance();
   if (unitTest == nullptr) return;
@@ -201,6 +213,9 @@ inline void warnIfNoTestsRanUnderProfile(const PerfConfig& cfg) {
                "[profile] Any profiler artifacts written are empty. Run with\n"
                "[profile] --gtest_list_tests to see available test names.\n\n",
                cfg.profileTool.c_str());
+#else
+  (void)cfg; // gtest not linked into this TU; nothing to validate
+#endif
 }
 
 } // namespace bench

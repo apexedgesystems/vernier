@@ -128,6 +128,7 @@ private:
   void launchNcuReplay();
   void stopProfiler();
   void parseReplayMetrics();
+  void extractNsysStats(); ///< Auto-run `nsys stats --report ...` on the .nsys-rep
 
   PerfConfig cfg_{};
   std::string testName_;

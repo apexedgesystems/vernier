@@ -230,6 +230,41 @@ void NsightProfiler::stopProfiler() {
   int status = 0;
   ::waitpid(childPid_, &status, WNOHANG);
   childPid_ = -1;
+
+  // For Nsight Systems runs, auto-extract the four canonical reports that
+  // apex_csf walks through manually after every profile (kernel summary, API
+  // summary, mem size summary, mem time summary). Reports are written next to
+  // the .nsys-rep so the user can grep them without an extra cli round-trip.
+  if (mode_ == NsightMode::Systems) {
+    extractNsysStats();
+  }
+}
+
+void NsightProfiler::extractNsysStats() {
+  const std::string repPath = artifactDir_ + "/profile.nsys-rep";
+  std::error_code ec;
+  if (!std::filesystem::exists(repPath, ec)) {
+    return; // nsys never produced a report (likely Docker attach failure)
+  }
+  static const char* const kReports[] = {
+      "cuda_gpu_kern_sum",
+      "cuda_api_sum",
+      "cuda_gpu_mem_size_sum",
+      "cuda_gpu_mem_time_sum",
+  };
+  for (const char* report : kReports) {
+    const std::string outPath = artifactDir_ + "/" + report + ".txt";
+    const std::string cmd = "nsys stats --report " + std::string(report) + " '" + repPath +
+                            "' > '" + outPath + "' 2>/dev/null";
+    [[maybe_unused]] int rc = std::system(cmd.c_str());
+  }
+  std::fprintf(stderr,
+               "\n[nsight] auto-extracted nsys stats reports to %s:\n"
+               "[nsight]   cuda_gpu_kern_sum.txt    -- per-kernel time distribution\n"
+               "[nsight]   cuda_api_sum.txt         -- CUDA API call overhead\n"
+               "[nsight]   cuda_gpu_mem_size_sum.txt -- H2D/D2H byte totals\n"
+               "[nsight]   cuda_gpu_mem_time_sum.txt -- transfer time totals\n\n",
+               artifactDir_.c_str());
 }
 
 void NsightProfiler::parseReplayMetrics() {
