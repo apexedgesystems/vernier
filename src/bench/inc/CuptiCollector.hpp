@@ -7,8 +7,8 @@
  * The existing GPU harness captures wall time via CUDA events and clocks via
  * NVML. CUPTI fills the gap left by both: per-kernel register count, static
  * and dynamic shared memory, launch geometry, and a precise device-side
- * duration -- all without spawning ncu as an external process (which the
- * apex doc flagged as fragile inside Docker).
+ * duration -- all without spawning ncu as an external process (which is
+ * fragile inside container PID namespaces; see TROUBLESHOOTING.md).
  *
  * Scope: this collector exposes only the metrics CUPTI's Activity API
  * surfaces directly (`CUpti_ActivityKernel*` records). The CUPTI Profiler /

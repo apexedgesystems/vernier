@@ -89,8 +89,9 @@ void RocprofProfiler::beforeMeasure() {
                  mode_.c_str(), artifactDir_.c_str());
     return;
   }
-  // Not wrapped: print the precise rocprof invocation. Match the apex_csf-style
-  // hint pattern used by compute-sanitizer / callgrind / nsight backends.
+  // Not wrapped: print the precise rocprof invocation, matching the
+  // hint pattern the other wrap-externally backends use
+  // (compute-sanitizer / callgrind / nsight).
   const std::string flag = modeFlag(mode_);
   std::fprintf(stderr,
                "\n[rocprof] NOT running under rocprof; this measurement will execute\n"

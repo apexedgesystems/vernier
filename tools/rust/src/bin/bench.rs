@@ -83,8 +83,10 @@ enum Command {
 
     /// Execute a benchmark binary with optional CPU pinning and profiling
     Run {
-        /// Path to benchmark binary
-        binary: PathBuf,
+        /// Benchmark binary: a full path, or a short name that auto-resolves
+        /// under build/*/bin/ptests (e.g. "BasicWorkflow" -> the matching
+        /// BenchDemo_01_BasicWorkflow / SLIP_PTEST binary in build/).
+        binary: String,
 
         /// CSV output path (passed to binary as --csv)
         #[arg(long)]
@@ -185,6 +187,23 @@ enum Command {
     ProfileSummarize {
         /// Directory containing per-tool subdirectories (e.g. bench-out/)
         dir: PathBuf,
+    },
+
+    /// Scaffold a .bench.yaml at the project root with sensible defaults
+    Init {
+        /// Path to write (default: .bench.yaml in the current directory)
+        #[arg(long, default_value = ".bench.yaml")]
+        path: PathBuf,
+
+        /// Overwrite an existing file
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Validate a .bench.yaml: types, ranges, unknown keys
+    ConfigValidate {
+        /// Path to the config file (default: walk up from CWD for .bench.yaml)
+        path: Option<PathBuf>,
     },
 
     /// Generate an SVG flamegraph from perf.data
@@ -331,12 +350,21 @@ fn run(args: Args) -> Result<(), Error> {
             analyze,
             extra_args,
         } => {
+            // Accept either a full path or a short name; resolve_binary walks
+            // VERNIER_BENCH_BIN_ROOTS (default build/*) for a match.
+            let resolved = bench::workflow::resolve_binary(&binary)?;
+            // Pull defaults from .bench.yaml if one exists; unset CLI flags
+            // win from the file. CLI takes precedence when both are set.
+            let cwd = std::env::current_dir().map_err(Error::Io)?;
+            let file_cfg = bench::config::find(&cwd)
+                .and_then(|p| bench::config::load(&p).ok())
+                .unwrap_or_default();
             let cfg = bench::runner::RunConfig {
-                binary,
+                binary: resolved,
                 csv: csv.clone(),
                 quick,
-                cycles,
-                repeats,
+                cycles: cycles.or(file_cfg.cycles),
+                repeats: repeats.or(file_cfg.repeats),
                 profile,
                 taskset,
                 extra_args,
@@ -456,13 +484,18 @@ fn run(args: Args) -> Result<(), Error> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
+            // .bench.yaml fills in any unset flags.
+            let cwd = std::env::current_dir().map_err(Error::Io)?;
+            let file_cfg = bench::config::find(&cwd)
+                .and_then(|p| bench::config::load(&p).ok())
+                .unwrap_or_default();
             bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
                 binary: resolved,
                 profilers: parsed_profilers,
-                artifact_root: out,
-                gtest_filter: filter,
-                cycles,
-                repeats,
+                artifact_root: out.or(file_cfg.profile_output_dir.clone()),
+                gtest_filter: filter.or(file_cfg.gtest_filter.clone()),
+                cycles: cycles.or(file_cfg.cycles),
+                repeats: repeats.or(file_cfg.repeats),
                 quick,
             })?;
         }
@@ -470,6 +503,27 @@ fn run(args: Args) -> Result<(), Error> {
         Command::ProfileSummarize { dir } => {
             let report = bench::workflow::profile_summarize(&dir)?;
             bench::workflow::print_summary(&report);
+        }
+
+        Command::Init { path, force } => {
+            bench::config::write_template(&path, force)?;
+            println!("[bench] wrote scaffold to {}", path.display());
+        }
+
+        Command::ConfigValidate { path } => {
+            let resolved = match path {
+                Some(p) => p,
+                None => {
+                    let cwd = std::env::current_dir().map_err(Error::Io)?;
+                    bench::config::find(&cwd).ok_or_else(|| {
+                        Error::InvalidArgs(
+                            "no .bench.yaml found in this directory or any parent.".into(),
+                        )
+                    })?
+                }
+            };
+            let report = bench::config::validate(&resolved)?;
+            bench::config::print_validation(&report);
         }
 
         Command::Flamegraph {

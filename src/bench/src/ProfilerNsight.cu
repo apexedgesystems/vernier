@@ -231,10 +231,10 @@ void NsightProfiler::stopProfiler() {
   ::waitpid(childPid_, &status, WNOHANG);
   childPid_ = -1;
 
-  // For Nsight Systems runs, auto-extract the four canonical reports that
-  // apex_csf walks through manually after every profile (kernel summary, API
-  // summary, mem size summary, mem time summary). Reports are written next to
-  // the .nsys-rep so the user can grep them without an extra cli round-trip.
+  // For Nsight Systems runs, auto-extract the four canonical reports
+  // (kernel summary, API summary, mem size summary, mem time summary).
+  // Reports are written next to the .nsys-rep so the user can grep them
+  // without an extra cli round-trip.
   if (mode_ == NsightMode::Systems) {
     extractNsysStats();
   }

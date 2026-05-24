@@ -132,6 +132,7 @@ pub fn find_in_path(name: &str) -> Option<PathBuf> {
 /* ----------------------------- Modules ----------------------------- */
 
 pub mod compare;
+pub mod config;
 pub mod csv_loader;
 pub mod flamegraph;
 pub mod gpu_env;

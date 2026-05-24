@@ -38,8 +38,14 @@ fn candidate_names(name: &str) -> Vec<String> {
     ]
 }
 
-/// Search the conventional `bin/ptests/` and `bin/tests/` subdirectories of
-/// every `build/*` directory for a binary matching `name`.
+/// Search conventional ptest/test/example directories for a binary that
+/// matches `name`. The default search roots are `build/*` (every subdir of
+/// `build/` -- CMake default convention); override by setting the env var
+/// `VERNIER_BENCH_BIN_ROOTS` to a colon-separated list of roots and
+/// `VERNIER_BENCH_BIN_SUBDIRS` to a colon-separated list of subdirs.
+///
+/// Example for a project that builds into `out/<preset>/` with `tests/` only:
+///   VERNIER_BENCH_BIN_ROOTS=out/* VERNIER_BENCH_BIN_SUBDIRS=tests bench run Foo
 pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
     // Exact path first: respect any explicit override.
     let direct = PathBuf::from(name);
@@ -48,15 +54,34 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
     }
 
     let candidates = candidate_names(name);
+
+    // Collect search roots. Env override expands shell-style "build/*" via
+    // a simple readdir; otherwise fall back to the CMake default.
+    let roots_spec = std::env::var("VERNIER_BENCH_BIN_ROOTS")
+        .unwrap_or_else(|_| "build/*".to_string());
     let mut roots: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = fs::read_dir("build") {
-        for e in entries.flatten() {
-            roots.push(e.path());
+    for entry in roots_spec.split(':') {
+        if let Some(prefix) = entry.strip_suffix("/*") {
+            if let Ok(read) = fs::read_dir(prefix) {
+                for e in read.flatten() {
+                    roots.push(e.path());
+                }
+            }
+        } else {
+            let p = PathBuf::from(entry);
+            if p.is_dir() {
+                roots.push(p);
+            }
         }
     }
+
+    let subs_spec = std::env::var("VERNIER_BENCH_BIN_SUBDIRS")
+        .unwrap_or_else(|_| "bin/ptests:bin/tests:bin/examples".to_string());
+    let subs: Vec<&str> = subs_spec.split(':').collect();
+
     let mut found: Vec<PathBuf> = Vec::new();
     for root in &roots {
-        for sub in ["bin/ptests", "bin/tests", "bin/examples"] {
+        for sub in &subs {
             for cand in &candidates {
                 let p = root.join(sub).join(cand);
                 if p.is_file() {
@@ -69,8 +94,9 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
     found.dedup();
     if found.is_empty() {
         return Err(Error::InvalidArgs(format!(
-            "no binary matching '{}' under build/*/bin/ptests | bin/tests | bin/examples",
-            name
+            "no binary matching '{}' under {} (override with \
+             VERNIER_BENCH_BIN_ROOTS / VERNIER_BENCH_BIN_SUBDIRS).",
+            name, roots_spec
         )));
     }
     if found.len() > 1 {
