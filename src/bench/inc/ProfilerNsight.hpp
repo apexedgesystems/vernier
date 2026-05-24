@@ -137,6 +137,10 @@ private:
 
   ReplayMetrics replayMetrics_{};
   bool useReplayMode_ = false;
+
+  // True when an NVTX range has been pushed by beforeMeasure(); ensures
+  // afterMeasure() pops it once even if launch failed earlier.
+  bool nvtxRangePush_ = false;
 };
 
 /* --------------------------------- API --------------------------------- */

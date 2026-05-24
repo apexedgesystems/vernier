@@ -16,6 +16,8 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "src/bench/inc/Nvtx.hpp"
+
 namespace vernier {
 namespace bench {
 
@@ -60,9 +62,21 @@ void NsightProfiler::beforeMeasure() {
   } else if (mode_ == NsightMode::ComputeReplay && isNcuAvailable()) {
     launchNcuReplay();
   }
+  // Auto-emit an NVTX range named after the test so the measured window
+  // appears as a labeled region in the nsys timeline. Pop in afterMeasure.
+#if VERNIER_HAS_NVTX
+  nvtxRangePushA(testName_.c_str());
+  nvtxRangePush_ = true;
+#endif
 }
 
 void NsightProfiler::afterMeasure(const Stats& /*s*/) {
+#if VERNIER_HAS_NVTX
+  if (nvtxRangePush_) {
+    nvtxRangePop();
+    nvtxRangePush_ = false;
+  }
+#endif
   stopProfiler();
 
   if (useReplayMode_) {

@@ -29,6 +29,7 @@ set(CPU_DEMOS
     07_CallgrindProfiler
     08_RaplProfiler
     09_BpftraceProfiler
+    10_NvtxAnnotation
 )
 
 foreach (DEMO ${CPU_DEMOS})
