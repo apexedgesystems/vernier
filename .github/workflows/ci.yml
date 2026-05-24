@@ -9,8 +9,18 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "LICENSE"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "CHANGELOG.md"
+      - "LICENSE"
 
 concurrency:
   group: ci-${{ github.ref }}
