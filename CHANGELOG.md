@@ -56,11 +56,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   unknown keys preserved as extras so projects can layer custom fields.
 - **`nsight-parse` Python tool** -- consolidates `.nsys-rep` + `.ncu-rep`
   reports into a tidy CSV the rest of the toolchain can consume.
-- **Monitor Phase 4 integration** --
-  `VERNIER_MONITOR_GAUGE` / `VERNIER_MONITOR_INCREMENT` macros,
-  `configFromEnv()` with `VERNIER_MONITOR` / `VERNIER_MONITOR_FILE` /
-  `VERNIER_MONITOR_CONSOLE` / `VERNIER_MONITOR_DISABLE` /
-  `VERNIER_MONITOR_QUEUE`, `MONITOR_GUIDE.md`, and an end-to-end example
+- **Monitor integration polish** -- `VERNIER_MONITOR_GAUGE` and
+  `VERNIER_MONITOR_INCREMENT` macros to match the existing
+  `VERNIER_MONITOR_SCOPE`; `configFromEnv()` reads `VERNIER_MONITOR`,
+  `VERNIER_MONITOR_FILE`, `VERNIER_MONITOR_CONSOLE`,
+  `VERNIER_MONITOR_DISABLE`, `VERNIER_MONITOR_QUEUE` so the same binary
+  stays silent in production and emits a full report once an operator
+  sets the env var. New `MONITOR_GUIDE.md` plus an end-to-end example
   binary.
 - **`UB_PERF_GPU_GUARD` auto-attaches** profiler hooks the same way the
   CPU `UB_PERF_GUARD` does; GPU tests no longer need a manual
