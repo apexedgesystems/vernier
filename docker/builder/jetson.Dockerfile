@@ -13,8 +13,8 @@
 FROM vernier.dev.jetson:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.builder.jetson" \
       org.opencontainers.image.description="Jetson (AArch64) cross-compile release artifact builder"
@@ -27,7 +27,7 @@ WORKDIR /home/${USER}/workspace
 # ==============================================================================
 # Source Code
 # ==============================================================================
-COPY --chown=${UID}:${GID} . .
+COPY --chown=${HOST_UID}:${HOST_GID} . .
 
 # ==============================================================================
 # Build Release Artifacts

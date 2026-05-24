@@ -11,8 +11,8 @@
 FROM vernier.dev.cpu:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.dev.rpi" \
       org.opencontainers.image.description="Raspberry Pi development shell"
@@ -28,8 +28,8 @@ COPY --from=vernier.toolchain.rpi:latest / /
 # ==============================================================================
 # User Setup (recreate after COPY overwrites /etc/passwd)
 # ==============================================================================
-RUN setup-user.sh "${USER}" "${UID}" "${GID}" && \
-    setup-prompt.sh "${USER}" "${UID}" "${GID}" "35" "RPI"
+RUN setup-user.sh "${USER}" "${HOST_UID}" "${HOST_GID}" && \
+    setup-prompt.sh "${USER}" "${HOST_UID}" "${HOST_GID}" "35" "RPI"
 
 # ==============================================================================
 # Environment

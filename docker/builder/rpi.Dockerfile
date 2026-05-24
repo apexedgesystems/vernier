@@ -13,8 +13,8 @@
 FROM vernier.dev.rpi:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.builder.rpi" \
       org.opencontainers.image.description="Raspberry Pi cross-compile release artifact builder"
@@ -27,7 +27,7 @@ WORKDIR /home/${USER}/workspace
 # ==============================================================================
 # Source Code
 # ==============================================================================
-COPY --chown=${UID}:${GID} . .
+COPY --chown=${HOST_UID}:${HOST_GID} . .
 
 # ==============================================================================
 # Build Release Artifacts

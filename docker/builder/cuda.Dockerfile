@@ -11,8 +11,8 @@
 FROM vernier.dev.cuda:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.builder.cuda" \
       org.opencontainers.image.description="CUDA release artifact builder"
@@ -25,7 +25,7 @@ WORKDIR /home/${USER}/workspace
 # ==============================================================================
 # Source Code
 # ==============================================================================
-COPY --chown=${UID}:${GID} . .
+COPY --chown=${HOST_UID}:${HOST_GID} . .
 
 # ==============================================================================
 # Build Release Artifacts

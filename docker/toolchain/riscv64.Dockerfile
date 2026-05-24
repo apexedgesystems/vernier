@@ -7,8 +7,8 @@
 FROM vernier.base:latest
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.toolchain.riscv64" \
       org.opencontainers.image.description="RISC-V 64-bit Linux cross-compilation toolchain"

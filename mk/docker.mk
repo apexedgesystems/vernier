@@ -16,10 +16,11 @@ DOCKER_MK_GUARD := 1
 export DOCKER_BUILDKIT := 1
 export COMPOSE_DOCKER_CLI_BUILD := 1
 
-# Export UID/GID for docker compose (UID is readonly in bash, won't export normally)
-export USER := $(shell id -un)
-export UID  := $(shell id -u)
-export GID  := $(shell id -g)
+# Export HOST_UID/HOST_GID for docker compose. Avoid bare UID -- it is a
+# bash readonly builtin in interactive shells and won't export normally.
+export USER     := $(shell id -un)
+export HOST_UID := $(shell id -u)
+export HOST_GID := $(shell id -g)
 
 # Artifact output directory
 DOCKER_OUT_DIR := output

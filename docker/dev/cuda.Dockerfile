@@ -11,8 +11,8 @@
 FROM nvidia/cuda:13.1.0-devel-ubuntu24.04
 
 ARG USER
-ARG UID
-ARG GID
+ARG HOST_UID
+ARG HOST_GID
 
 LABEL org.opencontainers.image.title="vernier.dev.cuda" \
       org.opencontainers.image.description="CUDA development environment for Vernier"
@@ -89,8 +89,8 @@ RUN ln -sf /usr/local/cuda/targets/x86_64-linux/lib/stubs/libnvidia-ml.so \
 # ==============================================================================
 # User Setup
 # ==============================================================================
-RUN setup-user.sh "${USER}" "${UID}" "${GID}" && \
-    setup-prompt.sh "${USER}" "${UID}" "${GID}" "32" "CUDA"
+RUN setup-user.sh "${USER}" "${HOST_UID}" "${HOST_GID}" && \
+    setup-prompt.sh "${USER}" "${HOST_UID}" "${HOST_GID}" "32" "CUDA"
 
 # ==============================================================================
 # Validation
