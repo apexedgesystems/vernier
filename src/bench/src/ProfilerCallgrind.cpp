@@ -177,3 +177,8 @@ std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg,
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "callgrind",
+    ::vernier::bench::makeCallgrindProfiler,
+    "Install valgrind: apt install valgrind.")

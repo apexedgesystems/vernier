@@ -235,3 +235,8 @@ std::unique_ptr<Profiler> makeNsightProfiler(const PerfConfig& cfg, const std::s
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "nsight",
+    ::vernier::bench::makeNsightProfiler,
+    "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")

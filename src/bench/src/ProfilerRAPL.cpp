@@ -281,3 +281,8 @@ std::unique_ptr<Profiler> makeRAPLProfiler(const PerfConfig& cfg, const std::str
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "rapl",
+    ::vernier::bench::makeRAPLProfiler,
+    "Requires Intel CPU + 'sudo modprobe msr' + CAP_SYS_RAWIO.")

@@ -336,3 +336,8 @@ std::unique_ptr<Profiler> makeBpftraceProfiler(const PerfConfig& cfg, const std:
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "bpftrace",
+    ::vernier::bench::makeBpftraceProfiler,
+    "Install bpftrace and run with root/sudo.")

@@ -236,3 +236,8 @@ std::unique_ptr<Profiler> makePerfProfiler(const PerfConfig& cfg, const std::str
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "perf",
+    ::vernier::bench::makePerfProfiler,
+    "Install linux-tools-$(uname -r) or run outside Docker.")

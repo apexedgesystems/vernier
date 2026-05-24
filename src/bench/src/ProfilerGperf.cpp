@@ -199,3 +199,8 @@ std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::st
 
 } // namespace bench
 } // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "gperf",
+    ::vernier::bench::makeGperfProfiler,
+    "Install libgperftools-dev and rebuild.")

@@ -14,6 +14,7 @@
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfRegistry.hpp" // stamp profile metadata
+#include "src/bench/inc/ProfilerRegistry.hpp" // backend self-registration
 
 namespace vernier {
 namespace bench {
@@ -66,67 +67,15 @@ private:
 
 /* --------------------------------- API --------------------------------- */
 
-// Forward declarations of backend factories (defined in their respective headers/translation units)
-std::unique_ptr<Profiler> makePerfProfiler(const PerfConfig& cfg, const std::string& testName);
-std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName);
-std::unique_ptr<Profiler> makeBpftraceProfiler(const PerfConfig& cfg, const std::string& testName);
-std::unique_ptr<Profiler> makeRAPLProfiler(const PerfConfig& cfg, const std::string& testName);
-std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg, const std::string& testName);
-
 inline std::unique_ptr<Profiler> Profiler::make(const PerfConfig& cfg,
                                                 const std::string& testName) {
   // Default: no profiling requested.
   if (cfg.profileTool.empty()) {
     return std::make_unique<detail::NoOpProfiler>();
   }
-
-  // Helper: warn when a requested profiler is unavailable on this platform.
-  auto warnUnavailable = [&](const char* tool, const char* hint) {
-    std::fprintf(stderr,
-                 "\n[WARN] Profiler '%s' requested but unavailable on this platform.\n"
-                 "   %s\n"
-                 "   Falling back to no-op (measurements will proceed without profiling).\n\n",
-                 tool, hint);
-  };
-
-  // Dispatch to known backends.
-  if (cfg.profileTool == "perf") {
-    if (auto p = makePerfProfiler(cfg, testName))
-      return p;
-    warnUnavailable("perf", "Install linux-tools-$(uname -r) or run outside Docker.");
-    return std::make_unique<detail::NoOpProfiler>("perf", "");
-  }
-  if (cfg.profileTool == "gperf") {
-    if (auto p = makeGperfProfiler(cfg, testName))
-      return p;
-    warnUnavailable("gperf", "Install libgperftools-dev and rebuild.");
-    return std::make_unique<detail::NoOpProfiler>("gperf", "");
-  }
-  if (cfg.profileTool == "bpftrace") {
-    if (auto p = makeBpftraceProfiler(cfg, testName))
-      return p;
-    warnUnavailable("bpftrace", "Install bpftrace and run with root/sudo.");
-    return std::make_unique<detail::NoOpProfiler>("bpftrace", "");
-  }
-  if (cfg.profileTool == "rapl") {
-    if (auto p = makeRAPLProfiler(cfg, testName))
-      return p;
-    warnUnavailable("rapl", "Requires Intel CPU + 'sudo modprobe msr' + CAP_SYS_RAWIO.");
-    return std::make_unique<detail::NoOpProfiler>("rapl", "");
-  }
-  if (cfg.profileTool == "callgrind") {
-    if (auto p = makeCallgrindProfiler(cfg, testName))
-      return p;
-    warnUnavailable("callgrind", "Install valgrind: apt install valgrind.");
-    return std::make_unique<detail::NoOpProfiler>("callgrind", "");
-  }
-
-  // Unknown profiler: return a named no-op so CSV can still reflect the request.
-  std::fprintf(stderr,
-               "\n[WARN] Unknown profiler '%s'. Available: perf, gperf, bpftrace, rapl, "
-               "callgrind.\n\n",
-               cfg.profileTool.c_str());
-  return std::make_unique<detail::NoOpProfiler>(cfg.profileTool, "");
+  // Dispatch via registry. Backends self-register at static init via
+  // VERNIER_REGISTER_PROFILER_BACKEND in their translation units.
+  return ProfilerRegistry::instance().make(cfg.profileTool, cfg, testName);
 }
 
 /**
