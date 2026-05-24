@@ -75,6 +75,10 @@ private:
   bool wantCache_{false};
   bool wantBranch_{false};
   bool runningUnderValgrind_{false};
+  // True only if callgrind_control can actually toggle instrumentation.
+  // Inside a Docker PID namespace the control program cannot reach the
+  // valgrind process, so we keep recording for the whole run instead.
+  bool canToggle_{false};
 };
 
 /* --------------------------------- API --------------------------------- */

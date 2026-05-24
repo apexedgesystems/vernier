@@ -17,6 +17,7 @@
 #include <unistd.h>
 
 #include "src/bench/inc/Nvtx.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
 
 namespace vernier {
 namespace bench {
@@ -55,7 +56,19 @@ bool NsightProfiler::isNcuAvailable() const {
 }
 
 void NsightProfiler::beforeMeasure() {
-  if (mode_ == NsightMode::Systems && isNsysAvailable()) {
+  // Inside a container PID namespace, `nsys profile -p <pid>` / `ncu -p <pid>`
+  // attach modes cannot reach this process reliably. Print the wrap-externally
+  // hint and skip the attach attempt; the user runs nsys/ncu around the binary
+  // instead (same pattern callgrind / compute-sanitizer use).
+  if (profiler_env::isInContainer()) {
+    const char* tool = (mode_ == NsightMode::Systems) ? "nsys" : "ncu";
+    std::fprintf(stderr,
+                 "\n[nsight] running inside a container; attach-by-pid is unreliable.\n"
+                 "[nsight] Wrap externally instead:\n"
+                 "[nsight]   %s profile -o %s/profile <this-binary> --profile nsight [...]\n"
+                 "[nsight] Skipping internal attach for this run.\n\n",
+                 tool, artifactDir_.c_str());
+  } else if (mode_ == NsightMode::Systems && isNsysAvailable()) {
     launchNsys();
   } else if (mode_ == NsightMode::Compute && isNcuAvailable()) {
     launchNcu();
