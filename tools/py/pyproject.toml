@@ -23,6 +23,10 @@ packages = [{include = "vernier_tools", from = "src"}]
 # Benchmarking visualization (plotting only; analysis/comparison/validation use Rust bench tool)
 bench-plot = "vernier_tools.benchmarking.bench_plot:main"
 
+# Nsight report extractor: turns .nsys-rep / .ncu-rep into a tidy CSV the
+# rest of the toolchain (bench-plot, bench compare) can consume.
+nsight-parse = "vernier_tools.benchmarking.nsight_parser:main"
+
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"
 pre-commit = "^4.2.0"

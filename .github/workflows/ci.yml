@@ -143,6 +143,7 @@ jobs:
         run: |
           test -f build/native-linux-debug/bin/tools/rust/bench
           test -f build/native-linux-debug/bin/tools/py/bench-plot
+          test -f build/native-linux-debug/bin/tools/py/nsight-parse
 
       - name: Run C++ tests
         run: docker compose run --rm -T dev make testp
