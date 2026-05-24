@@ -138,6 +138,13 @@ enum Command {
         json: bool,
     },
 
+    /// Show GPU / CPU affinity topology and recommended CPU pinning
+    GpuTopo {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Generate an SVG flamegraph from perf.data
     Flamegraph {
         /// Input perf.data file
@@ -372,6 +379,15 @@ fn run(args: Args) -> Result<(), Error> {
                 println!("{}", bench::report::gpu_env_to_json(&results));
             } else {
                 bench::gpu_env::print_results(&results);
+            }
+        }
+
+        Command::GpuTopo { json } => {
+            let report = bench::gpu_topo::discover();
+            if json {
+                bench::gpu_topo::print_results_json(&report);
+            } else {
+                bench::gpu_topo::print_results(&report);
             }
         }
 

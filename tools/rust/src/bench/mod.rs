@@ -137,6 +137,7 @@ pub mod flamegraph;
 pub mod gpu_env;
 pub mod gpu_lock;
 pub mod gpu_monitor;
+pub mod gpu_topo;
 pub mod report;
 pub mod runner;
 pub mod stats;
