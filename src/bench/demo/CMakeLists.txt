@@ -30,6 +30,8 @@ set(CPU_DEMOS
     08_RaplProfiler
     09_BpftraceProfiler
     10_NvtxAnnotation
+    11_MassifProfiler
+    12_MemcheckProfiler
 )
 
 foreach (DEMO ${CPU_DEMOS})
