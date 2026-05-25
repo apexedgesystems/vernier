@@ -105,7 +105,7 @@ inline void nvtxMark(const char* name) noexcept {
  * Compiles to a no-op when NVTX headers are not available; safe to leave in
  * production code.
  */
-#define BENCH_NVTX_SCOPE(name)                                                                         \
+#define BENCH_NVTX_SCOPE(name)                                                                     \
   ::vernier::bench::NvtxScope VERNIER_NVTX_CAT(_bench_nvtx_scope_, __LINE__)(name)
 
 /** @brief Emit an instantaneous NVTX marker named @p name. */

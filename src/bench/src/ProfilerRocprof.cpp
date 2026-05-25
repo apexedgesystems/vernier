@@ -21,9 +21,7 @@ namespace bench {
 
 namespace {
 
-bool isRocprofOnPath() {
-  return std::system("command -v rocprof >/dev/null 2>&1") == 0;
-}
+bool isRocprofOnPath() { return std::system("command -v rocprof >/dev/null 2>&1") == 0; }
 
 bool isRocmRuntimePresent() {
   // /opt/rocm/lib/libhsa-runtime64.so is the canonical install marker;
@@ -44,23 +42,31 @@ bool isRocmRuntimePresent() {
 // before the process starts. Use either env signal as the "wrapping detected"
 // marker; both are stable across rocprof v1 and v2.
 bool detectUnderRocprof() {
-  if (std::getenv("ROCP_TOOL_LIB") != nullptr) return true;
-  if (std::getenv("ROCPROFILER_LIBRARY") != nullptr) return true;
+  if (std::getenv("ROCP_TOOL_LIB") != nullptr)
+    return true;
+  if (std::getenv("ROCPROFILER_LIBRARY") != nullptr)
+    return true;
   const char* preload = std::getenv("LD_PRELOAD");
   return preload && std::strstr(preload, "rocprof") != nullptr;
 }
 
 std::string modeFromArgs(const std::string& args) {
-  if (args.find("stats") != std::string::npos) return "stats";
-  if (args.find("hsa-trace") != std::string::npos) return "hsa-trace";
-  if (args.find("hip-trace") != std::string::npos) return "hip-trace";
+  if (args.find("stats") != std::string::npos)
+    return "stats";
+  if (args.find("hsa-trace") != std::string::npos)
+    return "hsa-trace";
+  if (args.find("hip-trace") != std::string::npos)
+    return "hip-trace";
   return "default";
 }
 
 std::string modeFlag(const std::string& mode) {
-  if (mode == "stats") return "--stats";
-  if (mode == "hsa-trace") return "--hsa-trace";
-  if (mode == "hip-trace") return "--hip-trace";
+  if (mode == "stats")
+    return "--stats";
+  if (mode == "hsa-trace")
+    return "--hsa-trace";
+  if (mode == "hip-trace")
+    return "--hip-trace";
   return ""; // default: no extra flag
 }
 
@@ -73,9 +79,8 @@ RocprofProfiler::RocprofProfiler(const PerfConfig& cfg, std::string testName)
   mode_ = modeFromArgs(cfg_.profileArgs);
   runningUnderRocprof_ = detectUnderRocprof();
 
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? testName_ + ".rocprof"
-                     : cfg_.artifactRoot + "/" + testName_ + ".rocprof";
+  artifactDir_ = cfg_.artifactRoot.empty() ? testName_ + ".rocprof"
+                                           : cfg_.artifactRoot + "/" + testName_ + ".rocprof";
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
   (void)ec;
@@ -98,10 +103,7 @@ void RocprofProfiler::beforeMeasure() {
                "[rocprof] normally but no profile is collected. To collect:\n"
                "[rocprof]   rocprof%s%s -o %s/results.csv \\\n"
                "[rocprof]       <this-binary> --profile rocprof --profile-args %s [...]\n\n",
-               flag.empty() ? "" : " ",
-               flag.c_str(),
-               artifactDir_.c_str(),
-               mode_.c_str());
+               flag.empty() ? "" : " ", flag.c_str(), artifactDir_.c_str(), mode_.c_str());
 }
 
 void RocprofProfiler::afterMeasure(const Stats& /*s*/) {
@@ -120,8 +122,7 @@ EnvReport checkRocprofEnvironment() {
                      "Install ROCm + roctracer (https://rocm.docs.amd.com)."};
   }
   if (!tool) {
-    return EnvReport{EnvReport::Status::Error,
-                     "ROCm runtime present but rocprof binary missing",
+    return EnvReport{EnvReport::Status::Error, "ROCm runtime present but rocprof binary missing",
                      "apt install rocprofiler (or your distro's equivalent)."};
   }
   if (!runtime) {
@@ -145,7 +146,5 @@ std::unique_ptr<Profiler> makeRocprofProfiler(const PerfConfig& cfg, const std::
 } // namespace vernier
 
 VERNIER_REGISTER_PROFILER_BACKEND(
-    "rocprof",
-    ::vernier::bench::makeRocprofProfiler,
-    ::vernier::bench::checkRocprofEnvironment,
+    "rocprof", ::vernier::bench::makeRocprofProfiler, ::vernier::bench::checkRocprofEnvironment,
     "Install ROCm + rocprof (apt install rocprofiler on Debian/Ubuntu).")

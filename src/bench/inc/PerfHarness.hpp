@@ -145,7 +145,7 @@ inline unsigned int g_timeoutSecs = 0;
 // Must be async-signal-safe -- only write(2) + _exit(2) here.
 inline void handler(int /*sig*/) {
   static const char kPrefix[] = "\n[bench] watchdog timeout: test '";
-  static const char kMid[]    = "' under --profile ";
+  static const char kMid[] = "' under --profile ";
   static const char kSuffix[] =
       " exceeded the configured profile-test-timeout.\n"
       "[bench] Likely cause: drain loop, blocking I/O, or filter that holds the\n"
@@ -479,8 +479,7 @@ public:
     // measured() thread itself because fn() holds the CPU.
     const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
     if (watchdogActive) {
-      perf_watchdog::arm(testName_.c_str(),
-                         cfg_.profileTool.c_str(),
+      perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
                          static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
     }
 

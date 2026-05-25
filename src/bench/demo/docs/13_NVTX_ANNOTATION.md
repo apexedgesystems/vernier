@@ -2,7 +2,7 @@
 
 ## Overview
 
-NVTX (NVIDIA Tools Extension) is *instrumentation*, not a profiler. It emits
+NVTX (NVIDIA Tools Extension) is _instrumentation_, not a profiler. It emits
 labeled ranges that any Nsight tool picks up automatically -- the same
 benchmark goes from an unlabeled wall of GPU activity to a timeline with
 named phases. Vernier exposes `BENCH_NVTX_SCOPE("name")` (RAII range) and
@@ -12,14 +12,14 @@ unannotated benchmarks get per-test grouping in nsys for free.
 
 ## What is NVTX?
 
-NVTX is NVIDIA's *instrumentation* API -- header-only, ships with the
+NVTX is NVIDIA's _instrumentation_ API -- header-only, ships with the
 CUDA toolkit, no library to link. You wrap a region of code with a
 named range; any NVIDIA profiler attached to the process (Nsight
 Systems, Nsight Compute, even VTune) renders those ranges as labeled
 bars on its timeline.
 
 - **Best for:** turning an opaque kernel-launch wall in nsys into a
-  timeline grouped by *your* concepts -- per-stage, per-frame,
+  timeline grouped by _your_ concepts -- per-stage, per-frame,
   per-request -- without changing the profiler.
 - **How it works:** push/pop into a user-space ringbuffer. Near-zero
   cost when no profiler is attached; the profiler reads the ringbuffer
@@ -27,7 +27,7 @@ bars on its timeline.
 - **Overhead:** essentially free when nothing is listening. Safe to
   leave in production builds.
 - **Note:** NVTX does not collect or report anything itself. It only
-  *labels* events for some other tool to display.
+  _labels_ events for some other tool to display.
 
 **In vernier:** `BENCH_NVTX_SCOPE("name")` opens an RAII range;
 `BENCH_NVTX_MARK("name")` drops an instantaneous marker. Compiles to
@@ -101,7 +101,7 @@ optimization candidate looks equally attractive.
 ## Overhead
 
 NVTX push/pop is a userspace ringbuffer write. On runs where profiling
-is *not* active (no nsys attach), the cost is a near-zero branch -- safe
+is _not_ active (no nsys attach), the cost is a near-zero branch -- safe
 to leave in production code.
 
 ## Key Takeaways

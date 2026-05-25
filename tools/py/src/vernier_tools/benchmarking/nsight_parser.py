@@ -161,12 +161,7 @@ def _parse_ncu(path: Path, result: ParseResult) -> None:
 def _clean_key(s: str) -> str:
     # ncu column names contain spaces / parens; normalize to snake-ish.
     return (
-        s.strip()
-        .lower()
-        .replace(" ", "_")
-        .replace("(", "")
-        .replace(")", "")
-        .replace("/", "_per_")
+        s.strip().lower().replace(" ", "_").replace("(", "").replace(")", "").replace("/", "_per_")
     )
 
 

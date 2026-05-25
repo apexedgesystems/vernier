@@ -19,17 +19,22 @@ vernier_module(bench)
 # ------------------------------------------------------------------------------
 
 set(CPP_SOURCES
-    "${SRC_DIR}/ProfilerRegistry.cpp" "${SRC_DIR}/ProfilerPerf.cpp" "${SRC_DIR}/ProfilerGperf.cpp"
-    "${SRC_DIR}/ProfilerBpftrace.cpp" "${SRC_DIR}/ProfilerRAPL.cpp"
-    "${SRC_DIR}/ProfilerCallgrind.cpp" "${SRC_DIR}/ProfilerMassif.cpp"
-    "${SRC_DIR}/ProfilerMemcheck.cpp" "${SRC_DIR}/ProfilerOffCpu.cpp"
-    "${SRC_DIR}/ProfilerRocprof.cpp" "${SRC_DIR}/ProfilerHeaptrack.cpp"
+    "${SRC_DIR}/ProfilerRegistry.cpp"
+    "${SRC_DIR}/ProfilerPerf.cpp"
+    "${SRC_DIR}/ProfilerGperf.cpp"
+    "${SRC_DIR}/ProfilerBpftrace.cpp"
+    "${SRC_DIR}/ProfilerRAPL.cpp"
+    "${SRC_DIR}/ProfilerCallgrind.cpp"
+    "${SRC_DIR}/ProfilerMassif.cpp"
+    "${SRC_DIR}/ProfilerMemcheck.cpp"
+    "${SRC_DIR}/ProfilerOffCpu.cpp"
+    "${SRC_DIR}/ProfilerRocprof.cpp"
+    "${SRC_DIR}/ProfilerHeaptrack.cpp"
     "${SRC_DIR}/ProfilerJemalloc.cpp"
 )
 
 set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
-                 "${SRC_DIR}/ProfilerComputeSanitizer.cu"
-                 "${SRC_DIR}/CuptiCollector.cu"
+                 "${SRC_DIR}/ProfilerComputeSanitizer.cu" "${SRC_DIR}/CuptiCollector.cu"
 )
 
 # ------------------------------------------------------------------------------
@@ -48,7 +53,6 @@ vernier_add_library(
   REQUIRES
   POSIX
 )
-
 
 # gperftools (optional)
 find_library(GPERF_PROFILER_LIB NAMES profiler)

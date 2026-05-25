@@ -20,7 +20,7 @@ which functions accumulated the most time.
 - **Overhead:** ~1-3% at the default sample rate.
 - **Skip it for:** exact instruction counts (callgrind), hardware events
   like cache misses (perf), or anything sub-function (use `perf record
-  --call-graph dwarf`).
+--call-graph dwarf`).
 
 **In vernier:** `--profile gperf` writes `<TestName>.gperf/cpu.prof`.
 Visualize with `google-pprof --text|--pdf|--web <binary> cpu.prof`.

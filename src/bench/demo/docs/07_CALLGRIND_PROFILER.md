@@ -10,7 +10,7 @@ for precise A/B comparisons where measurement noise is unacceptable.
 ## What is callgrind?
 
 `callgrind` is one of Valgrind's tools. It runs your program on a
-synthetic CPU and *counts every instruction executed* per function, so
+synthetic CPU and _counts every instruction executed_ per function, so
 the numbers are exact and reproducible -- two runs of the same code
 give identical results.
 

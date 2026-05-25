@@ -23,17 +23,17 @@ namespace bench {
 
 namespace {
 
-bool isHeaptrackOnPath() {
-  return std::system("command -v heaptrack >/dev/null 2>&1") == 0;
-}
+bool isHeaptrackOnPath() { return std::system("command -v heaptrack >/dev/null 2>&1") == 0; }
 
 /// heaptrack injects libheaptrack_preload.so via LD_PRELOAD; that env var is
 /// the most reliable detection signal across distros.
 bool detectUnderHeaptrack() {
   const char* preload = std::getenv("LD_PRELOAD");
-  if (preload && std::strstr(preload, "heaptrack")) return true;
+  if (preload && std::strstr(preload, "heaptrack"))
+    return true;
   // Alternative signal heaptrack >=1.4 sets:
-  if (std::getenv("HEAPTRACK_OUTPUT") != nullptr) return true;
+  if (std::getenv("HEAPTRACK_OUTPUT") != nullptr)
+    return true;
   return false;
 }
 
@@ -44,9 +44,8 @@ bool detectUnderHeaptrack() {
 HeaptrackProfiler::HeaptrackProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
   runningUnderHeaptrack_ = detectUnderHeaptrack();
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? "./" + testName_ + ".heaptrack"
-                     : cfg_.artifactRoot + "/" + testName_ + ".heaptrack";
+  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".heaptrack"
+                                           : cfg_.artifactRoot + "/" + testName_ + ".heaptrack";
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
   (void)ec;
@@ -66,8 +65,7 @@ void HeaptrackProfiler::beforeMeasure() {
                "[heaptrack]   heaptrack -o %s/run.heaptrack \\\n"
                "[heaptrack]       <this-binary> --profile heaptrack [...]\n"
                "[heaptrack] Then: heaptrack_print %s/run.heaptrack.zst | head -40\n\n",
-               artifactDir_.c_str(),
-               artifactDir_.c_str());
+               artifactDir_.c_str(), artifactDir_.c_str());
 }
 
 void HeaptrackProfiler::afterMeasure(const Stats& /*s*/) {
@@ -78,8 +76,7 @@ void HeaptrackProfiler::afterMeasure(const Stats& /*s*/) {
 
 EnvReport checkHeaptrackEnvironment() {
   if (!isHeaptrackOnPath()) {
-    return EnvReport{EnvReport::Status::Error,
-                     "heaptrack binary not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "heaptrack binary not found on PATH",
                      "apt install heaptrack (and optionally heaptrack-gui)."};
   }
   return EnvReport{EnvReport::Status::Ok, "heaptrack available", ""};
@@ -87,16 +84,16 @@ EnvReport checkHeaptrackEnvironment() {
 
 /* --------------------------------- API --------------------------------- */
 
-std::unique_ptr<Profiler> makeHeaptrackProfiler(const PerfConfig& cfg, const std::string& testName) {
-  if (!isHeaptrackOnPath()) return nullptr;
+std::unique_ptr<Profiler> makeHeaptrackProfiler(const PerfConfig& cfg,
+                                                const std::string& testName) {
+  if (!isHeaptrackOnPath())
+    return nullptr;
   return std::make_unique<HeaptrackProfiler>(cfg, testName);
 }
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "heaptrack",
-    ::vernier::bench::makeHeaptrackProfiler,
-    ::vernier::bench::checkHeaptrackEnvironment,
-    "apt install heaptrack (low-overhead heap profiler).")
+VERNIER_REGISTER_PROFILER_BACKEND("heaptrack", ::vernier::bench::makeHeaptrackProfiler,
+                                  ::vernier::bench::checkHeaptrackEnvironment,
+                                  "apt install heaptrack (low-overhead heap profiler).")

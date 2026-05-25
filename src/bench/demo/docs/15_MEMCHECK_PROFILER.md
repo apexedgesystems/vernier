@@ -3,7 +3,7 @@
 ## Overview
 
 Memcheck is a correctness tool, not a perf tool. The value here is running
-memcheck *after* an optimization pass -- if a refactor introduced a leak,
+memcheck _after_ an optimization pass -- if a refactor introduced a leak,
 UAF, or uninitialized read, memcheck will flag it before it ships.
 
 Two variants in this demo:
@@ -23,7 +23,7 @@ violates the rules along with a stack trace pointing at the source line.
 
 - **Best for:** finding memory bugs that don't crash but corrupt
   results -- leaks, use-after-free, uninitialized reads, double-frees,
-  out-of-bounds heap access. Most valuable as a *post-optimization*
+  out-of-bounds heap access. Most valuable as a _post-optimization_
   gate: prove the refactor didn't introduce any of the above.
 - **How it works:** binary instrumentation through Valgrind's IR;
   every memory operation is checked against shadow metadata.
@@ -111,14 +111,14 @@ specific test you're checking; do not run memcheck across a full suite.
 
 - Memcheck is a correctness tool -- a post-optimization gate, not a
   perf measurement.
-- The value is the *stack trace*: it pins every leak / UAF / uninit
+- The value is the _stack trace_: it pins every leak / UAF / uninit
   read to a source line.
 - `--error-exitcode=1` turns memcheck violations into CI failures.
 - ~20x overhead; always use `--cycles 1` and a narrow `--gtest_filter`.
 
 ## See Also
 
-- [Demo 14 (Massif)](14_MASSIF_PROFILER.md) -- heap *profile* (sizes,
+- [Demo 14 (Massif)](14_MASSIF_PROFILER.md) -- heap _profile_ (sizes,
   sites, timeline)
 - [Demo 7 (Callgrind)](07_CALLGRIND_PROFILER.md) -- instruction counts
   (the perf-side of Valgrind)

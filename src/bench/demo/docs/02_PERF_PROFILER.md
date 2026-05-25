@@ -13,7 +13,7 @@ hardware counters directly, so the numbers it reports -- cycles,
 instructions, cache misses, branch mispredictions -- come straight from
 the silicon, not a software estimate.
 
-- **Best for:** finding *why* CPU-bound code is slow -- cache, branch
+- **Best for:** finding _why_ CPU-bound code is slow -- cache, branch
   prediction, pipeline stalls -- by looking at hardware events.
 - **Two modes:** `perf stat` prints one row of counter totals;
   `perf record` + `perf report` samples call stacks for a flamegraph.

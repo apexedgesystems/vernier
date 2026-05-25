@@ -13,7 +13,7 @@
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
-#include "src/bench/inc/PerfRegistry.hpp" // stamp profile metadata
+#include "src/bench/inc/PerfRegistry.hpp"     // stamp profile metadata
 #include "src/bench/inc/ProfilerRegistry.hpp" // backend self-registration
 
 namespace vernier {

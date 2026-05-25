@@ -578,21 +578,26 @@ private:
 
   void capturePowerThermal(PowerThermalProfile& pt, bool isStart) {
 #ifdef COMPAT_NVML_AVAILABLE
-    if (!nvmlInitialized_) return;
+    if (!nvmlInitialized_)
+      return;
 
     // Power: NVML reports milliwatts.
     unsigned int powerMw = 0;
     if (nvmlDeviceGetPowerUsage(nvmlDevice_, &powerMw) == NVML_SUCCESS) {
       const double watts = static_cast<double>(powerMw) / 1000.0;
-      if (isStart) pt.powerDrawWStart = watts;
-      else         pt.powerDrawWEnd   = watts;
+      if (isStart)
+        pt.powerDrawWStart = watts;
+      else
+        pt.powerDrawWEnd = watts;
     }
 
     // Temperature: NVML reports degrees Celsius for the GPU core.
     unsigned int tempC = 0;
     if (nvmlDeviceGetTemperature(nvmlDevice_, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS) {
-      if (isStart) pt.temperatureCStart = static_cast<int>(tempC);
-      else         pt.temperatureCEnd   = static_cast<int>(tempC);
+      if (isStart)
+        pt.temperatureCStart = static_cast<int>(tempC);
+      else
+        pt.temperatureCEnd = static_cast<int>(tempC);
     }
 
     if (isStart) {

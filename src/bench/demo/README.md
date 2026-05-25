@@ -103,12 +103,12 @@ Requires NVIDIA GPU with CUDA support.
 Binary names: `BenchDemo_Gpu_NN_*`.
 
 Two GPU profilers ship without a dedicated demo binary because they fire on
-*every* GPU run -- consult the walkthroughs to see what to look for:
+_every_ GPU run -- consult the walkthroughs to see what to look for:
 
-| Profiler          | Wraps                  | When to use                              | Walkthrough                                            |
-| ----------------- | ---------------------- | ---------------------------------------- | ------------------------------------------------------ |
-| rocprof (AMD)     | AMD GPU + HIP kernels  | AMD MI / Radeon Instinct profiling       | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)  |
-| CUPTI (in-proc)   | Any GPU benchmark      | Per-launch register / smem / count       | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
+| Profiler        | Wraps                 | When to use                        | Walkthrough                                                   |
+| --------------- | --------------------- | ---------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)   | AMD GPU + HIP kernels | AMD MI / Radeon Instinct profiling | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI (in-proc) | Any GPU benchmark     | Per-launch register / smem / count | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -139,17 +139,17 @@ docker compose run --rm -T dev-cuda bash -c '
 
 ### CLI Flags
 
-| Flag                       | Purpose                                          |
-| -------------------------- | ------------------------------------------------ |
-| `--quick`                  | Fast iteration (fewer cycles/repeats)            |
-| `--csv FILE`               | Export results to CSV                            |
-| `--repeats N`              | Number of measurement repeats                    |
-| `--cycles N`               | Iterations per repeat                            |
-| `--threads N`              | Thread count for contention tests                |
+| Flag                       | Purpose                                                                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--quick`                  | Fast iteration (fewer cycles/repeats)                                                                                                                                                                                |
+| `--csv FILE`               | Export results to CSV                                                                                                                                                                                                |
+| `--repeats N`              | Number of measurement repeats                                                                                                                                                                                        |
+| `--cycles N`               | Iterations per repeat                                                                                                                                                                                                |
+| `--threads N`              | Thread count for contention tests                                                                                                                                                                                    |
 | `--profile <backend>`      | Attach any registered backend (see `bench doctor` for the list: `perf`, `gperf`, `callgrind`, `rapl`, `bpftrace`, `massif`, `memcheck`, `offcpu`, `heaptrack`, `jemalloc`, `nsight`, `compute-sanitizer`, `rocprof`) |
-| `--profile-output-dir DIR` | Route profile artifacts to a custom root         |
-| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`       |
-| `--gtest_filter=PATTERN`   | Run specific tests only                          |
+| `--profile-output-dir DIR` | Route profile artifacts to a custom root                                                                                                                                                                             |
+| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`                                                                                                                                                                           |
+| `--gtest_filter=PATTERN`   | Run specific tests only                                                                                                                                                                                              |
 
 ---
 

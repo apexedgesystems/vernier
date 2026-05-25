@@ -3,7 +3,7 @@
 ## Overview
 
 On-CPU profilers (perf, gperf, callgrind, rapl) measure where threads run.
-None of them shows where threads spend time *blocked*: sleep, mutex wait,
+None of them shows where threads spend time _blocked_: sleep, mutex wait,
 I/O wait, scheduler delay. Off-CPU profiling is the complementary view, and
 the only way to localize lock contention or I/O-bound code from a profile.
 
@@ -14,15 +14,15 @@ Two variants in this demo:
 
 The story: an on-CPU profile of `MutexCounter` shows a mix of
 `futex_wait`, `pthread_mutex_lock`, and the actual counter increment.
-The off-CPU profile shows where the threads *blocked* -- pinning the
+The off-CPU profile shows where the threads _blocked_ -- pinning the
 lock as the cause. Replacing the mutex with `std::atomic::fetch_add`
 eliminates the blocked time entirely.
 
 ## What is off-CPU profiling?
 
-Off-CPU profiling is the *inverse* of every other profiler in vernier:
+Off-CPU profiling is the _inverse_ of every other profiler in vernier:
 instead of sampling threads that are running, it captures stacks every
-time a thread *stops* running. The result is a flame graph of where
+time a thread _stops_ running. The result is a flame graph of where
 threads went to sleep, weighted by how long they stayed asleep.
 
 - **Best for:** lock contention, I/O wait, scheduler delay, condition
@@ -91,8 +91,8 @@ scheduler-noise (thread creation, exit), not application paths.
 ## Step 3: Cross-Reference with On-CPU
 
 Run gperf or callgrind on the same two variants. The on-CPU profile
-also shows the mutex calls -- but as *time spent in the call*, not
-*where the thread blocked*. Off-CPU complements rather than replaces.
+also shows the mutex calls -- but as _time spent in the call_, not
+_where the thread blocked_. Off-CPU complements rather than replaces.
 
 ## When to Use
 
@@ -101,7 +101,7 @@ also shows the mutex calls -- but as *time spent in the call*, not
 - I/O-bound paths where you suspect a blocking syscall is the bottleneck.
 - Workloads where on-CPU profilers show mostly sleep / wait stacks
   (`__nptl_death_event`, `pthread_cond_signal`); the off-CPU view
-  shows the *callers* of those waits.
+  shows the _callers_ of those waits.
 
 ## Overhead
 
@@ -111,7 +111,7 @@ during measured windows. Use `--quick` to keep run-time bounded.
 
 ## Key Takeaways
 
-- Off-CPU is the *inverse* view of every other profiler -- it shows
+- Off-CPU is the _inverse_ view of every other profiler -- it shows
   where threads stopped running, not where they ran.
 - Single highest-leverage diagnostic for lock contention, blocking
   I/O, scheduler delay, and condition-variable waits.

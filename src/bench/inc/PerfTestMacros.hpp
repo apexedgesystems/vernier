@@ -179,7 +179,7 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
 /// Inline filter-validation: a typo in --gtest_filter under --profile silently
 /// produces empty artifacts; emit a loud warning at end-of-main instead.
 /// Expanded only inside test binaries that already include gtest.
-#define VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg)                                             \
+#define VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg)                                            \
   do {                                                                                             \
     if (!(cfg).profileTool.empty()) {                                                              \
       const auto* _vernier_ut = ::testing::UnitTest::GetInstance();                                \

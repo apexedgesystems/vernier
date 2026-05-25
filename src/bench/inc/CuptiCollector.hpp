@@ -46,12 +46,12 @@ namespace bench {
  * + resource-usage view at the same granularity as the timing view.
  */
 struct CuptiKernelStats {
-  std::size_t kernelLaunches{0};  ///< Number of kernels observed in this window
-  std::uint16_t registersMedian{0}; ///< Median registers/thread across launches
-  std::uint16_t registersMax{0};    ///< Worst-case registers/thread
-  std::uint32_t staticSmemBytes{0}; ///< Median static __shared__ allocation
+  std::size_t kernelLaunches{0};     ///< Number of kernels observed in this window
+  std::uint16_t registersMedian{0};  ///< Median registers/thread across launches
+  std::uint16_t registersMax{0};     ///< Worst-case registers/thread
+  std::uint32_t staticSmemBytes{0};  ///< Median static __shared__ allocation
   std::uint32_t dynamicSmemBytes{0}; ///< Median dynamic shared memory at launch
-  std::string firstKernelName;      ///< Demangled name of the first observed kernel
+  std::string firstKernelName;       ///< Demangled name of the first observed kernel
 };
 
 /* ----------------------------- CuptiCollector ----------------------------- */

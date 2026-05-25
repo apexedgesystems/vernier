@@ -650,7 +650,7 @@ grep -A2 "LEAK SUMMARY" run.memcheck
 ### Off-CPU Profiling (where threads sleep)
 
 All the on-CPU profilers above show where threads burn cycles. `--profile
-offcpu` shows where they *stop* burning cycles -- sleep, mutex wait, I/O
+offcpu` shows where they _stop_ burning cycles -- sleep, mutex wait, I/O
 wait. Requires root + tracefs.
 
 ```bash

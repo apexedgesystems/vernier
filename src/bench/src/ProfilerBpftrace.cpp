@@ -344,19 +344,16 @@ namespace bench {
 EnvReport checkBpftraceEnvironment() {
 #ifdef __linux__
   if (std::system("command -v bpftrace >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error,
-                     "bpftrace binary not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "bpftrace binary not found on PATH",
                      "apt install bpftrace."};
   }
   if (geteuid() != 0) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "bpftrace available but not running as root",
+    return EnvReport{EnvReport::Status::Warning, "bpftrace available but not running as root",
                      "Run with sudo or grant CAP_BPF; bpftrace probes require kernel privileges."};
   }
   return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root", ""};
 #else
-  return EnvReport{EnvReport::Status::Error,
-                   "bpftrace is Linux-only",
+  return EnvReport{EnvReport::Status::Error, "bpftrace is Linux-only",
                    "Run on Linux or use a different profiler."};
 #endif
 }
@@ -364,8 +361,6 @@ EnvReport checkBpftraceEnvironment() {
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "bpftrace",
-    ::vernier::bench::makeBpftraceProfiler,
-    ::vernier::bench::checkBpftraceEnvironment,
-    "Install bpftrace and run with root/sudo.")
+VERNIER_REGISTER_PROFILER_BACKEND("bpftrace", ::vernier::bench::makeBpftraceProfiler,
+                                  ::vernier::bench::checkBpftraceEnvironment,
+                                  "Install bpftrace and run with root/sudo.")

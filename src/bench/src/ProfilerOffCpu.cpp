@@ -25,9 +25,7 @@ namespace bench {
 
 namespace {
 
-bool isBpftraceOnPath() {
-  return std::system("command -v bpftrace >/dev/null 2>&1") == 0;
-}
+bool isBpftraceOnPath() { return std::system("command -v bpftrace >/dev/null 2>&1") == 0; }
 
 #ifdef __linux__
 constexpr const char* OFFCPU_SCRIPT = R"BT(
@@ -52,9 +50,8 @@ END {
 
 OffCpuProfiler::OffCpuProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? "./" + testName_ + ".offcpu"
-                     : cfg_.artifactRoot + "/" + testName_ + ".offcpu";
+  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".offcpu"
+                                           : cfg_.artifactRoot + "/" + testName_ + ".offcpu";
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
   (void)ec;
@@ -64,16 +61,14 @@ OffCpuProfiler::OffCpuProfiler(const PerfConfig& cfg, std::string testName)
 void OffCpuProfiler::beforeMeasure() {
 #ifdef __linux__
   if (geteuid() != 0) {
-    std::fprintf(stderr,
-                 "\n[offcpu] not running as root; bpftrace cannot attach kprobes.\n"
-                 "[offcpu] Re-run with sudo (or grant CAP_BPF) to collect off-CPU stacks.\n"
-                 "[offcpu] Measurement will proceed without profiling.\n\n");
+    std::fprintf(stderr, "\n[offcpu] not running as root; bpftrace cannot attach kprobes.\n"
+                         "[offcpu] Re-run with sudo (or grant CAP_BPF) to collect off-CPU stacks.\n"
+                         "[offcpu] Measurement will proceed without profiling.\n\n");
     return;
   }
   if (!isBpftraceOnPath()) {
-    std::fprintf(stderr,
-                 "\n[offcpu] bpftrace not found on PATH; cannot collect off-CPU stacks.\n"
-                 "[offcpu]   apt install bpftrace (or equivalent), then re-run.\n\n");
+    std::fprintf(stderr, "\n[offcpu] bpftrace not found on PATH; cannot collect off-CPU stacks.\n"
+                         "[offcpu]   apt install bpftrace (or equivalent), then re-run.\n\n");
     return;
   }
   spawnBpftrace();
@@ -117,7 +112,8 @@ void OffCpuProfiler::spawnBpftrace() {
 }
 
 void OffCpuProfiler::stopBpftrace() {
-  if (childPid_ <= 0) return;
+  if (childPid_ <= 0)
+    return;
   // SIGINT triggers bpftrace's END block, flushing the @offcpu_ns map.
   ::kill(childPid_, SIGINT);
   int status = 0;
@@ -133,19 +129,16 @@ void OffCpuProfiler::stopBpftrace() {
 EnvReport checkOffCpuEnvironment() {
 #ifdef __linux__
   if (!isBpftraceOnPath()) {
-    return EnvReport{EnvReport::Status::Error,
-                     "bpftrace not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "bpftrace not found on PATH",
                      "apt install bpftrace."};
   }
   if (geteuid() != 0) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "bpftrace available but not running as root",
+    return EnvReport{EnvReport::Status::Warning, "bpftrace available but not running as root",
                      "Run with sudo or grant CAP_BPF; off-CPU kprobes need kernel privileges."};
   }
   return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root", ""};
 #else
-  return EnvReport{EnvReport::Status::Error,
-                   "off-CPU profiling is Linux-only",
+  return EnvReport{EnvReport::Status::Error, "off-CPU profiling is Linux-only",
                    "Run on Linux or use a different profiler."};
 #endif
 }
@@ -154,7 +147,8 @@ EnvReport checkOffCpuEnvironment() {
 
 std::unique_ptr<Profiler> makeOffCpuProfiler(const PerfConfig& cfg, const std::string& testName) {
 #ifdef __linux__
-  if (!isBpftraceOnPath()) return nullptr;
+  if (!isBpftraceOnPath())
+    return nullptr;
   return std::make_unique<OffCpuProfiler>(cfg, testName);
 #else
   (void)cfg;
@@ -166,8 +160,6 @@ std::unique_ptr<Profiler> makeOffCpuProfiler(const PerfConfig& cfg, const std::s
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "offcpu",
-    ::vernier::bench::makeOffCpuProfiler,
-    ::vernier::bench::checkOffCpuEnvironment,
-    "apt install bpftrace and run with sudo (CAP_BPF).")
+VERNIER_REGISTER_PROFILER_BACKEND("offcpu", ::vernier::bench::makeOffCpuProfiler,
+                                  ::vernier::bench::checkOffCpuEnvironment,
+                                  "apt install bpftrace and run with sudo (CAP_BPF).")

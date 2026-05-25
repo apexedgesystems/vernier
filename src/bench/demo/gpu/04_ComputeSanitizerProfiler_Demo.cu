@@ -140,13 +140,12 @@ PERF_GPU_BANDWIDTH(ComputeSanitizer, WithDeliberateOob) {
   perf.cudaWarmup(
       [&](cudaStream_t s) { scaleKernelWithOob<<<grid, block, 0, s>>>(d_in, d_out, N); });
 
-  auto result = perf.cudaKernel(
-                        [&](cudaStream_t s) {
-                          scaleKernelWithOob<<<grid, block, 0, s>>>(d_in, d_out, N);
-                        },
-                        "scale_with_oob")
-                    .withLaunchConfig(grid, block)
-                    .measure();
+  auto result =
+      perf.cudaKernel(
+              [&](cudaStream_t s) { scaleKernelWithOob<<<grid, block, 0, s>>>(d_in, d_out, N); },
+              "scale_with_oob")
+          .withLaunchConfig(grid, block)
+          .measure();
 
   EXPECT_GT(result.callsPerSecond, 1.0);
 

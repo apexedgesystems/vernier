@@ -499,21 +499,21 @@ Every backend below self-registers via the profiler registry; `bench doctor`
 (or `--profile-check`) walks the list and reports each one's environment
 readiness with the exact remediation hint.
 
-| Profiler            | Layer | Purpose                                       | Requirements                           | Overhead   |
-| ------------------- | ----- | --------------------------------------------- | -------------------------------------- | ---------- |
-| `perf`              | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`) | Linux, `kernel.perf_event_paranoid<=1` | ~5%        |
-| `gperf`             | CPU   | gperftools sampling (CPU + optional heap)     | libgperftools                          | ~10%       |
-| `callgrind`         | CPU   | Deterministic instruction counts              | valgrind                               | ~20-50x    |
-| `bpftrace`          | CPU   | Kernel tracing (fsync / write latency, etc.)  | Linux BPF + root / CAP_BPF             | <1%        |
-| `rapl`              | CPU   | Package energy consumption                    | Intel CPU + MSR access                 | <1%        |
-| `massif`            | CPU   | Heap usage timeline                           | valgrind                               | ~20x       |
-| `memcheck`          | CPU   | Memory errors and leaks                       | valgrind                               | ~20x       |
-| `offcpu`            | CPU   | Off-CPU stack profiling                       | bpftrace + root + tracefs              | low        |
-| `heaptrack`         | CPU   | Lower-overhead heap profiler                  | heaptrack on PATH                      | ~1.5x      |
-| `jemalloc`          | CPU   | jemalloc prof sampling                        | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%     |
-| `nsight`            | GPU   | Nsight Systems / Compute (auto stats)         | CUDA toolkit + nsys/ncu                | ~2x        |
-| `compute-sanitizer` | GPU   | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit                          | ~5-10x     |
-| `rocprof`           | GPU   | AMD ROCm GPU profiler                         | ROCm + rocprof                         | ~2x        |
+| Profiler            | Layer | Purpose                                          | Requirements                           | Overhead |
+| ------------------- | ----- | ------------------------------------------------ | -------------------------------------- | -------- |
+| `perf`              | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | Linux, `kernel.perf_event_paranoid<=1` | ~5%      |
+| `gperf`             | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                          | ~10%     |
+| `callgrind`         | CPU   | Deterministic instruction counts                 | valgrind                               | ~20-50x  |
+| `bpftrace`          | CPU   | Kernel tracing (fsync / write latency, etc.)     | Linux BPF + root / CAP_BPF             | <1%      |
+| `rapl`              | CPU   | Package energy consumption                       | Intel CPU + MSR access                 | <1%      |
+| `massif`            | CPU   | Heap usage timeline                              | valgrind                               | ~20x     |
+| `memcheck`          | CPU   | Memory errors and leaks                          | valgrind                               | ~20x     |
+| `offcpu`            | CPU   | Off-CPU stack profiling                          | bpftrace + root + tracefs              | low      |
+| `heaptrack`         | CPU   | Lower-overhead heap profiler                     | heaptrack on PATH                      | ~1.5x    |
+| `jemalloc`          | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%   |
+| `nsight`            | GPU   | Nsight Systems / Compute (auto stats)            | CUDA toolkit + nsys/ncu                | ~2x      |
+| `compute-sanitizer` | GPU   | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit                           | ~5-10x   |
+| `rocprof`           | GPU   | AMD ROCm GPU profiler                            | ROCm + rocprof                         | ~2x      |
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
@@ -946,22 +946,22 @@ Complete GPU-specific CSV columns:
 
 #### Power and Thermal Columns (NVML)
 
-| Column              | Type   | Description                              | Example |
-| ------------------- | ------ | ---------------------------------------- | ------- |
-| `powerDrawW`        | double | Average GPU package power (watts)        | 19.79   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)       | 80.0    |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C)  | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C)  | 2       |
+| Column              | Type   | Description                             | Example |
+| ------------------- | ------ | --------------------------------------- | ------- |
+| `powerDrawW`        | double | Average GPU package power (watts)       | 19.79   |
+| `powerLimitW`       | double | Configured power-cap limit (watts)      | 80.0    |
+| `temperatureC`      | int    | Peak GPU temperature during the run (C) | 49      |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C) | 2       |
 
 #### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type   | Description                                       | Example |
-| ----------------------- | ------ | ------------------------------------------------- | ------- |
-| `cuptiKernelLaunches`   | int    | Kernel launches observed in this measure() window | 25000   |
-| `cuptiRegistersMedian`  | int    | Median registers per thread across launches       | 16      |
-| `cuptiRegistersMax`     | int    | Max registers per thread observed                 | 16      |
-| `cuptiStaticSmemBytes`  | int    | Median static `__shared__` allocation per launch  | 0       |
-| `cuptiDynamicSmemBytes` | int    | Median dynamic shared memory passed at launch     | 0       |
+| Column                  | Type | Description                                       | Example |
+| ----------------------- | ---- | ------------------------------------------------- | ------- |
+| `cuptiKernelLaunches`   | int  | Kernel launches observed in this measure() window | 25000   |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       | 16      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                 | 16      |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  | 0       |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     | 0       |
 
 CUPTI columns populate automatically on every GPU run when libcupti is
 linked at build time; no `--profile` flag required. See

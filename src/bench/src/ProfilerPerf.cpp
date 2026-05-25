@@ -47,24 +47,22 @@ void PerfStatProfiler::beforeMeasure() {
 
   pid_t targetPid = ::getpid();
   const bool useRecord = startsWithTrim(cfg_.profileArgs, "record");
-  const bool useMem    = startsWithTrim(cfg_.profileArgs, "mem");
-  const bool useC2c    = startsWithTrim(cfg_.profileArgs, "c2c");
+  const bool useMem = startsWithTrim(cfg_.profileArgs, "mem");
+  const bool useC2c = startsWithTrim(cfg_.profileArgs, "c2c");
 
   if (useMem) {
     // perf mem -- memory-access profiling. Captures load/store latency
     // distribution; useful for finding L1/L2/LLC stalls.
     dataPath_ = artifactDir_ + "/perf.mem.data";
-    errPath_  = artifactDir_ + "/mem.err.txt";
-    std::string cmd = "perf mem record -p " + std::to_string(targetPid) +
-                      " -o '" + dataPath_ + "'";
+    errPath_ = artifactDir_ + "/mem.err.txt";
+    std::string cmd = "perf mem record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else if (useC2c) {
     // perf c2c -- cache-line contention profiling. Surfaces false sharing
     // by attributing HITM events to the source line of the contended write.
     dataPath_ = artifactDir_ + "/perf.c2c.data";
-    errPath_  = artifactDir_ + "/c2c.err.txt";
-    std::string cmd = "perf c2c record -p " + std::to_string(targetPid) +
-                      " -o '" + dataPath_ + "'";
+    errPath_ = artifactDir_ + "/c2c.err.txt";
+    std::string cmd = "perf c2c record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else if (useRecord) {
     // perf record mode
@@ -262,15 +260,13 @@ EnvReport checkPerfEnvironment() {
 #ifdef __linux__
   // 1) Is the perf binary even on PATH?
   if (std::system("command -v perf >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error,
-                     "perf binary not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "perf binary not found on PATH",
                      "Install linux-tools-$(uname -r) inside the dev container."};
   }
   // 2) perf_event_paranoid gates hardware counter access.
   std::FILE* fp = std::fopen("/proc/sys/kernel/perf_event_paranoid", "r");
   if (!fp) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "cannot read /proc/sys/kernel/perf_event_paranoid",
+    return EnvReport{EnvReport::Status::Warning, "cannot read /proc/sys/kernel/perf_event_paranoid",
                      "Run inside Linux; non-Linux platforms cannot run perf."};
   }
   int paranoid = 4;
@@ -278,8 +274,7 @@ EnvReport checkPerfEnvironment() {
   std::fclose(fp);
   if (paranoid <= 1) {
     return EnvReport{EnvReport::Status::Ok,
-                     "perf available, perf_event_paranoid=" + std::to_string(paranoid),
-                     ""};
+                     "perf available, perf_event_paranoid=" + std::to_string(paranoid), ""};
   }
   if (paranoid <= 2) {
     return EnvReport{EnvReport::Status::Warning,
@@ -288,13 +283,11 @@ EnvReport checkPerfEnvironment() {
                      "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1"};
   }
   return EnvReport{EnvReport::Status::Error,
-                   "perf_event_paranoid=" + std::to_string(paranoid) +
-                       " (all perf access blocked)",
+                   "perf_event_paranoid=" + std::to_string(paranoid) + " (all perf access blocked)",
                    "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1 "
                    "(resets on reboot; rerun each session)."};
 #else
-  return EnvReport{EnvReport::Status::Error,
-                   "perf is Linux-only",
+  return EnvReport{EnvReport::Status::Error, "perf is Linux-only",
                    "Run on Linux or use a different profiler."};
 #endif
 }
@@ -302,8 +295,6 @@ EnvReport checkPerfEnvironment() {
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "perf",
-    ::vernier::bench::makePerfProfiler,
-    ::vernier::bench::checkPerfEnvironment,
-    "Install linux-tools-$(uname -r) or run outside Docker.")
+VERNIER_REGISTER_PROFILER_BACKEND("perf", ::vernier::bench::makePerfProfiler,
+                                  ::vernier::bench::checkPerfEnvironment,
+                                  "Install linux-tools-$(uname -r) or run outside Docker.")

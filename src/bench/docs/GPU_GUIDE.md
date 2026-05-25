@@ -861,11 +861,11 @@ PERF_GPU_TEST(MyKernel, WithProfiling) {
 
 ### GPU-side backends
 
-| Backend             | Wraps                       | Use it for                                                            |
-| ------------------- | --------------------------- | --------------------------------------------------------------------- |
-| `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern_sum / api_sum / mem_*  |
-| `compute-sanitizer` | NVIDIA Compute Sanitizer    | GPU memcheck / racecheck / synccheck / initcheck                       |
-| `rocprof`           | AMD ROCm rocprof            | AMD MI / Radeon Instinct profiling (kernel time + Chrome-trace JSON)   |
+| Backend             | Wraps                         | Use it for                                                             |
+| ------------------- | ----------------------------- | ---------------------------------------------------------------------- |
+| `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern*sum / api_sum / mem*\* |
+| `compute-sanitizer` | NVIDIA Compute Sanitizer      | GPU memcheck / racecheck / synccheck / initcheck                       |
+| `rocprof`           | AMD ROCm rocprof              | AMD MI / Radeon Instinct profiling (kernel time + Chrome-trace JSON)   |
 
 Each backend follows the wrap-externally pattern: the binary stays passive
 unless wrapping is detected, in which case the backend records the artifact
@@ -916,13 +916,13 @@ CUPTI's Activity API populates per-launch register count, static + dynamic
 shared memory, and launch count into the GPU CSV section on every GPU run
 -- no `--profile` flag required. New columns:
 
-| Column                   | Meaning                                                    |
-| ------------------------ | ---------------------------------------------------------- |
-| `cuptiKernelLaunches`    | Number of kernel launches observed in the measured window  |
-| `cuptiRegistersMedian`   | Median registers per thread across launches                |
-| `cuptiRegistersMax`      | Max registers per thread observed                          |
-| `cuptiStaticSmemBytes`   | Median static `__shared__` allocation                      |
-| `cuptiDynamicSmemBytes`  | Median dynamic shared memory passed at launch              |
+| Column                  | Meaning                                                   |
+| ----------------------- | --------------------------------------------------------- |
+| `cuptiKernelLaunches`   | Number of kernel launches observed in the measured window |
+| `cuptiRegistersMedian`  | Median registers per thread across launches               |
+| `cuptiRegistersMax`     | Max registers per thread observed                         |
+| `cuptiStaticSmemBytes`  | Median static `__shared__` allocation                     |
+| `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch             |
 
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the

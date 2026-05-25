@@ -26,16 +26,16 @@
  *    included via the tid-keyed start map.
  *  - Docker constraint: tracefs (`/sys/kernel/tracing`) is not mounted
  *    in the default dev container. To exercise this backend inside
- *    Docker, run the container with `--mount type=bind,source=/sys/kernel/tracing,target=/sys/kernel/tracing`
- *    (and `--privileged` for kernel symbol access). On bare metal this
- *    works directly under sudo.
+ *    Docker, run the container with `--mount
+ * type=bind,source=/sys/kernel/tracing,target=/sys/kernel/tracing` (and `--privileged` for kernel
+ * symbol access). On bare metal this works directly under sudo.
  */
 
 #include <memory>
 #include <string>
 
 #ifdef __linux__
-#include <sys/types.h>  // pid_t
+#include <sys/types.h> // pid_t
 #endif
 
 #include "src/bench/inc/PerfConfig.hpp"

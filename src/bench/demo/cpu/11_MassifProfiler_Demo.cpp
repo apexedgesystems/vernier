@@ -63,7 +63,8 @@ PERF_THROUGHPUT(Massif, SmallChurn) {
       [&] {
         // Fresh allocation each iteration -- this is the cost massif reveals.
         auto buf = std::make_unique<double[]>(WORK_SIZE);
-        for (std::size_t i = 0; i < WORK_SIZE; ++i) buf[i] = static_cast<double>(i);
+        for (std::size_t i = 0; i < WORK_SIZE; ++i)
+          buf[i] = static_cast<double>(i);
         sink = sink + buf[WORK_SIZE - 1];
       },
       "small_churn");
@@ -85,13 +86,15 @@ PERF_THROUGHPUT(Massif, PooledReuse) {
   auto buf = std::make_unique<double[]>(WORK_SIZE);
 
   perf.warmup([&] {
-    for (std::size_t i = 0; i < WORK_SIZE; ++i) buf[i] = static_cast<double>(i);
+    for (std::size_t i = 0; i < WORK_SIZE; ++i)
+      buf[i] = static_cast<double>(i);
   });
 
   volatile double sink = 0.0;
   auto result = perf.throughputLoop(
       [&] {
-        for (std::size_t i = 0; i < WORK_SIZE; ++i) buf[i] = static_cast<double>(i);
+        for (std::size_t i = 0; i < WORK_SIZE; ++i)
+          buf[i] = static_cast<double>(i);
         sink = sink + buf[WORK_SIZE - 1];
       },
       "pooled_reuse");

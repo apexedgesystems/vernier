@@ -85,10 +85,11 @@ struct PerfRow {
   std::optional<bool> throttling;
 
   // Power + thermal (NVML; non-empty when capture is enabled)
-  std::optional<double> powerDrawW;       ///< Avg power draw across the measured window (W)
-  std::optional<double> powerLimitW;      ///< Configured power limit (W)
-  std::optional<int> temperatureC;        ///< End-of-measure GPU core temperature (C)
-  std::optional<int> temperatureDeltaC;   ///< Delta over the measured window (C, positive = warmed up)
+  std::optional<double> powerDrawW;  ///< Avg power draw across the measured window (W)
+  std::optional<double> powerLimitW; ///< Configured power limit (W)
+  std::optional<int> temperatureC;   ///< End-of-measure GPU core temperature (C)
+  std::optional<int>
+      temperatureDeltaC; ///< Delta over the measured window (C, positive = warmed up)
 
   // CUPTI in-process kernel metrics (non-empty when libcupti is linked
   // and the toolkit is recent enough to expose CUpti_ActivityKernel9).

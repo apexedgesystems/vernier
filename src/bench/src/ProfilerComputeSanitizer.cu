@@ -29,7 +29,8 @@ bool isComputeSanitizerOnPath() {
 // to be stable across CUDA releases, but reliable on 2025.x.
 bool detectUnderSanitizer() {
   const char* p = std::getenv("CUDA_INJECTION64_PATH");
-  if (!p) return false;
+  if (!p)
+    return false;
   // The path usually ends in libcompute-sanitizer.so or similar.
   return std::strstr(p, "sanitizer") != nullptr || std::strstr(p, "Sanitizer") != nullptr;
 }
@@ -92,8 +93,7 @@ void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {
 
 EnvReport checkComputeSanitizerEnvironment() {
   if (!isComputeSanitizerOnPath()) {
-    return EnvReport{EnvReport::Status::Error,
-                     "compute-sanitizer not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "compute-sanitizer not found on PATH",
                      "Install the CUDA toolkit; compute-sanitizer ships with it."};
   }
   return EnvReport{EnvReport::Status::Ok, "compute-sanitizer available", ""};
@@ -112,8 +112,7 @@ std::unique_ptr<Profiler> makeComputeSanitizerProfiler(const PerfConfig& cfg,
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "compute-sanitizer",
-    ::vernier::bench::makeComputeSanitizerProfiler,
-    ::vernier::bench::checkComputeSanitizerEnvironment,
-    "Install CUDA toolkit; compute-sanitizer ships with it.")
+VERNIER_REGISTER_PROFILER_BACKEND("compute-sanitizer",
+                                  ::vernier::bench::makeComputeSanitizerProfiler,
+                                  ::vernier::bench::checkComputeSanitizerEnvironment,
+                                  "Install CUDA toolkit; compute-sanitizer ships with it.")

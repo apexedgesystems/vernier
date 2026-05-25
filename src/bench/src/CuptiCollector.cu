@@ -30,9 +30,9 @@ namespace bench {
 
 namespace {
 
-constexpr std::size_t BUFFER_SIZE = 32 * 1024;     // bytes per CUPTI activity buffer
-constexpr std::size_t BUFFER_ALIGN = 8;            // CUPTI requires 8-byte aligned buffers
-constexpr std::size_t RECORD_RESERVE = 1024;       // pre-allocate to avoid reallocation under callback
+constexpr std::size_t BUFFER_SIZE = 32 * 1024; // bytes per CUPTI activity buffer
+constexpr std::size_t BUFFER_ALIGN = 8;        // CUPTI requires 8-byte aligned buffers
+constexpr std::size_t RECORD_RESERVE = 1024;   // pre-allocate to avoid reallocation under callback
 
 struct KernelRecord {
   std::uint16_t registersPerThread{0};
@@ -55,8 +55,7 @@ Aggregator& aggregator() {
   return g;
 }
 
-extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer,
-                                              size_t* size,
+extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer, size_t* size,
                                               size_t* maxNumRecords) {
   void* allocated = nullptr;
   if (posix_memalign(&allocated, BUFFER_ALIGN, BUFFER_SIZE) != 0) {
@@ -70,12 +69,10 @@ extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer,
   *maxNumRecords = 0; // 0 means "as many as fit"
 }
 
-extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/,
-                                              uint32_t /*streamId*/,
-                                              uint8_t* buffer,
-                                              size_t /*size*/,
-                                              size_t validSize) {
-  if (!buffer) return;
+extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/, uint32_t /*streamId*/,
+                                              uint8_t* buffer, size_t /*size*/, size_t validSize) {
+  if (!buffer)
+    return;
 
   Aggregator& agg = aggregator();
   CUpti_Activity* record = nullptr;
@@ -89,7 +86,8 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/,
 
   do {
     status = cuptiActivityGetNextRecord(buffer, validSize, &record);
-    if (status != CUPTI_SUCCESS || !record) break;
+    if (status != CUPTI_SUCCESS || !record)
+      break;
 
     // Tolerate both KERNEL and CONCURRENT_KERNEL activity kinds; payload
     // shape is identical for the fields we read.
@@ -116,20 +114,21 @@ struct CuptiCollector::Impl {
 
 CuptiCollector::CuptiCollector() {
   impl_ = new Impl();
-  if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) ==
-      CUPTI_SUCCESS) {
+  if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) == CUPTI_SUCCESS) {
     aggregator().records.reserve(RECORD_RESERVE);
     available_ = true;
   }
 }
 
 CuptiCollector::~CuptiCollector() {
-  if (running_) stop();
+  if (running_)
+    stop();
   delete impl_;
 }
 
 void CuptiCollector::start() {
-  if (!available_ || running_) return;
+  if (!available_ || running_)
+    return;
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().records.clear();
@@ -141,7 +140,8 @@ void CuptiCollector::start() {
 }
 
 void CuptiCollector::stop() {
-  if (!available_ || !running_) return;
+  if (!available_ || !running_)
+    return;
 
   cuptiActivityFlushAll(1); // 1 = force flush even partially-filled buffers
   cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
@@ -182,7 +182,8 @@ void CuptiCollector::stop() {
       regs.push_back(r.registersPerThread);
       ssmem.push_back(r.staticSmemBytes);
       dsmem.push_back(r.dynamicSmemBytes);
-      if (r.registersPerThread > regsMax) regsMax = r.registersPerThread;
+      if (r.registersPerThread > regsMax)
+        regsMax = r.registersPerThread;
     }
     stats_.registersMedian = medianU16(regs);
     stats_.registersMax = regsMax;
@@ -203,9 +204,7 @@ void CuptiCollector::reset() {
 
 struct CuptiCollector::Impl {};
 
-CuptiCollector::CuptiCollector() {
-  impl_ = nullptr;
-}
+CuptiCollector::CuptiCollector() { impl_ = nullptr; }
 CuptiCollector::~CuptiCollector() {}
 void CuptiCollector::start() {}
 void CuptiCollector::stop() {}

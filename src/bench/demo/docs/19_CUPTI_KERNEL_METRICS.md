@@ -42,13 +42,13 @@ section of the CSV (see columns below).
 
 ## CSV Columns
 
-| Column | Source | Meaning |
-|---|---|---|
-| `cuptiKernelLaunches` | `CUpti_ActivityKernel9.kind` | Number of kernel launches in this measure() window |
-| `cuptiRegistersMedian` | `.registersPerThread` | Median registers per thread across launches |
-| `cuptiRegistersMax` | `.registersPerThread` | Max registers per thread observed |
-| `cuptiStaticSmemBytes` | `.staticSharedMemory` | Median static __shared__ allocation |
-| `cuptiDynamicSmemBytes` | `.dynamicSharedMemory` | Median dynamic shared memory passed at launch |
+| Column                  | Source                       | Meaning                                            |
+| ----------------------- | ---------------------------- | -------------------------------------------------- |
+| `cuptiKernelLaunches`   | `CUpti_ActivityKernel9.kind` | Number of kernel launches in this measure() window |
+| `cuptiRegistersMedian`  | `.registersPerThread`        | Median registers per thread across launches        |
+| `cuptiRegistersMax`     | `.registersPerThread`        | Max registers per thread observed                  |
+| `cuptiStaticSmemBytes`  | `.staticSharedMemory`        | Median static **shared** allocation                |
+| `cuptiDynamicSmemBytes` | `.dynamicSharedMemory`       | Median dynamic shared memory passed at launch      |
 
 ## Usage
 
@@ -93,6 +93,7 @@ What that tells you:
 ## When CUPTI is a No-Op
 
 The collector compiles to a no-op when:
+
 - libcupti is not linked at build time (the CMake target falls back
   cleanly via `__has_include(<cupti.h>)`).
 - The CUDA toolkit is too old to expose `CUpti_ActivityKernel9`.
@@ -111,7 +112,7 @@ in-process captures the same per-launch fields that `ncu --csv
   attach (CUPTI runs in-process so namespaces don't apply).
 - The need to install a second tool on the deployment target.
 
-For metrics that ncu *does* capture and CUPTI Activity doesn't (achieved
+For metrics that ncu _does_ capture and CUPTI Activity doesn't (achieved
 occupancy, warp efficiency, cache hit rates), keep using `--profile
 nsight --profile-args replay` or wrap externally with ncu.
 

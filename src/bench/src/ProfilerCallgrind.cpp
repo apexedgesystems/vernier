@@ -63,15 +63,16 @@ CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName
   wantBranch_ = (args.find("branch") != std::string::npos);
 
   runningUnderValgrind_ = isRunningUnderValgrind();
-  canToggle_ = runningUnderValgrind_ && isCallgrindControlAvailable() &&
-               !profiler_env::isInContainer();
+  canToggle_ =
+      runningUnderValgrind_ && isCallgrindControlAvailable() && !profiler_env::isInContainer();
 
   if (!runningUnderValgrind_) {
-    std::fprintf(stderr, "\n[callgrind] not running under valgrind; instrumentation skipped.\n"
-                         "[callgrind] To collect a profile, wrap externally:\n"
-                         "[callgrind]   valgrind --tool=callgrind --instr-atstart=no \\\n"
-                         "[callgrind]     --callgrind-out-file=%s/callgrind.out \\\n"
-                         "[callgrind]     <this-binary> --profile callgrind [...]\n\n",
+    std::fprintf(stderr,
+                 "\n[callgrind] not running under valgrind; instrumentation skipped.\n"
+                 "[callgrind] To collect a profile, wrap externally:\n"
+                 "[callgrind]   valgrind --tool=callgrind --instr-atstart=no \\\n"
+                 "[callgrind]     --callgrind-out-file=%s/callgrind.out \\\n"
+                 "[callgrind]     <this-binary> --profile callgrind [...]\n\n",
                  artifactDir_.c_str());
   } else if (!canToggle_) {
     std::fprintf(stderr, "\n[callgrind] running under valgrind; callgrind_control cannot reach\n"
@@ -192,8 +193,7 @@ namespace bench {
 
 EnvReport checkCallgrindEnvironment() {
   if (std::system("command -v valgrind >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error,
-                     "valgrind binary not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
                      "apt install valgrind."};
   }
   // Docker PID namespace breaks callgrind_control attach; warn so users know to
@@ -209,8 +209,6 @@ EnvReport checkCallgrindEnvironment() {
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "callgrind",
-    ::vernier::bench::makeCallgrindProfiler,
-    ::vernier::bench::checkCallgrindEnvironment,
-    "Install valgrind: apt install valgrind.")
+VERNIER_REGISTER_PROFILER_BACKEND("callgrind", ::vernier::bench::makeCallgrindProfiler,
+                                  ::vernier::bench::checkCallgrindEnvironment,
+                                  "Install valgrind: apt install valgrind.")

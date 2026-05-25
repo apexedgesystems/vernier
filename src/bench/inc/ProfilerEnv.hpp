@@ -60,11 +60,13 @@ inline bool isInContainer() {
   // 3. Runtime-set env var
   if (const char* v = std::getenv("CONTAINER")) {
     // vernier dev images set CONTAINER=yes; some runtimes set it differently.
-    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0) return true;
+    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0)
+      return true;
   }
   // 4. cgroups v1 substring match (fallback)
   std::FILE* fp = std::fopen("/proc/1/cgroup", "r");
-  if (!fp) return false;
+  if (!fp)
+    return false;
   char line[512];
   bool found = false;
   while (std::fgets(line, sizeof(line), fp)) {
@@ -88,9 +90,11 @@ inline bool isInContainer() {
  * env var is filtered (e.g. systemd / nspawn).
  */
 inline bool isRunningUnderValgrind() {
-  if (std::getenv("RUNNING_ON_VALGRIND") != nullptr) return true;
+  if (std::getenv("RUNNING_ON_VALGRIND") != nullptr)
+    return true;
   std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp) return false;
+  if (!fp)
+    return false;
   char line[512];
   bool found = false;
   while (std::fgets(line, sizeof(line), fp)) {

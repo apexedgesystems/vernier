@@ -71,7 +71,8 @@ public:
    *
    * Registration is idempotent: re-registering the same name replaces the prior entry.
    */
-  void registerBackend(std::string name, Factory factory, EnvCheck check, std::string unavailableHint);
+  void registerBackend(std::string name, Factory factory, EnvCheck check,
+                       std::string unavailableHint);
 
   /**
    * @brief Construct a profiler for the requested backend, or a named no-op.
@@ -83,8 +84,7 @@ public:
    *
    * Never returns nullptr.
    */
-  std::unique_ptr<Profiler> make(const std::string& name,
-                                 const PerfConfig& cfg,
+  std::unique_ptr<Profiler> make(const std::string& name, const PerfConfig& cfg,
                                  const std::string& testName) const;
 
   /** @brief True if a backend with this name has been registered. */
@@ -139,12 +139,10 @@ namespace detail {
  * @brief RAII registrar; one instance per backend at file scope triggers registration.
  */
 struct ProfilerRegistrar {
-  ProfilerRegistrar(std::string name,
-                    ProfilerRegistry::Factory factory,
-                    ProfilerRegistry::EnvCheck check,
-                    std::string hint) {
-    ProfilerRegistry::instance().registerBackend(
-        std::move(name), std::move(factory), std::move(check), std::move(hint));
+  ProfilerRegistrar(std::string name, ProfilerRegistry::Factory factory,
+                    ProfilerRegistry::EnvCheck check, std::string hint) {
+    ProfilerRegistry::instance().registerBackend(std::move(name), std::move(factory),
+                                                 std::move(check), std::move(hint));
   }
 };
 
@@ -164,10 +162,10 @@ struct ProfilerRegistrar {
  *
  * The check function should be a `EnvReport(*)()` (no arguments, returns EnvReport).
  */
-#define VERNIER_REGISTER_PROFILER_BACKEND(NAME, FACTORY, CHECK, HINT)                                  \
-  namespace {                                                                                          \
-  const ::vernier::bench::detail::ProfilerRegistrar UB_REGISTRAR_##__LINE__{                           \
-      (NAME), (FACTORY), (CHECK), (HINT)};                                                             \
+#define VERNIER_REGISTER_PROFILER_BACKEND(NAME, FACTORY, CHECK, HINT)                              \
+  namespace {                                                                                      \
+  const ::vernier::bench::detail::ProfilerRegistrar UB_REGISTRAR_##__LINE__{(NAME), (FACTORY),     \
+                                                                            (CHECK), (HINT)};      \
   }
 
 } // namespace bench

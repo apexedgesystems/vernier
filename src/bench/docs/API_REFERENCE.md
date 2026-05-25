@@ -254,6 +254,7 @@ void attachProfilerHooks(PerfCase& perf, const PerfConfig& cfg);
 **Supported profilers** (each self-registers via the backend registry):
 
 CPU:
+
 - `perf` - Linux perf_events (`stat` / `record` / `mem` / `c2c` modes)
 - `gperf` - gperftools (CPU + optional heap sampling)
 - `callgrind` - valgrind callgrind (deterministic instruction counts)
@@ -266,6 +267,7 @@ CPU:
 - `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
 
 GPU:
+
 - `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
   canonical nsys stats reports)
 - `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
@@ -273,6 +275,7 @@ GPU:
 - `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
 
 Adjacent in-process instrumentation:
+
 - **CUPTI** - per-launch register count, static + dynamic shared memory,
   launch count populate the GPU CSV section on every `PERF_GPU_*` test
   (no `--profile` flag required).
@@ -658,24 +661,24 @@ Additional columns for GPU tests:
 
 ### Power and Thermal Columns
 
-| Column              | Type   | Description                              |
-| ------------------- | ------ | ---------------------------------------- |
-| `powerDrawW`        | double | Average GPU package power (watts)        |
-| `powerLimitW`       | double | Configured power-cap limit (watts)       |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C)  |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C)  |
+| Column              | Type   | Description                             |
+| ------------------- | ------ | --------------------------------------- |
+| `powerDrawW`        | double | Average GPU package power (watts)       |
+| `powerLimitW`       | double | Configured power-cap limit (watts)      |
+| `temperatureC`      | int    | Peak GPU temperature during the run (C) |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C) |
 
 Source: NVML. Populated on every NVIDIA GPU run.
 
 ### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                       |
-| ----------------------- | ---- | ------------------------------------------------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window           |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                 |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     |
+| Column                  | Type | Description                                      |
+| ----------------------- | ---- | ------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
 
 Source: CUPTI Activity API. Populated when libcupti is linked at build
 time; no `--profile` flag required.
@@ -725,17 +728,17 @@ time; no `--profile` flag required.
 
 ### Profiling Flags
 
-| Flag                    | Type   | Default | Description                                      |
-| ----------------------- | ------ | ------- | ------------------------------------------------ |
-| `--profile TOOL`        | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof |
-| `--profile-args ARGS`   | string | -       | Profiler-specific arguments                      |
-| `--profile-output-dir`  | path   | -       | Where backend artifacts land (alias of `--artifact-root`) |
-| `--profile-test-timeout`| int    | 300     | Per-test watchdog seconds under `--profile` (0 disables) |
-| `--profile-check`       | flag   | -       | Print binary readiness + per-backend env doctor, then exit |
-| `--artifact-root DIR`   | string | .       | Profiler output directory                        |
-| `--profile-frequency N` | int    | 10000   | Sampling Hz for CPU profilers                    |
-| `--profile-analyze`     | bool   | false   | Auto-run analysis after profiling                |
-| `--bpf LIST`            | string | -       | BPF scripts (comma-separated): offcpu,syslat,bio |
+| Flag                     | Type   | Default | Description                                                                                                                         |
+| ------------------------ | ------ | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof |
+| `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                         |
+| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                           |
+| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                            |
+| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                          |
+| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                           |
+| `--profile-frequency N`  | int    | 10000   | Sampling Hz for CPU profilers                                                                                                       |
+| `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                   |
+| `--bpf LIST`             | string | -       | BPF scripts (comma-separated): offcpu,syslat,bio                                                                                    |
 
 ### GPU-Specific Flags
 

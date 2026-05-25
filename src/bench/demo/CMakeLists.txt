@@ -52,7 +52,9 @@ endforeach ()
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
-  set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt 04_ComputeSanitizerProfiler)
+  set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt
+                04_ComputeSanitizerProfiler
+  )
 
   foreach (DEMO ${GPU_DEMOS})
     vernier_add_ptest(

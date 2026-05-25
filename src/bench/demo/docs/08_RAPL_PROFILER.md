@@ -12,7 +12,7 @@ battery-powered and thermally-constrained systems.
 RAPL ("Running Average Power Limit") is an Intel CPU feature that
 exposes per-package energy counters through Model-Specific Registers
 (MSRs). It tells you, in joules, how much energy the CPU package burned
-during a window of work -- *measured*, not estimated from cycles.
+during a window of work -- _measured_, not estimated from cycles.
 
 - **Best for:** energy-per-operation comparisons. Two builds that hit
   the same wall-clock might still differ in joules; RAPL surfaces that.

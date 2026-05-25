@@ -7,12 +7,12 @@ equivalent of valgrind memcheck. It catches device-side bugs that often
 don't crash but silently corrupt results. The same binary can be wrapped
 with any of four sub-tools depending on what bug class you're hunting:
 
-| Sub-tool       | Catches                                                |
-| -------------- | ------------------------------------------------------ |
-| `memcheck`     | OOB reads/writes, leaks, misaligned access (default)   |
-| `racecheck`    | Shared-memory data races                               |
-| `synccheck`    | Missed or invalid `__syncthreads` barriers             |
-| `initcheck`    | Reads from uninitialized device memory                 |
+| Sub-tool    | Catches                                              |
+| ----------- | ---------------------------------------------------- |
+| `memcheck`  | OOB reads/writes, leaks, misaligned access (default) |
+| `racecheck` | Shared-memory data races                             |
+| `synccheck` | Missed or invalid `__syncthreads` barriers           |
+| `initcheck` | Reads from uninitialized device memory               |
 
 The story: a kernel with an off-by-one bug returns plausible-looking
 results most of the time and ships. Compute Sanitizer flags it with the
@@ -140,7 +140,7 @@ not benchmarking.
 
 ## Key Takeaways
 
-- Compute Sanitizer is a *correctness* tool for CUDA kernels -- catches
+- Compute Sanitizer is a _correctness_ tool for CUDA kernels -- catches
   bugs that don't crash but corrupt results.
 - Four sub-tools cover four bug classes: `memcheck`, `racecheck`,
   `synccheck`, `initcheck`. Same binary, different `--tool=`.
@@ -149,7 +149,7 @@ not benchmarking.
 
 ## See Also
 
-- [Demo 11 (Nsight Profiler)](11_NSIGHT_PROFILER.md) -- the *performance*
+- [Demo 11 (Nsight Profiler)](11_NSIGHT_PROFILER.md) -- the _performance_
   side of GPU profiling
 - [Demo 15 (Memcheck)](15_MEMCHECK_PROFILER.md) -- the CPU equivalent
   (Valgrind memcheck)

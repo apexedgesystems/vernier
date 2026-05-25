@@ -181,21 +181,21 @@ bench gpu-topo --json
 `--profile X` dispatches to whichever backend self-registered under name `X`.
 The `doctor` command lists all of them with their environment readiness.
 
-| Backend             | Layer | Wraps                                                |
-| ------------------- | ----- | ---------------------------------------------------- |
-| `perf`              | CPU   | `perf stat` / `record` / `mem` / `c2c`               |
-| `gperf`             | CPU   | gperftools sampling profiler                         |
-| `callgrind`         | CPU   | valgrind callgrind                                   |
-| `bpftrace`          | CPU   | bpftrace scripts                                     |
-| `rapl`              | CPU   | Intel RAPL MSRs                                      |
-| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)                |
-| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                   |
-| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)         |
-| `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                      |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)          |
-| `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)       |
-| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init)    |
-| `rocprof`           | GPU   | AMD ROCm rocprof                                     |
+| Backend             | Layer | Wraps                                             |
+| ------------------- | ----- | ------------------------------------------------- |
+| `perf`              | CPU   | `perf stat` / `record` / `mem` / `c2c`            |
+| `gperf`             | CPU   | gperftools sampling profiler                      |
+| `callgrind`         | CPU   | valgrind callgrind                                |
+| `bpftrace`          | CPU   | bpftrace scripts                                  |
+| `rapl`              | CPU   | Intel RAPL MSRs                                   |
+| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)             |
+| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                |
+| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)      |
+| `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
+| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |
+| `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)    |
+| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init) |
+| `rocprof`           | GPU   | AMD ROCm rocprof                                  |
 
 CUPTI activity counters (per-launch register count, shared memory, kernel
 count) populate the GPU section of the CSV automatically on every GPU run --

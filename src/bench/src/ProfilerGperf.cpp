@@ -206,12 +206,13 @@ namespace bench {
 EnvReport checkGperfEnvironment() {
 #if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
   std::string msg = "gperftools linked:";
-  if (UB_HAS_GPERF_CPU) msg += " cpu";
-  if (UB_HAS_GPERF_HEAP) msg += " heap";
+  if (UB_HAS_GPERF_CPU)
+    msg += " cpu";
+  if (UB_HAS_GPERF_HEAP)
+    msg += " heap";
   return EnvReport{EnvReport::Status::Ok, std::move(msg), ""};
 #else
-  return EnvReport{EnvReport::Status::Error,
-                   "gperftools headers not present at build time",
+  return EnvReport{EnvReport::Status::Error, "gperftools headers not present at build time",
                    "apt install libgperftools-dev (or equivalent) then rebuild."};
 #endif
 }
@@ -219,8 +220,6 @@ EnvReport checkGperfEnvironment() {
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "gperf",
-    ::vernier::bench::makeGperfProfiler,
-    ::vernier::bench::checkGperfEnvironment,
-    "Install libgperftools-dev and rebuild.")
+VERNIER_REGISTER_PROFILER_BACKEND("gperf", ::vernier::bench::makeGperfProfiler,
+                                  ::vernier::bench::checkGperfEnvironment,
+                                  "Install libgperftools-dev and rebuild.")

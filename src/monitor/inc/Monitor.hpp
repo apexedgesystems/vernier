@@ -356,7 +356,7 @@ inline ScopeGuard::~ScopeGuard() noexcept {
 /// Counter increment. Default delta is 1; pass a value to advance by N.
 /// Usage: VERNIER_MONITOR_INCREMENT(monitor, "events", tag);
 #define VERNIER_MONITOR_INCREMENT(mon, scopeName, tag, ...)                                        \
-  (mon).increment((scopeName), (tag) __VA_OPT__(, static_cast<double>(__VA_ARGS__)))
+  (mon).increment((scopeName), (tag)__VA_OPT__(, static_cast<double>(__VA_ARGS__)))
 
 } // namespace monitor
 } // namespace vernier

@@ -11,14 +11,14 @@ targets observability in real runs you can't repeat.
 
 ## At a glance
 
-| Capability | API |
-|---|---|
-| Scoped timer | `VERNIER_MONITOR_SCOPE(monitor, "name", tag)` |
-| Point-in-time gauge | `VERNIER_MONITOR_GAUGE(monitor, "name", tag, value)` |
-| Counter increment | `VERNIER_MONITOR_INCREMENT(monitor, "name", tag[, delta])` |
-| Threshold alert | `monitor.setThreshold("name", tag, thresholdUs)` |
-| End-of-run summary | `monitor.printSummary()` (or auto on shutdown) |
-| Zero-overhead disable | `cfg.enabled = false` or `VERNIER_MONITOR=0` |
+| Capability            | API                                                        |
+| --------------------- | ---------------------------------------------------------- |
+| Scoped timer          | `VERNIER_MONITOR_SCOPE(monitor, "name", tag)`              |
+| Point-in-time gauge   | `VERNIER_MONITOR_GAUGE(monitor, "name", tag, value)`       |
+| Counter increment     | `VERNIER_MONITOR_INCREMENT(monitor, "name", tag[, delta])` |
+| Threshold alert       | `monitor.setThreshold("name", tag, thresholdUs)`           |
+| End-of-run summary    | `monitor.printSummary()` (or auto on shutdown)             |
+| Zero-overhead disable | `cfg.enabled = false` or `VERNIER_MONITOR=0`               |
 
 The hot path is lock-free and bounded: scope entry/exit cost is a clock
 read plus a single MPMC queue write (~100-200ns). A dedicated I/O
@@ -53,13 +53,13 @@ vernier::monitor::Monitor monitor(cfg);
 
 Recognized env vars:
 
-| Var | Effect |
-|---|---|
-| `VERNIER_MONITOR=1` | enable; default behavior is enabled-when-constructed |
-| `VERNIER_MONITOR_DISABLE=1` | hard-disable (overrides `VERNIER_MONITOR`) |
-| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | enable file sink with this path |
-| `VERNIER_MONITOR_CONSOLE=WARNING` | console sink at this min level (or `off`) |
-| `VERNIER_MONITOR_QUEUE=8192` | ring-buffer capacity (rounded up to pow2) |
+| Var                                  | Effect                                               |
+| ------------------------------------ | ---------------------------------------------------- |
+| `VERNIER_MONITOR=1`                  | enable; default behavior is enabled-when-constructed |
+| `VERNIER_MONITOR_DISABLE=1`          | hard-disable (overrides `VERNIER_MONITOR`)           |
+| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | enable file sink with this path                      |
+| `VERNIER_MONITOR_CONSOLE=WARNING`    | console sink at this min level (or `off`)            |
+| `VERNIER_MONITOR_QUEUE=8192`         | ring-buffer capacity (rounded up to pow2)            |
 
 Same code, different deployments:
 

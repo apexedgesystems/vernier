@@ -40,18 +40,18 @@ bool isJemallocLibPresent() {
   return false;
 }
 
-bool isJeprofOnPath() {
-  return std::system("command -v jeprof >/dev/null 2>&1") == 0;
-}
+bool isJeprofOnPath() { return std::system("command -v jeprof >/dev/null 2>&1") == 0; }
 
 /// jemalloc is active when libjemalloc shows up in /proc/self/maps OR when
 /// LD_PRELOAD names it explicitly. Either is sufficient as a "wrapping
 /// detected" signal.
 bool detectUnderJemalloc() {
   const char* preload = std::getenv("LD_PRELOAD");
-  if (preload && std::strstr(preload, "jemalloc")) return true;
+  if (preload && std::strstr(preload, "jemalloc"))
+    return true;
   std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp) return false;
+  if (!fp)
+    return false;
   char line[512];
   bool found = false;
   while (std::fgets(line, sizeof(line), fp)) {
@@ -71,9 +71,8 @@ bool detectUnderJemalloc() {
 JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
   runningUnderJemalloc_ = detectUnderJemalloc();
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? "./" + testName_ + ".jemalloc"
-                     : cfg_.artifactRoot + "/" + testName_ + ".jemalloc";
+  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".jemalloc"
+                                           : cfg_.artifactRoot + "/" + testName_ + ".jemalloc";
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
   (void)ec;
@@ -87,15 +86,15 @@ void JemallocProfiler::beforeMeasure() {
                  artifactDir_.c_str());
     return;
   }
-  std::fprintf(stderr,
-               "\n[jemalloc] NOT running under jemalloc; this measurement will execute\n"
-               "[jemalloc] normally but no heap samples are collected. To collect:\n"
-               "[jemalloc]   LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \\\n"
-               "[jemalloc]   MALLOC_CONF=prof:true,prof_prefix:%s/jeprof \\\n"
-               "[jemalloc]       <this-binary> --profile jemalloc [...]\n"
-               "[jemalloc] Then: jeprof --text <this-binary> %s/jeprof.*.heap | head -20\n\n",
-               artifactDir_.c_str(),
-               artifactDir_.c_str());
+  std::fprintf(
+      stderr,
+      "\n[jemalloc] NOT running under jemalloc; this measurement will execute\n"
+      "[jemalloc] normally but no heap samples are collected. To collect:\n"
+      "[jemalloc]   LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \\\n"
+      "[jemalloc]   MALLOC_CONF=prof:true,prof_prefix:%s/jeprof \\\n"
+      "[jemalloc]       <this-binary> --profile jemalloc [...]\n"
+      "[jemalloc] Then: jeprof --text <this-binary> %s/jeprof.*.heap | head -20\n\n",
+      artifactDir_.c_str(), artifactDir_.c_str());
 }
 
 void JemallocProfiler::afterMeasure(const Stats& /*s*/) {
@@ -113,13 +112,11 @@ EnvReport checkJemallocEnvironment() {
                      "apt install libjemalloc2 libjemalloc-dev (or your distro's equivalent)."};
   }
   if (!lib) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "jeprof present but libjemalloc.so missing",
+    return EnvReport{EnvReport::Status::Warning, "jeprof present but libjemalloc.so missing",
                      "apt install libjemalloc2 so LD_PRELOAD can find the runtime."};
   }
   if (!tool) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "libjemalloc.so present but jeprof missing",
+    return EnvReport{EnvReport::Status::Warning, "libjemalloc.so present but jeprof missing",
                      "apt install libjemalloc-dev (ships jeprof for analysis)."};
   }
   return EnvReport{EnvReport::Status::Ok, "libjemalloc + jeprof available", ""};
@@ -137,7 +134,5 @@ std::unique_ptr<Profiler> makeJemallocProfiler(const PerfConfig& cfg, const std:
 } // namespace vernier
 
 VERNIER_REGISTER_PROFILER_BACKEND(
-    "jemalloc",
-    ::vernier::bench::makeJemallocProfiler,
-    ::vernier::bench::checkJemallocEnvironment,
+    "jemalloc", ::vernier::bench::makeJemallocProfiler, ::vernier::bench::checkJemallocEnvironment,
     "apt install libjemalloc2 libjemalloc-dev (preloaded via LD_PRELOAD).")

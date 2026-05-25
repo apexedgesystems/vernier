@@ -21,29 +21,27 @@ ProfilerRegistry& ProfilerRegistry::instance() {
   return s_instance;
 }
 
-void ProfilerRegistry::registerBackend(std::string name,
-                                       Factory factory,
-                                       EnvCheck check,
+void ProfilerRegistry::registerBackend(std::string name, Factory factory, EnvCheck check,
                                        std::string unavailableHint) {
   if (!check) {
     check = []() { return EnvReport{EnvReport::Status::Ok, "no check defined", ""}; };
   }
-  backends_[std::move(name)] = Entry{std::move(factory), std::move(check), std::move(unavailableHint)};
+  backends_[std::move(name)] =
+      Entry{std::move(factory), std::move(check), std::move(unavailableHint)};
 }
 
-std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& name,
-                                                 const PerfConfig& cfg,
+std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& name, const PerfConfig& cfg,
                                                  const std::string& testName) const {
   const auto it = backends_.find(name);
   if (it == backends_.end()) {
     std::string available;
     for (const auto& [n, _] : backends_) {
-      if (!available.empty()) available += ", ";
+      if (!available.empty())
+        available += ", ";
       available += n;
     }
-    std::fprintf(stderr,
-                 "\n[WARN] Unknown profiler '%s'. Available: %s.\n\n",
-                 name.c_str(), available.c_str());
+    std::fprintf(stderr, "\n[WARN] Unknown profiler '%s'. Available: %s.\n\n", name.c_str(),
+                 available.c_str());
     return std::make_unique<detail::NoOpProfiler>(name, "");
   }
 
@@ -95,8 +93,12 @@ int ProfilerRegistry::printDoctor() const {
   int fails = 0;
   for (const auto& [name, rep] : reports) {
     const char* tag = "[OK]  ";
-    if (rep.status == EnvReport::Status::Warning) tag = "[WARN]";
-    if (rep.status == EnvReport::Status::Error) { tag = "[FAIL]"; ++fails; }
+    if (rep.status == EnvReport::Status::Warning)
+      tag = "[WARN]";
+    if (rep.status == EnvReport::Status::Error) {
+      tag = "[FAIL]";
+      ++fails;
+    }
     std::fprintf(stdout, "  %s %-10s %s\n", tag, name.c_str(), rep.message.c_str());
     if (!rep.hint.empty()) {
       std::fprintf(stdout, "             %s\n", rep.hint.c_str());

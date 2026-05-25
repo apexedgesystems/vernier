@@ -21,7 +21,7 @@ NVIDIA's Nsight is actually two complementary tools shipped together:
 - **Nsight Compute (`ncu`)** -- per-kernel deep dive. Replays each
   kernel multiple times to collect hardware metrics: achieved occupancy,
   memory throughput, cache hit rates, warp-execution efficiency. Reach
-  for it when the question is "why is *this kernel* slow?"
+  for it when the question is "why is _this kernel_ slow?"
 
 - **Best for:** GPU kernel optimization. Nsight Systems pinpoints which
   kernel matters; Nsight Compute explains why it's slow.

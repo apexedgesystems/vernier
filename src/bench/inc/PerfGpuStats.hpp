@@ -116,11 +116,11 @@ struct ClockSpeedProfile {
  * All fields are zero when NVML is unavailable or the sample failed.
  */
 struct PowerThermalProfile {
-  double powerDrawWStart{};   ///< Instantaneous power draw at measure start (W)
-  double powerDrawWEnd{};     ///< Instantaneous power draw at measure end (W)
-  double powerLimitW{};       ///< Configured power limit (W)
-  int temperatureCStart{};    ///< GPU core temperature at start (Celsius)
-  int temperatureCEnd{};      ///< GPU core temperature at end (Celsius)
+  double powerDrawWStart{}; ///< Instantaneous power draw at measure start (W)
+  double powerDrawWEnd{};   ///< Instantaneous power draw at measure end (W)
+  double powerLimitW{};     ///< Configured power limit (W)
+  int temperatureCStart{};  ///< GPU core temperature at start (Celsius)
+  int temperatureCEnd{};    ///< GPU core temperature at end (Celsius)
 
   /** Average of start/end samples; near enough for a single short measurement. */
   [[nodiscard]] double avgPowerDrawW() const { return (powerDrawWStart + powerDrawWEnd) * 0.5; }

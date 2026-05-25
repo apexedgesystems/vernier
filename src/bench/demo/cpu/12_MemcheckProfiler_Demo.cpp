@@ -56,7 +56,8 @@ PERF_THROUGHPUT(Memcheck, CleanWorkload) {
   auto result = perf.throughputLoop(
       [&] {
         auto buf = std::make_unique<double[]>(WORK);
-        for (std::size_t i = 0; i < WORK; ++i) buf[i] = static_cast<double>(i);
+        for (std::size_t i = 0; i < WORK; ++i)
+          buf[i] = static_cast<double>(i);
         sink = sink + buf[WORK - 1];
       },
       "clean_workload");
@@ -86,7 +87,8 @@ PERF_THROUGHPUT(Memcheck, WithDeliberateLeak) {
         // Intentional: allocate but never free. Memcheck will report
         // "definitely lost: N bytes in M blocks" where M scales with calls.
         double* leaked = new double[WORK];
-        for (std::size_t i = 0; i < WORK; ++i) leaked[i] = static_cast<double>(i);
+        for (std::size_t i = 0; i < WORK; ++i)
+          leaked[i] = static_cast<double>(i);
         sink = sink + leaked[WORK - 1];
         // leaked NOT deleted -- on purpose.
       },

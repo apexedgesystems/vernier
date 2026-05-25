@@ -75,15 +75,18 @@ namespace detail {
 
 inline bool envTruthy(const char* name) {
   const char* v = std::getenv(name);
-  if (!v || !*v) return false;
-  if (v[0] == '0' && v[1] == '\0') return false;
-  return std::strcmp(v, "false") != 0 && std::strcmp(v, "off") != 0 &&
-         std::strcmp(v, "no") != 0;
+  if (!v || !*v)
+    return false;
+  if (v[0] == '0' && v[1] == '\0')
+    return false;
+  return std::strcmp(v, "false") != 0 && std::strcmp(v, "off") != 0 && std::strcmp(v, "no") != 0;
 }
 
 inline AlertLevel parseAlertLevel(const char* s, AlertLevel fallback) {
-  if (!s || !*s) return fallback;
-  if (std::strcmp(s, "INFO") == 0 || std::strcmp(s, "info") == 0) return AlertLevel::INFO;
+  if (!s || !*s)
+    return fallback;
+  if (std::strcmp(s, "INFO") == 0 || std::strcmp(s, "info") == 0)
+    return AlertLevel::INFO;
   if (std::strcmp(s, "WARNING") == 0 || std::strcmp(s, "warning") == 0 ||
       std::strcmp(s, "WARN") == 0 || std::strcmp(s, "warn") == 0) {
     return AlertLevel::WARNING;

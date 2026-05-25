@@ -23,13 +23,9 @@ namespace bench {
 
 namespace {
 
-bool isValgrindAvailable() {
-  return std::system("command -v valgrind >/dev/null 2>&1") == 0;
-}
+bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
 
-bool isRunningUnderValgrind() {
-  return std::getenv("RUNNING_ON_VALGRIND") != nullptr;
-}
+bool isRunningUnderValgrind() { return std::getenv("RUNNING_ON_VALGRIND") != nullptr; }
 
 } // namespace
 
@@ -37,9 +33,8 @@ bool isRunningUnderValgrind() {
 
 MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? "./" + testName_ + ".massif"
-                     : cfg_.artifactRoot + "/" + testName_ + ".massif";
+  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".massif"
+                                           : cfg_.artifactRoot + "/" + testName_ + ".massif";
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
   (void)ec;
@@ -55,10 +50,8 @@ MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
                  "[massif]       --massif-out-file=%s/massif.out \\\n"
                  "[massif]       <this-binary> --profile massif [...]\n"
                  "[massif] Then: ms_print %s/massif.out | head -40\n\n",
-                 pages ? " --pages-as-heap=yes" : "",
-                 stacks ? " --stacks=yes" : "",
-                 artifactDir_.c_str(),
-                 artifactDir_.c_str());
+                 pages ? " --pages-as-heap=yes" : "", stacks ? " --stacks=yes" : "",
+                 artifactDir_.c_str(), artifactDir_.c_str());
   }
 }
 
@@ -74,27 +67,23 @@ void MassifProfiler::afterMeasure(const Stats& /*s*/) {
 
 EnvReport checkMassifEnvironment() {
   if (!isValgrindAvailable()) {
-    return EnvReport{EnvReport::Status::Error,
-                     "valgrind binary not found on PATH",
+    return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
                      "apt install valgrind."};
   }
-  return EnvReport{EnvReport::Status::Ok,
-                   "valgrind available (massif tool ships with it)",
-                   ""};
+  return EnvReport{EnvReport::Status::Ok, "valgrind available (massif tool ships with it)", ""};
 }
 
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeMassifProfiler(const PerfConfig& cfg, const std::string& testName) {
-  if (!isValgrindAvailable()) return nullptr;
+  if (!isValgrindAvailable())
+    return nullptr;
   return std::make_unique<MassifProfiler>(cfg, testName);
 }
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "massif",
-    ::vernier::bench::makeMassifProfiler,
-    ::vernier::bench::checkMassifEnvironment,
-    "apt install valgrind (massif ships with it).")
+VERNIER_REGISTER_PROFILER_BACKEND("massif", ::vernier::bench::makeMassifProfiler,
+                                  ::vernier::bench::checkMassifEnvironment,
+                                  "apt install valgrind (massif ships with it).")

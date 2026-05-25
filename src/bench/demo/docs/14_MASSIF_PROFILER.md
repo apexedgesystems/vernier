@@ -3,7 +3,7 @@
 ## Overview
 
 Massif samples heap usage over time. Where gperf / callgrind / perf show
-where CPU cycles go, massif shows where *memory* goes -- which allocation
+where CPU cycles go, massif shows where _memory_ goes -- which allocation
 sites dominate peak heap, when allocations happen, and how the profile
 changes after a fix.
 
@@ -87,12 +87,12 @@ loop no longer contributes new peaks. Same arithmetic, no churn.
 
 A 1-line change (move the allocation out of the inner loop) eliminates
 the heap sawtooth entirely. The benchmark also speeds up because
-allocator overhead is gone -- but the heap profile shows the *root
-cause* that perf / gperf would have shown only as glibc-malloc time.
+allocator overhead is gone -- but the heap profile shows the _root
+cause_ that perf / gperf would have shown only as glibc-malloc time.
 
 ## When to Use Massif
 
-- Allocation-heavy code where the *bytes* matter, not just the time.
+- Allocation-heavy code where the _bytes_ matter, not just the time.
 - Long-running services where peak heap drives OOM behavior.
 - Refactors that swap allocators (jemalloc, mimalloc, custom pools) --
   massif quantifies the heap-side improvement.

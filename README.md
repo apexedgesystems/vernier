@@ -14,7 +14,7 @@ and statistical analysis.
 1. [Quick Start](#1-quick-start)
 2. [Key Features](#2-key-features)
 3. [Common Workflows](#3-common-workflows)
-4. [CLI Tools](#4-cli-tools)
+4. [CLI Tools and Backends](#4-cli-tools-and-backends)
 5. [API Reference](#5-api-reference)
 6. [Requirements](#6-requirements)
 7. [Platform Support](#7-platform-support)
@@ -133,32 +133,32 @@ under `build/native-linux-release/install/`.
 CLI tools build with `make tools-rust` and `make tools-py`; source `.env`
 from the build directory to put them on PATH.
 
-| Tool           | Language | Purpose                                                                  |
-| -------------- | -------- | ------------------------------------------------------------------------ |
+| Tool           | Language | Purpose                                                                                                                                                    |
+| -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `bench`        | Rust     | Analysis, comparison, validation, run, doctor, profile-all, profile-summarize, init, config-validate, gpu-env, gpu-lock, gpu-monitor, gpu-topo, flamegraph |
-| `bench-plot`   | Python   | Visualization (plots, dashboards, charts)                                |
-| `nsight-parse` | Python   | Turn `.nsys-rep` / `.ncu-rep` reports into a tidy CSV                    |
+| `bench-plot`   | Python   | Visualization (plots, dashboards, charts)                                                                                                                  |
+| `nsight-parse` | Python   | Turn `.nsys-rep` / `.ncu-rep` reports into a tidy CSV                                                                                                      |
 
 ### Registered profiler backends
 
 `--profile X` dispatches to whichever backend self-registered under that
 name; `bench doctor` lists them all with their environment readiness.
 
-| Backend             | Layer | Wraps                                            |
-| ------------------- | ----- | ------------------------------------------------ |
-| `perf`              | CPU   | Linux perf_events (stat / record / mem / c2c)    |
-| `gperf`             | CPU   | gperftools                                       |
-| `callgrind`         | CPU   | valgrind callgrind                               |
-| `bpftrace`          | CPU   | bpftrace scripts                                 |
-| `rapl`              | CPU   | Intel RAPL MSRs                                  |
-| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)            |
-| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)               |
-| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)     |
-| `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)             |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)      |
-| `nsight`            | GPU   | NVIDIA Nsight Systems / Compute                  |
-| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)          |
-| `rocprof`           | GPU   | AMD ROCm rocprof                                 |
+| Backend             | Layer | Wraps                                         |
+| ------------------- | ----- | --------------------------------------------- |
+| `perf`              | CPU   | Linux perf_events (stat / record / mem / c2c) |
+| `gperf`             | CPU   | gperftools                                    |
+| `callgrind`         | CPU   | valgrind callgrind                            |
+| `bpftrace`          | CPU   | bpftrace scripts                              |
+| `rapl`              | CPU   | Intel RAPL MSRs                               |
+| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)         |
+| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)            |
+| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)  |
+| `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
+| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
+| `nsight`            | GPU   | NVIDIA Nsight Systems / Compute               |
+| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
+| `rocprof`           | GPU   | AMD ROCm rocprof                              |
 
 CUPTI kernel metrics populate the GPU CSV section automatically on every
 GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
@@ -216,13 +216,13 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 ## 7. Platform Support
 
-| Platform                  | Library | Profilers              | CUDA | Pre-built Artifact              |
-| ------------------------- | ------- | ---------------------- | ---- | ------------------------------- |
-| x86_64 Linux              | Full    | All 13                 | Yes  | `vernier-*-x86_64-linux[-cuda]` |
-| Jetson (aarch64)          | Full    | All except RAPL        | Yes  | `vernier-*-aarch64-jetson`      |
-| Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL  | No   | `vernier-*-aarch64-rpi`         |
-| RISC-V 64                 | Full    | CPU backends, no RAPL  | No   | `vernier-*-riscv64-linux`       |
-| macOS (Apple Silicon/x86) | Full    | No-ops                 | No   | Build from source               |
+| Platform                  | Library | Profilers             | CUDA | Pre-built Artifact              |
+| ------------------------- | ------- | --------------------- | ---- | ------------------------------- |
+| x86_64 Linux              | Full    | All 13                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
+| Jetson (aarch64)          | Full    | All except RAPL       | Yes  | `vernier-*-aarch64-jetson`      |
+| Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL | No   | `vernier-*-aarch64-rpi`         |
+| RISC-V 64                 | Full    | CPU backends, no RAPL | No   | `vernier-*-riscv64-linux`       |
+| macOS (Apple Silicon/x86) | Full    | No-ops                | No   | Build from source               |
 
 `rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only; `nsight` /
 `compute-sanitizer` / `cupti` / `nvtx` are NVIDIA-only. All backends

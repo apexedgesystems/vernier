@@ -7,7 +7,6 @@ from pathlib import Path
 
 from vernier_tools.benchmarking import nsight_parser
 
-
 # =============================== CSV Header Detection ========================
 
 
