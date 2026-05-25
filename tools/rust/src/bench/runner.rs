@@ -1,5 +1,12 @@
 //! Benchmark binary execution with optional CPU pinning and profiling.
+//!
+//! When `--profile <X>` names a wrap-externally backend (valgrind tools,
+//! heaptrack, compute-sanitizer), the runner transparently invokes the
+//! correct wrap command so a single `bench run --profile massif <bin>`
+//! produces real heap-profile artifacts without the caller copy/pasting
+//! the printed wrap instruction.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -16,6 +23,7 @@ pub struct RunConfig {
     pub cycles: Option<u32>,
     pub repeats: Option<u32>,
     pub profile: Option<String>,
+    pub profile_output_dir: Option<PathBuf>,
     pub taskset: Option<String>,
     pub extra_args: Vec<String>,
 }
@@ -56,15 +64,38 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         args.push("--profile".to_string());
         args.push(profile.clone());
     }
+    if let Some(ref dir) = cfg.profile_output_dir {
+        args.push("--profile-output-dir".to_string());
+        args.push(dir.display().to_string());
+    }
     args.extend(cfg.extra_args.iter().cloned());
 
-    // Build the outer command (with optional taskset)
-    let mut cmd = if let Some(ref cpuset) = cfg.taskset {
-        let mut c = Command::new("taskset");
-        c.arg("-c").arg(cpuset).arg(&cfg.binary);
-        c
-    } else {
-        Command::new(&cfg.binary)
+    // If the requested profile is a wrap-externally backend we know how to
+    // wrap, build the wrap command (e.g. `valgrind --tool=massif ...`) and
+    // run the benchmark binary under it. Otherwise execute the binary
+    // directly. taskset, if requested, layers on the outside of either.
+    let wrap = cfg
+        .profile
+        .as_deref()
+        .and_then(|t| wrap_command_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+
+    let mut cmd = match (&cfg.taskset, &wrap) {
+        (Some(cpuset), Some((prog, prefix))) => {
+            let mut c = Command::new("taskset");
+            c.arg("-c").arg(cpuset).arg(prog).args(prefix);
+            c
+        }
+        (Some(cpuset), None) => {
+            let mut c = Command::new("taskset");
+            c.arg("-c").arg(cpuset).arg(&cfg.binary);
+            c
+        }
+        (None, Some((prog, prefix))) => {
+            let mut c = Command::new(prog);
+            c.args(prefix);
+            c
+        }
+        (None, None) => Command::new(&cfg.binary),
     };
 
     cmd.args(&args)
@@ -73,7 +104,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 
     println!(
         "Running: {}",
-        format_command(&cfg.binary, &cfg.taskset, &args)
+        format_command(&cfg.binary, &cfg.taskset, &wrap, &args)
     );
 
     let status = cmd.status()?;
@@ -86,14 +117,97 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     Ok(cfg.csv.clone())
 }
 
+/* ----------------------------- Wrap-externally backends ----------------------------- */
+
+/// Wrap command (program + prefix args ending in the binary path) for a
+/// backend that must be invoked externally. Returns `None` for in-process
+/// backends (perf, gperf, rapl, bpftrace, offcpu) which the binary handles
+/// from its own `--profile` flag.
+///
+/// Per-binary artifact dir convention: `<output-dir-or-bench-out>/<binary-stem>.<tool>/`.
+/// The wrap tool writes its raw output there; the C++ harness then layers
+/// per-test subdirs alongside as needed.
+fn wrap_command_for(
+    tool: &str,
+    binary: &Path,
+    output_dir: Option<&Path>,
+) -> Option<(String, Vec<String>)> {
+    let bin = binary.to_str()?.to_string();
+    let stem = binary.file_stem()?.to_str()?.to_string();
+    let root = output_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("bench-out"));
+    let per_dir = root.join(format!("{}.{}", stem, tool));
+    fs::create_dir_all(&per_dir).ok()?;
+    let dir = per_dir.display().to_string();
+
+    match tool {
+        "callgrind" => Some((
+            "valgrind".into(),
+            vec![
+                "--tool=callgrind".into(),
+                "--instr-atstart=no".into(),
+                format!("--callgrind-out-file={dir}/callgrind.out"),
+                bin,
+            ],
+        )),
+        "massif" => Some((
+            "valgrind".into(),
+            vec![
+                "--tool=massif".into(),
+                format!("--massif-out-file={dir}/massif.out"),
+                bin,
+            ],
+        )),
+        "memcheck" => Some((
+            "valgrind".into(),
+            vec![
+                "--tool=memcheck".into(),
+                "--leak-check=full".into(),
+                "--error-exitcode=0".into(),
+                format!("--log-file={dir}/memcheck.log"),
+                bin,
+            ],
+        )),
+        "heaptrack" => Some((
+            "heaptrack".into(),
+            vec!["-o".into(), format!("{dir}/run"), bin],
+        )),
+        "compute-sanitizer" => Some((
+            "compute-sanitizer".into(),
+            vec![
+                "--tool=memcheck".into(),
+                "--log-file".into(),
+                format!("{dir}/sanitizer.log"),
+                bin,
+            ],
+        )),
+        // jemalloc, nsight, rocprof require env-var or multi-mode wraps that
+        // don't compose into a single argv. The binary's --profile handler
+        // prints the precise invocation; users wrap manually for those.
+        _ => None,
+    }
+}
+
 /* ----------------------------- Helpers ----------------------------- */
 
-fn format_command(binary: &Path, taskset: &Option<String>, args: &[String]) -> String {
+fn format_command(
+    binary: &Path,
+    taskset: &Option<String>,
+    wrap: &Option<(String, Vec<String>)>,
+    args: &[String],
+) -> String {
     let mut parts = Vec::new();
     if let Some(ref cpuset) = taskset {
         parts.push(format!("taskset -c {cpuset}"));
     }
-    parts.push(binary.display().to_string());
+    match wrap {
+        Some((prog, prefix)) => {
+            parts.push(prog.clone());
+            parts.extend(prefix.iter().cloned());
+        }
+        None => parts.push(binary.display().to_string()),
+    }
     parts.extend(args.iter().cloned());
     parts.join(" ")
 }
@@ -121,6 +235,7 @@ mod tests {
         let s = format_command(
             Path::new("./my_test"),
             &None,
+            &None,
             &["--csv".to_string(), "out.csv".to_string()],
         );
         assert_eq!(s, "./my_test --csv out.csv");
@@ -132,8 +247,43 @@ mod tests {
         let s = format_command(
             Path::new("./my_test"),
             &Some("0,1".to_string()),
+            &None,
             &["--quick".to_string()],
         );
         assert_eq!(s, "taskset -c 0,1 ./my_test --quick");
+    }
+
+    /// @test format_command with a wrap-externally backend.
+    #[test]
+    fn format_command_wrapped() {
+        let wrap = Some((
+            "valgrind".to_string(),
+            vec![
+                "--tool=massif".to_string(),
+                "--massif-out-file=out/foo.massif/massif.out".to_string(),
+                "./my_test".to_string(),
+            ],
+        ));
+        let s = format_command(
+            Path::new("./my_test"),
+            &None,
+            &wrap,
+            &["--profile".to_string(), "massif".to_string()],
+        );
+        assert_eq!(
+            s,
+            "valgrind --tool=massif --massif-out-file=out/foo.massif/massif.out ./my_test --profile massif"
+        );
+    }
+
+    /// @test wrap_command_for returns None for in-process backends.
+    #[test]
+    fn wrap_command_for_in_process_is_none() {
+        for tool in [
+            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "nsight", "rocprof",
+        ] {
+            let r = wrap_command_for(tool, Path::new("./bin"), None);
+            assert!(r.is_none(), "tool {tool} should be None");
+        }
     }
 }

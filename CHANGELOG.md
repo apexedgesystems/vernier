@@ -88,8 +88,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   CUDA `nvtx3` interface target to a consumer so `Nvtx.hpp`'s
   `BENCH_NVTX_*` macros emit real ranges when the toolkit is present
   and compile to no-ops otherwise.
+- **`bench run --profile <X>` auto-wraps wrap-externally backends.**
+  When `<X>` is `callgrind`, `massif`, `memcheck`, `heaptrack`, or
+  `compute-sanitizer`, `bench run` invokes the correct wrap command
+  (`valgrind --tool=...`, `heaptrack -o ...`, etc.) instead of just
+  running the binary directly and leaving the user to copy the
+  printed instruction. Artifacts land in
+  `<--profile-output-dir>/<binary-stem>.<tool>/`. In-process
+  backends (perf, gperf, rapl, bpftrace, offcpu) are unchanged.
 
 ### Changed
+
+- **Build `.env` paths are absolute.** `tools/CMakeLists.txt` now
+  embeds `${CMAKE_BINARY_DIR}` directly in the generated `.env` file
+  instead of writing `$PWD`-relative entries. `. build/<preset>/.env`
+  works from anywhere -- the previous "cd into the build dir first"
+  step is no longer required. Generation moved to a `configure_file`
+  template (`tools/env-helper.sh.in`).
 
 - **Profiler dispatch refactored** to the registry; no behavior change for
   the six pre-existing backends.

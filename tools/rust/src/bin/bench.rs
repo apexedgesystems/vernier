@@ -109,6 +109,13 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
 
+        /// Where wrap-externally backends (massif, memcheck, callgrind,
+        /// heaptrack, compute-sanitizer) write their artifacts. Defaults
+        /// to `bench-out/`. Forwarded to the binary as --profile-output-dir
+        /// so the C++ harness's per-test subdirs land in the same root.
+        #[arg(long)]
+        profile_output_dir: Option<PathBuf>,
+
         /// Pin to CPUs (e.g., "0,1,3")
         #[arg(long)]
         taskset: Option<String>,
@@ -347,6 +354,7 @@ fn run(args: Args) -> Result<(), Error> {
             cycles,
             repeats,
             profile,
+            profile_output_dir,
             taskset,
             analyze,
             extra_args,
@@ -367,6 +375,7 @@ fn run(args: Args) -> Result<(), Error> {
                 cycles: cycles.or(file_cfg.cycles),
                 repeats: repeats.or(file_cfg.repeats),
                 profile,
+                profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
                 taskset,
                 extra_args,
             };

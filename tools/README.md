@@ -30,17 +30,18 @@ for Vernier benchmark results.
 make tools-rust        # bench (analysis, comparison, execution)
 make tools-py          # bench-plot (visualization, optional)
 
-# Setup environment (from build directory)
-cd build/native-linux-debug
-source .env
+# Source from anywhere; .env embeds absolute paths.
+source build/native-linux-debug/.env
 
 # Verify
 bench --help
 bench-plot --help      # Only if tools-py built
 ```
 
-The build directory is self-contained and relocatable. Copy it anywhere, source `.env`,
-and the tools work.
+The `.env` file uses absolute paths to the tools in the build tree, so
+sourcing it from any cwd puts `bench` / `bench-plot` / `nsight-parse`
+on PATH. The build directory itself stays self-contained -- copy it
+anywhere, source the `.env` inside it, and the tools work.
 
 ---
 
@@ -110,17 +111,28 @@ bench run ./bin/ptests/MyComponent_PTEST                  # full path
 bench run MyComponent --csv results.csv --quick
 bench run MyComponent --taskset 2-9 --profile perf
 bench run MyComponent --csv results.csv --analyze
+bench run MyComponent --profile massif                    # auto-wraps with valgrind
+bench run MyComponent --profile heaptrack                 # auto-wraps with heaptrack
 ```
 
 **Options:**
 
-| Flag             | Description                                          | Default |
-| ---------------- | ---------------------------------------------------- | ------- |
-| `--csv FILE`     | Export results to CSV                                | --      |
-| `--quick`        | Fewer cycles/repeats for fast iteration              | --      |
-| `--taskset CPUS` | Pin to specific CPU cores                            | --      |
-| `--profile MODE` | Enable profiling (any registered backend; see below) | --      |
-| `--analyze`      | Run summary after execution                          | --      |
+| Flag                       | Description                                          | Default      |
+| -------------------------- | ---------------------------------------------------- | ------------ |
+| `--csv FILE`               | Export results to CSV                                | --           |
+| `--quick`                  | Fewer cycles/repeats for fast iteration              | --           |
+| `--taskset CPUS`           | Pin to specific CPU cores                            | --           |
+| `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
+| `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
+| `--analyze`                | Run summary after execution                          | --           |
+
+When `--profile` names a wrap-externally backend (`callgrind`, `massif`,
+`memcheck`, `heaptrack`, `compute-sanitizer`), `bench run` transparently
+invokes the correct wrap (`valgrind --tool=...`, `heaptrack -o ...`,
+etc.) and writes the artifacts to
+`<--profile-output-dir>/<binary-stem>.<tool>/`. In-process backends
+(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly
+and the C++ harness manages its own per-test artifact subdirs.
 
 Unset `--cycles` / `--repeats` are filled in from `.bench.yaml` (see `init`).
 
@@ -386,31 +398,29 @@ Output columns: `source` (nsys / ncu), `report`, `kernel`, `instances`,
 Quick test with immediate summary:
 
 ```bash
-cd build/native-linux-debug
-source .env
-bench run ./bin/ptests/MyComponent_PTEST --quick --csv results.csv --analyze
+source build/native-linux-debug/.env
+bench run MyComponent_PTEST --quick --csv results.csv --analyze
 ```
 
 ### Optimization Workflow
 
 ```bash
-cd build/native-linux-debug
-source .env
+source build/native-linux-debug/.env
 
 # 1. Validate environment
 bench validate
 
 # 2. Baseline measurement
-./bin/ptests/MyComponent_PTEST --repeats 30 --csv baseline.csv
+bench run MyComponent_PTEST -- --repeats 30 --csv baseline.csv
 
 # 3. Profile to find hotspots
-./bin/ptests/MyComponent_PTEST --profile perf --cycles 100000
+bench run MyComponent_PTEST -- --profile perf --cycles 100000
 bench flamegraph MyComponent.Throughput.perf/perf.data --output before.svg
 
 # 4. Make changes, rebuild
 
 # 5. Measure again
-./bin/ptests/MyComponent_PTEST --repeats 30 --csv optimized.csv
+bench run MyComponent_PTEST -- --repeats 30 --csv optimized.csv
 
 # 6. Statistical comparison
 bench compare baseline.csv optimized.csv --threshold 5
@@ -425,8 +435,7 @@ Full GPU benchmarking pipeline with environment validation, clock locking,
 and state monitoring:
 
 ```bash
-cd build/native-linux-debug
-source .env
+source build/native-linux-debug/.env
 
 # 1. Validate GPU environment
 bench gpu-env
