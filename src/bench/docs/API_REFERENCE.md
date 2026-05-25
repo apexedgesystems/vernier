@@ -1,5 +1,9 @@
 # API Reference
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++23
+
 Complete API documentation for the benchmarking framework. This reference covers all CPU and GPU APIs, profiling integration, and configuration options.
 
 ---
@@ -651,6 +655,30 @@ Additional columns for GPU tests:
 | `occupancy`         | double | Kernel occupancy [0.0-1.0]  |
 | `sm_clock_MHz`      | double | SM clock frequency          |
 | `throttling`        | bool   | Thermal throttling detected |
+
+### Power and Thermal Columns
+
+| Column              | Type   | Description                              |
+| ------------------- | ------ | ---------------------------------------- |
+| `powerDrawW`        | double | Average GPU package power (watts)        |
+| `powerLimitW`       | double | Configured power-cap limit (watts)       |
+| `temperatureC`      | int    | Peak GPU temperature during the run (C)  |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)  |
+
+Source: NVML. Populated on every NVIDIA GPU run.
+
+### CUPTI In-Process Kernel Metrics
+
+| Column                  | Type | Description                                       |
+| ----------------------- | ---- | ------------------------------------------------- |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window           |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                 |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     |
+
+Source: CUPTI Activity API. Populated when libcupti is linked at build
+time; no `--profile` flag required.
 
 ### Multi-GPU Columns
 

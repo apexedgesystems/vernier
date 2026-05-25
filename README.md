@@ -72,6 +72,9 @@ cmake --build --preset native-linux-debug
   in-process CUPTI kernel metrics (register / smem / launch counts) without
   spawning ncu
 - NVTX timeline annotation API auto-injected into Nsight Systems runs
+- Companion `vernier::monitor` library for lightweight runtime
+  instrumentation in production runs (lock-free queue, env-var-driven
+  enablement, console + file sinks)
 - Statistical analysis: median, percentiles, CV%, adaptive stability detection
 - Memory bandwidth analysis with efficiency calculations
 - Multi-threaded contention benchmarking with synchronized start gates
@@ -183,7 +186,8 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 | [CI/CD Integration](src/bench/docs/CI_CD_INTEGRATION.md) | Automated regression detection               |
 | [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup          |
 | [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                  |
-| [Demo Walkthroughs](src/bench/demo/docs/)                | 12 step-by-step tutorials                    |
+| [Demo Walkthroughs](src/bench/demo/docs/)                | 17 step-by-step tutorials (13 CPU + 4 GPU)   |
+| [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library              |
 
 ---
 
@@ -198,27 +202,32 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 **Optional:**
 
-- CUDA toolkit 12+ (GPU benchmarking)
-- gperftools (gperf profiler backend)
-- valgrind (callgrind profiler backend)
-- bpftrace (syscall tracing)
+- CUDA toolkit 12+ (GPU benchmarking, NVTX, CUPTI, Compute Sanitizer)
+- gperftools (`gperf` backend)
+- valgrind (`callgrind` / `massif` / `memcheck` backends)
+- bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
+- heaptrack (`heaptrack` backend -- low-overhead heap profiler)
+- jemalloc with `prof` enabled (`jemalloc` backend; LD_PRELOAD)
+- ROCm + rocprof (AMD GPU profiling via the `rocprof` backend)
 - Rust toolchain (for `bench` CLI tool)
-- Python 3.10+ with Poetry (for `bench-plot` CLI tool)
+- Python 3.10+ with Poetry (for `bench-plot` and `nsight-parse` CLI tools)
 
 ---
 
 ## 7. Platform Support
 
-| Platform                  | Library | Profilers   | CUDA | Pre-built Artifact              |
-| ------------------------- | ------- | ----------- | ---- | ------------------------------- |
-| x86_64 Linux              | Full    | All 6       | Yes  | `vernier-*-x86_64-linux[-cuda]` |
-| Jetson (aarch64)          | Full    | 5 (no RAPL) | Yes  | `vernier-*-aarch64-jetson`      |
-| Raspberry Pi (aarch64)    | Full    | 5 (no RAPL) | No   | `vernier-*-aarch64-rpi`         |
-| RISC-V 64                 | Full    | 5 (no RAPL) | No   | `vernier-*-riscv64-linux`       |
-| macOS (Apple Silicon/x86) | Full    | No-ops      | No   | Build from source               |
+| Platform                  | Library | Profilers              | CUDA | Pre-built Artifact              |
+| ------------------------- | ------- | ---------------------- | ---- | ------------------------------- |
+| x86_64 Linux              | Full    | All 13                 | Yes  | `vernier-*-x86_64-linux[-cuda]` |
+| Jetson (aarch64)          | Full    | All except RAPL        | Yes  | `vernier-*-aarch64-jetson`      |
+| Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL  | No   | `vernier-*-aarch64-rpi`         |
+| RISC-V 64                 | Full    | CPU backends, no RAPL  | No   | `vernier-*-riscv64-linux`       |
+| macOS (Apple Silicon/x86) | Full    | No-ops                 | No   | Build from source               |
 
-RAPL is Intel-only (energy measurement). All profilers degrade gracefully when
-hardware or tools are unavailable -- the core timing harness always works.
+`rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only; `nsight` /
+`compute-sanitizer` / `cupti` / `nvtx` are NVIDIA-only. All backends
+degrade gracefully when hardware or tools are unavailable -- the core
+timing harness always works.
 
 ---
 
@@ -250,17 +259,23 @@ vernier/
   docker/                     Dockerfiles (base, dev, builder, toolchain)
   mk/                         Make modules (build, test, docker, coverage)
   src/
-    bench/                    Benchmarking library
-      inc/                    Public headers (Perf.hpp, PerfGpu.hpp, profilers)
-      src/                    Profiler implementations
-      bpf/                    BPF tracing scripts
-      utst/                   Unit tests (66 tests)
+    bench/                    Benchmarking library (perf, GPU harness, profilers)
+      inc/                    Public headers (Perf.hpp, PerfGpu.hpp, Nvtx.hpp, profilers)
+      src/                    Profiler implementations + CUPTI collector
+      bpf/                    bpftrace scripts (off-cpu, syslat)
+      utst/                   Unit tests
       ptst/                   Performance tests (CPU + GPU)
-      demo/                   Educational demos with step-by-step docs
-      docs/                   Technical documentation
+      demo/                   13 CPU + 4 GPU walkthroughs with step-by-step docs
+      docs/                   Library documentation
+    monitor/                  Runtime instrumentation library (vernier::monitor)
+      inc/                    Public headers (Monitor.hpp, MonitorConfig.hpp)
+      src/                    Sink implementations
+      utst/                   Unit tests
+      examples/               End-to-end usage examples
+      docs/                   MONITOR_GUIDE.md
   tools/
-    rust/                     bench CLI (Rust)
-    py/                       bench-plot CLI (Python)
+    rust/                     bench CLI (Rust) -- analysis, doctor, run, gpu-*
+    py/                       bench-plot, nsight-parse CLIs (Python)
 ```
 
 ---

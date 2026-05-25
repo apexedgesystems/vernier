@@ -1,5 +1,9 @@
 # Advanced Benchmarking Guide
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++23
+
 Complete guide to advanced features, patterns, and best practices for the benchmarking framework.
 
 ---
@@ -939,6 +943,29 @@ Complete GPU-specific CSV columns:
 | `achievedOccupancy` | double | Kernel occupancy [0-1]      | 0.82                    |
 | `smClockMHz`        | double | SM clock frequency          | 1410.0                  |
 | `throttling`        | bool   | Thermal throttling detected | false                   |
+
+#### Power and Thermal Columns (NVML)
+
+| Column              | Type   | Description                              | Example |
+| ------------------- | ------ | ---------------------------------------- | ------- |
+| `powerDrawW`        | double | Average GPU package power (watts)        | 19.79   |
+| `powerLimitW`       | double | Configured power-cap limit (watts)       | 80.0    |
+| `temperatureC`      | int    | Peak GPU temperature during the run (C)  | 49      |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)  | 2       |
+
+#### CUPTI In-Process Kernel Metrics
+
+| Column                  | Type   | Description                                       | Example |
+| ----------------------- | ------ | ------------------------------------------------- | ------- |
+| `cuptiKernelLaunches`   | int    | Kernel launches observed in this measure() window | 25000   |
+| `cuptiRegistersMedian`  | int    | Median registers per thread across launches       | 16      |
+| `cuptiRegistersMax`     | int    | Max registers per thread observed                 | 16      |
+| `cuptiStaticSmemBytes`  | int    | Median static `__shared__` allocation per launch  | 0       |
+| `cuptiDynamicSmemBytes` | int    | Median dynamic shared memory passed at launch     | 0       |
+
+CUPTI columns populate automatically on every GPU run when libcupti is
+linked at build time; no `--profile` flag required. See
+[demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
 
 #### Multi-GPU Columns
 

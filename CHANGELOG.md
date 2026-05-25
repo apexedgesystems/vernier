@@ -83,6 +83,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **TROUBLESHOOTING.md extensions** -- drain-loop / blocking-recv hang
   patterns, the `timeout`+env-var trap, container CSV / artifact path
   routing.
+- **`vernier_nvtx_enable()` CMake helper** -- mirrors
+  `vernier_nvml_enable()` / `vernier_cupti_enable()`. Propagates the
+  CUDA `nvtx3` interface target to a consumer so `Nvtx.hpp`'s
+  `BENCH_NVTX_*` macros emit real ranges when the toolkit is present
+  and compile to no-ops otherwise.
 
 ### Changed
 

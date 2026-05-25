@@ -14,11 +14,12 @@ for Vernier benchmark results.
 1. [Quick Start](#1-quick-start)
 2. [bench (Rust)](#2-bench-rust)
 3. [bench-plot (Python)](#3-bench-plot-python)
-4. [Common Workflows](#4-common-workflows)
-5. [CSV Schema](#5-csv-schema)
-6. [Building](#6-building)
-7. [Testing](#7-testing)
-8. [See Also](#8-see-also)
+4. [nsight-parse (Python)](#3b-nsight-parse-python)
+5. [Common Workflows](#4-common-workflows)
+6. [CSV Schema](#5-csv-schema)
+7. [Building](#6-building)
+8. [Testing](#7-testing)
+9. [See Also](#8-see-also)
 
 ---
 
@@ -45,8 +46,8 @@ and the tools work.
 
 ## 2. bench (Rust)
 
-Single binary with 8 subcommands for benchmarking analysis, GPU environment management,
-and profiling tasks.
+Single binary with 14 subcommands for benchmarking analysis, profiling
+orchestration, GPU environment management, and project setup.
 
 ### summary - Display Results
 
@@ -481,8 +482,11 @@ stable, cvThreshold
 
 **GPU columns (when present):** gpuModel, computeCapability, kernelTimeUs,
 transferTimeUs, h2dBytes, d2hBytes, speedupVsCpu, memBandwidthGBs, occupancy,
-smClockMHz, throttling, deviceId, deviceCount, multiGpuEfficiency, p2pBandwidthGBs,
-umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs, umThrashing
+smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC,
+temperatureDeltaC, cuptiKernelLaunches, cuptiRegistersMedian,
+cuptiRegistersMax, cuptiStaticSmemBytes, cuptiDynamicSmemBytes, deviceId,
+deviceCount, multiGpuEfficiency, p2pBandwidthGBs, umPageFaults,
+umH2DMigrations, umD2HMigrations, umMigrationTimeUs, umThrashing
 
 **Metadata columns:** timestamp, gitHash, hostname, platform
 
