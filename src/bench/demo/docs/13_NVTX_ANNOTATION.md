@@ -10,6 +10,32 @@ named phases. Vernier exposes `BENCH_NVTX_SCOPE("name")` (RAII range) and
 each test's measured window in an NVTX range named after the test, so even
 unannotated benchmarks get per-test grouping in nsys for free.
 
+## What is NVTX?
+
+NVTX is NVIDIA's *instrumentation* API -- header-only, ships with the
+CUDA toolkit, no library to link. You wrap a region of code with a
+named range; any NVIDIA profiler attached to the process (Nsight
+Systems, Nsight Compute, even VTune) renders those ranges as labeled
+bars on its timeline.
+
+- **Best for:** turning an opaque kernel-launch wall in nsys into a
+  timeline grouped by *your* concepts -- per-stage, per-frame,
+  per-request -- without changing the profiler.
+- **How it works:** push/pop into a user-space ringbuffer. Near-zero
+  cost when no profiler is attached; the profiler reads the ringbuffer
+  out-of-band.
+- **Overhead:** essentially free when nothing is listening. Safe to
+  leave in production builds.
+- **Note:** NVTX does not collect or report anything itself. It only
+  *labels* events for some other tool to display.
+
+**In vernier:** `BENCH_NVTX_SCOPE("name")` opens an RAII range;
+`BENCH_NVTX_MARK("name")` drops an instantaneous marker. Compiles to
+no-op on CPU-only builds where the CUDA toolkit isn't present, so the
+same code builds everywhere. `NsightProfiler` also auto-injects a
+top-level range named after each test so nsys can group launches
+per-test without any source changes.
+
 ## Prerequisites
 
 ```bash
@@ -77,3 +103,21 @@ optimization candidate looks equally attractive.
 NVTX push/pop is a userspace ringbuffer write. On runs where profiling
 is *not* active (no nsys attach), the cost is a near-zero branch -- safe
 to leave in production code.
+
+## Key Takeaways
+
+- NVTX is instrumentation, not a profiler -- it labels events for any
+  Nsight tool to render.
+- `BENCH_NVTX_SCOPE("name")` is the workhorse: RAII range, scope-bound.
+- `BENCH_NVTX_MARK("name")` drops an instantaneous marker at a point.
+- `NsightProfiler` auto-injects a per-test range, so even unannotated
+  tests get per-test grouping in nsys timelines.
+- Safe to leave in production: the macros are no-op when NVTX headers
+  are absent and near-zero cost when no profiler is attached.
+
+## See Also
+
+- [Demo 11 (Nsight Profiler)](11_NSIGHT_PROFILER.md) -- the tool that
+  renders the ranges
+- [Demo 19 (CUPTI)](19_CUPTI_KERNEL_METRICS.md) -- in-process kernel
+  metrics that complement NVTX timelines

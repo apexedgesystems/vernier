@@ -7,6 +7,33 @@ patterns. Shows how per-byte write() calls create massive kernel context-switch
 overhead and how batching eliminates it. This is a common anti-pattern in
 embedded telemetry, logging, and serial communication code.
 
+## What is bpftrace?
+
+`bpftrace` is a high-level tracing language for Linux's eBPF subsystem
+-- think DTrace, for Linux. You write a short script that attaches
+probes to kernel functions, tracepoints, or user-space symbols, and
+bpftrace compiles it to safe in-kernel BPF bytecode that runs on every
+event without copying data to user space.
+
+- **Best for:** the questions other profilers can't see: syscall
+  latency distributions, off-CPU blocking, scheduler delay, lock-wait
+  stacks, I/O wait, page-fault stacks.
+- **How it works:** per-event kernel probes. Aggregations
+  (`@histogram[probe]`) happen in BPF map space and print at script
+  exit.
+- **Overhead:** depends on probe rate. Syscall histograms over a hot
+  loop are cheap; per-instruction probes will crawl.
+- **Requires:** kernel BTF (most distros since ~2020), root or
+  CAP_BPF/CAP_SYS_ADMIN. Containers need either `--privileged` or a
+  tracefs bind-mount.
+- **Skip it for:** pure user-space CPU profiling (perf / gperf), heap
+  analysis (massif), or anything Windows-shaped.
+
+**In vernier:** `--profile bpftrace --bpf <script>` runs a named
+bpftrace script around the measured window. Scripts live in
+`src/utilities/benchmarking/bpf/`; built-ins include `syslat`
+(syscall latency) and `offcpu` (blocked-time stacks).
+
 ## Prerequisites
 
 ```bash
@@ -139,7 +166,7 @@ transition, which is a fixed cost per syscall regardless of payload size.
 - The `syslat` script produces latency histograms per syscall type
 - Always buffer writes and flush periodically, not per-byte or per-field
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- bpftrace profiling section
 - Demo 02 (perf) -- Use hardware counters to measure CPU overhead per syscall

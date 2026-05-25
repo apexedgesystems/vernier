@@ -93,7 +93,7 @@ The hardware handles the atomic operation at the cache coherency level.
 - Scaling efficiency = (N-thread throughput) / (1-thread throughput \* N)
 - For complex shared state, consider lock-free data structures or sharding
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Multi-threaded benchmarking patterns
 - Demo 09 (bpftrace) -- Trace kernel-level scheduling overhead

@@ -14,6 +14,27 @@ workflow below uses one of the CUDA demos as the structural template;
 the kernel body would be identical except for the `<<<...>>>` -> `hipLaunchKernelGGL`
 substitution.
 
+## What is rocprof?
+
+`rocprof` is AMD's equivalent of NVIDIA's Nsight Systems / Compute. It
+captures kernel timings, hardware counters, and API traces on AMD GPUs
+running ROCm, and writes the results as CSV + a Chrome-trace JSON.
+
+- **Best for:** AMD GPU benchmarking and optimization -- kernel
+  duration, occupancy, memory throughput, and host/device traces on
+  Radeon Instinct / MI hardware.
+- **How it works:** wrap-externally; rocprof injects its agent into
+  HSA/HIP and intercepts kernel dispatches.
+- **Overhead:** minimal for kernel timings; per-counter modes add a
+  small fixed cost per kernel launch.
+- **Skip it for:** NVIDIA GPUs (use Nsight), CPU profiling (perf), or
+  hosts without a working ROCm stack.
+
+**In vernier:** `--profile rocprof` is wrap-externally -- run the
+binary under `rocprof -o <path>`. Per-test artifacts land in
+`<TestName>.rocprof/`; `results.csv` is the per-kernel timing table and
+`results.json` opens in `chrome://tracing`.
+
 ## Prerequisites
 
 ```bash
@@ -82,8 +103,21 @@ column -t -s ',' MyHipPtest.Gpu.MyKernel.rocprof/results.csv | head -10
 - Verifying kernel timing parity between drivers (host nsys timeline
   vs ROCm rocprof JSON).
 
+## Key Takeaways
+
+- rocprof is to AMD GPUs what Nsight is to NVIDIA -- the primary perf
+  tool for HIP / OpenCL kernels on ROCm.
+- vernier uses the same wrap-externally pattern as nsight and
+  compute-sanitizer; the backend prints the precise rocprof invocation
+  when not wrapped.
+- `results.csv` (per-kernel timings) and `results.json` (Chrome trace)
+  are the two artifacts to look at.
+- Trace modes (`--stats`, `--hsa-trace`, `--hip-trace`) trade detail
+  for overhead; pick by what question you're answering.
+
 ## See Also
 
-- [Demo 11 (Nsight Profiler)](11_NSIGHT_PROFILER.md) -- NVIDIA equivalent
+- [Demo 11 (Nsight Profiler)](11_NSIGHT_PROFILER.md) -- NVIDIA
+  equivalent
 - [Demo 17 (Compute Sanitizer)](17_COMPUTE_SANITIZER.md) -- shares the
   wrap-externally pattern

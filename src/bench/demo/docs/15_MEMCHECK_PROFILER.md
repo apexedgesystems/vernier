@@ -14,6 +14,31 @@ Two variants in this demo:
 The story: a benchmark that "works" can still leak. Memcheck shows the
 exact source line and stack trace.
 
+## What is memcheck?
+
+`memcheck` is Valgrind's default tool and the de-facto C/C++ memory
+error detector. It instruments every load/store to track which bytes
+have been allocated and initialized, and reports any access that
+violates the rules along with a stack trace pointing at the source line.
+
+- **Best for:** finding memory bugs that don't crash but corrupt
+  results -- leaks, use-after-free, uninitialized reads, double-frees,
+  out-of-bounds heap access. Most valuable as a *post-optimization*
+  gate: prove the refactor didn't introduce any of the above.
+- **How it works:** binary instrumentation through Valgrind's IR;
+  every memory operation is checked against shadow metadata.
+- **Overhead:** ~20-30x slower than native. Use `--cycles 1` and run
+  only the test you're checking.
+- **Skip it for:** performance measurement (memcheck has nothing to
+  say about speed), GPU memory (use compute-sanitizer), and code
+  that's heavy on custom allocators (memcheck only sees the standard
+  ones unless you annotate).
+
+**In vernier:** `--profile memcheck` is wrap-externally -- run the
+binary under `valgrind --tool=memcheck --leak-check=full`. The log
+file lands in `<TestName>.memcheck/`. Add `--error-exitcode=1` to
+fail CI on memory errors.
+
 ## Prerequisites
 
 ```bash
@@ -82,7 +107,18 @@ Add `--error-exitcode=1` to make memcheck-failures fail the CI job.
 ~20x slower under valgrind. Use `--cycles 1` (or 2) and run only the
 specific test you're checking; do not run memcheck across a full suite.
 
+## Key Takeaways
+
+- Memcheck is a correctness tool -- a post-optimization gate, not a
+  perf measurement.
+- The value is the *stack trace*: it pins every leak / UAF / uninit
+  read to a source line.
+- `--error-exitcode=1` turns memcheck violations into CI failures.
+- ~20x overhead; always use `--cycles 1` and a narrow `--gtest_filter`.
+
 ## See Also
 
-- [Demo 11 (Massif)](14_MASSIF_PROFILER.md) -- heap *profile* (sizes/sites)
+- [Demo 14 (Massif)](14_MASSIF_PROFILER.md) -- heap *profile* (sizes,
+  sites, timeline)
 - [Demo 7 (Callgrind)](07_CALLGRIND_PROFILER.md) -- instruction counts
+  (the perf-side of Valgrind)

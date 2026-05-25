@@ -7,6 +7,30 @@ counting. Unlike sampling profilers (perf, gperf), callgrind simulates every
 instruction -- producing identical results on every run. This makes it ideal
 for precise A/B comparisons where measurement noise is unacceptable.
 
+## What is callgrind?
+
+`callgrind` is one of Valgrind's tools. It runs your program on a
+synthetic CPU and *counts every instruction executed* per function, so
+the numbers are exact and reproducible -- two runs of the same code
+give identical results.
+
+- **Best for:** A/B optimization comparisons where you need an exact
+  ratio (1.7x or 2.1x?) instead of "5% +/- 3%". Also great for proving
+  an algorithmic change actually reduced instruction count.
+- **How it works:** dynamic binary instrumentation. Valgrind translates
+  your binary into its IR, executes it on a simulated CPU, and counts.
+- **Overhead:** 20-50x slower than native. Use `--cycles 1` and
+  `--repeats 1` -- the results are deterministic, so repetition adds
+  nothing.
+- **Skip it for:** wall-clock measurement (the simulated CPU isn't real
+  silicon), production workloads (too slow), and anything I/O-heavy
+  (syscall timing is meaningless).
+
+**In vernier:** `--profile callgrind` is wrap-externally -- run the
+binary under `valgrind --tool=callgrind ...`. Per-test artifacts land in
+`<TestName>.callgrind/callgrind.out`; visualize with
+`callgrind_annotate` or `kcachegrind`.
+
 ## Prerequisites
 
 ```bash
@@ -99,7 +123,7 @@ The actual 5000x includes constant factors from the loop body.
 - Instruction counts directly reflect algorithmic complexity
 - Use callgrind for precision, use perf/gperf for speed
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Profiler comparison table
 - Demo 03 (gperf) -- For faster but noisier function-level profiling

@@ -99,7 +99,7 @@ AoS is the right choice when:
 - SoA enables vectorization (SIMD) as a bonus -- contiguous doubles can be loaded 4-at-a-time
 - The same principle applies to database column stores vs row stores
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Memory access patterns
 - Demo 02 (perf) -- Verify the cache miss reduction with hardware counters

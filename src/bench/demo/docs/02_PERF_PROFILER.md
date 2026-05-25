@@ -6,6 +6,25 @@ Demonstrates using the Linux `perf` profiler to identify cache-hostile memory
 access patterns. Shows how stride-512 access causes constant cache misses and
 how sequential access lets the hardware prefetcher eliminate them.
 
+## What is perf?
+
+`perf` is Linux's built-in performance analysis tool. It reads CPU
+hardware counters directly, so the numbers it reports -- cycles,
+instructions, cache misses, branch mispredictions -- come straight from
+the silicon, not a software estimate.
+
+- **Best for:** finding *why* CPU-bound code is slow -- cache, branch
+  prediction, pipeline stalls -- by looking at hardware events.
+- **Two modes:** `perf stat` prints one row of counter totals;
+  `perf record` + `perf report` samples call stacks for a flamegraph.
+- **Overhead:** essentially none (`perf stat`), or ~1-5% for `perf record`.
+  Safe to leave on in CI.
+- **Skip it for:** exact instruction counts (use callgrind), heap leaks
+  (massif / memcheck), or GPU work (Nsight).
+
+**In vernier:** `--profile perf` writes `<TestName>.perf/stat.txt` (or
+`perf.data` with `--profile-args record`).
+
 ## Prerequisites
 
 ```bash
@@ -105,7 +124,7 @@ The 5x speedup maps directly to the 133x reduction in cache misses.
 - Cache line size is 64 bytes -- strides larger than this waste prefetch bandwidth
 - Always profile before optimizing: "measure, don't guess"
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- CPU benchmarking patterns
 - Demo 04 (Cache Friendly) -- AoS vs SoA layout optimization

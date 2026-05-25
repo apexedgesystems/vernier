@@ -95,7 +95,7 @@ misprediction, regardless of data order.
 - Branchless matters most in: hot inner loops, random data, 50/50 conditions
 - For rare branches (<5% or >95% taken), the predictor handles it well
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Branch prediction section
 - Demo 02 (perf) -- Hardware counter profiling

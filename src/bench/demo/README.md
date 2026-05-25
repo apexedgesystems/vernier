@@ -139,20 +139,17 @@ docker compose run --rm -T dev-cuda bash -c '
 
 ### CLI Flags
 
-| Flag                     | Purpose                               |
-| ------------------------ | ------------------------------------- |
-| `--quick`                | Fast iteration (fewer cycles/repeats) |
-| `--csv FILE`             | Export results to CSV                 |
-| `--repeats N`            | Number of measurement repeats         |
-| `--cycles N`             | Iterations per repeat                 |
-| `--threads N`            | Thread count for contention tests     |
-| `--profile perf`         | Attach Linux perf profiler            |
-| `--profile gperf`        | Attach gperftools profiler            |
-| `--profile callgrind`    | Run under Valgrind callgrind          |
-| `--profile rapl`         | Enable Intel RAPL energy measurement  |
-| `--profile bpftrace`     | Enable bpftrace syscall tracing       |
-| `--profile nsight`       | Enable NVIDIA Nsight profiling        |
-| `--gtest_filter=PATTERN` | Run specific tests only               |
+| Flag                       | Purpose                                          |
+| -------------------------- | ------------------------------------------------ |
+| `--quick`                  | Fast iteration (fewer cycles/repeats)            |
+| `--csv FILE`               | Export results to CSV                            |
+| `--repeats N`              | Number of measurement repeats                    |
+| `--cycles N`               | Iterations per repeat                            |
+| `--threads N`              | Thread count for contention tests                |
+| `--profile <backend>`      | Attach any registered backend (see `bench doctor` for the list: `perf`, `gperf`, `callgrind`, `rapl`, `bpftrace`, `massif`, `memcheck`, `offcpu`, `heaptrack`, `jemalloc`, `nsight`, `compute-sanitizer`, `rocprof`) |
+| `--profile-output-dir DIR` | Route profile artifacts to a custom root         |
+| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`       |
+| `--gtest_filter=PATTERN`   | Run specific tests only                          |
 
 ---
 
@@ -200,11 +197,23 @@ and dependency chains), and designed to show measurable differences.
 8. Demo 08 -- Energy measurement with Intel RAPL
 9. Demo 09 -- Syscall tracing with bpftrace
 
+**Memory and contention deep dives:**
+
+10. Demo 11 -- Heap profile timeline with Valgrind Massif
+11. Demo 12 -- Leak / UAF detection with Valgrind Memcheck
+12. Demo 13 -- Off-CPU profiling: where threads block
+
 **GPU (requires NVIDIA GPU):**
 
-10. Demo 10 -- CPU vs GPU comparison, transfer overhead analysis
-11. Demo 11 -- Memory coalescing with Nsight
-12. Demo 12 -- Shared memory optimization and bank conflicts
+13. Demo 10 -- CPU vs GPU comparison, transfer overhead analysis
+14. Demo 11 -- Memory coalescing with Nsight
+15. Demo 12 -- Shared memory optimization and bank conflicts
+16. Demo 04 (GPU) -- Kernel correctness with Compute Sanitizer
+
+**GPU instrumentation:**
+
+17. Demo 10 (CPU) -- NVTX timeline annotation for any Nsight tool
+18. Demo 19 (doc) -- CUPTI in-process kernel metrics (auto-captured)
 
 ---
 

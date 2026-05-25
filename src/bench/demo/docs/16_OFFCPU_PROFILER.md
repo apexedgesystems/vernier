@@ -2,10 +2,10 @@
 
 ## Overview
 
-All six pre-existing Vernier profilers measure on-CPU work. None of them
-shows where threads spend time *blocked*: sleep, mutex wait, I/O wait,
-scheduler delay. Off-CPU profiling is the complementary view, and the
-only way to localize lock contention or I/O-bound code from a profile.
+On-CPU profilers (perf, gperf, callgrind, rapl) measure where threads run.
+None of them shows where threads spend time *blocked*: sleep, mutex wait,
+I/O wait, scheduler delay. Off-CPU profiling is the complementary view, and
+the only way to localize lock contention or I/O-bound code from a profile.
 
 Two variants in this demo:
 
@@ -17,6 +17,32 @@ The story: an on-CPU profile of `MutexCounter` shows a mix of
 The off-CPU profile shows where the threads *blocked* -- pinning the
 lock as the cause. Replacing the mutex with `std::atomic::fetch_add`
 eliminates the blocked time entirely.
+
+## What is off-CPU profiling?
+
+Off-CPU profiling is the *inverse* of every other profiler in vernier:
+instead of sampling threads that are running, it captures stacks every
+time a thread *stops* running. The result is a flame graph of where
+threads went to sleep, weighted by how long they stayed asleep.
+
+- **Best for:** lock contention, I/O wait, scheduler delay, condition
+  variables, blocking syscalls -- anywhere a thread isn't burning CPU
+  but is still blocking your progress.
+- **How it works:** a bpftrace probe attaches to
+  `finish_task_switch()` in the kernel; on every context switch off the
+  CPU, it captures the user-space stack and the time until the thread
+  runs again. Aggregated, that becomes the off-CPU flame graph.
+- **Overhead:** per-context-switch kernel probe + ustack collection.
+  Busy systems pay more; vernier limits the trace to measured windows
+  to keep cost bounded.
+- **Requires:** root (kprobes), kernel BTF, and -- in Docker -- a
+  tracefs bind-mount + `--privileged`.
+- **Skip it for:** CPU-bound code (use perf / gperf), heap (massif),
+  GPU work, or anywhere you can't get root.
+
+**In vernier:** `--profile offcpu` runs the bpftrace off-CPU script
+around the measured window. The text-format flame graph lands in
+`<TestName>.offcpu/offcpu.txt`.
 
 ## Prerequisites
 
@@ -82,3 +108,20 @@ also shows the mutex calls -- but as *time spent in the call*, not
 Per-context-switch kprobe + ustack collection. On busy systems the
 overhead is non-trivial during the trace, but the trace only runs
 during measured windows. Use `--quick` to keep run-time bounded.
+
+## Key Takeaways
+
+- Off-CPU is the *inverse* view of every other profiler -- it shows
+  where threads stopped running, not where they ran.
+- Single highest-leverage diagnostic for lock contention, blocking
+  I/O, scheduler delay, and condition-variable waits.
+- Output is a flame graph weighted by blocked time per stack.
+- Requires root + tracefs; containers need `--privileged` or a
+  tracefs bind-mount.
+
+## See Also
+
+- [Demo 9 (bpftrace)](09_BPFTRACE_PROFILER.md) -- the same eBPF
+  machinery, different probe targets (syscalls vs context switches)
+- [Demo 6 (Thread Scaling)](06_THREAD_SCALING.md) -- on-CPU view of
+  the same mutex-vs-atomic comparison

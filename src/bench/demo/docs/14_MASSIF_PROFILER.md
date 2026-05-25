@@ -16,6 +16,29 @@ The story: a `new[]` inside a hot loop looks innocent at the source level
 but dominates the heap profile. Massif's allocation-site timeline pins
 the cost; the fix is a one-line move.
 
+## What is massif?
+
+`massif` is one of Valgrind's tools. It takes periodic snapshots of heap
+usage during your run and attributes each byte to the call site that
+allocated it. The output rendered by `ms_print` is a sawtooth/stair-step
+timeline that makes peak heap and allocation hotspots visually obvious.
+
+- **Best for:** "where is my heap going?" -- peak heap usage, churn,
+  unintended growth, refactors that swap allocators (jemalloc, custom
+  pools).
+- **How it works:** Valgrind intercepts every `malloc` / `new` and
+  snapshots the heap on a schedule, attributing bytes to allocation
+  call stacks.
+- **Overhead:** ~10-20x slower than native (Valgrind tax). Use
+  `--cycles 1` -- the goal is allocation patterns, not timing.
+- **Skip it for:** wall-clock or CPU profiling (perf / callgrind), leak
+  detection (memcheck), or allocations through `mmap` (massif tracks
+  the standard allocator, not raw mappings).
+
+**In vernier:** `--profile massif` is wrap-externally -- run the binary
+under `valgrind --tool=massif`. Per-test artifacts land in
+`<TestName>.massif/`; render with `ms_print <file>` or `massif-visualizer`.
+
 ## Prerequisites
 
 ```bash
@@ -77,3 +100,20 @@ cause* that perf / gperf would have shown only as glibc-malloc time.
 ## Overhead
 
 ~10x slower under valgrind. Use `--cycles 1` (or 2) for usable wall-time.
+
+## Key Takeaways
+
+- Massif answers "where does my heap go?" -- something perf / gperf
+  cannot see directly.
+- The sawtooth pattern in `ms_print` is the visual signature of
+  allocate-in-loop bugs; flat means pooled.
+- Allocation site attribution pins the fix to a specific source line.
+- ~10x overhead means run with `--cycles 1`; you're after allocation
+  patterns, not timing.
+
+## See Also
+
+- [Demo 15 (Memcheck)](15_MEMCHECK_PROFILER.md) -- leak detection (not
+  allocation patterns)
+- [Demo 7 (Callgrind)](07_CALLGRIND_PROFILER.md) -- the CPU-side of
+  Valgrind's tool family
