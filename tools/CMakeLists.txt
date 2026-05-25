@@ -13,7 +13,17 @@
 # ------------------------------------------------------------------------------
 # Helper script (generated at configure time)
 # ------------------------------------------------------------------------------
-# Appends PATH/PYTHONPATH entries to the build .env file (idempotent).
+# Appends PATH / PYTHONPATH entries for vernier's CLI tools to the build
+# .env file. Paths are absolute (embedded CMAKE_BINARY_DIR) so the .env
+# works regardless of the user's cwd at source time -- `. build/<preset>/.env`
+# from the project root puts the tools on PATH without a follow-up cd.
+#
+# Append-if-missing rather than rewrite: when vernier is FetchContent'd
+# into a parent project that has its own tools layer writing to the same
+# .env file, both sets of entries must coexist. The grep pattern keys on
+# the absolute CMAKE_BINARY_DIR path so vernier's own entries are
+# detected uniquely even when a parent project also writes `bin/tools/`
+# rows from a different source tree.
 
 set(_ENV_FILE "${CMAKE_BINARY_DIR}/.env")
 set(_ENV_HELPER "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-env-helper.sh")
@@ -25,11 +35,12 @@ file(
   "ENV_FILE=\"${_ENV_FILE}\"\n"
   "add_if_missing() {\n"
   "  local key=\"$1\" line=\"$2\"\n"
-  "  grep -q \"$key\" \"$ENV_FILE\" 2>/dev/null || printf '%s\\n' \"$line\" >> \"$ENV_FILE\"\n"
+  "  grep -qF \"$key\" \"$ENV_FILE\" 2>/dev/null || printf '%s\\n' \"$line\" >> \"$ENV_FILE\"\n"
   "}\n"
-  "add_if_missing 'bin/tools/rust' 'export PATH=\"$PWD/bin/tools/rust:$PATH\"'\n"
-  "add_if_missing 'bin/tools/py' 'export PATH=\"$PWD/bin/tools/py:$PATH\"'\n"
-  "add_if_missing 'PYTHONPATH.*lib/python' 'export PYTHONPATH=\"$PWD/lib/python:$PYTHONPATH\"'\n"
+  "touch \"$ENV_FILE\"\n"
+  "add_if_missing '${CMAKE_BINARY_DIR}/bin/tools/rust' 'export PATH=\"${CMAKE_BINARY_DIR}/bin/tools/rust:$PATH\"'\n"
+  "add_if_missing '${CMAKE_BINARY_DIR}/bin/tools/py' 'export PATH=\"${CMAKE_BINARY_DIR}/bin/tools/py:$PATH\"'\n"
+  "add_if_missing '${CMAKE_BINARY_DIR}/lib/python' 'export PYTHONPATH=\"${CMAKE_BINARY_DIR}/lib/python:$PYTHONPATH\"'\n"
 )
 
 # ------------------------------------------------------------------------------

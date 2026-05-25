@@ -84,8 +84,9 @@ enum Command {
     /// Execute a benchmark binary with optional CPU pinning and profiling
     Run {
         /// Benchmark binary: a full path, or a short name that auto-resolves
-        /// under build/*/bin/ptests (e.g. "BasicWorkflow" -> the matching
-        /// BenchDemo_01_BasicWorkflow / SLIP_PTEST binary in build/).
+        /// under build/*/bin/{ptests,tests,examples}. The resolver tries the
+        /// name as given, then with `_PTEST` / `_pTest` suffixes, then with
+        /// a `BenchDemo_` prefix.
         binary: String,
 
         /// CSV output path (passed to binary as --csv)
