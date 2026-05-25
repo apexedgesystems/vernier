@@ -22,8 +22,8 @@
  * When to reach for which:
  *   - massif       full timeline, lab use, ~20x overhead
  *   - heaptrack    production-ish runs, ~1.5x overhead, allocation-site rank
- *   - jemalloc     even lower overhead but requires linking jemalloc; out of
- *                  scope as a vernier backend (consumers wire it themselves)
+ *   - jemalloc     sampling-based, ~5-10% overhead, requires libjemalloc
+ *                  available at LD_PRELOAD time (see ProfilerJemalloc.hpp)
  */
 
 #include <memory>

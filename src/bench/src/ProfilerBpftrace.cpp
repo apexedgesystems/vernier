@@ -2,8 +2,9 @@
  * @file ProfilerBpftrace.cpp
  * @brief Implementation of bpftrace profiler backend.
  *
- * This file consolidates the entire BPF subsystem (formerly BpfConfig, BpfProbes, BpfRunner)
- * into a single implementation file, as these are implementation details of the bpftrace profiler.
+ * Holds the BpfConfig + BpfRunner internals behind an anonymous namespace so
+ * the bpftrace integration does not export any extra symbols beyond
+ * ProfilerBpftrace itself.
  */
 
 #include "src/bench/inc/ProfilerBpftrace.hpp"
@@ -35,7 +36,7 @@ namespace bench {
 
 #ifdef __linux__
 // ============================================================================
-// BPF Configuration (formerly BpfConfig.hpp)
+// BPF Configuration
 // ============================================================================
 
 namespace { // Internal implementation details
@@ -94,7 +95,7 @@ void populateFromPerfConfig(BpfConfig& out, const PerfConfig& perf, const std::s
 }
 
 // ============================================================================
-// BPF Script Specs (formerly BpfProbes.hpp - simplified)
+// BPF Script Specs
 // ============================================================================
 
 struct BpfSpec {
@@ -104,7 +105,7 @@ struct BpfSpec {
 };
 
 // ============================================================================
-// BPF Runner (formerly BpfRunner.hpp)
+// BPF Runner
 // ============================================================================
 
 class BpfRunner {

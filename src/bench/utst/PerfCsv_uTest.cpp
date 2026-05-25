@@ -291,9 +291,10 @@ TEST(PerfCsvTest, FullHeaderColumnCount) {
 
   const std::string CONTENT = csv.content();
 
-  // Base: 20, Profile: +2, Metadata: +4, GPU: +20 = 46 columns
+  // Base: 20, Profile: +2, Metadata: +4, GPU: +29 (11 base + 4 power/thermal +
+  // 5 CUPTI + 4 multi-GPU + 5 Unified Memory) = 55 columns.
   const size_t COMMA_COUNT = std::count(CONTENT.begin(), CONTENT.end(), ',');
-  EXPECT_EQ(COMMA_COUNT, 45U); // 46 columns = 45 commas
+  EXPECT_EQ(COMMA_COUNT, 54U);
 }
 
 /** @test Header includes stability columns. */

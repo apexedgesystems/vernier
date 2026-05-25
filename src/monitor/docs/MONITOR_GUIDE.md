@@ -1,5 +1,9 @@
 # vernier::monitor -- Runtime Performance Monitor
 
+**Namespace:** `vernier::monitor`
+**Platform:** Linux-only
+**C++ Standard:** C++23
+
 Lightweight, lock-free instrumentation library for measuring runtime
 behavior of long-running applications. Complements the `vernier::bench`
 harness, which targets controlled benchmark loops; `vernier::monitor`

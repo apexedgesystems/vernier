@@ -30,9 +30,9 @@ namespace bench {
 
 namespace {
 
-constexpr std::size_t kBufferSize = 32 * 1024;     // bytes per CUPTI activity buffer
-constexpr std::size_t kBufferAlign = 8;            // CUPTI requires 8-byte aligned buffers
-constexpr std::size_t kRecordReserve = 1024;       // pre-allocate to avoid reallocation under callback
+constexpr std::size_t BUFFER_SIZE = 32 * 1024;     // bytes per CUPTI activity buffer
+constexpr std::size_t BUFFER_ALIGN = 8;            // CUPTI requires 8-byte aligned buffers
+constexpr std::size_t RECORD_RESERVE = 1024;       // pre-allocate to avoid reallocation under callback
 
 struct KernelRecord {
   std::uint16_t registersPerThread{0};
@@ -59,14 +59,14 @@ extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer,
                                               size_t* size,
                                               size_t* maxNumRecords) {
   void* allocated = nullptr;
-  if (posix_memalign(&allocated, kBufferAlign, kBufferSize) != 0) {
+  if (posix_memalign(&allocated, BUFFER_ALIGN, BUFFER_SIZE) != 0) {
     *buffer = nullptr;
     *size = 0;
     *maxNumRecords = 0;
     return;
   }
   *buffer = static_cast<uint8_t*>(allocated);
-  *size = kBufferSize;
+  *size = BUFFER_SIZE;
   *maxNumRecords = 0; // 0 means "as many as fit"
 }
 
@@ -118,7 +118,7 @@ CuptiCollector::CuptiCollector() {
   impl_ = new Impl();
   if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) ==
       CUPTI_SUCCESS) {
-    aggregator().records.reserve(kRecordReserve);
+    aggregator().records.reserve(RECORD_RESERVE);
     available_ = true;
   }
 }

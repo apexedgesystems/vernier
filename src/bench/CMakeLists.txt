@@ -5,8 +5,10 @@
 # Provides profiler integrations, harness infrastructure, and statistics.
 #
 # Libraries:
-#   bench       - CPU profilers (perf, gperftools, bpftrace, RAPL, callgrind)
-#   bench_cuda  - GPU harness and Nsight profiler integration
+#   bench       - CPU profilers and registry (perf, gperftools, callgrind,
+#                 bpftrace, RAPL, massif, memcheck, off-cpu, heaptrack,
+#                 jemalloc, rocprof) plus shared dispatch/env infrastructure.
+#   bench_cuda  - GPU harness, NVTX, Nsight, Compute Sanitizer, CUPTI.
 # ==============================================================================
 
 include(vernier/All)
@@ -57,6 +59,11 @@ endif ()
 if (GPERF_TCMALLOC_LIB)
   target_link_libraries(${LIB_NAME} PRIVATE ${GPERF_TCMALLOC_LIB})
 endif ()
+
+# NVTX3 is header-only and exposed via Nvtx.hpp in this library's public
+# include directory; downstream consumers that only link bench should
+# still get real NVTX ranges when the CUDA toolkit is present.
+vernier_nvtx_enable(${LIB_NAME})
 
 # ------------------------------------------------------------------------------
 # CUDA Library (requires CUDA toolkit)

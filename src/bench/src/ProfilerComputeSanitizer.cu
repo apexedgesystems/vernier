@@ -35,8 +35,8 @@ bool detectUnderSanitizer() {
 }
 
 std::string sanitizerToolFromArgs(const std::string& profileArgs) {
-  static const char* const kTools[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
-  for (const char* tool : kTools) {
+  static const char* const TOOLS[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
+  for (const char* tool : TOOLS) {
     if (profileArgs.find(tool) != std::string::npos) {
       return tool;
     }

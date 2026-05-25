@@ -1,5 +1,9 @@
 # CPU Benchmarking Guide
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++23
+
 Complete guide to CPU performance benchmarking with the framework. This guide covers everything from basic measurements to advanced profiling techniques.
 
 ---

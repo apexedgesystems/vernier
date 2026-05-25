@@ -38,9 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-# ============================================================================
-# Public API
-# ============================================================================
+# =============================== Public API ===================================
 
 NSYS_REPORTS = (
     "cuda_gpu_kern_sum",
@@ -65,6 +63,13 @@ class ParseResult:
     warnings: list[str] = field(default_factory=list)
 
     def write_csv(self, path: Path) -> None:
+        """Write rows to `path` as CSV with canonical column order.
+
+        Always creates the file. Known columns (source, report, kernel,
+        instances, time_*) come first; any per-tool metric columns are
+        appended in alphabetical order so downstream tooling sees a
+        stable header.
+        """
         if not self.rows:
             path.write_text("")  # still produce the file
             return
@@ -87,9 +92,7 @@ class ParseResult:
                 w.writerow({k: row.get(k, "") for k in cols})
 
 
-# ============================================================================
-# Entry point
-# ============================================================================
+# =============================== Entry Point =================================
 
 
 def parse_paths(paths: Iterable[Path]) -> ParseResult:
@@ -116,9 +119,7 @@ def _iter_inputs(paths: Iterable[Path]) -> Iterable[Path]:
             yield p
 
 
-# ============================================================================
-# Nsight Systems
-# ============================================================================
+# =============================== Nsight Systems ==============================
 
 
 def _parse_nsys(path: Path, result: ParseResult) -> None:
@@ -137,9 +138,7 @@ def _parse_nsys(path: Path, result: ParseResult) -> None:
             result.rows.append({"source": "nsys", "report": report, **row})
 
 
-# ============================================================================
-# Nsight Compute
-# ============================================================================
+# =============================== Nsight Compute ==============================
 
 
 def _parse_ncu(path: Path, result: ParseResult) -> None:
@@ -171,9 +170,7 @@ def _clean_key(s: str) -> str:
     )
 
 
-# ============================================================================
-# Subprocess + CSV helpers
-# ============================================================================
+# =============================== Subprocess Helpers ==========================
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -203,9 +200,7 @@ def _iter_csv_after_header(text: str) -> Iterable[dict]:
     yield from reader
 
 
-# ============================================================================
-# CLI
-# ============================================================================
+# =============================== Main CLI ====================================
 
 
 def main(argv: list[str] | None = None) -> int:

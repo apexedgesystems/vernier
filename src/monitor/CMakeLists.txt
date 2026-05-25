@@ -47,6 +47,12 @@ target_link_libraries(
 vernier_standard_optins(${LIB_NAME})
 
 # ------------------------------------------------------------------------------
+# Production documentation (release builds only)
+# ------------------------------------------------------------------------------
+
+vernier_install_docs("${CMAKE_CURRENT_SOURCE_DIR}/docs")
+
+# ------------------------------------------------------------------------------
 # Subdirectories
 # ------------------------------------------------------------------------------
 
@@ -58,6 +64,3 @@ if (PROJECT_IS_TOP_LEVEL)
     add_subdirectory(examples)
   endif ()
 endif ()
-
-# Install the MONITOR_GUIDE alongside the headers in release builds.
-vernier_install_docs("${CMAKE_CURRENT_SOURCE_DIR}/docs")

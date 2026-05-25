@@ -1,5 +1,9 @@
 # Troubleshooting Guide
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++23
+
 Solutions to common issues when using the benchmarking framework. This guide covers measurement problems, build issues, profiling, containers, and more.
 
 ---
@@ -467,7 +471,7 @@ interactively (the operator can Ctrl-C) but deadlock under `--repeats N`
 because the framework waits indefinitely. Exclude with `--gtest_filter`
 before any profiler or `--repeats` run.
 
-**Built-in watchdog (since v1.0.2):**
+**Built-in watchdog:**
 
 Under `--profile X`, vernier installs a SIGALRM-based per-test watchdog
 that auto-aborts after 300 s with a precise diagnostic naming the test
@@ -951,9 +955,9 @@ command as its first positional argument.
 **Problem:** `--csv results.csv` or `--profile gperf` writes inside the
 container; when the container exits, the files are gone.
 
-**Built-in detection (since v1.0.2):** when vernier detects it is running in a
-container and `--csv` points outside the workspace mount, it prints a warning
-naming the offending path. Heed the warning.
+**Built-in detection:** when vernier detects it is running in a container and
+`--csv` points outside the workspace mount, it prints a warning naming the
+offending path. Heed the warning.
 
 **Fix:** write under a host-mounted path:
 
@@ -979,8 +983,8 @@ docker compose run --rm -T dev ./MyTest --profile gperf \
 runs the project root is polluted with stale artifacts that git complains
 about.
 
-**Built-in fix (since v1.0.2):** pass `--profile-output-dir <path>` (or its
-alias `--artifact-root <path>`):
+**Built-in fix:** pass `--profile-output-dir <path>` (or its alias
+`--artifact-root <path>`):
 
 ```bash
 ./MyTest --profile gperf --profile-output-dir bench-out/2026-05-24/

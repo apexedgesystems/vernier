@@ -77,14 +77,14 @@ void NsightProfiler::beforeMeasure() {
   }
   // Auto-emit an NVTX range named after the test so the measured window
   // appears as a labeled region in the nsys timeline. Pop in afterMeasure.
-#if VERNIER_HAS_NVTX
+#if COMPAT_NVTX_AVAILABLE
   nvtxRangePushA(testName_.c_str());
   nvtxRangePush_ = true;
 #endif
 }
 
 void NsightProfiler::afterMeasure(const Stats& /*s*/) {
-#if VERNIER_HAS_NVTX
+#if COMPAT_NVTX_AVAILABLE
   if (nvtxRangePush_) {
     nvtxRangePop();
     nvtxRangePush_ = false;
@@ -246,13 +246,13 @@ void NsightProfiler::extractNsysStats() {
   if (!std::filesystem::exists(repPath, ec)) {
     return; // nsys never produced a report (likely Docker attach failure)
   }
-  static const char* const kReports[] = {
+  static const char* const REPORTS[] = {
       "cuda_gpu_kern_sum",
       "cuda_api_sum",
       "cuda_gpu_mem_size_sum",
       "cuda_gpu_mem_time_sum",
   };
-  for (const char* report : kReports) {
+  for (const char* report : REPORTS) {
     const std::string outPath = artifactDir_ + "/" + report + ".txt";
     const std::string cmd = "nsys stats --report " + std::string(report) + " '" + repPath +
                             "' > '" + outPath + "' 2>/dev/null";

@@ -396,7 +396,7 @@ fn run(args: Args) -> Result<(), Error> {
                     // Standalone lock mode
                     bench::gpu_lock::lock_clocks(&lock_cfg)?;
                 } else {
-                    // Wrapper mode: lock → run → reset
+                    // Wrapper mode: lock -> run -> reset
                     let wrap_cfg = bench::gpu_lock::WrapConfig {
                         lock: lock_cfg,
                         command,
@@ -427,7 +427,11 @@ fn run(args: Args) -> Result<(), Error> {
                     println!("{json}");
                 }
             }
-            GpuMonitorAction::Diff { before, after, json } => {
+            GpuMonitorAction::Diff {
+                before,
+                after,
+                json,
+            } => {
                 let before_snap = bench::gpu_monitor::load_snapshot(&before)?;
                 let after_snap = bench::gpu_monitor::load_snapshot(&after)?;
                 let diffs = bench::gpu_monitor::diff_snapshots(&before_snap, &after_snap);

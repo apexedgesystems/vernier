@@ -27,6 +27,7 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -338,10 +339,14 @@ inline ScopeGuard::~ScopeGuard() noexcept {
 
 /* ----------------------------- Convenience Macros ----------------------------- */
 
+/// Token-pasting helper (two levels for proper expansion of `__LINE__`).
+#define VERNIER_MONITOR_CAT_INNER(a, b) a##b
+#define VERNIER_MONITOR_CAT(a, b) VERNIER_MONITOR_CAT_INNER(a, b)
+
 /// Scoped timer macro. Creates a ScopeGuard that auto-records on scope exit.
 /// Usage: VERNIER_MONITOR_SCOPE(monitor, "stage_name", tag);
 #define VERNIER_MONITOR_SCOPE(mon, scopeName, tag)                                                 \
-  ::vernier::monitor::ScopeGuard _vmon_guard_##__LINE__(mon, scopeName, tag)
+  ::vernier::monitor::ScopeGuard VERNIER_MONITOR_CAT(_vmon_guard_, __LINE__)(mon, scopeName, tag)
 
 /// Point-in-time gauge sample. Useful for "current queue depth", etc.
 /// Usage: VERNIER_MONITOR_GAUGE(monitor, "queue_depth", tag, queue.size());

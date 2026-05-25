@@ -16,7 +16,7 @@ add_library(demo_helpers INTERFACE)
 target_include_directories(demo_helpers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ------------------------------------------------------------------------------
-# CPU Demo Sources (9 demos)
+# CPU Demo Sources
 # ------------------------------------------------------------------------------
 
 set(CPU_DEMOS
@@ -48,7 +48,7 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
-# GPU Demo Sources (3 demos)
+# GPU Demo Sources
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)

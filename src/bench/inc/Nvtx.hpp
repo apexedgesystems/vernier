@@ -29,11 +29,21 @@
  *       write; on profile-disabled runs it is a near-zero-cost branch.
  */
 
+// COMPAT_NVTX_AVAILABLE is set by vernier_nvtx_enable() (see
+// cmake/vernier/Cuda.cmake) when the CUDA toolkit's CUDA::nvtx3 imported
+// target is available at build time. The __has_include fallback lets
+// downstream consumers that bypass the vernier CMake helpers still get
+// real ranges when the headers happen to be on their include path.
+#if !defined(COMPAT_NVTX_AVAILABLE)
 #if __has_include(<nvtx3/nvToolsExt.h>)
-#include <nvtx3/nvToolsExt.h>
-#define VERNIER_HAS_NVTX 1
+#define COMPAT_NVTX_AVAILABLE 1
 #else
-#define VERNIER_HAS_NVTX 0
+#define COMPAT_NVTX_AVAILABLE 0
+#endif
+#endif
+
+#if COMPAT_NVTX_AVAILABLE
+#include <nvtx3/nvToolsExt.h>
 #endif
 
 namespace vernier {
@@ -50,7 +60,7 @@ namespace bench {
 class NvtxScope {
 public:
   explicit NvtxScope(const char* name) noexcept {
-#if VERNIER_HAS_NVTX
+#if COMPAT_NVTX_AVAILABLE
     nvtxRangePushA(name);
 #else
     (void)name;
@@ -58,7 +68,7 @@ public:
   }
 
   ~NvtxScope() noexcept {
-#if VERNIER_HAS_NVTX
+#if COMPAT_NVTX_AVAILABLE
     nvtxRangePop();
 #endif
   }
@@ -73,7 +83,7 @@ public:
 
 /** @brief Emit an instantaneous NVTX marker. No-op when NVTX is unavailable. */
 inline void nvtxMark(const char* name) noexcept {
-#if VERNIER_HAS_NVTX
+#if COMPAT_NVTX_AVAILABLE
   nvtxMarkA(name);
 #else
   (void)name;

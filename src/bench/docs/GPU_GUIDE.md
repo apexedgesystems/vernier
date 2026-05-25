@@ -1,5 +1,9 @@
 # GPU Benchmarking Guide
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux + NVIDIA CUDA (and AMD ROCm where noted)
+**C++ Standard:** C++23
+
 Complete guide to GPU/CUDA performance benchmarking. This guide assumes you're familiar with CUDA programming basics and covers benchmarking CUDA kernels, measuring GPU performance, and optimizing GPU workloads.
 
 ---

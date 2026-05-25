@@ -1,6 +1,14 @@
 # ==============================================================================
-# Monitor examples
+# Examples: monitor
+#
+# Demonstrates env-var-driven Monitor configuration: the same binary stays
+# silent in production and emits a full report when an operator sets the
+# relevant VERNIER_MONITOR_* env var.
 # ==============================================================================
+
+# ------------------------------------------------------------------------------
+# Executables
+# ------------------------------------------------------------------------------
 
 add_executable(MonitorEnvVarExample MonitorEnvVarExample.cpp)
 target_link_libraries(MonitorEnvVarExample PRIVATE monitor)

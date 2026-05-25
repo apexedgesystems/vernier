@@ -23,6 +23,12 @@ use serde::Serialize;
 
 /* ----------------------------- Types ----------------------------- */
 
+/// Per-GPU topology and CPU-affinity recommendation row.
+///
+/// Captures everything `bench gpu-topo` needs to recommend a CPU pin
+/// list for a given device: PCI / NUMA placement, the affinity mask
+/// reported by `nvidia-smi topo -m`, and peer-to-peer links to other
+/// GPUs on the host.
 #[derive(Debug, Clone, Serialize)]
 pub struct GpuTopology {
     pub gpu_index: u32,
@@ -34,12 +40,18 @@ pub struct GpuTopology {
     pub peers: Vec<PeerLink>,
 }
 
+/// One entry in `GpuTopology::peers` -- the link to another GPU on the host.
 #[derive(Debug, Clone, Serialize)]
 pub struct PeerLink {
     pub peer_index: u32,
     pub link_type: String, // "NV1", "PIX", "SYS", etc. -- nvidia-smi notation
 }
 
+/// Whole-host topology report returned by `discover()`.
+///
+/// `warnings` accumulates non-fatal diagnostics (missing nvidia-smi,
+/// PCI sysfs paths that didn't resolve) so callers can surface them
+/// without crashing.
 #[derive(Debug, Clone, Serialize)]
 pub struct TopologyReport {
     pub gpus: Vec<GpuTopology>,
@@ -55,15 +67,11 @@ pub fn discover() -> TopologyReport {
     let bus_ids = match nvidia_smi_bus_ids() {
         Some(ids) if !ids.is_empty() => ids,
         Some(_) => {
-            warnings.push(
-                "nvidia-smi reports zero GPUs; recommendations limited.".to_string(),
-            );
+            warnings.push("nvidia-smi reports zero GPUs; recommendations limited.".to_string());
             Vec::new()
         }
         None => {
-            warnings.push(
-                "nvidia-smi unavailable or failed; recommendations limited.".to_string(),
-            );
+            warnings.push("nvidia-smi unavailable or failed; recommendations limited.".to_string());
             return TopologyReport {
                 gpus: Vec::new(),
                 warnings,
@@ -73,8 +81,7 @@ pub fn discover() -> TopologyReport {
 
     let topo_matrix = nvidia_smi_topo_matrix();
     if topo_matrix.is_none() {
-        warnings
-            .push("nvidia-smi topo -m failed; peer-link annotations omitted.".to_string());
+        warnings.push("nvidia-smi topo -m failed; peer-link annotations omitted.".to_string());
     }
 
     let gpus = bus_ids
@@ -117,8 +124,8 @@ pub fn print_results(report: &TopologyReport) {
     }
 
     println!(
-        "  {:<4} {:<28} {:<14} {:<6} {:<18} {}",
-        "GPU", "Name", "Bus ID", "NUMA", "Affinity (nv-smi)", "Recommended CPUs"
+        "  {:<4} {:<28} {:<14} {:<6} {:<18} Recommended CPUs",
+        "GPU", "Name", "Bus ID", "NUMA", "Affinity (nv-smi)"
     );
     println!("  {}", "-".repeat(98));
     for g in &report.gpus {
@@ -127,10 +134,7 @@ pub fn print_results(report: &TopologyReport) {
             .map(|n| n.to_string())
             .unwrap_or_else(|| "-".into());
         let aff = g.cpu_affinity_raw.clone().unwrap_or_else(|| "-".into());
-        let rec = g
-            .recommended_cpu_list
-            .clone()
-            .unwrap_or_else(|| "-".into());
+        let rec = g.recommended_cpu_list.clone().unwrap_or_else(|| "-".into());
         println!(
             "  {:<4} {:<28} {:<14} {:<6} {:<18} {}",
             g.gpu_index,
@@ -204,7 +208,7 @@ fn nvidia_smi_bus_ids() -> Option<Vec<String>> {
 fn nvidia_smi_name(idx: u32) -> Option<String> {
     let out = Command::new("nvidia-smi")
         .args([
-            &format!("--query-gpu=name"),
+            "--query-gpu=name",
             "--format=csv,noheader",
             "-i",
             &idx.to_string(),
@@ -252,7 +256,10 @@ impl TopoMatrix {
 }
 
 fn nvidia_smi_topo_matrix() -> Option<TopoMatrix> {
-    let out = Command::new("nvidia-smi").args(["topo", "-m"]).output().ok()?;
+    let out = Command::new("nvidia-smi")
+        .args(["topo", "-m"])
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

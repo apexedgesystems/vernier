@@ -1,8 +1,7 @@
 //! `.bench.yaml` reader, writer, and validator.
 //!
-//! Vernier consumers (apex_csf, seeker, and any other project that
-//! FetchContents vernier) end up duplicating the same CLI invocation pattern
-//! across dozens of libraries:
+//! Downstream consumers that FetchContent vernier end up duplicating the
+//! same CLI invocation pattern across dozens of libraries:
 //!
 //!   ./MyTest --cycles 1000 --repeats 10 --gtest_filter=-*Large* --csv ...
 //!
@@ -34,6 +33,13 @@ use super::Error;
 
 /* ----------------------------- Config ----------------------------- */
 
+/// Parsed `.bench.yaml`: the per-project defaults `bench run` and
+/// `bench profile-all` fall back to when the corresponding CLI flag is
+/// not supplied.
+///
+/// Named fields are the recognized keys; everything else round-trips
+/// through `extras` so projects can layer custom fields without forcing
+/// us to grow the schema.
 #[derive(Debug, Default, Clone)]
 pub struct Config {
     pub cycles: Option<u32>,
@@ -147,7 +153,9 @@ fn parse(text: &str, path: &Path) -> Result<Config, Error> {
         in_list_for = None;
 
         // key: value (or key:)
-        let Some((key, val)) = line.split_once(':') else { continue };
+        let Some((key, val)) = line.split_once(':') else {
+            continue;
+        };
         let key = key.trim();
         let val = val.trim();
 
@@ -199,7 +207,10 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 fn parse_inline_list(s: &str) -> Vec<String> {
-    s.split(',').map(|p| strip_quotes(p.trim()).to_string()).filter(|p| !p.is_empty()).collect()
+    s.split(',')
+        .map(|p| strip_quotes(p.trim()).to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /* ----------------------------- Validation ----------------------------- */
@@ -246,10 +257,7 @@ pub fn validate(path: &Path) -> Result<ValidationReport, Error> {
         } else if r < 5 {
             findings.push(Finding {
                 severity: Severity::Warning,
-                message: format!(
-                    "repeats={} is low; consider >= 10 for stable medians",
-                    r
-                ),
+                message: format!("repeats={} is low; consider >= 10 for stable medians", r),
             });
         }
     }
@@ -318,6 +326,7 @@ pub fn print_validation(report: &ValidationReport) {
 mod tests {
     use super::*;
 
+    /// @test Minimal key/value pairs parse into typed fields.
     #[test]
     fn parse_minimal() {
         let text = "cycles: 5000\nrepeats: 20\n";
@@ -326,6 +335,7 @@ mod tests {
         assert_eq!(cfg.repeats, Some(20));
     }
 
+    /// @test Inline `[a, b]` list syntax populates the matching field.
     #[test]
     fn parse_inline_list() {
         let text = "bin_roots: [\"build/*\", \"out/*\"]\n";
@@ -333,6 +343,7 @@ mod tests {
         assert_eq!(cfg.bin_roots, vec!["build/*", "out/*"]);
     }
 
+    /// @test Block list syntax (`key:` followed by `- item`) populates the matching field.
     #[test]
     fn parse_block_list() {
         let text = "bin_subdirs:\n  - bin/ptests\n  - bin/tests\n";
@@ -340,6 +351,7 @@ mod tests {
         assert_eq!(cfg.bin_subdirs, vec!["bin/ptests", "bin/tests"]);
     }
 
+    /// @test Surrounding quotes are stripped from scalar values.
     #[test]
     fn parse_quoted_strings_strip() {
         let text = "gtest_filter: \"-*Large*\"\n";
@@ -347,6 +359,7 @@ mod tests {
         assert_eq!(cfg.gtest_filter.as_deref(), Some("-*Large*"));
     }
 
+    /// @test Unknown keys flow through to `Config::extras` unchanged.
     #[test]
     fn parse_preserves_extras() {
         let text = "future_knob: 42\n";
@@ -354,6 +367,7 @@ mod tests {
         assert_eq!(cfg.extras.get("future_knob"), Some(&"42".to_string()));
     }
 
+    /// @test Full-line and trailing `#` comments are stripped.
     #[test]
     fn comments_ignored() {
         let text = "# comment\ncycles: 100 # trailing\n";

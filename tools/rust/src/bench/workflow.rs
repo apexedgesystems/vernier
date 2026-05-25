@@ -57,8 +57,8 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
 
     // Collect search roots. Env override expands shell-style "build/*" via
     // a simple readdir; otherwise fall back to the CMake default.
-    let roots_spec = std::env::var("VERNIER_BENCH_BIN_ROOTS")
-        .unwrap_or_else(|_| "build/*".to_string());
+    let roots_spec =
+        std::env::var("VERNIER_BENCH_BIN_ROOTS").unwrap_or_else(|_| "build/*".to_string());
     let mut roots: Vec<PathBuf> = Vec::new();
     for entry in roots_spec.split(':') {
         if let Some(prefix) = entry.strip_suffix("/*") {
@@ -118,11 +118,13 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
 pub fn doctor(binary: Option<&Path>) -> Result<i32, Error> {
     let bin = match binary {
         Some(p) => p.to_path_buf(),
-        None => return Err(Error::InvalidArgs(
-            "no binary given. Pass a ptest binary path, e.g. \
+        None => {
+            return Err(Error::InvalidArgs(
+                "no binary given. Pass a ptest binary path, e.g. \
              `bench doctor build/native-linux-debug/bin/ptests/BenchDemo_01_BasicWorkflow`."
-                .into(),
-        )),
+                    .into(),
+            ))
+        }
     };
     if !bin.is_file() {
         return Err(Error::InvalidArgs(format!(
@@ -268,7 +270,9 @@ fn walk_files(root: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(p) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&p) else { continue };
+        let Ok(entries) = fs::read_dir(&p) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let q = entry.path();
             if q.is_dir() {
@@ -291,8 +295,8 @@ pub fn print_summary(report: &[SummarizedTool]) {
         return;
     }
     println!(
-        "  {:<22} {:>10} {:>14}   {}",
-        "Tool subdir", "Files", "Total bytes", "Sample artifact"
+        "  {:<22} {:>10} {:>14}   Sample artifact",
+        "Tool subdir", "Files", "Total bytes"
     );
     println!("  {}", "-".repeat(80));
     for r in report {
@@ -316,6 +320,9 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()
     } else {
-        s.chars().take(n.saturating_sub(1)).chain(std::iter::once('+')).collect()
+        s.chars()
+            .take(n.saturating_sub(1))
+            .chain(std::iter::once('+'))
+            .collect()
     }
 }

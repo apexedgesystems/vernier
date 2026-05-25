@@ -113,15 +113,16 @@ PERF_GPU_BANDWIDTH(ComputeSanitizer, SafeKernel) {
 }
 
 /**
- * @test Kernel with a deliberate one-element OOB read on the last thread.
+ * @test Kernel with a deliberate one-element OOB write on the last thread.
  *
- * Behavior on hardware: usually returns a benign value (the next page) and
- * the test passes. Behavior under compute-sanitizer --tool=memcheck: error
- * log entry "Invalid __global__ read of size 4 bytes" pinned to the source
- * line in scaleKernelWithOob.
+ * Standalone behavior is driver- and architecture-dependent: many recent
+ * CUDA runtimes detect the page-boundary overrun and surface it as "an
+ * illegal memory access", which fails the gtest case; older runtimes
+ * silently return a benign value (the next page) and the case passes.
  *
- * This test is intentionally weak about correctness so the benchmark
- * completes; the point is to exercise the sanitizer detection path.
+ * Either outcome leaves you with a buggy kernel. compute-sanitizer
+ * --tool=memcheck is what actually pinpoints it: "Invalid __global__
+ * write of size 4 bytes" with the exact source line, thread, and block.
  */
 PERF_GPU_BANDWIDTH(ComputeSanitizer, WithDeliberateOob) {
   UB_PERF_GPU_GUARD(perf);

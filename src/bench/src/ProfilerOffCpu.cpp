@@ -30,7 +30,7 @@ bool isBpftraceOnPath() {
 }
 
 #ifdef __linux__
-constexpr const char* kOffCpuScript = R"BT(
+constexpr const char* OFFCPU_SCRIPT = R"BT(
 kprobe:finish_task_switch* /pid == $1/ {
   @start[tid] = nsecs;
 }
@@ -106,7 +106,7 @@ void OffCpuProfiler::spawnBpftrace() {
     char arg0[] = "bpftrace";
     char argE[] = "-e";
     // The script must be writable for exec.
-    std::string scriptBuf = kOffCpuScript;
+    std::string scriptBuf = OFFCPU_SCRIPT;
     ::execlp("bpftrace", arg0, argE, scriptBuf.c_str(), pidStr.c_str(),
              static_cast<char*>(nullptr));
     std::fprintf(stderr, "[offcpu] execlp(bpftrace) failed: %s\n", std::strerror(errno));

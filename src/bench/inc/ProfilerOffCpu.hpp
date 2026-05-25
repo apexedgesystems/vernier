@@ -34,6 +34,10 @@
 #include <memory>
 #include <string>
 
+#ifdef __linux__
+#include <sys/types.h>  // pid_t
+#endif
+
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
