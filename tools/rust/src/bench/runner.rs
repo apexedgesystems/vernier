@@ -132,6 +132,17 @@ fn wrap_command_for(
     binary: &Path,
     output_dir: Option<&Path>,
 ) -> Option<(String, Vec<String>)> {
+    // Return early for in-process backends so we don't materialize a
+    // per-tool artifact directory the C++ harness will never use --
+    // perf/gperf/rapl/bpftrace/offcpu manage their own per-test dirs and
+    // jemalloc/nsight/rocprof need wraps that aren't reducible to argv.
+    if !matches!(
+        tool,
+        "callgrind" | "massif" | "memcheck" | "heaptrack" | "compute-sanitizer"
+    ) {
+        return None;
+    }
+
     let bin = binary.to_str()?.to_string();
     let stem = binary.file_stem()?.to_str()?.to_string();
     let root = output_dir
@@ -144,9 +155,14 @@ fn wrap_command_for(
     match tool {
         "callgrind" => Some((
             "valgrind".into(),
+            // `--instr-atstart=no` would require `callgrind_control` to
+            // toggle instrumentation around the measured region, which
+            // can't cross PID namespaces (i.e. fails in Docker). Letting
+            // callgrind instrument the whole run is slower but works
+            // everywhere and matches what the binary's `Docker fallback`
+            // hint already prints.
             vec![
                 "--tool=callgrind".into(),
-                "--instr-atstart=no".into(),
                 format!("--callgrind-out-file={dir}/callgrind.out"),
                 bin,
             ],
@@ -182,10 +198,7 @@ fn wrap_command_for(
                 bin,
             ],
         )),
-        // jemalloc, nsight, rocprof require env-var or multi-mode wraps that
-        // don't compose into a single argv. The binary's --profile handler
-        // prints the precise invocation; users wrap manually for those.
-        _ => None,
+        _ => unreachable!("matches! filter above kept only wrap-externally tools"),
     }
 }
 
