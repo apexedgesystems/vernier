@@ -157,7 +157,10 @@ pub struct ProfileAllConfig {
 }
 
 /// Iterate over each profiler, invoking the binary in sequence. Each run gets
-/// its own artifact subdirectory: `<artifact_root>/<profiler>/`.
+/// its own artifact subdirectory: `<artifact_root>/<profiler>/`. Routes through
+/// `run_benchmark` so wrap-externally backends (callgrind, massif, memcheck,
+/// heaptrack, compute-sanitizer) get the same auto-wrap treatment as a direct
+/// `bench run --profile <X>` invocation.
 pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
     if !cfg.binary.is_file() {
         return Err(Error::InvalidArgs(format!(
@@ -178,33 +181,31 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             .join(tool);
         fs::create_dir_all(&out_dir).map_err(Error::Io)?;
 
-        let mut cmd = Command::new(&cfg.binary);
-        cmd.arg("--profile").arg(tool);
-        cmd.arg("--profile-output-dir").arg(&out_dir);
-        if let Some(f) = &cfg.gtest_filter {
-            cmd.arg(format!("--gtest_filter={}", f));
-        }
-        if cfg.quick {
-            cmd.arg("--quick");
-        }
-        if let Some(c) = cfg.cycles {
-            cmd.arg("--cycles").arg(c.to_string());
-        }
-        if let Some(r) = cfg.repeats {
-            cmd.arg("--repeats").arg(r.to_string());
-        }
-
         eprintln!(
             "\n=== bench profile-all: tool={} -> {} ===",
             tool,
             out_dir.display()
         );
-        let status = cmd.status().map_err(Error::Io)?;
-        if !status.success() {
+
+        let run_cfg = super::runner::RunConfig {
+            binary: cfg.binary.clone(),
+            csv: None,
+            quick: cfg.quick,
+            cycles: cfg.cycles,
+            repeats: cfg.repeats,
+            profile: Some(tool.to_string()),
+            profile_output_dir: Some(out_dir.clone()),
+            taskset: None,
+            extra_args: cfg
+                .gtest_filter
+                .as_ref()
+                .map(|f| vec![format!("--gtest_filter={}", f)])
+                .unwrap_or_default(),
+        };
+        if let Err(e) = super::runner::run_benchmark(&run_cfg) {
             eprintln!(
-                "[bench] --profile {} exited with code {}; continuing with next profiler.",
-                tool,
-                status.code().unwrap_or(-1)
+                "[bench] --profile {} failed: {}; continuing with next profiler.",
+                tool, e
             );
         }
     }
