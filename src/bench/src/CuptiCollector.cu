@@ -129,6 +129,12 @@ CuptiCollector::~CuptiCollector() {
 void CuptiCollector::start() {
   if (!available_ || running_)
     return;
+  // Single-client gate: when VERNIER_DISABLE_CUPTI is set, skip in-process
+  // CUPTI so an external Nsight session (nsys / ncu) can attach -- CUPTI
+  // allows only one client per process. stop()/stats() stay safe no-ops
+  // because running_ remains false.
+  if (std::getenv("VERNIER_DISABLE_CUPTI") != nullptr)
+    return;
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().records.clear();
