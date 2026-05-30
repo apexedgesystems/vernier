@@ -112,7 +112,16 @@ bool isIntelCPUWithRAPL() {
     return false;
   }
 
-  return std::filesystem::exists("/dev/cpu/0/msr");
+  // /dev/cpu/<n>/msr exists on every Linux box with the `msr` module
+  // loaded, but reading it requires root (or CAP_SYS_RAWIO). Doctor
+  // previously reported "[OK]" purely on file existence, which gave a
+  // false-positive whenever the user ran without sudo. Actually issue
+  // a probe read against the RAPL power-unit register; if that
+  // succeeds, the backend can do real work in this session.
+  if (!std::filesystem::exists("/dev/cpu/0/msr")) {
+    return false;
+  }
+  return readMSR(0, MSR_RAPL_POWER_UNIT).has_value();
 #else
   return false;
 #endif
@@ -287,10 +296,18 @@ namespace bench {
 
 EnvReport checkRAPLEnvironment() {
   if (RAPLProfiler::isAvailable()) {
-    return EnvReport{EnvReport::Status::Ok, "RAPL MSRs accessible", ""};
+    return EnvReport{EnvReport::Status::Ok, "RAPL MSRs readable", ""};
   }
+#ifdef __linux__
+  // Distinguish missing-MSR-device from has-device-but-not-readable so
+  // the hint actually matches the user's situation.
+  if (std::filesystem::exists("/dev/cpu/0/msr")) {
+    return EnvReport{EnvReport::Status::Error, "RAPL MSRs present but not readable by current user",
+                     "Re-run with sudo, or `sudo setcap cap_sys_rawio+ep <binary>`."};
+  }
+#endif
   return EnvReport{EnvReport::Status::Error, "RAPL not available (Intel CPU + MSR access required)",
-                   "sudo modprobe msr; grant CAP_SYS_RAWIO or run as root."};
+                   "sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO)."};
 }
 
 } // namespace bench

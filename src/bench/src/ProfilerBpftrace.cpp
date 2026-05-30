@@ -134,6 +134,10 @@ public:
       return false;
     }
     if (!canRun()) {
+      std::fprintf(stderr,
+                   "[bpftrace] cannot run %s: bpftrace not on PATH or not running as root.\n"
+                   "[bpftrace] Re-run with sudo (or grant CAP_BPF) to attach kprobes.\n",
+                   spec.name.c_str());
       return false;
     }
 
@@ -148,6 +152,17 @@ public:
 
     std::ifstream in(scriptPath);
     if (!in) {
+      // Common failure mode: the consumer didn't ship the canonical
+      // scripts at `cfg_.scriptsDir` (vernier's defaults look under
+      // `src/utilities/benchmarking/bpf/`, which only exists if the
+      // parent project happens to vend the scripts there). Silently
+      // skipping looks like the profile ran fine; make it loud instead.
+      std::fprintf(stderr,
+                   "[bpftrace] script not found: %s\n"
+                   "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
+                   "[bpftrace] `--bpf-scripts <dir>` (default: src/utilities/benchmarking/bpf/),\n"
+                   "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n",
+                   scriptPath.c_str());
       return false;
     }
     std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

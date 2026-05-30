@@ -25,16 +25,33 @@ namespace {
 
 bool isHeaptrackOnPath() { return std::system("command -v heaptrack >/dev/null 2>&1") == 0; }
 
-/// heaptrack injects libheaptrack_preload.so via LD_PRELOAD; that env var is
-/// the most reliable detection signal across distros.
+/// Detect whether the current process is running under heaptrack.
+///
+/// Older heaptrack (~1.2) exported `LD_PRELOAD=...libheaptrack_preload.so`
+/// to the child; newer releases (1.5+) inject the library via a GDB-style
+/// hand-off so the child's environment is empty. `HEAPTRACK_OUTPUT` is
+/// likewise inconsistent. The reliable cross-version signal is the mapped
+/// preload library itself in `/proc/self/maps`, which is present whenever
+/// heaptrack actually instrumented the process.
 bool detectUnderHeaptrack() {
   const char* preload = std::getenv("LD_PRELOAD");
   if (preload && std::strstr(preload, "heaptrack"))
     return true;
-  // Alternative signal heaptrack >=1.4 sets:
   if (std::getenv("HEAPTRACK_OUTPUT") != nullptr)
     return true;
-  return false;
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp)
+    return false;
+  char line[512];
+  bool found = false;
+  while (std::fgets(line, sizeof(line), fp)) {
+    if (std::strstr(line, "libheaptrack_")) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(fp);
+  return found;
 }
 
 } // namespace
