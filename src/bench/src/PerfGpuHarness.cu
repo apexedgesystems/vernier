@@ -591,9 +591,15 @@ private:
         pt.powerDrawWEnd = watts;
     }
 
-    // Temperature: NVML reports degrees Celsius for the GPU core.
+    // Temperature: NVML reports degrees Celsius for the GPU core. Newer NVML
+    // deprecates nvmlDeviceGetTemperature for a versioned variant that is not
+    // present on all supported drivers, so keep the classic call (works
+    // everywhere we target) and silence the deprecation locally.
     unsigned int tempC = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
     if (nvmlDeviceGetTemperature(nvmlDevice_, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS) {
+#pragma GCC diagnostic pop
       if (isStart)
         pt.temperatureCStart = static_cast<int>(tempC);
       else

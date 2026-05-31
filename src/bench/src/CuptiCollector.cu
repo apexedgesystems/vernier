@@ -114,6 +114,14 @@ struct CuptiCollector::Impl {
 
 CuptiCollector::CuptiCollector() {
   impl_ = new Impl();
+  // Single-client gate: when VERNIER_DISABLE_CUPTI is set, do not even
+  // register activity callbacks, so an external Nsight session (nsys / ncu)
+  // can claim the one CUPTI client slot. Registering here -- before any
+  // cuptiActivityEnable -- is already enough to starve an injected nsys CUPTI
+  // session, so the start() gate alone cannot free CUPTI. Leaving available_
+  // false keeps start()/stop()/stats() as safe no-ops.
+  if (std::getenv("VERNIER_DISABLE_CUPTI") != nullptr)
+    return;
   if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) == CUPTI_SUCCESS) {
     aggregator().records.reserve(RECORD_RESERVE);
     available_ = true;

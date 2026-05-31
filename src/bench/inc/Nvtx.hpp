@@ -42,8 +42,15 @@
 #endif
 #endif
 
-#if COMPAT_NVTX_AVAILABLE
+// COMPAT_NVTX_AVAILABLE can be forced on by the build (the CUDA::nvtx3 imported
+// target exists) even on toolkits that no longer ship the classic
+// <nvtx3/nvToolsExt.h> header. Gate the C API on the header actually being
+// present so the wrappers stay clean no-ops when it is not.
+#if COMPAT_NVTX_AVAILABLE && __has_include(<nvtx3/nvToolsExt.h>)
 #include <nvtx3/nvToolsExt.h>
+#define VERNIER_NVTX_USABLE 1
+#else
+#define VERNIER_NVTX_USABLE 0
 #endif
 
 namespace vernier {
@@ -60,16 +67,16 @@ namespace bench {
 class NvtxScope {
 public:
   explicit NvtxScope(const char* name) noexcept {
-#if COMPAT_NVTX_AVAILABLE
-    nvtxRangePushA(name);
+#if VERNIER_NVTX_USABLE
+    ::nvtxRangePushA(name);
 #else
     (void)name;
 #endif
   }
 
   ~NvtxScope() noexcept {
-#if COMPAT_NVTX_AVAILABLE
-    nvtxRangePop();
+#if VERNIER_NVTX_USABLE
+    ::nvtxRangePop();
 #endif
   }
 
@@ -83,8 +90,8 @@ public:
 
 /** @brief Emit an instantaneous NVTX marker. No-op when NVTX is unavailable. */
 inline void nvtxMark(const char* name) noexcept {
-#if COMPAT_NVTX_AVAILABLE
-  nvtxMarkA(name);
+#if VERNIER_NVTX_USABLE
+  ::nvtxMarkA(name);
 #else
   (void)name;
 #endif
