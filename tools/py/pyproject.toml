@@ -1,6 +1,6 @@
 [project]
 name = "vernier-py-tools"
-version = "1.0.0"
+version = "1.0.2"
 description = "CLI tools for the Vernier benchmarking framework"
 authors = [
     {name = "Kevin Alexander Gomez"}

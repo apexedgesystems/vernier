@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <string>
 
@@ -21,7 +22,29 @@ namespace {
 
 bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
 
-bool isRunningUnderValgrind() { return std::getenv("RUNNING_ON_VALGRIND") != nullptr; }
+// Detect a live valgrind instrumentation via its preload library in the
+// process memory map. An env-var check is unreliable: valgrind exposes
+// RUNNING_ON_VALGRIND as a client request, not an environment variable, so
+// getenv() always returned null and the "not running" hint printed even when
+// the auto-wrap had the binary under valgrind.
+bool isRunningUnderValgrind() {
+  const char* preload = std::getenv("LD_PRELOAD");
+  if (preload && std::strstr(preload, "vgpreload"))
+    return true;
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp)
+    return false;
+  char line[512];
+  bool found = false;
+  while (std::fgets(line, sizeof(line), fp)) {
+    if (std::strstr(line, "vgpreload") || std::strstr(line, "/valgrind/")) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(fp);
+  return found;
+}
 
 } // namespace
 

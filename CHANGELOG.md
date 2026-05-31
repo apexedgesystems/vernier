@@ -12,9 +12,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Self-registering profiler backends** -- profiler dispatch refactored
   from a hardcoded if-chain to a registry. New backends slot in via a
   single `VERNIER_REGISTER_PROFILER_BACKEND` line at file scope.
-- **Eight new profiler backends** (registry now lists 13):
+- **Nine new profiler backends** (registry now lists 14):
   - `massif`            -- valgrind heap profiler (full timeline, ~20x)
   - `memcheck`          -- valgrind memory error / leak detector
+  - `helgrind`          -- valgrind thread-error detector: data races, lock
+    order, pthread misuse (`--profile-args drd` selects DRD). CPU analog of
+    compute-sanitizer's racecheck
   - `offcpu`            -- bpftrace finish_task_switch (where threads sleep)
   - `heaptrack`         -- low-overhead heap profiler (~1.5x)
   - `jemalloc`          -- jemalloc prof sampling (~5-10%, LD_PRELOAD)
@@ -126,6 +129,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **CSV listener GPU-mode detection** -- previously scanned test names
   for "Gpu" / "CUDA" substrings, which missed `PERF_GPU_BANDWIDTH(Foo,
   Bar)`-style tests. Now reads an explicit flag set by `PERF_GPU_MAIN`.
+- **Valgrind under-detection** -- massif / memcheck reported "not running
+  under valgrind" (and printed the manual-wrap hint) even when the auto-wrap
+  had the binary under valgrind, because they checked `getenv(
+  "RUNNING_ON_VALGRIND")` -- a valgrind *client request*, never an env var.
+  They now scan `/proc/self/maps` for the `vgpreload` library. compute-sanitizer
+  detection gained the same `/proc/self/maps` fallback (its injection env var
+  drifted across CUDA releases).
+- **perf doctor false `[OK]`** -- `bench doctor` reported perf ready off the
+  `command -v perf` + `perf_event_paranoid` checks alone, even when the perf
+  wrapper had no kernel-matched build. It now also verifies `perf --version`
+  succeeds and warns with the `linux-tools-$(uname -r)` remediation otherwise.
+- **`.env` not `set -u`-safe** -- the generated tools `.env` expanded
+  `$PYTHONPATH` unguarded, so `set -u` scripts aborted on `source`. Now uses
+  `${PYTHONPATH:-}`.
+
+### Changed (cont.)
+
+- **`bench profile-all`** accepts `--profile-output-dir` as a visible alias for
+  `--out`, matching `bench run`'s flag name.
 
 ---
 

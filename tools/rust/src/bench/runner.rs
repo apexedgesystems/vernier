@@ -138,7 +138,7 @@ fn wrap_command_for(
     // jemalloc/nsight/rocprof need wraps that aren't reducible to argv.
     if !matches!(
         tool,
-        "callgrind" | "massif" | "memcheck" | "heaptrack" | "compute-sanitizer"
+        "callgrind" | "massif" | "memcheck" | "helgrind" | "heaptrack" | "compute-sanitizer"
     ) {
         return None;
     }
@@ -182,6 +182,14 @@ fn wrap_command_for(
                 "--leak-check=full".into(),
                 "--error-exitcode=0".into(),
                 format!("--log-file={dir}/memcheck.log"),
+                bin,
+            ],
+        )),
+        "helgrind" => Some((
+            "valgrind".into(),
+            vec![
+                "--tool=helgrind".into(),
+                format!("--log-file={dir}/helgrind.log"),
                 bin,
             ],
         )),

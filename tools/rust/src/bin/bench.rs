@@ -171,7 +171,8 @@ enum Command {
         profilers: Option<String>,
 
         /// Artifact root; per-profiler subdirs land here. Default: bench-out/
-        #[arg(long)]
+        /// (--profile-output-dir is accepted as an alias, matching `bench run`)
+        #[arg(long, visible_alias = "profile-output-dir")]
         out: Option<PathBuf>,
 
         /// --gtest_filter to pass through

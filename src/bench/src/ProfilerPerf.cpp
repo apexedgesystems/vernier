@@ -263,6 +263,15 @@ EnvReport checkPerfEnvironment() {
     return EnvReport{EnvReport::Status::Error, "perf binary not found on PATH",
                      "Install linux-tools-$(uname -r) inside the dev container."};
   }
+  // 1b) The perf wrapper can be present while the kernel-matched build is not
+  // (linux-tools must match the RUNNING kernel). If so the wrapper exists but
+  // `perf --version` fails -- report it rather than a false [OK].
+  if (std::system("perf --version >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "perf wrapper present but no kernel-matched build (perf --version failed)",
+                     "Install linux-tools matching the running kernel: "
+                     "apt install linux-tools-$(uname -r)."};
+  }
   // 2) perf_event_paranoid gates hardware counter access.
   std::FILE* fp = std::fopen("/proc/sys/kernel/perf_event_paranoid", "r");
   if (!fp) {

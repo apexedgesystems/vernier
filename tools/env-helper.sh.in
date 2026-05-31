@@ -19,4 +19,4 @@ add_if_missing '@CMAKE_BINARY_DIR@/bin/tools/rust' \
 add_if_missing '@CMAKE_BINARY_DIR@/bin/tools/py' \
   'export PATH="@CMAKE_BINARY_DIR@/bin/tools/py:$PATH"'
 add_if_missing '@CMAKE_BINARY_DIR@/lib/python' \
-  'export PYTHONPATH="@CMAKE_BINARY_DIR@/lib/python:$PYTHONPATH"'
+  'export PYTHONPATH="@CMAKE_BINARY_DIR@/lib/python:${PYTHONPATH:-}"'

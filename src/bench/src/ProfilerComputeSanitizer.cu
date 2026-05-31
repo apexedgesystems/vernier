@@ -29,10 +29,25 @@ bool isComputeSanitizerOnPath() {
 // to be stable across CUDA releases, but reliable on 2025.x.
 bool detectUnderSanitizer() {
   const char* p = std::getenv("CUDA_INJECTION64_PATH");
-  if (!p)
+  if (p && (std::strstr(p, "sanitizer") != nullptr || std::strstr(p, "Sanitizer") != nullptr))
+    return true;
+  // Fallback: the injection library is mapped into the process whenever
+  // compute-sanitizer is actually instrumenting. The env-var name/value has
+  // drifted across CUDA releases, so scanning /proc/self/maps is the reliable
+  // signal (and avoids a false "NOT running" hint when the auto-wrap ran).
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp)
     return false;
-  // The path usually ends in libcompute-sanitizer.so or similar.
-  return std::strstr(p, "sanitizer") != nullptr || std::strstr(p, "Sanitizer") != nullptr;
+  char line[512];
+  bool found = false;
+  while (std::fgets(line, sizeof(line), fp)) {
+    if (std::strstr(line, "sanitizer") || std::strstr(line, "Sanitizer")) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(fp);
+  return found;
 }
 
 std::string sanitizerToolFromArgs(const std::string& profileArgs) {

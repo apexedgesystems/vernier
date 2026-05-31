@@ -27,6 +27,7 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerCallgrind.cpp"
     "${SRC_DIR}/ProfilerMassif.cpp"
     "${SRC_DIR}/ProfilerMemcheck.cpp"
+    "${SRC_DIR}/ProfilerHelgrind.cpp"
     "${SRC_DIR}/ProfilerOffCpu.cpp"
     "${SRC_DIR}/ProfilerRocprof.cpp"
     "${SRC_DIR}/ProfilerHeaptrack.cpp"
