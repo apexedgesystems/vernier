@@ -33,6 +33,9 @@ set(CPU_DEMOS
     11_MassifProfiler
     12_MemcheckProfiler
     13_OffCpuProfiler
+    14_HelgrindProfiler
+    15_HeaptrackProfiler
+    16_JemallocProfiler
 )
 
 foreach (DEMO ${CPU_DEMOS})

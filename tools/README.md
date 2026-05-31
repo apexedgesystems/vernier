@@ -202,6 +202,7 @@ The `doctor` command lists all of them with their environment readiness.
 | `rapl`              | CPU   | Intel RAPL MSRs                                   |
 | `massif`            | CPU   | valgrind massif (heap timeline, ~20x)             |
 | `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                |
+| `helgrind`          | CPU   | valgrind helgrind / DRD (data races, lock order)  |
 | `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)      |
 | `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |

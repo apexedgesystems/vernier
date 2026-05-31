@@ -508,6 +508,7 @@ readiness with the exact remediation hint.
 | `rapl`              | CPU   | Package energy consumption                       | Intel CPU + MSR access                 | <1%      |
 | `massif`            | CPU   | Heap usage timeline                              | valgrind                               | ~20x     |
 | `memcheck`          | CPU   | Memory errors and leaks                          | valgrind                               | ~20x     |
+| `helgrind`          | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind                               | ~20x     |
 | `offcpu`            | CPU   | Off-CPU stack profiling                          | bpftrace + root + tracefs              | low      |
 | `heaptrack`         | CPU   | Lower-overhead heap profiler                     | heaptrack on PATH                      | ~1.5x    |
 | `jemalloc`          | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%   |
@@ -620,7 +621,7 @@ warmup = 2;      // Extra warmup to stabilize
 ### Development Workflow
 
 ```bash
-# Phase 1: Development (fast feedback)
+# Development (fast feedback)
 make
 ./test --quick --csv dev.csv
 # Make changes...
@@ -628,10 +629,10 @@ make
 ./test --quick --csv dev2.csv
 bench compare dev.csv dev2.csv
 
-# Phase 2: Validation (more samples)
+# Validation (more samples)
 ./test --cycles 50000 --repeats 20 --csv validate.csv
 
-# Phase 3: Production (full characterization)
+# Production (full characterization)
 ./test --cycles 100000 --repeats 30 --csv production.csv
 ```
 

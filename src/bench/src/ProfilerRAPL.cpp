@@ -113,11 +113,10 @@ bool isIntelCPUWithRAPL() {
   }
 
   // /dev/cpu/<n>/msr exists on every Linux box with the `msr` module
-  // loaded, but reading it requires root (or CAP_SYS_RAWIO). Doctor
-  // previously reported "[OK]" purely on file existence, which gave a
-  // false-positive whenever the user ran without sudo. Actually issue
-  // a probe read against the RAPL power-unit register; if that
-  // succeeds, the backend can do real work in this session.
+  // loaded, but reading it requires root (or CAP_SYS_RAWIO). File
+  // existence alone is a false-positive when the user runs without
+  // sudo, so issue a probe read against the RAPL power-unit register;
+  // success means the backend can do real work in this session.
   if (!std::filesystem::exists("/dev/cpu/0/msr")) {
     return false;
   }

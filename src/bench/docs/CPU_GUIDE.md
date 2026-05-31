@@ -647,6 +647,22 @@ valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
 grep -A2 "LEAK SUMMARY" run.memcheck
 ```
 
+### Thread-Safety with Helgrind / DRD
+
+Detect data races and lock-order violations in multi-threaded code. Run after
+a concurrency change or when a contention test shows non-deterministic results.
+`--profile helgrind` uses valgrind's helgrind tool; pass `--profile-args drd` to
+switch to DRD, which reports the same race classes with a smaller memory
+footprint. Like the other valgrind tools, run a single cycle (~20x overhead).
+
+```bash
+./MyComponent_PTEST --profile helgrind --cycles 1
+grep -E "data race|lock order" helgrind.log
+
+# DRD variant (lighter on memory):
+./MyComponent_PTEST --profile helgrind --profile-args drd --cycles 1
+```
+
 ### Off-CPU Profiling (where threads sleep)
 
 All the on-CPU profilers above show where threads burn cycles. `--profile

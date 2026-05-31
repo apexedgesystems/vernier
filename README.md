@@ -64,7 +64,7 @@ cmake --build --preset native-linux-debug
 ## 2. Key Features
 
 - GoogleTest integration with CSV export and end-of-run summary tables
-- 13 self-registering profiler backends covering CPU, heap, off-CPU, energy,
+- 14 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
   and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
 - Per-backend environment doctor (`--profile-check`) with actionable hints
 - SIGALRM per-test watchdog so hung profiler runs fail loudly, not silently
@@ -153,6 +153,7 @@ name; `bench doctor` lists them all with their environment readiness.
 | `rapl`              | CPU   | Intel RAPL MSRs                               |
 | `massif`            | CPU   | valgrind massif (heap timeline, ~20x)         |
 | `memcheck`          | CPU   | valgrind memcheck (errors / leaks)            |
+| `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)   |
 | `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)  |
 | `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
