@@ -104,18 +104,18 @@ void JemallocProfiler::afterMeasure(const Stats& /*s*/) {
 /* ----------------------------- Env check ----------------------------- */
 
 EnvReport checkJemallocEnvironment() {
-  const bool lib = isJemallocLibPresent();
-  const bool tool = isJeprofOnPath();
-  if (!lib && !tool) {
+  const bool LIB = isJemallocLibPresent();
+  const bool TOOL = isJeprofOnPath();
+  if (!LIB && !TOOL) {
     return EnvReport{EnvReport::Status::Error,
                      "jemalloc not detected (no libjemalloc.so, no jeprof)",
                      "apt install libjemalloc2 libjemalloc-dev (or your distro's equivalent)."};
   }
-  if (!lib) {
+  if (!LIB) {
     return EnvReport{EnvReport::Status::Warning, "jeprof present but libjemalloc.so missing",
                      "apt install libjemalloc2 so LD_PRELOAD can find the runtime."};
   }
-  if (!tool) {
+  if (!TOOL) {
     return EnvReport{EnvReport::Status::Warning, "libjemalloc.so present but jeprof missing",
                      "apt install libjemalloc-dev (ships jeprof for analysis)."};
   }

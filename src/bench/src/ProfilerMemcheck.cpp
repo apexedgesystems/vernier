@@ -22,11 +22,10 @@ namespace {
 
 bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
 
-// Detect a live valgrind instrumentation via its preload library in the
-// process memory map. An env-var check is unreliable: valgrind exposes
-// RUNNING_ON_VALGRIND as a client request, not an environment variable, so
-// getenv() always returned null and the "not running" hint printed even when
-// the auto-wrap had the binary under valgrind.
+// Detect a live valgrind by scanning /proc/self/maps for the vgpreload module;
+// this is reliable regardless of how the tool was launched. An env-var check
+// cannot stand in for it: valgrind exposes RUNNING_ON_VALGRIND as a client
+// request, not an environment variable, so getenv() does not see it.
 bool isRunningUnderValgrind() {
   const char* preload = std::getenv("LD_PRELOAD");
   if (preload && std::strstr(preload, "vgpreload"))
@@ -60,16 +59,16 @@ MemcheckProfiler::MemcheckProfiler(const PerfConfig& cfg, std::string testName)
 
   runningUnderValgrind_ = isRunningUnderValgrind();
   if (!runningUnderValgrind_) {
-    const bool leakFull = cfg_.profileArgs.find("leak-full") != std::string::npos;
-    const bool trackOrigins = cfg_.profileArgs.find("track-origins") != std::string::npos;
+    const bool LEAK_FULL = cfg_.profileArgs.find("leak-full") != std::string::npos;
+    const bool TRACK_ORIGINS = cfg_.profileArgs.find("track-origins") != std::string::npos;
     std::fprintf(stderr,
                  "\n[memcheck] NOT running under valgrind; measurement will execute normally but\n"
                  "[memcheck] no memory checking happens. To check:\n"
                  "[memcheck]   valgrind --tool=memcheck%s%s \\\n"
                  "[memcheck]       --log-file=%s/memcheck.log \\\n"
                  "[memcheck]       <this-binary> --profile memcheck --cycles 5 [...]\n\n",
-                 leakFull ? " --leak-check=full" : " --leak-check=summary",
-                 trackOrigins ? " --track-origins=yes" : "", artifactDir_.c_str());
+                 LEAK_FULL ? " --leak-check=full" : " --leak-check=summary",
+                 TRACK_ORIGINS ? " --track-origins=yes" : "", artifactDir_.c_str());
   }
 }
 

@@ -46,10 +46,6 @@
 #include <string>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
-
-namespace ub = vernier::bench;
-namespace demo = vernier::bench::demo;
 
 static constexpr std::size_t APPENDS = 4096;
 

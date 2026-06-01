@@ -196,12 +196,12 @@ EnvReport checkCallgrindEnvironment() {
     return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
                      "apt install valgrind."};
   }
-  // Docker PID namespace breaks callgrind_control attach; warn so users know to
-  // expect the wrap-mode fallback (handled by the backend in a later commit).
+  // Under a Docker PID namespace, callgrind_control attach is unreliable; run
+  // callgrind by wrapping valgrind directly instead.
   if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
     return EnvReport{EnvReport::Status::Warning,
                      "valgrind available; running in Docker (PID namespace)",
-                     "callgrind_control attach will be replaced by direct valgrind wrap."};
+                     "Run via 'bench run', which wraps valgrind directly (no attach needed)."};
   }
   return EnvReport{EnvReport::Status::Ok, "valgrind available", ""};
 }

@@ -84,7 +84,7 @@ void OffCpuProfiler::afterMeasure(const Stats& /*s*/) {
 #ifdef __linux__
 
 void OffCpuProfiler::spawnBpftrace() {
-  const pid_t selfPid = ::getpid();
+  const pid_t SELF_PID = ::getpid();
   childPid_ = ::fork();
   if (childPid_ < 0) {
     std::fprintf(stderr, "[offcpu] fork failed: %s\n", std::strerror(errno));
@@ -97,7 +97,7 @@ void OffCpuProfiler::spawnBpftrace() {
     // bpftrace -e '<script>' $TARGET_PID
     // $1 inside the script is bound to the first positional argument
     // (the target PID), which lets the kprobe filter only this process.
-    std::string pidStr = std::to_string(selfPid);
+    std::string pidStr = std::to_string(SELF_PID);
     char arg0[] = "bpftrace";
     char argE[] = "-e";
     // The script must be writable for exec.

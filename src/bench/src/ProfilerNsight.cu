@@ -316,11 +316,12 @@ EnvReport checkNsightEnvironment() {
     return EnvReport{EnvReport::Status::Warning, "nsys present but ncu missing",
                      "Install nsight-compute for kernel analysis."};
   }
-  // Both present; Docker PID namespace still breaks attach-by-pid (handled later).
+  // Both present; under a Docker PID namespace attach-by-pid is unreliable, so
+  // wrap nsys/ncu externally around the binary.
   if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "nsys + ncu available; running in Docker (PID namespace)",
-                     "attach-by-pid will be replaced by direct nsys/ncu wrap."};
+    return EnvReport{
+        EnvReport::Status::Warning, "nsys + ncu available; running in Docker (PID namespace)",
+        "Wrap nsys/ncu externally around the binary (attach-by-pid is unreliable here)."};
   }
   return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
 }

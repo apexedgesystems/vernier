@@ -26,10 +26,10 @@ namespace {
 
 bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
 
-// Detect a live valgrind instrumentation via its preload library in the
-// process memory map. RUNNING_ON_VALGRIND is a valgrind client request, not an
-// environment variable, so a getenv() check never fired and the "not running"
-// hint printed even when the auto-wrap had the binary under valgrind.
+// Detect a live valgrind by scanning /proc/self/maps for the vgpreload module;
+// this is reliable regardless of how the tool was launched. RUNNING_ON_VALGRIND
+// is a valgrind client request rather than an environment variable, so a
+// getenv() check cannot stand in for the maps scan.
 bool isRunningUnderValgrind() {
   const char* preload = std::getenv("LD_PRELOAD");
   if (preload && std::strstr(preload, "vgpreload"))
@@ -63,8 +63,8 @@ MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
 
   runningUnderValgrind_ = isRunningUnderValgrind();
   if (!runningUnderValgrind_) {
-    const bool pages = cfg_.profileArgs.find("pages") != std::string::npos;
-    const bool stacks = cfg_.profileArgs.find("stacks") != std::string::npos;
+    const bool PAGES = cfg_.profileArgs.find("pages") != std::string::npos;
+    const bool STACKS = cfg_.profileArgs.find("stacks") != std::string::npos;
     std::fprintf(stderr,
                  "\n[massif] NOT running under valgrind; measurement will execute normally but\n"
                  "[massif] no heap profile will be collected. To collect:\n"
@@ -72,7 +72,7 @@ MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
                  "[massif]       --massif-out-file=%s/massif.out \\\n"
                  "[massif]       <this-binary> --profile massif [...]\n"
                  "[massif] Then: ms_print %s/massif.out | head -40\n\n",
-                 pages ? " --pages-as-heap=yes" : "", stacks ? " --stacks=yes" : "",
+                 PAGES ? " --pages-as-heap=yes" : "", STACKS ? " --stacks=yes" : "",
                  artifactDir_.c_str(), artifactDir_.c_str());
   }
 }

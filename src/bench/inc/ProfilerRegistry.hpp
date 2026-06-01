@@ -112,7 +112,7 @@ public:
    * For every registered backend, prints one line of the form:
    *   [OK]   perf       perf available, perf_event_paranoid=1
    *   [WARN] callgrind  valgrind available; running in Docker (PID namespace)
-   *                     callgrind_control attach will be replaced by direct valgrind wrap.
+   *                     Run via 'bench run', which wraps valgrind directly (no attach needed).
    *   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
    *                     sudo modprobe msr; grant CAP_SYS_RAWIO or run as root.
    *

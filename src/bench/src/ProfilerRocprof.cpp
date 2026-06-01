@@ -97,13 +97,13 @@ void RocprofProfiler::beforeMeasure() {
   // Not wrapped: print the precise rocprof invocation, matching the
   // hint pattern the other wrap-externally backends use
   // (compute-sanitizer / callgrind / nsight).
-  const std::string flag = modeFlag(mode_);
+  const std::string FLAG = modeFlag(mode_);
   std::fprintf(stderr,
                "\n[rocprof] NOT running under rocprof; this measurement will execute\n"
                "[rocprof] normally but no profile is collected. To collect:\n"
                "[rocprof]   rocprof%s%s -o %s/results.csv \\\n"
                "[rocprof]       <this-binary> --profile rocprof --profile-args %s [...]\n\n",
-               flag.empty() ? "" : " ", flag.c_str(), artifactDir_.c_str(), mode_.c_str());
+               FLAG.empty() ? "" : " ", FLAG.c_str(), artifactDir_.c_str(), mode_.c_str());
 }
 
 void RocprofProfiler::afterMeasure(const Stats& /*s*/) {
@@ -114,18 +114,18 @@ void RocprofProfiler::afterMeasure(const Stats& /*s*/) {
 /* ----------------------------- Env check ----------------------------- */
 
 EnvReport checkRocprofEnvironment() {
-  const bool tool = isRocprofOnPath();
-  const bool runtime = isRocmRuntimePresent();
-  if (!tool && !runtime) {
+  const bool TOOL = isRocprofOnPath();
+  const bool RUNTIME = isRocmRuntimePresent();
+  if (!TOOL && !RUNTIME) {
     return EnvReport{EnvReport::Status::Error,
                      "ROCm not detected (no rocprof on PATH, no /opt/rocm)",
                      "Install ROCm + roctracer (https://rocm.docs.amd.com)."};
   }
-  if (!tool) {
+  if (!TOOL) {
     return EnvReport{EnvReport::Status::Error, "ROCm runtime present but rocprof binary missing",
                      "apt install rocprofiler (or your distro's equivalent)."};
   }
-  if (!runtime) {
+  if (!RUNTIME) {
     return EnvReport{EnvReport::Status::Warning,
                      "rocprof present but no ROCm runtime / GPU kernel driver detected",
                      "rocprof will run but cannot attach to AMD GPUs on this host."};

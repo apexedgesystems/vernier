@@ -52,8 +52,6 @@
 
 #include "src/bench/inc/Perf.hpp"
 
-namespace ub = vernier::bench;
-
 static constexpr int NUM_THREADS = 4;
 static constexpr int LOOPS_PER_THREAD = 2000;
 
