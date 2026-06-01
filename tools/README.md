@@ -127,7 +127,7 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--analyze`                | Run summary after execution                          | --           |
 
 When `--profile` names a wrap-externally backend (`callgrind`, `massif`,
-`memcheck`, `heaptrack`, `compute-sanitizer`), `bench run` transparently
+`memcheck`, `helgrind`, `heaptrack`, `compute-sanitizer`), `bench run` transparently
 invokes the correct wrap (`valgrind --tool=...`, `heaptrack -o ...`,
 etc.) and writes the artifacts to
 `<--profile-output-dir>/<binary-stem>.<tool>/`. In-process backends

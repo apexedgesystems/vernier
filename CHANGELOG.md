@@ -5,7 +5,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## v1.0.2 (in development)
+## v1.0.2 - Unreleased
 
 ### Added
 
@@ -77,12 +77,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and pointing at `--gtest_list_tests`.
 - **Container-aware `--csv` warning** -- writing the CSV outside the
   workspace mount inside a container now warns at flag-parse time.
-- **Four new CPU demo binaries** with Slow/Fast story arcs:
+- **Seven new CPU demo binaries** with Slow/Fast story arcs:
   `BenchDemo_10_NvtxAnnotation`, `_11_MassifProfiler`,
-  `_12_MemcheckProfiler`, `_13_OffCpuProfiler`. One new GPU demo:
+  `_12_MemcheckProfiler`, `_13_OffCpuProfiler`, `_14_HelgrindProfiler`,
+  `_15_HeaptrackProfiler`, `_16_JemallocProfiler`. One new GPU demo:
   `BenchDemo_Gpu_04_ComputeSanitizerProfiler`.
-- **Seven new walkthrough docs** (13-19): NVTX, Massif, Memcheck, Off-CPU,
-  Compute Sanitizer, rocprof, CUPTI.
+- **Ten new walkthrough docs** (13-22): NVTX, Massif, Memcheck, Off-CPU,
+  Compute Sanitizer, rocprof, CUPTI, Helgrind, Heaptrack, jemalloc.
 - **TROUBLESHOOTING.md extensions** -- drain-loop / blocking-recv hang
   patterns, the `timeout`+env-var trap, container CSV / artifact path
   routing.
@@ -143,6 +144,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`.env` not `set -u`-safe** -- the generated tools `.env` expanded
   `$PYTHONPATH` unguarded, so `set -u` scripts aborted on `source`. Now uses
   `${PYTHONPATH:-}`.
+- **`VERNIER_DISABLE_CUPTI` honored in-process** -- now also skips in-process
+  CUPTI callback registration in the collector constructor, so an external
+  Nsight (nsys / ncu) session can claim the single CUPTI client slot.
 
 ### Changed (cont.)
 

@@ -178,17 +178,17 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 ## 5. API Reference
 
-| Document                                                 | Purpose                                      |
-| -------------------------------------------------------- | -------------------------------------------- |
-| [CPU Guide](src/bench/docs/CPU_GUIDE.md)                 | CPU benchmarking patterns and profiler usage |
-| [GPU Guide](src/bench/docs/GPU_GUIDE.md)                 | GPU/CUDA benchmarking patterns               |
-| [API Reference](src/bench/docs/API_REFERENCE.md)         | Complete API documentation                   |
-| [Advanced Guide](src/bench/docs/ADVANCED_GUIDE.md)       | Memory profiling, parameterized tests        |
-| [CI/CD Integration](src/bench/docs/CI_CD_INTEGRATION.md) | Automated regression detection               |
-| [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup          |
-| [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                  |
-| [Demo Walkthroughs](src/bench/demo/docs/)                | 17 step-by-step tutorials (13 CPU + 4 GPU)   |
-| [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library              |
+| Document                                                 | Purpose                                                                     |
+| -------------------------------------------------------- | --------------------------------------------------------------------------- |
+| [CPU Guide](src/bench/docs/CPU_GUIDE.md)                 | CPU benchmarking patterns and profiler usage                                |
+| [GPU Guide](src/bench/docs/GPU_GUIDE.md)                 | GPU/CUDA benchmarking patterns                                              |
+| [API Reference](src/bench/docs/API_REFERENCE.md)         | Complete API documentation                                                  |
+| [Advanced Guide](src/bench/docs/ADVANCED_GUIDE.md)       | Memory profiling, parameterized tests                                       |
+| [CI/CD Integration](src/bench/docs/CI_CD_INTEGRATION.md) | Automated regression detection                                              |
+| [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup                                         |
+| [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                                                 |
+| [Demo Walkthroughs](src/bench/demo/docs/)                | 22 step-by-step walkthroughs (16 CPU + 4 GPU demos, plus rocprof and CUPTI) |
+| [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library                                             |
 
 ---
 
@@ -219,7 +219,7 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 | Platform                  | Library | Profilers             | CUDA | Pre-built Artifact              |
 | ------------------------- | ------- | --------------------- | ---- | ------------------------------- |
-| x86_64 Linux              | Full    | All 13                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
+| x86_64 Linux              | Full    | All 14                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
 | Jetson (aarch64)          | Full    | All except RAPL       | Yes  | `vernier-*-aarch64-jetson`      |
 | Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL | No   | `vernier-*-aarch64-rpi`         |
 | RISC-V 64                 | Full    | CPU backends, no RAPL | No   | `vernier-*-riscv64-linux`       |
