@@ -120,9 +120,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 /* ----------------------------- Wrap-externally backends ----------------------------- */
 
 /// Wrap command (program + prefix args ending in the binary path) for a
-/// backend that must be invoked externally. Returns `None` for in-process
-/// backends (perf, gperf, rapl, bpftrace, offcpu) which the binary handles
-/// from its own `--profile` flag.
+/// backend that must be invoked externally. Returns `None` for backends the
+/// runner does not argv-wrap: the in-process ones (perf, gperf, rapl,
+/// bpftrace, offcpu) that the binary drives from its own `--profile` flag,
+/// plus jemalloc/nsight/rocprof whose wraps aren't reducible to argv.
 ///
 /// Per-binary artifact dir convention: `<output-dir-or-bench-out>/<binary-stem>.<tool>/`.
 /// The wrap tool writes its raw output there; the C++ harness then layers

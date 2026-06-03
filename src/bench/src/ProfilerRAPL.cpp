@@ -249,7 +249,7 @@ void RAPLProfiler::afterMeasure(const Stats& s) {
     out << "Average power: " << avgPowerWatts << " W\n";
     out << "Energy per operation: " << energyPerOpMillijoules << " mJ/call\n";
     out << "\n";
-    out << "Energy unit: " << (energyUnit_ * 1e6) << " uuJ\n";
+    out << "Energy unit: " << (energyUnit_ * 1e6) << " uJ\n";
     out << "Start counter: " << energyStart_ << "\n";
     out << "End counter: " << energyEnd_ << "\n";
     out << "Delta counter: " << deltaCounter << "\n";

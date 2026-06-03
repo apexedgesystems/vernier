@@ -7,7 +7,8 @@
 //!   2. `bench gpu-lock reset`  -- reset clocks and exit
 //!   3. `bench gpu-lock lock -- <command>` -- lock, run command, reset on exit
 //!
-//! The wrapper mode resets clocks even on Ctrl-C (via drop guard).
+//! The wrapper mode resets clocks via an RAII drop guard, so clocks are
+//! restored even if the wrapped command fails or the runner panics.
 
 use std::process::Command;
 

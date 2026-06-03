@@ -8,7 +8,8 @@
  *  - Wraps the benchmark binary execution under `valgrind --tool=callgrind`
  *  - Deterministic instruction counting (no sampling noise, no frequency tuning)
  *  - Perfect for A/B comparisons: identical instruction counts across runs
- *  - Outputs callgrind.out.<pid> files for analysis with callgrind_annotate or KCachegrind
+ *  - Outputs a callgrind.out file (callgrind.out.<pid> when valgrind dumps at
+ *    exit) for analysis with callgrind_annotate or KCachegrind
  *
  * Modes:
  *  - Default: collect instruction counts, cache simulation off (faster)

@@ -24,13 +24,12 @@ using vernier::bench::EnvReport;
 using vernier::bench::PerfConfig;
 using vernier::bench::ProfilerRegistry;
 
-// Backends compiled into libbench that self-register on load. The CUDA
-// backends (compute-sanitizer, nsight) live in the separate CUDA library, and
-// jemalloc / nsight / rocprof are orchestrated by the CLI rather than the
-// in-process registry, so none of those appear here.
-const std::vector<std::string> CPU_BACKENDS = {"perf",   "gperf",    "callgrind", "bpftrace",
-                                               "rapl",   "massif",   "memcheck",  "helgrind",
-                                               "offcpu", "heaptrack"};
+// Backends compiled into libbench that self-register on load. compute-sanitizer
+// and nsight self-register too, but they live in the separate CUDA library and
+// so are absent from this CPU-only test binary.
+const std::vector<std::string> CPU_BACKENDS = {"perf",   "gperf",     "callgrind", "bpftrace",
+                                               "rapl",   "massif",    "memcheck",  "helgrind",
+                                               "offcpu", "heaptrack", "jemalloc",  "rocprof"};
 
 /** @test Every CPU profiler backend self-registers. */
 TEST(ProfilerRegistryTest, CpuBackendsRegistered) {

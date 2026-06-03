@@ -1,8 +1,9 @@
 //! Benchmark analysis: CSV loading, statistics, comparison, and reporting.
 //!
 //! This module provides the non-plotting analysis functionality for the Vernier
-//! benchmarking framework. Subcommands: summary, compare, validate, run,
-//! flamegraph.
+//! benchmarking framework, backing the `bench` subcommands: summary, compare,
+//! validate, run, doctor, profile-all, profile-summarize, init,
+//! config-validate, gpu-env, gpu-topo, gpu-monitor, gpu-lock, flamegraph.
 
 use std::{fmt, path::PathBuf};
 

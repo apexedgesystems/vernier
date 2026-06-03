@@ -24,7 +24,7 @@
  *
  * Threading: all calls are serialized on the harness thread. The CUPTI
  * activity buffers fill on whatever thread CUDA dispatches; we only read
- * them inside flush(), which runs on the harness thread after a measurement
+ * them inside stop(), which runs on the harness thread after a measurement
  * window. No shared mutable state from the CUDA threads is exposed.
  */
 
@@ -51,7 +51,7 @@ struct CuptiKernelStats {
   std::uint16_t registersMax{0};     ///< Worst-case registers/thread
   std::uint32_t staticSmemBytes{0};  ///< Median static __shared__ allocation
   std::uint32_t dynamicSmemBytes{0}; ///< Median dynamic shared memory at launch
-  std::string firstKernelName;       ///< Demangled name of the first observed kernel
+  std::string firstKernelName;       ///< Name of the first observed kernel as reported by CUPTI
 };
 
 /* ----------------------------- CuptiCollector ----------------------------- */
