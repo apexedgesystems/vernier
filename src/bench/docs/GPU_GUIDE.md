@@ -821,16 +821,20 @@ Analysis: Explicit 2x faster due to UM page fault overhead
 NVIDIA Nsight Compute provides detailed kernel profiling:
 
 ```bash
-# Profile specific kernel
+# Profile specific kernel (default Systems mode -> nsys timeline)
 ./MyKernel_GPU_PTEST --profile nsight --gtest_filter="*MyKernel"
 
-# Generates: nsight-MyTest.MyKernel-TIMESTAMP.ncu-rep
+# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep (+ auto stats reports)
+
+# Kernel deep-dive (Compute replay) -> .ncu-rep instead
+./MyKernel_GPU_PTEST --profile nsight --profile-args replay --gtest_filter="*MyKernel"
+# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui nsight-MyTest.MyKernel-*.ncu-rep
+ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 # Or command-line report
-ncu --csv --print-summary per-kernel nsight-*.ncu-rep
+ncu --csv --print-summary per-kernel MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 ```
 
 **What Nsight shows:**
@@ -873,8 +877,11 @@ path. When run unwrapped, the backend prints the precise invocation including
 the per-test artifact directory.
 
 ```bash
-# Timeline profile (auto-stats reports drop next to the .nsys-rep)
-nsys profile -o run.nsys-rep -t cuda,nvtx \
+# Timeline profile (auto-stats reports drop next to the .nsys-rep).
+# VERNIER_DISABLE_CUPTI=1 frees the one CUPTI client slot for nsys -- without
+# it the binary's in-process CUPTI collector holds the slot and the trace is
+# empty (see "CUPTI in-process kernel metrics" below). Same for an external ncu.
+VERNIER_DISABLE_CUPTI=1 nsys profile -o run.nsys-rep -t cuda,nvtx \
     ./MyGpuTest --profile nsight --gtest_filter='*'
 
 # GPU memory error detection
@@ -885,6 +892,10 @@ compute-sanitizer --tool=memcheck --log-file=run.sanitizer.log \
 rocprof --stats -o run.csv \
     ./MyHipTest --profile rocprof --profile-args stats
 ```
+
+nsys also needs the application's CUDA toolkit to be no newer than the driver's
+CUDA (`nvidia-smi`): a binary built one minor version ahead runs but is not
+nsys-traceable. `ncu` and the in-process CUPTI columns are unaffected.
 
 ### NVTX annotation API
 
@@ -929,6 +940,10 @@ captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
 cache hit rates), keep `--profile nsight --profile-args replay` or wrap
 externally with `ncu`.
+
+CUPTI allows a single client per process, so this in-process collector and an
+external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,
+set `VERNIER_DISABLE_CUPTI=1` so the in-process collector releases the slot.
 
 ---
 

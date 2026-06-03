@@ -36,7 +36,7 @@ make tools-rust
 Run Demo 01 (basic throughput measurement) and analyze the results:
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/demo01.csv
   source .env
@@ -121,12 +121,12 @@ All demos are built as performance test executables (ptests):
 
 ```bash
 # Run a demo
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   ./build/native-linux-debug/bin/ptests/BenchDemo_01_BasicWorkflow --quick
 '
 
 # Export results to CSV and analyze
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_04_CacheFriendly --csv results.csv
   source .env
@@ -134,7 +134,7 @@ docker compose run --rm -T dev-cuda bash -c '
 '
 
 # Run a specific test within a demo
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   ./build/native-linux-debug/bin/ptests/BenchDemo_05_BranchOptimization \
     --gtest_filter="*BranchlessRandomData*"
 '

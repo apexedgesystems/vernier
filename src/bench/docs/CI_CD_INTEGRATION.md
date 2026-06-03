@@ -90,13 +90,10 @@ cmake --build build
 ./build/bin/ptests/MyComponent_PTEST --csv candidate.csv
 
 # Compare with auto-fail on regression
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold 5 \
 --fail-on-regression \
---output-md pr_comment.md \
---output-json results.json
+--markdown > pr_comment.md
 
 # Exit code 0 = pass, 1 = regression detected
 ```
@@ -153,13 +150,13 @@ git checkout -
 - name: Compare and detect regressions
 id: compare
 run: |
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold 5 \
 --fail-on-regression \
---output-md pr_comment.md \
---output-json regression_report.json
+--markdown > pr_comment.md
+bench compare baseline.csv candidate.csv \
+--threshold 5 \
+--json > regression_report.json
 
 - name: Post PR comment
 if: always()
@@ -258,20 +255,19 @@ git checkout -
 - name: Regression detection
 id: regression
 run: |
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold 5 \
 --fail-on-regression \
---output-md pr_comment.md \
---output-json results.json
+--markdown > pr_comment.md
+bench compare baseline.csv candidate.csv \
+--threshold 5 \
+--json > results.json
 continue-on-error: true
 
 - name: Generate visualizations
 if: always()
 run: |
-bench compare \
-baseline.csv candidate.csv \
+bench-plot plot candidate.csv \
 --output comparison/
 
 - name: Post detailed PR comment
@@ -355,12 +351,10 @@ git checkout -
 
 - name: Compare GPU performance
 run: |
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold 5 \
 --fail-on-regression \
---output-md gpu_report.md
+--markdown > gpu_report.md
 
 # Upload and comment steps...
 ```
@@ -412,13 +406,13 @@ make tools-py    # bench-plot (optional, for charts)
 - git checkout $CI_COMMIT_SHA
 
 # Compare with auto-fail
-- bench compare
---baseline baseline.csv
---candidate candidate.csv
+- bench compare baseline.csv candidate.csv
 --threshold $REGRESSION_THRESHOLD
 --fail-on-regression
---output-json regression_report.json
---output-md pr_comment.md
+--markdown > pr_comment.md
+- bench compare baseline.csv candidate.csv
+--threshold $REGRESSION_THRESHOLD
+--json > regression_report.json
 
 artifacts:
 when: always
@@ -512,13 +506,13 @@ steps {
 sh '''
 make tools-rust  # bench compare, bench summary
 make tools-py    # bench-plot (optional, for charts)
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold ${THRESHOLD} \
 --fail-on-regression \
---output-json regression_report.json \
---output-md report.md
+--markdown > report.md
+bench compare baseline.csv candidate.csv \
+--threshold ${THRESHOLD} \
+--json > regression_report.json
 '''
 }
 }
@@ -600,13 +594,13 @@ displayName: 'Generate baseline'
 condition: eq(variables['Build.Reason'], 'PullRequest')
 
 - script: |
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold 5 \
 --fail-on-regression \
---output-json results.json \
---output-md pr_comment.md
+--markdown > pr_comment.md
+bench compare baseline.csv candidate.csv \
+--threshold 5 \
+--json > results.json
 displayName: 'Regression detection'
 
 - task: PublishBuildArtifacts@1
@@ -982,20 +976,20 @@ if [ "${{ matrix.mode }}" = "quick" ]; then
 THRESHOLD=10
 fi
 
-bench compare \
---baseline baseline.csv \
---candidate candidate.csv \
+bench compare baseline.csv candidate.csv \
 --threshold $THRESHOLD \
 --fail-on-regression \
---output-md pr_comment.md \
---output-json results.json
+--markdown > pr_comment.md
+bench compare baseline.csv candidate.csv \
+--threshold $THRESHOLD \
+--json > results.json
 continue-on-error: true
 
 - name: Generate visualizations
 if: always()
 run: |
-bench compare \
-baseline.csv candidate.csv \
+bench-plot plot \
+candidate.csv \
 --output comparison/
 
 bench-plot dashboard \

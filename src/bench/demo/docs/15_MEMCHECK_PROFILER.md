@@ -83,14 +83,14 @@ docker compose run --rm -T dev bash -c '
 ```
 
 Expected: a stack trace pinning the leak to `new double[WORK]` in
-`12_MemcheckProfiler_Demo.cpp:88`, plus a "definitely lost: N bytes in M
+`12_MemcheckProfiler_Demo.cpp:89`, plus a "definitely lost: N bytes in M
 blocks" summary scaling with `--cycles`.
 
 ```
 ==N== 800,000,000 bytes in 1000 blocks are definitely lost in loss record 3 of 3
 ==N==    at 0x48485C3: operator new[](unsigned long)
 ==N==    by 0x12794D: Memcheck_WithDeliberateLeak_Test::TestBody()::$_1::operator() ()
-==N==    at 12_MemcheckProfiler_Demo.cpp:88
+==N==    at 12_MemcheckProfiler_Demo.cpp:89
 ```
 
 ## Step 3: Use Memcheck as a CI Gate

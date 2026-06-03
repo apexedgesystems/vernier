@@ -41,7 +41,7 @@ make tools-rust
 ## Step 1: Run with RAPL Profiling
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_08_RaplProfiler --profile rapl --quick \
     --csv /tmp/rapl_demo.csv

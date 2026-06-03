@@ -74,7 +74,7 @@ peak heap memory consumption: 390.62K
 ...
 MOST CALLS TO ALLOCATION FUNCTIONS
   5.1M calls   std::vector<unsigned int>::push_back(...)
-               at 15_HeaptrackProfiler_Demo.cpp:67
+               at 15_HeaptrackProfiler_Demo.cpp:68
 ```
 
 ## Step 2: Profile the Fast Path

@@ -170,7 +170,7 @@ PERF_TEST(Codec, Encode) {
 auto result = perf.throughputLoop([&] {
   work();
 }, "simple");
-// CSV: wallMedian, callsPerSecond
+// CSV: wallMedian, callsPerSecond (same schema either way)
 ```
 
 **Include when:**
@@ -186,10 +186,11 @@ ub::MemoryProfile mp{INPUT_SIZE, OUTPUT_SIZE, 0};
 auto result = perf.throughputLoop([&] {
   work();
 }, "detailed", mp);
-// CSV: wallMedian, callsPerSecond, memBandwidthMBs, bytesRead, bytesWritten
+// CSV schema is unchanged; bandwidth from the MemoryProfile is printed to the
+// console, not written as extra CSV columns.
 ```
 
-**Performance impact:** None - it's just metadata for CSV export.
+**Performance impact:** None - it's just metadata for the console bandwidth report.
 
 ---
 
@@ -377,26 +378,28 @@ All CPU performance tests produce CSV with these columns:
 
 #### Base Columns (Always Present)
 
-| Column        | Type   | Description              | Example                  |
-| ------------- | ------ | ------------------------ | ------------------------ |
-| `test`        | string | Test name (Suite.Name)   | "MyComponent.Throughput" |
-| `cycles`      | int    | Operations per repeat    | 10000                    |
-| `repeats`     | int    | Samples collected        | 10                       |
-| `warmup`      | int    | Warmup iterations        | 1000                     |
-| `threads`     | int    | Thread count             | 1                        |
-| `msgBytes`    | int    | Payload size (bytes)     | 1024                     |
-| `console`     | bool   | Console output enabled   | true                     |
-| `nonBlocking` | bool   | Non-blocking I/O mode    | false                    |
-| `minLevel`    | int    | Minimum log level        | 0                        |
-| `medianUs`    | double | Median per-call time     | 0.543                    |
-| `p10Us`       | double | 10th percentile          | 0.512                    |
-| `p90Us`       | double | 90th percentile          | 0.587                    |
-| `minUs`       | double | Minimum time             | 0.498                    |
-| `maxUs`       | double | Maximum time             | 0.623                    |
-| `meanUs`      | double | Mean time                | 0.546                    |
-| `stddevUs`    | double | Standard deviation       | 0.023                    |
-| `cv`          | double | Coefficient of variation | 0.042                    |
-| `callsPerSec` | double | Throughput               | 1843317.0                |
+| Column           | Type   | Description                 | Example                  |
+| ---------------- | ------ | --------------------------- | ------------------------ |
+| `test`           | string | Test name (Suite.Name)      | "MyComponent.Throughput" |
+| `cycles`         | int    | Operations per repeat       | 10000                    |
+| `repeats`        | int    | Samples collected           | 10                       |
+| `warmup`         | int    | Warmup iterations           | 1000                     |
+| `threads`        | int    | Thread count                | 1                        |
+| `msgBytes`       | int    | Payload size (bytes)        | 1024                     |
+| `console`        | bool   | Console output enabled      | true                     |
+| `nonBlocking`    | bool   | Non-blocking I/O mode       | false                    |
+| `minLevel`       | string | Minimum log level           | "INFO"                   |
+| `wallMedian`     | double | Median per-call time        | 0.543                    |
+| `wallP10`        | double | 10th percentile             | 0.512                    |
+| `wallP90`        | double | 90th percentile             | 0.587                    |
+| `wallMin`        | double | Minimum time                | 0.498                    |
+| `wallMax`        | double | Maximum time                | 0.623                    |
+| `wallMean`       | double | Mean time                   | 0.546                    |
+| `wallStddev`     | double | Standard deviation          | 0.023                    |
+| `wallCV`         | double | Coefficient of variation    | 0.042                    |
+| `callsPerSecond` | double | Throughput                  | 1843317.0                |
+| `stable`         | bool   | CV below adaptive threshold | 1                        |
+| `cvThreshold`    | double | Adaptive CV threshold used  | 0.05                     |
 
 #### Metadata Columns
 
@@ -423,7 +426,7 @@ See GPU_GUIDE.md for complete GPU column schema.
 **Plot scaling curves:**
 
 ```bash
-bench-plot plot results.csv --x-axis msgBytes --y-axis callsPerSec
+bench-plot plot results.csv --output plots/
 ```
 
 **Compare implementations:**
@@ -534,18 +537,14 @@ sudo sysctl -w kernel.perf_event_paranoid=-1
 ./MyComponent_PTEST --profile perf --csv results.csv
 
 # Analyze results
-perf report -i perf-MyComponent.Throughput-*.data
-perf annotate -i perf-MyComponent.Throughput-*.data
+perf report -i MyComponent.Throughput.perf/perf.data
+perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
 
-**CSV columns added:**
-
-- `cpuCycles` - Total CPU cycles
-- `instructions` - Instructions executed
-- `ipc` - Instructions per cycle
-- `l1dMisses` - L1 data cache misses
-- `llcMisses` - Last-level cache misses
-- `branchMispredicts` - Branch mispredictions
+**Artifacts:** perf writes its capture to `perf-<Test>-<timestamp>.data`; the
+`profileTool` and `profileDir` CSV columns record that a profile was taken and
+where it landed. Counter detail lives in the perf report, not in extra CSV
+columns.
 
 ### Using RAPL
 
@@ -553,15 +552,16 @@ perf annotate -i perf-MyComponent.Throughput-*.data
 # Run test with RAPL (requires root)
 sudo ./MyComponent_PTEST --profile rapl --csv results.csv
 
-# Results include energy consumption
-cat results.csv | grep MyComponent
+# Energy summary is written to <Test>.rapl/energy.txt
+cat MyComponent.Throughput.rapl/energy.txt
 ```
 
-**CSV columns added:**
+**Energy report fields (in `<Test>.rapl/energy.txt`):**
 
-- `energyJoules` - Total energy consumed (J)
-- `powerWatts` - Average power (W)
-- `energyPerOp` - Energy per operation (uJ)
+- `Energy consumed` - Total energy consumed (J)
+- `Average power` - Average power (W)
+- `Energy per operation` - Energy per operation (mJ/call)
+- `Duration` - Measured wall-clock duration (s)
 
 ### Custom Profilers
 
@@ -763,7 +763,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --artifact-root DIR    # Output directory (default: .)
 --profile-frequency N  # Sampling Hz for CPU profilers (default: 10000)
 --profile-analyze      # Auto-run analysis after profiling
---bpf LIST             # BPF scripts (comma-separated): offcpu,syslat,bio
+--bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 ```
 
 **GPU flags:**
@@ -771,7 +771,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 ```bash
 --gpu-device N      # CUDA device ID (default: 0)
 --gpu-warmup N      # GPU warmup iterations (default: 10)
---gpu-memory MODE   # Memory strategy: explicit|unified|pinned
+--gpu-memory MODE   # Memory strategy: explicit|unified|pinned|mapped
 --min-speedup F     # Minimum expected speedup vs CPU
 ```
 
@@ -831,12 +831,14 @@ TEST_P(GpuPayloadTest, Kernel) {
   cudaMalloc(&d_data, arraySize * sizeof(float));
 
   // Warmup
-  perf.cudaWarmup([&] {
-    myKernel<<<grid, block>>>(d_data, arraySize);
+  perf.cudaWarmup([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_data, arraySize);
   });
 
   // Measure
-  auto result = perf.cudaKernel(myKernel, "kernel")
+  auto result = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_data, arraySize);
+  }, "kernel")
     .withLaunchConfig(grid, block)
     .withHostToDevice(h_data.data(), d_data, arraySize * sizeof(float))
     .withDeviceToHost(d_data, h_data.data(), arraySize * sizeof(float))
@@ -941,7 +943,7 @@ Complete GPU-specific CSV columns:
 | `d2hBytes`          | int64  | Device-to-host bytes        | 4194304                 |
 | `speedupVsCpu`      | double | GPU vs CPU speedup          | 15.3                    |
 | `memBandwidthGBs`   | double | Memory bandwidth            | 850.2                   |
-| `achievedOccupancy` | double | Kernel occupancy [0-1]      | 0.82                    |
+| `occupancy`         | double | Kernel occupancy [0-1]      | 0.82                    |
 | `smClockMHz`        | double | SM clock frequency          | 1410.0                  |
 | `throttling`        | bool   | Thermal throttling detected | false                   |
 
@@ -991,20 +993,26 @@ linked at build time; no `--profile` flag required. See
 
 GPU-specific profilers:
 
-| Profiler | Purpose                        | Requirements          | Output           |
-| -------- | ------------------------------ | --------------------- | ---------------- |
-| `nsight` | Comprehensive kernel profiling | NVIDIA Nsight Compute | `.ncu-rep` files |
+| Profiler            | Purpose                                          | Requirements            | Output                                                                          |
+| ------------------- | ------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------- |
+| `nsight`            | Nsight Systems timeline / Compute kernel detail  | CUDA toolkit + nsys/ncu | `profile.nsys-rep` (default), `kernel_replay.ncu-rep` (`--profile-args replay`) |
+| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit            | `sanitizer.log`                                                                 |
+| `rocprof`           | AMD ROCm GPU profiler                            | ROCm + rocprof          | `results.{csv,json}`                                                            |
 
-**Using Nsight Compute:**
+**Using Nsight:**
 
 ```bash
-# Profile specific kernel
+# Profile specific kernel (default Systems mode)
 ./test --profile nsight --gtest_filter="*MyKernel"
 
-# Generates: nsight-MyTest.MyKernel-TIMESTAMP.ncu-rep
+# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep
+
+# Kernel deep-dive (Compute replay)
+./test --profile nsight --profile-args replay --gtest_filter="*MyKernel"
+# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui nsight-MyTest.MyKernel-*.ncu-rep
+ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 ```
 
 ### GPU Best Practices
@@ -1012,19 +1020,21 @@ ncu-ui nsight-MyTest.MyKernel-*.ncu-rep
 1. **Always warmup GPU kernels** - First launch includes JIT compilation
 
    ```cpp
-   perf.cudaWarmup([&] {
-     myKernel<<<grid, block>>>(d_data);
+   perf.cudaWarmup([&](cudaStream_t s) {
+     myKernel<<<grid, block, 0, s>>>(d_data);
    });
    ```
 
 2. **Use appropriate launch configuration** - Check occupancy
 
    ```cpp
-   auto result = perf.cudaKernel(myKernel, "kernel")
+   auto result = perf.cudaKernel([&](cudaStream_t s) {
+       myKernel<<<grid, block, sharedMemBytes, s>>>(d_data);
+     }, "kernel")
      .withLaunchConfig(grid, block, sharedMemBytes)
      .measure();
 
-   EXPECT_GT(result.stats.achievedOccupancy, 0.5)
+   EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
      << "Low occupancy - increase threads or reduce resources";
    ```
 
@@ -1035,7 +1045,9 @@ ncu-ui nsight-MyTest.MyKernel-*.ncu-rep
      dim3 block(blockSize);
      dim3 grid((N + blockSize - 1) / blockSize);
 
-     auto result = perf.cudaKernel(myKernel, "kernel")
+     auto result = perf.cudaKernel([&](cudaStream_t s) {
+         myKernel<<<grid, block, 0, s>>>(d_data, N);
+       }, "kernel")
        .withLaunchConfig(grid, block)
        .measure();
    }
@@ -1045,18 +1057,20 @@ ncu-ui nsight-MyTest.MyKernel-*.ncu-rep
 
    ```cpp
    // Just transfers (no kernel)
-   auto transfer = perf.cudaKernel(emptyKernel, "transfer-only")
+   auto transfer = perf.cudaKernel([&](cudaStream_t) {}, "transfer-only")
      .withHostToDevice(h_in, d_in, SIZE)
      .withDeviceToHost(d_out, h_out, SIZE)
      .measure();
 
    // Full pipeline
-   auto full = perf.cudaKernel(myKernel, "full")
+   auto full = perf.cudaKernel([&](cudaStream_t s) {
+       myKernel<<<grid, block, 0, s>>>(d_in, d_out, N);
+     }, "full")
      .withHostToDevice(h_in, d_in, SIZE)
      .withDeviceToHost(d_out, h_out, SIZE)
      .measure();
 
-   double kernelOnlyUs = full.stats.kernelTimeUs - transfer.stats.transferTimeUs;
+   double kernelOnlyUs = full.kernelTimeUs - transfer.transferTimeUs;
    ```
 
 ---

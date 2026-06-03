@@ -12,7 +12,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Self-registering profiler backends** -- profiler dispatch refactored
   from a hardcoded if-chain to a registry. New backends slot in via a
   single `VERNIER_REGISTER_PROFILER_BACKEND` line at file scope.
-- **Nine new profiler backends** (registry now lists 14):
+- **Eight new profiler backends** (registry now lists 14):
   - `massif`            -- valgrind heap profiler (full timeline, ~20x)
   - `memcheck`          -- valgrind memory error / leak detector
   - `helgrind`          -- valgrind thread-error detector: data races, lock
@@ -93,8 +93,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `BENCH_NVTX_*` macros emit real ranges when the toolkit is present
   and compile to no-ops otherwise.
 - **`bench run --profile <X>` auto-wraps wrap-externally backends.**
-  When `<X>` is `callgrind`, `massif`, `memcheck`, `heaptrack`, or
-  `compute-sanitizer`, `bench run` invokes the correct wrap command
+  When `<X>` is `callgrind`, `massif`, `memcheck`, `helgrind`,
+  `heaptrack`, or `compute-sanitizer`, `bench run` invokes the correct wrap command
   (`valgrind --tool=...`, `heaptrack -o ...`, etc.) instead of just
   running the binary directly and leaving the user to copy the
   printed instruction. Artifacts land in

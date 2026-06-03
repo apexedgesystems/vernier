@@ -30,13 +30,13 @@ Visualize with `google-pprof --text|--pdf|--web <binary> cpu.prof`.
 ```bash
 make compose-debug
 make tools-rust
-# gperftools is pre-installed in the dev-cuda container
+# gperftools is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --quick --csv /tmp/gperf_demo.csv
   ./bin/tools/rust/bench summary /tmp/gperf_demo.csv
@@ -55,7 +55,7 @@ The optimized version is ~50x faster for 500 elements.
 ## Step 2: Profile the Slow Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --profile gperf \
     --gtest_filter="*BubbleSortHotspot*" --cycles 1000
@@ -91,7 +91,7 @@ google-pprof --pdf ./BenchDemo_03_GperfProfiler *.prof > hotspot.pdf
 ## Step 4: Profile the Fast Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --profile gperf \
     --gtest_filter="*StdSortOptimized*" --cycles 10000

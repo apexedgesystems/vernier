@@ -263,10 +263,10 @@ vernier/
     bench/                    Benchmarking library (perf, GPU harness, profilers)
       inc/                    Public headers (Perf.hpp, PerfGpu.hpp, Nvtx.hpp, profilers)
       src/                    Profiler implementations + CUPTI collector
-      bpf/                    bpftrace scripts (off-cpu, syslat)
+      bpf/                    bpftrace scripts (write / fsync latency)
       utst/                   Unit tests
       ptst/                   Performance tests (CPU + GPU)
-      demo/                   13 CPU + 4 GPU walkthroughs with step-by-step docs
+      demo/                   16 CPU + 4 GPU walkthroughs with step-by-step docs
       docs/                   Library documentation
     monitor/                  Runtime instrumentation library (vernier::monitor)
       inc/                    Public headers (Monitor.hpp, MonitorConfig.hpp)

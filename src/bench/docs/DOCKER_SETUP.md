@@ -386,8 +386,7 @@ docker run --rm --privileged \
 mybench:latest \
 bash -c "
 ./ptests/MyComponent_PTEST --profile perf --artifact-root artifacts/
-bench flamegraph \
---perf-data artifacts/MyComponent.Test.perf/perf.data \
+bench flamegraph artifacts/MyComponent.Test.perf/perf.data \
 --output flamegraph.svg
 "
 ```
@@ -468,8 +467,7 @@ mybench:latest bash
 # Inside container:
 ./validate_container.sh # Verify everything works
 ./ptests/MyComponent_PTEST --profile perf --artifact-root /results/
-bench flamegraph \
---perf-data /results/MyComponent.Test.perf/perf.data \
+bench flamegraph /results/MyComponent.Test.perf/perf.data \
 --output /results/flamegraph.svg
 ```
 

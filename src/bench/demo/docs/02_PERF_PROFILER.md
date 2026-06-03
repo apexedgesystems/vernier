@@ -30,13 +30,13 @@ the silicon, not a software estimate.
 ```bash
 make compose-debug
 make tools-rust
-# perf is pre-installed in the dev-cuda container
+# perf is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_02_PerfProfiler --quick --csv /tmp/perf_demo.csv
   ./bin/tools/rust/bench summary /tmp/perf_demo.csv
@@ -55,7 +55,7 @@ The sequential version is ~5x faster. But why? Profiling reveals the answer.
 ## Step 2: Profile the Slow Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_02_PerfProfiler --profile perf \
     --gtest_filter="*StridedAccess*" --cycles 1000
@@ -87,7 +87,7 @@ Key indicators:
 ## Step 4: Profile the Fast Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_02_PerfProfiler --profile perf \
     --gtest_filter="*SequentialAccess*" --cycles 1000

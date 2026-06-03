@@ -16,8 +16,8 @@ targets observability in real runs you can't repeat.
 | Scoped timer          | `VERNIER_MONITOR_SCOPE(monitor, "name", tag)`              |
 | Point-in-time gauge   | `VERNIER_MONITOR_GAUGE(monitor, "name", tag, value)`       |
 | Counter increment     | `VERNIER_MONITOR_INCREMENT(monitor, "name", tag[, delta])` |
-| Threshold alert       | `monitor.setThreshold("name", tag, thresholdUs)`           |
-| End-of-run summary    | `monitor.printSummary()` (or auto on shutdown)             |
+| Threshold alert       | `monitor.setThreshold("name", tag.id, thresholdUs)`        |
+| End-of-run summary    | `monitor.stop()` (also auto-called by the destructor)      |
 | Zero-overhead disable | `cfg.enabled = false` or `VERNIER_MONITOR=0`               |
 
 The hot path is lock-free and bounded: scope entry/exit cost is a clock
@@ -115,8 +115,9 @@ VERNIER_MONITOR_GAUGE(monitor, "queue_depth", decoder, queue.size());
 ### Threshold alerts
 
 ```cpp
-// Warn (and flag in summary) if "decode" ever exceeds 5 ms
-monitor.setThreshold("decode", decoder, 5000);
+// Warn (and flag in summary) if "decode" ever exceeds 5 ms.
+// setThreshold takes the numeric tag id, not the full MonitorTag.
+monitor.setThreshold("decode", decoder.id, 5000);
 ```
 
 When a scope exceeds its threshold, the sample is flagged as
@@ -134,7 +135,7 @@ vernier::monitor summary
  decoder/1     process_frame      10421   1.23 ms   4.87 ms  12.1 ms   3
  decoder/1     decode              5210   0.61 ms   2.10 ms   8.4 ms   1
  decoder/1     render              5210   0.55 ms   1.91 ms   3.4 ms   0
- io/2          bytes_written (c)  10421   --        --        --       --
+ io/2          bytes_written (c)  10421   -         -         9043712  -
 --------------------------------------------------------------------------
  Total samples: 31263 | Dropped: 0 | Wall time: 62.3 s
 ```

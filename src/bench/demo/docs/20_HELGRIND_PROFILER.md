@@ -75,9 +75,9 @@ stacks that both resolve to the increment in `14_HelgrindProfiler_Demo.cpp`.
 ```
 ==N== Possible data race during write of size 8 at 0x.... by thread #3
 ==N==    at 0x....: Helgrind_RacyCounter_Test::TestBody()::$_0::operator() ()
-==N==    at 14_HelgrindProfiler_Demo.cpp:84
+==N==    at 14_HelgrindProfiler_Demo.cpp:79
 ==N== This conflicts with a previous write of size 8 by thread #2
-==N==    at 14_HelgrindProfiler_Demo.cpp:84
+==N==    at 14_HelgrindProfiler_Demo.cpp:79
 ```
 
 ## Step 2: Safe Workload -- Expect No Race

@@ -46,8 +46,7 @@ Solutions to common issues when using the benchmarking framework. This guide cov
 taskset -c 2-9 ./MyComponent_PTEST --csv results.csv
 
 # Or use the bench run command
-bench run ./MyComponent_PTEST \
-    --taskset --cpuset 2-9
+bench run ./MyComponent_PTEST --taskset 2-9
 ```
 
 **2. Increase warmup iterations**:
@@ -182,8 +181,7 @@ volatile int sink = sum;  // Tell compiler: sum is used
 
 ```bash
 ./MyComponent_PTEST --profile perf --cycles 100000
-bench flamegraph \
-    --perf-data MyComponent.Test.perf/perf.data \
+bench flamegraph MyComponent.Test.perf/perf.data \
     --output hotspots.svg
 ```
 
@@ -551,9 +549,9 @@ const int N = 1024 * 1024;
 **2. Transfer overhead dominates**:
 
 ```bash
-# Check CSV
-grep "transferOverheadPct" results.csv
-# If >50%, transfers dominate
+# Check CSV: compare transferTimeUs against kernelTimeUs
+bench summary results.csv --json | grep -E "transferTimeUs|kernelTimeUs"
+# If transfer time rivals kernel time, transfers dominate
 
 # Keep data on GPU longer or use Unified Memory
 ```
@@ -733,7 +731,7 @@ sudo setcap cap_bpf,cap_perfmon=ep ./MyComponent_PTEST
 
 ### Nsight Not Generating Reports
 
-**Symptoms:** No `.qdrep` or `.ncu-rep` files.
+**Symptoms:** No `.nsys-rep` or `.ncu-rep` files.
 
 **Solutions:**
 
@@ -759,6 +757,36 @@ nsys profile --trace=cuda ./test --gtest_filter="*Specific*"
 # Nsight Compute
 ncu --set full ./test --gtest_filter="*Specific*"
 ```
+
+**4. `nsys` runs but the report has no GPU activity**: nsys completes without
+error and writes a `.nsys-rep`, yet `nsys stats --report cuda_gpu_kern_sum`
+reports "does not contain CUDA kernel data" and `nsight-parse` writes 0 rows.
+Two distinct, fixable causes:
+
+- **Build toolkit ahead of the driver.** A binary built with a CUDA toolkit
+  whose minor version is higher than the CUDA the driver provides (the "CUDA
+  Version" `nvidia-smi` reports) still runs via minor-version forward
+  compatibility, but nsys cannot trace its CUDA activity. Build with a toolkit
+  whose CUDA is `<=` the driver's, or upgrade the driver. `ncu` and the
+  in-process CUPTI columns use other interfaces and keep working, which is the
+  tell-tale: GPU benchmarks and CSV metrics succeed while the nsys timeline is
+  empty.
+
+- **The in-process CUPTI collector holds the single client slot.** CUPTI allows
+  one client per process. When the binary uses the in-process CUPTI collector
+  (the automatic GPU CSV columns), it claims that slot and starves an external
+  nsys / ncu session. Set `VERNIER_DISABLE_CUPTI=1` when wrapping the binary so
+  the in-process collector stands down and the external tool can attach:
+
+  ```bash
+  VERNIER_DISABLE_CUPTI=1 nsys profile -o out --trace=cuda,nvtx \
+      ./test --profile nsight --gtest_filter="*Specific*"
+  ```
+
+If you only need per-kernel metrics, the in-process CUPTI columns (kernel time,
+registers, shared memory, launch count) populate automatically with no nsys
+required; for occupancy / warp stalls / cache / roofline, use `ncu` (see
+`GPU_GUIDE.md`).
 
 ---
 
@@ -1096,8 +1124,7 @@ head results.csv
 
 ```bash
 ./test --profile perf --cycles 100000
-bench flamegraph \
-    --perf-data test.perf/perf.data
+bench flamegraph test.perf/perf.data
 ```
 
 **3. Check memory bandwidth**:
@@ -1151,9 +1178,8 @@ cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 **4. Compare with differential flamegraph**:
 
 ```bash
-bench flamegraph \
-    --perf-data optimized.perf/perf.data \
-    --baseline-perf baseline.perf/perf.data
+bench flamegraph optimized.perf/perf.data \
+    --baseline baseline.perf/perf.data
 ```
 
 ---
@@ -1212,7 +1238,7 @@ Include:
 
 - [ ] Check GoogleTest installed
 - [ ] For GPU: Verify CUDA toolkit
-- [ ] Check CMake version >= 3.15
+- [ ] Check CMake version >= 3.24
 
 **Profiler not working?**
 

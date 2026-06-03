@@ -16,7 +16,7 @@ make tools-rust       # Build bench tool
 ## Step 1: Run the Demo
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/demo01.csv
 '
@@ -58,7 +58,7 @@ BasicWorkflow.SimpleThroughput           323.158    321.683   330.853      1.5% 
 Run the demo twice (simulating before/after optimization):
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/baseline.csv
   ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/candidate.csv

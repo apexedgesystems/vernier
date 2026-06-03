@@ -36,13 +36,13 @@ binary under `valgrind --tool=callgrind ...`. Per-test artifacts land in
 ```bash
 make compose-debug
 make tools-rust
-# Valgrind is pre-installed in the dev-cuda container
+# Valgrind is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement (Normal Speed)
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_07_CallgrindProfiler --quick --csv /tmp/callgrind_demo.csv
   ./bin/tools/rust/bench summary /tmp/callgrind_demo.csv
@@ -59,7 +59,7 @@ CallgrindProfiler.BinarySearch     ~5 us/call   ~200.0K calls/s
 ## Step 2: Profile with Callgrind
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_07_CallgrindProfiler --profile callgrind \
     --gtest_filter="*LinearSearch*" --cycles 100 --repeats 1

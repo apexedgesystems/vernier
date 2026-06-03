@@ -558,16 +558,16 @@ Find hotspots and optimization opportunities:
 # Profile with hardware counters
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
 
-# Generates: perf-MyComponent.Throughput-TIMESTAMP.data
+# Generates: MyComponent.Throughput.perf/perf.data
 
 # View report
-perf report -i perf-MyComponent.Throughput-*.data
+perf report -i MyComponent.Throughput.perf/perf.data
 
 # Annotate source
-perf annotate -i perf-MyComponent.Throughput-*.data
+perf annotate -i MyComponent.Throughput.perf/perf.data
 
 # Export for analysis
-perf script -i perf-MyComponent.Throughput-*.data > profile.txt
+perf script -i MyComponent.Throughput.perf/perf.data > profile.txt
 ```
 
 **Common patterns to look for:**
@@ -582,19 +582,21 @@ perf script -i perf-MyComponent.Throughput-*.data > profile.txt
 Identify memory allocation bottlenecks:
 
 ```bash
-# CPU profiling
+# CPU profiling (default) -> MyComponent.Throughput.gperf/cpu.prof
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
-# Heap profiling (requires HEAPPROFILE environment variable)
-HEAPPROFILE=/tmp/heap ./MyComponent_PTEST --profile gperf
+# Heap profiling -> MyComponent.Throughput.gperf/heap.<N>.heap
+./MyComponent_PTEST --profile gperf --profile-args heap
+
+# Both CPU and heap
+./MyComponent_PTEST --profile gperf --profile-args both
 
 # Analyze CPU profile
-google-pprof --text ./MyComponent_PTEST cpu-profile.prof
-google-pprof --pdf ./MyComponent_PTEST cpu-profile.prof > profile.pdf
+google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof
+google-pprof --pdf ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof > profile.pdf
 
 # Analyze heap profile
-google-pprof --text ./MyComponent_PTEST /tmp/heap.0001.heap
-google-pprof --pdf ./MyComponent_PTEST /tmp/heap.0001.heap > heap.pdf
+google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/heap.0001.heap
 ```
 
 ### System-wide Tracing with bpftrace
@@ -603,13 +605,14 @@ Trace syscalls and kernel interactions:
 
 ```bash
 # Requires root or CAP_BPF capability
+# --bpf takes a script name resolved under --bpf-scripts (default bpf dir)
 sudo ./MyComponent_PTEST --profile bpftrace \
-  --profile-args "bpf/fsync_latency.bt" \
+  --bpf fsync_latency \
   --gtest_filter="*IO"
 
-# Custom bpftrace script
+# Custom bpftrace script (absolute path also accepted by --bpf)
 sudo ./MyComponent_PTEST --profile bpftrace \
-  --profile-args "custom_trace.bt"
+  --bpf /path/to/custom_trace.bt
 ```
 
 ### Heap Profilers (Massif, Heaptrack, jemalloc prof)
@@ -656,11 +659,13 @@ switch to DRD, which reports the same race classes with a smaller memory
 footprint. Like the other valgrind tools, run a single cycle (~20x overhead).
 
 ```bash
-./MyComponent_PTEST --profile helgrind --cycles 1
-grep -E "data race|lock order" helgrind.log
+valgrind --tool=helgrind --log-file=run.helgrind \
+    ./MyComponent_PTEST --profile helgrind --cycles 1
+grep -E "data race|lock order" run.helgrind
 
 # DRD variant (lighter on memory):
-./MyComponent_PTEST --profile helgrind --profile-args drd --cycles 1
+valgrind --tool=drd --log-file=run.drd \
+    ./MyComponent_PTEST --profile helgrind --profile-args drd --cycles 1
 ```
 
 ### Off-CPU Profiling (where threads sleep)
@@ -700,8 +705,8 @@ Measure power consumption (Intel CPUs):
 # Requires root for /dev/cpu/*/msr access
 sudo ./MyComponent_PTEST --profile rapl --csv energy_results.csv
 
-# Results include power consumption in CSV
-# Columns: package_joules, dram_joules, duration_seconds
+# Energy summary is printed and written to <Test>.rapl/energy.txt
+# Fields: Energy consumed (J), Average power (W), Energy per operation (mJ/call), Duration (s)
 ```
 
 ---
@@ -994,8 +999,8 @@ EXPECT_LT(result.stats.cv, 0.10) << "High jitter detected";
 # Quick mode: Fewer cycles and repeats
 ./MyComponent_PTEST --quick --gtest_filter="*MyTest"
 
-# Equivalent to:
-./MyComponent_PTEST --cycles 1000 --repeats 3
+# Equivalent to (unless you override explicitly):
+./MyComponent_PTEST --cycles 5000 --repeats 5 --warmup 2
 ```
 
 **Production mode for CI:**
@@ -1031,7 +1036,7 @@ bench compare baseline.csv optimized.csv
 ./MyComponent_PTEST --profile perf --gtest_filter="*Slow"
 
 # Analyze
-perf report -i perf-*.data
+perf report -i MyComponent.Slow.perf/perf.data
 
 # Focus optimization on top functions only
 ```

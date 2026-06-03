@@ -40,13 +40,13 @@ bpftrace script around the measured window. Scripts live in
 make compose-debug
 make tools-rust
 # Requires root/sudo for bpftrace
-# bpftrace is pre-installed in the dev-cuda container
+# bpftrace is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_09_BpftraceProfiler --quick \
     --csv /tmp/bpf_demo.csv
@@ -67,7 +67,7 @@ individual write() syscalls while the batched version makes exactly 1.
 ## Step 2: Profile with bpftrace
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   sudo ./bin/ptests/BenchDemo_09_BpftraceProfiler --profile bpftrace \
     --bpf syslat --gtest_filter="*ManySmallWrites*" \
@@ -108,7 +108,7 @@ as each 1-byte write. The kernel processes the buffer in one pass.
 ## Step 4: Compare
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_09_BpftraceProfiler --quick \
     --gtest_filter="*ManySmallWrites*" --csv /tmp/bpf_slow.csv

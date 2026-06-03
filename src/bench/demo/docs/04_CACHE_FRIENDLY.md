@@ -17,7 +17,7 @@ make tools-rust
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_04_CacheFriendly --quick --csv /tmp/cache_demo.csv
   ./bin/tools/rust/bench summary /tmp/cache_demo.csv

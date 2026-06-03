@@ -486,9 +486,11 @@ Exit code 1 on regression. `--markdown` produces a table suitable for PR comment
 
 The benchmarking framework outputs CSV files with the following columns.
 
-**Base columns:** test, cycles, repeats, warmup, threads, msgBytes, wallMedian,
-wallP10, wallP90, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond,
-stable, cvThreshold
+**Base columns:** test, cycles, repeats, warmup, threads, msgBytes, console,
+nonBlocking, minLevel, wallMedian, wallP10, wallP90, wallMin, wallMax, wallMean,
+wallStddev, wallCV, callsPerSecond, stable, cvThreshold
+
+**Profile columns (when profiling):** profileTool, profileDir
 
 **GPU columns (when present):** gpuModel, computeCapability, kernelTimeUs,
 transferTimeUs, h2dBytes, d2hBytes, speedupVsCpu, memBandwidthGBs, occupancy,
