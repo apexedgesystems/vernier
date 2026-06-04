@@ -58,7 +58,7 @@ jobs:
           echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
 
       - name: Login to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -103,7 +103,7 @@ jobs:
       # SHA suffix ensures each run gets a fresh save key; restore-keys do
       # the actual hit work via prefix match on the most recent saved cache.
       - name: Restore ccache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ env.CCACHE_HOST }}
           key: ccache-cpp-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
@@ -112,7 +112,7 @@ jobs:
             ccache-cpp-${{ runner.os }}-
 
       - name: Login to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -166,7 +166,7 @@ jobs:
           echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
 
       - name: Login to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -205,7 +205,7 @@ jobs:
           echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
 
       - name: Login to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
