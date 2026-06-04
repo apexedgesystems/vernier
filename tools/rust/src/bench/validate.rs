@@ -1,7 +1,11 @@
 //! Environment validation: check for profiling tools, permissions, and settings.
 //!
-//! Mirrors the C++ `--profile-check` functionality in PerfConfig.hpp but adds
-//! checks for FlameGraph scripts, nsight, and bpftrace.
+//! Host-level readiness for every profiler backend: perf, gperftools, the
+//! valgrind tools (callgrind/massif/memcheck/helgrind), heaptrack, jemalloc,
+//! rapl, bpftrace, nsight, compute-sanitizer, and rocprof, plus FlameGraph
+//! scripts, ASLR, and perf_event_paranoid. For per-backend, per-binary checks
+//! run `bench doctor <binary>`, which drives each backend's own environment
+//! probe through the registry.
 
 use std::path::PathBuf;
 
@@ -15,10 +19,16 @@ pub fn run_checks() -> Vec<CheckResult> {
         check_perf(),
         check_perf_paranoid(),
         check_gperftools(),
+        check_valgrind(),
+        check_heaptrack(),
+        check_jemalloc(),
+        check_rapl(),
         check_aslr(),
         check_flamegraph(),
-        check_nsight(),
         check_bpftrace(),
+        check_nsight(),
+        check_compute_sanitizer(),
+        check_rocprof(),
     ]
 }
 
@@ -239,6 +249,101 @@ fn check_bpftrace() -> CheckResult {
             label: "bpftrace".to_string(),
             status: CheckStatus::Warn,
             detail: "not found; install bpftrace for kernel-level tracing".to_string(),
+        },
+    }
+}
+
+fn check_valgrind() -> CheckResult {
+    match find_in_path("valgrind") {
+        Some(path) => CheckResult {
+            label: "valgrind (callgrind/massif/memcheck/helgrind)".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!("found at {}", path.display()),
+        },
+        None => CheckResult {
+            label: "valgrind (callgrind/massif/memcheck/helgrind)".to_string(),
+            status: CheckStatus::Warn,
+            detail: "not found; install valgrind for callgrind/massif/memcheck/helgrind"
+                .to_string(),
+        },
+    }
+}
+
+fn check_heaptrack() -> CheckResult {
+    match find_in_path("heaptrack") {
+        Some(path) => CheckResult {
+            label: "heaptrack".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!("found at {}", path.display()),
+        },
+        None => CheckResult {
+            label: "heaptrack".to_string(),
+            status: CheckStatus::Warn,
+            detail: "not found; install heaptrack for low-overhead heap profiling".to_string(),
+        },
+    }
+}
+
+fn check_jemalloc() -> CheckResult {
+    match find_in_path("jeprof") {
+        Some(path) => CheckResult {
+            label: "jemalloc".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!("jeprof found at {}", path.display()),
+        },
+        None => CheckResult {
+            label: "jemalloc".to_string(),
+            status: CheckStatus::Warn,
+            detail: "jeprof not found; install jemalloc (built with prof) for allocation sampling"
+                .to_string(),
+        },
+    }
+}
+
+fn check_rapl() -> CheckResult {
+    if std::path::Path::new("/dev/cpu/0/msr").exists() {
+        CheckResult {
+            label: "rapl".to_string(),
+            status: CheckStatus::Ok,
+            detail: "/dev/cpu/0/msr present (energy counters need root or CAP_SYS_RAWIO)"
+                .to_string(),
+        }
+    } else {
+        CheckResult {
+            label: "rapl".to_string(),
+            status: CheckStatus::Warn,
+            detail: "/dev/cpu/0/msr absent; 'sudo modprobe msr' on an Intel host for energy"
+                .to_string(),
+        }
+    }
+}
+
+fn check_compute_sanitizer() -> CheckResult {
+    match find_in_path("compute-sanitizer") {
+        Some(path) => CheckResult {
+            label: "compute-sanitizer".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!("found at {}", path.display()),
+        },
+        None => CheckResult {
+            label: "compute-sanitizer".to_string(),
+            status: CheckStatus::Warn,
+            detail: "not found; ships with the CUDA toolkit for GPU memcheck/racecheck".to_string(),
+        },
+    }
+}
+
+fn check_rocprof() -> CheckResult {
+    match find_in_path("rocprof") {
+        Some(path) => CheckResult {
+            label: "rocprof".to_string(),
+            status: CheckStatus::Ok,
+            detail: format!("found at {}", path.display()),
+        },
+        None => CheckResult {
+            label: "rocprof".to_string(),
+            status: CheckStatus::Warn,
+            detail: "not found; install ROCm for AMD GPU profiling".to_string(),
         },
     }
 }
