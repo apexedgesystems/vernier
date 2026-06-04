@@ -36,7 +36,7 @@ make tools-rust
 Run Demo 01 (basic throughput measurement) and analyze the results:
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/demo01.csv
   source .env
@@ -68,17 +68,27 @@ walkthrough of what the code does and why.
 
 ## 2. CPU Demos
 
-| #   | Demo                  | Concept                         | Slow Path               | Fast Path                  | Walkthrough                                                 |
-| --- | --------------------- | ------------------------------- | ----------------------- | -------------------------- | ----------------------------------------------------------- |
-| 01  | Basic Workflow        | Measure-export-analyze cycle    | std::accumulate         | Manual pointer loop        | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
-| 02  | perf Profiler         | Hardware counter profiling      | Stride-512 array walk   | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
-| 03  | gperftools Profiler   | Function-level flamegraphs      | Bubble sort O(n^2)      | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
-| 04  | Cache-Friendly Layout | AoS vs SoA data transformation  | 128B struct (81% waste) | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
-| 05  | Branch Optimization   | Branch prediction and avoidance | Branchy + random data   | Branchless + multiply      | [05_BRANCH_OPTIMIZATION.md](docs/05_BRANCH_OPTIMIZATION.md) |
-| 06  | Thread Scaling        | Lock contention analysis        | Mutex-protected counter | Atomic relaxed counter     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)           |
-| 07  | Callgrind Profiler    | Deterministic instruction count | Linear search O(n)      | Binary search O(log n)     | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md)   |
-| 08  | RAPL Profiler         | Energy/power measurement        | Naive dot product       | Vectorized inner product   | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)             |
-| 09  | bpftrace Profiler     | Syscall overhead tracing        | One write() per byte    | Single batched write()     | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)     |
+| #   | Demo                  | Concept                            | Slow Path                   | Fast Path                  | Walkthrough                                                 |
+| --- | --------------------- | ---------------------------------- | --------------------------- | -------------------------- | ----------------------------------------------------------- |
+| 01  | Basic Workflow        | Measure-export-analyze cycle       | std::accumulate             | Manual pointer loop        | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
+| 02  | perf Profiler         | Hardware counter profiling         | Stride-512 array walk       | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
+| 03  | gperftools Profiler   | Function-level flamegraphs         | Bubble sort O(n^2)          | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
+| 04  | Cache-Friendly Layout | AoS vs SoA data transformation     | 128B struct (81% waste)     | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
+| 05  | Branch Optimization   | Branch prediction and avoidance    | Branchy + random data       | Branchless + multiply      | [05_BRANCH_OPTIMIZATION.md](docs/05_BRANCH_OPTIMIZATION.md) |
+| 06  | Thread Scaling        | Lock contention analysis           | Mutex-protected counter     | Atomic relaxed counter     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)           |
+| 07  | Callgrind Profiler    | Deterministic instruction count    | Linear search O(n)          | Binary search O(log n)     | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md)   |
+| 08  | RAPL Profiler         | Energy/power measurement           | Naive dot product           | Vectorized inner product   | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)             |
+| 09  | bpftrace Profiler     | Syscall overhead tracing           | One write() per byte        | Single batched write()     | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)     |
+| 10  | NVTX Annotation       | Timeline labeling for Nsight       | Single opaque region        | Per-phase named ranges     | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)         |
+| 11  | Massif Profiler       | Heap usage timeline                | new[] each iteration        | Pooled buffer reuse        | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
+| 12  | Memcheck Profiler     | Leak / UAF detection               | Raw new[] (leaky)           | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
+| 13  | Off-CPU Profiler      | Where threads go to sleep          | std::mutex contention       | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
+| 14  | Helgrind Profiler     | Data-race / thread-error detection | Unguarded shared counter    | std::atomic counter        | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)     |
+| 15  | Heaptrack Profiler    | Ranked allocation-site profiling   | Unreserved vector push_back | Reserved + reused buffer   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md)   |
+| 16  | jemalloc Profiler     | Sampled allocation hotspots        | Per-iter string churn       | Reserved + reused string   | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)     |
+
+The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
+filenames carry their own sequential number across CPU + GPU.
 
 ---
 
@@ -88,9 +98,20 @@ Requires NVIDIA GPU with CUDA support.
 
 | #   | Demo               | Concept                    | Slow Path              | Fast Path               | Walkthrough                                               |
 | --- | ------------------ | -------------------------- | ---------------------- | ----------------------- | --------------------------------------------------------- |
-| 10  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 11  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 12  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 01  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels   | Deliberate OOB write   | Bounds-checked scale    | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+
+Binary names: `BenchDemo_Gpu_NN_*`.
+
+Two GPU profilers ship without a dedicated demo binary because they fire on
+_every_ GPU run -- consult the walkthroughs to see what to look for:
+
+| Profiler        | Wraps                 | When to use                        | Walkthrough                                                   |
+| --------------- | --------------------- | ---------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)   | AMD GPU + HIP kernels | AMD MI / Radeon Instinct profiling | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI (in-proc) | Any GPU benchmark     | Per-launch register / smem / count | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -100,12 +121,12 @@ All demos are built as performance test executables (ptests):
 
 ```bash
 # Run a demo
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   ./build/native-linux-debug/bin/ptests/BenchDemo_01_BasicWorkflow --quick
 '
 
 # Export results to CSV and analyze
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_04_CacheFriendly --csv results.csv
   source .env
@@ -113,7 +134,7 @@ docker compose run --rm -T dev-cuda bash -c '
 '
 
 # Run a specific test within a demo
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   ./build/native-linux-debug/bin/ptests/BenchDemo_05_BranchOptimization \
     --gtest_filter="*BranchlessRandomData*"
 '
@@ -121,20 +142,17 @@ docker compose run --rm -T dev-cuda bash -c '
 
 ### CLI Flags
 
-| Flag                     | Purpose                               |
-| ------------------------ | ------------------------------------- |
-| `--quick`                | Fast iteration (fewer cycles/repeats) |
-| `--csv FILE`             | Export results to CSV                 |
-| `--repeats N`            | Number of measurement repeats         |
-| `--cycles N`             | Iterations per repeat                 |
-| `--threads N`            | Thread count for contention tests     |
-| `--profile perf`         | Attach Linux perf profiler            |
-| `--profile gperf`        | Attach gperftools profiler            |
-| `--profile callgrind`    | Run under Valgrind callgrind          |
-| `--profile rapl`         | Enable Intel RAPL energy measurement  |
-| `--profile bpftrace`     | Enable bpftrace syscall tracing       |
-| `--profile nsight`       | Enable NVIDIA Nsight profiling        |
-| `--gtest_filter=PATTERN` | Run specific tests only               |
+| Flag                       | Purpose                                                                                                                                                                                                                          |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--quick`                  | Fast iteration (fewer cycles/repeats)                                                                                                                                                                                            |
+| `--csv FILE`               | Export results to CSV                                                                                                                                                                                                            |
+| `--repeats N`              | Number of measurement repeats                                                                                                                                                                                                    |
+| `--cycles N`               | Iterations per repeat                                                                                                                                                                                                            |
+| `--threads N`              | Thread count for contention tests                                                                                                                                                                                                |
+| `--profile <backend>`      | Attach any registered backend (see `bench doctor` for the list: `perf`, `gperf`, `callgrind`, `rapl`, `bpftrace`, `massif`, `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`, `nsight`, `compute-sanitizer`, `rocprof`) |
+| `--profile-output-dir DIR` | Route profile artifacts to a custom root                                                                                                                                                                                         |
+| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`                                                                                                                                                                                       |
+| `--gtest_filter=PATTERN`   | Run specific tests only                                                                                                                                                                                                          |
 
 ---
 
@@ -182,11 +200,26 @@ and dependency chains), and designed to show measurable differences.
 8. Demo 08 -- Energy measurement with Intel RAPL
 9. Demo 09 -- Syscall tracing with bpftrace
 
+**Memory and contention deep dives:**
+
+10. Demo 11 -- Heap profile timeline with Valgrind Massif
+11. Demo 12 -- Leak / UAF detection with Valgrind Memcheck
+12. Demo 13 -- Off-CPU profiling: where threads block
+13. Demo 14 -- Data-race detection with Valgrind Helgrind / DRD
+14. Demo 15 -- Ranked allocation sites with heaptrack
+15. Demo 16 -- Sampled allocation hotspots with jemalloc prof
+
 **GPU (requires NVIDIA GPU):**
 
-10. Demo 10 -- CPU vs GPU comparison, transfer overhead analysis
-11. Demo 11 -- Memory coalescing with Nsight
-12. Demo 12 -- Shared memory optimization and bank conflicts
+13. Demo 10 -- CPU vs GPU comparison, transfer overhead analysis
+14. Demo 11 -- Memory coalescing with Nsight
+15. Demo 12 -- Shared memory optimization and bank conflicts
+16. Demo 04 (GPU) -- Kernel correctness with Compute Sanitizer
+
+**GPU instrumentation:**
+
+17. Demo 10 (CPU) -- NVTX timeline annotation for any Nsight tool
+18. Demo 19 (doc) -- CUPTI in-process kernel metrics (auto-captured)
 
 ---
 

@@ -43,6 +43,9 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
     csv << ",gpuModel,computeCapability,kernelTimeUs,transferTimeUs,"
            "h2dBytes,d2hBytes,speedupVsCpu,memBandwidthGBs,occupancy,"
            "smClockMHz,throttling";
+    csv << ",powerDrawW,powerLimitW,temperatureC,temperatureDeltaC";
+    csv << ",cuptiKernelLaunches,cuptiRegistersMedian,cuptiRegistersMax,"
+           "cuptiStaticSmemBytes,cuptiDynamicSmemBytes";
     csv << ",deviceId,deviceCount,multiGpuEfficiency,p2pBandwidthGBs";
     csv << ",umPageFaults,umH2DMigrations,umD2HMigrations,umMigrationTimeUs,umThrashing";
   }
@@ -95,6 +98,17 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
     csv << "," << (row.occupancy ? std::to_string(*row.occupancy) : "");
     csv << "," << (row.smClockMHz ? std::to_string(*row.smClockMHz) : "");
     csv << "," << (row.throttling ? (*row.throttling ? "1" : "0") : "");
+
+    csv << "," << (row.powerDrawW ? std::to_string(*row.powerDrawW) : "");
+    csv << "," << (row.powerLimitW ? std::to_string(*row.powerLimitW) : "");
+    csv << "," << (row.temperatureC ? std::to_string(*row.temperatureC) : "");
+    csv << "," << (row.temperatureDeltaC ? std::to_string(*row.temperatureDeltaC) : "");
+
+    csv << "," << (row.cuptiKernelLaunches ? std::to_string(*row.cuptiKernelLaunches) : "");
+    csv << "," << (row.cuptiRegistersMedian ? std::to_string(*row.cuptiRegistersMedian) : "");
+    csv << "," << (row.cuptiRegistersMax ? std::to_string(*row.cuptiRegistersMax) : "");
+    csv << "," << (row.cuptiStaticSmemBytes ? std::to_string(*row.cuptiStaticSmemBytes) : "");
+    csv << "," << (row.cuptiDynamicSmemBytes ? std::to_string(*row.cuptiDynamicSmemBytes) : "");
 
     csv << "," << (row.deviceId ? std::to_string(*row.deviceId) : "");
     csv << "," << (row.deviceCount ? std::to_string(*row.deviceCount) : "");

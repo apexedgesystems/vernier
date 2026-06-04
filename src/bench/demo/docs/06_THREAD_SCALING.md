@@ -16,7 +16,7 @@ make tools-rust
 ## Step 1: Run with Multiple Threads
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_06_ThreadScaling --threads 4 --quick --csv /tmp/thread_demo.csv
   ./bin/tools/rust/bench summary /tmp/thread_demo.csv
@@ -38,7 +38,7 @@ The mutex version is 20x slower than atomic under contention.
 Run at different thread counts to see scaling behavior:
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_06_ThreadScaling --threads 1 --quick --csv /tmp/t1.csv
   ./bin/ptests/BenchDemo_06_ThreadScaling --threads 2 --quick --csv /tmp/t2.csv
@@ -93,7 +93,7 @@ The hardware handles the atomic operation at the cache coherency level.
 - Scaling efficiency = (N-thread throughput) / (1-thread throughput \* N)
 - For complex shared state, consider lock-free data structures or sharding
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Multi-threaded benchmarking patterns
 - Demo 09 (bpftrace) -- Trace kernel-level scheduling overhead

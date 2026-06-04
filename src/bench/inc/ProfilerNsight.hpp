@@ -128,6 +128,7 @@ private:
   void launchNcuReplay();
   void stopProfiler();
   void parseReplayMetrics();
+  void extractNsysStats(); ///< Auto-run `nsys stats --report ...` on the .nsys-rep
 
   PerfConfig cfg_{};
   std::string testName_;
@@ -137,6 +138,10 @@ private:
 
   ReplayMetrics replayMetrics_{};
   bool useReplayMode_ = false;
+
+  // True when an NVTX range has been pushed by beforeMeasure(); ensures
+  // afterMeasure() pops it once even if launch failed earlier.
+  bool nvtxRangePush_ = false;
 };
 
 /* --------------------------------- API --------------------------------- */

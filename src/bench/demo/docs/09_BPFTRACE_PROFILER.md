@@ -7,19 +7,46 @@ patterns. Shows how per-byte write() calls create massive kernel context-switch
 overhead and how batching eliminates it. This is a common anti-pattern in
 embedded telemetry, logging, and serial communication code.
 
+## What is bpftrace?
+
+`bpftrace` is a high-level tracing language for Linux's eBPF subsystem
+-- think DTrace, for Linux. You write a short script that attaches
+probes to kernel functions, tracepoints, or user-space symbols, and
+bpftrace compiles it to safe in-kernel BPF bytecode that runs on every
+event without copying data to user space.
+
+- **Best for:** the questions other profilers can't see: syscall
+  latency distributions, off-CPU blocking, scheduler delay, lock-wait
+  stacks, I/O wait, page-fault stacks.
+- **How it works:** per-event kernel probes. Aggregations
+  (`@histogram[probe]`) happen in BPF map space and print at script
+  exit.
+- **Overhead:** depends on probe rate. Syscall histograms over a hot
+  loop are cheap; per-instruction probes will crawl.
+- **Requires:** kernel BTF (most distros since ~2020), root or
+  CAP_BPF/CAP_SYS_ADMIN. Containers need either `--privileged` or a
+  tracefs bind-mount.
+- **Skip it for:** pure user-space CPU profiling (perf / gperf), heap
+  analysis (massif), or anything Windows-shaped.
+
+**In vernier:** `--profile bpftrace --bpf <script>` runs a named
+bpftrace script around the measured window. Scripts live in
+`src/utilities/benchmarking/bpf/`; built-ins include `syslat`
+(syscall latency) and `offcpu` (blocked-time stacks).
+
 ## Prerequisites
 
 ```bash
 make compose-debug
 make tools-rust
 # Requires root/sudo for bpftrace
-# bpftrace is pre-installed in the dev-cuda container
+# bpftrace is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_09_BpftraceProfiler --quick \
     --csv /tmp/bpf_demo.csv
@@ -40,7 +67,7 @@ individual write() syscalls while the batched version makes exactly 1.
 ## Step 2: Profile with bpftrace
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   sudo ./bin/ptests/BenchDemo_09_BpftraceProfiler --profile bpftrace \
     --bpf syslat --gtest_filter="*ManySmallWrites*" \
@@ -81,7 +108,7 @@ as each 1-byte write. The kernel processes the buffer in one pass.
 ## Step 4: Compare
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_09_BpftraceProfiler --quick \
     --gtest_filter="*ManySmallWrites*" --csv /tmp/bpf_slow.csv
@@ -139,7 +166,7 @@ transition, which is a fixed cost per syscall regardless of payload size.
 - The `syslat` script produces latency histograms per syscall type
 - Always buffer writes and flush periodically, not per-byte or per-field
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- bpftrace profiling section
 - Demo 02 (perf) -- Use hardware counters to measure CPU overhead per syscall

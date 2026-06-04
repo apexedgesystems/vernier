@@ -167,7 +167,7 @@ GPU wins only at large scale or when data is already resident.
 - The framework separates kernel time, transfer time, and total time
 - Use `PERF_GPU_COMPARISON` macro for CPU-vs-GPU benchmarks
 
-## Further Reading
+## See Also
 
 - `docs/GPU_GUIDE.md` -- Complete GPU benchmarking reference
 - Demo 11 (Nsight) -- Profile GPU memory access patterns

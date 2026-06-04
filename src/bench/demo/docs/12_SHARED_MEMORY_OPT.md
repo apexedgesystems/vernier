@@ -187,7 +187,7 @@ the alignment between stride and bank count.
 - Use Nsight Compute to detect bank conflicts ("Shared Memory Bank Conflicts")
 - Two fixes (coalescing + bank conflicts) compound for 5x total improvement
 
-## Further Reading
+## See Also
 
 - `docs/GPU_GUIDE.md` -- Shared memory patterns and bank conflict avoidance
 - Demo 10 (GPU Basic) -- Framework fundamentals and transfer overhead

@@ -112,7 +112,15 @@ bool isIntelCPUWithRAPL() {
     return false;
   }
 
-  return std::filesystem::exists("/dev/cpu/0/msr");
+  // /dev/cpu/<n>/msr exists on every Linux box with the `msr` module
+  // loaded, but reading it requires root (or CAP_SYS_RAWIO). File
+  // existence alone is a false-positive when the user runs without
+  // sudo, so issue a probe read against the RAPL power-unit register;
+  // success means the backend can do real work in this session.
+  if (!std::filesystem::exists("/dev/cpu/0/msr")) {
+    return false;
+  }
+  return readMSR(0, MSR_RAPL_POWER_UNIT).has_value();
 #else
   return false;
 #endif
@@ -241,7 +249,7 @@ void RAPLProfiler::afterMeasure(const Stats& s) {
     out << "Average power: " << avgPowerWatts << " W\n";
     out << "Energy per operation: " << energyPerOpMillijoules << " mJ/call\n";
     out << "\n";
-    out << "Energy unit: " << (energyUnit_ * 1e6) << " uuJ\n";
+    out << "Energy unit: " << (energyUnit_ * 1e6) << " uJ\n";
     out << "Start counter: " << energyStart_ << "\n";
     out << "End counter: " << energyEnd_ << "\n";
     out << "Delta counter: " << deltaCounter << "\n";
@@ -281,3 +289,29 @@ std::unique_ptr<Profiler> makeRAPLProfiler(const PerfConfig& cfg, const std::str
 
 } // namespace bench
 } // namespace vernier
+
+namespace vernier {
+namespace bench {
+
+EnvReport checkRAPLEnvironment() {
+  if (RAPLProfiler::isAvailable()) {
+    return EnvReport{EnvReport::Status::Ok, "RAPL MSRs readable", ""};
+  }
+#ifdef __linux__
+  // Distinguish missing-MSR-device from has-device-but-not-readable so
+  // the hint actually matches the user's situation.
+  if (std::filesystem::exists("/dev/cpu/0/msr")) {
+    return EnvReport{EnvReport::Status::Error, "RAPL MSRs present but not readable by current user",
+                     "Re-run with sudo, or `sudo setcap cap_sys_rawio+ep <binary>`."};
+  }
+#endif
+  return EnvReport{EnvReport::Status::Error, "RAPL not available (Intel CPU + MSR access required)",
+                   "sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO)."};
+}
+
+} // namespace bench
+} // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND("rapl", ::vernier::bench::makeRAPLProfiler,
+                                  ::vernier::bench::checkRAPLEnvironment,
+                                  "Requires Intel CPU + 'sudo modprobe msr' + CAP_SYS_RAWIO.")

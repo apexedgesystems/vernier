@@ -1,5 +1,9 @@
 # API Reference
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++20 (C++23 used when available)
+
 Complete API documentation for the benchmarking framework. This reference covers all CPU and GPU APIs, profiling integration, and configuration options.
 
 ---
@@ -183,7 +187,7 @@ struct PerfConfig {
   // Profiling knobs (default off)
   std::string profileTool;             // "perf", "gperf", "bpftrace", "rapl", "callgrind"
   std::string profileArgs;             // Verbatim pass-through to the tool
-  std::vector<std::string> bpfScripts; // Curated script names: "offcpu", "syslat", "bio"
+  std::vector<std::string> bpfScripts; // Script names/paths: "fsync_latency", "write_latency"
   std::string artifactRoot;            // Profiler artifact directory
   int profileFrequency = 10000;        // Sampling Hz for CPU profilers
   bool profileAnalyze = false;         // Auto-run analysis after profiling
@@ -247,12 +251,38 @@ Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 void attachProfilerHooks(PerfCase& perf, const PerfConfig& cfg);
 ```
 
-**Supported profilers:**
+**Supported profilers** (each self-registers via the backend registry):
 
-- `perf` - Linux perf_events (CPU profiling, hardware counters)
-- `gperf` - gperftools (CPU/heap profiling)
-- `bpftrace` - BPF tracing (off-CPU, syscalls)
+CPU:
+
+- `perf` - Linux perf_events (`stat` / `record` / `mem` / `c2c` modes)
+- `gperf` - gperftools (CPU + optional heap sampling)
+- `callgrind` - valgrind callgrind (deterministic instruction counts)
+- `bpftrace` - BPF tracing (syscall / fsync latency scripts)
 - `rapl` - Intel RAPL (energy measurement)
+- `massif` - valgrind massif (heap usage timeline, ~20x overhead)
+- `memcheck` - valgrind memcheck (memory errors and leaks)
+- `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
+- `offcpu` - bpftrace finish_task_switch (where threads spend blocked time)
+- `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
+- `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
+
+GPU:
+
+- `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
+  canonical nsys stats reports)
+- `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
+  / synccheck / initcheck)
+- `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
+
+Adjacent in-process instrumentation:
+
+- **CUPTI** - per-launch register count, static + dynamic shared memory,
+  launch count populate the GPU CSV section on every `PERF_GPU_*` test
+  (no `--profile` flag required).
+- **NVTX** - `BENCH_NVTX_SCOPE("name") / BENCH_NVTX_MARK("name")` macros
+  label the nsys timeline; `NsightProfiler` auto-emits a range named after
+  the test around each measured window.
 
 **Example:**
 
@@ -323,62 +353,60 @@ EXPECT_STABLE_CV_CPU(result, cfg)
 
 ```cpp
 PERF_GPU_TEST(SuiteName, TestName)       // General GPU test
-PERF_GPU_TEST(SuiteName, TestName)     // Kernel-focused test
+PERF_GPU_THROUGHPUT(SuiteName, TestName) // Throughput-focused test
+PERF_GPU_LATENCY(SuiteName, TestName)    // Latency-focused test
+PERF_GPU_COMPARISON(SuiteName, TestName) // CPU vs GPU comparison
+PERF_GPU_BANDWIDTH(SuiteName, TestName)  // Memory bandwidth test
+PERF_GPU_SCALING(SuiteName, TestName)    // Multi-GPU scaling test
 
-UB_PERF_GPU_GUARD(varName)               // Create scoped GpuPerfCase
+UB_PERF_GPU_GUARD(varName)               // Create scoped PerfGpuCase
 PERF_GPU_MAIN()                          // Main with GPU support
 ```
 
-### GpuPerfCase
+### PerfGpuCase
 
 Core GPU benchmark harness.
 
 **Key methods:**
 
 ```cpp
-// Kernel builder (fluent interface)
-GpuKernelBuilder cudaKernel(
-  void (*kernel)(...),    // Kernel function pointer
-  dim3 grid,              // Grid dimensions
-  dim3 block,             // Block dimensions
-  size_t sharedMem = 0    // Shared memory per block
-);
+// CPU baseline (call before the GPU kernel to populate speedupVsCpu)
+PerfResult cpuBaseline(CpuFn fn, std::string label = "cpu_baseline");
 
-// Memory transfer
-GpuTransferBuilder transfer(
-  void* dst, void* src, size_t bytes,
-  cudaMemcpyKind kind
-);
+// Kernel builder (fluent interface). KernelFn = std::function<void(cudaStream_t)>.
+CudaKernelBuilder cudaKernel(KernelFn kernel, std::string label = "cuda_kernel");
 
-// Unified Memory testing
-GpuUnifiedMemoryBuilder unifiedMemory(
-  void* ptr, size_t bytes
-);
+// Multi-GPU builder. MultiGpuKernelFn = std::function<void(int deviceId, cudaStream_t)>.
+MultiGpuKernelBuilder cudaKernelMultiGpu(int deviceCount, MultiGpuKernelFn kernel,
+                                         std::string label = "multi_gpu_kernel");
+
+// Warmup the kernel before measuring
+void cudaWarmup(KernelFn kernel);
 
 // Accessors
 int cycles() const noexcept;
 int repeats() const noexcept;
-int gpuWarmup() const noexcept;
 const PerfConfig& cpuConfig() const noexcept;
-const GpuPerfConfig& gpuConfig() const noexcept;
+const PerfGpuConfig& gpuConfig() const noexcept;
+const std::string& testName() const noexcept;
+cudaStream_t stream() const noexcept;
 ```
 
-### GpuKernelBuilder
+### CudaKernelBuilder
 
 Fluent interface for kernel configuration and measurement.
 
 ```cpp
-class GpuKernelBuilder {
+class CudaKernelBuilder {
 public:
   // Configuration (optional)
-  GpuKernelBuilder& withHostInput(const void* host, size_t bytes);
-  GpuKernelBuilder& withDeviceInput(void* device, size_t bytes);
-  GpuKernelBuilder& withHostOutput(void* host, size_t bytes);
-  GpuKernelBuilder& withDeviceOutput(void* device, size_t bytes);
-  GpuKernelBuilder& withPinnedAlloc();
+  CudaKernelBuilder& withHostToDevice(const void* src, void* dst, size_t bytes);
+  CudaKernelBuilder& withDeviceToHost(const void* src, void* dst, size_t bytes);
+  CudaKernelBuilder& withLaunchConfig(dim3 grid, dim3 block, size_t sharedMemBytes = 0);
+  CudaKernelBuilder& withDeviceId(int deviceId);
 
-  // Measurement
-  GpuPerfResult measure(std::string label = "kernel");
+  // Measurement (label is set on cudaKernel(), not here)
+  PerfGpuResult measure();
 };
 ```
 
@@ -391,48 +419,63 @@ PERF_GPU_TEST(MyKernel, Throughput) {
   // Setup
   std::vector<float> h_input(N);
   std::vector<float> h_output(N);
+  float *d_input, *d_output;
+  cudaMalloc(&d_input, N * sizeof(float));
+  cudaMalloc(&d_output, N * sizeof(float));
+
+  dim3 block(256);
+  dim3 grid((N + 255) / 256);
+
+  perf.cudaWarmup([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_input, d_output, N);
+  });
 
   // Measure kernel performance
-  auto result = perf.cudaKernel(myKernel, grid, block)
-    .withHostInput(h_input.data(), h_input.size() * sizeof(float))
-    .withHostOutput(h_output.data(), h_output.size() * sizeof(float))
-    .measure("myKernel");
+  auto result = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_input, d_output, N);
+  }, "myKernel")
+    .withHostToDevice(h_input.data(), d_input, N * sizeof(float))
+    .withDeviceToHost(d_output, h_output.data(), N * sizeof(float))
+    .withLaunchConfig(grid, block)
+    .measure();
 
   // Validate
-  EXPECT_GT(result.stats.kernelGpuThroughput, 1e9) << "GPU throughput too low";
+  EXPECT_GT(result.callsPerSecond, 1000) << "GPU throughput too low";
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
+
+  cudaFree(d_input);
+  cudaFree(d_output);
 }
 ```
 
-### GpuPerfResult
+### PerfGpuResult
 
 ```cpp
-struct GpuPerfResult {
-  GpuStats stats;           // Comprehensive GPU statistics
-  std::string label;        // Kernel label
+struct PerfGpuResult {
+  GpuStats stats{};         // Comprehensive GPU statistics (see GpuStats below)
+  double kernelTimeUs{};    // CUDA event kernel time
+  double transferTimeUs{};  // H2D + D2H transfer time
+  double totalTimeUs{};     // Kernel + transfers
+  double callsPerSecond{};  // 1e6 / totalTimeUs
+  double speedupVsCpu{};    // Set by cpuBaseline() comparison
+  std::string label;        // Kernel label from cudaKernel()
+  int deviceId{-1};         // CUDA device ID
 };
 
 struct GpuStats {
-  // CPU-side timing
-  CpuTimingStats cpuStats;  // Wall-clock measurements
-
-  // GPU-side timing
-  double kernelTimeUs;      // CUDA event kernel time
-  double transferTimeUs;    // H2D + D2H transfer time
-
-  // Throughput
-  double kernelGpuThroughput;  // Ops/sec based on GPU time
-  double totalCpuThroughput;   // Ops/sec based on CPU time
-
-  // Memory bandwidth
-  double h2dBandwidthGBs;   // Host-to-device bandwidth
-  double d2hBandwidthGBs;   // Device-to-host bandwidth
-
-  // GPU metrics
-  double achievedOccupancy; // Actual occupancy (0.0-1.0)
-  double smClockMHz;        // SM clock frequency
-  std::string gpuModel;     // Device name
-  std::string computeCapability; // e.g., "8.6"
+  Stats cpuStats{};                    // CPU-side timing
+  GpuDeviceInfo deviceInfo{};          // GPU model, compute capability
+  MemoryTransferProfile transfers{};   // H2D/D2H bytes and bandwidthGBs()
+  OccupancyMetrics occupancy{};        // achievedOccupancy, block size, warps
+  ClockSpeedProfile clocks{};          // smClockMHzEnd, isThrottling()
+  PowerThermalProfile powerThermal{};  // Power draw, temperature (NVML)
+  CuptiKernelStats cupti{};            // In-process per-launch kernel metrics
+  double kernelTimeMedianUs{};
+  double transferTimeMedianUs{};
+  double totalTimeMedianUs{};
+  std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
+  std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only with managed memory
 };
 ```
 
@@ -443,11 +486,11 @@ struct GpuStats {
 EXPECT_STABLE_CV_GPU(gpuResult, perf.cpuConfig());
 
 // Occupancy validation
-EXPECT_GT(gpuResult.stats.achievedOccupancy, 0.5)
+EXPECT_GT(gpuResult.stats.occupancy.achievedOccupancy, 0.5)
   << "Low occupancy - kernel may be register/shared memory bound";
 
 // Bandwidth validation
-EXPECT_GT(gpuResult.stats.h2dBandwidthGBs, 10.0)
+EXPECT_GT(gpuResult.stats.transfers.bandwidthGBs(), 10.0)
   << "Low transfer bandwidth - check PCIe link";
 ```
 
@@ -488,14 +531,14 @@ Linux `perf` integration for CPU profiling.
 
 ```bash
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
-# Generates: perf-MyComponent.Throughput-TIMESTAMP.data
+# Generates: MyComponent.Throughput.perf/perf.data
 ```
 
 **Analysis:**
 
 ```bash
-perf report -i perf-MyComponent.Throughput-*.data
-perf annotate -i perf-MyComponent.Throughput-*.data
+perf report -i MyComponent.Throughput.perf/perf.data
+perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
 
 ### ProfilerGperf
@@ -505,24 +548,23 @@ Google Performance Tools integration.
 **Features:**
 
 - CPU profiling (sampling)
-- Heap profiling
-- Contention profiling
+- Heap profiling (`--profile-args heap`, or `both` for CPU + heap)
 
 **Usage:**
 
 ```bash
-# CPU profiling
+# CPU profiling (default) -> MyComponent.Throughput.gperf/cpu.prof
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
-# Heap profiling
-HEAPPROFILE=/tmp/heap ./MyComponent_PTEST --profile gperf
+# Heap profiling -> MyComponent.Throughput.gperf/heap.<N>.heap
+./MyComponent_PTEST --profile gperf --profile-args heap
 ```
 
 **Analysis:**
 
 ```bash
-google-pprof --text ./MyComponent_PTEST cpu-profile.prof
-google-pprof --pdf ./MyComponent_PTEST cpu-profile.prof > profile.pdf
+google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof
+google-pprof --pdf ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof > profile.pdf
 ```
 
 ### ProfilerBpftrace
@@ -539,7 +581,7 @@ BPF-based kernel tracing.
 
 ```bash
 # Requires root or CAP_BPF capability
-sudo ./MyComponent_PTEST --profile bpftrace --profile-args "fsync_latency.bt"
+sudo ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
 ```
 
 ### ProfilerRAPL
@@ -627,27 +669,51 @@ Additional columns for GPU tests:
 | `speedupVsCpu`      | double | GPU/CPU speedup ratio       |
 | `memBandwidthGBs`   | double | Memory bandwidth (GB/s)     |
 | `occupancy`         | double | Kernel occupancy [0.0-1.0]  |
-| `sm_clock_MHz`      | double | SM clock frequency          |
+| `smClockMHz`        | double | SM clock frequency          |
 | `throttling`        | bool   | Thermal throttling detected |
+
+### Power and Thermal Columns
+
+| Column              | Type   | Description                             |
+| ------------------- | ------ | --------------------------------------- |
+| `powerDrawW`        | double | Average GPU package power (watts)       |
+| `powerLimitW`       | double | Configured power-cap limit (watts)      |
+| `temperatureC`      | int    | Peak GPU temperature during the run (C) |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C) |
+
+Source: NVML. Populated on every NVIDIA GPU run.
+
+### CUPTI In-Process Kernel Metrics
+
+| Column                  | Type | Description                                      |
+| ----------------------- | ---- | ------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
+
+Source: CUPTI Activity API. Populated when libcupti is linked at build
+time; no `--profile` flag required.
 
 ### Multi-GPU Columns
 
-| Column                 | Type   | Description            |
-| ---------------------- | ------ | ---------------------- |
-| `device_id`            | int    | Primary CUDA device ID |
-| `device_count`         | int    | Number of GPUs used    |
-| `multi_gpu_efficiency` | double | Parallel efficiency    |
-| `p2p_bandwidth_GBs`    | double | Peer-to-peer bandwidth |
+| Column               | Type   | Description            |
+| -------------------- | ------ | ---------------------- |
+| `deviceId`           | int    | Primary CUDA device ID |
+| `deviceCount`        | int    | Number of GPUs used    |
+| `multiGpuEfficiency` | double | Parallel efficiency    |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth |
 
 ### Unified Memory Columns
 
-| Column                 | Type   | Description               |
-| ---------------------- | ------ | ------------------------- |
-| `um_page_faults`       | int64  | GPU page faults           |
-| `um_h2d_migrations`    | int64  | Host-to-device migrations |
-| `um_d2h_migrations`    | int64  | Device-to-host migrations |
-| `um_migration_time_us` | double | Total migration overhead  |
-| `um_thrashing`         | bool   | Thrashing detected        |
+| Column              | Type   | Description               |
+| ------------------- | ------ | ------------------------- |
+| `umPageFaults`      | int64  | GPU page faults           |
+| `umH2DMigrations`   | int64  | Host-to-device migrations |
+| `umD2HMigrations`   | int64  | Device-to-host migrations |
+| `umMigrationTimeUs` | double | Total migration overhead  |
+| `umThrashing`       | bool   | Thrashing detected        |
 
 ---
 
@@ -675,14 +741,17 @@ Additional columns for GPU tests:
 
 ### Profiling Flags
 
-| Flag                    | Type   | Default | Description                                      |
-| ----------------------- | ------ | ------- | ------------------------------------------------ |
-| `--profile TOOL`        | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind |
-| `--profile-args ARGS`   | string | -       | Profiler-specific arguments                      |
-| `--artifact-root DIR`   | string | .       | Profiler output directory                        |
-| `--profile-frequency N` | int    | 10000   | Sampling Hz for CPU profilers                    |
-| `--profile-analyze`     | bool   | false   | Auto-run analysis after profiling                |
-| `--bpf LIST`            | string | -       | BPF scripts (comma-separated): offcpu,syslat,bio |
+| Flag                     | Type   | Default | Description                                                                                                                                   |
+| ------------------------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof |
+| `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                   |
+| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                     |
+| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                                      |
+| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                    |
+| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                     |
+| `--profile-frequency N`  | int    | 10000   | Sampling Hz for CPU profilers                                                                                                                 |
+| `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                             |
+| `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                 |
 
 ### GPU-Specific Flags
 

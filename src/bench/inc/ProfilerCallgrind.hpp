@@ -8,12 +8,13 @@
  *  - Wraps the benchmark binary execution under `valgrind --tool=callgrind`
  *  - Deterministic instruction counting (no sampling noise, no frequency tuning)
  *  - Perfect for A/B comparisons: identical instruction counts across runs
- *  - Outputs callgrind.out.<pid> files for analysis with callgrind_annotate or KCachegrind
+ *  - Outputs a callgrind.out file (callgrind.out.<pid> when valgrind dumps at
+ *    exit) for analysis with callgrind_annotate or KCachegrind
  *
  * Modes:
- *  - Default: collect instruction counts, cache simulation off (faster)
- *  - "cache" in profileArgs: enable cache simulation (--cache-sim=yes)
- *  - "branch" in profileArgs: enable branch prediction simulation
+ *  - Default: instruction counts only (cache / branch simulation off, faster)
+ *  - Cache or branch simulation: add valgrind's --cache-sim=yes /
+ *    --branch-sim=yes to the wrap command
  *
  * Requirements:
  *  - valgrind installed (apt install valgrind)
@@ -28,8 +29,9 @@
  *
  * Usage:
  *   --profile callgrind                    # Basic instruction counts
- *   --profile callgrind --profile-args cache  # With cache simulation
  *   --profile callgrind --profile-analyze  # Auto-run callgrind_annotate
+ *   # Cache simulation: wrap with valgrind directly:
+ *   #   valgrind --tool=callgrind --cache-sim=yes ./MyTest --profile callgrind
  */
 
 #include <memory>
@@ -72,9 +74,11 @@ private:
   PerfConfig cfg_;
   std::string testName_;
   std::string artifactDir_;
-  bool wantCache_{false};
-  bool wantBranch_{false};
   bool runningUnderValgrind_{false};
+  // True only if callgrind_control can actually toggle instrumentation.
+  // Inside a Docker PID namespace the control program cannot reach the
+  // valgrind process, so we keep recording for the whole run instead.
+  bool canToggle_{false};
 };
 
 /* --------------------------------- API --------------------------------- */

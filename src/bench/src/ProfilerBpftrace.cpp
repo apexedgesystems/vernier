@@ -2,8 +2,9 @@
  * @file ProfilerBpftrace.cpp
  * @brief Implementation of bpftrace profiler backend.
  *
- * This file consolidates the entire BPF subsystem (formerly BpfConfig, BpfProbes, BpfRunner)
- * into a single implementation file, as these are implementation details of the bpftrace profiler.
+ * Holds the BpfConfig + BpfRunner internals behind an anonymous namespace so
+ * the bpftrace integration does not export any extra symbols beyond
+ * ProfilerBpftrace itself.
  */
 
 #include "src/bench/inc/ProfilerBpftrace.hpp"
@@ -35,14 +36,14 @@ namespace bench {
 
 #ifdef __linux__
 // ============================================================================
-// BPF Configuration (formerly BpfConfig.hpp)
+// BPF Configuration
 // ============================================================================
 
 namespace { // Internal implementation details
 
 struct BpfConfig {
   bool enabled = false;
-  std::string scriptsDir = "src/utilities/benchmarking/bpf";
+  std::string scriptsDir = "src/bench/bpf";
   std::vector<std::string> scripts;
   std::string outputDir;
   std::string format = "text";
@@ -94,7 +95,7 @@ void populateFromPerfConfig(BpfConfig& out, const PerfConfig& perf, const std::s
 }
 
 // ============================================================================
-// BPF Script Specs (formerly BpfProbes.hpp - simplified)
+// BPF Script Specs
 // ============================================================================
 
 struct BpfSpec {
@@ -104,7 +105,7 @@ struct BpfSpec {
 };
 
 // ============================================================================
-// BPF Runner (formerly BpfRunner.hpp)
+// BPF Runner
 // ============================================================================
 
 class BpfRunner {
@@ -133,6 +134,10 @@ public:
       return false;
     }
     if (!canRun()) {
+      std::fprintf(stderr,
+                   "[bpftrace] cannot run %s: bpftrace not on PATH or not running as root.\n"
+                   "[bpftrace] Re-run with sudo (or grant CAP_BPF) to attach kprobes.\n",
+                   spec.name.c_str());
       return false;
     }
 
@@ -147,6 +152,16 @@ public:
 
     std::ifstream in(scriptPath);
     if (!in) {
+      // The script was not found under cfg_.scriptsDir. The default
+      // (src/bench/bpf/) resolves when running from the vernier tree; a
+      // consumer points --bpf-scripts / PERF_BPF_SCRIPTS at its own copy.
+      // Silently skipping looks like the profile ran fine, so be loud.
+      std::fprintf(stderr,
+                   "[bpftrace] script not found: %s\n"
+                   "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
+                   "[bpftrace] `--bpf-scripts <dir>` (default: src/bench/bpf/),\n"
+                   "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n",
+                   scriptPath.c_str());
       return false;
     }
     std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
@@ -336,3 +351,30 @@ std::unique_ptr<Profiler> makeBpftraceProfiler(const PerfConfig& cfg, const std:
 
 } // namespace bench
 } // namespace vernier
+
+namespace vernier {
+namespace bench {
+
+EnvReport checkBpftraceEnvironment() {
+#ifdef __linux__
+  if (std::system("command -v bpftrace >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Error, "bpftrace binary not found on PATH",
+                     "apt install bpftrace."};
+  }
+  if (geteuid() != 0) {
+    return EnvReport{EnvReport::Status::Warning, "bpftrace available but not running as root",
+                     "Run with sudo or grant CAP_BPF; bpftrace probes require kernel privileges."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root", ""};
+#else
+  return EnvReport{EnvReport::Status::Error, "bpftrace is Linux-only",
+                   "Run on Linux or use a different profiler."};
+#endif
+}
+
+} // namespace bench
+} // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND("bpftrace", ::vernier::bench::makeBpftraceProfiler,
+                                  ::vernier::bench::checkBpftraceEnvironment,
+                                  "Install bpftrace and run with root/sudo.")

@@ -26,7 +26,7 @@ Run benchmarks in containers with reproducible, validated environments. Perfect 
 **Isolated** - No dependency conflicts with host system
 **Portable** - Works on any machine with Docker installed
 **CI-ready** - Easy integration with GitHub Actions, GitLab CI, Jenkins
-**Validated** - Built-in validation script ensures everything works
+**Validated** - `bench validate` ensures everything works
 
 ### What You'll Need
 
@@ -256,23 +256,31 @@ docker run --rm --gpus all mybench-gpu:latest nvidia-smi
 
 ## Container Validation
 
-### Built-in Validation Script
+### Built-in Environment Checks
 
-The framework includes a comprehensive validation script to ensure your container has everything needed:
+The `bench` tool checks that your container has everything needed for
+profiling. Build the tools with `make tools-rust` and source the build
+`.env` to put `bench` on PATH, then run `bench validate`:
 
 **Running validation:**
 
 ```bash
 # Inside container
-./vernier/tst/validate_container.sh
+make tools-rust
+source build/native-linux-debug/.env
+bench validate
 
 # From host
 docker run --rm --privileged \
 -v /usr/bin/perf:/usr/bin/perf:ro \
 -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
 mybench:latest \
-./vernier/tst/validate_container.sh
+bash -c "make tools-rust && source build/native-linux-debug/.env && bench validate"
 ```
+
+For GPU containers, add `bench gpu-env` to check GPU environment readiness
+(CUDA, Nsight Systems, Nsight Compute). For a deeper per-backend check tied
+to a specific binary, run `bench doctor <ptest-binary>`.
 
 **What it checks:**
 
@@ -324,18 +332,18 @@ Container is ready for benchmarking.
 # Add validation as health check
 FROM ubuntu:22.04
 
-# ... install dependencies ...
+# ... install dependencies, copy source ...
 
-# Copy validation script
-COPY tst/validate_container.sh /usr/local/bin/
+# Build the tools and source the build .env so bench is on PATH
+RUN make tools-rust
 
 # Run validation during build (fails build if issues)
-RUN /usr/local/bin/validate_container.sh || \
+RUN . build/native-linux-debug/.env && bench validate || \
 (echo "ERROR: Container validation failed" && exit 1)
 
 # Also use as runtime health check
 HEALTHCHECK --interval=60s --timeout=10s \
-CMD /usr/local/bin/validate_container.sh || exit 1
+CMD . build/native-linux-debug/.env && bench validate || exit 1
 ```
 
 ---
@@ -386,8 +394,7 @@ docker run --rm --privileged \
 mybench:latest \
 bash -c "
 ./ptests/MyComponent_PTEST --profile perf --artifact-root artifacts/
-bench flamegraph \
---perf-data artifacts/MyComponent.Test.perf/perf.data \
+bench flamegraph artifacts/MyComponent.Test.perf/perf.data \
 --output flamegraph.svg
 "
 ```
@@ -452,7 +459,7 @@ RUN cmake -B build -S . && cmake --build build -j$(nproc)
 # Welcome message
 RUN echo 'echo " Benchmarking Container"' >> /etc/bash.bashrc && \
 echo 'echo " Tools: perf, FlameGraph, Python analysis"' >> /etc/bash.bashrc && \
-echo 'echo " Run: validate_container.sh to verify setup"' >> /etc/bash.bashrc
+echo 'echo " Run: bench validate to verify setup"' >> /etc/bash.bashrc
 ```
 
 **Run with full profiling:**
@@ -466,10 +473,10 @@ docker run --rm -it --privileged \
 mybench:latest bash
 
 # Inside container:
-./validate_container.sh # Verify everything works
+source build/native-linux-debug/.env
+bench validate # Verify everything works
 ./ptests/MyComponent_PTEST --profile perf --artifact-root /results/
-bench flamegraph \
---perf-data /results/MyComponent.Test.perf/perf.data \
+bench flamegraph /results/MyComponent.Test.perf/perf.data \
 --output /results/flamegraph.svg
 ```
 
@@ -500,7 +507,7 @@ run: |
 docker run --rm --privileged \
 -v /usr/bin/perf:/usr/bin/perf:ro \
 mybench:latest \
-./tst/validate_container.sh
+bash -c "source build/native-linux-debug/.env && bench validate"
 
 - name: Run benchmarks
 run: |
@@ -530,7 +537,7 @@ script:
 
 # Validate
 - docker run --rm mybench:$CI_COMMIT_SHA
-./tst/validate_container.sh
+bash -c "source build/native-linux-debug/.env && bench validate"
 
 # Run benchmarks
 - docker run --rm
@@ -582,8 +589,8 @@ Fail fast if container is broken:
 
 ```dockerfile
 # Run validation during build
-COPY tst/validate_container.sh /usr/local/bin/
-RUN validate_container.sh || exit 1
+RUN make tools-rust
+RUN . build/native-linux-debug/.env && bench validate || exit 1
 ```
 
 ### 4. Use Specific Base Images
@@ -633,13 +640,14 @@ ls results/results.csv
 
 ### Container Validation Fails
 
-**Problem:** `validate_container.sh` reports errors.
+**Problem:** `bench validate` reports errors.
 
 **Solutions:**
 
 ```bash
 # Check which checks failed
-docker run --rm mybench:latest ./tst/validate_container.sh
+docker run --rm mybench:latest \
+bash -c "source build/native-linux-debug/.env && bench validate"
 
 # Common issues:
 
@@ -786,6 +794,9 @@ RUN cmake -B build -S . \
 cmake --build build --parallel $(nproc) && \
 strip build/bin/ptests/*
 
+# Build the bench tool (provides validate, gpu-env, doctor)
+RUN make tools-rust
+
 # ============ Stage 2: Runtime ============
 FROM ubuntu:22.04
 
@@ -822,10 +833,10 @@ COPY --from=builder --chown=benchmark:benchmark \
 COPY --from=builder --chown=benchmark:benchmark \
 /src/tools ./tools
 COPY --from=builder --chown=benchmark:benchmark \
-/src/tst/validate_container.sh ./
+/src/build/native-linux-debug ./build/native-linux-debug
 
 # Validate during build
-RUN ./validate_container.sh || \
+RUN . build/native-linux-debug/.env && bench validate || \
 (echo "ERROR: Validation failed" && exit 1)
 
 # Switch to non-root
@@ -839,7 +850,7 @@ CMD test -f ./ptests/MyComponent_PTEST || exit 1
 ENV PS1=' benchmark@docker:\w\$ '
 
 # Default: run validation
-CMD ["./validate_container.sh"]
+CMD ["bash", "-c", "source build/native-linux-debug/.env && bench validate"]
 ```
 
 **Build and run:**

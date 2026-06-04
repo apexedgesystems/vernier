@@ -222,9 +222,14 @@ public:
     totalTimes.reserve(cpuCfg_.repeats);
 
     ClockSpeedProfile clocks{};
+    PowerThermalProfile powerThermal{};
     if (gpuCfg_.captureClockSpeeds) {
       captureClockSpeed(clocks, true);
+      capturePowerThermal(powerThermal, true);
     }
+
+    // Start in-process kernel metrics; no-op when libcupti is unavailable.
+    cupti_.start();
 
     UnifiedMemoryProfile umProfile{};
     UMSnapshot umBefore, umAfter;
@@ -281,7 +286,11 @@ public:
 
     if (gpuCfg_.captureClockSpeeds) {
       captureClockSpeed(clocks, false);
+      capturePowerThermal(powerThermal, false);
     }
+
+    // Drain CUPTI activity buffers and aggregate before publishing the result.
+    cupti_.stop();
 
     auto kernelVals = kernelTimes;
     auto h2dVals = h2dTimes;
@@ -308,6 +317,8 @@ public:
     result.stats.cpuStats = totalStats;
     result.stats.deviceInfo = deviceInfo_;
     result.stats.clocks = clocks;
+    result.stats.powerThermal = powerThermal;
+    result.stats.cupti = cupti_.stats();
 
     size_t totalH2D = 0, totalD2H = 0;
     for (const auto& xfer : h2d)
@@ -565,6 +576,48 @@ private:
 #endif
   }
 
+  void capturePowerThermal(PowerThermalProfile& pt, bool isStart) {
+#ifdef COMPAT_NVML_AVAILABLE
+    if (!nvmlInitialized_)
+      return;
+
+    // Power: NVML reports milliwatts.
+    unsigned int powerMw = 0;
+    if (nvmlDeviceGetPowerUsage(nvmlDevice_, &powerMw) == NVML_SUCCESS) {
+      const double watts = static_cast<double>(powerMw) / 1000.0;
+      if (isStart)
+        pt.powerDrawWStart = watts;
+      else
+        pt.powerDrawWEnd = watts;
+    }
+
+    // Temperature: NVML reports degrees Celsius for the GPU core. Newer NVML
+    // deprecates nvmlDeviceGetTemperature for a versioned variant that is not
+    // present on all supported drivers, so keep the classic call (works
+    // everywhere we target) and silence the deprecation locally.
+    unsigned int tempC = 0;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    if (nvmlDeviceGetTemperature(nvmlDevice_, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS) {
+#pragma GCC diagnostic pop
+      if (isStart)
+        pt.temperatureCStart = static_cast<int>(tempC);
+      else
+        pt.temperatureCEnd = static_cast<int>(tempC);
+    }
+
+    if (isStart) {
+      unsigned int limitMw = 0;
+      if (nvmlDeviceGetPowerManagementLimit(nvmlDevice_, &limitMw) == NVML_SUCCESS) {
+        pt.powerLimitW = static_cast<double>(limitMw) / 1000.0;
+      }
+    }
+#else
+    (void)pt;
+    (void)isStart;
+#endif
+  }
+
   void enablePeerToPeer(int deviceCount) {
     for (int i = 0; i < deviceCount; ++i) {
       cudaSetDevice(i);
@@ -661,6 +714,30 @@ private:
     row.smClockMHz = result.stats.clocks.smClockMHzEnd;
     row.throttling = result.stats.clocks.isThrottling();
 
+    // Populate power + thermal only when we actually sampled non-zero values.
+    const auto& pt = result.stats.powerThermal;
+    if (pt.powerDrawWStart > 0.0 || pt.powerDrawWEnd > 0.0) {
+      row.powerDrawW = pt.avgPowerDrawW();
+    }
+    if (pt.powerLimitW > 0.0) {
+      row.powerLimitW = pt.powerLimitW;
+    }
+    if (pt.temperatureCStart > 0 || pt.temperatureCEnd > 0) {
+      row.temperatureC = pt.temperatureCEnd;
+      row.temperatureDeltaC = pt.temperatureDeltaC();
+    }
+
+    // CUPTI columns are only populated when at least one launch was captured;
+    // otherwise the CSV cells stay empty rather than reporting zeros.
+    const auto& cu = result.stats.cupti;
+    if (cu.kernelLaunches > 0) {
+      row.cuptiKernelLaunches = cu.kernelLaunches;
+      row.cuptiRegistersMedian = cu.registersMedian;
+      row.cuptiRegistersMax = cu.registersMax;
+      row.cuptiStaticSmemBytes = cu.staticSmemBytes;
+      row.cuptiDynamicSmemBytes = cu.dynamicSmemBytes;
+    }
+
     if (result.deviceId >= 0) {
       row.deviceId = result.deviceId;
     }
@@ -739,6 +816,10 @@ private:
   nvmlDevice_t nvmlDevice_{};
   bool nvmlInitialized_ = false;
 #endif
+
+  // In-process kernel metric collector (no-op when libcupti is not linked
+  // or when the CUDA toolkit is too old to expose CUpti_ActivityKernel9).
+  CuptiCollector cupti_{};
 
   friend class PerfGpuCase;
 };

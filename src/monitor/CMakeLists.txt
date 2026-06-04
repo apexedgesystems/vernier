@@ -47,11 +47,20 @@ target_link_libraries(
 vernier_standard_optins(${LIB_NAME})
 
 # ------------------------------------------------------------------------------
+# Production documentation (release builds only)
+# ------------------------------------------------------------------------------
+
+vernier_install_docs("${CMAKE_CURRENT_SOURCE_DIR}/docs")
+
+# ------------------------------------------------------------------------------
 # Subdirectories
 # ------------------------------------------------------------------------------
 
 if (PROJECT_IS_TOP_LEVEL)
   if (EXISTS "${UTST_DIR}/CMakeLists.txt")
     add_subdirectory(utst)
+  endif ()
+  if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/examples/CMakeLists.txt")
+    add_subdirectory(examples)
   endif ()
 endif ()

@@ -255,6 +255,33 @@ function (vernier_nvml_enable _target)
 endfunction ()
 
 # ------------------------------------------------------------------------------
+# vernier_nvtx_enable(<target>)
+#
+# Enable NVTX3 (NVIDIA Tools Extension) usage on <target>.
+# Defines COMPAT_NVTX_AVAILABLE=1 (toolkit present) or 0 (absent).
+#
+# NVTX3 is header-only and ships with the CUDA toolkit as the INTERFACE
+# imported target CUDA::nvtx3. When present, propagating it gives the
+# target's translation units access to <nvtx3/nvToolsExt.h> at zero
+# runtime cost (no library to load). When absent, the macros stay no-op
+# so the same code builds on CPU-only hosts.
+# ------------------------------------------------------------------------------
+function (vernier_nvtx_enable _target)
+  if (NOT TARGET "${_target}")
+    return()
+  endif ()
+
+  _vernier_cuda_target_scope(${_target} _scope)
+
+  if (TARGET CUDA::nvtx3)
+    target_compile_definitions(${_target} ${_scope} COMPAT_NVTX_AVAILABLE=1)
+    target_link_libraries(${_target} ${_scope} CUDA::nvtx3)
+  else ()
+    target_compile_definitions(${_target} ${_scope} COMPAT_NVTX_AVAILABLE=0)
+  endif ()
+endfunction ()
+
+# ------------------------------------------------------------------------------
 # vernier_cupti_enable(<target>)
 #
 # Enable CUPTI usage when libcupti is available.

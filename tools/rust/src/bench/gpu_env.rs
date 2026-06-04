@@ -18,6 +18,7 @@ pub fn run_checks() -> Vec<CheckResult> {
     results.push(check_nvidia_smi());
     results.push(check_nvidia_driver());
     results.push(check_cuda_toolkit());
+    results.push(check_nsys_trace_compat());
     results.extend(check_gpu_devices());
     results.push(check_persistence_mode());
     results.push(check_clock_state());
@@ -570,6 +571,75 @@ fn check_p2p_access() -> Vec<CheckResult> {
     }
 }
 
+/// Parse a CUDA `major.minor` from strings like "release 13.1, V13.1.115",
+/// "CUDA Version: 13.0", or "13.1" (the patch component, if any, is ignored).
+fn parse_cuda_version(text: &str) -> Option<(u32, u32)> {
+    for token in text.split(|c: char| !(c.is_ascii_digit() || c == '.')) {
+        let mut parts = token.split('.');
+        if let (Some(major), Some(minor)) = (parts.next(), parts.next()) {
+            if let (Ok(major), Ok(minor)) = (major.parse::<u32>(), minor.parse::<u32>()) {
+                return Some((major, minor));
+            }
+        }
+    }
+    None
+}
+
+/// Compare the local CUDA toolkit (nvcc) against the CUDA version the driver
+/// provides (nvidia-smi). nsys can only trace a binary whose toolkit CUDA is
+/// not newer than the driver's, so a toolkit ahead of the driver is the common
+/// cause of a silent empty nsys trace. ncu and in-process CUPTI are unaffected.
+fn check_nsys_trace_compat() -> CheckResult {
+    let label = "nsys trace compatibility".to_string();
+
+    let toolkit = cmd_stdout("nvcc", &["--version"])
+        .and_then(|out| {
+            out.lines()
+                .find(|l| l.contains("release"))
+                .map(str::to_string)
+        })
+        .and_then(|line| parse_cuda_version(&line));
+
+    let driver = cmd_stdout("nvidia-smi", &[])
+        .and_then(|banner| {
+            banner
+                .lines()
+                .find_map(|l| l.split("CUDA Version:").nth(1).map(str::to_string))
+        })
+        .and_then(|s| parse_cuda_version(&s));
+
+    match (toolkit, driver) {
+        (Some(t), Some(d)) if t > d => CheckResult {
+            label,
+            status: CheckStatus::Warn,
+            detail: format!(
+                "CUDA toolkit {}.{} is ahead of the driver's CUDA {}.{}; nsys cannot trace CUDA \
+                 activity (build with a toolkit <= the driver's CUDA, or upgrade the driver). ncu \
+                 and in-process CUPTI are unaffected.",
+                t.0, t.1, d.0, d.1
+            ),
+        },
+        (Some(t), Some(d)) => CheckResult {
+            label,
+            status: CheckStatus::Ok,
+            detail: format!(
+                "toolkit {}.{} <= driver CUDA {}.{}; nsys can trace",
+                t.0, t.1, d.0, d.1
+            ),
+        },
+        (None, _) => CheckResult {
+            label,
+            status: CheckStatus::Ok,
+            detail: "no local CUDA toolkit (nvcc); toolkit/driver skew check not applicable".into(),
+        },
+        (Some(_), None) => CheckResult {
+            label,
+            status: CheckStatus::Warn,
+            detail: "cannot read the driver's CUDA version from nvidia-smi to compare".into(),
+        },
+    }
+}
+
 /* ----------------------------- Tests ----------------------------- */
 
 #[cfg(test)]
@@ -582,6 +652,26 @@ mod tests {
         let results = run_checks();
         // Should always have at least the tool/driver/toolkit checks
         assert!(results.len() >= 3, "got {} results", results.len());
+    }
+
+    /// @test CUDA version strings parse to (major, minor), patch ignored.
+    #[test]
+    fn parse_cuda_version_forms() {
+        assert_eq!(
+            parse_cuda_version("Cuda compilation tools, release 13.1, V13.1.115"),
+            Some((13, 1))
+        );
+        assert_eq!(parse_cuda_version("CUDA Version: 13.0"), Some((13, 0)));
+        assert_eq!(parse_cuda_version("13.2"), Some((13, 2)));
+        assert_eq!(parse_cuda_version("no version here"), None);
+    }
+
+    /// @test The toolkit-vs-driver ordering used by the skew check.
+    #[test]
+    fn toolkit_ahead_of_driver_ordering() {
+        assert!((13u32, 1u32) > (13u32, 0u32)); // 13.1 toolkit ahead of 13.0 driver
+        assert!(!((13u32, 0u32) > (13u32, 1u32))); // matched / behind is fine
+        assert!((14u32, 0u32) > (13u32, 9u32)); // major dominates minor
     }
 
     /// @test Each check has a non-empty label and detail.

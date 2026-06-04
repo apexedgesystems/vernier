@@ -7,6 +7,27 @@ energy consumption per operation. Shows that optimized code not only runs
 faster but also consumes less total energy -- a critical metric for
 battery-powered and thermally-constrained systems.
 
+## What is RAPL?
+
+RAPL ("Running Average Power Limit") is an Intel CPU feature that
+exposes per-package energy counters through Model-Specific Registers
+(MSRs). It tells you, in joules, how much energy the CPU package burned
+during a window of work -- _measured_, not estimated from cycles.
+
+- **Best for:** energy-per-operation comparisons. Two builds that hit
+  the same wall-clock might still differ in joules; RAPL surfaces that.
+- **How it works:** the OS reads `/dev/cpu/<n>/msr` between checkpoints
+  and the delta is energy consumed. The harness does this around the
+  measured window.
+- **Overhead:** essentially none -- just two MSR reads per repeat.
+- **Skip it for:** non-Intel CPUs (no equivalent counter on most ARM;
+  AMD has a similar interface but the driver path differs), or runs
+  without MSR access (need `sudo modprobe msr` and root / CAP_SYS_RAWIO).
+
+**In vernier:** `--profile rapl` populates per-test energy columns in
+the CSV. Inside containers you typically need `--privileged` plus the
+host MSR module loaded.
+
 ## Prerequisites
 
 ```bash
@@ -20,7 +41,7 @@ make tools-rust
 ## Step 1: Run with RAPL Profiling
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_08_RaplProfiler --profile rapl --quick \
     --csv /tmp/rapl_demo.csv
@@ -78,7 +99,7 @@ but for much less time, resulting in lower total energy per operation.
 - Auto-vectorization is one of the highest-leverage energy optimizations
 - RAPL requires Intel CPU (Haswell+) and MSR access
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- RAPL profiling section
 - Demo 02 (perf) -- Use hardware counters alongside RAPL

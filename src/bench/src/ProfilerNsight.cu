@@ -16,6 +16,9 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include "src/bench/inc/Nvtx.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
+
 namespace vernier {
 namespace bench {
 
@@ -53,16 +56,40 @@ bool NsightProfiler::isNcuAvailable() const {
 }
 
 void NsightProfiler::beforeMeasure() {
-  if (mode_ == NsightMode::Systems && isNsysAvailable()) {
+  // Inside a container PID namespace, `nsys profile -p <pid>` / `ncu -p <pid>`
+  // attach modes cannot reach this process reliably. Print the wrap-externally
+  // hint and skip the attach attempt; the user runs nsys/ncu around the binary
+  // instead (same pattern callgrind / compute-sanitizer use).
+  if (profiler_env::isInContainer()) {
+    const char* tool = (mode_ == NsightMode::Systems) ? "nsys" : "ncu";
+    std::fprintf(stderr,
+                 "\n[nsight] running inside a container; attach-by-pid is unreliable.\n"
+                 "[nsight] Wrap externally instead:\n"
+                 "[nsight]   %s profile -o %s/profile <this-binary> --profile nsight [...]\n"
+                 "[nsight] Skipping internal attach for this run.\n\n",
+                 tool, artifactDir_.c_str());
+  } else if (mode_ == NsightMode::Systems && isNsysAvailable()) {
     launchNsys();
   } else if (mode_ == NsightMode::Compute && isNcuAvailable()) {
     launchNcu();
   } else if (mode_ == NsightMode::ComputeReplay && isNcuAvailable()) {
     launchNcuReplay();
   }
+  // Auto-emit an NVTX range named after the test so the measured window
+  // appears as a labeled region in the nsys timeline. Pop in afterMeasure.
+#if COMPAT_NVTX_AVAILABLE
+  nvtxRangePushA(testName_.c_str());
+  nvtxRangePush_ = true;
+#endif
 }
 
 void NsightProfiler::afterMeasure(const Stats& /*s*/) {
+#if COMPAT_NVTX_AVAILABLE
+  if (nvtxRangePush_) {
+    nvtxRangePop();
+    nvtxRangePush_ = false;
+  }
+#endif
   stopProfiler();
 
   if (useReplayMode_) {
@@ -203,6 +230,41 @@ void NsightProfiler::stopProfiler() {
   int status = 0;
   ::waitpid(childPid_, &status, WNOHANG);
   childPid_ = -1;
+
+  // For Nsight Systems runs, auto-extract the four canonical reports
+  // (kernel summary, API summary, mem size summary, mem time summary).
+  // Reports are written next to the .nsys-rep so the user can grep them
+  // without an extra cli round-trip.
+  if (mode_ == NsightMode::Systems) {
+    extractNsysStats();
+  }
+}
+
+void NsightProfiler::extractNsysStats() {
+  const std::string repPath = artifactDir_ + "/profile.nsys-rep";
+  std::error_code ec;
+  if (!std::filesystem::exists(repPath, ec)) {
+    return; // nsys never produced a report (likely Docker attach failure)
+  }
+  static const char* const REPORTS[] = {
+      "cuda_gpu_kern_sum",
+      "cuda_api_sum",
+      "cuda_gpu_mem_size_sum",
+      "cuda_gpu_mem_time_sum",
+  };
+  for (const char* report : REPORTS) {
+    const std::string outPath = artifactDir_ + "/" + report + ".txt";
+    const std::string cmd = "nsys stats --report " + std::string(report) + " '" + repPath +
+                            "' > '" + outPath + "' 2>/dev/null";
+    [[maybe_unused]] int rc = std::system(cmd.c_str());
+  }
+  std::fprintf(stderr,
+               "\n[nsight] auto-extracted nsys stats reports to %s:\n"
+               "[nsight]   cuda_gpu_kern_sum.txt    -- per-kernel time distribution\n"
+               "[nsight]   cuda_api_sum.txt         -- CUDA API call overhead\n"
+               "[nsight]   cuda_gpu_mem_size_sum.txt -- H2D/D2H byte totals\n"
+               "[nsight]   cuda_gpu_mem_time_sum.txt -- transfer time totals\n\n",
+               artifactDir_.c_str());
 }
 
 void NsightProfiler::parseReplayMetrics() {
@@ -235,3 +297,38 @@ std::unique_ptr<Profiler> makeNsightProfiler(const PerfConfig& cfg, const std::s
 
 } // namespace bench
 } // namespace vernier
+
+namespace vernier {
+namespace bench {
+
+EnvReport checkNsightEnvironment() {
+  const bool nsys = std::system("command -v nsys >/dev/null 2>&1") == 0;
+  const bool ncu = std::system("command -v ncu  >/dev/null 2>&1") == 0;
+  if (!nsys && !ncu) {
+    return EnvReport{EnvReport::Status::Error, "neither nsys nor ncu found on PATH",
+                     "Install CUDA toolkit + Nsight (devtools repo on Ubuntu)."};
+  }
+  if (!nsys) {
+    return EnvReport{EnvReport::Status::Warning, "ncu present but nsys missing",
+                     "Install nsight-systems-cli for timeline profiling."};
+  }
+  if (!ncu) {
+    return EnvReport{EnvReport::Status::Warning, "nsys present but ncu missing",
+                     "Install nsight-compute for kernel analysis."};
+  }
+  // Both present; under a Docker PID namespace attach-by-pid is unreliable, so
+  // wrap nsys/ncu externally around the binary.
+  if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
+    return EnvReport{
+        EnvReport::Status::Warning, "nsys + ncu available; running in Docker (PID namespace)",
+        "Wrap nsys/ncu externally around the binary (attach-by-pid is unreliable here)."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
+}
+
+} // namespace bench
+} // namespace vernier
+
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "nsight", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNsightEnvironment,
+    "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")

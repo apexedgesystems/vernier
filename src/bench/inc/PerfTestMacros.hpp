@@ -51,7 +51,15 @@
  * @endcode
  */
 
+#include <cstdio>
 #include <string>
+
+// gtest itself is included by user test binaries (the existing PERF_TEST
+// macro chain already requires it). The PERF_MAIN macro below references
+// ::testing::UnitTest directly so the gtest header is in scope only where
+// PERF_MAIN is expanded -- never in library TUs that pull this header
+// transitively. This keeps bench's interface clean of gtest for downstream
+// projects that FetchContent vernier alongside their own gtest setup.
 
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
@@ -168,6 +176,23 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
  *   - Initialize GoogleTest
  *   - Run all tests
  */
+/// Inline filter-validation: a typo in --gtest_filter under --profile silently
+/// produces empty artifacts; emit a loud warning at end-of-main instead.
+/// Expanded only inside test binaries that already include gtest.
+#define VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg)                                            \
+  do {                                                                                             \
+    if (!(cfg).profileTool.empty()) {                                                              \
+      const auto* _vernier_ut = ::testing::UnitTest::GetInstance();                                \
+      if (_vernier_ut && _vernier_ut->test_to_run_count() == 0) {                                  \
+        std::fprintf(stderr,                                                                       \
+                     "\n[profile] --profile %s requested but the gtest filter matched zero "       \
+                     "tests.\n[profile] Any profiler artifacts written are empty. Run with\n"      \
+                     "[profile] --gtest_list_tests to see available test names.\n\n",              \
+                     (cfg).profileTool.c_str());                                                   \
+      }                                                                                            \
+    }                                                                                              \
+  } while (0)
+
 #define PERF_MAIN()                                                                                \
   int main(int argc, char** argv) {                                                                \
     auto& cfg = vernier::bench::detail::perfConfigSingleton();                                     \
@@ -175,7 +200,9 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
     vernier::bench::setGlobalPerfConfig(&cfg);                                                     \
     vernier::bench::installPerfEventListener(cfg);                                                 \
     ::testing::InitGoogleTest(&argc, argv);                                                        \
-    return RUN_ALL_TESTS();                                                                        \
+    const int _vernier_rc = RUN_ALL_TESTS();                                                       \
+    VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);                                               \
+    return _vernier_rc;                                                                            \
   }
 
 #endif // VERNIER_PERFTESTMACROS_HPP

@@ -83,8 +83,11 @@ enum Command {
 
     /// Execute a benchmark binary with optional CPU pinning and profiling
     Run {
-        /// Path to benchmark binary
-        binary: PathBuf,
+        /// Benchmark binary: a full path, or a short name that auto-resolves
+        /// under build/*/bin/{ptests,tests,examples}. The resolver tries the
+        /// name as given, then with `_PTEST` / `_pTest` suffixes, then with
+        /// a `BenchDemo_` prefix.
+        binary: String,
 
         /// CSV output path (passed to binary as --csv)
         #[arg(long)]
@@ -105,6 +108,13 @@ enum Command {
         /// Profiling tool (passed to binary as --profile)
         #[arg(long)]
         profile: Option<String>,
+
+        /// Where wrap-externally backends (massif, memcheck, callgrind,
+        /// heaptrack, compute-sanitizer) write their artifacts. Defaults
+        /// to `bench-out/`. Forwarded to the binary as --profile-output-dir
+        /// so the C++ harness's per-test subdirs land in the same root.
+        #[arg(long)]
+        profile_output_dir: Option<PathBuf>,
 
         /// Pin to CPUs (e.g., "0,1,3")
         #[arg(long)]
@@ -136,6 +146,73 @@ enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+
+    /// Show GPU / CPU affinity topology and recommended CPU pinning
+    GpuTopo {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Run --profile-check (binary readiness + per-backend env doctor)
+    Doctor {
+        /// Path to a benchmark binary (any vernier ptest works)
+        binary: PathBuf,
+    },
+
+    /// Run a benchmark binary under each profiler in sequence
+    ProfileAll {
+        /// Benchmark binary (full path or short name; auto-resolves under build/*/bin/)
+        binary: String,
+
+        /// Profilers to run, comma-separated; defaults to gperf,perf,callgrind
+        #[arg(long)]
+        profilers: Option<String>,
+
+        /// Artifact root; per-profiler subdirs land here. Default: bench-out/
+        /// (--profile-output-dir is accepted as an alias, matching `bench run`)
+        #[arg(long, visible_alias = "profile-output-dir")]
+        out: Option<PathBuf>,
+
+        /// --gtest_filter to pass through
+        #[arg(long)]
+        filter: Option<String>,
+
+        /// --cycles override
+        #[arg(long)]
+        cycles: Option<u32>,
+
+        /// --repeats override
+        #[arg(long)]
+        repeats: Option<u32>,
+
+        /// --quick mode
+        #[arg(long)]
+        quick: bool,
+    },
+
+    /// Walk an artifact directory and tabulate per-tool output
+    ProfileSummarize {
+        /// Directory containing per-tool subdirectories (e.g. bench-out/)
+        dir: PathBuf,
+    },
+
+    /// Scaffold a .bench.yaml at the project root with sensible defaults
+    Init {
+        /// Path to write (default: .bench.yaml in the current directory)
+        #[arg(long, default_value = ".bench.yaml")]
+        path: PathBuf,
+
+        /// Overwrite an existing file
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Validate a .bench.yaml: types, ranges, unknown keys
+    ConfigValidate {
+        /// Path to the config file (default: walk up from CWD for .bench.yaml)
+        path: Option<PathBuf>,
     },
 
     /// Generate an SVG flamegraph from perf.data
@@ -278,17 +355,28 @@ fn run(args: Args) -> Result<(), Error> {
             cycles,
             repeats,
             profile,
+            profile_output_dir,
             taskset,
             analyze,
             extra_args,
         } => {
+            // Accept either a full path or a short name; resolve_binary walks
+            // VERNIER_BENCH_BIN_ROOTS (default build/*) for a match.
+            let resolved = bench::workflow::resolve_binary(&binary)?;
+            // Pull defaults from .bench.yaml if one exists; unset CLI flags
+            // win from the file. CLI takes precedence when both are set.
+            let cwd = std::env::current_dir().map_err(Error::Io)?;
+            let file_cfg = bench::config::find(&cwd)
+                .and_then(|p| bench::config::load(&p).ok())
+                .unwrap_or_default();
             let cfg = bench::runner::RunConfig {
-                binary,
+                binary: resolved,
                 csv: csv.clone(),
                 quick,
-                cycles,
-                repeats,
+                cycles: cycles.or(file_cfg.cycles),
+                repeats: repeats.or(file_cfg.repeats),
                 profile,
+                profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
                 taskset,
                 extra_args,
             };
@@ -319,7 +407,7 @@ fn run(args: Args) -> Result<(), Error> {
                     // Standalone lock mode
                     bench::gpu_lock::lock_clocks(&lock_cfg)?;
                 } else {
-                    // Wrapper mode: lock → run → reset
+                    // Wrapper mode: lock -> run -> reset
                     let wrap_cfg = bench::gpu_lock::WrapConfig {
                         lock: lock_cfg,
                         command,
@@ -350,7 +438,11 @@ fn run(args: Args) -> Result<(), Error> {
                     println!("{json}");
                 }
             }
-            GpuMonitorAction::Diff { before, after, json } => {
+            GpuMonitorAction::Diff {
+                before,
+                after,
+                json,
+            } => {
                 let before_snap = bench::gpu_monitor::load_snapshot(&before)?;
                 let after_snap = bench::gpu_monitor::load_snapshot(&after)?;
                 let diffs = bench::gpu_monitor::diff_snapshots(&before_snap, &after_snap);
@@ -373,6 +465,80 @@ fn run(args: Args) -> Result<(), Error> {
             } else {
                 bench::gpu_env::print_results(&results);
             }
+        }
+
+        Command::GpuTopo { json } => {
+            let report = bench::gpu_topo::discover();
+            if json {
+                bench::gpu_topo::print_results_json(&report);
+            } else {
+                bench::gpu_topo::print_results(&report);
+            }
+        }
+
+        Command::Doctor { binary } => {
+            let rc = bench::workflow::doctor(Some(&binary))?;
+            std::process::exit(rc);
+        }
+
+        Command::ProfileAll {
+            binary,
+            profilers,
+            out,
+            filter,
+            cycles,
+            repeats,
+            quick,
+        } => {
+            let resolved = bench::workflow::resolve_binary(&binary)?;
+            let parsed_profilers = profilers
+                .map(|s| {
+                    s.split(',')
+                        .map(|p| p.trim().to_string())
+                        .filter(|p| !p.is_empty())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            // .bench.yaml fills in any unset flags.
+            let cwd = std::env::current_dir().map_err(Error::Io)?;
+            let file_cfg = bench::config::find(&cwd)
+                .and_then(|p| bench::config::load(&p).ok())
+                .unwrap_or_default();
+            bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
+                binary: resolved,
+                profilers: parsed_profilers,
+                artifact_root: out.or(file_cfg.profile_output_dir.clone()),
+                gtest_filter: filter.or(file_cfg.gtest_filter.clone()),
+                cycles: cycles.or(file_cfg.cycles),
+                repeats: repeats.or(file_cfg.repeats),
+                quick,
+            })?;
+        }
+
+        Command::ProfileSummarize { dir } => {
+            let report = bench::workflow::profile_summarize(&dir)?;
+            bench::workflow::print_summary(&report);
+        }
+
+        Command::Init { path, force } => {
+            bench::config::write_template(&path, force)?;
+            println!("[bench] wrote scaffold to {}", path.display());
+        }
+
+        Command::ConfigValidate { path } => {
+            let resolved = match path {
+                Some(p) => p,
+                None => {
+                    let cwd = std::env::current_dir().map_err(Error::Io)?;
+                    bench::config::find(&cwd).ok_or_else(|| {
+                        Error::InvalidArgs(
+                            "no .bench.yaml found in this directory or any parent.".into(),
+                        )
+                    })?
+                }
+            };
+            let report = bench::config::validate(&resolved)?;
+            bench::config::print_validation(&report);
         }
 
         Command::Flamegraph {

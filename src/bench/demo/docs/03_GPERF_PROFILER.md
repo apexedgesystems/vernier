@@ -6,18 +6,37 @@ Demonstrates using gperftools to identify function-level hotspots. When a
 single function dominates execution time, gperftools pinpoints it immediately.
 Shows the classic "replace O(n^2) with O(n log n)" optimization.
 
+## What is gperftools?
+
+`gperftools` (originally "Google Performance Tools") is a sampling CPU
+profiler. It snapshots the call stack ~100 times per second during your
+run and writes the samples to a `cpu.prof` file; `pprof` then tells you
+which functions accumulated the most time.
+
+- **Best for:** answering "which function is the bottleneck?" -- it
+  pinpoints hot functions and produces a flamegraph.
+- **How it works:** statistical sampling of call stacks (not instruction
+  simulation), so it's fast but slightly noisy at the millisecond level.
+- **Overhead:** ~1-3% at the default sample rate.
+- **Skip it for:** exact instruction counts (callgrind), hardware events
+  like cache misses (perf), or anything sub-function (use `perf record
+--call-graph dwarf`).
+
+**In vernier:** `--profile gperf` writes `<TestName>.gperf/cpu.prof`.
+Visualize with `google-pprof --text|--pdf|--web <binary> cpu.prof`.
+
 ## Prerequisites
 
 ```bash
 make compose-debug
 make tools-rust
-# gperftools is pre-installed in the dev-cuda container
+# gperftools is pre-installed in the dev container
 ```
 
 ## Step 1: Baseline Measurement
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --quick --csv /tmp/gperf_demo.csv
   ./bin/tools/rust/bench summary /tmp/gperf_demo.csv
@@ -36,7 +55,7 @@ The optimized version is ~50x faster for 500 elements.
 ## Step 2: Profile the Slow Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --profile gperf \
     --gtest_filter="*BubbleSortHotspot*" --cycles 1000
@@ -72,7 +91,7 @@ google-pprof --pdf ./BenchDemo_03_GperfProfiler *.prof > hotspot.pdf
 ## Step 4: Profile the Fast Path
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_03_GperfProfiler --profile gperf \
     --gtest_filter="*StdSortOptimized*" --cycles 10000
@@ -117,7 +136,7 @@ The O(n^2) to O(n log n) improvement gives 53x for n=500.
 - When one function dominates (>50% time), replacing its algorithm is the fix
 - After optimization, look for the next hotspot -- there is always one
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- CPU profiling patterns
 - Demo 07 (Callgrind) -- For deterministic A/B comparison without noise

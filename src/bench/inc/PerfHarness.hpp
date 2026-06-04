@@ -9,8 +9,11 @@
  */
 
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <csignal>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <functional>
 #include <optional>
@@ -19,7 +22,7 @@
 #include <vector>
 #include <thread>
 
-#include <unistd.h> // gethostname
+#include <unistd.h> // gethostname, _exit, write
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
@@ -126,6 +129,60 @@ inline void printProgress(const char* testName, int repeat, int totalRepeats,
 
 /** @brief Clear progress line from stderr. */
 inline void clearProgress() { std::fprintf(stderr, "\r%*s\r", 80, ""); }
+
+/* ----------------------------- Watchdog ----------------------------- */
+
+namespace perf_watchdog {
+
+// Async-signal-safe state: SIGALRM handler can read these.
+// Buffers are bounded so the handler never allocates.
+inline std::atomic<bool> g_armed{false};
+inline char g_testName[160] = {0};
+inline char g_profileTool[32] = {0};
+inline unsigned int g_timeoutSecs = 0;
+
+// SIGALRM handler. Prints a diagnostic and exits hard.
+// Must be async-signal-safe -- only write(2) + _exit(2) here.
+inline void handler(int /*sig*/) {
+  static const char kPrefix[] = "\n[bench] watchdog timeout: test '";
+  static const char kMid[] = "' under --profile ";
+  static const char kSuffix[] =
+      " exceeded the configured profile-test-timeout.\n"
+      "[bench] Likely cause: drain loop, blocking I/O, or filter that holds the\n"
+      "[bench] measured loop. Identify the test, exclude it via --gtest_filter,\n"
+      "[bench] or raise --profile-test-timeout. Aborting.\n";
+  ::write(STDERR_FILENO, kPrefix, sizeof(kPrefix) - 1);
+  ::write(STDERR_FILENO, g_testName, std::strlen(g_testName));
+  ::write(STDERR_FILENO, kMid, sizeof(kMid) - 1);
+  ::write(STDERR_FILENO, g_profileTool, std::strlen(g_profileTool));
+  ::write(STDERR_FILENO, kSuffix, sizeof(kSuffix) - 1);
+  ::_exit(2);
+}
+
+inline void arm(const char* testName, const char* profileTool, unsigned int timeoutSecs) {
+  // Copy to async-signal-safe buffers (no allocation in the handler path).
+  std::strncpy(g_testName, testName ? testName : "?", sizeof(g_testName) - 1);
+  g_testName[sizeof(g_testName) - 1] = '\0';
+  std::strncpy(g_profileTool, profileTool ? profileTool : "?", sizeof(g_profileTool) - 1);
+  g_profileTool[sizeof(g_profileTool) - 1] = '\0';
+  g_timeoutSecs = timeoutSecs;
+
+  struct sigaction sa{};
+  sa.sa_handler = handler;
+  ::sigemptyset(&sa.sa_mask);
+  // No SA_RESTART: we want syscalls to return on signal, allowing prompt exit.
+  sa.sa_flags = 0;
+  ::sigaction(SIGALRM, &sa, nullptr);
+  ::alarm(timeoutSecs);
+  g_armed.store(true, std::memory_order_relaxed);
+}
+
+inline void disarm() {
+  ::alarm(0);
+  g_armed.store(false, std::memory_order_relaxed);
+}
+
+} // namespace perf_watchdog
 
 /* ----------------------------- Metadata Capture ----------------------------- */
 
@@ -416,6 +473,16 @@ public:
     auto lastProgressTime = MEASURE_START;
     bool showedProgress = false;
 
+    // Arm the per-test watchdog only when profiling AND the user has a
+    // non-zero timeout. SIGALRM is the cleanest way to abort a hung fn():
+    // drain-loop / blocking-recv tests cannot be interrupted from the
+    // measured() thread itself because fn() holds the CPU.
+    const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
+    if (watchdogActive) {
+      perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
+                         static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
+    }
+
     std::vector<double> perCall;
     perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
     for (int r = 0; r < cfg_.repeats; ++r) {
@@ -437,6 +504,10 @@ public:
 
     if (showedProgress) {
       clearProgress();
+    }
+
+    if (watchdogActive) {
+      perf_watchdog::disarm();
     }
 
     auto vals = perCall; // copy so summarize() can sort

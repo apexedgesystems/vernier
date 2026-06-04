@@ -255,8 +255,7 @@ fn gpu_monitor_diff_json_output() {
     std::fs::write(&path, &out).expect("write");
 
     let snap_path = path.to_string_lossy().to_string();
-    let (diff_code, diff_out, _) =
-        run(&["gpu-monitor", "diff", &snap_path, &snap_path, "--json"]);
+    let (diff_code, diff_out, _) = run(&["gpu-monitor", "diff", &snap_path, &snap_path, "--json"]);
     assert_eq!(diff_code, 0);
     let parsed: serde_json::Value = serde_json::from_str(&diff_out).expect("valid JSON");
     assert!(parsed.is_array());

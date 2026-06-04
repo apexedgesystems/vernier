@@ -1,6 +1,6 @@
 [package]
 name = "vernier-rust-tools"
-version = "1.0.0"
+version = "1.0.2"
 edition = "2021"
 description = "CLI tools for the Vernier benchmarking framework"
 authors = ["Kevin Alexander Gomez"]

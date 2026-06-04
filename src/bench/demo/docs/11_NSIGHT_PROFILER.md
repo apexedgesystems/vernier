@@ -10,6 +10,36 @@ When threads in a warp access consecutive addresses, the memory controller
 combines 32 requests into 1-2 transactions. When threads access scattered
 addresses, each request becomes a separate transaction (up to 32x slower).
 
+## What is Nsight?
+
+NVIDIA's Nsight is actually two complementary tools shipped together:
+
+- **Nsight Systems (`nsys`)** -- whole-application timeline. Shows
+  CPU/GPU activity, kernel launches, memory copies, NVTX ranges, and
+  CUDA API calls on a unified trace. Reach for it first when the
+  question is "where does the GPU time go?"
+- **Nsight Compute (`ncu`)** -- per-kernel deep dive. Replays each
+  kernel multiple times to collect hardware metrics: achieved occupancy,
+  memory throughput, cache hit rates, warp-execution efficiency. Reach
+  for it when the question is "why is _this kernel_ slow?"
+
+- **Best for:** GPU kernel optimization. Nsight Systems pinpoints which
+  kernel matters; Nsight Compute explains why it's slow.
+- **How it works:** both use NVIDIA's CUPTI under the hood. `nsys` reads
+  the Activity API (in-process, cheap); `ncu` uses the Profiler API with
+  kernel replay (~5x slower per kernel).
+- **Overhead:** `nsys` is near-native; `ncu` adds ~5x per profiled
+  kernel because of replay.
+- **Skip it for:** CPU-only work (perf / gperf), AMD GPUs (rocprof), or
+  microsecond-scale single-launch measurement where replay would
+  distort results.
+
+**In vernier:** `--profile nsight` is wrap-externally -- run the binary
+under `nsys profile -o <path>` or `ncu -o <path>`. Per-test artifacts
+land in `<TestName>.nsight/`; the backend auto-extracts
+`cuda_gpu_kern_sum.txt`, `cuda_api_sum.txt`, and the memory summaries
+next to the `.nsys-rep` so you can grep without a separate CLI round-trip.
+
 ## Prerequisites
 
 ```bash
@@ -178,7 +208,7 @@ of this trade-off).
 - The fix is usually a data layout change, not an algorithm change
 - Profile with `--profile nsight` or use `ncu` directly for kernel analysis
 
-## Further Reading
+## See Also
 
 - `docs/GPU_GUIDE.md` -- Memory coalescing patterns
 - Demo 10 (GPU Basic) -- Framework fundamentals and transfer overhead

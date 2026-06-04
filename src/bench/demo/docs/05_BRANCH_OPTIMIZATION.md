@@ -16,7 +16,7 @@ make tools-rust
 ## Step 1: Run All Three Variants
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
   ./bin/ptests/BenchDemo_05_BranchOptimization --quick --csv /tmp/branch_demo.csv
   ./bin/tools/rust/bench summary /tmp/branch_demo.csv --sort median
@@ -34,7 +34,7 @@ BranchOptimization.BranchyRandomData      ~90 us/call   ~11K calls/s
 ## Step 2: Profile Branch Misses
 
 ```bash
-docker compose run --rm -T dev-cuda bash -c '
+docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
 
   # Profile branchy + random (worst case)
@@ -95,7 +95,7 @@ misprediction, regardless of data order.
 - Branchless matters most in: hot inner loops, random data, 50/50 conditions
 - For rare branches (<5% or >95% taken), the predictor handles it well
 
-## Further Reading
+## See Also
 
 - `docs/CPU_GUIDE.md` -- Branch prediction section
 - Demo 02 (perf) -- Hardware counter profiling

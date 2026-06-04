@@ -121,6 +121,31 @@ inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
   *argc = w;
 }
 
+/* ------------------------------ GPU Mode Flag ------------------------------ */
+
+/**
+ * @brief Lightweight cross-cutting flag: was PERF_GPU_MAIN called in this
+ *        process? Read by CPU-side components (PerfListener) that need to
+ *        decide whether to emit the GPU section of the schema but can't
+ *        pull PerfGpuHarness.hpp (CUDA-dependent).
+ *
+ * Lives here rather than in a dedicated header because PerfGpuConfig is the
+ * existing CUDA-free GPU-configuration boundary already included by both
+ * PERF_GPU_MAIN and PerfListener; co-locating the flag avoids a one-file
+ * header just for a bool.
+ */
+namespace detail {
+
+inline bool& gpuModeFlag() {
+  static bool active = false;
+  return active;
+}
+
+inline void markGpuMode() { gpuModeFlag() = true; }
+inline bool isGpuModeActive() { return gpuModeFlag(); }
+
+} // namespace detail
+
 } // namespace bench
 } // namespace vernier
 

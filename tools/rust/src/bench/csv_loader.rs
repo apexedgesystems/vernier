@@ -3,10 +3,10 @@
 //! Handles all CSV variants produced by the benchmarking framework:
 //! - Old-format (no stable/cvThreshold columns, has metadata columns)
 //! - New-format (with stable/cvThreshold)
-//! - GPU-extended (43 columns, CPU rows may be shorter than header)
+//! - GPU-extended (extra GPU columns; CPU rows may be shorter than header)
 //!
 //! Uses manual field extraction (not serde Deserialize) so that rows shorter
-//! than the header are handled gracefully — missing trailing columns get defaults.
+//! than the header are handled gracefully -- missing trailing columns get defaults.
 
 use std::collections::HashMap;
 use std::path::Path;

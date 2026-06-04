@@ -16,7 +16,7 @@ add_library(demo_helpers INTERFACE)
 target_include_directories(demo_helpers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ------------------------------------------------------------------------------
-# CPU Demo Sources (9 demos)
+# CPU Demo Sources
 # ------------------------------------------------------------------------------
 
 set(CPU_DEMOS
@@ -29,6 +29,13 @@ set(CPU_DEMOS
     07_CallgrindProfiler
     08_RaplProfiler
     09_BpftraceProfiler
+    10_NvtxAnnotation
+    11_MassifProfiler
+    12_MemcheckProfiler
+    13_OffCpuProfiler
+    14_HelgrindProfiler
+    15_HeaptrackProfiler
+    16_JemallocProfiler
 )
 
 foreach (DEMO ${CPU_DEMOS})
@@ -44,11 +51,13 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
-# GPU Demo Sources (3 demos)
+# GPU Demo Sources
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
-  set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt)
+  set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt
+                04_ComputeSanitizerProfiler
+  )
 
   foreach (DEMO ${GPU_DEMOS})
     vernier_add_ptest(

@@ -1,6 +1,6 @@
 [project]
 name = "vernier-py-tools"
-version = "1.0.0"
+version = "1.0.2"
 description = "CLI tools for the Vernier benchmarking framework"
 authors = [
     {name = "Kevin Alexander Gomez"}
@@ -22,6 +22,10 @@ packages = [{include = "vernier_tools", from = "src"}]
 [tool.poetry.scripts]
 # Benchmarking visualization (plotting only; analysis/comparison/validation use Rust bench tool)
 bench-plot = "vernier_tools.benchmarking.bench_plot:main"
+
+# Nsight report extractor: turns .nsys-rep / .ncu-rep into a tidy CSV the
+# rest of the toolchain (bench-plot, bench compare) can consume.
+nsight-parse = "vernier_tools.benchmarking.nsight_parser:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.5"

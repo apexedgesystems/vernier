@@ -46,12 +46,15 @@
 
 /* ----------------------------- Scoped Guard ----------------------------- */
 
+// Construct a PerfGpuCase and auto-attach profiler hooks. Two-statement form
+// (PerfGpuCase is non-movable, so a return-by-value helper is not possible);
+// the user's trailing semicolon terminates the attach call.
 #define UB_PERF_GPU_GUARD(varName)                                                                 \
-  vernier::bench::PerfGpuCase varName {                                                            \
-    ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +                   \
-        std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),        \
-        vernier::bench::detail::getPerfConfig()                                                    \
-  }
+  vernier::bench::PerfGpuCase varName{                                                             \
+      ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +                 \
+          std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),      \
+      vernier::bench::detail::getPerfConfig()};                                                    \
+  vernier::bench::attachGpuProfilerHooks(varName, vernier::bench::detail::getPerfConfig())
 
 /* ----------------------------- GPU Main Macro ----------------------------- */
 
@@ -74,7 +77,9 @@
     vernier::bench::setGlobalPerfConfig(&cfg);                                                     \
     vernier::bench::installPerfEventListener(cfg);                                                 \
     ::testing::InitGoogleTest(&argc, argv);                                                        \
-    return RUN_ALL_TESTS();                                                                        \
+    const int _vernier_rc = RUN_ALL_TESTS();                                                       \
+    VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);                                               \
+    return _vernier_rc;                                                                            \
   }
 
 /* -------------------------------- Detail -------------------------------- */
@@ -89,7 +94,12 @@ inline PerfGpuConfig& gpuConfigSingleton() {
   return cfg;
 }
 
-inline void setGlobalGpuConfig(const PerfGpuConfig& cfg) { gpuConfigSingleton() = cfg; }
+inline void setGlobalGpuConfig(const PerfGpuConfig& cfg) {
+  gpuConfigSingleton() = cfg;
+  // Mark this binary as a GPU run so PerfListener / other CUDA-free
+  // consumers emit the GPU section of the CSV / pick GPU-aware defaults.
+  ::vernier::bench::detail::markGpuMode();
+}
 
 inline const PerfGpuConfig& getGlobalGpuConfig() { return gpuConfigSingleton(); }
 

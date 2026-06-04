@@ -15,6 +15,9 @@
 #include <string_view>
 #include <vector>
 
+#include "src/bench/inc/ProfilerEnv.hpp"      // isInContainer for CSV path warning
+#include "src/bench/inc/ProfilerRegistry.hpp" // backend doctor in --profile-check
+
 namespace vernier {
 namespace bench {
 
@@ -39,6 +42,13 @@ struct PerfConfig {
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
   int profileFrequency = 10000;        ///< Sampling frequency for CPU profilers (Hz)
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
+
+  // Per-test watchdog: aborts a measured() loop when total wall time exceeds
+  // the threshold. 0 disables; auto-set to 300 seconds when profileTool is
+  // non-empty so a drain-loop / blocking-recv test under profiler overhead
+  // fails loudly instead of hanging CI indefinitely. Override with
+  // --profile-test-timeout N (seconds).
+  int profileTestTimeoutSecs = 0;
 
   // ---- Quick mode (lighter defaults for fast iteration) ----
   bool quickMode = false; ///< Apply reduced cycles/repeats for development iteration
@@ -131,6 +141,21 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--csv") {
       cfg.csv = std::string(NEED_ARG("--csv", i, *argc, argv));
       ++i;
+      // Inside a container, a relative or /tmp CSV path writes to the
+      // container fs and disappears on exit; warn the user before they
+      // discover that the file isn't visible on the host.
+      if (profiler_env::isInContainer()) {
+        const std::string& p = *cfg.csv;
+        const bool inWorkspace = p.find("/home/") == 0 || p.find("/workspace") == 0;
+        if (!inWorkspace) {
+          std::fprintf(stderr,
+                       "\n[csv] writing to '%s' inside a container; this path is unlikely to be\n"
+                       "[csv] visible on the host. Prefer a path under /home/$USER/workspace/\n"
+                       "[csv] (or wherever your dev volume is mounted) so the file survives the\n"
+                       "[csv] container exit.\n\n",
+                       p.c_str());
+        }
+      }
     }
 
     // ---- Profiling / artifact flags ----
@@ -143,8 +168,11 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--bpf") {
       cfg.bpfScripts = PARSE_LIST(NEED_ARG("--bpf", i, *argc, argv));
       ++i;
-    } else if (a == "--artifact-root") {
-      cfg.artifactRoot = NEED_ARG("--artifact-root", i, *argc, argv);
+    } else if (a == "--artifact-root" || a == "--profile-output-dir") {
+      // --profile-output-dir is the user-friendlier alias; both write the
+      // same field. All registered profiler backends consult artifactRoot
+      // when building their per-test artifact subdirectory.
+      cfg.artifactRoot = NEED_ARG("--profile-output-dir", i, *argc, argv);
       ++i;
     } else if (a == "--profile-frequency") {
       cfg.profileFrequency =
@@ -152,6 +180,10 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
       ++i;
     } else if (a == "--profile-analyze") {
       cfg.profileAnalyze = true;
+    } else if (a == "--profile-test-timeout") {
+      cfg.profileTestTimeoutSecs =
+          std::max(0, std::atoi(NEED_ARG("--profile-test-timeout", i, *argc, argv)));
+      ++i;
     }
 
     // ---- Quick mode flag ----
@@ -171,6 +203,13 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     }
   }
   *argc = w;
+
+  // Auto-set a generous watchdog when profiling and the user hasn't overridden.
+  // 300 s = 5 min is comfortable headroom for callgrind's 20x overhead while
+  // still being short enough to abort genuinely hung tests during a CI run.
+  if (!cfg.profileTool.empty() && cfg.profileTestTimeoutSecs == 0) {
+    cfg.profileTestTimeoutSecs = 300;
+  }
 
   // Apply quick mode defaults if enabled and user didn't explicitly override
   if (cfg.quickMode) {
@@ -356,6 +395,12 @@ inline void runProfileCheck() {
   } else {
     std::fprintf(stdout, "\n  Binary is ready for profiling.\n\n");
   }
+
+  // Backend environment doctor: per-profiler pre-flight (perf_event_paranoid,
+  // valgrind installed, nsys/ncu present, etc.). Linked into this binary
+  // (which transitively includes ProfilerRegistry via Profiler.hpp), so the
+  // call resolves regardless of which backends the user has wired in.
+  ProfilerRegistry::instance().printDoctor();
 }
 
 } // namespace bench

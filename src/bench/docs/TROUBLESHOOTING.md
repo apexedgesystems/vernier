@@ -1,5 +1,9 @@
 # Troubleshooting Guide
 
+**Namespace:** `vernier::bench`
+**Platform:** Linux-only
+**C++ Standard:** C++20 (C++23 used when available)
+
 Solutions to common issues when using the benchmarking framework. This guide covers measurement problems, build issues, profiling, containers, and more.
 
 ---
@@ -42,8 +46,7 @@ Solutions to common issues when using the benchmarking framework. This guide cov
 taskset -c 2-9 ./MyComponent_PTEST --csv results.csv
 
 # Or use the bench run command
-bench run ./MyComponent_PTEST \
-    --taskset --cpuset 2-9
+bench run ./MyComponent_PTEST --taskset 2-9
 ```
 
 **2. Increase warmup iterations**:
@@ -178,8 +181,7 @@ volatile int sink = sum;  // Tell compiler: sum is used
 
 ```bash
 ./MyComponent_PTEST --profile perf --cycles 100000
-bench flamegraph \
-    --perf-data MyComponent.Test.perf/perf.data \
+bench flamegraph MyComponent.Test.perf/perf.data \
     --output hotspots.svg
 ```
 
@@ -452,15 +454,37 @@ perf.throughputLoop([&]{
 # If that works, profiler is the issue
 ```
 
+**4. Drain loops in concurrency tests**:
+
+A `while (counter < N) yield()` pattern hangs under profiler overhead when
+task rejections prevent the counter from ever reaching N. Read the test
+source before running with `--profile` and exclude these via
+`--gtest_filter=-*DrainLoop*`.
+
+**5. Blocking `recv` / batch-receive tests**:
+
+Tests that call a blocking `recv()`, `recvfrom()`, or batch-receive waiting
+for N frames hang when fewer frames arrive than expected. These pass
+interactively (the operator can Ctrl-C) but deadlock under `--repeats N`
+because the framework waits indefinitely. Exclude with `--gtest_filter`
+before any profiler or `--repeats` run.
+
+**Built-in watchdog:**
+
+Under `--profile X`, vernier installs a SIGALRM-based per-test watchdog
+that auto-aborts after 300 s with a precise diagnostic naming the test
+and the profile tool. Override with `--profile-test-timeout <seconds>`;
+set to `0` to disable. The watchdog only fires while a profile is active.
+
 **Debug:**
 
 ```bash
-# Run with timeout
+# External timeout (always available)
 timeout 60s ./MyComponent_PTEST --csv results.csv
 
-# Attach debugger
+# Attach debugger to find what is blocking
 gdb -p $(pgrep MyComponent_PTEST)
-(gdb) bt  # Print backtrace
+(gdb) bt
 ```
 
 ---
@@ -525,9 +549,9 @@ const int N = 1024 * 1024;
 **2. Transfer overhead dominates**:
 
 ```bash
-# Check CSV
-grep "transferOverheadPct" results.csv
-# If >50%, transfers dominate
+# Check CSV: compare transferTimeUs against kernelTimeUs
+bench summary results.csv --json | grep -E "transferTimeUs|kernelTimeUs"
+# If transfer time rivals kernel time, transfers dominate
 
 # Keep data on GPU longer or use Unified Memory
 ```
@@ -707,7 +731,7 @@ sudo setcap cap_bpf,cap_perfmon=ep ./MyComponent_PTEST
 
 ### Nsight Not Generating Reports
 
-**Symptoms:** No `.qdrep` or `.ncu-rep` files.
+**Symptoms:** No `.nsys-rep` or `.ncu-rep` files.
 
 **Solutions:**
 
@@ -733,6 +757,36 @@ nsys profile --trace=cuda ./test --gtest_filter="*Specific*"
 # Nsight Compute
 ncu --set full ./test --gtest_filter="*Specific*"
 ```
+
+**4. `nsys` runs but the report has no GPU activity**: nsys completes without
+error and writes a `.nsys-rep`, yet `nsys stats --report cuda_gpu_kern_sum`
+reports "does not contain CUDA kernel data" and `nsight-parse` writes 0 rows.
+Two distinct, fixable causes:
+
+- **Build toolkit ahead of the driver.** A binary built with a CUDA toolkit
+  whose minor version is higher than the CUDA the driver provides (the "CUDA
+  Version" `nvidia-smi` reports) still runs via minor-version forward
+  compatibility, but nsys cannot trace its CUDA activity. Build with a toolkit
+  whose CUDA is `<=` the driver's, or upgrade the driver. `ncu` and the
+  in-process CUPTI columns use other interfaces and keep working, which is the
+  tell-tale: GPU benchmarks and CSV metrics succeed while the nsys timeline is
+  empty.
+
+- **The in-process CUPTI collector holds the single client slot.** CUPTI allows
+  one client per process. When the binary uses the in-process CUPTI collector
+  (the automatic GPU CSV columns), it claims that slot and starves an external
+  nsys / ncu session. Set `VERNIER_DISABLE_CUPTI=1` when wrapping the binary so
+  the in-process collector stands down and the external tool can attach:
+
+  ```bash
+  VERNIER_DISABLE_CUPTI=1 nsys profile -o out --trace=cuda,nvtx \
+      ./test --profile nsight --gtest_filter="*Specific*"
+  ```
+
+If you only need per-kernel metrics, the in-process CUPTI columns (kernel time,
+registers, shared memory, launch count) populate automatically with no nsys
+required; for occupancy / warp stalls / cache / roofline, use `ncu` (see
+`GPU_GUIDE.md`).
 
 ---
 
@@ -902,6 +956,74 @@ docker run --rm \
 
 ---
 
+### `timeout` Drops Env Vars
+
+**Problem:** Wrapping a profile command with `timeout` silently swallows your
+env vars.
+
+```bash
+# BAD: timeout treats CPUPROFILE_FREQUENCY as the command name
+timeout 120 CPUPROFILE_FREQUENCY=1000 ./MyTest --profile gperf
+# -> "timeout: cannot run CPUPROFILE_FREQUENCY=1000: No such file or directory"
+```
+
+**Fix:** insert `env` so `timeout` sees a real command:
+
+```bash
+timeout 120 env CPUPROFILE_FREQUENCY=1000 ./MyTest --profile gperf
+```
+
+The same trap applies to `nice`, `taskset`, and any other wrapper that takes a
+command as its first positional argument.
+
+---
+
+### CSV / Profile Artifacts Vanish on Container Exit
+
+**Problem:** `--csv results.csv` or `--profile gperf` writes inside the
+container; when the container exits, the files are gone.
+
+**Built-in detection:** when vernier detects it is running in a container and
+`--csv` points outside the workspace mount, it prints a warning naming the
+offending path. Heed the warning.
+
+**Fix:** write under a host-mounted path:
+
+```bash
+# BAD (path inside container fs):
+docker compose run --rm -T dev ./MyTest --csv /tmp/results.csv
+
+# GOOD (under the workspace mount):
+docker compose run --rm -T dev ./MyTest \
+    --csv /home/$USER/workspace/results.csv
+
+# Same for --profile-output-dir (or --artifact-root):
+docker compose run --rm -T dev ./MyTest --profile gperf \
+    --profile-output-dir /home/$USER/workspace/profile-out/
+```
+
+---
+
+### Profile Artifacts Land in CWD; Move Immediately
+
+**Problem:** without `--profile-output-dir`, each `--profile X` run drops a
+`<TestName>.<tool>/` directory in the current working directory. After a few
+runs the project root is polluted with stale artifacts that git complains
+about.
+
+**Built-in fix:** pass `--profile-output-dir <path>` (or its alias
+`--artifact-root <path>`):
+
+```bash
+./MyTest --profile gperf --profile-output-dir bench-out/2026-05-24/
+```
+
+Every backend in the registry writes to a per-test subdirectory of that root.
+For multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the
+same root: each tool's artifacts go into a separate `<Test>.<tool>/` subdir.
+
+---
+
 ## Analysis Tool Issues
 
 ### Python Import Errors
@@ -1002,8 +1124,7 @@ head results.csv
 
 ```bash
 ./test --profile perf --cycles 100000
-bench flamegraph \
-    --perf-data test.perf/perf.data
+bench flamegraph test.perf/perf.data
 ```
 
 **3. Check memory bandwidth**:
@@ -1057,9 +1178,8 @@ cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 **4. Compare with differential flamegraph**:
 
 ```bash
-bench flamegraph \
-    --perf-data optimized.perf/perf.data \
-    --baseline-perf baseline.perf/perf.data
+bench flamegraph optimized.perf/perf.data \
+    --baseline baseline.perf/perf.data
 ```
 
 ---
@@ -1118,7 +1238,7 @@ Include:
 
 - [ ] Check GoogleTest installed
 - [ ] For GPU: Verify CUDA toolkit
-- [ ] Check CMake version >= 3.15
+- [ ] Check CMake version >= 3.24
 
 **Profiler not working?**
 
