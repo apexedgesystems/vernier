@@ -152,6 +152,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - **`bench profile-all`** accepts `--profile-output-dir` as a visible alias for
   `--out`, matching `bench run`'s flag name.
+- **`bench validate`** reports host readiness for every backend (the valgrind
+  tools, heaptrack, jemalloc, rapl, compute-sanitizer, rocprof), not just
+  perf / gperftools / nsight / bpftrace.
+- **`bench gpu-env`** compares the CUDA toolkit against the driver's CUDA and
+  warns when the toolkit is ahead -- the common, otherwise-silent cause of an
+  empty nsys trace (ncu and in-process CUPTI are unaffected).
+- **Build floor is C++20** (Clang 12+ / GCC 10+); C++23 is selected
+  automatically when the toolchain supports it.
 
 ---
 
