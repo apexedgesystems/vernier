@@ -5,7 +5,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
-## v1.0.2 - Unreleased
+## v1.0.2 - 2026-06-04
 
 ### Added
 
