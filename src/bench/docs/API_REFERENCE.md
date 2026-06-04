@@ -2,7 +2,7 @@
 
 **Namespace:** `vernier::bench`
 **Platform:** Linux-only
-**C++ Standard:** C++23
+**C++ Standard:** C++20 (C++23 used when available)
 
 Complete API documentation for the benchmarking framework. This reference covers all CPU and GPU APIs, profiling integration, and configuration options.
 

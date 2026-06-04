@@ -40,7 +40,17 @@ vernier_coverage_init()
 # ------------------------------------------------------------------------------
 # Language standard
 # ------------------------------------------------------------------------------
-set(CMAKE_CXX_STANDARD 23)
+# Prefer C++23 where the toolchain supports it; require C++20 as the floor
+# (the sources are C++20-clean). A consumer-provided standard is respected.
+if (NOT CMAKE_CXX_STANDARD)
+  if ("cxx_std_23" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    set(CMAKE_CXX_STANDARD 23)
+  elseif ("cxx_std_20" IN_LIST CMAKE_CXX_COMPILE_FEATURES)
+    set(CMAKE_CXX_STANDARD 20)
+  else ()
+    message(FATAL_ERROR "vernier requires C++20 or newer")
+  endif ()
+endif ()
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

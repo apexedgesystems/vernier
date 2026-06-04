@@ -2,7 +2,7 @@
 
 **Namespace:** `vernier::bench`
 **Platform:** Linux-only
-**C++ Standard:** C++23
+**C++ Standard:** C++20 (C++23 used when available)
 
 Complete guide to advanced features, patterns, and best practices for the benchmarking framework.
 

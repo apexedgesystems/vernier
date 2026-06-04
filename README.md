@@ -2,7 +2,7 @@
 
 **Namespace:** `vernier::bench`
 **Platform:** Linux (full), macOS (core harness)
-**C++ Standard:** C++23
+**C++ Standard:** C++20 (C++23 used when available)
 
 Performance benchmarking framework with profiler integrations, GPU support,
 and statistical analysis.
@@ -196,7 +196,8 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 **Required:**
 
-- C++23 compiler (clang-21 recommended, GCC 13+ also works)
+- C++20 compiler or newer (Clang 12+ / GCC 10+); C++23 is used automatically
+  when the toolchain supports it (Clang 21 / GCC 13+)
 - CMake 3.24+
 - GoogleTest (auto-fetched via CMake FetchContent)
 - POSIX system (Linux or macOS)

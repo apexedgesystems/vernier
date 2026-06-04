@@ -2,7 +2,7 @@
 
 **Namespace:** `vernier::monitor`
 **Platform:** Linux-only
-**C++ Standard:** C++23
+**C++ Standard:** C++20 (C++23 used when available)
 
 Lightweight, lock-free instrumentation library for measuring runtime
 behavior of long-running applications. Complements the `vernier::bench`

@@ -2,7 +2,7 @@
 
 **Namespace:** `vernier::bench`
 **Platform:** Linux-only
-**C++ Standard:** C++23
+**C++ Standard:** C++20 (C++23 used when available)
 
 Solutions to common issues when using the benchmarking framework. This guide covers measurement problems, build issues, profiling, containers, and more.
 
