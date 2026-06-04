@@ -43,7 +43,7 @@ namespace { // Internal implementation details
 
 struct BpfConfig {
   bool enabled = false;
-  std::string scriptsDir = "src/utilities/benchmarking/bpf";
+  std::string scriptsDir = "src/bench/bpf";
   std::vector<std::string> scripts;
   std::string outputDir;
   std::string format = "text";
@@ -152,15 +152,14 @@ public:
 
     std::ifstream in(scriptPath);
     if (!in) {
-      // Common failure mode: the consumer didn't ship the canonical
-      // scripts at `cfg_.scriptsDir` (vernier's defaults look under
-      // `src/utilities/benchmarking/bpf/`, which only exists if the
-      // parent project happens to vend the scripts there). Silently
-      // skipping looks like the profile ran fine; make it loud instead.
+      // The script was not found under cfg_.scriptsDir. The default
+      // (src/bench/bpf/) resolves when running from the vernier tree; a
+      // consumer points --bpf-scripts / PERF_BPF_SCRIPTS at its own copy.
+      // Silently skipping looks like the profile ran fine, so be loud.
       std::fprintf(stderr,
                    "[bpftrace] script not found: %s\n"
                    "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
-                   "[bpftrace] `--bpf-scripts <dir>` (default: src/utilities/benchmarking/bpf/),\n"
+                   "[bpftrace] `--bpf-scripts <dir>` (default: src/bench/bpf/),\n"
                    "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n",
                    scriptPath.c_str());
       return false;

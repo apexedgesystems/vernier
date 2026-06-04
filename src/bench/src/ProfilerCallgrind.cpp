@@ -57,11 +57,6 @@ CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
 
-  // Parse mode from profileArgs
-  std::string args = cfg_.profileArgs;
-  wantCache_ = (args.find("cache") != std::string::npos);
-  wantBranch_ = (args.find("branch") != std::string::npos);
-
   runningUnderValgrind_ = isRunningUnderValgrind();
   canToggle_ =
       runningUnderValgrind_ && isCallgrindControlAvailable() && !profiler_env::isInContainer();

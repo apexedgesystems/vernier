@@ -159,8 +159,8 @@ pub struct ProfileAllConfig {
 /// Iterate over each profiler, invoking the binary in sequence. Each run gets
 /// its own artifact subdirectory: `<artifact_root>/<profiler>/`. Routes through
 /// `run_benchmark` so wrap-externally backends (callgrind, massif, memcheck,
-/// heaptrack, compute-sanitizer) get the same auto-wrap treatment as a direct
-/// `bench run --profile <X>` invocation.
+/// helgrind, heaptrack, compute-sanitizer) get the same auto-wrap treatment as
+/// a direct `bench run --profile <X>` invocation.
 pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
     if !cfg.binary.is_file() {
         return Err(Error::InvalidArgs(format!(
