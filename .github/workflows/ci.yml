@@ -103,7 +103,7 @@ jobs:
       # SHA suffix ensures each run gets a fresh save key; restore-keys do
       # the actual hit work via prefix match on the most recent saved cache.
       - name: Restore ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.CCACHE_HOST }}
           key: ccache-cpp-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
