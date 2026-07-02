@@ -42,12 +42,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pull pre-built dev images so the artifact build chain skips
-      # toolchain rebuilds. Falls back to local build if any pull fails.
-      - name: Pull cached dev images
+      # Pull the pre-built lean build tiers (the release builders inherit these,
+      # not the dev shells) so the artifact build chain reuses their layers and
+      # the baked hermetic caches. base is pulled too because the cross toolchains
+      # build on it. Falls back to local build if any pull fails.
+      - name: Pull cached build tiers
         run: |
-          for img in vernier.base vernier.dev.cpu vernier.dev.cuda \
-                     vernier.dev.jetson vernier.dev.rpi vernier.dev.riscv64; do
+          for img in vernier.base vernier.build-base \
+                     vernier.build.cpu vernier.build.cuda vernier.build.jetson \
+                     vernier.build.rpi vernier.build.riscv64; do
             docker pull $REGISTRY/$img:latest \
               && docker tag $REGISTRY/$img:latest $img || true
           done

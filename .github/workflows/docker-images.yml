@@ -34,6 +34,14 @@ on:
     branches: [main]
     paths:
       - docker/**
+      # base.Dockerfile bakes the rust cargo cache, the FetchContent sources, and
+      # the python wheelhouse from these, so a bump must rebuild the image to
+      # refresh them (offline/hermetic builds depend on the baked copies).
+      - tools/rust/Cargo.lock
+      - tools/rust/Cargo.toml
+      - tools/py/poetry.lock
+      - tools/py/pyproject.toml
+      - ExternalDependencies.cmake
   workflow_dispatch:
     inputs:
       force_rebuild:
@@ -79,12 +87,21 @@ jobs:
       - name: Detect changed Dockerfiles
         run: |
           FORCE="${{ github.event.inputs.force_rebuild }}"
-          DIFF=$(git diff --name-only HEAD~1 HEAD -- docker/ 2>/dev/null || echo "docker/base.Dockerfile")
+          DIFF=$(git diff --name-only HEAD~1 HEAD -- docker/ tools/rust/Cargo.lock tools/rust/Cargo.toml tools/py/poetry.lock tools/py/pyproject.toml ExternalDependencies.cmake 2>/dev/null || echo "docker/base.Dockerfile")
           echo "Changed docker files: $DIFF"
 
           changed() { echo "$DIFF" | grep -qF "$1" && echo "true" || echo "false"; }
 
           BASE=$(changed   "base.Dockerfile")
+
+          # base.Dockerfile COPYs and bakes from the lock/dep files and the bake
+          # script (docker/scripts/), so a change to any must rebuild base (which
+          # cascades to all) -- otherwise a stale cache or stale script survives.
+          # The bake script is a COPY input with no edge in this name-matched
+          # graph, so it is mapped onto base explicitly here.
+          if echo "$DIFF" | grep -qE 'tools/rust/Cargo\.|tools/py/(poetry\.lock|pyproject\.toml)|ExternalDependencies\.cmake|docker/scripts/'; then
+            BASE=true
+          fi
           CPU=$(changed    "dev/cpu.Dockerfile")
           CUDA=$(changed   "dev/cuda.Dockerfile")
           JETSON=$(changed "dev/jetson.Dockerfile")
@@ -127,93 +144,117 @@ jobs:
       # --------------------------------------------------------------------------
       # Base image (parent of all)
       # --------------------------------------------------------------------------
-      - name: vernier.base
+      - name: vernier.base + vernier.build-base
         run: |
           if [ "$REBUILD_BASE" = "true" ]; then
-            docker compose build base
-            docker tag vernier.base $REGISTRY/vernier.base:latest
-            docker tag vernier.base $REGISTRY/vernier.base:${{ github.sha }}
-            docker push $REGISTRY/vernier.base:latest
-            docker push $REGISTRY/vernier.base:${{ github.sha }}
+            docker compose build base build-base
+            for img in vernier.base vernier.build-base; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.base:latest
-            docker tag $REGISTRY/vernier.base:latest vernier.base
+            for img in vernier.base vernier.build-base; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
 
       # --------------------------------------------------------------------------
       # CPU and CUDA dev images (both inherit from base, independent of each other)
       # --------------------------------------------------------------------------
-      - name: vernier.dev.cpu
+      - name: vernier.dev.cpu + vernier.build.cpu
         run: |
           if [ "$REBUILD_CPU" = "true" ]; then
-            docker compose build dev
-            docker tag vernier.dev.cpu $REGISTRY/vernier.dev.cpu:latest
-            docker tag vernier.dev.cpu $REGISTRY/vernier.dev.cpu:${{ github.sha }}
-            docker push $REGISTRY/vernier.dev.cpu:latest
-            docker push $REGISTRY/vernier.dev.cpu:${{ github.sha }}
+            docker compose build dev build-cpu
+            for img in vernier.dev.cpu vernier.build.cpu; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.dev.cpu:latest
-            docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu
+            for img in vernier.dev.cpu vernier.build.cpu; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
 
-      - name: vernier.dev.cuda
+      - name: vernier.dev.cuda + vernier.build.cuda
         run: |
           if [ "$REBUILD_CUDA" = "true" ]; then
-            docker compose build dev-cuda
-            docker tag vernier.dev.cuda $REGISTRY/vernier.dev.cuda:latest
-            docker tag vernier.dev.cuda $REGISTRY/vernier.dev.cuda:${{ github.sha }}
-            docker push $REGISTRY/vernier.dev.cuda:latest
-            docker push $REGISTRY/vernier.dev.cuda:${{ github.sha }}
+            docker compose build dev-cuda build-cuda
+            for img in vernier.dev.cuda vernier.build.cuda; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.dev.cuda:latest
-            docker tag $REGISTRY/vernier.dev.cuda:latest vernier.dev.cuda
+            for img in vernier.dev.cuda vernier.build.cuda; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
 
       # --------------------------------------------------------------------------
       # Jetson (FROM vernier.dev.cuda, COPY --from=vernier.toolchain.aarch64)
       # --------------------------------------------------------------------------
-      - name: vernier.dev.jetson
+      - name: vernier.dev.jetson + vernier.build.jetson
         run: |
           if [ "$REBUILD_JETSON" = "true" ]; then
             docker compose build toolchain-aarch64
-            docker compose build dev-jetson
-            docker tag vernier.dev.jetson $REGISTRY/vernier.dev.jetson:latest
-            docker tag vernier.dev.jetson $REGISTRY/vernier.dev.jetson:${{ github.sha }}
-            docker push $REGISTRY/vernier.dev.jetson:latest
-            docker push $REGISTRY/vernier.dev.jetson:${{ github.sha }}
+            docker compose build dev-jetson build-jetson
+            for img in vernier.dev.jetson vernier.build.jetson; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.dev.jetson:latest
-            docker tag $REGISTRY/vernier.dev.jetson:latest vernier.dev.jetson
+            for img in vernier.dev.jetson vernier.build.jetson; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
 
       # --------------------------------------------------------------------------
       # Linux cross-compile dev images (FROM vernier.dev.cpu)
       # --------------------------------------------------------------------------
-      - name: vernier.dev.rpi
+      - name: vernier.dev.rpi + vernier.build.rpi
         run: |
           if [ "$REBUILD_RPI" = "true" ]; then
             docker compose build toolchain-aarch64
             docker compose build toolchain-rpi
-            docker compose build dev-rpi
-            docker tag vernier.dev.rpi $REGISTRY/vernier.dev.rpi:latest
-            docker tag vernier.dev.rpi $REGISTRY/vernier.dev.rpi:${{ github.sha }}
-            docker push $REGISTRY/vernier.dev.rpi:latest
-            docker push $REGISTRY/vernier.dev.rpi:${{ github.sha }}
+            docker compose build dev-rpi build-rpi
+            for img in vernier.dev.rpi vernier.build.rpi; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.dev.rpi:latest
-            docker tag $REGISTRY/vernier.dev.rpi:latest vernier.dev.rpi
+            for img in vernier.dev.rpi vernier.build.rpi; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
 
-      - name: vernier.dev.riscv64
+      - name: vernier.dev.riscv64 + vernier.build.riscv64
         run: |
           if [ "$REBUILD_RISCV64" = "true" ]; then
             docker compose build toolchain-riscv64
-            docker compose build dev-riscv64
-            docker tag vernier.dev.riscv64 $REGISTRY/vernier.dev.riscv64:latest
-            docker tag vernier.dev.riscv64 $REGISTRY/vernier.dev.riscv64:${{ github.sha }}
-            docker push $REGISTRY/vernier.dev.riscv64:latest
-            docker push $REGISTRY/vernier.dev.riscv64:${{ github.sha }}
+            docker compose build dev-riscv64 build-riscv64
+            for img in vernier.dev.riscv64 vernier.build.riscv64; do
+              docker tag $img $REGISTRY/$img:latest
+              docker tag $img $REGISTRY/$img:${{ github.sha }}
+              docker push $REGISTRY/$img:latest
+              docker push $REGISTRY/$img:${{ github.sha }}
+            done
           else
-            docker pull $REGISTRY/vernier.dev.riscv64:latest
-            docker tag $REGISTRY/vernier.dev.riscv64:latest vernier.dev.riscv64
+            for img in vernier.dev.riscv64 vernier.build.riscv64; do
+              docker pull $REGISTRY/$img:latest
+              docker tag $REGISTRY/$img:latest $img
+            done
           fi
