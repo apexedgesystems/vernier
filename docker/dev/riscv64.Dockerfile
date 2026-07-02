@@ -8,7 +8,10 @@
 #   make shell-dev-riscv64
 #   docker compose run --rm dev-riscv64
 # ==============================================================================
-FROM vernier.dev.cpu:latest
+# BASE selects the tier: vernier.dev.cpu (dev shell) or vernier.build.cpu (the
+# lean release-builder variant, vernier.build.riscv64).
+ARG BASE=vernier.dev.cpu:latest
+FROM ${BASE}
 
 ARG USER
 ARG HOST_UID

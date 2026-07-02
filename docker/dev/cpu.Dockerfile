@@ -8,7 +8,10 @@
 #   make shell-dev              # Interactive shell
 #   docker compose run dev      # Via compose
 # ==============================================================================
-FROM vernier.base:latest
+# BASE selects the tier: vernier.base (dev shell, full tooling) or
+# vernier.build-base (the lean release-builder variant, vernier.build.cpu).
+ARG BASE=vernier.base:latest
+FROM ${BASE}
 
 ARG USER
 ARG HOST_UID

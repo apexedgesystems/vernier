@@ -8,7 +8,7 @@
 #   docker compose build builder-cpu
 #   make docker-builder-cpu
 # ==============================================================================
-FROM vernier.dev.cpu:latest
+FROM vernier.build.cpu:latest
 
 ARG USER
 ARG HOST_UID

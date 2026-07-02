@@ -10,7 +10,7 @@
 #   docker compose build builder-riscv64
 #   make docker-builder-riscv64
 # ==============================================================================
-FROM vernier.dev.riscv64:latest
+FROM vernier.build.riscv64:latest
 
 ARG USER
 ARG HOST_UID
