@@ -20,6 +20,9 @@ mkdir -p "$DEST"
 # the first token after the opening line; GIT_REPOSITORY/GIT_TAG follow.
 parse_decls() {
   awk '
+    # Strip comments first so a "#" line (or an inline "# ... )" with parens)
+    # cannot be mistaken for the closing paren of a declare block.
+    { sub(/#.*/, "") }
     tolower($0) ~ /fetchcontent_declare\(/ { inblk = 1; name = ""; repo = ""; tag = ""; next }
     inblk && name == "" && $1 != "" && $1 != "SYSTEM" { name = $1 }
     inblk && $1 == "GIT_REPOSITORY" { repo = $2 }
