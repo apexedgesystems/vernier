@@ -3,6 +3,10 @@
 #
 # Triggered by pushing a version tag (v*). Builds all platform artifacts
 # through the full Docker pipeline and attaches them to the GitHub Release.
+#
+# Rehearsal: workflow_dispatch runs the identical artifact build (version taken
+# from CMakeLists.txt, no tag needed) and skips only the publish step -- proving
+# the release pipeline before a tag is cut.
 # ==============================================================================
 name: Release
 
@@ -10,6 +14,7 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -55,20 +60,24 @@ jobs:
               && docker tag $REGISTRY/$img:latest $img || true
           done
 
-      - name: Extract version from tag
+      - name: Resolve version
         id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Verify version matches CMakeLists.txt
         run: |
           cmake_version=$(sed -n 's/.*VERSION \([0-9]*\.[0-9]*\.[0-9]*\).*/\1/p' \
             CMakeLists.txt | head -1)
-          tag_version="${{ steps.version.outputs.version }}"
-          if [ "$cmake_version" != "$tag_version" ]; then
-            echo "ERROR: Tag version ($tag_version) does not match CMakeLists.txt ($cmake_version)"
-            exit 1
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            # Rehearsal: no tag to verify; build the tree's own version.
+            echo "version=${cmake_version}" >> "$GITHUB_OUTPUT"
+            echo "Rehearsal build of ${cmake_version}"
+          else
+            tag_version="${GITHUB_REF_NAME#v}"
+            if [ "$cmake_version" != "$tag_version" ]; then
+              echo "ERROR: Tag version ($tag_version) does not match CMakeLists.txt ($cmake_version)"
+              exit 1
+            fi
+            echo "version=${tag_version}" >> "$GITHUB_OUTPUT"
+            echo "Version verified: $tag_version"
           fi
-          echo "Version verified: $tag_version"
 
       - name: Build all artifacts
         # Route the make-driven image builds through the registry-cache overlay
@@ -82,6 +91,7 @@ jobs:
         run: ls -la output/
 
       - name: Create GitHub Release
+        if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           name: Vernier ${{ steps.version.outputs.version }}
