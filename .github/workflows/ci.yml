@@ -1,14 +1,19 @@
 # ==============================================================================
 # CI -- Build, test, and lint on push/PR to main
 #
-# Runs format-check, debug build, and test suite inside Docker Compose
-# containers. Uses the CPU dev image (no NVIDIA driver needed).
+# A detect job classifies the diff and scopes the gate: docs-only pushes skip CI
+# entirely (paths-ignore), tool-only changes skip the C++ build, and the image
+# rebuild runs only when an image input (Dockerfile, compose, baked dependency
+# manifest) changed. Jobs otherwise run on the registry :latest images -- the
+# pull is seconds and nothing is rebuilt.
 #
-# The four jobs (format, cpp, rust, python) run in parallel; wall time
-# is the slowest job, not the sum. Each job pulls cached dev images from
-# ghcr.io (published by docker-images.yml on docker/** changes); when the
-# Dockerfiles have not changed the pull is seconds and the subsequent
-# 'docker compose build' is a cache-hit no-op.
+# When images are rebuilt, the build goes through the registry-cache overlay
+# (docker-compose.ci-cache.yml): pushed images embed inline layer cache, so only
+# the layers a change actually invalidated are rebuilt, not the whole image.
+#
+# The rust/python tests run on the lean build tier (vernier.build.cpu) -- the
+# same tier the release builds with. The C++ job stays on the dev image (its
+# perf tests exercise the profiler backends that only dev-base ships).
 # ==============================================================================
 name: CI
 
@@ -38,15 +43,85 @@ permissions:
 
 env:
   REGISTRY: ghcr.io/${{ github.repository }}
+  COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci-cache.yml
 
 jobs:
+  # ----------------------------------------------------------------------------
+  # Classify the diff: which areas changed, and do the gate images need a rebuild
+  # ----------------------------------------------------------------------------
+  changes:
+    name: Detect changed areas
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      cpp: ${{ steps.d.outputs.cpp }}
+      rust: ${{ steps.d.outputs.rust }}
+      py: ${{ steps.d.outputs.py }}
+      docker: ${{ steps.d.outputs.docker }}
+      leaves: ${{ steps.d.outputs.leaves }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Classify diff
+        id: d
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="origin/${{ github.base_ref }}...HEAD"
+          elif [ -n "${{ github.event.before }}" ] \
+               && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ] \
+               && git rev-parse -q --verify "${{ github.event.before }}^{commit}" >/dev/null; then
+            RANGE="${{ github.event.before }}..HEAD"
+          else
+            RANGE="HEAD~1..HEAD"
+          fi
+          files=$(git diff --name-only "$RANGE" 2>/dev/null || true)
+          echo "Changed files ($RANGE):"; echo "$files"
+
+          cpp=false; rust=false; py=false; docker=false; leaves=false; all=false
+          for f in $files; do
+            case "$f" in
+              # Baked dependency manifests: the gate images bake these, so the
+              # image must rebuild or the offline build runs against stale caches.
+              tools/rust/Cargo.lock|tools/rust/Cargo.toml) rust=true; docker=true ;;
+              tools/py/poetry.lock|tools/py/pyproject.toml) py=true; docker=true ;;
+              ExternalDependencies.cmake) cpp=true; docker=true ;;
+              tools/CMakeLists.txt) cpp=true; rust=true; py=true ;;
+              tools/rust/*) rust=true ;;
+              tools/py/*)   py=true ;;
+              src/*|CMakeLists.txt|cmake/*|CMakePresets.json) cpp=true ;;
+              # Gate-image inputs (the images the jobs below run in)
+              docker/base.Dockerfile|docker/dev/cpu.Dockerfile) docker=true ;;
+              docker-compose.yml|docker-compose.ci-cache.yml) docker=true ;;
+              docker/scripts/*) docker=true ;;
+              # Platform leaves: built by the image-graph check, not the test jobs.
+              # builder/* and final.Dockerfile are release-time (they embed a full
+              # artifact build); the release pipeline proves them.
+              docker/builder/*|docker/final.Dockerfile) : ;;
+              docker/dev/*|docker/toolchain/*) leaves=true ;;
+              *) all=true ;;
+            esac
+          done
+          # A manual run / unclassified change runs every test job; the image
+          # rebuild stays diff-driven.
+          if [ -z "$files" ]; then all=true; fi
+          if [ "$all" = true ]; then cpp=true; rust=true; py=true; fi
+          # A gate-image rebuild invalidates the whole graph: prove the platform
+          # leaves still build (the test jobs only exercise base/cpu).
+          if [ "$docker" = true ]; then leaves=true; fi
+
+          printf '%s=%s\n' cpp "$cpp" rust "$rust" py "$py" docker "$docker" leaves "$leaves" | tee -a "$GITHUB_OUTPUT"
+
   # ----------------------------------------------------------------------------
   # Format check -- clang-format, prettier, shfmt etc. via 'make format-check'
   # ----------------------------------------------------------------------------
   format:
     name: Format
+    needs: changes
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 
@@ -71,10 +146,11 @@ jobs:
           docker pull $REGISTRY/vernier.dev.cpu:latest \
             && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
 
-      - name: Build dev image
+      - name: Rebuild dev image (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
         run: |
-          docker compose build base
-          docker compose build dev
+          $COMPOSE build base
+          $COMPOSE build dev
 
       - name: Format check
         run: docker compose run --rm -T dev make format-check
@@ -84,6 +160,8 @@ jobs:
   # ----------------------------------------------------------------------------
   cpp:
     name: C++ build and tests
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -125,10 +203,11 @@ jobs:
           docker pull $REGISTRY/vernier.dev.cpu:latest \
             && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
 
-      - name: Build dev image
+      - name: Rebuild dev image (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
         run: |
-          docker compose build base
-          docker compose build dev
+          $COMPOSE build base
+          $COMPOSE build dev
 
       - name: ccache stats (pre-build)
         run: docker compose run --rm -T dev ccache -z
@@ -149,10 +228,12 @@ jobs:
         run: docker compose run --rm -T dev make testp
 
   # ----------------------------------------------------------------------------
-  # Rust tests -- cargo test in tools/rust/
+  # Rust tests -- cargo test on the lean build tier (release parity)
   # ----------------------------------------------------------------------------
   rust:
     name: Rust tests
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -172,26 +253,29 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull cached dev images
+      - name: Pull cached build tier
         run: |
-          docker pull $REGISTRY/vernier.base:latest \
-            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
-          docker pull $REGISTRY/vernier.dev.cpu:latest \
-            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+          docker pull $REGISTRY/vernier.build-base:latest \
+            && docker tag $REGISTRY/vernier.build-base:latest vernier.build-base || true
+          docker pull $REGISTRY/vernier.build.cpu:latest \
+            && docker tag $REGISTRY/vernier.build.cpu:latest  vernier.build.cpu  || true
 
-      - name: Build dev image
+      - name: Rebuild build tier (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
         run: |
-          docker compose build base
-          docker compose build dev
+          $COMPOSE build build-base
+          $COMPOSE build build-cpu
 
       - name: Run Rust tests
-        run: docker compose run --rm -T dev make test-rust
+        run: $COMPOSE run --rm -T ci-build make test-rust
 
   # ----------------------------------------------------------------------------
-  # Python tests -- pytest in tools/py/
+  # Python tests -- pytest on the lean build tier (release parity)
   # ----------------------------------------------------------------------------
   python:
     name: Python tests
+    needs: changes
+    if: needs.changes.outputs.py == 'true' || needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -211,17 +295,63 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull cached dev images
+      - name: Pull cached build tier
         run: |
-          docker pull $REGISTRY/vernier.base:latest \
-            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
-          docker pull $REGISTRY/vernier.dev.cpu:latest \
-            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+          docker pull $REGISTRY/vernier.build-base:latest \
+            && docker tag $REGISTRY/vernier.build-base:latest vernier.build-base || true
+          docker pull $REGISTRY/vernier.build.cpu:latest \
+            && docker tag $REGISTRY/vernier.build.cpu:latest  vernier.build.cpu  || true
 
-      - name: Build dev image
+      - name: Rebuild build tier (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
         run: |
-          docker compose build base
-          docker compose build dev
+          $COMPOSE build build-base
+          $COMPOSE build build-cpu
 
       - name: Run Python tests
-        run: docker compose run --rm -T dev make test-py
+        run: $COMPOSE run --rm -T ci-build make test-py
+
+  # ----------------------------------------------------------------------------
+  # Image graph check -- prove the platform leaves still build.
+  #
+  # The test jobs only exercise base + the cpu leaf; a broken cuda/cross leaf
+  # (an invalid COPY --from, a lean-overlay assumption) would otherwise merge
+  # green and explode in docker-images on main. Builds through the registry
+  # cache, so unchanged layers pull instead of rebuilding; builder/* and final
+  # are release-time images proven by the release pipeline.
+  # ----------------------------------------------------------------------------
+  images:
+    name: Image graph check
+    needs: changes
+    if: needs.changes.outputs.leaves == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build the image graph (registry-cached)
+        run: |
+          $COMPOSE build base build-base
+          $COMPOSE build dev build-cpu
+          $COMPOSE build dev-cuda build-cuda
+          # Same-invocation services build in parallel, so toolchain-rpi (FROM
+          # toolchain-aarch64) needs its parent built in a prior invocation.
+          $COMPOSE build toolchain-aarch64 toolchain-riscv64
+          $COMPOSE build toolchain-rpi
+          $COMPOSE build dev-jetson build-jetson
+          $COMPOSE build dev-rpi build-rpi
+          $COMPOSE build dev-riscv64 build-riscv64
