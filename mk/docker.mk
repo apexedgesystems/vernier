@@ -32,11 +32,16 @@ DOCKER_OUT_DIR := output
 # Internal Helpers
 # ------------------------------------------------------------------------------
 
+# Extra compose files, e.g. the CI registry-cache overlay. CI sets
+# DOCKER_COMPOSE_FILES="-f docker-compose.yml -f docker-compose.ci-cache.yml"
+# so image builds reuse registry layer cache; local builds leave it empty.
+DOCKER_COMPOSE_FILES ?=
+
 # _docker_build: Build a docker compose service
 # Usage: $(call _docker_build,tag,display_name,service)
 define _docker_build
 	$(call log,docker,Building $(2))
-	@docker compose build $(3)
+	@docker compose $(DOCKER_COMPOSE_FILES) build $(3)
 endef
 
 # _docker_shell: Run an interactive shell in a docker compose service

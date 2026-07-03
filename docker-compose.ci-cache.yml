@@ -1,0 +1,120 @@
+# ==============================================================================
+# docker-compose.ci-cache.yml -- CI-only registry build-cache overlay
+#
+# Layered on top of docker-compose.yml in CI (the gate, docker-images, and the
+# release), never in day-to-day local builds:
+#   docker compose -f docker-compose.yml -f docker-compose.ci-cache.yml build <svc>
+#
+# cache_to embeds inline cache metadata in the built image, so pushed :latest
+# images carry their layer cache; cache_from lets a fresh runner reuse those
+# layers from the registry instead of rebuilding from scratch. The inline
+# exporter works with the default builder -- no buildx driver setup needed.
+# cache_from is best-effort: a missing ref (first build) is silently ignored.
+#
+# Also defines the `ci-build` service: the lean build tier (vernier.build.cpu)
+# with the workspace mounted, so the gate runs the rust/python tests on the same
+# tier the release builds with.
+# ==============================================================================
+x-inline-cache: &inline-cache
+  - type=inline
+
+services:
+  build-base:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build-base:latest
+      cache_to: *inline-cache
+
+  base:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.base:latest
+        # dev-base shares build-base's lower half; reuse those layers too.
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build-base:latest
+      cache_to: *inline-cache
+
+  dev:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.dev.cpu:latest
+      cache_to: *inline-cache
+
+  dev-cuda:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.dev.cuda:latest
+      cache_to: *inline-cache
+
+  dev-jetson:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.dev.jetson:latest
+      cache_to: *inline-cache
+
+  dev-rpi:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.dev.rpi:latest
+      cache_to: *inline-cache
+
+  dev-riscv64:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.dev.riscv64:latest
+      cache_to: *inline-cache
+
+  build-cpu:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build.cpu:latest
+      cache_to: *inline-cache
+
+  build-cuda:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build.cuda:latest
+      cache_to: *inline-cache
+
+  build-jetson:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build.jetson:latest
+      cache_to: *inline-cache
+
+  build-rpi:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build.rpi:latest
+      cache_to: *inline-cache
+
+  build-riscv64:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.build.riscv64:latest
+      cache_to: *inline-cache
+
+  toolchain-aarch64:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.toolchain.aarch64:latest
+      cache_to: *inline-cache
+
+  toolchain-rpi:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.toolchain.rpi:latest
+      cache_to: *inline-cache
+
+  toolchain-riscv64:
+    build:
+      cache_from:
+        - ${REGISTRY:-ghcr.io/apexedgesystems/vernier}/vernier.toolchain.riscv64:latest
+      cache_to: *inline-cache
+
+  # The lean test-run tier for the gate: the release build tier with the
+  # workspace mounted. Tests run on what the release ships with.
+  ci-build:
+    image: vernier.build.cpu
+    working_dir: /home/${USER}/workspace
+    volumes:
+      - .:/home/${USER}/workspace:cached

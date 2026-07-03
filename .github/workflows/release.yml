@@ -71,6 +71,11 @@ jobs:
           echo "Version verified: $tag_version"
 
       - name: Build all artifacts
+        # Route the make-driven image builds through the registry-cache overlay
+        # so the toolchain/tier rebuilds reuse pushed layers instead of building
+        # from scratch on the fresh runner.
+        env:
+          DOCKER_COMPOSE_FILES: -f docker-compose.yml -f docker-compose.ci-cache.yml
         run: make artifacts
 
       - name: List artifacts

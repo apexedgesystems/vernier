@@ -18,14 +18,19 @@
 #   - toolchain/<x>.Dockerfile changed -> rebuild any dev image that COPY-froms it
 #   - No relevant Dockerfile changed  -> each image is pulled from registry
 #
-# Toolchain images (vernier.toolchain.*) are NOT pushed -- they are transient
-# layers consumed via COPY --from by the dev images that need them. They are
-# rebuilt locally whenever the dev image that depends on them is rebuilt.
+# Every build goes through the registry-cache overlay
+# (docker-compose.ci-cache.yml): pushed images embed inline layer cache, and
+# rebuilds pull unchanged layers from :latest instead of recompiling the image
+# from scratch on a fresh runner.
 #
 # Images pushed (tagged :latest and :{git-sha}):
-#   vernier.base
-#   vernier.dev.cpu   vernier.dev.cuda   vernier.dev.jetson
-#   vernier.dev.rpi   vernier.dev.riscv64
+#   vernier.base        vernier.build-base
+#   vernier.dev.cpu     vernier.dev.cuda     vernier.dev.jetson
+#   vernier.dev.rpi     vernier.dev.riscv64
+#   vernier.build.cpu   vernier.build.cuda   vernier.build.jetson
+#   vernier.build.rpi   vernier.build.riscv64
+#   vernier.toolchain.* (:latest only -- consumed via COPY --from and as layer
+#   cache by the gate's image-graph check and the release rebuilds)
 # ==============================================================================
 name: Docker Images
 
@@ -61,6 +66,10 @@ jobs:
 
     env:
       REGISTRY: ghcr.io/${{ github.repository }}
+      # Build through the registry-cache overlay: pushed images embed inline
+      # layer cache, and rebuilds pull unchanged layers instead of recompiling
+      # the whole image from scratch on a fresh runner.
+      COMPOSE: docker compose -f docker-compose.yml -f docker-compose.ci-cache.yml
 
     steps:
       - name: Checkout
@@ -147,7 +156,7 @@ jobs:
       - name: vernier.base + vernier.build-base
         run: |
           if [ "$REBUILD_BASE" = "true" ]; then
-            docker compose build base build-base
+            $COMPOSE build base build-base
             for img in vernier.base vernier.build-base; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
@@ -167,7 +176,7 @@ jobs:
       - name: vernier.dev.cpu + vernier.build.cpu
         run: |
           if [ "$REBUILD_CPU" = "true" ]; then
-            docker compose build dev build-cpu
+            $COMPOSE build dev build-cpu
             for img in vernier.dev.cpu vernier.build.cpu; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
@@ -184,7 +193,7 @@ jobs:
       - name: vernier.dev.cuda + vernier.build.cuda
         run: |
           if [ "$REBUILD_CUDA" = "true" ]; then
-            docker compose build dev-cuda build-cuda
+            $COMPOSE build dev-cuda build-cuda
             for img in vernier.dev.cuda vernier.build.cuda; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
@@ -204,8 +213,10 @@ jobs:
       - name: vernier.dev.jetson + vernier.build.jetson
         run: |
           if [ "$REBUILD_JETSON" = "true" ]; then
-            docker compose build toolchain-aarch64
-            docker compose build dev-jetson build-jetson
+            $COMPOSE build toolchain-aarch64
+            docker tag vernier.toolchain.aarch64 $REGISTRY/vernier.toolchain.aarch64:latest
+            docker push $REGISTRY/vernier.toolchain.aarch64:latest
+            $COMPOSE build dev-jetson build-jetson
             for img in vernier.dev.jetson vernier.build.jetson; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
@@ -225,9 +236,13 @@ jobs:
       - name: vernier.dev.rpi + vernier.build.rpi
         run: |
           if [ "$REBUILD_RPI" = "true" ]; then
-            docker compose build toolchain-aarch64
-            docker compose build toolchain-rpi
-            docker compose build dev-rpi build-rpi
+            $COMPOSE build toolchain-aarch64
+            $COMPOSE build toolchain-rpi
+            for tc in vernier.toolchain.aarch64 vernier.toolchain.rpi; do
+              docker tag $tc $REGISTRY/$tc:latest
+              docker push $REGISTRY/$tc:latest
+            done
+            $COMPOSE build dev-rpi build-rpi
             for img in vernier.dev.rpi vernier.build.rpi; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
@@ -244,8 +259,10 @@ jobs:
       - name: vernier.dev.riscv64 + vernier.build.riscv64
         run: |
           if [ "$REBUILD_RISCV64" = "true" ]; then
-            docker compose build toolchain-riscv64
-            docker compose build dev-riscv64 build-riscv64
+            $COMPOSE build toolchain-riscv64
+            docker tag vernier.toolchain.riscv64 $REGISTRY/vernier.toolchain.riscv64:latest
+            docker push $REGISTRY/vernier.toolchain.riscv64:latest
+            $COMPOSE build dev-riscv64 build-riscv64
             for img in vernier.dev.riscv64 vernier.build.riscv64; do
               docker tag $img $REGISTRY/$img:latest
               docker tag $img $REGISTRY/$img:${{ github.sha }}
