@@ -1,3 +1,4 @@
+// CI fast-path probe: measurement-only change; PR closes unmerged.
 /**
  * @file MonitorEnvVarExample.cpp
  * @brief End-to-end example: env-var-driven Monitor configuration.
