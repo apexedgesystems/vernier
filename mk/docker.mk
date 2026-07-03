@@ -21,6 +21,9 @@ export COMPOSE_DOCKER_CLI_BUILD := 1
 export USER     := $(shell id -un)
 export HOST_UID := $(shell id -u)
 export HOST_GID := $(shell id -g)
+# Host running-kernel version so dev-base installs the matching linux-tools
+# (perf needs the exact match; the generic package drifts ahead of the host).
+export HOST_KERNEL := $(shell uname -r)
 
 # Artifact output directory
 DOCKER_OUT_DIR := output
@@ -29,11 +32,16 @@ DOCKER_OUT_DIR := output
 # Internal Helpers
 # ------------------------------------------------------------------------------
 
+# Extra compose files, e.g. the CI registry-cache overlay. CI sets
+# DOCKER_COMPOSE_FILES="-f docker-compose.yml -f docker-compose.ci-cache.yml"
+# so image builds reuse registry layer cache; local builds leave it empty.
+DOCKER_COMPOSE_FILES ?=
+
 # _docker_build: Build a docker compose service
 # Usage: $(call _docker_build,tag,display_name,service)
 define _docker_build
 	$(call log,docker,Building $(2))
-	@docker compose build $(3)
+	@docker compose $(DOCKER_COMPOSE_FILES) build $(3)
 endef
 
 # _docker_shell: Run an interactive shell in a docker compose service
@@ -99,22 +107,47 @@ docker-dev-riscv64: docker-dev docker-toolchain-riscv64
 	$(call _docker_build,dev,RISC-V 64 dev shell,dev-riscv64)
 
 # ------------------------------------------------------------------------------
+# Lean Build Tiers (release builders inherit these, not the dev shells)
+# ------------------------------------------------------------------------------
+# Each is the platform leaf built on build-base instead of dev-base: the
+# compile/link/test toolchain plus the baked hermetic caches, none of the
+# dev-only scanners/profilers. The builder images below derive from these.
+
+docker-build-base:
+	$(call _docker_build,build-base,lean build-base,build-base)
+
+docker-build-cpu: docker-build-base
+	$(call _docker_build,build,CPU build tier,build-cpu)
+
+docker-build-cuda: docker-build-base
+	$(call _docker_build,build,CUDA build tier,build-cuda)
+
+docker-build-jetson: docker-build-cuda docker-toolchain-aarch64
+	$(call _docker_build,build,Jetson build tier,build-jetson)
+
+docker-build-rpi: docker-build-cpu docker-toolchain-rpi
+	$(call _docker_build,build,Raspberry Pi build tier,build-rpi)
+
+docker-build-riscv64: docker-build-cpu docker-toolchain-riscv64
+	$(call _docker_build,build,RISC-V 64 build tier,build-riscv64)
+
+# ------------------------------------------------------------------------------
 # Builder Images (CI Artifact Generation)
 # ------------------------------------------------------------------------------
 
-docker-builder-cpu: docker-dev
+docker-builder-cpu: docker-build-cpu
 	$(call _docker_build,builder,CPU builder,builder-cpu)
 
-docker-builder-cuda: docker-dev-cuda
+docker-builder-cuda: docker-build-cuda
 	$(call _docker_build,builder,CUDA builder,builder-cuda)
 
-docker-builder-jetson: docker-dev-jetson
+docker-builder-jetson: docker-build-jetson
 	$(call _docker_build,builder,Jetson builder,builder-jetson)
 
-docker-builder-rpi: docker-dev-rpi
+docker-builder-rpi: docker-build-rpi
 	$(call _docker_build,builder,Raspberry Pi builder,builder-rpi)
 
-docker-builder-riscv64: docker-dev-riscv64
+docker-builder-riscv64: docker-build-riscv64
 	$(call _docker_build,builder,RISC-V 64 builder,builder-riscv64)
 
 # ------------------------------------------------------------------------------
@@ -207,6 +240,8 @@ docker-validate: docker-lint
 .PHONY: docker-base artifacts
 .PHONY: docker-toolchain-aarch64 docker-toolchain-rpi docker-toolchain-riscv64
 .PHONY: docker-dev docker-dev-cuda docker-dev-jetson docker-dev-rpi docker-dev-riscv64
+.PHONY: docker-build-base docker-build-cpu docker-build-cuda docker-build-jetson
+.PHONY: docker-build-rpi docker-build-riscv64
 .PHONY: docker-builder-cpu docker-builder-cuda docker-builder-jetson
 .PHONY: docker-builder-rpi docker-builder-riscv64
 .PHONY: shell-dev shell-dev-cuda shell-dev-jetson shell-dev-rpi shell-dev-riscv64

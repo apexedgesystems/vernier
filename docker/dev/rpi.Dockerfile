@@ -8,7 +8,10 @@
 #   make shell-dev-rpi
 #   docker compose run --rm dev-rpi
 # ==============================================================================
-FROM vernier.dev.cpu:latest
+# BASE selects the tier: vernier.dev.cpu (dev shell) or vernier.build.cpu (the
+# lean release-builder variant, vernier.build.rpi).
+ARG BASE=vernier.dev.cpu:latest
+FROM ${BASE}
 
 ARG USER
 ARG HOST_UID

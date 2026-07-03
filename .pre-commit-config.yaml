@@ -8,6 +8,7 @@ files: |
     mk/|
     docs/|
     docker/|
+    scripts/|
     tools/|
     (CMakeLists\.txt|
      ExternalDependencies\.cmake|
@@ -166,6 +167,13 @@ repos:
         entry: hadolint
         language: system
         files: (Dockerfile|\.Dockerfile)$
+
+      - id: pinned-deps-local
+        name: FetchContent deps pinned to immutable refs (local)
+        entry: bash scripts/check-pinned-deps.sh
+        language: system
+        files: ^ExternalDependencies\.cmake$
+        pass_filenames: false
 
       - id: shfmt-local
         name: shfmt (local)

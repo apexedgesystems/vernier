@@ -8,7 +8,7 @@
 #   docker compose build builder-cuda
 #   make docker-builder-cuda
 # ==============================================================================
-FROM vernier.dev.cuda:latest
+FROM vernier.build.cuda:latest
 
 ARG USER
 ARG HOST_UID

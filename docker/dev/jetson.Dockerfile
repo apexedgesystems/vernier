@@ -8,7 +8,10 @@
 #   make shell-dev-jetson
 #   docker compose run dev-jetson
 # ==============================================================================
-FROM vernier.dev.cuda:latest
+# BASE selects the tier: vernier.dev.cuda (dev shell) or vernier.build.cuda (the
+# lean release-builder variant, vernier.build.jetson).
+ARG BASE=vernier.dev.cuda:latest
+FROM ${BASE}
 
 ARG USER
 ARG HOST_UID

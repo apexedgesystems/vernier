@@ -17,17 +17,33 @@ x-build-args: &build-args
   USER: ${USER}
   HOST_UID: ${HOST_UID:-1000}
   HOST_GID: ${HOST_GID:-1000}
+  HOST_KERNEL: ${HOST_KERNEL:-}
   VERSION: ${PROJECT_VERSION:-1.0.0}
 
 services:
   # ============================================================================
-  # Base image (build-only, not meant to be run directly)
+  # Base images (build-only, not meant to be run directly)
   # ============================================================================
+  # build-base: the lean compile/link/test tier (no dev tooling). The release
+  # builders and the build-test gate can inherit only this; it also carries the
+  # baked hermetic dependency caches that dev-base (vernier.base) inherits.
+  build-base:
+    image: vernier.build-base
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+      target: build-base
+      args:
+        <<: *build-args
+    profiles: ["build-only"]
+
+  # base: the full dev tier (build-base + scanners/formatters/profilers/docs).
   base:
     image: vernier.base
     build:
       context: .
       dockerfile: docker/base.Dockerfile
+      target: dev-base
       args:
         <<: *build-args
     profiles: ["build-only"]
@@ -144,6 +160,68 @@ services:
     hostname: vernier-dev-riscv64
     privileged: true
     command: bash
+
+  # ============================================================================
+  # Lean release-builder tiers (build-only)
+  # ============================================================================
+  # The platform leaves built on build-base (not dev-base), so the release
+  # builders carry the compile/link/test toolchain and the baked hermetic caches
+  # but none of the dev-only scanners/profilers/formatters. The builder-* images
+  # below derive from these.
+  build-cpu:
+    image: vernier.build.cpu
+    build:
+      context: .
+      dockerfile: docker/dev/cpu.Dockerfile
+      args:
+        <<: *build-args
+        BASE: vernier.build-base:latest
+    profiles: ["build-only"]
+
+  build-cuda:
+    image: vernier.build.cuda
+    build:
+      context: .
+      dockerfile: docker/dev/cuda.Dockerfile
+      args:
+        <<: *build-args
+        OVERLAY: vernier.build-base:latest
+        WITH_NSIGHT: "0"
+        # The overlay loses ENV; re-activate the baked caches so this tier's
+        # tools build offline like the rest of the build tiers.
+        RUST_OFFLINE: "1"
+        PIP_WHEELHOUSE: /opt/vernier-pip-wheels
+    profiles: ["build-only"]
+
+  build-rpi:
+    image: vernier.build.rpi
+    build:
+      context: .
+      dockerfile: docker/dev/rpi.Dockerfile
+      args:
+        <<: *build-args
+        BASE: vernier.build.cpu:latest
+    profiles: ["build-only"]
+
+  build-riscv64:
+    image: vernier.build.riscv64
+    build:
+      context: .
+      dockerfile: docker/dev/riscv64.Dockerfile
+      args:
+        <<: *build-args
+        BASE: vernier.build.cpu:latest
+    profiles: ["build-only"]
+
+  build-jetson:
+    image: vernier.build.jetson
+    build:
+      context: .
+      dockerfile: docker/dev/jetson.Dockerfile
+      args:
+        <<: *build-args
+        BASE: vernier.build.cuda:latest
+    profiles: ["build-only"]
 
   # ============================================================================
   # Builder images (CI artifact generation)

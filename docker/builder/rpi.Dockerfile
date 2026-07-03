@@ -10,7 +10,7 @@
 #   docker compose build builder-rpi
 #   make docker-builder-rpi
 # ==============================================================================
-FROM vernier.dev.rpi:latest
+FROM vernier.build.rpi:latest
 
 ARG USER
 ARG HOST_UID

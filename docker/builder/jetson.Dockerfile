@@ -10,7 +10,7 @@
 #   docker compose build builder-jetson
 #   make docker-builder-jetson
 # ==============================================================================
-FROM vernier.dev.jetson:latest
+FROM vernier.build.jetson:latest
 
 ARG USER
 ARG HOST_UID

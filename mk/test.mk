@@ -95,10 +95,13 @@ test-py:
 	$(call log,test,Running Python tools tests)
 	@cd "$(PY_TOOLS_DIR)" && poetry install --quiet && (poetry run pytest -v || test $$? -eq 5)
 
-# Rust tools unit tests
+# Rust tools unit tests. Inherit CARGO_HOME (the dev image bakes an offline-ready
+# registry cache; locally it is ~/.cargo) so tests reuse the shared crate cache
+# instead of re-downloading into a per-build throwaway. The compiled test
+# artifacts still isolate to the per-build target dir.
 test-rust:
 	$(call log,test,Running Rust tools tests)
-	@cd tools/rust && CARGO_HOME="$(CURDIR)/$(BUILD_DIR)/rust-cargo" cargo test
+	@cd tools/rust && cargo test --target-dir "$(CURDIR)/$(BUILD_DIR)/rust-test-target"
 
 # ------------------------------------------------------------------------------
 # Phony Declarations
