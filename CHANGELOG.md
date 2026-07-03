@@ -5,6 +5,73 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## v1.0.3 - 2026-06-28
+
+### Changed
+
+- **Tiered base image** -- `docker/base.Dockerfile` is now two stages:
+  `build-base` (lean compile/link/test tier) and `dev-base` (build-base plus
+  scanners, formatters, profilers, and docs). `vernier.base` builds the dev-base
+  target, so every existing dev shell is unaffected.
+- **Hermetic dependency baking** -- the build image pre-fetches the rust tools'
+  cargo crates, the FetchContent sources (googletest), and the python tools'
+  wheels at their pinned versions, so a release build resolves no external
+  registry (crates.io, PyPI, GitHub) at build time. A registry outage, throttle,
+  or yank can no longer fail a build; clean builds reuse the caches instead of
+  re-fetching. The offline switches are unset in dev-base so interactive dev
+  still resolves online.
+- **Rust tools build** -- `tools/CMakeLists.txt` no longer overrides
+  `CARGO_HOME` to a per-build directory; it inherits the shared registry cache
+  (enabling cache reuse and offline builds) and the compiled artifacts still
+  isolate to a per-build target directory.
+- **Lean release builders** -- every release builder (cpu, cuda, jetson, rpi,
+  riscv64) now derives from a build tier (the platform leaf built on build-base)
+  instead of the full dev shell, and every build tier carries the offline
+  switches for the baked caches. The cpu and cuda tiers drop the dev-only
+  scanners, profilers, and formatters outright; the cross tiers (jetson, rpi,
+  riscv64) still receive dev tooling through the toolchain overlay (the
+  toolchain images build on the dev tier) -- slimming those is a follow-up. The
+  platform leaf Dockerfiles are parameterized (a BASE / OVERLAY arg) to produce
+  both the dev shell and the build variant from one definition.
+- **CI image graph** -- `docker-images.yml` builds and publishes the build tiers
+  alongside the dev images, and rebuilds the base image when
+  `tools/rust/Cargo.lock`, `tools/py/poetry.lock`, or `ExternalDependencies.cmake`
+  change so the baked caches never go stale. The release workflow pulls the build
+  tiers to reuse their layers.
+- **Resilient image downloads** -- the image's external fetches (the LLVM apt
+  key, CMake, UPX, hadolint, shfmt) retry with backoff on connection and HTTP
+  5xx/429 errors, so a transient registry blip no longer fails an image rebuild.
+- **Registry layer cache for CI image builds** -- CI builds go through a cache
+  overlay (`docker-compose.ci-cache.yml`): pushed images embed inline layer
+  cache and rebuilds pull unchanged layers from the registry, so an image-input
+  change rebuilds only the layers it invalidated instead of the whole image on
+  a fresh runner. Toolchain images are now pushed so cross-image and release
+  rebuilds cache too.
+- **Scoped CI gate** -- a detect job classifies the diff: tool-only changes skip
+  the C++ build, the image rebuild runs only when an image input changed (jobs
+  otherwise run on the pulled registry images -- previously every PR rebuilt the
+  dev image from scratch), and an image-graph check builds the platform leaves
+  when they or a gate image change (previously a broken cuda/cross leaf merged
+  green). The rust/python tests run on the lean build tier -- the tier the
+  release builds with -- and `make test-rust` reuses the shared cargo cache
+  instead of re-downloading crates into a per-build throwaway.
+- **Release rehearsal mode** -- `release.yml` accepts `workflow_dispatch`: the
+  identical artifact build (version from `CMakeLists.txt`, no tag required)
+  with only the publish step skipped, so the release pipeline is provable
+  before a version tag is cut.
+
+### Added
+
+- **docker/scripts/bake-external-deps.sh** -- clones the FetchContent
+  dependencies at their pinned tags into the image for offline configure.
+- **build-base + build.\* compose services** -- the lean build/test tier and the
+  per-platform lean builder tiers.
+- **Dependency-pin guard** -- `scripts/check-pinned-deps.sh` (run as a pre-commit
+  hook) fails if any FetchContent `GIT_TAG` is not an immutable ref (a version
+  tag or a full commit SHA). A moving ref would let a dependency drift without
+  `ExternalDependencies.cmake` changing, silently bypassing the image's
+  auto-rebuild and leaving the baked source stale.
+
 ## v1.0.2 - 2026-06-04
 
 ### Added
