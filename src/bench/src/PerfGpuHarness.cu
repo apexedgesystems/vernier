@@ -834,7 +834,10 @@ private:
 
   // In-process kernel metric collector (no-op when libcupti is not linked
   // or when the CUDA toolkit is too old to expose CUpti_ActivityKernel9).
-  CuptiCollector cupti_{};
+  // Constructed with the yield decision: registration alone claims the
+  // single CUPTI client slot, so an external Nsight session needs the
+  // collector never to register (see CuptiCollector ctor).
+  CuptiCollector cupti_{profiler_env::cuptiMustYield(cpuCfg_.profileTool)};
 
   friend class PerfGpuCase;
 };
