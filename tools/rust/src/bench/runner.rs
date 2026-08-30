@@ -182,6 +182,7 @@ fn wrap_command_for(
             | "heaptrack"
             | "compute-sanitizer"
             | "nsight"
+            | "ncu"
     ) {
         return None;
     }
@@ -256,6 +257,18 @@ fn wrap_command_for(
                 format!("{dir}/profile"),
                 "-t".into(),
                 "cuda,nvtx".into(),
+                bin,
+            ],
+        )),
+        // First-class Nsight Compute: same external-wrap pattern; the
+        // replay pass stays a --profile-args opt-in inside the binary.
+        "ncu" => Some((
+            "ncu".into(),
+            vec![
+                "-o".into(),
+                format!("{dir}/kernel_profile"),
+                "--target-processes".into(),
+                "all".into(),
                 bin,
             ],
         )),
@@ -417,6 +430,27 @@ mod tests {
                 format!("{}/profile", dir.display()),
                 "-t".to_string(),
                 "cuda,nvtx".to_string(),
+                "./my_test".to_string(),
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// @test ncu wraps with the kernel-profile output and all target processes.
+    #[test]
+    fn wrap_command_for_ncu_uses_ncu() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_ncu");
+        let (prog, args) = wrap_command_for("ncu", Path::new("./my_test"), Some(&root))
+            .expect("ncu should wrap externally");
+        let dir = root.join("my_test.ncu");
+        assert_eq!(prog, "ncu");
+        assert_eq!(
+            args,
+            vec![
+                "-o".to_string(),
+                format!("{}/kernel_profile", dir.display()),
+                "--target-processes".to_string(),
+                "all".to_string(),
                 "./my_test".to_string(),
             ]
         );

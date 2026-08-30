@@ -34,7 +34,13 @@ NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
 
-  if (cfg_.profileArgs.find("replay") != std::string::npos) {
+  if (cfg_.profileTool == "ncu") {
+    // First-class Nsight Compute (--profile ncu). Replay stays the same
+    // --profile-args opt-in as the nsight spelling.
+    const bool REPLAY = cfg_.profileArgs.find("replay") != std::string::npos;
+    mode_ = REPLAY ? NsightMode::ComputeReplay : NsightMode::Compute;
+    useReplayMode_ = REPLAY;
+  } else if (cfg_.profileArgs.find("replay") != std::string::npos) {
     mode_ = NsightMode::ComputeReplay;
     useReplayMode_ = true;
   } else if (cfg_.profileArgs.find("ncu") != std::string::npos ||
@@ -336,9 +342,31 @@ EnvReport checkNsightEnvironment() {
   return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
 }
 
+EnvReport checkNcuEnvironment() {
+  if (std::system("command -v ncu >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Error, "ncu not found on PATH",
+                     "Install nsight-compute (CUDA toolkit devtools repo on Ubuntu)."};
+  }
+  if (profiler_env::isInContainer()) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "ncu available; running in a container (PID namespace)",
+                     "Use bench run --profile ncu (wraps ncu around the binary automatically)."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "ncu available", ""};
+}
+
 } // namespace bench
 } // namespace vernier
 
 VERNIER_REGISTER_PROFILER_BACKEND(
     "nsight", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNsightEnvironment,
     "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")
+
+// Nsight Compute as its own first-class name: same backend implementation,
+// constructor selects Compute mode from the tool name. Kernel replay's rich
+// metrics inherently need many launches, so it remains a separate pass from
+// single-launch timing (--profile-args replay) -- the flag is still the one
+// entry point.
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "ncu", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNcuEnvironment,
+    "Install NVIDIA Nsight Compute (ncu) and ensure a CUDA-capable GPU is visible.")

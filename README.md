@@ -64,7 +64,7 @@ cmake --build --preset native-linux-debug
 ## 2. Key Features
 
 - GoogleTest integration with CSV export and end-of-run summary tables
-- 14 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
+- 15 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
   and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
 - Per-backend environment doctor (`--profile-check`) with actionable hints
 - SIGALRM per-test watchdog so hung profiler runs fail loudly, not silently
@@ -157,7 +157,8 @@ name; `bench doctor` lists them all with their environment readiness.
 | `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)  |
 | `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
-| `nsight`            | GPU   | NVIDIA Nsight Systems / Compute               |
+| `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)              |
+| `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)   |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
 | `rocprof`           | GPU   | AMD ROCm rocprof                              |
 
@@ -220,7 +221,7 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 | Platform                  | Library | Profilers             | CUDA | Pre-built Artifact              |
 | ------------------------- | ------- | --------------------- | ---- | ------------------------------- |
-| x86_64 Linux              | Full    | All 14                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
+| x86_64 Linux              | Full    | All 15                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
 | Jetson (aarch64)          | Full    | All except RAPL       | Yes  | `vernier-*-aarch64-jetson`      |
 | Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL | No   | `vernier-*-aarch64-rpi`         |
 | RISC-V 64                 | Full    | CPU backends, no RAPL | No   | `vernier-*-riscv64-linux`       |
