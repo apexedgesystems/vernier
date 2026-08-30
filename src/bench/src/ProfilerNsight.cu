@@ -56,11 +56,21 @@ bool NsightProfiler::isNcuAvailable() const {
 }
 
 void NsightProfiler::beforeMeasure() {
+  // When bench run already wrapped this process with nsys/ncu
+  // (VERNIER_EXTERNAL_WRAP), the external session owns the capture: skip
+  // the attach paths and the manual-wrap hint entirely. The NVTX range
+  // below still labels the measured window in the external timeline, and
+  // the harness's CUPTI collector yields via the same signal.
+  const std::string EXTERNAL_WRAP = profiler_env::externalWrapTool();
+  if (EXTERNAL_WRAP == "nsight" || EXTERNAL_WRAP == "ncu") {
+    std::fprintf(stderr, "[nsight] external %s wrap active; skipping in-process attach.\n",
+                 EXTERNAL_WRAP.c_str());
+  }
   // Inside a container PID namespace, `nsys profile -p <pid>` / `ncu -p <pid>`
   // attach modes cannot reach this process reliably. Print the wrap-externally
   // hint and skip the attach attempt; the user runs nsys/ncu around the binary
   // instead (same pattern callgrind / compute-sanitizer use).
-  if (profiler_env::isInContainer()) {
+  else if (profiler_env::isInContainer()) {
     const char* tool = (mode_ == NsightMode::Systems) ? "nsys" : "ncu";
     std::fprintf(stderr,
                  "\n[nsight] running inside a container; attach-by-pid is unreliable.\n"
