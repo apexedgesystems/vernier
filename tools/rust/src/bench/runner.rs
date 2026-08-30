@@ -27,6 +27,8 @@ pub struct RunConfig {
     pub cycles: Option<u32>,
     pub repeats: Option<u32>,
     pub profile: Option<String>,
+    pub profile_args: Option<String>,
+    pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
     pub taskset: Option<String>,
     pub extra_args: Vec<String>,
@@ -67,6 +69,14 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     if let Some(ref profile) = cfg.profile {
         args.push("--profile".to_string());
         args.push(profile.clone());
+    }
+    if let Some(ref pa) = cfg.profile_args {
+        args.push("--profile-args".to_string());
+        args.push(pa.clone());
+    }
+    if let Some(t) = cfg.profile_test_timeout {
+        args.push("--profile-test-timeout".to_string());
+        args.push(t.to_string());
     }
     if let Some(ref dir) = cfg.profile_output_dir {
         args.push("--profile-output-dir".to_string());

@@ -109,6 +109,16 @@ enum Command {
         #[arg(long)]
         profile: Option<String>,
 
+        /// Verbatim pass-through to the profiler backend (passed to the
+        /// binary as --profile-args, e.g. "replay" for ncu kernel replay)
+        #[arg(long)]
+        profile_args: Option<String>,
+
+        /// Per-test profiler watchdog timeout in seconds (passed to the
+        /// binary as --profile-test-timeout)
+        #[arg(long)]
+        profile_test_timeout: Option<u32>,
+
         /// Where wrap-externally backends (massif, memcheck, callgrind,
         /// heaptrack, compute-sanitizer) write their artifacts. Defaults
         /// to `bench-out/`. Forwarded to the binary as --profile-output-dir
@@ -355,6 +365,8 @@ fn run(args: Args) -> Result<(), Error> {
             cycles,
             repeats,
             profile,
+            profile_args,
+            profile_test_timeout,
             profile_output_dir,
             taskset,
             analyze,
@@ -376,6 +388,8 @@ fn run(args: Args) -> Result<(), Error> {
                 cycles: cycles.or(file_cfg.cycles),
                 repeats: repeats.or(file_cfg.repeats),
                 profile,
+                profile_args,
+                profile_test_timeout,
                 profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
                 taskset,
                 extra_args,

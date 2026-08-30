@@ -194,6 +194,8 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             cycles: cfg.cycles,
             repeats: cfg.repeats,
             profile: Some(tool.to_string()),
+            profile_args: None,
+            profile_test_timeout: None,
             profile_output_dir: Some(out_dir.clone()),
             taskset: None,
             extra_args: cfg
