@@ -56,6 +56,10 @@
       vernier::bench::detail::getPerfConfig()};                                                    \
   vernier::bench::attachGpuProfilerHooks(varName, vernier::bench::detail::getPerfConfig())
 
+/** @brief Preferred name for the GPU guard; UB_PERF_GPU_GUARD stays as a
+ *  compatibility alias. */
+#define PERF_GPU_GUARD(varName) UB_PERF_GPU_GUARD(varName)
+
 /* ----------------------------- GPU Main Macro ----------------------------- */
 
 /**

@@ -31,7 +31,7 @@ and statistical analysis.
 #include "Perf.hpp"
 
 PERF_TEST(MyLib, Throughput) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
   perf.warmup([&]{ work(); });
   auto result = perf.throughputLoop([&]{ work(); }, "label");
   EXPECT_GT(result.callsPerSecond, 10000.0);

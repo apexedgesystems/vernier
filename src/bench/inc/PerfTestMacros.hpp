@@ -11,8 +11,13 @@
  * | Macro | Purpose |
  * |-------|---------|
  * | `PERF_TEST(Suite, Name)` | Declare a perf test (use this for most tests) |
- * | `UB_PERF_GUARD(perf)` | Create PerfCase with auto-attached profiler hooks |
+ * | `PERF_TEST_F(Fixture, Name)` | Fixture-based perf test (alias of TEST_F) |
+ * | `PERF_TEST_P(Fixture, Name)` | Parameterized perf test (alias of TEST_P) |
+ * | `PERF_GUARD(perf)` | Create PerfCase with auto-attached profiler hooks |
  * | `PERF_MAIN()` | Drop-in main() with flag parsing and CSV support |
+ *
+ * `UB_PERF_GUARD` / `UB_PERF_GUARD_NOPROFILE` remain as compatibility
+ * aliases of the PERF_-prefixed names.
  *
  * ## Semantic Aliases (for discoverability)
  *
@@ -122,6 +127,12 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
 /** @brief Thread-ramp sweep test (alias of TEST). */
 #define PERF_RAMP(Suite, Name) TEST(Suite, Name)
 
+/** @brief Fixture-based perf test (alias of TEST_F; use PERF_GUARD inside). */
+#define PERF_TEST_F(Fixture, Name) TEST_F(Fixture, Name)
+
+/** @brief Parameterized perf test (alias of TEST_P; use PERF_GUARD inside). */
+#define PERF_TEST_P(Fixture, Name) TEST_P(Fixture, Name)
+
 /* ----------------------------- Scoped Guard ----------------------------- */
 
 /**
@@ -157,6 +168,11 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
         std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),        \
         vernier::bench::detail::getPerfConfig()                                                    \
   }
+
+/** @brief Preferred names for the guards; UB_-prefixed forms stay as
+ *  compatibility aliases. */
+#define PERF_GUARD(varName) UB_PERF_GUARD(varName)
+#define PERF_GUARD_NOPROFILE(varName) UB_PERF_GUARD_NOPROFILE(varName)
 
 /* ------------------------------ Main Macro ------------------------------ */
 
