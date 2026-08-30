@@ -106,17 +106,38 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    // Env-shaped wraps (jemalloc) inject via the environment instead of argv.
+    let env_wrap = cfg
+        .profile
+        .as_deref()
+        .and_then(|t| env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+    if let Some(ref pairs) = env_wrap {
+        for (k, v) in pairs {
+            cmd.env(k, v);
+        }
+    }
+
     // Tell the child which tool already wraps it so its in-process backend
     // stays passive (no re-attach, no manual-wrap hint for a wrap that
     // happened). See profiler_env::externalWrapTool() on the C++ side.
-    if wrap.is_some() {
+    if wrap.is_some() || env_wrap.is_some() {
         if let Some(ref tool) = cfg.profile {
             cmd.env("VERNIER_EXTERNAL_WRAP", tool);
         }
     }
 
+    let env_prefix = env_wrap
+        .as_ref()
+        .map(|pairs| {
+            pairs
+                .iter()
+                .map(|(k, v)| format!("{k}={v} "))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
     println!(
-        "Running: {}",
+        "Running: {}{}",
+        env_prefix,
         format_command(&cfg.binary, &cfg.taskset, &wrap, &args)
     );
 
@@ -274,6 +295,63 @@ fn wrap_command_for(
         )),
         _ => unreachable!("matches! filter above kept only wrap-externally tools"),
     }
+}
+
+/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
+/// prof_final:true guarantees the exit-time dump the backend's docs promise.
+fn jemalloc_env(lib: &str, dir: &Path) -> Vec<(String, String)> {
+    vec![
+        ("LD_PRELOAD".to_string(), lib.to_string()),
+        (
+            "MALLOC_CONF".to_string(),
+            format!(
+                "prof:true,prof_final:true,prof_prefix:{}/jeprof",
+                dir.display()
+            ),
+        ),
+    ]
+}
+
+/// Wrap for backends that inject via environment rather than argv.
+/// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
+/// into the per-binary artifact dir. Returns None when the tool is not
+/// env-shaped or its library cannot be found (the binary's own hint then
+/// explains the manual setup).
+fn env_wrap_for(
+    tool: &str,
+    binary: &Path,
+    output_dir: Option<&Path>,
+) -> Option<Vec<(String, String)>> {
+    if tool != "jemalloc" {
+        return None;
+    }
+    let lib = find_libjemalloc()?;
+    let dir = wrap_artifact_dir(tool, binary, output_dir);
+    fs::create_dir_all(&dir).ok()?;
+    Some(jemalloc_env(&lib, &dir))
+}
+
+/// Locate libjemalloc: the distro paths the C++ backend also probes, then
+/// ldconfig -p as the portable fallback.
+fn find_libjemalloc() -> Option<String> {
+    const CANDIDATES: [&str; 5] = [
+        "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
+        "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+        "/usr/lib64/libjemalloc.so",
+        "/usr/lib64/libjemalloc.so.2",
+        "/usr/local/lib/libjemalloc.so",
+    ];
+    for c in CANDIDATES {
+        if Path::new(c).is_file() {
+            return Some(c.to_string());
+        }
+    }
+    let out = Command::new("ldconfig").arg("-p").output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.contains("libjemalloc.so"))
+        .and_then(|l| l.rsplit(' ').next())
+        .map(str::to_string)
 }
 
 /// The four canonical nsys stats reports, matching what the C++ backend
@@ -464,5 +542,34 @@ mod tests {
         assert_eq!(d, PathBuf::from("bench-out/Foo_PTEST.nsight"));
         let d = wrap_artifact_dir("massif", Path::new("./t"), Some(Path::new("out")));
         assert_eq!(d, PathBuf::from("out/t.massif"));
+    }
+
+    /// @test jemalloc env wrap composes LD_PRELOAD + MALLOC_CONF with a
+    /// final dump into the artifact dir.
+    #[test]
+    fn jemalloc_env_composition() {
+        let pairs = jemalloc_env("/usr/lib/libjemalloc.so.2", Path::new("out/t.jemalloc"));
+        assert_eq!(
+            pairs[0],
+            (
+                "LD_PRELOAD".to_string(),
+                "/usr/lib/libjemalloc.so.2".to_string()
+            )
+        );
+        assert_eq!(
+            pairs[1],
+            (
+                "MALLOC_CONF".to_string(),
+                "prof:true,prof_final:true,prof_prefix:out/t.jemalloc/jeprof".to_string()
+            )
+        );
+    }
+
+    /// @test env_wrap_for is None for tools that are not env-shaped.
+    #[test]
+    fn env_wrap_for_non_jemalloc_is_none() {
+        for tool in ["perf", "massif", "nsight", "ncu", "rocprof", "heaptrack"] {
+            assert!(env_wrap_for(tool, Path::new("./b"), None).is_none());
+        }
     }
 }
