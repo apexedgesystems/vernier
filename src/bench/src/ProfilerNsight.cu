@@ -115,7 +115,9 @@ void NsightProfiler::afterMeasure(const Stats& /*s*/) {
 
 void NsightProfiler::launchNsys() {
   std::string outputPath = artifactDir_ + "/profile";
-  std::string cmd = "nsys profile -o " + outputPath + " -t cuda,nvtx";
+  // --force-overwrite: a rerun into the same artifact dir must recapture,
+  // not fail on the existing .nsys-rep and leave stale stats behind.
+  std::string cmd = "nsys profile -o " + outputPath + " -t cuda,nvtx --force-overwrite true";
 
   if (!cfg_.profileArgs.empty()) {
     std::string args = cfg_.profileArgs;
@@ -156,7 +158,7 @@ void NsightProfiler::launchNsys() {
 
 void NsightProfiler::launchNcu() {
   std::string outputPath = artifactDir_ + "/kernel_profile";
-  std::string cmd = "ncu -o " + outputPath;
+  std::string cmd = "ncu -o " + outputPath + " -f";
 
   if (!cfg_.profileArgs.empty()) {
     std::string args = cfg_.profileArgs;
@@ -206,7 +208,7 @@ void NsightProfiler::launchNcuReplay() {
     cmd += " --metrics " + metricsStr;
   }
 
-  cmd += " -o " + outputPath;
+  cmd += " -o " + outputPath + " -f";
 
   pid_t targetPid = ::getpid();
   cmd += " --target-processes all -p " + std::to_string(targetPid);
@@ -270,8 +272,8 @@ void NsightProfiler::extractNsysStats() {
   };
   for (const char* report : REPORTS) {
     const std::string outPath = artifactDir_ + "/" + report + ".txt";
-    const std::string cmd = "nsys stats --report " + std::string(report) + " '" + repPath +
-                            "' > '" + outPath + "' 2>/dev/null";
+    const std::string cmd = "nsys stats --force-export=true --report " + std::string(report) +
+                            " '" + repPath + "' > '" + outPath + "' 2>/dev/null";
     [[maybe_unused]] int rc = std::system(cmd.c_str());
   }
   std::fprintf(stderr,

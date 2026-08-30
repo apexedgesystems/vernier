@@ -288,6 +288,10 @@ fn wrap_command_for(
                 format!("{dir}/profile"),
                 "-t".into(),
                 "cuda,nvtx".into(),
+                // nsys refuses to overwrite an existing report and the rerun
+                // then silently reprocesses the stale capture; force it.
+                "--force-overwrite".into(),
+                "true".into(),
                 bin,
             ],
         )),
@@ -298,6 +302,7 @@ fn wrap_command_for(
             vec![
                 "-o".into(),
                 format!("{dir}/kernel_profile"),
+                "-f".into(),
                 "--target-processes".into(),
                 "all".into(),
                 bin,
@@ -392,7 +397,7 @@ fn extract_nsys_stats(dir: &Path) {
             continue;
         };
         let _ = Command::new("nsys")
-            .args(["stats", "--report", report])
+            .args(["stats", "--force-export=true", "--report", report])
             .arg(&rep)
             .stdout(Stdio::from(out_file))
             .stderr(Stdio::null())
@@ -518,6 +523,8 @@ mod tests {
                 format!("{}/profile", dir.display()),
                 "-t".to_string(),
                 "cuda,nvtx".to_string(),
+                "--force-overwrite".to_string(),
+                "true".to_string(),
                 "./my_test".to_string(),
             ]
         );
@@ -537,6 +544,7 @@ mod tests {
             vec![
                 "-o".to_string(),
                 format!("{}/kernel_profile", dir.display()),
+                "-f".to_string(),
                 "--target-processes".to_string(),
                 "all".to_string(),
                 "./my_test".to_string(),
