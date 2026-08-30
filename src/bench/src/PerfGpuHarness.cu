@@ -10,6 +10,7 @@
 #include "src/bench/inc/PerfGpuTestMacros.hpp"
 #include "src/bench/inc/PerfUtils.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <cuda_runtime.h>
 #include <algorithm>
@@ -229,7 +230,17 @@ public:
     }
 
     // Start in-process kernel metrics; no-op when libcupti is unavailable.
-    cupti_.start();
+    // CUPTI is single-client per process: when an external Nsight session
+    // owns it (--profile nsight/ncu, a runner wrap, or VERNIER_DISABLE_CUPTI),
+    // yield so nsys/ncu records the kernels instead of this collector.
+    const bool cuptiEnabled = !profiler_env::cuptiMustYield(cpuCfg_.profileTool);
+    if (cuptiEnabled) {
+      cupti_.start();
+    } else {
+      std::fprintf(stderr, "[gpu] in-process CUPTI collection disabled for this run "
+                           "(external Nsight session or VERNIER_DISABLE_CUPTI); "
+                           "CUPTI CSV columns will be empty.\n");
+    }
 
     UnifiedMemoryProfile umProfile{};
     UMSnapshot umBefore, umAfter;
@@ -290,7 +301,9 @@ public:
     }
 
     // Drain CUPTI activity buffers and aggregate before publishing the result.
-    cupti_.stop();
+    if (cuptiEnabled) {
+      cupti_.stop();
+    }
 
     auto kernelVals = kernelTimes;
     auto h2dVals = h2dTimes;
@@ -318,7 +331,9 @@ public:
     result.stats.deviceInfo = deviceInfo_;
     result.stats.clocks = clocks;
     result.stats.powerThermal = powerThermal;
-    result.stats.cupti = cupti_.stats();
+    if (cuptiEnabled) {
+      result.stats.cupti = cupti_.stats();
+    }
 
     size_t totalH2D = 0, totalD2H = 0;
     for (const auto& xfer : h2d)
