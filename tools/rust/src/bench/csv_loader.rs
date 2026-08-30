@@ -30,6 +30,8 @@ pub struct BenchRow {
     pub wall_median: f64,
     pub wall_p10: f64,
     pub wall_p90: f64,
+    pub wall_p99: f64,
+    pub wall_p999: f64,
     pub wall_min: f64,
     pub wall_max: f64,
     pub wall_mean: f64,
@@ -122,6 +124,9 @@ fn parse_row(record: &csv::StringRecord, hmap: &HashMap<String, usize>) -> Bench
         wall_median: get_f64(record, hmap, "wallMedian"),
         wall_p10: get_f64(record, hmap, "wallP10"),
         wall_p90: get_f64(record, hmap, "wallP90"),
+        // Absent in pre-v1.0.4 CSVs; get_f64 defaults them to 0.0.
+        wall_p99: get_f64(record, hmap, "wallP99"),
+        wall_p999: get_f64(record, hmap, "wallP999"),
         wall_min: get_f64(record, hmap, "wallMin"),
         wall_max: get_f64(record, hmap, "wallMax"),
         wall_mean: get_f64(record, hmap, "wallMean"),

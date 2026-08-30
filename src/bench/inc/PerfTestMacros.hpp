@@ -25,7 +25,8 @@
  * - `PERF_THROUGHPUT` - Measures operations per second
  * - `PERF_LATENCY` - Measures single-operation latency
  * - `PERF_CONTENTION` - Measures multi-threaded performance
- * - `PERF_TAIL` - Measures p99/p999 latency
+ * - `PERF_TAIL` - Measures tail latency (p99/p999 across repeat samples;
+ *   tails only bite with high --repeats — a per-op sampling loop is future work)
  * - `PERF_ALLOC` - Measures allocation overhead
  * - `PERF_IO` - Measures I/O operations
  * - `PERF_RAMP` - Measures thread scaling

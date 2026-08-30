@@ -20,6 +20,8 @@ struct Stats {
   double median{}; ///< 50th percentile
   double p10{};    ///< 10th percentile
   double p90{};    ///< 90th percentile
+  double p99{};    ///< 99th percentile (tail; needs many samples to bite)
+  double p999{};   ///< 99.9th percentile (deep tail; ditto)
   double min{};    ///< minimum
   double max{};    ///< maximum
   double mean{};   ///< arithmetic mean
@@ -68,14 +70,16 @@ inline Stats summarize(std::vector<double>& values) {
   // Coefficient of variation (relative jitter)
   const double CV = (MEAN != 0.0) ? (STDDEV / MEAN) : 0.0;
 
-  return {QUANTILE(0.50), // median
-          QUANTILE(0.10), // p10
-          QUANTILE(0.90), // p90
-          values.front(), // min
-          values.back(),  // max
-          MEAN,           // mean
-          STDDEV,         // stddev
-          CV};            // cv
+  return {QUANTILE(0.50),  // median
+          QUANTILE(0.10),  // p10
+          QUANTILE(0.90),  // p90
+          QUANTILE(0.99),  // p99
+          QUANTILE(0.999), // p999
+          values.front(),  // min
+          values.back(),   // max
+          MEAN,            // mean
+          STDDEV,          // stddev
+          CV};             // cv
 }
 
 } // namespace bench
