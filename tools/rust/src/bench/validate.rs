@@ -89,11 +89,32 @@ pub fn has_failures(results: &[CheckResult]) -> bool {
 
 fn check_perf() -> CheckResult {
     match find_in_path("perf") {
-        Some(path) => CheckResult {
-            label: "perf".to_string(),
-            status: CheckStatus::Ok,
-            detail: format!("found at {}", path.display()),
-        },
+        Some(path) => {
+            // Presence is not sufficient: distro perf is a kernel-version
+            // shim that can sit on PATH yet refuse to run when the
+            // installed linux-tools doesn't match the running kernel (the
+            // classic in-container failure). Exec-probe instead of
+            // trusting the lookup.
+            match std::process::Command::new("perf").arg("--version").output() {
+                Ok(out) if out.status.success() => {
+                    let version = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    CheckResult {
+                        label: "perf".to_string(),
+                        status: CheckStatus::Ok,
+                        detail: format!("{} ({})", version, path.display()),
+                    }
+                }
+                _ => CheckResult {
+                    label: "perf".to_string(),
+                    status: CheckStatus::Fail,
+                    detail: format!(
+                        "found at {} but it does not execute; install linux-tools for \
+                         the running kernel (linux-tools-$(uname -r))",
+                        path.display()
+                    ),
+                },
+            }
+        }
         None => CheckResult {
             label: "perf".to_string(),
             status: CheckStatus::Fail,
