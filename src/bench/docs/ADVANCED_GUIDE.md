@@ -119,7 +119,7 @@ bandwidth = (1 MB read + 1 MB write) / time = 2000 MB/s
 
 ```cpp
 PERF_TEST(Codec, Encode) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
   ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
 
   const size_t INPUT_SIZE = 1024;   // 1KB input
@@ -244,13 +244,13 @@ INSTANTIATE_TEST_SUITE_P(
 );
 ```
 
-### Standard Pattern with UB_PERF_GUARD
+### Standard Pattern with PERF_GUARD
 
 For simple tests without parameters:
 
 ```cpp
 PERF_TEST(MyComponent, Basic) {
-  UB_PERF_GUARD(perf);  // Gets "MyComponent.Basic" automatically
+  PERF_GUARD(perf);  // Gets "MyComponent.Basic" automatically
   ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
 
   // Test code...
@@ -270,7 +270,7 @@ PERF_TEST(MyComponent, PayloadSweep) {
     // Override specific field
     cfg.msgBytes = payloadSize;
 
-    // Create custom PerfCase (can't use UB_PERF_GUARD here!)
+    // Create custom PerfCase (can't use PERF_GUARD here!)
     std::string testName = "MyComponent.PayloadSweep/" + std::to_string(payloadSize);
     ub::PerfCase perf{testName, cfg};
     ub::attachProfilerHooks(perf, cfg);
@@ -299,7 +299,7 @@ PERF_TEST(MyComponent, PayloadSweep) {
 
 ### Why Custom Config?
 
-**`UB_PERF_GUARD(perf)` limitations:**
+**`PERF_GUARD(perf)` limitations:**
 
 - Gets test name from GoogleTest automatically
 - Uses global config (can't override per-parameter)
@@ -362,7 +362,7 @@ PayloadTest/PayloadSizes.Encode/4096,4096,4.567,219000
 
 ### Key Points
 
-1. **Use `UB_PERF_GUARD`** for simple tests with no parameters
+1. **Use `PERF_GUARD`** for simple tests with no parameters
 2. **Use manual constructor** for parameter sweeps
 3. **Always set `cfg.msgBytes`** to actual payload size
 4. **Include parameter in test name** for CSV clarity
@@ -462,7 +462,7 @@ Enables command-line profilers for this test case. Must be called to activate `-
 
 **When to call:**
 
-- Right after `UB_PERF_GUARD(perf)` in every test
+- Right after `PERF_GUARD(perf)` in every test
 - Right after manual `PerfCase` constructor for parameterized tests
 
 **What it does:**
@@ -484,7 +484,7 @@ Enables command-line profilers for this test case. Must be called to activate `-
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
   ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());  // Required!
 
   // If user runs: ./test --profile perf
@@ -800,7 +800,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 
 ### GPU Parameterized Tests
 
-GPU tests follow the same pattern as CPU but use `UB_PERF_GPU_GUARD`:
+GPU tests follow the same pattern as CPU but use `PERF_GPU_GUARD`:
 
 ```cpp
 class GpuPayloadTest : public ::testing::TestWithParam<int> {
@@ -891,7 +891,7 @@ class MultiGpuTest : public ::testing::TestWithParam<int> {};
 TEST_P(MultiGpuTest, Scaling) {
   const int deviceCount = GetParam();
 
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   // Allocate per-device data
   std::vector<float*> d_data(deviceCount);
@@ -1079,7 +1079,7 @@ ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 ### CPU Benchmarking
 
-1. **Always call `attachProfilerHooks()`** after `UB_PERF_GUARD` or `PerfCase` constructor
+1. **Always call `attachProfilerHooks()`** after `PERF_GUARD` or `PerfCase` constructor
 2. **Use `MemoryProfile`** for memory-bound code analysis
 3. **Set `cfg.msgBytes`** to actual payload size in parameterized tests
 4. **Use `--quick`** during development, full config for production

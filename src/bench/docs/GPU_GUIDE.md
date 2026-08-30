@@ -44,7 +44,7 @@ __global__ void vectorAdd(const float* a, const float* b, float* c, int n) {
 
 PERF_GPU_TEST(VectorAdd, Basic) {
   // Create GPU benchmark harness
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   // Setup
   const int N = 1024 * 1024;  // 1M elements
@@ -108,8 +108,12 @@ cmake -B build -S . && cmake --build build
 # Quick mode during development
 ./VectorAdd_GPU_PTEST --quick
 
-# With Nsight profiling
+# With Nsight Systems timeline profiling
 ./VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+
+# With Nsight Compute kernel analysis (add --profile-args replay for
+# replay-mode metrics)
+./VectorAdd_GPU_PTEST --profile ncu --gtest_filter="*Basic"
 
 # Specific GPU device
 ./VectorAdd_GPU_PTEST --gpu-device 1 --csv results.csv
@@ -282,7 +286,7 @@ PERF_GPU_COMPARISON(Suite, Name)     // CPU vs GPU comparison
 PERF_GPU_BANDWIDTH(Suite, Name)      // Memory bandwidth test
 PERF_GPU_SCALING(Suite, Name)        // Multi-GPU scaling test
 
-UB_PERF_GPU_GUARD(varName)           // Create scoped PerfGpuCase
+PERF_GPU_GUARD(varName)           // Create scoped PerfGpuCase
 PERF_MAIN()                          // Main function with GPU support
 ```
 
@@ -290,7 +294,7 @@ PERF_MAIN()                          // Main function with GPU support
 
 ```cpp
 PERF_GPU_TEST(MyKernel, Basic) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   // Setup
   const int N = 1024 * 1024;
@@ -323,7 +327,7 @@ PERF_GPU_TEST(MyKernel, Basic) {
 
 ```cpp
 PERF_GPU_TEST(MyAlgorithm, CompareVersions) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
   float *d_data;
@@ -401,7 +405,7 @@ Launch configuration (grid/block dimensions) significantly impacts performance.
 
 ```cpp
 PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
   float *d_data;
@@ -492,7 +496,7 @@ Use `cpuBaseline()` to measure GPU speedup over CPU:
 
 ```cpp
 PERF_GPU_TEST(MyAlgorithm, CpuVsGpu) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
   std::vector<float> h_data(N, 1.0f);
@@ -573,7 +577,7 @@ Test performance across multiple GPUs:
 
 ```cpp
 PERF_GPU_TEST(MyKernel, MultiGpu) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const int DEVICE_COUNT = 4;
   const int N = 1024 * 1024;
@@ -654,7 +658,7 @@ Test peer-to-peer transfer bandwidth between GPUs:
 
 ```cpp
 PERF_GPU_TEST(P2P, Bandwidth) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const size_t TEST_SIZE = 100 * 1024 * 1024;  // 100MB
 
@@ -772,7 +776,7 @@ Unified Memory CSV columns:
 
 ```cpp
 PERF_GPU_TEST(MemoryStrategy, Compare) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
   std::vector<float> h_data(N, 1.0f);
@@ -847,13 +851,13 @@ ncu --csv --print-summary per-kernel MyKernel.MyKernel.nsight/kernel_replay.ncu-
 
 ### GPU Profiler Integration
 
-`UB_PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is
+`PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is
 selected by `--profile X` fires around the measured window. No manual
 `attachGpuProfilerHooks` call required.
 
 ```cpp
 PERF_GPU_TEST(MyKernel, WithProfiling) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   auto result = perf.cudaKernel([&](cudaStream_t s) {
     myKernel<<<grid, block, 0, s>>>(d_data, N);
@@ -953,7 +957,7 @@ set `VERNIER_DISABLE_CUPTI=1` so the in-process collector releases the slot.
 
 ```cpp
 PERF_GPU_TEST(MyKernel, Validated) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   // ... setup and measurement ...
 

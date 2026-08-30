@@ -29,7 +29,7 @@ Complete API documentation for the benchmarking framework. This reference covers
 namespace ub = vernier::bench;
 
 PERF_TEST(MyComponent, Throughput) {
-  UB_PERF_GUARD(perf);  // Creates PerfCase with config from command-line
+  PERF_GUARD(perf);  // Creates PerfCase with config from command-line
 
   // Setup test data
   std::vector<int> data(10000, 42);
@@ -70,7 +70,7 @@ PERF_THROUGHPUT(SuiteName, TestName)     // Throughput measurement
 PERF_LATENCY(SuiteName, TestName)        // Latency distribution
 PERF_CONTENTION(SuiteName, TestName)     // Multi-threaded test
 
-UB_PERF_GUARD(varName)                   // Create scoped PerfCase
+PERF_GUARD(varName)                   // Create scoped PerfCase
 PERF_MAIN()                              // Main function with CSV export
 ```
 
@@ -288,7 +288,7 @@ Adjacent in-process instrumentation:
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
   ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
 
   perf.warmup([&]{ /* ... */ });
@@ -359,7 +359,7 @@ PERF_GPU_COMPARISON(SuiteName, TestName) // CPU vs GPU comparison
 PERF_GPU_BANDWIDTH(SuiteName, TestName)  // Memory bandwidth test
 PERF_GPU_SCALING(SuiteName, TestName)    // Multi-GPU scaling test
 
-UB_PERF_GPU_GUARD(varName)               // Create scoped PerfGpuCase
+PERF_GPU_GUARD(varName)               // Create scoped PerfGpuCase
 PERF_GPU_MAIN()                          // Main with GPU support
 ```
 
@@ -414,7 +414,7 @@ public:
 
 ```cpp
 PERF_GPU_TEST(MyKernel, Throughput) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   // Setup
   std::vector<float> h_input(N);
@@ -879,12 +879,12 @@ auto result = perf.throughputLoop([&] {
 ```cpp
 // CORRECT: One PerfCase per test
 PERF_TEST(MyComponent, Test1) {
-  UB_PERF_GUARD(perf);  // Independent instance
+  PERF_GUARD(perf);  // Independent instance
   // ...
 }
 
 PERF_TEST(MyComponent, Test2) {
-  UB_PERF_GUARD(perf);  // Independent instance
+  PERF_GUARD(perf);  // Independent instance
   // ...
 }
 
@@ -934,7 +934,7 @@ PerfCase globalPerf{"Test", cfg};  // Don't do this!
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   std::vector<int> data(10000);
   perf.warmup([&] {
@@ -958,7 +958,7 @@ PERF_TEST(MyComponent, Throughput) {
 
 ```cpp
 PERF_TEST(MyComponent, CompareAlgorithms) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   // Test baseline
   volatile int sink = 0;
@@ -982,7 +982,7 @@ PERF_TEST(MyComponent, CompareAlgorithms) {
 
 ```cpp
 PERF_TEST(Memory, Bandwidth) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   const size_t SIZE = 1024 * 1024;
   std::vector<uint8_t> data(SIZE);
@@ -1007,7 +1007,7 @@ PERF_TEST(Memory, Bandwidth) {
 
 ```cpp
 PERF_TEST(SharedResource, Scalability) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   std::atomic<int64_t> counter{0};
 

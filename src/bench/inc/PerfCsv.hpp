@@ -61,9 +61,9 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
       << row.threads << "," << row.msgBytes << "," << (row.console ? "1" : "0") << ","
       << (row.nonBlocking ? "1" : "0") << "," << row.minLevel << "," << row.stats.median << ","
       << row.stats.p10 << "," << row.stats.p90 << "," << row.stats.p99 << "," << row.stats.p999
-      << "," << row.stats.min << "," << row.stats.max
-      << "," << row.stats.mean << "," << row.stats.stddev << "," << row.stats.cv << ","
-      << row.callsPerSecond << "," << (row.stable ? "1" : "0") << "," << row.cvThreshold;
+      << "," << row.stats.min << "," << row.stats.max << "," << row.stats.mean << ","
+      << row.stats.stddev << "," << row.stats.cv << "," << row.callsPerSecond << ","
+      << (row.stable ? "1" : "0") << "," << row.cvThreshold;
 
   // Profile columns
   if (row.profileTool.has_value() || row.profileDir.has_value()) {
