@@ -1,10 +1,14 @@
 //! Benchmark binary execution with optional CPU pinning and profiling.
 //!
 //! When `--profile <X>` names a wrap-externally backend (valgrind tools,
-//! heaptrack, compute-sanitizer), the runner transparently invokes the
-//! correct wrap command so a single `bench run --profile massif <bin>`
+//! heaptrack, compute-sanitizer, nsys), the runner transparently invokes
+//! the correct wrap command so a single `bench run --profile massif <bin>`
 //! produces real heap-profile artifacts without the caller copy/pasting
-//! the printed wrap instruction.
+//! the printed wrap instruction. Wrapped children get
+//! `VERNIER_EXTERNAL_WRAP=<tool>` so in-process backends stay passive
+//! instead of re-attaching or printing manual-wrap hints; for nsight the
+//! runner also extracts the canonical `nsys stats` reports after the run
+//! (the .nsys-rep only exists once the wrapped process exits).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +27,8 @@ pub struct RunConfig {
     pub cycles: Option<u32>,
     pub repeats: Option<u32>,
     pub profile: Option<String>,
+    pub profile_args: Option<String>,
+    pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
     pub taskset: Option<String>,
     pub extra_args: Vec<String>,
@@ -64,6 +70,14 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         args.push("--profile".to_string());
         args.push(profile.clone());
     }
+    if let Some(ref pa) = cfg.profile_args {
+        args.push("--profile-args".to_string());
+        args.push(pa.clone());
+    }
+    if let Some(t) = cfg.profile_test_timeout {
+        args.push("--profile-test-timeout".to_string());
+        args.push(t.to_string());
+    }
     if let Some(ref dir) = cfg.profile_output_dir {
         args.push("--profile-output-dir".to_string());
         args.push(dir.display().to_string());
@@ -102,8 +116,38 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
+    // Env-shaped wraps (jemalloc) inject via the environment instead of argv.
+    let env_wrap = cfg
+        .profile
+        .as_deref()
+        .and_then(|t| env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+    if let Some(ref pairs) = env_wrap {
+        for (k, v) in pairs {
+            cmd.env(k, v);
+        }
+    }
+
+    // Tell the child which tool already wraps it so its in-process backend
+    // stays passive (no re-attach, no manual-wrap hint for a wrap that
+    // happened). See profiler_env::externalWrapTool() on the C++ side.
+    if wrap.is_some() || env_wrap.is_some() {
+        if let Some(ref tool) = cfg.profile {
+            cmd.env("VERNIER_EXTERNAL_WRAP", tool);
+        }
+    }
+
+    let env_prefix = env_wrap
+        .as_ref()
+        .map(|pairs| {
+            pairs
+                .iter()
+                .map(|(k, v)| format!("{k}={v} "))
+                .collect::<String>()
+        })
+        .unwrap_or_default();
     println!(
-        "Running: {}",
+        "Running: {}{}",
+        env_prefix,
         format_command(&cfg.binary, &cfg.taskset, &wrap, &args)
     );
 
@@ -114,20 +158,43 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         return Err(Error::Parse(format!("benchmark exited with code {code}")));
     }
 
+    // The wrapped nsys session writes its .nsys-rep at child exit, so the
+    // report extraction the C++ backend does for attach-mode runs has to
+    // happen runner-side for wrapped runs.
+    if wrap.is_some() && cfg.profile.as_deref() == Some("nsight") {
+        extract_nsys_stats(&wrap_artifact_dir(
+            "nsight",
+            &cfg.binary,
+            cfg.profile_output_dir.as_deref(),
+        ));
+    }
+
     Ok(cfg.csv.clone())
 }
 
 /* ----------------------------- Wrap-externally backends ----------------------------- */
 
+/// Per-binary artifact dir for a wrapped run:
+/// `<output-dir-or-bench-out>/<binary-stem>.<tool>/`. The wrap tool writes
+/// its raw output there; the C++ harness then layers per-test subdirs
+/// alongside as needed.
+fn wrap_artifact_dir(tool: &str, binary: &Path, output_dir: Option<&Path>) -> PathBuf {
+    let stem = binary
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bench");
+    output_dir
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("bench-out"))
+        .join(format!("{stem}.{tool}"))
+}
+
 /// Wrap command (program + prefix args ending in the binary path) for a
 /// backend that must be invoked externally. Returns `None` for backends the
 /// runner does not argv-wrap: the in-process ones (perf, gperf, rapl,
 /// bpftrace, offcpu) that the binary drives from its own `--profile` flag,
-/// plus jemalloc/nsight/rocprof whose wraps aren't reducible to argv.
-///
-/// Per-binary artifact dir convention: `<output-dir-or-bench-out>/<binary-stem>.<tool>/`.
-/// The wrap tool writes its raw output there; the C++ harness then layers
-/// per-test subdirs alongside as needed.
+/// plus jemalloc (env-shaped wrap: LD_PRELOAD + MALLOC_CONF) and rocprof
+/// (injects its own tracer libs).
 fn wrap_command_for(
     tool: &str,
     binary: &Path,
@@ -136,20 +203,23 @@ fn wrap_command_for(
     // Return early for in-process backends so we don't materialize a
     // per-tool artifact directory the C++ harness will never use --
     // perf/gperf/rapl/bpftrace/offcpu manage their own per-test dirs and
-    // jemalloc/nsight/rocprof need wraps that aren't reducible to argv.
+    // jemalloc/rocprof need wraps that aren't reducible to argv.
     if !matches!(
         tool,
-        "callgrind" | "massif" | "memcheck" | "helgrind" | "heaptrack" | "compute-sanitizer"
+        "callgrind"
+            | "massif"
+            | "memcheck"
+            | "helgrind"
+            | "heaptrack"
+            | "compute-sanitizer"
+            | "nsight"
+            | "ncu"
     ) {
         return None;
     }
 
     let bin = binary.to_str()?.to_string();
-    let stem = binary.file_stem()?.to_str()?.to_string();
-    let root = output_dir
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("bench-out"));
-    let per_dir = root.join(format!("{}.{}", stem, tool));
+    let per_dir = wrap_artifact_dir(tool, binary, output_dir);
     fs::create_dir_all(&per_dir).ok()?;
     let dir = per_dir.display().to_string();
 
@@ -207,8 +277,136 @@ fn wrap_command_for(
                 bin,
             ],
         )),
+        // Mirrors the wrap command the C++ backend prints as its Docker
+        // fallback hint; the child's backend stays passive via
+        // VERNIER_EXTERNAL_WRAP and the runner extracts stats post-run.
+        "nsight" => Some((
+            "nsys".into(),
+            vec![
+                "profile".into(),
+                "-o".into(),
+                format!("{dir}/profile"),
+                "-t".into(),
+                "cuda,nvtx".into(),
+                // nsys refuses to overwrite an existing report and the rerun
+                // then silently reprocesses the stale capture; force it.
+                "--force-overwrite".into(),
+                "true".into(),
+                bin,
+            ],
+        )),
+        // First-class Nsight Compute: same external-wrap pattern; the
+        // replay pass stays a --profile-args opt-in inside the binary.
+        "ncu" => Some((
+            "ncu".into(),
+            vec![
+                "-o".into(),
+                format!("{dir}/kernel_profile"),
+                "-f".into(),
+                "--target-processes".into(),
+                "all".into(),
+                bin,
+            ],
+        )),
         _ => unreachable!("matches! filter above kept only wrap-externally tools"),
     }
+}
+
+/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
+/// prof_final:true guarantees the exit-time dump the backend's docs promise.
+fn jemalloc_env(lib: &str, dir: &Path) -> Vec<(String, String)> {
+    vec![
+        ("LD_PRELOAD".to_string(), lib.to_string()),
+        (
+            "MALLOC_CONF".to_string(),
+            format!(
+                "prof:true,prof_final:true,prof_prefix:{}/jeprof",
+                dir.display()
+            ),
+        ),
+    ]
+}
+
+/// Wrap for backends that inject via environment rather than argv.
+/// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
+/// into the per-binary artifact dir. Returns None when the tool is not
+/// env-shaped or its library cannot be found (the binary's own hint then
+/// explains the manual setup).
+fn env_wrap_for(
+    tool: &str,
+    binary: &Path,
+    output_dir: Option<&Path>,
+) -> Option<Vec<(String, String)>> {
+    if tool != "jemalloc" {
+        return None;
+    }
+    let lib = find_libjemalloc()?;
+    let dir = wrap_artifact_dir(tool, binary, output_dir);
+    fs::create_dir_all(&dir).ok()?;
+    Some(jemalloc_env(&lib, &dir))
+}
+
+/// Locate libjemalloc: the distro paths the C++ backend also probes, then
+/// ldconfig -p as the portable fallback.
+fn find_libjemalloc() -> Option<String> {
+    const CANDIDATES: [&str; 5] = [
+        "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
+        "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+        "/usr/lib64/libjemalloc.so",
+        "/usr/lib64/libjemalloc.so.2",
+        "/usr/local/lib/libjemalloc.so",
+    ];
+    for c in CANDIDATES {
+        if Path::new(c).is_file() {
+            return Some(c.to_string());
+        }
+    }
+    let out = Command::new("ldconfig").arg("-p").output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .find(|l| l.contains("libjemalloc.so"))
+        .and_then(|l| l.rsplit(' ').next())
+        .map(str::to_string)
+}
+
+/// The four canonical nsys stats reports, matching what the C++ backend
+/// extracts for attach-mode runs (ProfilerNsight.cu).
+const NSYS_STATS_REPORTS: [&str; 4] = [
+    "cuda_gpu_kern_sum",
+    "cuda_api_sum",
+    "cuda_gpu_mem_size_sum",
+    "cuda_gpu_mem_time_sum",
+];
+
+/// Extract the canonical `nsys stats` reports beside a wrapped run's
+/// .nsys-rep. Best-effort: a missing report file (nsys produced nothing)
+/// or a failing nsys invocation prints a notice rather than erroring the
+/// run, matching the attach-mode behavior.
+fn extract_nsys_stats(dir: &Path) {
+    let rep = dir.join("profile.nsys-rep");
+    if !rep.is_file() {
+        eprintln!(
+            "[nsight] no report at {} (nsys produced nothing for this run)",
+            rep.display()
+        );
+        return;
+    }
+    for report in NSYS_STATS_REPORTS {
+        let out_path = dir.join(format!("{report}.txt"));
+        let Ok(out_file) = fs::File::create(&out_path) else {
+            continue;
+        };
+        let _ = Command::new("nsys")
+            .args(["stats", "--force-export=true", "--report", report])
+            .arg(&rep)
+            .stdout(Stdio::from(out_file))
+            .stderr(Stdio::null())
+            .status();
+    }
+    println!(
+        "[nsight] auto-extracted nsys stats reports into {}",
+        dir.display()
+    );
 }
 
 /* ----------------------------- Helpers ----------------------------- */
@@ -302,10 +500,94 @@ mod tests {
     #[test]
     fn wrap_command_for_in_process_is_none() {
         for tool in [
-            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "nsight", "rocprof",
+            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "rocprof",
         ] {
             let r = wrap_command_for(tool, Path::new("./bin"), None);
             assert!(r.is_none(), "tool {tool} should be None");
+        }
+    }
+
+    /// @test nsight wraps with nsys profile into the per-binary artifact dir.
+    #[test]
+    fn wrap_command_for_nsight_uses_nsys_profile() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_nsight");
+        let (prog, args) = wrap_command_for("nsight", Path::new("./my_test"), Some(&root))
+            .expect("nsight should wrap externally");
+        let dir = root.join("my_test.nsight");
+        assert_eq!(prog, "nsys");
+        assert_eq!(
+            args,
+            vec![
+                "profile".to_string(),
+                "-o".to_string(),
+                format!("{}/profile", dir.display()),
+                "-t".to_string(),
+                "cuda,nvtx".to_string(),
+                "--force-overwrite".to_string(),
+                "true".to_string(),
+                "./my_test".to_string(),
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// @test ncu wraps with the kernel-profile output and all target processes.
+    #[test]
+    fn wrap_command_for_ncu_uses_ncu() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_ncu");
+        let (prog, args) = wrap_command_for("ncu", Path::new("./my_test"), Some(&root))
+            .expect("ncu should wrap externally");
+        let dir = root.join("my_test.ncu");
+        assert_eq!(prog, "ncu");
+        assert_eq!(
+            args,
+            vec![
+                "-o".to_string(),
+                format!("{}/kernel_profile", dir.display()),
+                "-f".to_string(),
+                "--target-processes".to_string(),
+                "all".to_string(),
+                "./my_test".to_string(),
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// @test wrap_artifact_dir follows the <root>/<stem>.<tool> convention.
+    #[test]
+    fn wrap_artifact_dir_convention() {
+        let d = wrap_artifact_dir("nsight", Path::new("build/bin/ptests/Foo_PTEST"), None);
+        assert_eq!(d, PathBuf::from("bench-out/Foo_PTEST.nsight"));
+        let d = wrap_artifact_dir("massif", Path::new("./t"), Some(Path::new("out")));
+        assert_eq!(d, PathBuf::from("out/t.massif"));
+    }
+
+    /// @test jemalloc env wrap composes LD_PRELOAD + MALLOC_CONF with a
+    /// final dump into the artifact dir.
+    #[test]
+    fn jemalloc_env_composition() {
+        let pairs = jemalloc_env("/usr/lib/libjemalloc.so.2", Path::new("out/t.jemalloc"));
+        assert_eq!(
+            pairs[0],
+            (
+                "LD_PRELOAD".to_string(),
+                "/usr/lib/libjemalloc.so.2".to_string()
+            )
+        );
+        assert_eq!(
+            pairs[1],
+            (
+                "MALLOC_CONF".to_string(),
+                "prof:true,prof_final:true,prof_prefix:out/t.jemalloc/jeprof".to_string()
+            )
+        );
+    }
+
+    /// @test env_wrap_for is None for tools that are not env-shaped.
+    #[test]
+    fn env_wrap_for_non_jemalloc_is_none() {
+        for tool in ["perf", "massif", "nsight", "ncu", "rocprof", "heaptrack"] {
+            assert!(env_wrap_for(tool, Path::new("./b"), None).is_none());
         }
     }
 }

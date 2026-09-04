@@ -162,10 +162,16 @@ struct ProfilerRegistrar {
  *
  * The check function should be a `EnvReport(*)()` (no arguments, returns EnvReport).
  */
+/* Two-level paste so __LINE__ expands before concatenation; a direct
+ * NAME##__LINE__ pastes the literal token and collides as soon as one TU
+ * registers two backends (e.g. nsight + ncu in ProfilerNsight.cu). */
+#define VERNIER_REG_CONCAT_INNER(a, b) a##b
+#define VERNIER_REG_CONCAT(a, b) VERNIER_REG_CONCAT_INNER(a, b)
+
 #define VERNIER_REGISTER_PROFILER_BACKEND(NAME, FACTORY, CHECK, HINT)                              \
   namespace {                                                                                      \
-  const ::vernier::bench::detail::ProfilerRegistrar UB_REGISTRAR_##__LINE__{(NAME), (FACTORY),     \
-                                                                            (CHECK), (HINT)};      \
+  const ::vernier::bench::detail::ProfilerRegistrar VERNIER_REG_CONCAT(UB_REGISTRAR_, __LINE__){   \
+      (NAME), (FACTORY), (CHECK), (HINT)};                                                         \
   }
 
 } // namespace bench

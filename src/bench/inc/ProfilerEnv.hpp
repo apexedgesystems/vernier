@@ -107,6 +107,46 @@ inline bool isRunningUnderValgrind() {
   return found;
 }
 
+/* ----------------------------- externalWrapTool ----------------------------- */
+
+/**
+ * @brief Name of the tool the runner wrapped this process with, or "".
+ *
+ * `bench run --profile <tool>` sets VERNIER_EXTERNAL_WRAP=<tool> on the
+ * child when it invokes the wrap command itself (valgrind tools, nsys,
+ * ncu, ...). Backends use this to stay passive instead of re-attaching
+ * or printing manual-wrap hints for a wrap that already happened.
+ */
+inline std::string externalWrapTool() {
+  const char* v = std::getenv("VERNIER_EXTERNAL_WRAP");
+  return (v != nullptr) ? std::string{v} : std::string{};
+}
+
+/* ----------------------------- cuptiMustYield ----------------------------- */
+
+/**
+ * @brief True when in-process CUPTI collection must stay off for this run.
+ *
+ * CUPTI is single-client per process: if an external Nsight session
+ * (nsys/ncu) owns the interface, an in-process subscriber wins the race
+ * and the external tool records zero kernels. Yield when:
+ *  1. VERNIER_DISABLE_CUPTI is set truthy (explicit operator override),
+ *  2. the active --profile tool is nsight or ncu (an external session is
+ *     the point of the run, attach-mode or wrapped), or
+ *  3. the runner wrapped this process with nsys/ncu
+ *     (VERNIER_EXTERNAL_WRAP, see externalWrapTool()).
+ */
+inline bool cuptiMustYield(const std::string& profileTool) {
+  if (const char* v = std::getenv("VERNIER_DISABLE_CUPTI")) {
+    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0)
+      return true;
+  }
+  if (profileTool == "nsight" || profileTool == "ncu")
+    return true;
+  const std::string wrap = externalWrapTool();
+  return wrap == "nsight" || wrap == "ncu";
+}
+
 } // namespace profiler_env
 } // namespace bench
 } // namespace vernier

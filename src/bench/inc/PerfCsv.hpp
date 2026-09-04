@@ -30,8 +30,8 @@ namespace bench {
 inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
                            bool includeMetadata = false, bool includeGpu = false) {
   csv << "test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,"
-         "wallMedian,wallP10,wallP90,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,"
-         "stable,cvThreshold";
+         "wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,"
+         "wallCV,callsPerSecond,stable,cvThreshold";
 
   if (includeProfile) {
     csv << ",profileTool,profileDir";
@@ -60,9 +60,10 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
   csv << row.testName << "," << row.cycles << "," << row.repeats << "," << row.warmup << ","
       << row.threads << "," << row.msgBytes << "," << (row.console ? "1" : "0") << ","
       << (row.nonBlocking ? "1" : "0") << "," << row.minLevel << "," << row.stats.median << ","
-      << row.stats.p10 << "," << row.stats.p90 << "," << row.stats.min << "," << row.stats.max
-      << "," << row.stats.mean << "," << row.stats.stddev << "," << row.stats.cv << ","
-      << row.callsPerSecond << "," << (row.stable ? "1" : "0") << "," << row.cvThreshold;
+      << row.stats.p10 << "," << row.stats.p90 << "," << row.stats.p99 << "," << row.stats.p999
+      << "," << row.stats.min << "," << row.stats.max << "," << row.stats.mean << ","
+      << row.stats.stddev << "," << row.stats.cv << "," << row.callsPerSecond << ","
+      << (row.stable ? "1" : "0") << "," << row.cvThreshold;
 
   // Profile columns
   if (row.profileTool.has_value() || row.profileDir.has_value()) {

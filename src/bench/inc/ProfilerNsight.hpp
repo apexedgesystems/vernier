@@ -22,12 +22,17 @@
  *
  *  Then run with:
  *    --profile nsight                          # Nsight Systems (timeline)
- *    --profile nsight --profile-args "replay"  # Kernel replay with metrics
+ *    --profile ncu                             # Nsight Compute (kernel analysis)
+ *    --profile ncu --profile-args "replay"     # Kernel replay with metrics
+ *    --profile nsight --profile-args "replay"  # Same replay via the nsight name
  *
  * Notes:
- *  - Nsight Systems (nsys) works like perf - attaches to running process
- *  - Nsight Compute (ncu) has limited attach support (use manual wrapper for deep analysis)
- *  - Kernel replay mode automatically collects key bottleneck metrics
+ *  - Both names dispatch to this backend; "ncu" forces Compute mode.
+ *  - Under bench run the wrap happens externally (nsys profile / ncu around
+ *    the binary) and the backend stays passive (VERNIER_EXTERNAL_WRAP);
+ *    direct binary invocation attaches by pid outside containers.
+ *  - Kernel replay collects rich per-kernel metrics via many launches, so it
+ *    is inherently a separate pass from single-launch timing.
  *  - Requires NVIDIA Nsight tools to be installed
  *  - Safe no-op when tools unavailable
  */

@@ -80,10 +80,21 @@ JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName)
 
 void JemallocProfiler::beforeMeasure() {
   if (runningUnderJemalloc_) {
+    // Report the actual dump location: when a wrapper (bench run) set
+    // prof_prefix via MALLOC_CONF, samples land there, not in this
+    // test's own artifact dir.
+    std::string prefix = artifactDir_ + "/jeprof";
+    if (const char* mc = std::getenv("MALLOC_CONF")) {
+      if (const char* p = std::strstr(mc, "prof_prefix:")) {
+        const char* start = p + 12;
+        const char* end = std::strchr(start, ',');
+        prefix.assign(start, end ? static_cast<std::size_t>(end - start) : std::strlen(start));
+      }
+    }
     std::fprintf(stderr,
-                 "[jemalloc] wrapping detected; heap samples written to %s/jeprof.*.heap at\n"
+                 "[jemalloc] wrapping detected; heap samples written to %s.*.heap at\n"
                  "[jemalloc] process exit.\n",
-                 artifactDir_.c_str());
+                 prefix.c_str());
     return;
   }
   std::fprintf(
@@ -91,14 +102,15 @@ void JemallocProfiler::beforeMeasure() {
       "\n[jemalloc] NOT running under jemalloc; this measurement will execute\n"
       "[jemalloc] normally but no heap samples are collected. To collect:\n"
       "[jemalloc]   LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \\\n"
-      "[jemalloc]   MALLOC_CONF=prof:true,prof_prefix:%s/jeprof \\\n"
+      "[jemalloc]   MALLOC_CONF=prof:true,prof_final:true,prof_prefix:%s/jeprof \\\n"
       "[jemalloc]       <this-binary> --profile jemalloc [...]\n"
       "[jemalloc] Then: jeprof --text <this-binary> %s/jeprof.*.heap | head -20\n\n",
       artifactDir_.c_str(), artifactDir_.c_str());
 }
 
 void JemallocProfiler::afterMeasure(const Stats& /*s*/) {
-  // jemalloc dumps prof heaps at exit when MALLOC_CONF=prof:true was set.
+  // jemalloc dumps the final prof heap at exit when MALLOC_CONF carries
+  // prof:true,prof_final:true (the recipe both the hint and bench run use).
 }
 
 /* ----------------------------- Env check ----------------------------- */

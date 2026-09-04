@@ -141,7 +141,9 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
 }
 
 void GperfProfiler::runPprofAnalysis() const {
-#ifdef __linux__
+// Only ever called from the UB_HAS_GPERF_CPU branch of afterMeasure();
+// the body must compile out with it because cpuPath_ exists only there.
+#if UB_HAS_GPERF_CPU && defined(__linux__)
   // Check if pprof/google-pprof is available
   bool hasPprof = (std::system("command -v google-pprof >/dev/null 2>&1") == 0);
   if (!hasPprof) {

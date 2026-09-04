@@ -58,7 +58,14 @@ struct CuptiKernelStats {
 
 class CuptiCollector {
 public:
-  CuptiCollector();
+  /**
+   * @param forceDisabled Skip CUPTI registration entirely. The harness
+   * passes profiler_env::cuptiMustYield(...) here: registration alone
+   * (before any cuptiActivityEnable) already claims the process's single
+   * CUPTI client slot and starves an external nsys/ncu session, so the
+   * yield decision must gate construction, not just start().
+   */
+  explicit CuptiCollector(bool forceDisabled = false);
   ~CuptiCollector();
 
   CuptiCollector(const CuptiCollector&) = delete;

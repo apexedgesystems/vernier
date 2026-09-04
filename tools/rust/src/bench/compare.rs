@@ -157,6 +157,8 @@ mod tests {
             wall_median: median,
             wall_p10: median * 0.9,
             wall_p90: median * 1.1,
+            wall_p99: median * 1.18,
+            wall_p999: median * 1.19,
             wall_min: median * 0.8,
             wall_max: median * 1.2,
             wall_mean: median,

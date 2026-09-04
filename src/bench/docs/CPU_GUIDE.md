@@ -36,7 +36,7 @@ namespace ub = vernier::bench;
 
 PERF_TEST(MyComponent, BasicThroughput) {
   // Create benchmark harness (auto-reads command-line flags)
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   // Setup (not measured)
   std::vector<int> data(1000);
@@ -175,7 +175,7 @@ Measure how many operations per second your code can perform:
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   // Setup: Prepare test data
   const int N = 10000;
@@ -214,7 +214,7 @@ Focus on latency percentiles for latency-sensitive code:
 
 ```cpp
 PERF_LATENCY(Network, RequestLatency) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   NetworkClient client;
 
@@ -312,7 +312,7 @@ Measure contention and scalability with multiple threads:
 
 ```cpp
 PERF_CONTENTION(SharedCounter, Increment) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   std::atomic<int64_t> counter{0};
 
@@ -361,7 +361,7 @@ Understand if your code is CPU-bound or memory-bound:
 
 ```cpp
 PERF_TEST(Memory, StreamingCopy) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   const size_t SIZE = 1024 * 1024;  // 1 MB
   std::vector<uint8_t> src(SIZE);
@@ -422,7 +422,7 @@ Compare baseline vs optimized versions:
 
 ```cpp
 PERF_TEST(Algorithm, CompareVersions) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   std::vector<int> data(10000);
   std::iota(data.begin(), data.end(), 1);
@@ -488,7 +488,7 @@ Understand how performance scales with input size:
 
 ```cpp
 PERF_TEST(Algorithm, PayloadScaling) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   struct TestCase {
     std::string name;
@@ -719,7 +719,7 @@ Test performance at different cache levels:
 
 ```cpp
 PERF_TEST(Cache, HierarchyTraversal) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   struct CacheTest {
     const char* name;
@@ -789,7 +789,7 @@ Test branch predictor effectiveness:
 
 ```cpp
 PERF_TEST(BranchPrediction, PredictableVsRandom) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   const int N = 10000;
   std::vector<int> sortedData(N);
@@ -867,7 +867,7 @@ Measure cost of dynamic memory allocation:
 
 ```cpp
 PERF_TEST(Allocation, Overhead) {
-  UB_PERF_GUARD(perf);
+  PERF_GUARD(perf);
 
   struct AllocationTest {
     const char* name;

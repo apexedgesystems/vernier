@@ -51,6 +51,8 @@ Stats makeTestStats() {
       .median = 100.0,
       .p10 = 90.0,
       .p90 = 110.0,
+      .p99 = 118.0,
+      .p999 = 119.5,
       .min = 80.0,
       .max = 120.0,
       .mean = 100.0,
@@ -90,6 +92,8 @@ TEST(PerfCsvTest, BasicHeaderHasRequiredColumns) {
   EXPECT_NE(CONTENT.find("cycles"), std::string::npos);
   EXPECT_NE(CONTENT.find("repeats"), std::string::npos);
   EXPECT_NE(CONTENT.find("wallMedian"), std::string::npos);
+  EXPECT_NE(CONTENT.find("wallP99"), std::string::npos);
+  EXPECT_NE(CONTENT.find("wallP999"), std::string::npos);
   EXPECT_NE(CONTENT.find("wallCV"), std::string::npos);
   EXPECT_NE(CONTENT.find("callsPerSecond"), std::string::npos);
 }
@@ -273,7 +277,7 @@ TEST(PerfCsvTest, BooleanFieldsSerializeAs01) {
 /* ----------------------------- Field Count Tests ----------------------------- */
 
 /** @test Basic header has 20 columns (18 base + 2 stability). */
-TEST(PerfCsvTest, BasicHeaderHas20Columns) {
+TEST(PerfCsvTest, BasicHeaderHas22Columns) {
   CsvCapture csv;
   writeCsvHeader(csv.stream(), false, false, false);
 
@@ -281,7 +285,7 @@ TEST(PerfCsvTest, BasicHeaderHas20Columns) {
 
   // Count commas (columns = commas + 1)
   const size_t COMMA_COUNT = std::count(CONTENT.begin(), CONTENT.end(), ',');
-  EXPECT_EQ(COMMA_COUNT, 19U); // 20 columns = 19 commas
+  EXPECT_EQ(COMMA_COUNT, 21U); // 22 columns = 21 commas
 }
 
 /** @test Header with all options has expected column count. */
@@ -291,10 +295,10 @@ TEST(PerfCsvTest, FullHeaderColumnCount) {
 
   const std::string CONTENT = csv.content();
 
-  // Base: 20, Profile: +2, Metadata: +4, GPU: +29 (11 base + 4 power/thermal +
-  // 5 CUPTI + 4 multi-GPU + 5 Unified Memory) = 55 columns.
+  // Base: 22, Profile: +2, Metadata: +4, GPU: +29 (11 base + 4 power/thermal +
+  // 5 CUPTI + 4 multi-GPU + 5 Unified Memory) = 57 columns.
   const size_t COMMA_COUNT = std::count(CONTENT.begin(), CONTENT.end(), ',');
-  EXPECT_EQ(COMMA_COUNT, 54U);
+  EXPECT_EQ(COMMA_COUNT, 56U);
 }
 
 /** @test Header includes stability columns. */

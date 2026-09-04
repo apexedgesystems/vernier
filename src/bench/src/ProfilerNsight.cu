@@ -34,7 +34,13 @@ NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
   std::error_code ec;
   std::filesystem::create_directories(artifactDir_, ec);
 
-  if (cfg_.profileArgs.find("replay") != std::string::npos) {
+  if (cfg_.profileTool == "ncu") {
+    // First-class Nsight Compute (--profile ncu). Replay stays the same
+    // --profile-args opt-in as the nsight spelling.
+    const bool REPLAY = cfg_.profileArgs.find("replay") != std::string::npos;
+    mode_ = REPLAY ? NsightMode::ComputeReplay : NsightMode::Compute;
+    useReplayMode_ = REPLAY;
+  } else if (cfg_.profileArgs.find("replay") != std::string::npos) {
     mode_ = NsightMode::ComputeReplay;
     useReplayMode_ = true;
   } else if (cfg_.profileArgs.find("ncu") != std::string::npos ||
@@ -56,11 +62,21 @@ bool NsightProfiler::isNcuAvailable() const {
 }
 
 void NsightProfiler::beforeMeasure() {
+  // When bench run already wrapped this process with nsys/ncu
+  // (VERNIER_EXTERNAL_WRAP), the external session owns the capture: skip
+  // the attach paths and the manual-wrap hint entirely. The NVTX range
+  // below still labels the measured window in the external timeline, and
+  // the harness's CUPTI collector yields via the same signal.
+  const std::string EXTERNAL_WRAP = profiler_env::externalWrapTool();
+  if (EXTERNAL_WRAP == "nsight" || EXTERNAL_WRAP == "ncu") {
+    std::fprintf(stderr, "[nsight] external %s wrap active; skipping in-process attach.\n",
+                 EXTERNAL_WRAP.c_str());
+  }
   // Inside a container PID namespace, `nsys profile -p <pid>` / `ncu -p <pid>`
   // attach modes cannot reach this process reliably. Print the wrap-externally
   // hint and skip the attach attempt; the user runs nsys/ncu around the binary
   // instead (same pattern callgrind / compute-sanitizer use).
-  if (profiler_env::isInContainer()) {
+  else if (profiler_env::isInContainer()) {
     const char* tool = (mode_ == NsightMode::Systems) ? "nsys" : "ncu";
     std::fprintf(stderr,
                  "\n[nsight] running inside a container; attach-by-pid is unreliable.\n"
@@ -99,7 +115,9 @@ void NsightProfiler::afterMeasure(const Stats& /*s*/) {
 
 void NsightProfiler::launchNsys() {
   std::string outputPath = artifactDir_ + "/profile";
-  std::string cmd = "nsys profile -o " + outputPath + " -t cuda,nvtx";
+  // --force-overwrite: a rerun into the same artifact dir must recapture,
+  // not fail on the existing .nsys-rep and leave stale stats behind.
+  std::string cmd = "nsys profile -o " + outputPath + " -t cuda,nvtx --force-overwrite true";
 
   if (!cfg_.profileArgs.empty()) {
     std::string args = cfg_.profileArgs;
@@ -140,7 +158,7 @@ void NsightProfiler::launchNsys() {
 
 void NsightProfiler::launchNcu() {
   std::string outputPath = artifactDir_ + "/kernel_profile";
-  std::string cmd = "ncu -o " + outputPath;
+  std::string cmd = "ncu -o " + outputPath + " -f";
 
   if (!cfg_.profileArgs.empty()) {
     std::string args = cfg_.profileArgs;
@@ -190,7 +208,7 @@ void NsightProfiler::launchNcuReplay() {
     cmd += " --metrics " + metricsStr;
   }
 
-  cmd += " -o " + outputPath;
+  cmd += " -o " + outputPath + " -f";
 
   pid_t targetPid = ::getpid();
   cmd += " --target-processes all -p " + std::to_string(targetPid);
@@ -254,8 +272,8 @@ void NsightProfiler::extractNsysStats() {
   };
   for (const char* report : REPORTS) {
     const std::string outPath = artifactDir_ + "/" + report + ".txt";
-    const std::string cmd = "nsys stats --report " + std::string(report) + " '" + repPath +
-                            "' > '" + outPath + "' 2>/dev/null";
+    const std::string cmd = "nsys stats --force-export=true --report " + std::string(report) +
+                            " '" + repPath + "' > '" + outPath + "' 2>/dev/null";
     [[maybe_unused]] int rc = std::system(cmd.c_str());
   }
   std::fprintf(stderr,
@@ -326,9 +344,31 @@ EnvReport checkNsightEnvironment() {
   return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
 }
 
+EnvReport checkNcuEnvironment() {
+  if (std::system("command -v ncu >/dev/null 2>&1") != 0) {
+    return EnvReport{EnvReport::Status::Error, "ncu not found on PATH",
+                     "Install nsight-compute (CUDA toolkit devtools repo on Ubuntu)."};
+  }
+  if (profiler_env::isInContainer()) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "ncu available; running in a container (PID namespace)",
+                     "Use bench run --profile ncu (wraps ncu around the binary automatically)."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "ncu available", ""};
+}
+
 } // namespace bench
 } // namespace vernier
 
 VERNIER_REGISTER_PROFILER_BACKEND(
     "nsight", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNsightEnvironment,
     "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")
+
+// Nsight Compute as its own first-class name: same backend implementation,
+// constructor selects Compute mode from the tool name. Kernel replay's rich
+// metrics inherently need many launches, so it remains a separate pass from
+// single-launch timing (--profile-args replay) -- the flag is still the one
+// entry point.
+VERNIER_REGISTER_PROFILER_BACKEND(
+    "ncu", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNcuEnvironment,
+    "Install NVIDIA Nsight Compute (ncu) and ensure a CUDA-capable GPU is visible.")
