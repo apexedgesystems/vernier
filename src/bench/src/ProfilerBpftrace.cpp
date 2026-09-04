@@ -9,6 +9,8 @@
 
 #include "src/bench/inc/ProfilerBpftrace.hpp"
 
+#include "src/bench/inc/ProfilerEnv.hpp"
+
 #ifdef __linux__
 #include <array>
 #include <cctype>
@@ -126,7 +128,9 @@ public:
     if (::geteuid() == 0) {
       return true;
     }
-    return (std::system("sudo -n true >/dev/null 2>&1") == 0);
+    // Probe the actual capability: scoped sudoers grants authorize
+    // bpftrace specifically, so `sudo -n true` would false-negative.
+    return profiler_env::sudoBpftraceUsable();
   }
 
   bool start(const BpfSpec& spec, int pid) {
@@ -187,7 +191,8 @@ public:
     if (cfg_.format == "json") {
       cmd += " -f json";
     }
-    if (cfg_.requireSudo && ::geteuid() != 0) {
+    viaSudo_ = cfg_.requireSudo && ::geteuid() != 0;
+    if (viaSudo_) {
       cmd = std::string("sudo -n ") + cmd;
     }
 
@@ -226,13 +231,24 @@ public:
     if (childPid_ <= 0) {
       return;
     }
-    ::kill(childPid_, SIGINT);
-    std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.stopGraceMs));
-    if (::kill(childPid_, 0) == 0) {
-      ::kill(childPid_, SIGTERM);
+    // Under the sudo prefix the tracer runs as root: a plain ::kill from an
+    // unprivileged caller EPERMs silently, losing the SIGINT END-block flush
+    // and leaking the tracer past the run. Route delivery through
+    // `sudo -n kill`, and probe liveness EPERM-aware for the same reason.
+    const auto DELIVER = [this](int sig) {
+      return viaSudo_ ? profiler_env::sudoKill(childPid_, sig) : (::kill(childPid_, sig) == 0);
+    };
+    if (!DELIVER(SIGINT)) {
+      std::fprintf(stderr, "[bpftrace] could not signal tracer (sudo -n kill unavailable?); "
+                           "output may be incomplete.\n");
     }
-    int status = 0;
-    (void)::waitpid(childPid_, &status, WNOHANG);
+    std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.stopGraceMs));
+    if (profiler_env::processAlive(childPid_)) {
+      DELIVER(SIGTERM);
+      std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.stopGraceMs));
+    }
+    // The tracer was started through popen/sh, so it is not our direct child;
+    // there is nothing to reap here -- liveness above is the real check.
     childPid_ = -1;
   }
 
@@ -244,6 +260,7 @@ public:
 private:
   BpfConfig cfg_{};
   pid_t childPid_ = -1;
+  bool viaSudo_ = false;
   std::string tempScript_{};
   std::string stdoutPath_{};
   std::string stderrPath_{};
