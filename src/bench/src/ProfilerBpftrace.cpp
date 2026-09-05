@@ -50,7 +50,7 @@ struct BpfConfig {
   std::string outputDir;
   std::string format = "text";
   bool requireSudo = true;
-  int startGraceMs = 100;
+  int startGraceMs = 1000;
   int stopGraceMs = 200;
 };
 
@@ -139,8 +139,9 @@ public:
     }
     if (!canRun()) {
       std::fprintf(stderr,
-                   "[bpftrace] cannot run %s: bpftrace not on PATH or not running as root.\n"
-                   "[bpftrace] Re-run with sudo (or grant CAP_BPF) to attach kprobes.\n",
+                   "[bpftrace] cannot run %s: bpftrace not on PATH or no usable privileges.\n"
+                   "[bpftrace] Re-run with sudo, or set BENCH_SUDO=1 with a scoped sudoers\n"
+                   "[bpftrace] grant (bpftrace + kill).\n",
                    spec.name.c_str());
       return false;
     }
@@ -187,34 +188,42 @@ public:
     stdoutPath_ = (outdir / (spec.name + ".out." + cfg_.format)).string();
     stderrPath_ = (outdir / (spec.name + ".err.txt")).string();
 
-    std::string cmd = "bpftrace -q '" + tempScript_ + "'";
-    if (cfg_.format == "json") {
-      cmd += " -f json";
-    }
     viaSudo_ = cfg_.requireSudo && ::geteuid() != 0;
-    if (viaSudo_) {
-      cmd = std::string("sudo -n ") + cmd;
-    }
 
-    std::string shellCmd =
-        "sh -c '" + cmd + " >" + stdoutPath_ + " 2>" + stderrPath_ + " & echo $!'";
-    FILE* pipe = ::popen(shellCmd.c_str(), "r");
-    if (!pipe) {
+    // fork+exec, not popen/sh-backgrounding: signals must land on the
+    // process we actually track. A shell's $! hands back a wrapper pid,
+    // and SIGKILL on a sudo wrapper merely orphans the root tracer under
+    // it. A direct child receives delivery for real and waitpid can reap
+    // it. (Same proven pattern as the offcpu backend.)
+    const pid_t CHILD = ::fork();
+    if (CHILD < 0) {
       return false;
     }
-
-    std::array<char, 64> buf{};
-    if (!::fgets(buf.data(), static_cast<int>(buf.size()), pipe)) {
-      ::pclose(pipe);
-      return false;
+    if (CHILD == 0) {
+      std::freopen(stdoutPath_.c_str(), "w", stdout);
+      std::freopen(stderrPath_.c_str(), "w", stderr);
+      const bool JSON = (cfg_.format == "json");
+      if (viaSudo_) {
+        if (JSON) {
+          ::execlp("sudo", "sudo", "-n", "bpftrace", "-q", "-f", "json", tempScript_.c_str(),
+                   static_cast<char*>(nullptr));
+        } else {
+          ::execlp("sudo", "sudo", "-n", "bpftrace", "-q", tempScript_.c_str(),
+                   static_cast<char*>(nullptr));
+        }
+      } else {
+        if (JSON) {
+          ::execlp("bpftrace", "bpftrace", "-q", "-f", "json", tempScript_.c_str(),
+                   static_cast<char*>(nullptr));
+        } else {
+          ::execlp("bpftrace", "bpftrace", "-q", tempScript_.c_str(), static_cast<char*>(nullptr));
+        }
+      }
+      std::_Exit(127);
     }
-    ::pclose(pipe);
-
-    childPid_ = static_cast<pid_t>(std::strtol(buf.data(), nullptr, 10));
-    if (childPid_ <= 0) {
-      childPid_ = -1;
-      return false;
-    }
+    // One tracer per started script: a single slot would leak every tracer
+    // but the last when a spec list runs several scripts back to back.
+    children_.push_back(CHILD);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.startGraceMs));
     return true;
@@ -228,28 +237,43 @@ public:
   }
 
   void stop() noexcept {
-    if (childPid_ <= 0) {
-      return;
-    }
-    // Under the sudo prefix the tracer runs as root: a plain ::kill from an
-    // unprivileged caller EPERMs silently, losing the SIGINT END-block flush
-    // and leaking the tracer past the run. Route delivery through
-    // `sudo -n kill`, and probe liveness EPERM-aware for the same reason.
-    const auto DELIVER = [this](int sig) {
-      return viaSudo_ ? profiler_env::sudoKill(childPid_, sig) : (::kill(childPid_, sig) == 0);
-    };
-    if (!DELIVER(SIGINT)) {
-      std::fprintf(stderr, "[bpftrace] could not signal tracer (sudo -n kill unavailable?); "
-                           "output may be incomplete.\n");
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.stopGraceMs));
-    if (profiler_env::processAlive(childPid_)) {
+    // Under the sudo prefix tracers run as root: a plain ::kill from an
+    // unprivileged caller EPERMs silently, losing the flush and leaking the
+    // tracer past the run. Route delivery through `sudo -n kill` and
+    // escalate SIGINT -> SIGTERM -> SIGKILL with bounded reaps per tracer;
+    // the tracers are direct fork children, so waitpid works regardless of
+    // their uid.
+    for (const pid_t CHILD : children_) {
+      const pid_t TARGET = profiler_env::tracerPid(CHILD);
+      const auto DELIVER = [this, TARGET](int sig) {
+        return viaSudo_ ? profiler_env::sudoKill(TARGET, sig) : (::kill(TARGET, sig) == 0);
+      };
+      const auto WAIT_GONE = [CHILD](int ms) {
+        int status = 0;
+        for (int i = 0; i < ms / 50; ++i) {
+          if (::waitpid(CHILD, &status, WNOHANG) != 0)
+            return true;
+          std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return ::waitpid(CHILD, &status, WNOHANG) != 0;
+      };
+      if (!DELIVER(SIGINT)) {
+        std::fprintf(stderr,
+                     "[bpftrace] could not signal tracer %d (sudo -n kill "
+                     "unavailable?); output may be incomplete.\n",
+                     static_cast<int>(CHILD));
+      }
+      if (WAIT_GONE(cfg_.stopGraceMs * 10))
+        continue;
       DELIVER(SIGTERM);
-      std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.stopGraceMs));
+      if (WAIT_GONE(cfg_.stopGraceMs * 5))
+        continue;
+      std::fprintf(stderr, "[bpftrace] tracer %d unresponsive; sending SIGKILL.\n",
+                   static_cast<int>(CHILD));
+      DELIVER(SIGKILL);
+      (void)WAIT_GONE(cfg_.stopGraceMs * 5);
     }
-    // The tracer was started through popen/sh, so it is not our direct child;
-    // there is nothing to reap here -- liveness above is the real check.
-    childPid_ = -1;
+    children_.clear();
   }
 
   ~BpfRunner() { stop(); }
@@ -259,7 +283,7 @@ public:
 
 private:
   BpfConfig cfg_{};
-  pid_t childPid_ = -1;
+  std::vector<pid_t> children_{};
   bool viaSudo_ = false;
   std::string tempScript_{};
   std::string stdoutPath_{};
@@ -379,10 +403,27 @@ EnvReport checkBpftraceEnvironment() {
                      "apt install bpftrace."};
   }
   if (geteuid() != 0) {
+    if (profiler_env::benchSudoActive() && profiler_env::sudoBpftraceUsable()) {
+      if (!profiler_env::bpftraceKprobeViable(true)) {
+        return EnvReport{EnvReport::Status::Warning,
+                         "sudo -n bpftrace runs but cannot attach a kprobe script",
+                         "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing) and "
+                         "that the bpftrace build is not broken (stripped BEGIN/END)."};
+      }
+      return EnvReport{EnvReport::Status::Ok,
+                       "bpftrace available via BENCH_SUDO (kprobe attach verified)", ""};
+    }
     return EnvReport{EnvReport::Status::Warning, "bpftrace available but not running as root",
-                     "Run with sudo or grant CAP_BPF; bpftrace probes require kernel privileges."};
+                     "Run with sudo, or set BENCH_SUDO=1 with a scoped sudoers grant "
+                     "(bpftrace + kill)."};
   }
-  return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root", ""};
+  if (!profiler_env::bpftraceKprobeViable(false)) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "bpftrace runs as root but cannot attach a kprobe script",
+                     "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing)."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root (attach verified)",
+                   ""};
 #else
   return EnvReport{EnvReport::Status::Error, "bpftrace is Linux-only",
                    "Run on Linux or use a different profiler."};

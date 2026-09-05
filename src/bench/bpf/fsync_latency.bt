@@ -1,21 +1,20 @@
-// Histogram of fsync()/fdatasync() latency (us) for a specific PID.
-// {{PID}} will be replaced by the BpfRunner before execution.
+// Histogram of fsync() latency (us) for a specific PID.
+// {{PID}} is replaced by the BpfRunner before execution.
+//
+// Rides the syscalls tracepoints (stable ABI, arch-neutral) rather than
+// arch-prefixed kprobes, which do not exist off x86_64. No BEGIN/END on
+// purpose: maps auto-print at exit, and stripped distro bpftrace builds
+// cannot run BEGIN/END trigger uprobes.
 
-BEGIN { printf("Tracing fsync() latency for pid={{PID}}...\n"); }
-
-kprobe:__x64_sys_fsync /pid == {{PID}}/ { @start[tid] = nsecs; }
-kretprobe:__x64_sys_fsync /@start[tid]/ {
-  $d = (nsecs - @start[tid]) / 1000; @lat_fsync = hist($d); delete(@start[tid]);
+tracepoint:syscalls:sys_enter_fsync /pid == {{PID}}/ {
+  @start[tid] = nsecs;
 }
 
-kprobe:__x64_sys_fdatasync /pid == {{PID}}/ { @startd[tid] = nsecs; }
-kretprobe:__x64_sys_fdatasync /@startd[tid]/ {
-  $d = (nsecs - @startd[tid]) / 1000; @lat_fdatasync = hist($d); delete(@startd[tid]);
+tracepoint:syscalls:sys_exit_fsync /@start[tid]/ {
+  @fsync_latency_us = hist((nsecs - @start[tid]) / 1000);
+  delete(@start[tid]);
 }
 
-END {
-  printf("\nfsync() latency (us)\n");
-  print(@lat_fsync);
-  printf("\nfdatasync() latency (us)\n");
-  print(@lat_fdatasync);
+tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+  exit();
 }
