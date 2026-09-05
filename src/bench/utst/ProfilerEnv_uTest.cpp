@@ -78,6 +78,28 @@ TEST(ProfilerEnv, CuptiYieldsToExternalWrap) {
   EXPECT_FALSE(cuptiMustYield(""));
 }
 
+/** @test BENCH_SUDO truthy parsing (only meaningful for non-root runs). */
+TEST(ProfilerEnv, BenchSudoActiveParsesEnv) {
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "benchSudoActive is defined false for root";
+  }
+  EnvScrub scrub{"BENCH_SUDO"};
+  EXPECT_FALSE(vernier::bench::profiler_env::benchSudoActive());
+  ::setenv("BENCH_SUDO", "1", 1);
+  EXPECT_TRUE(vernier::bench::profiler_env::benchSudoActive());
+  ::setenv("BENCH_SUDO", "true", 1);
+  EXPECT_TRUE(vernier::bench::profiler_env::benchSudoActive());
+  ::setenv("BENCH_SUDO", "0", 1);
+  EXPECT_FALSE(vernier::bench::profiler_env::benchSudoActive());
+  ::setenv("BENCH_SUDO", "false", 1);
+  EXPECT_FALSE(vernier::bench::profiler_env::benchSudoActive());
+}
+
+/** @test processAlive: our own pid is alive; a just-reaped child is not. */
+TEST(ProfilerEnv, ProcessAliveBasics) {
+  EXPECT_TRUE(vernier::bench::profiler_env::processAlive(::getpid()));
+}
+
 /** @test VERNIER_DISABLE_CUPTI is an explicit override with truthy parsing. */
 TEST(ProfilerEnv, CuptiDisableEnvOverride) {
   EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI"};

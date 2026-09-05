@@ -14,6 +14,11 @@
 #include <cstring>
 #include <string>
 
+#include <cerrno>
+#include <csignal>
+#include <sys/types.h>
+#include <unistd.h>
+
 namespace vernier {
 namespace bench {
 namespace profiler_env {
@@ -145,6 +150,68 @@ inline bool cuptiMustYield(const std::string& profileTool) {
     return true;
   const std::string wrap = externalWrapTool();
   return wrap == "nsight" || wrap == "ncu";
+}
+
+/* ----------------------------- benchSudoActive ----------------------------- */
+
+/**
+ * @brief True when privilege-needing backends should elevate via `sudo -n`.
+ *
+ * Opt-in through BENCH_SUDO (truthy) for processes not already running as
+ * root. Pairs with a scoped sudoers grant (bpftrace + kill) so kernel-probe
+ * backends work from unprivileged test runs -- the tests and their artifacts
+ * stay owned by the user; only the probe tooling elevates.
+ */
+inline bool benchSudoActive() {
+  if (::geteuid() == 0)
+    return false;
+  const char* v = std::getenv("BENCH_SUDO");
+  return v != nullptr && v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0;
+}
+
+/* ----------------------------- sudoBpftraceUsable ----------------------------- */
+
+/**
+ * @brief True when `sudo -n bpftrace` works for this user.
+ *
+ * Probes the actual capability, not `sudo -n true`: a *scoped* sudoers
+ * grant (the recommended setup) authorizes bpftrace specifically, so a
+ * generic sudo probe false-negatives on exactly the configuration this
+ * feature is designed for.
+ */
+inline bool sudoBpftraceUsable() {
+  return std::system("sudo -n bpftrace --version >/dev/null 2>&1") == 0;
+}
+
+/* ----------------------------- processAlive ----------------------------- */
+
+/**
+ * @brief True when @p pid exists -- including root children an unprivileged
+ * caller cannot signal (kill(pid, 0) failing with EPERM still means alive).
+ */
+inline bool processAlive(pid_t pid) {
+  if (::kill(pid, 0) == 0)
+    return true;
+  return errno == EPERM;
+}
+
+/* ----------------------------- sudoKill ----------------------------- */
+
+/**
+ * @brief Deliver @p sig to @p pid, elevating via `sudo -n kill` when the
+ * caller is not root.
+ *
+ * A child spawned through sudo runs as root, and a plain ::kill from its
+ * unprivileged parent fails with EPERM -- silently losing e.g. bpftrace's
+ * SIGINT-triggered END-block flush. @return true when delivery succeeded.
+ */
+inline bool sudoKill(pid_t pid, int sig) {
+  if (::geteuid() == 0)
+    return ::kill(pid, sig) == 0;
+  char cmd[96];
+  std::snprintf(cmd, sizeof(cmd), "sudo -n kill -%d %d >/dev/null 2>&1", sig,
+                static_cast<int>(pid));
+  return std::system(cmd) == 0;
 }
 
 } // namespace profiler_env

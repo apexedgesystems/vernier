@@ -68,6 +68,7 @@ private:
   std::string outputPath_;
 #ifdef __linux__
   pid_t childPid_ = -1;
+  bool viaSudo_ = false;
 #endif
 };
 
