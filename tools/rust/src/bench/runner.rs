@@ -314,9 +314,11 @@ fn wrap_command_for(
 
 /// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
 /// prof_final:true guarantees the exit-time dump the backend's docs promise.
-fn jemalloc_env(lib: &str, dir: &Path) -> Vec<(String, String)> {
+/// The preload is by soname: ld.so searches the same dirs for LD_PRELOAD as
+/// for any other resolution, so no path lookup is needed or wanted.
+fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
     vec![
-        ("LD_PRELOAD".to_string(), lib.to_string()),
+        ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string()),
         (
             "MALLOC_CONF".to_string(),
             format!(
@@ -330,8 +332,8 @@ fn jemalloc_env(lib: &str, dir: &Path) -> Vec<(String, String)> {
 /// Wrap for backends that inject via environment rather than argv.
 /// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
 /// into the per-binary artifact dir. Returns None when the tool is not
-/// env-shaped or its library cannot be found (the binary's own hint then
-/// explains the manual setup).
+/// env-shaped or the loader cannot resolve the library (the binary's own
+/// hint then explains the manual setup).
 fn env_wrap_for(
     tool: &str,
     binary: &Path,
@@ -340,33 +342,25 @@ fn env_wrap_for(
     if tool != "jemalloc" {
         return None;
     }
-    let lib = find_libjemalloc()?;
+    if !jemalloc_preloadable() {
+        return None;
+    }
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     fs::create_dir_all(&dir).ok()?;
-    Some(jemalloc_env(&lib, &dir))
+    Some(jemalloc_env(&dir))
 }
 
-/// Locate libjemalloc: the distro paths the C++ backend also probes, then
-/// ldconfig -p as the portable fallback.
-fn find_libjemalloc() -> Option<String> {
-    const CANDIDATES: [&str; 5] = [
-        "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
-        "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
-        "/usr/lib64/libjemalloc.so",
-        "/usr/lib64/libjemalloc.so.2",
-        "/usr/local/lib/libjemalloc.so",
-    ];
-    for c in CANDIDATES {
-        if Path::new(c).is_file() {
-            return Some(c.to_string());
-        }
-    }
-    let out = Command::new("ldconfig").arg("-p").output().ok()?;
-    String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .find(|l| l.contains("libjemalloc.so"))
-        .and_then(|l| l.rsplit(' ').next())
-        .map(str::to_string)
+/// The loader is the only honest oracle for "will LD_PRELOAD work": preload
+/// by soname against /bin/true and let ld.so answer. Stderr stays silent on
+/// success; "cannot be preloaded" means the wrapped binary would not get the
+/// library either (ld.so warns and continues, and the C++ side would then
+/// see LD_PRELOAD set and believe it is profiled -- this gate prevents that).
+fn jemalloc_preloadable() -> bool {
+    Command::new("/bin/true")
+        .env("LD_PRELOAD", "libjemalloc.so.2")
+        .output()
+        .map(|o| !String::from_utf8_lossy(&o.stderr).contains("cannot be preloaded"))
+        .unwrap_or(false)
 }
 
 /// The four canonical nsys stats reports, matching what the C++ backend
@@ -563,16 +557,14 @@ mod tests {
     }
 
     /// @test jemalloc env wrap composes LD_PRELOAD + MALLOC_CONF with a
-    /// final dump into the artifact dir.
+    /// final dump into the artifact dir. The preload is by soname: ld.so
+    /// owns the search, so no path appears anywhere.
     #[test]
     fn jemalloc_env_composition() {
-        let pairs = jemalloc_env("/usr/lib/libjemalloc.so.2", Path::new("out/t.jemalloc"));
+        let pairs = jemalloc_env(Path::new("out/t.jemalloc"));
         assert_eq!(
             pairs[0],
-            (
-                "LD_PRELOAD".to_string(),
-                "/usr/lib/libjemalloc.so.2".to_string()
-            )
+            ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string())
         );
         assert_eq!(
             pairs[1],

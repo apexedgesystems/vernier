@@ -48,8 +48,16 @@ make compose-debug
 # Locally: apt install libjemalloc2 libjemalloc-dev
 ```
 
-`bench doctor` reports whether both the runtime (`libjemalloc.so`) and the
-analyzer (`jeprof`) are present.
+**Distro-package caveat**: Debian and Ubuntu build jemalloc _without_
+`--enable-prof`. The library preloads fine but rejects `prof:true`
+(`Invalid conf pair` on stderr) and never writes a heap profile. For heap
+profiling you need a jemalloc built with `--enable-prof` (from source:
+`./configure --enable-prof && make && sudo make install`) -- or reach for
+the `heaptrack` backend, which needs no special allocator build.
+
+`bench doctor` reports whether the runtime (`libjemalloc.so`) and the
+analyzer (`jeprof`) are present, and whether the runtime is a profiling
+build (it probes `prof:true` acceptance live).
 
 ## Step 1: Profile the Slow Path
 

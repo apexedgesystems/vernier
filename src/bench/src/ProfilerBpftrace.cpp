@@ -404,22 +404,22 @@ EnvReport checkBpftraceEnvironment() {
   }
   if (geteuid() != 0) {
     if (profiler_env::benchSudoActive() && profiler_env::sudoBpftraceUsable()) {
-      if (!profiler_env::bpftraceKprobeViable(true)) {
+      if (!profiler_env::bpftraceAttachViable(true)) {
         return EnvReport{EnvReport::Status::Warning,
-                         "sudo -n bpftrace runs but cannot attach a kprobe script",
+                         "sudo -n bpftrace runs but cannot attach a tracepoint script",
                          "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing) and "
                          "that the bpftrace build is not broken (stripped BEGIN/END)."};
       }
       return EnvReport{EnvReport::Status::Ok,
-                       "bpftrace available via BENCH_SUDO (kprobe attach verified)", ""};
+                       "bpftrace available via BENCH_SUDO (tracepoint attach verified)", ""};
     }
     return EnvReport{EnvReport::Status::Warning, "bpftrace available but not running as root",
                      "Run with sudo, or set BENCH_SUDO=1 with a scoped sudoers grant "
                      "(bpftrace + kill)."};
   }
-  if (!profiler_env::bpftraceKprobeViable(false)) {
+  if (!profiler_env::bpftraceAttachViable(false)) {
     return EnvReport{EnvReport::Status::Warning,
-                     "bpftrace runs as root but cannot attach a kprobe script",
+                     "bpftrace runs as root but cannot attach a tracepoint script",
                      "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing)."};
   }
   return EnvReport{EnvReport::Status::Ok, "bpftrace available, running as root (attach verified)",

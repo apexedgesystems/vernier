@@ -21,26 +21,39 @@ namespace bench {
 
 namespace {
 
-bool isJemallocLibPresent() {
-  // jemalloc usually lives at /usr/lib/x86_64-linux-gnu/libjemalloc.so or
-  // /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 on Debian/Ubuntu; check both.
-  static const char* const kCandidates[] = {
-      "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
-      "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
-      "/usr/lib64/libjemalloc.so",
-      "/usr/lib64/libjemalloc.so.2",
-      "/usr/local/lib/libjemalloc.so",
-  };
-  for (const char* p : kCandidates) {
-    if (std::FILE* f = std::fopen(p, "rb")) {
-      std::fclose(f);
-      return true;
-    }
-  }
-  return false;
-}
-
 bool isJeprofOnPath() { return std::system("command -v jeprof >/dev/null 2>&1") == 0; }
+
+enum class JemallocPreload { Missing, NoProf, ProfCapable };
+
+/// One subprocess answers both questions through the real mechanism: ld.so
+/// resolves LD_PRELOAD for /bin/true exactly as it will for a wrapped
+/// benchmark, by soname, through the full loader search. Nothing weaker is
+/// equivalent -- path lists miss multiarch dirs, and dlopen fails where
+/// preload succeeds (jemalloc's initial-exec TLS can exhaust the static TLS
+/// surplus mid-process: "cannot allocate memory in static TLS block",
+/// observed on aarch64). /bin/true keeps the child trivial; a shell builtin
+/// would never exec, so the preload would not engage.
+///
+/// Verdicts, from the child's stderr:
+///  - "cannot be preloaded"  -> the loader cannot resolve it: Missing.
+///  - "Invalid conf pair"    -> loads, but built without --enable-prof
+///                              (Debian/Ubuntu distro packages): NoProf.
+///  - silence                -> loads and accepts prof:true: ProfCapable.
+JemallocPreload probeJemallocPreload() {
+  std::FILE* pipe = popen("MALLOC_CONF=prof:true LD_PRELOAD=libjemalloc.so.2 /bin/true 2>&1", "r");
+  if (!pipe)
+    return JemallocPreload::Missing;
+  std::string out;
+  char buf[512];
+  while (std::fgets(buf, sizeof(buf), pipe))
+    out += buf;
+  pclose(pipe);
+  if (out.find("cannot be preloaded") != std::string::npos)
+    return JemallocPreload::Missing;
+  if (out.find("Invalid conf pair") != std::string::npos)
+    return JemallocPreload::NoProf;
+  return JemallocPreload::ProfCapable;
+}
 
 /// jemalloc is active when libjemalloc shows up in /proc/self/maps OR when
 /// LD_PRELOAD names it explicitly. Either is sufficient as a "wrapping
@@ -116,7 +129,8 @@ void JemallocProfiler::afterMeasure(const Stats& /*s*/) {
 /* ----------------------------- Env check ----------------------------- */
 
 EnvReport checkJemallocEnvironment() {
-  const bool LIB = isJemallocLibPresent();
+  const JemallocPreload PRELOAD = probeJemallocPreload();
+  const bool LIB = PRELOAD != JemallocPreload::Missing;
   const bool TOOL = isJeprofOnPath();
   if (!LIB && !TOOL) {
     return EnvReport{EnvReport::Status::Error,
@@ -131,7 +145,14 @@ EnvReport checkJemallocEnvironment() {
     return EnvReport{EnvReport::Status::Warning, "libjemalloc.so present but jeprof missing",
                      "apt install libjemalloc-dev (ships jeprof for analysis)."};
   }
-  return EnvReport{EnvReport::Status::Ok, "libjemalloc + jeprof available", ""};
+  if (PRELOAD == JemallocPreload::NoProf) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "libjemalloc present but built without profiling (prof:true rejected)",
+                     "Debian/Ubuntu ship jemalloc without --enable-prof, so no heap profile can "
+                     "be written. Build jemalloc from source with --enable-prof, or use the "
+                     "heaptrack backend."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "libjemalloc + jeprof available (profiling build)", ""};
 }
 
 /* --------------------------------- API --------------------------------- */

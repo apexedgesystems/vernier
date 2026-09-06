@@ -183,22 +183,28 @@ inline bool sudoBpftraceUsable() {
   return std::system("sudo -n bpftrace --version >/dev/null 2>&1") == 0;
 }
 
-/* ----------------------------- bpftraceKprobeViable ----------------------------- */
+/* ----------------------------- bpftraceAttachViable ----------------------------- */
 
 /**
- * @brief Live viability probe: can bpftrace actually attach a kprobe here?
+ * @brief Live viability probe: can bpftrace actually attach here?
  *
  * Presence on PATH is not health -- stripped builds break BEGIN/END,
  * missing tracefs breaks attachment, and both fail this real probe in
  * well under its 3s bound where a lookup-based check reports a false OK.
+ *
+ * The probe attaches a sched-family tracepoint -- the same surface the
+ * bpftrace-backed profilers use. A kprobe would be the wrong probe: some
+ * vendor kernels (e.g. NVIDIA L4T) compile kprobes out entirely while
+ * still shipping every sched tracepoint, and a kprobe-based check
+ * reports a false negative on exactly the targets where the backends
+ * work fine.
  */
-inline bool bpftraceKprobeViable(bool viaSudo) {
+inline bool bpftraceAttachViable(bool viaSudo) {
   const char* CMD =
-      viaSudo
-          ? "timeout 3 sudo -n bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
-            ">/dev/null 2>&1"
-          : "timeout 3 bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
-            ">/dev/null 2>&1";
+      viaSudo ? "timeout 3 sudo -n bpftrace -e "
+                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1"
+              : "timeout 3 bpftrace -e "
+                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1";
   return std::system(CMD) == 0;
 }
 
