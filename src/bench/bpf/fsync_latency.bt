@@ -5,6 +5,11 @@
 // arch-prefixed kprobes, which do not exist off x86_64. No BEGIN/END on
 // purpose: maps auto-print at exit, and stripped distro bpftrace builds
 // cannot run BEGIN/END trigger uprobes.
+//
+// Requires CONFIG_FTRACE_SYSCALLS; some vendor kernels (e.g. NVIDIA L4T)
+// compile the syscalls tracepoint family out. On those targets use the
+// sched-family samples (wakeup_latency, cpu_migrations), which every
+// kernel ships.
 
 tracepoint:syscalls:sys_enter_fsync /pid == {{PID}}/ {
   @start[tid] = nsecs;
