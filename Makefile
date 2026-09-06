@@ -21,6 +21,7 @@ include mk/format.mk
 include mk/docker.mk
 include mk/compose.mk
 include mk/clean.mk
+include mk/verify.mk
 
 # ==============================================================================
 # Configuration
@@ -132,6 +133,7 @@ help:
 	@printf '%s\n' "Quality:"
 	@printf '  %-28s %s\n' "make format" "Auto-fix formatting issues"
 	@printf '  %-28s %s\n' "make format-check" "Check formatting (no fixes)"
+	@printf '  %-28s %s\n' "make verify" "Run all CI lanes locally (pre-PR gate)"
 	@printf '  %-28s %s\n' "make coverage" "Generate code coverage report"
 	@printf '  %-28s %s\n' "make static" "Run static analysis (scan-build)"
 	@printf '  %-28s %s\n' "make asan" "Build + test with AddressSanitizer"
