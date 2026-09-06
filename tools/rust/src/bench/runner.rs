@@ -349,9 +349,11 @@ fn env_wrap_for(
 /// Locate libjemalloc: the distro paths the C++ backend also probes, then
 /// ldconfig -p as the portable fallback.
 fn find_libjemalloc() -> Option<String> {
-    const CANDIDATES: [&str; 5] = [
+    const CANDIDATES: [&str; 7] = [
         "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
         "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+        "/usr/lib/aarch64-linux-gnu/libjemalloc.so",
+        "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2",
         "/usr/lib64/libjemalloc.so",
         "/usr/lib64/libjemalloc.so.2",
         "/usr/local/lib/libjemalloc.so",

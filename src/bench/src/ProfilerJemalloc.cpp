@@ -22,11 +22,14 @@ namespace bench {
 namespace {
 
 bool isJemallocLibPresent() {
-  // jemalloc usually lives at /usr/lib/x86_64-linux-gnu/libjemalloc.so or
-  // /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 on Debian/Ubuntu; check both.
+  // Debian/Ubuntu multiarch dirs are per-tuple (x86_64-linux-gnu,
+  // aarch64-linux-gnu, ...); probe the common ones, then fall back to the
+  // loader's own cache -- if ldconfig knows it, LD_PRELOAD will find it.
   static const char* const kCandidates[] = {
       "/usr/lib/x86_64-linux-gnu/libjemalloc.so",
       "/usr/lib/x86_64-linux-gnu/libjemalloc.so.2",
+      "/usr/lib/aarch64-linux-gnu/libjemalloc.so",
+      "/usr/lib/aarch64-linux-gnu/libjemalloc.so.2",
       "/usr/lib64/libjemalloc.so",
       "/usr/lib64/libjemalloc.so.2",
       "/usr/local/lib/libjemalloc.so",
@@ -37,10 +40,20 @@ bool isJemallocLibPresent() {
       return true;
     }
   }
-  return false;
+  return std::system("ldconfig -p 2>/dev/null | grep -q libjemalloc.so") == 0;
 }
 
 bool isJeprofOnPath() { return std::system("command -v jeprof >/dev/null 2>&1") == 0; }
+
+/// Distro jemalloc builds frequently omit --enable-prof (Debian/Ubuntu do);
+/// such a library loads fine but rejects prof:true loudly on stderr, and no
+/// profile is ever written. Preload by soname so the loader resolves the
+/// same library LD_PRELOAD would; /bin/true keeps the child trivial (a shell
+/// builtin would never exec, so the preload would not engage).
+bool isJemallocProfCapable() {
+  return std::system("out=$(MALLOC_CONF=prof:true LD_PRELOAD=libjemalloc.so.2 /bin/true 2>&1); "
+                     "case \"$out\" in *'Invalid conf pair'*) exit 1 ;; esac; exit 0") == 0;
+}
 
 /// jemalloc is active when libjemalloc shows up in /proc/self/maps OR when
 /// LD_PRELOAD names it explicitly. Either is sufficient as a "wrapping
@@ -131,7 +144,14 @@ EnvReport checkJemallocEnvironment() {
     return EnvReport{EnvReport::Status::Warning, "libjemalloc.so present but jeprof missing",
                      "apt install libjemalloc-dev (ships jeprof for analysis)."};
   }
-  return EnvReport{EnvReport::Status::Ok, "libjemalloc + jeprof available", ""};
+  if (!isJemallocProfCapable()) {
+    return EnvReport{EnvReport::Status::Warning,
+                     "libjemalloc present but built without profiling (prof:true rejected)",
+                     "Debian/Ubuntu ship jemalloc without --enable-prof, so no heap profile can "
+                     "be written. Build jemalloc from source with --enable-prof, or use the "
+                     "heaptrack backend."};
+  }
+  return EnvReport{EnvReport::Status::Ok, "libjemalloc + jeprof available (profiling build)", ""};
 }
 
 /* --------------------------------- API --------------------------------- */
