@@ -697,6 +697,11 @@ tracepoint:syscalls:sys_exit_fsync {
 }
 ```
 
+The syscalls tracepoint family requires CONFIG_FTRACE_SYSCALLS; some
+vendor kernels (NVIDIA L4T among them) compile it out along with kprobes.
+The shipped sched-family samples (`wakeup_latency`, `cpu_migrations`) run
+on every kernel.
+
 ### Energy Measurement with RAPL
 
 Measure power consumption (Intel CPUs):
