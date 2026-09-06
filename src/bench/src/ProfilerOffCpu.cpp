@@ -28,23 +28,6 @@ namespace {
 
 bool isBpftraceOnPath() { return std::system("command -v bpftrace >/dev/null 2>&1") == 0; }
 
-/**
- * @brief Live viability probe: can bpftrace actually attach a kprobe here?
- *
- * Presence on PATH is not health -- stripped builds break BEGIN/END,
- * missing tracefs breaks attachment, and both fail this real probe in
- * ~200ms where a lookup-based check would report a false OK.
- */
-bool bpftraceScriptsViable(bool viaSudo) {
-  const char* CMD =
-      viaSudo
-          ? "timeout 3 sudo -n bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
-            ">/dev/null 2>&1"
-          : "timeout 3 bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
-            ">/dev/null 2>&1";
-  return std::system(CMD) == 0;
-}
-
 #ifdef __linux__
 // Probes ride the sched tracepoints (stable kernel ABI) rather than
 // finish_task_switch kprobes: the scheduler function inlines on modern
@@ -161,8 +144,9 @@ void OffCpuProfiler::stopBpftrace() {
   // SIGINT triggers bpftrace's END block, flushing the @offcpu_ns map.
   // Under BENCH_SUDO the child runs as root, so delivery goes through
   // `sudo -n kill` (a plain ::kill would EPERM and lose the flush).
+  const pid_t TARGET = profiler_env::tracerPid(childPid_);
   const bool SIGNALED =
-      viaSudo_ ? profiler_env::sudoKill(childPid_, SIGINT) : (::kill(childPid_, SIGINT) == 0);
+      viaSudo_ ? profiler_env::sudoKill(TARGET, SIGINT) : (::kill(TARGET, SIGINT) == 0);
   if (!SIGNALED) {
     std::fprintf(stderr, "[offcpu] could not signal bpftrace (sudo -n kill unavailable?); "
                          "output may be incomplete.\n");
@@ -177,8 +161,7 @@ void OffCpuProfiler::stopBpftrace() {
   }
   if (::waitpid(childPid_, &status, WNOHANG) == 0 && profiler_env::processAlive(childPid_)) {
     std::fprintf(stderr, "[offcpu] bpftrace did not exit after SIGINT; sending SIGTERM.\n");
-    (void)(viaSudo_ ? profiler_env::sudoKill(childPid_, SIGTERM)
-                    : (::kill(childPid_, SIGTERM) == 0));
+    (void)(viaSudo_ ? profiler_env::sudoKill(TARGET, SIGTERM) : (::kill(TARGET, SIGTERM) == 0));
     for (int i = 0; i < 20; ++i) { // ~2s
       if (::waitpid(childPid_, &status, WNOHANG) != 0)
         break;
@@ -189,8 +172,7 @@ void OffCpuProfiler::stopBpftrace() {
   // final reap stays bounded -- a stuck tracer must never hang a test.
   if (::waitpid(childPid_, &status, WNOHANG) == 0 && profiler_env::processAlive(childPid_)) {
     std::fprintf(stderr, "[offcpu] bpftrace unresponsive; sending SIGKILL.\n");
-    (void)(viaSudo_ ? profiler_env::sudoKill(childPid_, SIGKILL)
-                    : (::kill(childPid_, SIGKILL) == 0));
+    (void)(viaSudo_ ? profiler_env::sudoKill(TARGET, SIGKILL) : (::kill(TARGET, SIGKILL) == 0));
     for (int i = 0; i < 20; ++i) {
       if (::waitpid(childPid_, &status, WNOHANG) != 0)
         break;
@@ -213,7 +195,7 @@ EnvReport checkOffCpuEnvironment() {
   }
   if (geteuid() != 0) {
     if (profiler_env::benchSudoActive() && profiler_env::sudoBpftraceUsable()) {
-      if (!bpftraceScriptsViable(true)) {
+      if (!profiler_env::bpftraceKprobeViable(true)) {
         return EnvReport{EnvReport::Status::Warning,
                          "sudo -n bpftrace runs but cannot attach a kprobe script",
                          "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing) and "
@@ -226,7 +208,7 @@ EnvReport checkOffCpuEnvironment() {
                      "Run with sudo, or set BENCH_SUDO=1 with a scoped sudoers grant "
                      "(bpftrace + kill)."};
   }
-  if (!bpftraceScriptsViable(false)) {
+  if (!profiler_env::bpftraceKprobeViable(false)) {
     return EnvReport{EnvReport::Status::Warning,
                      "bpftrace runs as root but cannot attach a kprobe script",
                      "Check tracefs (mount -t tracefs tracefs /sys/kernel/tracing)."};

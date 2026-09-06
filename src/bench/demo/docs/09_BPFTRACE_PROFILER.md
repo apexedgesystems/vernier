@@ -83,9 +83,10 @@ histogram showing how much time the process spends in kernel transitions.
 ### bpftrace syscall latency output (ManySmallWrites)
 
 ```
-@syscall_lat_ns[write]:
-[512, 1K)            128 |@@                                |
-[1K, 2K)            4096 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+@write_latency_us:
+[0]                30707 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+[1]                    5 |                                  |
+[2, 4)                 6 |                                  |
 [2K, 4K)             820 |@@@@@@                            |
 [4K, 8K)              12 |                                  |
 ```
@@ -97,9 +98,9 @@ kernel context-switch overhead, not actual data movement.
 ### bpftrace syscall latency output (SingleBatchedWrite)
 
 ```
-@syscall_lat_ns[write]:
-[512, 1K)            500 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
-[1K, 2K)               3 |                                  |
+@write_latency_us:
+[0]                  500 |@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@|
+[1]                    3 |                                  |
 ```
 
 One write() call per iteration. The single 1 KB write takes the same ~1 us

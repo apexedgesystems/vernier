@@ -1,0 +1,23 @@
+// Histogram of scheduler wakeup latency (us) for a specific PID: the gap
+// between a thread being woken and actually getting a CPU. Lock convoys
+// and oversubscription show up here before they show up anywhere else.
+// {{PID}} is replaced by the BpfRunner before execution.
+//
+// Built entirely on sched-family tracepoints, which every kernel ships --
+// including vendor kernels (e.g. NVIDIA L4T) that compile out kprobes and
+// the syscalls tracepoint family. No BEGIN/END on purpose: maps auto-print
+// at exit, and stripped distro bpftrace builds cannot run BEGIN/END
+// trigger uprobes.
+
+tracepoint:sched:sched_wakeup /args->pid == {{PID}} || pid == {{PID}}/ {
+  @woken[args->pid] = nsecs;
+}
+
+tracepoint:sched:sched_switch /@woken[args->next_pid]/ {
+  @wakeup_latency_us = hist((nsecs - @woken[args->next_pid]) / 1000);
+  delete(@woken[args->next_pid]);
+}
+
+tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+  exit();
+}

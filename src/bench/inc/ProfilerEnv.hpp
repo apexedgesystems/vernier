@@ -183,6 +183,25 @@ inline bool sudoBpftraceUsable() {
   return std::system("sudo -n bpftrace --version >/dev/null 2>&1") == 0;
 }
 
+/* ----------------------------- bpftraceKprobeViable ----------------------------- */
+
+/**
+ * @brief Live viability probe: can bpftrace actually attach a kprobe here?
+ *
+ * Presence on PATH is not health -- stripped builds break BEGIN/END,
+ * missing tracefs breaks attachment, and both fail this real probe in
+ * well under its 3s bound where a lookup-based check reports a false OK.
+ */
+inline bool bpftraceKprobeViable(bool viaSudo) {
+  const char* CMD =
+      viaSudo
+          ? "timeout 3 sudo -n bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
+            ">/dev/null 2>&1"
+          : "timeout 3 bpftrace -e 'kprobe:do_nanosleep { } interval:ms:200 { exit(); }' "
+            ">/dev/null 2>&1";
+  return std::system(CMD) == 0;
+}
+
 /* ----------------------------- processAlive ----------------------------- */
 
 /**
@@ -193,6 +212,31 @@ inline bool processAlive(pid_t pid) {
   if (::kill(pid, 0) == 0)
     return true;
   return errno == EPERM;
+}
+
+/* ----------------------------- tracerPid ----------------------------- */
+
+/**
+ * @brief Resolve the process to signal for a spawned tracer child.
+ *
+ * sudo sometimes runs its command under a monitor process rather than
+ * exec'ing in place, and the monitor declines to relay signals whose
+ * sender shares the command's process group -- exactly our shape when a
+ * test signals its own fork. Signaling the monitor's child directly
+ * sidesteps the relay: if @p child has exactly one living child of its
+ * own, that grandchild is the tracer.
+ */
+inline pid_t tracerPid(pid_t child) {
+  char path[96];
+  std::snprintf(path, sizeof(path), "/proc/%d/task/%d/children", static_cast<int>(child),
+                static_cast<int>(child));
+  std::FILE* f = std::fopen(path, "r");
+  if (f == nullptr)
+    return child;
+  long grandchild = 0;
+  const int GOT = std::fscanf(f, "%ld", &grandchild);
+  std::fclose(f);
+  return (GOT == 1 && grandchild > 0) ? static_cast<pid_t>(grandchild) : child;
 }
 
 /* ----------------------------- sudoKill ----------------------------- */

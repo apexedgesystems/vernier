@@ -1,0 +1,19 @@
+// Per-thread CPU migration counts for a specific PID. Microsecond-scale
+// benchmarks that refuse to hold tight CV bars are often bouncing between
+// cores; this shows it directly (and pinning makes it read zero).
+// {{PID}} is replaced by the BpfRunner before execution. The filter
+// tracks the main thread -- ideal for single-threaded benchmark
+// binaries, where migration is exactly the pinning lesson.
+//
+// Built entirely on sched-family tracepoints, which every kernel ships --
+// including vendor kernels that compile out kprobes and the syscalls
+// tracepoint family. No BEGIN/END on purpose: maps auto-print at exit.
+
+tracepoint:sched:sched_migrate_task /args->pid == {{PID}}/ {
+  @migrations[args->pid] = count();
+  @dest_cpu[args->dest_cpu] = count();
+}
+
+tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+  exit();
+}

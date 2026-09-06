@@ -1,19 +1,25 @@
 // Histogram of write() latency (us) for a specific PID.
-// {{PID}} will be replaced by the BpfRunner before execution.
+// {{PID}} is replaced by the BpfRunner before execution.
+//
+// Rides the syscalls tracepoints (stable ABI, arch-neutral) rather than
+// arch-prefixed kprobes like __x64_sys_write, which do not exist on
+// aarch64/riscv64. No BEGIN/END on purpose: maps auto-print at exit, and
+// stripped distro bpftrace builds cannot run BEGIN/END trigger uprobes.
+//
+// Requires CONFIG_FTRACE_SYSCALLS; some vendor kernels (e.g. NVIDIA L4T)
+// compile the syscalls tracepoint family out. On those targets use the
+// sched-family samples (wakeup_latency, cpu_migrations), which every
+// kernel ships.
 
-BEGIN { printf("Tracing write() latency for pid={{PID}}...\n"); }
-
-kprobe:__x64_sys_write /pid == {{PID}}/ {
+tracepoint:syscalls:sys_enter_write /pid == {{PID}}/ {
   @start[tid] = nsecs;
 }
 
-kretprobe:__x64_sys_write /@start[tid]/ {
-  $d = (nsecs - @start[tid]) / 1000; // us
-  @lat = hist($d);
+tracepoint:syscalls:sys_exit_write /@start[tid]/ {
+  @write_latency_us = hist((nsecs - @start[tid]) / 1000);
   delete(@start[tid]);
 }
 
-END {
-  printf("\nwrite() latency (us)\n");
-  print(@lat);
+tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+  exit();
 }
