@@ -79,10 +79,16 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/rust/Cargo.toml")
       "touch '${_RUST_STAMP}'\n"
     )
 
+    # Track the rust sources so editing them dirties the stamp: without this,
+    # ninja considers the tools up to date forever and ships stale binaries.
+    # CONFIGURE_DEPENDS re-globs on build so new files are picked up too.
+    file(GLOB_RECURSE _RUST_SOURCES CONFIGURE_DEPENDS "${_RUST_SRC}/src/*.rs")
+
     add_custom_command(
       OUTPUT "${_RUST_STAMP}"
       COMMAND bash "${_RUST_BUILD_SCRIPT}"
       COMMAND bash "${_ENV_HELPER}"
+      DEPENDS ${_RUST_SOURCES} "${_RUST_SRC}/Cargo.toml" "${_RUST_SRC}/Cargo.lock"
       COMMENT "Building ${PROJECT_NAME} Rust tools"
       VERBATIM
     )
