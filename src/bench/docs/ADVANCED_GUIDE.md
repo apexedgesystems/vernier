@@ -525,7 +525,20 @@ test without requiring `--profile` -- spawning external `ncu` is unnecessary
 for those metrics.
 
 Run `bench doctor <ptest-binary>` (or `<ptest-binary> --profile-check`) to
-see each backend's status on the current host.
+see each backend's status on the current host. For CI, the same data is
+machine-readable and enforceable:
+
+```bash
+# Record the host's capability manifest as a build artifact (gate lanes):
+bench doctor MyComponent_PTEST --json > doctor.json
+
+# Fail a profile lane fast unless its tools are actually ready
+# ("warn" is not ready -- a warning offcpu row means empty artifacts):
+bench doctor MyComponent_PTEST --require offcpu,heaptrack
+```
+
+Assess-and-record on gate lanes, assess-and-enforce on profile lanes;
+the doctor never installs anything.
 
 ### Using perf
 
