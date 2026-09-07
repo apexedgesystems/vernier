@@ -112,10 +112,23 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
 
 /* ----------------------------- doctor ----------------------------- */
 
-/// Run a binary's `--profile-check` (binary readiness + backend doctor) and
-/// stream the output. When no binary is given, surface a friendly message
-/// directing the user at the conventional ptest pattern.
-pub fn doctor(binary: Option<&Path>) -> Result<i32, Error> {
+/// Map user-typed backend names to registered ones, mirroring the C++
+/// registry's canonicalName (the tool is called nsys everywhere outside
+/// the registry).
+fn canonical_backend(name: &str) -> &str {
+    match name {
+        "nsys" => "nsight",
+        other => other,
+    }
+}
+
+/// Run a binary's `--profile-check` (binary readiness + backend doctor).
+/// Text mode streams the human report. `json` emits the binary's one-document
+/// JSON form verbatim (fleet capability records). `require` parses that JSON
+/// and exits nonzero unless every named backend reports OK -- warn is not
+/// good enough for a profile lane (an offcpu row that warns "not running as
+/// root" produces empty artifacts, not failures).
+pub fn doctor(binary: Option<&Path>, json: bool, require: &[String]) -> Result<i32, Error> {
     let bin = match binary {
         Some(p) => p.to_path_buf(),
         None => {
@@ -132,11 +145,96 @@ pub fn doctor(binary: Option<&Path>) -> Result<i32, Error> {
             bin.display()
         )));
     }
+    if json || !require.is_empty() {
+        let out = Command::new(&bin)
+            .arg("--profile-check-json")
+            .output()
+            .map_err(Error::Io)?;
+        let doc = String::from_utf8_lossy(&out.stdout).to_string();
+        if json {
+            print!("{doc}");
+        }
+        if require.is_empty() {
+            return Ok(out.status.code().unwrap_or(1));
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&doc).map_err(|e| {
+            Error::InvalidArgs(format!("binary emitted unparseable doctor JSON: {e}"))
+        })?;
+        return Ok(evaluate_required_backends(&parsed, require));
+    }
     let status = Command::new(&bin)
         .arg("--profile-check")
         .status()
         .map_err(Error::Io)?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// The --require verdict: every named backend must exist and report "ok".
+/// Prints one line per requirement; returns the process exit code.
+fn evaluate_required_backends(doc: &serde_json::Value, require: &[String]) -> i32 {
+    let rows = doc["backends"].as_array().cloned().unwrap_or_default();
+    let mut failed = 0;
+    for raw in require {
+        let want = canonical_backend(raw.trim());
+        let row = rows.iter().find(|r| r["name"] == want);
+        match row {
+            Some(r) if r["status"] == "ok" => {
+                println!("[require] {want}: OK");
+            }
+            Some(r) => {
+                failed += 1;
+                let msg = r["message"].as_str().unwrap_or("");
+                let hint = r["hint"].as_str().unwrap_or("");
+                println!("[require] {want}: NOT READY ({msg})");
+                if !hint.is_empty() {
+                    println!("          {hint}");
+                }
+            }
+            None => {
+                failed += 1;
+                println!("[require] {want}: no such backend in this binary");
+            }
+        }
+    }
+    if failed > 0 {
+        println!("[require] {failed} requirement(s) unmet");
+        1
+    } else {
+        0
+    }
+}
+
+#[cfg(test)]
+mod doctor_tests {
+    use super::*;
+
+    fn doc() -> serde_json::Value {
+        serde_json::json!({"backends": [
+            {"name": "offcpu", "status": "ok", "message": "", "hint": ""},
+            {"name": "nsight", "status": "ok", "message": "", "hint": ""},
+            {"name": "perf", "status": "warn", "message": "paranoid=2", "hint": "lower it"},
+        ]})
+    }
+
+    #[test]
+    fn require_ok_passes() {
+        assert_eq!(evaluate_required_backends(&doc(), &["offcpu".into()]), 0);
+    }
+
+    #[test]
+    fn require_warn_fails() {
+        assert_eq!(evaluate_required_backends(&doc(), &["perf".into()]), 1);
+    }
+
+    #[test]
+    fn require_missing_fails() {
+        assert_eq!(evaluate_required_backends(&doc(), &["rocprof".into()]), 1);
+    }
+
+    #[test]
+    fn require_nsys_alias_resolves() {
+        assert_eq!(evaluate_required_backends(&doc(), &["nsys".into()]), 0);
+    }
 }
 
 /* ----------------------------- profile-all ----------------------------- */
