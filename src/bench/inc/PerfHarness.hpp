@@ -277,21 +277,20 @@ inline std::string capturePlatform() {
  */
 inline std::tuple<std::string, std::string, std::string, std::string>
 captureMetadata(bool cacheMetadata = true) {
-  static bool cached = false;
-  static std::string cachedGitHash;
-  static std::string cachedHostname;
-  static std::string cachedPlatform;
-
-  if (cacheMetadata && !cached) {
-    cachedGitHash = captureGitHash();
-    cachedHostname = captureHostname();
-    cachedPlatform = capturePlatform();
-    cached = true;
+  if (!cacheMetadata) {
+    return std::make_tuple(captureTimestamp(), captureGitHash(), captureHostname(),
+                           capturePlatform());
   }
-
-  return std::make_tuple(captureTimestamp(), cacheMetadata ? cachedGitHash : captureGitHash(),
-                         cacheMetadata ? cachedHostname : captureHostname(),
-                         cacheMetadata ? cachedPlatform : capturePlatform());
+  // Magic-static initialization IS the synchronization: the first caller
+  // captures under the compiler's init guard, everyone else waits, and
+  // afterwards the tuple is immutable. The previous shape assigned bare
+  // statics behind an unguarded flag, racing whichever worker thread the
+  // GPU harness publishes from against the main thread -- and
+  // captureGitHash() runs a subprocess, so that window was wide.
+  static const std::tuple<std::string, std::string, std::string> CACHED =
+      std::make_tuple(captureGitHash(), captureHostname(), capturePlatform());
+  return std::make_tuple(captureTimestamp(), std::get<0>(CACHED), std::get<1>(CACHED),
+                         std::get<2>(CACHED));
 }
 
 /* ----------------------------- MemoryProfile ----------------------------- */
