@@ -279,7 +279,9 @@ EnvReport checkPerfEnvironment() {
                      "Run inside Linux; non-Linux platforms cannot run perf."};
   }
   int paranoid = 4;
-  std::fscanf(fp, "%d", &paranoid);
+  if (std::fscanf(fp, "%d", &paranoid) != 1) {
+    paranoid = 4; // unreadable: assume the most restrictive setting
+  }
   std::fclose(fp);
   if (paranoid <= 1) {
     return EnvReport{EnvReport::Status::Ok,

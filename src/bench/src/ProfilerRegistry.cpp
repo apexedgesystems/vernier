@@ -30,8 +30,27 @@ void ProfilerRegistry::registerBackend(std::string name, Factory factory, EnvChe
       Entry{std::move(factory), std::move(check), std::move(unavailableHint)};
 }
 
-std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& name, const PerfConfig& cfg,
+std::string ProfilerRegistry::canonicalName(const std::string& name) {
+  // Friendly aliases for the names users actually type. `nsys` is what
+  // the tool is called everywhere outside this registry; the backend
+  // registered itself as `nsight` (it wraps nsys and pairs with ncu).
+  if (name == "nsys") {
+    return "nsight";
+  }
+  return name;
+}
+
+std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, const PerfConfig& cfg,
                                                  const std::string& testName) const {
+  const std::string name = canonicalName(rawName);
+  if (name == "cupti") {
+    // Not a wrap: per-kernel CUPTI columns are always collected in GPU
+    // builds. Say so instead of "unknown profiler".
+    std::fprintf(stderr, "\n[INFO] 'cupti' needs no --profile: per-kernel columns "
+                         "(kernelTimeUs, cuptiKernelLaunches) are always collected in GPU "
+                         "builds. Proceeding unprofiled.\n\n");
+    return std::make_unique<detail::NoOpProfiler>(name, "");
+  }
   const auto it = backends_.find(name);
   if (it == backends_.end()) {
     std::string available;
@@ -58,7 +77,7 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& name, const 
 }
 
 bool ProfilerRegistry::hasBackend(const std::string& name) const noexcept {
-  return backends_.find(name) != backends_.end();
+  return backends_.find(canonicalName(name)) != backends_.end();
 }
 
 std::vector<std::string> ProfilerRegistry::backendNames() const {
@@ -70,7 +89,8 @@ std::vector<std::string> ProfilerRegistry::backendNames() const {
   return names;
 }
 
-EnvReport ProfilerRegistry::runCheck(const std::string& name) const {
+EnvReport ProfilerRegistry::runCheck(const std::string& rawName) const {
+  const std::string name = canonicalName(rawName);
   const auto it = backends_.find(name);
   if (it == backends_.end()) {
     return EnvReport{EnvReport::Status::Error, "unknown profiler '" + name + "'", ""};

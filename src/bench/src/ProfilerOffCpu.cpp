@@ -108,7 +108,9 @@ void OffCpuProfiler::spawnBpftrace() {
   }
   if (childPid_ == 0) {
     // Child: redirect bpftrace stdout to artifact file, then exec.
-    std::freopen(outputPath_.c_str(), "w", stdout);
+    if (!std::freopen(outputPath_.c_str(), "w", stdout)) {
+      _exit(126); // child cannot set up its capture file
+    }
     // bpftrace -e '<script>' $TARGET_PID
     // $1 inside the script is bound to the first positional argument
     // (the target PID), which lets the kprobe filter only this process.
