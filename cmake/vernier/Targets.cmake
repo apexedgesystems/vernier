@@ -552,7 +552,13 @@ function (vernier_add_library_cuda)
     # Public cudart linkage for consumers
     if (NOT ACL_NO_CUDART AND TARGET CUDA::cudart)
       target_link_libraries(${ACL_NAME} PUBLIC CUDA::cudart)
-      target_link_options(${ACL_NAME} INTERFACE -Wl,-rpath-link,$<TARGET_FILE_DIR:CUDA::cudart>)
+      # Literal toolkit path, not $<TARGET_FILE_DIR:CUDA::cudart>: INTERFACE
+      # options evaluate in the CONSUMER's scope, where imported targets from
+      # this tree's find_package are not visible -- FetchContent consumers
+      # died at generate time with "No target CUDA::cudart".
+      if (CUDAToolkit_LIBRARY_DIR)
+        target_link_options(${ACL_NAME} INTERFACE -Wl,-rpath-link,${CUDAToolkit_LIBRARY_DIR})
+      endif ()
     endif ()
 
     # NVML integration
