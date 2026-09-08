@@ -43,6 +43,8 @@ use super::Error;
 #[derive(Debug, Default, Clone)]
 pub struct Config {
     pub cycles: Option<u32>,
+    /// Auto-size cycles to a wall-time window (e.g. "100ms")
+    pub target_time: Option<String>,
     pub repeats: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
     pub gtest_filter: Option<String>,

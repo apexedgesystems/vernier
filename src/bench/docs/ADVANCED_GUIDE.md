@@ -524,6 +524,17 @@ memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
 test without requiring `--profile` -- spawning external `ncu` is unnecessary
 for those metrics.
 
+### Window sizing without the guesswork
+
+Microsecond-scale operations cannot hold tight CV bars in tiny
+measurement windows -- and the right `--cycles` differs per test size.
+`--target-time 100ms` sizes the window instead of the iteration count:
+the harness times one call after warmup and picks cycles so each repeat
+spans the requested wall time (per test, so a parameterized sweep gets
+a per-size cycle count automatically). Applies where the harness owns
+the loop (`throughputLoop`, `contentionRun`); bodies driven by raw
+`measured()` keep explicit `--cycles`.
+
 Run `bench doctor <ptest-binary>` (or `<ptest-binary> --profile-check`) to
 see each backend's status on the current host. For CI, the same data is
 machine-readable and enforceable:

@@ -100,6 +100,9 @@ enum Command {
         /// Number of cycles (passed to binary as --cycles)
         #[arg(long)]
         cycles: Option<u32>,
+        /// Auto-size cycles so one repeat spans ~this wall time (e.g. 500us, 100ms, 2s; bare number = ms). Passed to the binary as --target-time
+        #[arg(long)]
+        target_time: Option<String>,
 
         /// Number of repeats (passed to binary as --repeats)
         #[arg(long)]
@@ -370,6 +373,7 @@ fn run(args: Args) -> Result<(), Error> {
             csv,
             quick,
             cycles,
+            target_time,
             repeats,
             profile,
             profile_args,
@@ -393,6 +397,7 @@ fn run(args: Args) -> Result<(), Error> {
                 csv: csv.clone(),
                 quick,
                 cycles: cycles.or(file_cfg.cycles),
+                target_time: target_time.or(file_cfg.target_time),
                 repeats: repeats.or(file_cfg.repeats),
                 profile,
                 profile_args,
