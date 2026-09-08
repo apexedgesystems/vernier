@@ -35,6 +35,12 @@ vernier_add_library(
   POSIX
 )
 
+# Consumer surface: mirrors bench -- PUBLIC include layout (the
+# vernier::monitor alias already comes from vernier_add_library).
+target_include_directories(
+  ${LIB_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>
+)
+
 target_link_libraries(
   ${LIB_NAME}
   PRIVATE pthread

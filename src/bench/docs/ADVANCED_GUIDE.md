@@ -502,22 +502,22 @@ Every backend below self-registers via the profiler registry; `bench doctor`
 (or `--profile-check`) walks the list and reports each one's environment
 readiness with the exact remediation hint.
 
-| Profiler            | Layer | Purpose                                          | Requirements                           | Overhead |
-| ------------------- | ----- | ------------------------------------------------ | -------------------------------------- | -------- |
-| `perf`              | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | Linux, `kernel.perf_event_paranoid<=1` | ~5%      |
-| `gperf`             | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                          | ~10%     |
-| `callgrind`         | CPU   | Deterministic instruction counts                 | valgrind                               | ~20-50x  |
-| `bpftrace`          | CPU   | Kernel tracing (fsync / write latency, etc.)     | Linux BPF + root / CAP_BPF             | <1%      |
-| `rapl`              | CPU   | Package energy consumption                       | Intel CPU + MSR access                 | <1%      |
-| `massif`            | CPU   | Heap usage timeline                              | valgrind                               | ~20x     |
-| `memcheck`          | CPU   | Memory errors and leaks                          | valgrind                               | ~20x     |
-| `helgrind`          | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind                               | ~20x     |
-| `offcpu`            | CPU   | Off-CPU stack profiling                          | bpftrace + root + tracefs              | low      |
-| `heaptrack`         | CPU   | Lower-overhead heap profiler                     | heaptrack on PATH                      | ~1.5x    |
-| `jemalloc`          | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%   |
-| `nsight`            | GPU   | Nsight Systems / Compute (auto stats)            | CUDA toolkit + nsys/ncu                | ~2x      |
-| `compute-sanitizer` | GPU   | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit                           | ~5-10x   |
-| `rocprof`           | GPU   | AMD ROCm GPU profiler                            | ROCm + rocprof                         | ~2x      |
+| Profiler             | Layer | Purpose                                          | Requirements                           | Overhead |
+| -------------------- | ----- | ------------------------------------------------ | -------------------------------------- | -------- |
+| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | Linux, `kernel.perf_event_paranoid<=1` | ~5%      |
+| `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                          | ~10%     |
+| `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind                               | ~20-50x  |
+| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | Linux BPF + root / CAP_BPF             | <1%      |
+| `rapl`               | CPU   | Package energy consumption                       | Intel CPU + MSR access                 | <1%      |
+| `massif`             | CPU   | Heap usage timeline                              | valgrind                               | ~20x     |
+| `memcheck`           | CPU   | Memory errors and leaks                          | valgrind                               | ~20x     |
+| `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind                               | ~20x     |
+| `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace + root + tracefs              | low      |
+| `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack on PATH                      | ~1.5x    |
+| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%   |
+| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | CUDA toolkit + nsys/ncu                | ~2x      |
+| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit                           | ~5-10x   |
+| `rocprof`            | GPU   | AMD ROCm GPU profiler                            | ROCm + rocprof                         | ~2x      |
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`

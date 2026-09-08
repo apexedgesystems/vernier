@@ -5,6 +5,8 @@
 
 #include "src/bench/inc/ProfilerGperf.hpp"
 
+#include <atomic>
+
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -80,14 +82,13 @@ GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
 #endif
 
   // DWARF v5 warning (once per process)
-  static bool warned = false;
-  if (!warned && wantCpu_ && detectDwarfV5Warning()) {
+  static std::atomic<bool> warned{false};
+  if (wantCpu_ && detectDwarfV5Warning() && !warned.exchange(true)) {
     std::fprintf(stderr,
                  "\n[WARN] gperftools: Clang DWARF v5 detected. Sample attribution may be "
                  "inaccurate (20-50%% misattribution).\n"
                  "   Fix: compile with -gdwarf-4 -fno-omit-frame-pointer\n"
                  "   Also recommended: setarch -R (disable ASLR) for consistent addresses\n\n");
-    warned = true;
   }
 }
 

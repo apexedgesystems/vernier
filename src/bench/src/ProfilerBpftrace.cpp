@@ -200,8 +200,10 @@ public:
       return false;
     }
     if (CHILD == 0) {
-      std::freopen(stdoutPath_.c_str(), "w", stdout);
-      std::freopen(stderrPath_.c_str(), "w", stderr);
+      if (!std::freopen(stdoutPath_.c_str(), "w", stdout) ||
+          !std::freopen(stderrPath_.c_str(), "w", stderr)) {
+        std::_Exit(126); // child cannot set up its capture files
+      }
       const bool JSON = (cfg_.format == "json");
       if (viaSudo_) {
         if (JSON) {

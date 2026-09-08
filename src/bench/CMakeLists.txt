@@ -55,6 +55,14 @@ vernier_add_library(
   POSIX
 )
 
+# Consumer surface: FetchContent and installed consumers get the include
+# layout for free (headers are included as "src/bench/inc/..." from the
+# vernier root) -- no hand-rolled include dirs. The vernier::bench alias
+# already comes from vernier_add_library.
+target_include_directories(
+  ${LIB_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>
+)
+
 # gperftools (optional)
 find_library(GPERF_PROFILER_LIB NAMES profiler)
 find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
@@ -80,6 +88,9 @@ vernier_nvtx_enable(${LIB_NAME})
 if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
   vernier_add_library_cuda(NAME ${LIB_NAME}_cuda CORE ${LIB_NAME} SRC ${CUDA_SOURCES})
   vernier_standard_optins(${LIB_NAME}_cuda)
+  target_include_directories(
+    ${LIB_NAME}_cuda PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>
+  )
 
   # CUPTI is the CUDA Profiling Tools Interface. find_package(CUDAToolkit)
   # exposes it as the CUDA::cupti imported target on any system layout

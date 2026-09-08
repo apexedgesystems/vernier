@@ -360,7 +360,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       linux-tools-generic \
       google-perftools \
       valgrind \
-      bpftrace
+      bpftrace \
+      heaptrack \
+      libjemalloc2 \
+      libjemalloc-dev
 
 # Host-kernel-matched perf. linux-tools-generic tracks the latest kernel, which
 # drifts ahead of the host's RUNNING kernel; perf needs the exact match. Install

@@ -84,6 +84,11 @@ public:
    *
    * Never returns nullptr.
    */
+  /**
+   * @brief Map user-facing aliases to registered backend names (nsys -> nsight).
+   */
+  static std::string canonicalName(const std::string& name);
+
   std::unique_ptr<Profiler> make(const std::string& name, const PerfConfig& cfg,
                                  const std::string& testName) const;
 
