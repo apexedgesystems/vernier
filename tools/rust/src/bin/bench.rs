@@ -169,6 +169,13 @@ enum Command {
     Doctor {
         /// Path to a benchmark binary (any vernier ptest works)
         binary: PathBuf,
+        /// Emit one JSON document (binary checks + backend rows) instead of text
+        #[arg(long)]
+        json: bool,
+        /// Comma-separated backends that must report OK (exit nonzero otherwise),
+        /// e.g. --require offcpu,heaptrack. Implies parsing the JSON form.
+        #[arg(long, value_delimiter = ',')]
+        require: Vec<String>,
     },
 
     /// Run a benchmark binary under each profiler in sequence
@@ -490,8 +497,12 @@ fn run(args: Args) -> Result<(), Error> {
             }
         }
 
-        Command::Doctor { binary } => {
-            let rc = bench::workflow::doctor(Some(&binary))?;
+        Command::Doctor {
+            binary,
+            json,
+            require,
+        } => {
+            let rc = bench::workflow::doctor(Some(&binary), json, &require)?;
             std::process::exit(rc);
         }
 

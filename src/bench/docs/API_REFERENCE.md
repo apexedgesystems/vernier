@@ -741,17 +741,18 @@ time; no `--profile` flag required.
 
 ### Profiling Flags
 
-| Flag                     | Type   | Default | Description                                                                                                                                   |
-| ------------------------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof |
-| `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                   |
-| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                     |
-| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                                      |
-| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                    |
-| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                     |
-| `--profile-frequency N`  | int    | 10000   | Sampling Hz for CPU profilers                                                                                                                 |
-| `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                             |
-| `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                 |
+| Flag                     | Type   | Default | Description                                                                                                                                               |
+| ------------------------ | ------ | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof             |
+| `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                               |
+| `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                 |
+| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                                                  |
+| `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                |
+| `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require` |
+| `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                 |
+| `--profile-frequency N`  | int    | 10000   | Sampling Hz for CPU profilers                                                                                                                             |
+| `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                                         |
+| `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                             |
 
 ### GPU-Specific Flags
 

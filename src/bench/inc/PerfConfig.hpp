@@ -58,6 +58,7 @@ struct PerfConfig {
 
 /** @brief Forward declaration -- defined below parsePerfFlags(). */
 inline void runProfileCheck();
+inline void runProfileCheckJson();
 
 /**
  * @brief Parse perf flags, leaving unknown args for gtest. Mutates argc/argv.
@@ -197,6 +198,12 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
       std::exit(0);
     }
 
+    // ---- Machine-readable profile check (for bench doctor --json/--require) ----
+    else if (a == "--profile-check-json") {
+      runProfileCheckJson();
+      std::exit(0);
+    }
+
     // Pass-through to gtest
     else {
       argv[w++] = argv[i];
@@ -241,30 +248,28 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
  *
  * @note NOT RT-safe (file I/O, console I/O).
  */
-inline void runProfileCheck() {
-  int passCount = 0;
-  int warnCount = 0;
-  int failCount = 0;
+/** @brief One readiness-check result; status: 0=ok, 1=warn, 2=fail. */
+struct ReadinessRow {
+  int status;
+  const char* label;
+  std::string detail;
+};
 
-  auto pass = [&](const char* label, const char* detail) {
-    std::fprintf(stdout, "  [OK]   %-30s %s\n", label, detail);
-    ++passCount;
+/** @brief Run the five binary readiness checks and return their rows.
+ *  Shared by the text and JSON renderers so the checks cannot drift. */
+inline std::vector<ReadinessRow> collectReadinessChecks() {
+  std::vector<ReadinessRow> rows;
+  auto pass = [&](const char* label, std::string detail) {
+    rows.push_back(ReadinessRow{0, label, std::move(detail)});
   };
-  auto warn = [&](const char* label, const char* detail) {
-    std::fprintf(stdout, "  [WARN] %-30s %s\n", label, detail);
-    ++warnCount;
+  auto warn = [&](const char* label, std::string detail) {
+    rows.push_back(ReadinessRow{1, label, std::move(detail)});
   };
-  auto fail = [&](const char* label, const char* detail) {
-    std::fprintf(stdout, "  [FAIL] %-30s %s\n", label, detail);
-    ++failCount;
+  auto fail = [&](const char* label, std::string detail) {
+    rows.push_back(ReadinessRow{2, label, std::move(detail)});
   };
 
-  std::fprintf(stdout, "\n=== Profile Readiness Check ===\n\n");
-
-  // 1. Frame pointers: check if the current function has a frame pointer
-  //    by inspecting the binary's ELF .eh_frame section presence.
-  //    Heuristic: check compile flags via /proc/self/cmdline or just test the
-  //    stack frame directly. Simplest: check if __builtin_frame_address works.
+  // 1. Frame pointers: simplest runtime probe -- __builtin_frame_address.
 #if defined(__GCC_HAVE_DWARF2_CFI_ASM) || defined(__clang__)
   {
     volatile void* fp = __builtin_frame_address(0);
@@ -278,24 +283,14 @@ inline void runProfileCheck() {
   warn("Frame pointers", "cannot detect at runtime; ensure -fno-omit-frame-pointer");
 #endif
 
-  // 2. DWARF version: read /proc/self/exe with readelf if available,
-  //    or check compiler flags at build time.
-#ifdef __GCC_HAVE_DWARF2_CFI_ASM
-  // Compile-time check: clang/gcc with DWARF2+ CFI
-  // Heuristic: check for common debug format macros
-#endif
+  // 2. Debug info: search /proc/self/exe for a .debug_info section name.
   {
-    // Runtime: inspect first bytes of .debug_info in /proc/self/exe
     std::ifstream exe("/proc/self/exe", std::ios::binary);
     if (exe) {
-      // Read ELF and search for DWARF version in .debug_info header
-      // The DWARF version is a uint16 at offset 4 in the .debug_info section
-      // Simpler approach: just check if the binary has .debug_info at all
       char buf[8192];
       bool foundDebug = false;
       while (exe.read(buf, sizeof(buf)) || exe.gcount() > 0) {
         auto count = exe.gcount();
-        // Search for ".debug_info" section name in ELF
         for (std::streamsize i = 0; i <= count - 11; ++i) {
           if (std::memcmp(buf + i, ".debug_info", 11) == 0) {
             foundDebug = true;
@@ -332,9 +327,8 @@ inline void runProfileCheck() {
     }
   }
 
-  // 4. gperftools linkage: check if libprofiler symbols are available
+  // 4. gperftools linkage via /proc/self/maps
   {
-    // Check /proc/self/maps for libprofiler
     std::ifstream maps("/proc/self/maps");
     if (maps) {
       std::string line;
@@ -355,7 +349,7 @@ inline void runProfileCheck() {
     }
   }
 
-  // 5. Split DWARF: check for .dwo references in the binary
+  // 5. Split DWARF: .dwo references in the binary
   {
     std::ifstream exe("/proc/self/exe", std::ios::binary);
     bool hasSplitDwarf = false;
@@ -381,6 +375,29 @@ inline void runProfileCheck() {
     }
   }
 
+  return rows;
+}
+
+inline void runProfileCheck() {
+  const std::vector<ReadinessRow> ROWS = collectReadinessChecks();
+  int passCount = 0;
+  int warnCount = 0;
+  int failCount = 0;
+
+  std::fprintf(stdout, "\n=== Profile Readiness Check ===\n\n");
+  for (const ReadinessRow& r : ROWS) {
+    if (r.status == 0) {
+      std::fprintf(stdout, "  [OK]   %-30s %s\n", r.label, r.detail.c_str());
+      ++passCount;
+    } else if (r.status == 1) {
+      std::fprintf(stdout, "  [WARN] %-30s %s\n", r.label, r.detail.c_str());
+      ++warnCount;
+    } else {
+      std::fprintf(stdout, "  [FAIL] %-30s %s\n", r.label, r.detail.c_str());
+      ++failCount;
+    }
+  }
+
   // Summary
   std::fprintf(stdout, "\n  ---\n  %d passed, %d warnings, %d failures\n", passCount, warnCount,
                failCount);
@@ -401,6 +418,80 @@ inline void runProfileCheck() {
   // (which transitively includes ProfilerRegistry via Profiler.hpp), so the
   // call resolves regardless of which backends the user has wired in.
   ProfilerRegistry::instance().printDoctor();
+}
+
+namespace detail {
+/** @brief Minimal JSON string escaping (quotes, backslashes, control chars). */
+inline std::string jsonEscape(const std::string& in) {
+  std::string out;
+  out.reserve(in.size() + 8);
+  for (const char C : in) {
+    switch (C) {
+    case '"':
+      out += "\\\"";
+      break;
+    case '\\':
+      out += "\\\\";
+      break;
+    case '\n':
+      out += "\\n";
+      break;
+    case '\t':
+      out += "\\t";
+      break;
+    default:
+      if (static_cast<unsigned char>(C) < 0x20) {
+        char buf[8];
+        std::snprintf(buf, sizeof(buf), "\\u%04x", C);
+        out += buf;
+      } else {
+        out += C;
+      }
+    }
+  }
+  return out;
+}
+} // namespace detail
+
+/** @brief Machine-readable twin of runProfileCheck: one JSON document with
+ *  the binary readiness rows and every backend's doctor row. Consumed by
+ *  `bench doctor --json` (fleet capability records) and `--require`
+ *  (profile-lane gating). */
+inline void runProfileCheckJson() {
+  const std::vector<ReadinessRow> ROWS = collectReadinessChecks();
+  const auto STATUS = [](int s) { return s == 0 ? "ok" : (s == 1 ? "warn" : "fail"); };
+
+  std::string out = "{\n  \"binary\": {\"checks\": [";
+  bool first = true;
+  int fails = 0;
+  for (const ReadinessRow& r : ROWS) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    fails += r.status == 2 ? 1 : 0;
+    out += "\n    {\"name\": \"" + detail::jsonEscape(r.label) + "\", \"status\": \"" +
+           STATUS(r.status) + "\", \"detail\": \"" + detail::jsonEscape(r.detail) + "\"}";
+  }
+  out += "\n  ], \"failures\": " + std::to_string(fails) + "},\n  \"backends\": [";
+
+  first = true;
+  int backendFails = 0;
+  for (const auto& [NAME, REPORT] : ProfilerRegistry::instance().runAllChecks()) {
+    if (!first) {
+      out += ",";
+    }
+    first = false;
+    const char* status = REPORT.status == EnvReport::Status::Ok
+                             ? "ok"
+                             : (REPORT.status == EnvReport::Status::Warning ? "warn" : "fail");
+    backendFails += REPORT.status == EnvReport::Status::Error ? 1 : 0;
+    out += "\n    {\"name\": \"" + detail::jsonEscape(NAME) + "\", \"status\": \"" + status +
+           "\", \"message\": \"" + detail::jsonEscape(REPORT.message) + "\", \"hint\": \"" +
+           detail::jsonEscape(REPORT.hint) + "\"}";
+  }
+  out += "\n  ],\n  \"backendFailures\": " + std::to_string(backendFails) + "\n}\n";
+  std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
 } // namespace bench

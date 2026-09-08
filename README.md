@@ -142,7 +142,9 @@ from the build directory to put them on PATH.
 ### Registered profiler backends
 
 `--profile X` dispatches to whichever backend self-registered under that
-name; `bench doctor` lists them all with their environment readiness.
+name; `bench doctor` lists them all with their environment readiness
+(`--json` for CI capability records, `--require a,b` to gate a profile
+lane on the backends it needs).
 
 | Backend             | Layer | Wraps                                         |
 | ------------------- | ----- | --------------------------------------------- |
