@@ -202,7 +202,7 @@ public:
     if (CHILD == 0) {
       if (!std::freopen(stdoutPath_.c_str(), "w", stdout) ||
           !std::freopen(stderrPath_.c_str(), "w", stderr)) {
-        _exit(126); // child cannot set up its capture files
+        std::_Exit(126); // child cannot set up its capture files
       }
       const bool JSON = (cfg_.format == "json");
       if (viaSudo_) {

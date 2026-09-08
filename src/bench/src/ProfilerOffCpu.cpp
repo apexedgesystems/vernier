@@ -109,7 +109,7 @@ void OffCpuProfiler::spawnBpftrace() {
   if (childPid_ == 0) {
     // Child: redirect bpftrace stdout to artifact file, then exec.
     if (!std::freopen(outputPath_.c_str(), "w", stdout)) {
-      _exit(126); // child cannot set up its capture file
+      std::_Exit(126); // child cannot set up its capture file
     }
     // bpftrace -e '<script>' $TARGET_PID
     // $1 inside the script is bound to the first positional argument
