@@ -134,7 +134,7 @@ etc.) and writes the artifacts to
 (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly
 and the C++ harness manages its own per-test artifact subdirs.
 
-Unset `--cycles` / `--repeats` are filled in from `.bench.yaml` (see `init`).
+Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 
 ### doctor - Backend Environment Check
 
