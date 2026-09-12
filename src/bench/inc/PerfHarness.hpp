@@ -388,6 +388,22 @@ inline PerfRow buildPerfRow(const std::string& testName, const PerfConfig& cfg, 
   return row;
 }
 
+/**
+ * @brief Cycles that make one repeat span ~targetUs given an estimated
+ * per-call cost. Pure math for testability; clamped to [10, 50e6].
+ */
+inline int calibratedCycles(long long targetUs, double estimatedPerCallUs) {
+  const double EST = estimatedPerCallUs > 0.001 ? estimatedPerCallUs : 0.001;
+  double cycles = static_cast<double>(targetUs) / EST;
+  if (cycles < 10.0) {
+    cycles = 10.0;
+  }
+  if (cycles > 50000000.0) {
+    cycles = 50000000.0;
+  }
+  return static_cast<int>(cycles);
+}
+
 /* ------------------------------- PerfCase ------------------------------- */
 
 /**
@@ -547,6 +563,7 @@ public:
    */
   PerfResult throughputLoop(const std::function<void()>& op, std::string label = "throughput",
                             std::optional<MemoryProfile> memProfile = std::nullopt) {
+    maybeCalibrate(op);
     auto loop = [&]() {
       for (int i = 0; i < cfg_.cycles; ++i) {
         op();
@@ -628,6 +645,9 @@ public:
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
    */
   PerfResult contentionRun(const std::function<void()>& worker, std::string label = "contention") {
+    // Calibrates from one uncontended call; contention only lengthens the
+    // repeat, which errs the window in the safe (longer) direction.
+    maybeCalibrate(worker);
     const int THREAD_COUNT = threads();
     std::vector<double> perCall;
     perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
@@ -707,8 +727,29 @@ public:
   [[nodiscard]] const std::string& testName() const noexcept { return testName_; }
 
 private:
+  /**
+   * @brief --target-time auto-sizing: time one call, set this instance's
+   * cycle count so a repeat spans the requested wall time. cfg_ is a
+   * per-case copy, so the division in measured(), the CSV row, and the
+   * loops all follow automatically; raw measured() users keep explicit
+   * --cycles (they own their loop bodies).
+   */
+  void maybeCalibrate(const std::function<void()>& op) {
+    if (cfg_.targetTimeUs <= 0 || calibrated_) {
+      return;
+    }
+    calibrated_ = true;
+    const double T0 = nowUs();
+    op();
+    const double EST = nowUs() - T0;
+    cfg_.cycles = calibratedCycles(cfg_.targetTimeUs, EST);
+    std::fprintf(stderr, "[target-time] %.3f ms -> cycles=%d (calibrated %.3f us/call)\n",
+                 static_cast<double>(cfg_.targetTimeUs) / 1000.0, cfg_.cycles, EST);
+  }
+
   std::string testName_;
   PerfConfig cfg_{};
+  bool calibrated_ = false;
   int actualWarmup_ = 1;
 
   // Optional hooks (no-ops unless set)

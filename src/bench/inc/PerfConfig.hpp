@@ -26,6 +26,7 @@ namespace bench {
 /** @brief Common benchmark configuration values (CLI-overridable). */
 struct PerfConfig {
   int cycles = 10000;               ///< Operations per repeat
+  int targetTimeUs = 0;             ///< >0: auto-size cycles so one repeat spans ~this wall time
   int repeats = 10;                 ///< Samples collected
   int warmup = 1;                   ///< Warmup repeats (0 = auto-scale: <1k->5, <10k->3, >=10k->1)
   int threads = 1;                  ///< Worker threads
@@ -57,6 +58,36 @@ struct PerfConfig {
 /* --------------------------------- API --------------------------------- */
 
 /** @brief Forward declaration -- defined below parsePerfFlags(). */
+/**
+ * @brief Parse a duration string to microseconds: "500us", "250ms", "2s",
+ * or a bare number (interpreted as milliseconds). Returns -1 when
+ * unparseable.
+ */
+inline long long parseDurationUs(const std::string& text) {
+  if (text.empty()) {
+    return -1;
+  }
+  std::size_t suffixAt = text.size();
+  long long scale = 1000; // bare number: milliseconds
+  if (text.size() > 2 && text.compare(text.size() - 2, 2, "us") == 0) {
+    suffixAt = text.size() - 2;
+    scale = 1;
+  } else if (text.size() > 2 && text.compare(text.size() - 2, 2, "ms") == 0) {
+    suffixAt = text.size() - 2;
+    scale = 1000;
+  } else if (text.size() > 1 && text.back() == 's') {
+    suffixAt = text.size() - 1;
+    scale = 1000000;
+  }
+  const std::string NUM = text.substr(0, suffixAt);
+  char* end = nullptr;
+  const double VALUE = std::strtod(NUM.c_str(), &end);
+  if (end == NUM.c_str() || *end != '\0' || VALUE <= 0.0) {
+    return -1;
+  }
+  return static_cast<long long>(VALUE * static_cast<double>(scale));
+}
+
 inline void runProfileCheck();
 inline void runProfileCheckJson();
 
@@ -117,6 +148,18 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     if (a == "--cycles") {
       cfg.cycles = std::max(1, std::atoi(NEED_ARG("--cycles", i, *argc, argv)));
       cyclesSet = true;
+      ++i;
+    } else if (a == "--target-time") {
+      const char* RAW = NEED_ARG("--target-time", i, *argc, argv);
+      const long long US = parseDurationUs(RAW);
+      if (US > 0) {
+        cfg.targetTimeUs = static_cast<int>(US > 2000000000LL ? 2000000000LL : US);
+      } else {
+        std::fprintf(stderr,
+                     "\n[WARN] --target-time: unparseable duration '%s' "
+                     "(use e.g. 500us, 100ms, 2s); ignoring.\n\n",
+                     RAW);
+      }
       ++i;
     } else if (a == "--repeats") {
       cfg.repeats = std::max(1, std::atoi(NEED_ARG("--repeats", i, *argc, argv)));

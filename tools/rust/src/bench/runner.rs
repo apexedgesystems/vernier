@@ -25,6 +25,8 @@ pub struct RunConfig {
     pub csv: Option<PathBuf>,
     pub quick: bool,
     pub cycles: Option<u32>,
+    /// Auto-size cycles to a wall-time window (e.g. "100ms"); forwarded verbatim
+    pub target_time: Option<String>,
     pub repeats: Option<u32>,
     pub profile: Option<String>,
     pub profile_args: Option<String>,
@@ -61,6 +63,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     if let Some(cycles) = cfg.cycles {
         args.push("--cycles".to_string());
         args.push(cycles.to_string());
+    }
+    if let Some(target_time) = &cfg.target_time {
+        args.push("--target-time".to_string());
+        args.push(target_time.clone());
     }
     if let Some(repeats) = cfg.repeats {
         args.push("--repeats".to_string());

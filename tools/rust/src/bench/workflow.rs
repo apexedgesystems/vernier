@@ -289,6 +289,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             binary: cfg.binary.clone(),
             csv: None,
             quick: cfg.quick,
+            target_time: None,
             cycles: cfg.cycles,
             repeats: cfg.repeats,
             profile: Some(tool.to_string()),
