@@ -13,21 +13,27 @@
  *  - Allocation tracking in MemoryProfile
  *
  * Expected behavior:
- *  - Buffer reuse should significantly outperform per-call allocation
- *  - Allocation overhead should be measurable
+ *  - Both cases fill the same 4 KiB buffer; AllocateEachCall adds one
+ *    operator new and one operator delete per call, and nothing else
+ *  - AllocateEachCall is the slower of the two. With a general-purpose
+ *    allocator the allocate/free pair costs about as much as the fill
+ *    itself (tens of nanoseconds), so expect roughly 1.5x to 2x, not
+ *    orders of magnitude
+ *  - A result where AllocateEachCall is the faster case means the
+ *    allocation was optimized away and the case measures nothing
  *  - Both patterns should produce stable measurements
  *
  * Usage:
  *   @code{.sh}
  *   # Run all allocation overhead tests
- *   ./TestBenchSamples_PTEST --gtest_filter="AllocationOverhead.*"
+ *   ./BenchmarkCPU_PTEST --gtest_filter="AllocationOverhead.*"
  *
  *   # Compare allocation patterns
- *   ./TestBenchSamples_PTEST --gtest_filter="AllocationOverhead.*" --csv alloc_compare.csv
+ *   ./BenchmarkCPU_PTEST --gtest_filter="AllocationOverhead.*" --csv alloc_compare.csv
  *   @endcode
  *
  * Performance expectations:
- *  - Runtime: ~2 seconds total
+ *  - Runtime: well under a second with default settings
  *  - Pass rate: 100% on stable hardware
  *  - CV: <10% for typical workloads
  *
@@ -58,18 +64,19 @@ inline const ub::PerfConfig& config() { return ub::detail::getPerfConfig(); }
  * @brief Per-call allocation overhead measurement
  *
  * Measures performance when allocating a new buffer on each iteration,
- * simulating code that doesn't reuse memory. This should show significant
- * overhead from allocation and deallocation.
+ * simulating code that doesn't reuse memory. Each call pays for one
+ * allocation and one deallocation on top of the fill; the helper keeps the
+ * buffer observable so an optimized build cannot remove them.
  *
  * @test AllocateEachCall
  *
  * Validates:
  *  - Allocation overhead is measurable
- *  - Performance is lower than buffer reuse
  *  - Measurements are stable despite allocation variance
  *
  * Expected performance:
- *  - Slower than buffer reuse pattern
+ *  - Slower than ReuseBuffer, by roughly 1.5x to 2x with a general-purpose
+ *    allocator
  *  - Throughput still reasonable (>1000 calls/sec)
  */
 PERF_TEST(AllocationOverhead, AllocateEachCall) {
@@ -95,18 +102,17 @@ PERF_TEST(AllocationOverhead, AllocateEachCall) {
  * @brief Buffer reuse performance measurement
  *
  * Measures performance when reusing a pre-allocated buffer across iterations,
- * simulating optimized code that minimizes allocation overhead. This should
- * show significantly better performance than per-call allocation.
+ * simulating optimized code that minimizes allocation overhead. The buffer
+ * grows once, during warmup; the measured calls only fill it.
  *
  * @test ReuseBuffer
  *
  * Validates:
  *  - Buffer reuse eliminates allocation overhead
- *  - Performance significantly better than allocate-per-call
  *  - Measurements are stable
  *
  * Expected performance:
- *  - Much faster than per-call allocation
+ *  - Faster than AllocateEachCall by the cost of one allocate/free pair
  *  - High throughput (>10000 calls/sec)
  */
 PERF_TEST(AllocationOverhead, ReuseBuffer) {

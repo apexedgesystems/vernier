@@ -122,28 +122,43 @@ inline std::size_t countPositiveBranchless(const std::int32_t* data, std::size_t
 }
 
 /**
- * @brief Allocate and fill buffer (simulates allocation overhead)
+ * @brief Make a buffer and the writes to it observable
  *
- * @param size Buffer size in bytes
+ * Publishes the pointer through a volatile object and reads one byte back
+ * through the reloaded pointer. The compiler cannot tell what the reloaded
+ * pointer refers to, so the buffer has to exist and hold its contents at
+ * this point. A volatile copy of buf[0] alone is not enough: the value is
+ * known at compile time and the allocation and the fill are removed.
+ *
+ * @param data Start of the buffer (at least one byte)
  */
-inline void allocateAndFill(std::size_t size) {
-  std::vector<std::uint8_t> buf(size);
-  std::fill(buf.begin(), buf.end(), std::uint8_t{0xFF});
-  volatile auto val = buf[0];
+inline void observeBuffer(const std::uint8_t* data) {
+  const std::uint8_t* volatile published = data;
+  volatile std::uint8_t val = *published;
   (void)val;
 }
 
 /**
- * @brief Reuse buffer (simulates zero allocation overhead)
+ * @brief Allocate, fill and free a buffer (one heap allocation per call)
+ *
+ * @param size Buffer size in bytes (at least one)
+ */
+inline void allocateAndFill(std::size_t size) {
+  std::vector<std::uint8_t> buf(size);
+  std::fill(buf.begin(), buf.end(), std::uint8_t{0xFF});
+  observeBuffer(buf.data());
+}
+
+/**
+ * @brief Fill a caller-owned buffer (no allocation once it has grown to size)
  *
  * @param buf Reusable buffer
- * @param size Size to fill
+ * @param size Size to fill (at least one)
  */
 inline void reuseAndFill(std::vector<std::uint8_t>& buf, std::size_t size) {
   buf.resize(size);
   std::fill(buf.begin(), buf.end(), std::uint8_t{0xFF});
-  volatile auto val = buf[0];
-  (void)val;
+  observeBuffer(buf.data());
 }
 
 } // namespace test
