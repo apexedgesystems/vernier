@@ -64,12 +64,20 @@ Rust CLI, and the unit tests pass (`ctest --test-dir build`: 117 of 117).
 ## 4. Running a Measurement
 
 Pin the CPU frequency governor for the measurement and restore it
-afterwards, in the same script, so a failure cannot leave it changed:
+afterwards, in the same script. The governor is changed only after the
+current one has been read, and a failed restore is reported and fails the
+script:
 
 ```bash
+set -euo pipefail
 GOV=/sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
 SAVED=$(head -1 /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)
-trap 'echo "$SAVED" | sudo tee $GOV > /dev/null' EXIT
+[ -n "$SAVED" ]                           # no saved governor, no change
+restore_governor() {
+  echo "$SAVED" | sudo tee $GOV > /dev/null ||
+    { echo "governor restore FAILED: set it back to '$SAVED' by hand" >&2; exit 1; }
+}
+trap restore_governor EXIT
 echo performance | sudo tee $GOV > /dev/null
 
 vcgencmd get_throttled                    # expect throttled=0x0
@@ -94,6 +102,11 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
 
 - **Small caches.** 1 MiB of shared L2 and no L3: cache effects appear at
   much smaller working sets than on a desktop CPU.
+- **heaptrack and tcmalloc.** With `libgoogle-perftools-dev` installed (the
+  gperf backend needs it), the build links tcmalloc; the doctor's `gperf`
+  line shows it as `cpu heap`. tcmalloc provides its own `operator new`,
+  which heaptrack does not intercept, so heaptrack misses C++ allocations
+  in this build even though the doctor reports heaptrack `[OK]`.
 - **jemalloc.** The distribution's jemalloc is built without profiling
   (`prof:true` is rejected); the doctor reports it, and the jemalloc
   walkthrough does not use this rig.

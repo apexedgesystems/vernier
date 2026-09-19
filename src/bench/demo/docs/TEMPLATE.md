@@ -11,7 +11,11 @@ run on the reference rig, and delete these comments. Rules:
   pasted output.
 - State which numbers depend on the rig.
 - The test must assert the effect it demonstrates, so the walkthrough
-  fails loudly when it stops being true.
+  fails loudly when it stops being true, and something must run it: on
+  the rig before every release, and on the rig's CI lane where one exists.
+- Give `bench run` the same explicit path Step 1 runs
+  (`./build/bin/ptests/<Binary>`). A bare binary name is resolved under
+  `build/*/bin/ptests`, which the rig layout (`-B build`) does not match.
 -->
 
 **Reference rig:** [<rig name>](../../docs/rigs/RIG_<NAME>.md)
@@ -57,7 +61,7 @@ variants.
 ## Step 2: Profile
 
 ```bash
-bench run <Binary> --profile <tool> -- --gtest_filter='<Test>'
+bench run ./build/bin/ptests/<Binary> --profile <tool> -- --gtest_filter='<Test>'
 ```
 
 Where the report lands, and the command that reads it. Captured output:

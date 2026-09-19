@@ -39,8 +39,9 @@ output.
 | Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs                                                |
 | NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs, and CPU walkthroughs that need a GPU timeline |
 
-The RAPL walkthrough needs an Intel CPU and is the one exception; it says
-so at the top.
+Three walkthroughs fall outside the two rigs, and each says so at its top:
+RAPL needs an Intel CPU; jemalloc needs a jemalloc built with profiling,
+which neither rig's distribution provides; rocprof needs an AMD GPU.
 
 ## 3. What Reproduces and What Does Not
 
@@ -61,9 +62,14 @@ memory.
 
 Each rig document ends with a `bench doctor` command and its expected
 output. The doctor probes every profiler backend on the machine in front
-of you and prints what is missing and the command that fixes it. If your
-doctor output matches the rig's, the walkthroughs for that rig should run
-as written.
+of you and prints what is missing and the command that fixes it.
+
+Treat a matching doctor output as a prerequisite, not a guarantee. The
+doctor checks that a tool is present and can attach; it does not check
+that the tool can see what a walkthrough needs it to see. The known case
+is heaptrack in a build that links tcmalloc: the doctor reports heaptrack
+`[OK]`, and heaptrack misses C++ allocations. Each rig document lists such
+limits under its rig-specific behavior.
 
 ## 5. Using Another Machine
 

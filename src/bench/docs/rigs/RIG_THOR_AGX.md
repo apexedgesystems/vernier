@@ -57,14 +57,23 @@ administrators on Jetson, so `--profile ncu` runs under `sudo`.
 
 ## 3. Build
 
-Release, native on the board, with the GPU architecture stated:
+Release, native on the board, with the GPU architecture stated. Vernier
+reads the architecture from its own `CUDA_ARCHS` option (default `89`) and
+assigns it over `CMAKE_CUDA_ARCHITECTURES`, so pass `CUDA_ARCHS`:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
-  -DVERNIER_BUILD_GPU=ON -DCMAKE_CUDA_ARCHITECTURES=110 \
+  -DVERNIER_BUILD_GPU=ON -DCUDA_ARCHS=110 \
   -DVERNIER_BUILD_TOOLS=ON -DPROJECT_BUILD_DOCS=OFF
 cmake --build build -j$(nproc)
 source build/.env          # puts the bench CLI on PATH
+```
+
+Check that the GPU code was compiled for this board:
+
+```bash
+grep -rho "generate-code=[^ ]*" build/src/bench/CMakeFiles/*/flags.make | sort -u
+# --generate-code=arch=compute_110,code=[compute_110,sm_110]
 ```
 
 On this rig the build takes about 35 seconds and the unit tests pass
@@ -73,13 +82,19 @@ On this rig the build takes about 35 seconds and the unit tests pass
 ## 4. Running a Measurement
 
 Lock the clocks for the measurement and restore them afterwards, in the
-same script, so a failure cannot leave the board locked:
+same script. The clocks are locked only after their state has been saved,
+and a failed restore is reported and fails the script:
 
 ```bash
+set -euo pipefail
 STATE=/tmp/jetson_clocks.state
 sudo rm -f "$STATE"                       # --store prompts if the file exists
-sudo jetson_clocks --store "$STATE"
-trap 'sudo jetson_clocks --restore "$STATE"' EXIT
+sudo jetson_clocks --store "$STATE"       # no snapshot, no lock: set -e stops here
+restore_clocks() {
+  sudo jetson_clocks --restore "$STATE" ||
+    { echo "clock restore FAILED: run 'sudo jetson_clocks --restore $STATE'" >&2; exit 1; }
+}
+trap restore_clocks EXIT
 sudo jetson_clocks
 
 taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
@@ -100,6 +115,11 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
   host-to-device copy is a memory-to-memory copy (about 75 GB/s here), not
   a PCIe transfer. Walkthrough numbers that involve transfers are smaller
   on this rig than on a discrete GPU, and each walkthrough says which ones.
+- **heaptrack and tcmalloc.** With `libgoogle-perftools-dev` installed (the
+  gperf backend needs it), the build links tcmalloc; the doctor's `gperf`
+  line shows it as `cpu heap`. tcmalloc provides its own `operator new`,
+  which heaptrack does not intercept, so heaptrack misses C++ allocations
+  in this build even though the doctor reports heaptrack `[OK]`.
 - **jemalloc.** The distribution's jemalloc is built without profiling;
   the doctor reports it, and the jemalloc walkthrough does not use this rig.
 - **Energy.** RAPL is Intel-only and is not available here.

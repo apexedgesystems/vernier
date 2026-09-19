@@ -149,7 +149,7 @@ docker compose run --rm -T dev bash -c '
 | `--repeats N`              | Number of measurement repeats                                                                                                                                                                                                                                                  |
 | `--cycles N`               | Iterations per repeat                                                                                                                                                                                                                                                          |
 | `--threads N`              | Thread count for contention tests                                                                                                                                                                                                                                              |
-| `--target-time DUR`        | Size each repeat to about this long instead of a fixed cycle count (`us`, `ms`, `s`)                                                                                                                                                                                           |
+| `--target-time DUR`        | `throughputLoop` and `contentionRun` only: size each repeat to about this long instead of a fixed cycle count (`us`, `ms`, `s`). `measured()` and GPU kernel tests keep `--cycles`                                                                                             |
 | `--warmup N`               | Untimed warmup calls before timing (default 1; `0` lets the framework choose)                                                                                                                                                                                                  |
 | `--msg-bytes N`            | Payload size per call; sets the CV threshold used for the stability flag                                                                                                                                                                                                       |
 | `--profile <backend>`      | Attach a registered backend: `perf`, `gperf`, `callgrind`, `massif`, `memcheck`, `helgrind`, `heaptrack`, `jemalloc`, `offcpu`, `bpftrace`, `rapl`, `nsight` (alias `nsys`), `ncu`, `compute-sanitizer`, `rocprof`. `bench doctor <binary>` reports which work on this machine |
@@ -250,6 +250,9 @@ A walkthrough meets this contract:
   cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
+- **Something runs it.** A walkthrough is re-run on its rig before every
+  release, and on the rig's CI lane where one exists. A failing assertion
+  blocks the release. An assertion nothing runs protects nothing.
 
 New walkthroughs start from [docs/TEMPLATE.md](docs/TEMPLATE.md).
 
