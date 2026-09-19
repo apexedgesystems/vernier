@@ -529,11 +529,14 @@ for those metrics.
 Microsecond-scale operations cannot hold tight CV bars in tiny
 measurement windows -- and the right `--cycles` differs per test size.
 `--target-time 100ms` sizes the window instead of the iteration count:
-the harness times one call after warmup and picks cycles so each repeat
+the harness times a batch of calls before the measured phase (doubled
+until the sample spans about 1 ms) and picks cycles so each repeat
 spans the requested wall time (per test, so a parameterized sweep gets
 a per-size cycle count automatically). Applies where the harness owns
 the loop (`throughputLoop`, `contentionRun`); bodies driven by raw
 `measured()` keep explicit `--cycles`.
+The floor is one cycle: a call that already outlasts the target runs
+once per repeat.
 
 Run `bench doctor <ptest-binary>` (or `<ptest-binary> --profile-check`) to
 see each backend's status on the current host. For CI, the same data is
