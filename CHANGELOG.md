@@ -57,6 +57,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clamped to at least 10, so a target shorter than the operation stretched each
   repeat to ten calls (a 60 ms target on a 200 ms call ran 2 s per repeat). The
   floor is 1: a call that already outlasts the target runs once per repeat.
+- **A failing test fails `make test`, `make testp` and `make verify`** -- the
+  test recipes pipe ctest through `tee` to write `ctest.log`, and the recipe
+  shell had no `pipefail`, so the target's status was `tee`'s: a run printing
+  `99% tests passed, 1 tests failed` exited 0, and the CI C++ job, which runs
+  `make testp`, could not go red. Recipes run under bash with
+  `-o pipefail -e`; a failing lane stops the target with ctest's status, and
+  the parallel lane prints the failing test's output (`--output-on-failure`)
+  like the serial lanes. `ctest.log` is still written and
+  `make test-py` still accepts pytest's "no tests collected" status.
+  `make docker-disk-usage` succeeds when no vernier image exists.
 
 ## v1.0.3 - 2026-06-28
 

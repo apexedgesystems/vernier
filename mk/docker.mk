@@ -218,7 +218,7 @@ docker-disk-usage:
 	@docker system df
 	@echo ""
 	@echo "Vernier Image Sizes:"
-	@docker images --format "  {{.Repository}}:{{.Tag}} => {{.Size}}" | grep vernier | sort
+	@docker images --format "  {{.Repository}}:{{.Tag}} => {{.Size}}" | { grep vernier || true; } | sort
 
 # ------------------------------------------------------------------------------
 # Validation
