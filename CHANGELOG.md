@@ -67,6 +67,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.
   `make docker-disk-usage` succeeds when no vernier image exists.
+- **A release cannot publish with an asset missing** -- the v1.0.3 release
+  carries six assets and no Python wheel: the wheel was built under the Python
+  tools' own version, the upload list named it by the project version, and an
+  unmatched upload pattern is not an error by default. The release workflow
+  runs `scripts/check-release-assets.sh <version> output` after the artifact
+  build, in tag and rehearsal (`workflow_dispatch`) runs alike; it names every
+  expected file that is absent or empty and fails the job before the publish
+  step, which also sets `fail_on_unmatched_files`.
 
 ## v1.0.3 - 2026-06-28
 

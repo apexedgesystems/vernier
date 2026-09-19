@@ -6,7 +6,8 @@
 #
 # Rehearsal: workflow_dispatch runs the identical artifact build (version taken
 # from CMakeLists.txt, no tag needed) and skips only the publish step -- proving
-# the release pipeline before a tag is cut.
+# the release pipeline, including the completeness of the asset set, before a
+# tag is cut.
 # ==============================================================================
 name: Release
 
@@ -90,6 +91,11 @@ jobs:
       - name: List artifacts
         run: ls -la output/
 
+      # Runs in both modes, ahead of the publish step, so a rehearsal proves the
+      # asset set too. Names each expected file that is missing and fails.
+      - name: Verify release assets
+        run: scripts/check-release-assets.sh "${{ steps.version.outputs.version }}" output
+
       - name: Create GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
@@ -98,6 +104,7 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             output/vernier-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz
             output/vernier-${{ steps.version.outputs.version }}-x86_64-linux-cuda.tar.gz
