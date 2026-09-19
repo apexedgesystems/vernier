@@ -57,6 +57,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clamped to at least 10, so a target shorter than the operation stretched each
   repeat to ten calls (a 60 ms target on a 200 ms call ran 2 s per repeat). The
   floor is 1: a call that already outlasts the target runs once per repeat.
+- **`Perf.hpp` compiles without warnings for consumers** -- the profile
+  watchdog's signal handler discarded the result of five `write(2)` calls, so an
+  optimized consumer build with `-Wall` (where the C library marks `write`
+  `warn_unused_result`) reported five `-Wunused-result` warnings from
+  `PerfHarness.hpp`, under both GCC and Clang, and failed outright under
+  `-Werror`. The handler writes through a helper that resumes after a short
+  write or `EINTR`; it remains async-signal-safe and its message is unchanged.
 
 ## v1.0.3 - 2026-06-28
 
