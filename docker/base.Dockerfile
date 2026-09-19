@@ -205,9 +205,10 @@ ENV VERNIER_PIP_WHEELHOUSE=/opt/vernier-pip-wheels
 # ==============================================================================
 # Profiler link libraries
 # ==============================================================================
-# The perf tests link tcmalloc/profiler when present, so the link-time libs ship
-# in build-base for parity with the dev build. The profiler binaries/backends
-# live in dev-base.
+# The benchmark library links libprofiler when present, and libtcmalloc when a
+# build asks for it (VERNIER_LINK_TCMALLOC=ON), so the link-time libs ship in
+# build-base for parity with the dev build. The profiler binaries/backends live
+# in dev-base.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt-get update && \
@@ -369,6 +370,18 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # drifts ahead of the host's RUNNING kernel; perf needs the exact match. Install
 # linux-tools-${HOST_KERNEL} (uname -r from the makefile). Tolerant: warns
 # rather than fails if that version isn't in the archive.
+#
+# Rebuild trigger: the image carries perf for the kernel of the host that built
+# it, at the time it was built. Rebuild it on the host that runs it whenever
+#   - the host boots a different kernel (uname -r changed), or
+#   - the image came from the registry (built with no HOST_KERNEL, so it holds
+#     only the generic package's kernel).
+# `make docker-dev` / `make docker-dev-cuda` (and the shell-dev* targets, which
+# depend on them) pass HOST_KERNEL=$(uname -r); a changed value invalidates this
+# layer, so only it and the layers above rebuild. `docker compose run` and the
+# compose-* targets start whatever image is tagged and never rebuild. Symptom of
+# a stale image: `perf` prints "perf not found for kernel <release>", and
+# `bench doctor` reports the perf backend as found but not executable.
 ARG HOST_KERNEL
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \

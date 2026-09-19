@@ -80,6 +80,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench --version` printed `bench 1.0.2` from a 1.0.3 tree and the wheel was
   named `vernier_py_tools-1.0.2-py3-none-any.whl`. Both carry the version in
   `CMakeLists.txt`.
+- **When the dev image needs a rebuild for `perf` is written down** -- the dev
+  images carry `perf` for the kernel of the host that built them. After a host
+  kernel update, or in an image pulled from the registry, `perf` prints
+  `perf not found for kernel <release>` and `--profile perf` cannot run.
+  `docker/base.Dockerfile` states the trigger next to the host-matched install
+  step: run `make docker-dev` (or `make docker-dev-cuda`) on the host that runs
+  the container; the changed `HOST_KERNEL` build argument rebuilds that layer.
 
 ## v1.0.3 - 2026-06-28
 
