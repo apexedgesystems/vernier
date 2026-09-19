@@ -35,4 +35,6 @@ vernier_add_gtest(
   bench
   LABELS
   benchmarking
+  TIMING_PATTERNS
+  "^PerfCaseTargetTimeTest\\."
 )

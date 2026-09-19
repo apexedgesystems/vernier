@@ -728,10 +728,18 @@ public:
 
 private:
   /**
-   * @brief --target-time auto-sizing: time one call, set this instance's
-   * cycle count so a repeat spans the requested wall time. cfg_ is a
-   * per-case copy, so the division in measured(), the CSV row, and the
-   * loops all follow automatically; raw measured() users keep explicit
+   * @brief --target-time auto-sizing: estimate one call's cost, then set
+   * this instance's cycle count so a repeat spans the requested wall time.
+   *
+   * The clock resolves microseconds, so a single call of a sub-microsecond
+   * operation reads as zero or one. The estimate instead times a batch of
+   * calls, doubling the batch until the sample spans CALIBRATION_SAMPLE_US,
+   * and divides: the quantization error is then a fraction of a percent. An
+   * operation slower than that is sampled once. Calibration finishes before
+   * the measured phase starts, so none of it is inside a timed window.
+   *
+   * cfg_ is a per-case copy, so the division in measured(), the CSV row, and
+   * the loops all follow automatically; raw measured() users keep explicit
    * --cycles (they own their loop bodies).
    */
   void maybeCalibrate(const std::function<void()>& op) {
@@ -739,12 +747,31 @@ private:
       return;
     }
     calibrated_ = true;
-    const double T0 = nowUs();
-    op();
-    const double EST = nowUs() - T0;
+
+    // 1 ms sample: 1000 clock ticks, so quantization is at most 0.1%.
+    constexpr double CALIBRATION_SAMPLE_US = 1000.0;
+    // Bounds the doubling when the operation costs next to nothing.
+    constexpr long long CALIBRATION_MAX_BATCH = 1LL << 26;
+
+    long long batch = 1;
+    double elapsedUs = 0.0;
+    for (;;) {
+      const double T0 = nowUs();
+      for (long long i = 0; i < batch; ++i) {
+        op();
+      }
+      elapsedUs = nowUs() - T0;
+      if (elapsedUs >= CALIBRATION_SAMPLE_US || batch >= CALIBRATION_MAX_BATCH) {
+        break;
+      }
+      batch *= 2;
+    }
+
+    const double EST = elapsedUs / static_cast<double>(batch);
     cfg_.cycles = calibratedCycles(cfg_.targetTimeUs, EST);
-    std::fprintf(stderr, "[target-time] %.3f ms -> cycles=%d (calibrated %.3f us/call)\n",
-                 static_cast<double>(cfg_.targetTimeUs) / 1000.0, cfg_.cycles, EST);
+    std::fprintf(stderr,
+                 "[target-time] %.3f ms -> cycles=%d (calibrated %.4f us/call, batch of %lld)\n",
+                 static_cast<double>(cfg_.targetTimeUs) / 1000.0, cfg_.cycles, EST, batch);
   }
 
   std::string testName_;
