@@ -52,6 +52,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `89`), which reads as a conflict. Reconfigure it once with
   `-UCMAKE_CUDA_ARCHITECTURES` (add `-UCUDA_ARCHS` if you never set it), or
   start from an empty build directory.
+- **`bench run` names a missing wrapper program** -- `bench run --profile
+  callgrind` on a machine without valgrind failed with
+  `I/O error: No such file or directory`, naming neither the file nor the
+  cause, and left an empty `bench-out/<binary>.callgrind/` directory behind.
+  The CLI resolves the programs it launches a run through before creating or
+  starting anything: the wrapper of a wrap-externally profile (`valgrind` for
+  callgrind, massif, memcheck and helgrind; `heaptrack`; `compute-sanitizer`;
+  `nsys` for nsight; `ncu`) and `taskset` for `--taskset`. A missing one
+  fails with `tool not found: 'valgrind' is not on PATH; --profile callgrind
+  runs the benchmark under it. ...` and a non-zero exit, and points at
+  `bench doctor`. `bench profile-all` reports the same line for that profiler
+  and continues with the next.
 - **CSV rows keep the case's own config columns** -- the CSV listener overwrote
   `cycles`, `repeats`, `threads`, `msgBytes`, `console`, `nonBlocking` and
   `minLevel` in every row with the process-wide flags. A `--target-time` run
