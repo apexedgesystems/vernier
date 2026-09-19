@@ -19,6 +19,7 @@ vernier_module(bench)
 # ------------------------------------------------------------------------------
 
 set(CPP_SOURCES
+    "${SRC_DIR}/PerfAbi.cpp"
     "${SRC_DIR}/ProfilerRegistry.cpp"
     "${SRC_DIR}/ProfilerPerf.cpp"
     "${SRC_DIR}/ProfilerGperf.cpp"
@@ -34,8 +35,9 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerJemalloc.cpp"
 )
 
-set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
-                 "${SRC_DIR}/ProfilerComputeSanitizer.cu" "${SRC_DIR}/CuptiCollector.cu"
+set(CUDA_SOURCES
+    "${SRC_DIR}/PerfGpuAbi.cu" "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
+    "${SRC_DIR}/ProfilerComputeSanitizer.cu" "${SRC_DIR}/CuptiCollector.cu"
 )
 
 # ------------------------------------------------------------------------------

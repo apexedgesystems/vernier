@@ -84,6 +84,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clamped to at least 10, so a target shorter than the operation stretched each
   repeat to ten calls (a 60 ms target on a 200 ms call ran 2 s per repeat). The
   floor is 1: a call that already outlasts the target runs once per repeat.
+- **A benchmark and a bench library from different builds stop with a message**
+  -- `libbench` and `libbench_cuda` read `PerfConfig`, `Stats` and
+  `PerfGpuConfig` objects laid out by header code compiled into the benchmark,
+  under one SONAME (`libbench.so.1`). A library from another build (an installed
+  package next to newer headers, a stale copy found first on the library path)
+  read the wrong bytes and the run died inside a profiler constructor with
+  `basic_string::_M_construct null not valid`. `PERF_MAIN`, `PERF_GPU_MAIN`,
+  the GPU guard and `Profiler::make` (so a benchmark with its own `main()` is
+  covered on first use) report what the benchmark was compiled with, and the
+  library compares it with its own build. On a mismatch the run prints one line
+  and exits with status 3, before any profiler is constructed:
+  `[bench] ABI mismatch: this benchmark and the libbench it loaded were built
+  from different vernier headers (sizeof(PerfConfig): benchmark 232, library
+  240). Rebuild the benchmark against this libbench, or load the libbench that
+  matches the benchmark's headers. Exiting.` A benchmark whose structs are
+  larger than the library's is accepted: members are only ever appended
+  (`targetTimeUs` is the last member of `PerfConfig`, and every member 1.0.3
+  has sits at its 1.0.3 offset), and a unit test fails if one is inserted
+  mid-struct. A library built before this check has no such entry point, so a
+  benchmark built with these headers refuses to start against it with the
+  loader's `undefined symbol: vernier::bench::checkBenchAbi(...)`.
 - **`Perf.hpp` compiles without warnings for consumers** -- the profile
   watchdog's signal handler discarded the result of five `write(2)` calls, so an
   optimized consumer build with `-Wall` (where the C library marks `write`

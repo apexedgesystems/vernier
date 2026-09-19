@@ -9,6 +9,7 @@
 
 #include <string>
 
+#include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfGpuHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
@@ -46,10 +47,13 @@
 
 /* ----------------------------- Scoped Guard ----------------------------- */
 
-// Construct a PerfGpuCase and auto-attach profiler hooks. Two-statement form
-// (PerfGpuCase is non-movable, so a return-by-value helper is not possible);
-// the user's trailing semicolon terminates the attach call.
+// Check the loaded libraries against these headers, construct a PerfGpuCase
+// and auto-attach profiler hooks. Multi-statement form (PerfGpuCase is
+// non-movable, so a return-by-value helper is not possible); the user's
+// trailing semicolon terminates the attach call. The check comes first because
+// the PerfGpuCase constructor already hands a PerfConfig to libbench_cuda.
 #define UB_PERF_GPU_GUARD(varName)                                                                 \
+  vernier::bench::ensureBenchGpuAbi();                                                             \
   vernier::bench::PerfGpuCase varName{                                                             \
       ::testing::UnitTest::GetInstance()->current_test_info()->test_suite_name() +                 \
           std::string(".") + ::testing::UnitTest::GetInstance()->current_test_info()->name(),      \
@@ -73,6 +77,7 @@
  */
 #define PERF_GPU_MAIN()                                                                            \
   int main(int argc, char** argv) {                                                                \
+    vernier::bench::ensureBenchGpuAbi();                                                           \
     auto& cfg = vernier::bench::detail::perfConfigSingleton();                                     \
     vernier::bench::parsePerfFlags(cfg, &argc, argv);                                              \
     vernier::bench::PerfGpuConfig gpuCfg;                                                          \
