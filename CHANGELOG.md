@@ -75,6 +75,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   build, in tag and rehearsal (`workflow_dispatch`) runs alike; it names every
   expected file that is absent or empty and fails the job before the publish
   step, which also sets `fail_on_unmatched_files`.
+- **The tools report the project version** -- `tools/rust/Cargo.toml` and
+  `tools/py/pyproject.toml` carried 1.0.2 while the project was 1.0.3, so
+  `bench --version` printed `bench 1.0.2` from a 1.0.3 tree and the wheel was
+  named `vernier_py_tools-1.0.2-py3-none-any.whl`. Both carry the version in
+  `CMakeLists.txt`.
 
 ## v1.0.3 - 2026-06-28
 
