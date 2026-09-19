@@ -5,6 +5,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## v1.0.4 - Unreleased
+
+### Changed
+
+- **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
+  and every `vernier_add_ptest` target link `libtcmalloc` only when configured
+  with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev
+  package happens to be installed at configure time. tcmalloc replaces `malloc`
+  and `operator new` for the whole process, so an implicit link made the same
+  source measure a different allocator from one machine to the next, and preload
+  heap profilers (heaptrack), which interpose the malloc family only, recorded
+  almost none of a C++ benchmark's allocations. gperftools CPU profiling
+  (`--profile gperf`) is unaffected.
+  **Action needed for gperftools heap profiling:** configure with
+  `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
+  prints how to enable heap mode and skips it, and `bench doctor` reports the
+  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  warns that C++ allocations will be missing from its trace. Allocation-heavy
+  timings captured on a machine that had the dev package installed are not
+  comparable across this change.
+
 ## v1.0.3 - 2026-06-28
 
 ### Changed

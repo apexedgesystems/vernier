@@ -78,6 +78,14 @@ GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
   wantCpu_ = false;
 #endif
 #if !UB_HAS_GPERF_HEAP
+  // Once per process: every test constructs its own profiler.
+  static std::atomic<bool> heapExplained{false};
+  if (wantHeap_ && !heapExplained.exchange(true)) {
+    std::fprintf(stderr,
+                 "\n[gperf] heap profiling is not compiled in: it needs tcmalloc, which replaces\n"
+                 "[gperf] the process allocator and is therefore opt-in. Reconfigure with\n"
+                 "[gperf] -DVERNIER_LINK_TCMALLOC=ON and rebuild. Heap mode skipped.\n\n");
+  }
   wantHeap_ = false;
 #endif
 

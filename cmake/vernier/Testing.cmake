@@ -307,12 +307,19 @@ function (vernier_add_ptest)
 
   # gperftools (optional)
   find_library(GPERF_PROFILER_LIB NAMES profiler)
-  find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
   if (GPERF_PROFILER_LIB)
     list(APPEND _link "${GPERF_PROFILER_LIB}")
   endif ()
-  if (GPERF_TCMALLOC_LIB)
+  # tcmalloc swaps the process allocator: linked only on request
+  # (VERNIER_LINK_TCMALLOC), never because the library happens to be installed.
+  set(_tcmalloc "off")
+  if (VERNIER_LINK_TCMALLOC)
+    find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
+    if (NOT GPERF_TCMALLOC_LIB)
+      message(FATAL_ERROR "VERNIER_LINK_TCMALLOC=ON but libtcmalloc was not found")
+    endif ()
     list(APPEND _link "${GPERF_TCMALLOC_LIB}")
+    set(_tcmalloc "on")
   endif ()
 
   # Benchmarking library (optional - auto-link if available)
@@ -359,7 +366,7 @@ function (vernier_add_ptest)
 
   # Summary
   set(_gperf "off")
-  if (GPERF_PROFILER_LIB OR GPERF_TCMALLOC_LIB)
+  if (GPERF_PROFILER_LIB)
     set(_gperf "on")
   endif ()
   set(_bench "off")
@@ -368,7 +375,7 @@ function (vernier_add_ptest)
   endif ()
   message(
     STATUS
-      "[Perf] target=${PT_TARGET} out=ptests/ benchlib=${_bench} gperftools=${_gperf} (manual execution only)"
+      "[Perf] target=${PT_TARGET} out=ptests/ benchlib=${_bench} gperftools=${_gperf} tcmalloc=${_tcmalloc} (manual execution only)"
   )
 endfunction ()
 
