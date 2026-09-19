@@ -91,8 +91,41 @@ inline long long parseDurationUs(const std::string& text) {
 inline void runProfileCheck();
 inline void runProfileCheckJson();
 
+namespace detail {
+
+/**
+ * @brief True for a `--option` that no parser in the process will consume.
+ *
+ * parsePerfFlags() forwards what it does not recognize. GoogleTest takes its
+ * own options from that remainder, and GPU binaries run parseGpuFlags() over
+ * it next, so both families are expected there. Anything else that looks
+ * like a long option is most likely a typo or an option this build predates.
+ */
+inline bool isUnclaimedOption(std::string_view arg) {
+  if (arg.size() <= 2 || arg.substr(0, 2) != "--") {
+    return false;
+  }
+  if (arg.substr(0, 8) == "--gtest_" || arg == "--help") {
+    return false;
+  }
+  constexpr std::string_view GPU_PARSER_OPTIONS[] = {"--gpu-warmup", "--gpu-device", "--gpu-memory",
+                                                     "--min-speedup", "--capture-um"};
+  for (const std::string_view OPTION : GPU_PARSER_OPTIONS) {
+    if (arg == OPTION) {
+      return false;
+    }
+  }
+  return true;
+}
+
+} // namespace detail
+
 /**
  * @brief Parse perf flags, leaving unknown args for gtest. Mutates argc/argv.
+ *
+ * An unrecognized `--option` is still forwarded, with one stderr line naming
+ * it, so a mistyped flag or a binary older than the flag does not run on
+ * defaults in silence. GoogleTest's and the GPU parser's options are exempt.
  *
  * Recognized flags:
  *   --cycles N         --repeats N        --warmup N (0 = auto-scale)
@@ -249,6 +282,12 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
 
     // Pass-through to gtest
     else {
+      if (detail::isUnclaimedOption(a)) {
+        std::fprintf(stderr,
+                     "[WARN] unknown option '%s': not a vernier or GoogleTest option; "
+                     "passed through, the run continues.\n",
+                     argv[i]);
+      }
       argv[w++] = argv[i];
     }
   }

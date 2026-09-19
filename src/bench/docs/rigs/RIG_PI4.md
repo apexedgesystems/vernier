@@ -59,7 +59,7 @@ source build/.env          # puts the bench CLI on PATH
 ```
 
 On this rig the build takes about eight and a half minutes, most of it the
-Rust CLI, and the unit tests pass (`ctest --test-dir build`: 117 of 117).
+Rust CLI, and the unit tests pass (`ctest --test-dir build`).
 
 ## 4. Running a Measurement
 
@@ -102,11 +102,6 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
 
 - **Small caches.** 1 MiB of shared L2 and no L3: cache effects appear at
   much smaller working sets than on a desktop CPU.
-- **heaptrack and tcmalloc.** With `libgoogle-perftools-dev` installed (the
-  gperf backend needs it), the build links tcmalloc; the doctor's `gperf`
-  line shows it as `cpu heap`. tcmalloc provides its own `operator new`,
-  which heaptrack does not intercept, so heaptrack misses C++ allocations
-  in this build even though the doctor reports heaptrack `[OK]`.
 - **jemalloc.** The distribution's jemalloc is built without profiling
   (`prof:true` is rejected); the doctor reports it, and the jemalloc
   walkthrough does not use this rig.
@@ -123,7 +118,7 @@ Expected on this rig:
 ```
   [OK]   bpftrace   bpftrace available via BENCH_SUDO (tracepoint attach verified)
   [OK]   callgrind  valgrind available
-  [OK]   gperf      gperftools linked: cpu heap
+  [OK]   gperf      gperftools linked: cpu
   [OK]   heaptrack  heaptrack available
   [OK]   helgrind   valgrind available (helgrind + drd thread-error detectors ship with it)
   [WARN] jemalloc   libjemalloc present but built without profiling (prof:true rejected)

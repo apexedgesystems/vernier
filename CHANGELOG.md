@@ -5,6 +5,59 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## v1.0.4 - Unreleased
+
+### Changed
+
+- **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
+  and every `vernier_add_ptest` target link `libtcmalloc` only when configured
+  with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev
+  package happens to be installed at configure time. tcmalloc replaces `malloc`
+  and `operator new` for the whole process, so an implicit link made the same
+  source measure a different allocator from one machine to the next, and preload
+  heap profilers (heaptrack), which interpose the malloc family only, recorded
+  almost none of a C++ benchmark's allocations. gperftools CPU profiling
+  (`--profile gperf`) is unaffected.
+  **Action needed for gperftools heap profiling:** configure with
+  `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
+  prints how to enable heap mode and skips it, and `bench doctor` reports the
+  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  warns that C++ allocations will be missing from its trace. Allocation-heavy
+  timings captured on a machine that had the dev package installed are not
+  comparable across this change.
+- **Unknown long options produce a warning** -- a test binary given a `--option`
+  that neither vernier nor GoogleTest recognizes prints one stderr line naming
+  it (`[WARN] unknown option '--target-tmie': ...`); the argument is still
+  passed through and the run continues with exit status unaffected. A mistyped
+  flag, or a binary built before a flag existed, otherwise ran on defaults
+  without saying so. `--gtest_*`, `--help` and the GPU harness options
+  (`--gpu-warmup`, `--gpu-device`, `--gpu-memory`, `--min-speedup`,
+  `--capture-um`) are exempt. Consumers that pass their own long options
+  through `PERF_MAIN` will see one line per option.
+
+### Fixed
+
+- **CSV rows keep the case's own config columns** -- the CSV listener overwrote
+  `cycles`, `repeats`, `threads`, `msgBytes`, `console`, `nonBlocking` and
+  `minLevel` in every row with the process-wide flags. A `--target-time` run
+  reported the default `cycles=10000` whatever count calibration chose, a case
+  that pinned its own thread count reported the global `--threads`, and GPU
+  rows lost the `threads=1` their harness sets. Rows are written as the case
+  recorded them; rows of cases that override nothing are unchanged. CSVs
+  captured with `--target-time` before this fix carry a wrong `cycles` column.
+- **`--target-time` calibrates from a timed batch of calls** -- calibration timed
+  a single call on a microsecond clock, so a sub-microsecond operation read as
+  0 or 1 us: a 40 ms target became 40,000,000 cycles (seconds per repeat) or
+  40,000 cycles (about a millisecond per repeat). The harness times a batch,
+  doubling it until the sample spans about 1 ms, and divides; a 115 ns
+  operation under `--target-time 40ms --repeats 10` runs in 0.4 s instead of
+  46 s. The `[target-time]` stderr line reports four decimals and the batch
+  size. Calibration stays outside the timed window.
+- **`--target-time` floor is one cycle** -- the calibrated cycle count was
+  clamped to at least 10, so a target shorter than the operation stretched each
+  repeat to ten calls (a 60 ms target on a 200 ms call ran 2 s per repeat). The
+  floor is 1: a call that already outlasts the target runs once per repeat.
+
 ## v1.0.3 - 2026-06-28
 
 ### Changed

@@ -63,14 +63,22 @@ target_include_directories(
   ${LIB_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>
 )
 
-# gperftools (optional)
+# gperftools (optional): the CPU profiler links whenever it is installed.
 find_library(GPERF_PROFILER_LIB NAMES profiler)
-find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
 if (GPERF_PROFILER_LIB)
   target_link_libraries(${LIB_NAME} PRIVATE ${GPERF_PROFILER_LIB})
 endif ()
-if (GPERF_TCMALLOC_LIB)
+
+# tcmalloc swaps the process allocator, so it links only on request (see
+# VERNIER_LINK_TCMALLOC). The definition is PUBLIC because ProfilerGperf.hpp
+# keys the heap profiler's availability on it for every consumer of the header.
+if (VERNIER_LINK_TCMALLOC)
+  find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
+  if (NOT GPERF_TCMALLOC_LIB)
+    message(FATAL_ERROR "VERNIER_LINK_TCMALLOC=ON but libtcmalloc was not found")
+  endif ()
   target_link_libraries(${LIB_NAME} PRIVATE ${GPERF_TCMALLOC_LIB})
+  target_compile_definitions(${LIB_NAME} PUBLIC VERNIER_HAS_TCMALLOC=1)
 endif ()
 
 # NVTX3 is header-only and exposed via Nvtx.hpp in this library's public

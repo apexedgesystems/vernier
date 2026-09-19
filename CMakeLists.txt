@@ -70,6 +70,11 @@ option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 # ------------------------------------------------------------------------------
 option(VERNIER_BUILD_GPU "Build GPU/CUDA support (requires CUDA toolkit)" ON)
 option(VERNIER_BUILD_TOOLS "Build CLI tools (Rust + Python, requires cargo and poetry)" OFF)
+# tcmalloc replaces malloc and operator new for the whole process, so linking it
+# changes the allocator every benchmark measures and hides C++ allocations from
+# preload heap profilers, which interpose the malloc family only. Needed solely
+# for the gperftools heap profiler (--profile gperf --profile-args heap).
+option(VERNIER_LINK_TCMALLOC "Link gperftools tcmalloc into bench and ptests" OFF)
 option(PROJECT_BUILD_DOCS "Enable Doxygen doc targets" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy integration" OFF)
 

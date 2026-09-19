@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (6 files)
+# Sources (10 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -17,8 +17,10 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfCsv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfConfig_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfRegistry_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PerfListener_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerRegistry_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerEnv_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -34,4 +36,6 @@ vernier_add_gtest(
   bench
   LABELS
   benchmarking
+  TIMING_PATTERNS
+  "^PerfCaseTargetTimeTest\\."
 )

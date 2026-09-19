@@ -11,6 +11,11 @@
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
+ *  - Heap profiling additionally requires a build with
+ *    -DVERNIER_LINK_TCMALLOC=ON: the heap profiler is part of tcmalloc, and
+ *    tcmalloc replaces the allocator for the whole process, so it is never
+ *    linked implicitly. Without it, a heap request prints how to enable it
+ *    and CPU profiling is unaffected.
  *  - If unavailable, makeGperfProfiler(...) returns nullptr and the factory
  *    in Profiler.hpp will produce a named no-op.
  */
@@ -30,7 +35,7 @@
 #define UB_HAS_GPERF_CPU 0
 #endif
 
-#if __has_include(<gperftools/heap-profiler.h>)
+#if __has_include(<gperftools/heap-profiler.h>) && defined(VERNIER_HAS_TCMALLOC)
 #define UB_HAS_GPERF_HEAP 1
 #else
 #define UB_HAS_GPERF_HEAP 0

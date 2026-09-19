@@ -25,6 +25,24 @@ namespace {
 
 bool isHeaptrackOnPath() { return std::system("command -v heaptrack >/dev/null 2>&1") == 0; }
 
+/// True when a shared object whose path contains `needle` is mapped into
+/// this process.
+bool isLibraryMapped(const char* needle) {
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp)
+    return false;
+  char line[512];
+  bool found = false;
+  while (std::fgets(line, sizeof(line), fp)) {
+    if (std::strstr(line, needle)) {
+      found = true;
+      break;
+    }
+  }
+  std::fclose(fp);
+  return found;
+}
+
 /// Detect whether the current process is running under heaptrack.
 ///
 /// Older heaptrack (~1.2) exported `LD_PRELOAD=...libheaptrack_preload.so`
@@ -39,20 +57,13 @@ bool detectUnderHeaptrack() {
     return true;
   if (std::getenv("HEAPTRACK_OUTPUT") != nullptr)
     return true;
-  std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp)
-    return false;
-  char line[512];
-  bool found = false;
-  while (std::fgets(line, sizeof(line), fp)) {
-    if (std::strstr(line, "libheaptrack_")) {
-      found = true;
-      break;
-    }
-  }
-  std::fclose(fp);
-  return found;
+  return isLibraryMapped("libheaptrack_");
 }
+
+/// heaptrack's preload interposes the malloc family only. An allocator that
+/// exports its own operator new (tcmalloc does) serves C++ allocations
+/// without ever calling malloc, so they never reach the trace.
+bool isOperatorNewReplaced() { return isLibraryMapped("libtcmalloc"); }
 
 } // namespace
 
@@ -69,6 +80,14 @@ HeaptrackProfiler::HeaptrackProfiler(const PerfConfig& cfg, std::string testName
 }
 
 void HeaptrackProfiler::beforeMeasure() {
+  if (isOperatorNewReplaced()) {
+    std::fprintf(
+        stderr,
+        "\n[heaptrack] WARNING: libtcmalloc is loaded and replaces operator new.\n"
+        "[heaptrack] heaptrack hooks the malloc family only, so C++ allocations will\n"
+        "[heaptrack] be MISSING from the trace. Use a build without tcmalloc\n"
+        "[heaptrack] (-DVERNIER_LINK_TCMALLOC=OFF, the default) and do not preload it.\n\n");
+  }
   if (runningUnderHeaptrack_) {
     std::fprintf(stderr,
                  "[heaptrack] wrapping detected; heap profile will be written at process\n"
