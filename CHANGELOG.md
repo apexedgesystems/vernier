@@ -37,6 +37,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`CMAKE_CUDA_ARCHITECTURES` is honored** -- the root `CMakeLists.txt` assigned
+  its own `CUDA_ARCHS` option (default `89`) over the standard variable, so
+  `-DCMAKE_CUDA_ARCHITECTURES=...`, a preset, a parent project's setting or the
+  `CUDAARCHS` environment variable were all discarded without a message, and
+  the GPU code was built for architecture 89 and JIT-compiled by the driver on
+  any other GPU. The standard variable (then `CUDAARCHS`) decides; `CUDA_ARCHS`
+  remains as a shorthand; `89` applies only when none is given; the configure
+  output states the value and where it came from
+  (`[cuda] architectures: 110 (from CMAKE_CUDA_ARCHITECTURES)`). Giving both
+  with different values stops configuration with a message naming both.
+  **Action needed for existing GPU build directories:** a directory configured
+  by an earlier release caches both variables (the compiler's default and
+  `89`), which reads as a conflict. Reconfigure it once with
+  `-UCMAKE_CUDA_ARCHITECTURES` (add `-UCUDA_ARCHS` if you never set it), or
+  start from an empty build directory.
 - **CSV rows keep the case's own config columns** -- the CSV listener overwrote
   `cycles`, `repeats`, `threads`, `msgBytes`, `console`, `nonBlocking` and
   `minLevel` in every row with the process-wide flags. A `--target-time` run

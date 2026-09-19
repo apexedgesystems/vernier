@@ -62,3 +62,16 @@ target_compile_options(
   BenchConsumerWarningCheck
   PRIVATE -O2 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2 -Werror
 )
+
+# ------------------------------------------------------------------------------
+# Build Logic Tests (1)
+# ------------------------------------------------------------------------------
+# Script-mode tests of configure logic; they need no toolkit and no GPU, so the
+# CUDA architecture rules are checked on every lane, including CPU-only ones.
+# ------------------------------------------------------------------------------
+
+add_test(NAME CudaArchitecturesResolveTest
+         COMMAND "${CMAKE_COMMAND}" -P
+                 "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/CudaArchitectures_test.cmake"
+)
+set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")

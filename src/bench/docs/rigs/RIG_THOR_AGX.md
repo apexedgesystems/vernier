@@ -57,9 +57,11 @@ administrators on Jetson, so `--profile ncu` runs under `sudo`.
 
 ## 3. Build
 
-Release, native on the board, with the GPU architecture stated. Vernier
-reads the architecture from its own `CUDA_ARCHS` option (default `89`) and
-assigns it over `CMAKE_CUDA_ARCHITECTURES`, so pass `CUDA_ARCHS`:
+Release, native on the board, with the GPU architecture stated: left
+unstated, Vernier builds GPU code for architecture `89`, which this board
+could only run through driver JIT compilation. `CUDA_ARCHS` is Vernier's
+shorthand for the standard `CMAKE_CUDA_ARCHITECTURES`; either works, and
+configuration stops if both are given with different values:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
