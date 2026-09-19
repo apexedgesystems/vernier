@@ -8,6 +8,8 @@
  *    loader mapped, and check the two backends that must tell the user.
  *  - Each expectation holds in both configurations; which branch runs
  *    depends on how the tree was configured.
+ *  - The gperf heap-mode explanation prints once per process, so it is
+ *    asserted in a child process that starts with that state clear.
  */
 
 #include "src/bench/inc/ProfilerGperf.hpp"
@@ -19,6 +21,9 @@
 #include <gtest/gtest.h>
 
 #include <unistd.h>
+
+#include <cstdio>
+#include <cstdlib>
 
 #include <filesystem>
 #include <fstream>
@@ -49,6 +54,35 @@ constexpr bool TCMALLOC_REQUESTED = true;
 #else
 constexpr bool TCMALLOC_REQUESTED = false;
 #endif
+
+/** @brief True when the gperf backend is compiled in; never requests heap mode. */
+bool gperfCompiledIn(PerfConfig cfg) {
+  cfg.profileArgs = "cpu";
+  StderrCapture quiet;
+  return makeGperfProfiler(cfg, "Tcmalloc.GperfProbe") != nullptr;
+}
+
+/** @brief Construct one heap-mode profiler; true when the explanation was printed. */
+bool heapRequestExplains(const PerfConfig& cfg) {
+  StderrCapture capture;
+  const std::unique_ptr<Profiler> profiler = makeGperfProfiler(cfg, "Tcmalloc.GperfHeap");
+  return capture.text().find("VERNIER_LINK_TCMALLOC") != std::string::npos;
+}
+
+/**
+ * @brief Child-process body: report which of two heap-mode requests explained.
+ *
+ * Removes the child's artifact root itself, because a death-test child never
+ * reaches TearDown().
+ */
+[[noreturn]] void reportHeapExplanations(const PerfConfig& cfg, const std::filesystem::path& root) {
+  const bool first = heapRequestExplains(cfg);
+  const bool second = heapRequestExplains(cfg);
+  std::error_code ec;
+  std::filesystem::remove_all(root, ec);
+  std::fprintf(stderr, "heap-explanation first=%d second=%d\n", first ? 1 : 0, second ? 1 : 0);
+  std::exit(0);
+}
 
 } // namespace
 
@@ -90,24 +124,27 @@ TEST_F(TcmallocOptInTest, HeaptrackWarnsOnlyWhenTcmallocMapped) {
   EXPECT_EQ(warned, tcmallocMapped()) << err;
 }
 
-/** @test Says how to enable heap mode exactly when heap profiling is not compiled in */
-TEST_F(TcmallocOptInTest, GperfHeapModeExplainsWhenUnavailable) {
+/** @brief Same fixture, named so GoogleTest schedules the death test first. */
+using TcmallocOptInDeathTest = TcmallocOptInTest;
+
+/** @test Explains an unavailable heap mode on the first request in a process and never again */
+TEST_F(TcmallocOptInDeathTest, GperfHeapModeExplainsOncePerProcess) {
   cfg_.profileTool = "gperf";
   cfg_.profileArgs = "heap";
 
-  // The explanation prints once per process; this is the only test in the
-  // binary that requests heap mode.
-
-  StderrCapture capture;
-  const std::unique_ptr<Profiler> profiler = makeGperfProfiler(cfg_, "Tcmalloc.GperfHeap");
-  const std::string err = capture.text();
-
-  if (profiler == nullptr) {
+  if (!gperfCompiledIn(cfg_)) {
     GTEST_SKIP() << "gperftools headers not present at build time";
   }
 
-  const bool explained = err.find("VERNIER_LINK_TCMALLOC") != std::string::npos;
-  EXPECT_EQ(explained, UB_HAS_GPERF_HEAP == 0) << err;
+  // "threadsafe" re-executes the test binary for the child, so the
+  // once-per-process state starts clear whatever ran before in this process;
+  // the default style forks and would inherit it.
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+
+  const std::string expected =
+      std::string("heap-explanation first=") + (UB_HAS_GPERF_HEAP == 0 ? "1" : "0") + " second=0";
+  EXPECT_EXIT(reportHeapExplanations(cfg_, root_), ::testing::ExitedWithCode(0), expected);
+
   // Heap support is never compiled in without the allocator it needs.
   EXPECT_TRUE(UB_HAS_GPERF_HEAP == 0 || TCMALLOC_REQUESTED);
 }
