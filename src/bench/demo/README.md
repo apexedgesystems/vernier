@@ -17,7 +17,8 @@ is a runnable executable paired with a step-by-step walkthrough. Start with Demo
 4. [Running Demos](#4-running-demos)
 5. [Shared Workloads](#5-shared-workloads)
 6. [Learning Path](#6-learning-path)
-7. [See Also](#7-see-also)
+7. [Reference Rigs and the Demo Contract](#7-reference-rigs-and-the-demo-contract)
+8. [See Also](#8-see-also)
 
 ---
 
@@ -105,13 +106,12 @@ Requires NVIDIA GPU with CUDA support.
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Two GPU profilers ship without a dedicated demo binary because they fire on
-_every_ GPU run -- consult the walkthroughs to see what to look for:
+Two GPU topics have a walkthrough but no dedicated demo binary:
 
-| Profiler        | Wraps                 | When to use                        | Walkthrough                                                   |
-| --------------- | --------------------- | ---------------------------------- | ------------------------------------------------------------- |
-| rocprof (AMD)   | AMD GPU + HIP kernels | AMD MI / Radeon Instinct profiling | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
-| CUPTI (in-proc) | Any GPU benchmark     | Per-launch register / smem / count | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
+| Profiler        | Wraps                                   | When to use                                             | Walkthrough                                                   |
+| --------------- | --------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)   | AMD GPU + HIP kernels                   | Wraps an AMD GPU run; not validated on AMD hardware     | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI (in-proc) | Tests timed with the GPU kernel builder | Per-kernel launch count, register and shared-memory use | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -142,17 +142,23 @@ docker compose run --rm -T dev bash -c '
 
 ### CLI Flags
 
-| Flag                       | Purpose                                                                                                                                                                                                                          |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--quick`                  | Fast iteration (fewer cycles/repeats)                                                                                                                                                                                            |
-| `--csv FILE`               | Export results to CSV                                                                                                                                                                                                            |
-| `--repeats N`              | Number of measurement repeats                                                                                                                                                                                                    |
-| `--cycles N`               | Iterations per repeat                                                                                                                                                                                                            |
-| `--threads N`              | Thread count for contention tests                                                                                                                                                                                                |
-| `--profile <backend>`      | Attach any registered backend (see `bench doctor` for the list: `perf`, `gperf`, `callgrind`, `rapl`, `bpftrace`, `massif`, `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`, `nsight`, `compute-sanitizer`, `rocprof`) |
-| `--profile-output-dir DIR` | Route profile artifacts to a custom root                                                                                                                                                                                         |
-| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`                                                                                                                                                                                       |
-| `--gtest_filter=PATTERN`   | Run specific tests only                                                                                                                                                                                                          |
+| Flag                       | Purpose                                                                                                                                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--quick`                  | Fast iteration (fewer cycles/repeats)                                                                                                                                                                                                                                          |
+| `--csv FILE`               | Export results to CSV                                                                                                                                                                                                                                                          |
+| `--repeats N`              | Number of measurement repeats                                                                                                                                                                                                                                                  |
+| `--cycles N`               | Iterations per repeat                                                                                                                                                                                                                                                          |
+| `--threads N`              | Thread count for contention tests                                                                                                                                                                                                                                              |
+| `--target-time DUR`        | Size each repeat to about this long instead of a fixed cycle count (`us`, `ms`, `s`)                                                                                                                                                                                           |
+| `--warmup N`               | Untimed warmup calls before timing (default 1; `0` lets the framework choose)                                                                                                                                                                                                  |
+| `--msg-bytes N`            | Payload size per call; sets the CV threshold used for the stability flag                                                                                                                                                                                                       |
+| `--profile <backend>`      | Attach a registered backend: `perf`, `gperf`, `callgrind`, `massif`, `memcheck`, `helgrind`, `heaptrack`, `jemalloc`, `offcpu`, `bpftrace`, `rapl`, `nsight` (alias `nsys`), `ncu`, `compute-sanitizer`, `rocprof`. `bench doctor <binary>` reports which work on this machine |
+| `--profile-args STR`       | Backend-specific arguments                                                                                                                                                                                                                                                     |
+| `--profile-output-dir DIR` | Route profile artifacts to a custom root                                                                                                                                                                                                                                       |
+| `--profile-test-timeout N` | SIGALRM watchdog seconds under `--profile`                                                                                                                                                                                                                                     |
+| `--gtest_filter=PATTERN`   | Run specific tests only                                                                                                                                                                                                                                                        |
+| `--gpu-device N`           | GPU tests: device index (default 0)                                                                                                                                                                                                                                            |
+| `--gpu-warmup N`           | GPU tests: untimed kernel launches before timing                                                                                                                                                                                                                               |
 
 ---
 
@@ -179,52 +185,79 @@ and dependency chains), and designed to show measurable differences.
 
 ## 6. Learning Path
 
-**Getting started (30 min):**
+Walkthroughs are numbered by their file name in `docs/`.
 
-1. Demo 01 -- Learn the basic measure-export-analyze workflow
-2. Demo 04 -- See the most common high-leverage optimization (AoS to SoA)
+**Getting started:**
 
-**Profiling tools (1 hour):**
+1. [01](docs/01_BASIC_WORKFLOW.md) -- the measure, export, compare workflow
+2. [04](docs/04_CACHE_FRIENDLY.md) -- a data-layout optimization (AoS to SoA)
 
-3. Demo 02 -- Hardware counters with perf (cache misses, branch misses)
-4. Demo 03 -- Function-level hotspot identification with gperftools
+**Profiling tools:**
 
-**Intermediate (1 hour):**
+3. [02](docs/02_PERF_PROFILER.md) -- hardware counters with perf
+4. [03](docs/03_GPERF_PROFILER.md) -- function-level hotspots with gperftools
+5. [07](docs/07_CALLGRIND_PROFILER.md) -- exact instruction counts with Callgrind
 
-5. Demo 05 -- Branch prediction and branchless coding
-6. Demo 06 -- Multi-threaded contention analysis
+**Branches and threads:**
 
-**Advanced profiling:**
+6. [05](docs/05_BRANCH_OPTIMIZATION.md) -- branch prediction and branchless code
+7. [06](docs/06_THREAD_SCALING.md) -- contention between threads
+8. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
+9. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind / DRD
 
-7. Demo 07 -- Deterministic instruction counting with Callgrind
-8. Demo 08 -- Energy measurement with Intel RAPL
-9. Demo 09 -- Syscall tracing with bpftrace
+**Memory:**
 
-**Memory and contention deep dives:**
+10. [21](docs/21_HEAPTRACK_PROFILER.md) -- ranked allocation sites with heaptrack
+11. [14](docs/14_MASSIF_PROFILER.md) -- heap size over time with Massif
+12. [15](docs/15_MEMCHECK_PROFILER.md) -- leaks and invalid access with Memcheck
+13. [22](docs/22_JEMALLOC_PROFILER.md) -- sampled allocation profiling with jemalloc
 
-10. Demo 11 -- Heap profile timeline with Valgrind Massif
-11. Demo 12 -- Leak / UAF detection with Valgrind Memcheck
-12. Demo 13 -- Off-CPU profiling: where threads block
-13. Demo 14 -- Data-race detection with Valgrind Helgrind / DRD
-14. Demo 15 -- Ranked allocation sites with heaptrack
-15. Demo 16 -- Sampled allocation hotspots with jemalloc prof
+**System and energy:**
 
-**GPU (requires NVIDIA GPU):**
+14. [09](docs/09_BPFTRACE_PROFILER.md) -- kernel tracing with bpftrace
+15. [08](docs/08_RAPL_PROFILER.md) -- energy with Intel RAPL
 
-13. Demo 10 -- CPU vs GPU comparison, transfer overhead analysis
-14. Demo 11 -- Memory coalescing with Nsight
-15. Demo 12 -- Shared memory optimization and bank conflicts
-16. Demo 04 (GPU) -- Kernel correctness with Compute Sanitizer
+**GPU (requires an NVIDIA GPU):**
 
-**GPU instrumentation:**
-
-17. Demo 10 (CPU) -- NVTX timeline annotation for any Nsight tool
-18. Demo 19 (doc) -- CUPTI in-process kernel metrics (auto-captured)
+16. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
+17. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
+18. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
+19. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
+20. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
+21. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
 
 ---
 
-## 7. See Also
+## 7. Reference Rigs and the Demo Contract
+
+A walkthrough names the machine its output was captured on, in a
+`Reference rig` line at its top, and links the rig document instead of
+repeating the setup. A walkthrough without that line has not been captured
+on a rig. See [docs/rigs/README.md](../docs/rigs/README.md).
+
+| Rig                                                    | Walkthroughs |
+| ------------------------------------------------------ | ------------ |
+| [Raspberry Pi 4](../docs/rigs/RIG_PI4.md)              | CPU          |
+| [NVIDIA Jetson AGX Thor](../docs/rigs/RIG_THOR_AGX.md) | GPU          |
+
+A walkthrough meets this contract:
+
+- **A named rig and a Release build.** Commands were run as written and
+  output blocks are pasted from that run, with the capture date and the
+  Vernier version.
+- **A test that asserts its own effect.** The demo's performance test
+  fails if the slow and fast variants stop differing, so a walkthrough
+  cannot drift silently.
+- **A statement of what reproduces.** Ratios and the profiler's finding
+  should match on the same rig; absolute times differ elsewhere.
+
+New walkthroughs start from [docs/TEMPLATE.md](docs/TEMPLATE.md).
+
+---
+
+## 8. See Also
 
 - [docs/CPU_GUIDE.md](../docs/CPU_GUIDE.md) -- CPU benchmarking reference
 - [docs/GPU_GUIDE.md](../docs/GPU_GUIDE.md) -- GPU benchmarking reference
+- [docs/rigs/README.md](../docs/rigs/README.md) -- reference rigs
 - [tools/README.md](../../../tools/README.md) -- CLI tools reference
