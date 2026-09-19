@@ -10,6 +10,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <thread>
 
 namespace {
 
@@ -40,7 +41,9 @@ TEST(CalibratedCycles, TargetOverEstimate) {
 }
 
 TEST(CalibratedCycles, ClampsBothEnds) {
-  EXPECT_EQ(calibratedCycles(10, 1000.0), 10);              // floor
+  EXPECT_EQ(calibratedCycles(10, 1000.0), 1);               // floor
+  EXPECT_EQ(calibratedCycles(60000, 200000.0), 1);          // 60ms target, 200ms call
+  EXPECT_EQ(calibratedCycles(5000, 1000.0), 5);             // below ten is not rounded up
   EXPECT_EQ(calibratedCycles(2000000000, 0.001), 50000000); // ceiling
   // Sub-precision estimates hit the safety floor rather than exploding.
   EXPECT_EQ(calibratedCycles(1000, 0.0), 1000000);
@@ -92,4 +95,25 @@ TEST(PerfCaseTargetTimeTest, FastOperationRoundNearTarget) {
 
   // Nominal run is calibration plus five 40 ms repeats (0.2 s).
   EXPECT_LT(wallUs, 1e6) << "cycles=" << perf.cycles();
+}
+
+/** @test Runs one cycle per repeat when a single call already exceeds the requested time */
+TEST(PerfCaseTargetTimeTest, SlowOperationRunsOneCycle) {
+  constexpr int REPEATS = 2;
+  vernier::bench::PerfConfig cfg;
+  cfg.targetTimeUs = 5000;
+  cfg.repeats = REPEATS;
+
+  int calls = 0;
+  const auto op = [&] {
+    ++calls;
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  };
+
+  vernier::bench::PerfCase perf{"TargetTime.SlowOperation", cfg};
+  (void)perf.throughputLoop(op);
+
+  EXPECT_EQ(perf.cycles(), 1);
+  // One calibration call, then one call per repeat.
+  EXPECT_EQ(calls, 1 + REPEATS);
 }

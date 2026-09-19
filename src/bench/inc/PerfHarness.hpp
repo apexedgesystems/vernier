@@ -390,13 +390,15 @@ inline PerfRow buildPerfRow(const std::string& testName, const PerfConfig& cfg, 
 
 /**
  * @brief Cycles that make one repeat span ~targetUs given an estimated
- * per-call cost. Pure math for testability; clamped to [10, 50e6].
+ * per-call cost. Pure math for testability; clamped to [1, 50e6]. The floor
+ * is one cycle: a call that already outlasts the target runs once per
+ * repeat instead of stretching the repeat to a multiple of it.
  */
 inline int calibratedCycles(long long targetUs, double estimatedPerCallUs) {
   const double EST = estimatedPerCallUs > 0.001 ? estimatedPerCallUs : 0.001;
   double cycles = static_cast<double>(targetUs) / EST;
-  if (cycles < 10.0) {
-    cycles = 10.0;
+  if (cycles < 1.0) {
+    cycles = 1.0;
   }
   if (cycles > 50000000.0) {
     cycles = 50000000.0;
