@@ -24,6 +24,61 @@
 namespace vernier {
 namespace bench {
 
+/* ----------------------------- CsvListener ----------------------------- */
+
+namespace detail {
+
+/**
+ * @brief GoogleTest listener that appends one CSV row per finished test.
+ *
+ * Takes the row the test left in PerfRegistry and writes it as recorded.
+ * The config columns are the case's own (a --target-time case's calibrated
+ * cycles, a per-case thread count), which can differ from the process-wide
+ * config; the harness that built the row is the only authority on them.
+ *
+ * @note NOT RT-safe (file I/O, heap allocation).
+ */
+class CsvListener : public ::testing::EmptyTestEventListener {
+public:
+  explicit CsvListener(std::string path, bool includeProfile, bool includeGpu)
+      : path_(std::move(path)), includeProfile_(includeProfile), includeGpu_(includeGpu) {
+    out_.open(path_, std::ios::out | std::ios::trunc);
+    if (out_) {
+      writeCsvHeader(out_, includeProfile_, /*includeMetadata=*/true, includeGpu_);
+    }
+  }
+  ~CsvListener() override {
+    if (out_) {
+      out_.flush();
+      out_.close();
+    }
+  }
+
+  void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    if (!out_) {
+      return;
+    }
+
+    if (auto row = PerfRegistry::instance().take()) {
+      // Clear profile metadata if not including profile columns
+      if (!includeProfile_) {
+        row->profileTool.reset();
+        row->profileDir.reset();
+      }
+
+      writeCsvRow(out_, *row);
+    }
+  }
+
+private:
+  std::string path_;
+  std::ofstream out_{};
+  bool includeProfile_{false};
+  bool includeGpu_{false};
+};
+
+} // namespace detail
+
 /* --------------------------------- API --------------------------------- */
 
 /**
@@ -136,56 +191,6 @@ inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest*
     return;
   }
 
-  class CsvListener : public ::testing::EmptyTestEventListener {
-  public:
-    explicit CsvListener(std::string path, bool includeProfile, bool includeGpu)
-        : path_(std::move(path)), includeProfile_(includeProfile), includeGpu_(includeGpu) {
-      out_.open(path_, std::ios::out | std::ios::trunc);
-      if (out_) {
-        writeCsvHeader(out_, includeProfile_, /*includeMetadata=*/true, includeGpu_);
-      }
-    }
-    ~CsvListener() override {
-      if (out_) {
-        out_.flush();
-        out_.close();
-      }
-    }
-
-    void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
-      if (!out_) {
-        return;
-      }
-
-      if (auto row = PerfRegistry::instance().take()) {
-        // Ensure row fields reflect the *parsed* flags used by this process
-        if (const PerfConfig* cfgPtr = globalPerfConfig()) {
-          row->cycles = cfgPtr->cycles;
-          row->repeats = cfgPtr->repeats;
-          row->threads = cfgPtr->threads;
-          row->msgBytes = cfgPtr->msgBytes;
-          row->console = cfgPtr->console;
-          row->nonBlocking = cfgPtr->nonBlocking;
-          row->minLevel = cfgPtr->minLevel;
-        }
-
-        // Clear profile metadata if not including profile columns
-        if (!includeProfile_) {
-          row->profileTool.reset();
-          row->profileDir.reset();
-        }
-
-        writeCsvRow(out_, *row);
-      }
-    }
-
-  private:
-    std::string path_;
-    std::ofstream out_{};
-    bool includeProfile_{false};
-    bool includeGpu_{false};
-  };
-
   const bool INCLUDE_PROFILE = !cfg.profileTool.empty();
 
   // Auto-detect GPU tests. The reliable signal is PERF_GPU_MAIN having run
@@ -210,7 +215,7 @@ inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest*
     }
   }
 
-  listeners.Append(new CsvListener(*cfg.csv, INCLUDE_PROFILE, hasGpuTests));
+  listeners.Append(new detail::CsvListener(*cfg.csv, INCLUDE_PROFILE, hasGpuTests));
 }
 
 } // namespace bench
