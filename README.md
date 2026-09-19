@@ -191,6 +191,7 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 | [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup                                         |
 | [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                                                 |
 | [Demo Walkthroughs](src/bench/demo/docs/)                | 22 step-by-step walkthroughs (16 CPU + 4 GPU demos, plus rocprof and CUPTI) |
+| [Reference Rigs](src/bench/docs/rigs/README.md)          | The machines and conditions the walkthrough outputs were captured on        |
 | [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library                                             |
 
 ---
