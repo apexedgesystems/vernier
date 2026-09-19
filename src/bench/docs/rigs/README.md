@@ -67,9 +67,11 @@ of you and prints what is missing and the command that fixes it.
 Treat a matching doctor output as a prerequisite, not a guarantee. The
 doctor checks backend-specific prerequisites, such as tool availability
 and permissions; it does not check that the tool can see what a
-walkthrough needs it to see. The known case
-is heaptrack in a build that links tcmalloc: the doctor reports heaptrack
-`[OK]`, and heaptrack misses C++ allocations. Each rig document lists such
+walkthrough needs it to see. The known case is heaptrack in a build configured with
+`-DVERNIER_LINK_TCMALLOC=ON`: tcmalloc provides its own `operator new`,
+which heaptrack does not intercept, so heaptrack misses C++ allocations
+while the doctor reports heaptrack `[OK]`. The default build does not link
+tcmalloc. Each rig document lists such
 limits under its rig-specific behavior.
 
 ## 5. Using Another Machine

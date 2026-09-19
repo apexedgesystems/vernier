@@ -77,7 +77,7 @@ grep -rho "generate-code=[^ ]*" build/src/bench/CMakeFiles/*/flags.make | sort -
 ```
 
 On this rig the build takes about 35 seconds and the unit tests pass
-(`ctest --test-dir build`: 117 of 117).
+(`ctest --test-dir build`).
 
 ## 4. Running a Measurement
 
@@ -115,11 +115,6 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
   host-to-device copy is a memory-to-memory copy (about 75 GB/s here), not
   a PCIe transfer. Walkthrough numbers that involve transfers are smaller
   on this rig than on a discrete GPU, and each walkthrough says which ones.
-- **heaptrack and tcmalloc.** With `libgoogle-perftools-dev` installed (the
-  gperf backend needs it), the build links tcmalloc; the doctor's `gperf`
-  line shows it as `cpu heap`. tcmalloc provides its own `operator new`,
-  which heaptrack does not intercept, so heaptrack misses C++ allocations
-  in this build even though the doctor reports heaptrack `[OK]`.
 - **jemalloc.** The distribution's jemalloc is built without profiling;
   the doctor reports it, and the jemalloc walkthrough does not use this rig.
 - **Energy.** RAPL is Intel-only and is not available here.
@@ -136,7 +131,7 @@ Expected on this rig:
   [OK]   bpftrace   bpftrace available via BENCH_SUDO (tracepoint attach verified)
   [OK]   callgrind  valgrind available
   [OK]   compute-sanitizer compute-sanitizer available
-  [OK]   gperf      gperftools linked: cpu heap
+  [OK]   gperf      gperftools linked: cpu
   [OK]   heaptrack  heaptrack available
   [OK]   helgrind   valgrind available (helgrind + drd thread-error detectors ship with it)
   [WARN] jemalloc   libjemalloc present but built without profiling (prof:true rejected)
