@@ -7,14 +7,21 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 
+#include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
+
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
 
+using vernier::bench::parseGpuFlags;
 using vernier::bench::parsePerfFlags;
 using vernier::bench::PerfConfig;
+using vernier::bench::PerfGpuConfig;
+using vernier::bench::test::StderrCapture;
 
 namespace {
 
@@ -39,6 +46,10 @@ private:
   std::vector<char*> argv_;
   int argc_ = 0;
 };
+
+std::size_t countLines(const std::string& text) {
+  return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+}
 
 } // namespace
 
@@ -336,4 +347,128 @@ TEST(PerfConfigTest, MultipleFlagsParsedTogether) {
   EXPECT_EQ(cfg.csv.value(), "out.csv");
   EXPECT_EQ(cfg.profileTool, "gperf");
   EXPECT_TRUE(cfg.console);
+}
+
+/* ----------------------------- Unknown Option Tests ----------------------------- */
+
+/** @test Names a mistyped option in exactly one stderr line and still passes it through */
+TEST(PerfConfigUnknownOptionTest, UnknownOptionWarnsOnceByName) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--target-tmie", "60ms", "--cycles", "100"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  const std::string err = capture.text();
+
+  EXPECT_EQ(countLines(err), 1u) << err;
+  EXPECT_NE(err.find("'--target-tmie'"), std::string::npos) << err;
+  EXPECT_EQ(cfg.cycles, 100);
+  EXPECT_EQ(cfg.targetTimeUs, 0);
+  ASSERT_EQ(*args.argc(), 3);
+  EXPECT_STREQ(args.argv()[1], "--target-tmie");
+  EXPECT_STREQ(args.argv()[2], "60ms");
+}
+
+/** @test Warns once per unknown option, each line naming its own option */
+TEST(PerfConfigUnknownOptionTest, EachUnknownOptionGetsItsOwnLine) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--bpf-scripts", "offcpu", "--repeats", "4", "--no-such-thing"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  const std::string err = capture.text();
+
+  EXPECT_EQ(countLines(err), 2u) << err;
+  const std::size_t first = err.find("'--bpf-scripts'");
+  const std::size_t second = err.find("'--no-such-thing'");
+  ASSERT_NE(first, std::string::npos) << err;
+  ASSERT_NE(second, std::string::npos) << err;
+  EXPECT_NE(err.find('\n', first), err.find('\n', second)) << err;
+  EXPECT_EQ(cfg.repeats, 4);
+}
+
+/** @test Leaves GoogleTest's own options, positionals and short options unremarked */
+TEST(PerfConfigUnknownOptionTest, GtestAndNonOptionArgsDoNotWarn) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog",
+                   "--gtest_filter=Suite.*",
+                   "--gtest_list_tests",
+                   "--gtest_repeat=2",
+                   "--help",
+                   "positional",
+                   "-v",
+                   "--"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  const std::string err = capture.text();
+
+  EXPECT_EQ(err, "");
+  EXPECT_EQ(*args.argc(), 8);
+}
+
+/** @test Accepts every option the parser documents without a warning */
+TEST(PerfConfigUnknownOptionTest, KnownOptionsDoNotWarn) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog",
+                   "--cycles",
+                   "100",
+                   "--target-time",
+                   "40ms",
+                   "--repeats",
+                   "3",
+                   "--warmup",
+                   "2",
+                   "--threads",
+                   "2",
+                   "--msg-bytes",
+                   "128",
+                   "--console",
+                   "--nonblocking",
+                   "--min-level",
+                   "DEBUG",
+                   "--csv",
+                   "/workspace/out.csv",
+                   "--profile",
+                   "perf",
+                   "--profile-args",
+                   "record",
+                   "--bpf",
+                   "offcpu,syslat",
+                   "--artifact-root",
+                   "/workspace/a",
+                   "--profile-output-dir",
+                   "/workspace/b",
+                   "--profile-frequency",
+                   "999",
+                   "--profile-analyze",
+                   "--profile-test-timeout",
+                   "30",
+                   "--quick"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  const std::string err = capture.text();
+
+  EXPECT_EQ(err, "");
+  EXPECT_EQ(*args.argc(), 1);
+}
+
+/** @test Passes the GPU parser's options through silently so that parser can consume them */
+TEST(PerfConfigUnknownOptionTest, GpuParserOptionsDoNotWarn) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog",    "--gpu-warmup",  "3",   "--gpu-device", "0", "--gpu-memory",
+                   "unified", "--min-speedup", "2.0", "--capture-um"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  const std::string err = capture.text();
+
+  EXPECT_EQ(err, "");
+  ASSERT_EQ(*args.argc(), 10);
+
+  // The GPU parser consumes every one of them: the two lists agree.
+  PerfGpuConfig gpuCfg;
+  parseGpuFlags(gpuCfg, args.argc(), args.argv());
+  EXPECT_EQ(*args.argc(), 1);
 }
