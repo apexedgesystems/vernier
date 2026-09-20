@@ -308,9 +308,9 @@ timing line in Step 1 belongs to a CPU demo and is incidental.
   invokes nothing else.
 - **The doctor warns that rocprof has no runtime or kernel driver.** The
   command resolved and neither of the two marker paths could be opened. A GPU
-  and its driver may still be present -- a container without the driver
-  devices produces this state, and so does an installation that places those
-  files elsewhere.
+  and its driver may still be present; the marker paths may be outside the
+  container or installed elsewhere. Missing driver devices alone does not
+  determine this row.
 - **You wrapped the run in rocprof and still got the "NOT running under
   rocprof" hint.** The backend infers the wrap from `ROCP_TOOL_LIB`,
   `ROCPROFILER_LIBRARY` or `LD_PRELOAD`; a rocprof release that sets none of
