@@ -165,3 +165,85 @@ TEST_F(PerfGpuHarnessTest, KernelOnlyRecordsNoTransferTime) {
   ASSERT_TRUE(ROW.transferTimeUs.has_value());
   EXPECT_DOUBLE_EQ(*ROW.transferTimeUs, 0.0);
 }
+
+/* ----------------------------- Speedup ----------------------------- */
+
+/**
+ * @test A CPU baseline reaches the GPU cases of the same suite, whichever
+ *       object measured it.
+ */
+TEST_F(PerfGpuHarnessTest, SpeedupUsesTheSuiteBaseline) {
+  const std::string SUITE = uniqueSuite("GpuSuiteBaseline");
+  SaxpyFixtureData data;
+
+  // A separate PerfGpuCase per test case, as one TEST per case produces.
+  ub::PerfGpuCase baselineCase{SUITE + ".CpuBaseline", cfg_};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+  const ub::PerfResult CPU = baselineCase.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+  (void)ub::PerfRegistry::instance().take();
+
+  ub::PerfGpuCase gpuCase{SUITE + ".Kernel", cfg_};
+  gpuCase.cudaWarmup(data.launch());
+  const ub::PerfGpuResult RESULT = gpuCase.cudaKernel(data.launch(), "saxpy").measure();
+
+  ASSERT_GT(CPU.stats.median, 0.0);
+  EXPECT_NEAR(RESULT.speedupVsCpu, CPU.stats.median / RESULT.totalTimeUs, 1e-9);
+
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.speedupVsCpu.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.speedupVsCpu);
+}
+
+/** @test With no baseline anywhere in its suite, a GPU row leaves the speedup cell empty. */
+TEST_F(PerfGpuHarnessTest, SpeedupCellIsEmptyWithoutBaseline) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuNoBaseline") + ".Kernel", cfg_};
+  perf.cudaWarmup(data.launch());
+
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_DOUBLE_EQ(RESULT.speedupVsCpu, 0.0);
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.speedupVsCpu.has_value())
+      << "an unknown speedup must be an empty cell, not a number";
+}
+
+/**
+ * @test The multi-GPU path reads the same suite baseline, so its speedup and
+ *       scaling efficiency are the measured ones.
+ */
+TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
+  const std::string SUITE = uniqueSuite("GpuMultiBaseline");
+  SaxpyFixtureData data;
+
+  ub::PerfGpuCase baselineCase{SUITE + ".CpuBaseline", cfg_};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+  const ub::PerfResult CPU = baselineCase.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+  (void)ub::PerfRegistry::instance().take();
+
+  ub::PerfGpuCase gpuCase{SUITE + ".MultiGpu", cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  const ub::MultiGpuResult RESULT =
+      gpuCase.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure();
+
+  ASSERT_EQ(RESULT.perDevice.size(), 1U);
+  ASSERT_GT(CPU.stats.median, 0.0);
+  const double DEVICE_TIME = RESULT.perDevice[0].kernelTimeUs;
+  EXPECT_NEAR(RESULT.totalSpeedupVsCpu, CPU.stats.median / DEVICE_TIME, 1e-9);
+  ASSERT_TRUE(RESULT.aggregatedStats.multiGpu.has_value());
+  EXPECT_NEAR(RESULT.aggregatedStats.multiGpu->scalingEfficiency, RESULT.totalSpeedupVsCpu, 1e-9);
+
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.speedupVsCpu.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.totalSpeedupVsCpu);
+}

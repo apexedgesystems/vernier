@@ -237,6 +237,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   time of a kernel-only test is its kernel time. Tests that do declare
   transfers are timed as before; the per-launch kernel time is unchanged
   (median 4.57 us before, 4.39 us after, across six alternating runs).
+- **A CPU baseline reaches the GPU tests of its suite** -- `speedupVsCpu` was
+  measured against a baseline kept on the `PerfGpuCase` object, and GoogleTest
+  builds one object per test case, so the usual layout (a `CpuBaseline` case
+  next to the GPU cases of the same suite) left every GPU case without a
+  baseline and `speedupVsCpu` was 0 in the CSV and on the console. A baseline
+  measured by `perf.cpuBaseline(...)` is recorded for its test suite and read
+  by the GPU cases of that suite, whichever object measured it; a case that
+  measures its own baseline still uses that one, and two suites in a binary
+  never share. The multi-GPU path reads the same baseline, so
+  `totalSpeedupVsCpu` and `multiGpuEfficiency` report measured numbers when the
+  baseline was measured by another case of the suite.
+- **An unknown GPU speedup is an empty cell** -- with no baseline to compare
+  against, the `speedupVsCpu` column held `0.000000`, which reads as a
+  measured slowdown of infinity. The cell is empty instead, as the other GPU
+  columns are when they have no value.
 
 ## v1.0.3 - 2026-06-28
 
