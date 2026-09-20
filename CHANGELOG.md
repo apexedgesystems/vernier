@@ -120,6 +120,39 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.001 us/call, faster than `ReuseBuffer`, and failed their CV check
   intermittently. The allocation is kept; in the reference optimized build they
   report tens of nanoseconds per call, slower than reuse.
+- **A failing test fails `make test`, `make testp` and `make verify`** -- the
+  test recipes pipe ctest through `tee` to write `ctest.log`, and the recipe
+  shell had no `pipefail`, so the target's status was `tee`'s: a run printing
+  `99% tests passed, 1 tests failed` exited 0, and the CI C++ job, which runs
+  `make testp`, could not go red. Recipes run under bash with
+  `-o pipefail -e`; a failing lane fails the target, and
+  the parallel lane prints the failing test's output (`--output-on-failure`)
+  like the serial lanes. `ctest.log` is still written and
+  `make test-py` still accepts pytest's "no tests collected" status.
+  `make docker-disk-usage` succeeds when no vernier image exists.
+- **A release cannot publish with an asset missing** -- the v1.0.3 release
+  carries six assets and no Python wheel: the wheel was built under the Python
+  tools' own version, the upload list named it by the project version, and an
+  unmatched upload pattern is not an error by default. The published set is
+  one list, `scripts/release-assets.txt`. After the artifact build, in tag and
+  rehearsal (`workflow_dispatch`) runs alike, the release workflow resolves it
+  for the version (`scripts/check-release-assets.sh resolve`) into a step
+  output that is both the publish step's `files` input and the input of
+  `check-release-assets.sh verify`, which names every path that is missing,
+  empty or not a regular file and fails the job before the publish step. The
+  publish step also sets `fail_on_unmatched_files`.
+- **The tools report the project version** -- `tools/rust/Cargo.toml` and
+  `tools/py/pyproject.toml` carried 1.0.2 while the project was 1.0.3, so
+  `bench --version` printed `bench 1.0.2` from a 1.0.3 tree and the wheel was
+  named `vernier_py_tools-1.0.2-py3-none-any.whl`. Both carry the version in
+  `CMakeLists.txt`.
+- **When the dev image needs a rebuild for `perf` is written down** -- the dev
+  images carry `perf` for the kernel of the host that built them. After a host
+  kernel update, or in an image pulled from the registry, `perf` prints
+  `perf not found for kernel <release>` and `--profile perf` cannot run.
+  `docker/base.Dockerfile` states the trigger next to the host-matched install
+  step: run `make docker-dev` (or `make docker-dev-cuda`) on the host that runs
+  the container; the changed `HOST_KERNEL` build argument rebuilds that layer.
 - **The bench libraries are `libbench.so.2` and `libbench_cuda.so.2`** --
   `PerfConfig` grew from 232 to 240 bytes since 1.0.3 and `Stats` from 64 to 80,
   which also grew every GPU result that embeds `Stats`, while the exported

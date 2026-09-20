@@ -6,7 +6,8 @@
 #
 # Rehearsal: workflow_dispatch runs the identical artifact build (version taken
 # from CMakeLists.txt, no tag needed) and skips only the publish step -- proving
-# the release pipeline before a tag is cut.
+# the release pipeline, including the completeness of the asset set, before a
+# tag is cut.
 # ==============================================================================
 name: Release
 
@@ -90,6 +91,27 @@ jobs:
       - name: List artifacts
         run: ls -la output/
 
+      # The published set is scripts/release-assets.txt, resolved once here in
+      # both modes. The step output is the publish step's `files:` input, and
+      # the next step checks that same output, so a rehearsal validates the
+      # exact string a tagged run uploads.
+      - name: Resolve release assets
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          files="$(scripts/check-release-assets.sh resolve "$VERSION" output)"
+          {
+            echo "files<<RELEASE_ASSETS_EOF"
+            printf '%s\n' "$files"
+            echo "RELEASE_ASSETS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify release assets
+        env:
+          RELEASE_FILES: ${{ steps.assets.outputs.files }}
+        run: printf '%s\n' "$RELEASE_FILES" | scripts/check-release-assets.sh verify
+
       - name: Create GitHub Release
         if: github.event_name == 'push'
         uses: softprops/action-gh-release@v3
@@ -98,11 +120,5 @@ jobs:
           draft: false
           prerelease: false
           generate_release_notes: true
-          files: |
-            output/vernier-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-x86_64-linux-cuda.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-aarch64-jetson.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-aarch64-rpi.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-riscv64-linux.tar.gz
-            output/vernier-tools-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz
-            output/vernier_py_tools-${{ steps.version.outputs.version }}-py3-none-any.whl
+          fail_on_unmatched_files: true
+          files: ${{ steps.assets.outputs.files }}
