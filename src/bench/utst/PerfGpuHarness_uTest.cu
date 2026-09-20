@@ -172,10 +172,24 @@ TEST_F(PerfGpuHarnessTest, RoundTripIsTransfersPlusOneLaunch) {
           .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
           .measure();
 
+  // The wall time and the leg times are medians of separate distributions, so
+  // they are close but never equal, and where the clocks are free to move a
+  // slow repeat moves one of them more than the other: the ratio measured over
+  // 30 runs on an unpinned reference board spans 0.995 to 1.203, and a first
+  // run after a rebuild has reached 2.04. The bounds are set so that only a
+  // wrong formula can cross them. A wall time divided by the cycle count a
+  // second time is 1/50 of the legs at the cycle count used here and 1/10,000
+  // at the default, which clears the lower bound by a factor of 25; a wall
+  // time that added a leg without dividing it per launch would be about the
+  // cycle count times the legs, which clears the upper bound by the same
+  // margin the jitter has beneath it.
   const double LEGS = RESULT.kernelTimeUs + RESULT.transferTimeUs;
   ASSERT_GT(RESULT.transferTimeUs, 0.0) << "the transfer legs were not measured at all";
-  EXPECT_NEAR(RESULT.totalTimeUs, LEGS, 0.25 * LEGS);
-  EXPECT_NEAR(RESULT.callsPerSecond, 1e6 / RESULT.totalTimeUs, 1.0);
+  EXPECT_GT(RESULT.totalTimeUs, 0.5 * LEGS)
+      << "a round trip cannot be a fraction of the legs it contains";
+  EXPECT_LT(RESULT.totalTimeUs, 10.0 * LEGS)
+      << "a round trip is its three legs, not a multiple of them";
+  EXPECT_DOUBLE_EQ(RESULT.callsPerSecond, 1e6 / RESULT.totalTimeUs);
 
   const ub::PerfRow ROW = lastRow();
   ASSERT_TRUE(ROW.kernelTimeUs.has_value());
@@ -306,8 +320,10 @@ TEST_F(PerfGpuHarnessTest, TwoBaselinesInASuiteLeaveTheSpeedupEmpty) {
   const KernelOutcome CHEAP_LAST = measureKernelCase(CHEAP_LAST_SUITE, data);
 
   // Precondition: the two baselines are far enough apart that a last-writer
-  // rule shows up as a different number, not as noise.
-  ASSERT_GT(EXPENSIVE, 4.0 * CHEAP) << "the two baselines must differ clearly";
+  // rule shows up as a different number, not as noise. The expensive case does
+  // eight times the work of the cheap one; the bound is a quarter of that, so
+  // neither clock behaviour nor cache warmth can bring the two together.
+  ASSERT_GT(EXPENSIVE, 2.0 * CHEAP) << "the two baselines must differ clearly";
 
   EXPECT_DOUBLE_EQ(CHEAP_FIRST.speedup, CHEAP_LAST.speedup)
       << "the speedup depends on which baseline case ran last";
@@ -322,7 +338,8 @@ TEST_F(PerfGpuHarnessTest, CaseBaselineWinsOverAnAmbiguousSuite) {
   const std::string SUITE = uniqueSuite("GpuOwnBaselineWins");
   const double CHEAP = recordBaseline(SUITE, "CheapBaseline", 1);
   const double EXPENSIVE = recordBaseline(SUITE, "ExpensiveBaseline", 8);
-  ASSERT_GT(EXPENSIVE, 4.0 * CHEAP) << "the two baselines must differ clearly";
+  // Eight times the work, asserted at twice: see the order test above.
+  ASSERT_GT(EXPENSIVE, 2.0 * CHEAP) << "the two baselines must differ clearly";
 
   ub::PerfGpuCase gpuCase{SUITE + ".KernelWithOwnBaseline", cfg_};
   std::vector<float> x(ELEMENTS, 1.0F);
