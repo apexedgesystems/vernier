@@ -85,41 +85,43 @@ set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarkin
 # than by numbers handed to the check: one AbiConsumer built from the tree's
 # headers, one from a copy in which PerfConfig has one more member. Both link
 # the same libbench.
+#
+# The header copy has one producer and one user. The rule's declared output
+# is the edited PerfConfig.hpp, which every generation rewrites, and that file
+# is a source of AbiConsumerMismatch and of nothing else. So the rule that
+# deletes, copies and edits the tree belongs to that target alone, the target's
+# objects are compiled after it, and because the consumer includes that header
+# its object is rebuilt in the same build whenever the tree is regenerated. A
+# dependency attached to the shared source file would instead put a second
+# copy of the rule into AbiConsumerMatch, which a parallel Makefiles build can
+# run alongside the first.
 # ------------------------------------------------------------------------------
 
 set(_abi_headers_root "${CMAKE_CURRENT_BINARY_DIR}/abi_mismatch_headers")
 file(GLOB _bench_headers CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/src/bench/inc/*")
+set(_abi_mismatched_header "${_abi_headers_root}/src/bench/inc/PerfConfig.hpp")
 add_custom_command(
-  OUTPUT "${_abi_headers_root}/stamp"
+  OUTPUT "${_abi_mismatched_header}"
   COMMAND "${CMAKE_COMMAND}" -DSRC=${PROJECT_SOURCE_DIR} -DDST=${_abi_headers_root} -P
           "${CMAKE_CURRENT_SOURCE_DIR}/AbiMismatchHeaders.cmake"
-  COMMAND "${CMAKE_COMMAND}" -E touch "${_abi_headers_root}/stamp"
   DEPENDS ${_bench_headers} "${CMAKE_CURRENT_SOURCE_DIR}/AbiMismatchHeaders.cmake"
   COMMENT "Generating the mismatched header tree for AbiConsumerMismatch"
   VERBATIM
 )
-add_custom_target(
-  BenchAbiMismatchHeaders
-  DEPENDS "${_abi_headers_root}/stamp"
-)
-
 add_executable(AbiConsumerMatch "${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumer.cpp")
 target_link_libraries(
   AbiConsumerMatch
   PRIVATE bench
 )
 
-add_executable(AbiConsumerMismatch "${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumer.cpp")
+add_executable(
+  AbiConsumerMismatch "${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumer.cpp" "${_abi_mismatched_header}"
+)
 target_link_libraries(
   AbiConsumerMismatch
   PRIVATE bench
 )
 target_include_directories(AbiConsumerMismatch BEFORE PRIVATE "${_abi_headers_root}")
-set_source_files_properties(
-  "${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumer.cpp" PROPERTIES OBJECT_DEPENDS
-                                                           "${_abi_headers_root}/stamp"
-)
-add_dependencies(AbiConsumerMismatch BenchAbiMismatchHeaders)
 
 foreach (_case Match Mismatch)
   string(TOLOWER "${_case}" _expect)
