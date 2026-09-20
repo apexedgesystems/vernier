@@ -254,9 +254,9 @@ protected:
   };
 
   /** @brief Emit @p rows through one listener and read the file back. */
-  Csv emit(bool includeProfile, const std::vector<PerfRow>& rows) {
+  Csv emit(bool includeProfile, const std::vector<PerfRow>& rows, bool includeGpu = true) {
     {
-      CsvListener listener(path_, includeProfile, /*includeGpu=*/true);
+      CsvListener listener(path_, includeProfile, includeGpu);
       for (const auto& row : rows) {
         PerfRegistry::instance().set(row);
         listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
@@ -325,6 +325,32 @@ TEST_F(GpuCsvListenerTest, UnprofiledFileRowsMatchHeaderColumns) {
   EXPECT_EQ(CSV.at(1, "hostname"), "rig-host");
   EXPECT_EQ(CSV.at(1, "gpuModel"), "");
   EXPECT_EQ(CSV.at(1, "umThrashing"), "");
+}
+
+/** @test In a CPU file with profile columns, a row without profile metadata fills them too */
+TEST_F(GpuCsvListenerTest, CpuFileRowWithoutProfileMetadataKeepsItsWidth) {
+  PerfRow profiled = cpuRow();
+  profiled.testName = "CpuSuite.Profiled";
+  profiled.profileTool = "callgrind";
+  profiled.profileDir = "./CpuSuite.Profiled.callgrind";
+
+  const Csv CSV = emit(/*includeProfile=*/true, {cpuRow(), profiled}, /*includeGpu=*/false);
+
+  // 22 result columns + 2 profile + 4 metadata.
+  ASSERT_EQ(CSV.rows.size(), 2U);
+  EXPECT_EQ(CSV.names.size(), 28U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  EXPECT_EQ(CSV.rows[1].size(), CSV.names.size());
+
+  EXPECT_EQ(CSV.at(0, "test"), "GpuSuite.CpuBaseline");
+  EXPECT_EQ(CSV.at(0, "profileTool"), "");
+  EXPECT_EQ(CSV.at(0, "profileDir"), "");
+  EXPECT_EQ(CSV.at(0, "timestamp"), "2026-09-20T12:00:00Z");
+  EXPECT_EQ(CSV.at(0, "platform"), "aarch64");
+
+  EXPECT_EQ(CSV.at(1, "profileTool"), "callgrind");
+  EXPECT_EQ(CSV.at(1, "profileDir"), "./CpuSuite.Profiled.callgrind");
+  EXPECT_EQ(CSV.at(1, "hostname"), "rig-host");
 }
 
 /** @test A row that does carry profile metadata keeps it under its own headers */

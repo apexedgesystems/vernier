@@ -212,11 +212,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GPU rows, putting every value after `cvThreshold` (`gpuModel`,
   `kernelTimeUs`, the CUPTI and multi-GPU columns) under the wrong name; a CPU
   baseline case in the same binary wrote 26 values against the same header,
-  with or without a profiler. Rows carry the header's groups, with an empty
-  cell where a row has no value, so a row is as wide as the header and each
-  value stands under its own column name. CSV files captured from a GPU binary
-  before this fix cannot be read by column position; reread them by counting
-  from the left edge, or capture them again.
+  with or without a profiler. A CPU-only file had the same gap wherever a row
+  carried no profiler metadata: 26 values under the 28-column header a
+  `--profile` run writes. Rows carry the header's groups, with an empty cell
+  where a row has no value, so a row is as wide as the header and each value
+  stands under its own column name. CSV files captured before this fix from a
+  GPU binary, or from any run whose rows differ in what they carry, cannot be
+  read by column position; reread them by counting from the left edge, or
+  capture them again.
 - **A GPU test's wall time is one round trip** -- the per-call wall time of a
   `PERF_GPU_TEST` was the round trip divided by the cycle count a second time,
   after the kernel leg had already been divided by it, so every wall column
