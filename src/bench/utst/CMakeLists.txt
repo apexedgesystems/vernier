@@ -134,3 +134,14 @@ foreach (_case Match Mismatch)
   )
   set_tests_properties(AbiConsumer${_case}Test PROPERTIES LABELS "benchmarking;abi")
 endforeach ()
+
+# The driver's own check: a sanitizer report in a consumer's output fails the
+# run, also when the consumer exits 0 (recovering UBSan).
+add_test(
+  NAME AbiConsumerDriverTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DDRIVER=${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumer_test.cmake
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/abi_consumer_driver -P
+    "${CMAKE_CURRENT_SOURCE_DIR}/AbiConsumerDriver_test.cmake"
+)
+set_tests_properties(AbiConsumerDriverTest PROPERTIES LABELS "benchmarking;abi")
