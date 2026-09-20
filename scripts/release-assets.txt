@@ -1,0 +1,21 @@
+# ==============================================================================
+# release-assets.txt - the files a release publishes.
+#
+# One file name per line; {version} is replaced by the project version. The
+# release workflow resolves this list once per run and hands the same resolved
+# paths to the asset check and to the publish step, so a name added or removed
+# here changes what is verified and what is uploaded together.
+#
+# Blank lines and lines starting with # are ignored.
+# ==============================================================================
+
+# Library packages, one per platform
+vernier-{version}-x86_64-linux.tar.gz
+vernier-{version}-x86_64-linux-cuda.tar.gz
+vernier-{version}-aarch64-jetson.tar.gz
+vernier-{version}-aarch64-rpi.tar.gz
+vernier-{version}-riscv64-linux.tar.gz
+
+# Command-line tools
+vernier-tools-{version}-x86_64-linux.tar.gz
+vernier_py_tools-{version}-py3-none-any.whl

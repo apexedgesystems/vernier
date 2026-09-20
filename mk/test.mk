@@ -43,7 +43,7 @@ CTEST_ALL_SERIAL := ctest \
 # All tests except Coverage and Timing, parallel execution
 CTEST_ALL_PARALLEL := ctest \
   -LE "$(COVERAGE_LABEL)|$(TIMING_LABEL)" \
-  -j$(NUM_JOBS) --no-tests=ignore
+  -j$(NUM_JOBS) --no-tests=ignore --output-on-failure
 
 # Timing tests only, serial execution
 CTEST_TIMING_SERIAL := ctest \
