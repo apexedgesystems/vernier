@@ -140,8 +140,13 @@ void trackUnifiedMemory(UnifiedMemoryProfile&, const UMSnapshot&, const UMSnapsh
 // ============================================================================
 // A GoogleTest suite runs each of its cases in a PerfGpuCase of its own, so a
 // baseline measured in one case is out of reach of the next unless it is kept
-// beside the case objects. It is keyed by suite so two suites in one binary
-// cannot read each other's baseline.
+// beside the case objects. The rule: a GPU case is compared against the
+// baseline its own case measured; without one it is compared against its
+// suite's baseline only while exactly one case of that suite has recorded one.
+// Once a second case records a different baseline there is no answer to "which
+// one", so a GPU case without its own baseline reports no speedup and the
+// suite is named once on stderr. Keying by suite keeps two suites in one
+// binary from reading each other's baseline.
 // ============================================================================
 
 namespace {
@@ -152,19 +157,69 @@ std::string suiteOf(const std::string& testName) {
   return (DOT == std::string::npos) ? testName : testName.substr(0, DOT);
 }
 
-/**
- * @brief Read (setUs <= 0) or write (setUs > 0) a suite's CPU baseline median.
- * @return The stored median in microseconds, 0.0 when the suite has none.
- */
-double suiteBaselineUs(const std::string& suite, double setUs = 0.0) {
+/** @brief What one suite recorded as its CPU baseline. */
+struct SuiteBaseline {
+  std::string recordedBy; ///< Full name of the case that recorded the median
+  double medianUs = 0.0;  ///< Baseline median (us per call)
+  bool ambiguous = false; ///< A second case recorded one: no shared answer
+  bool reported = false;  ///< The ambiguity has been named on stderr
+};
+
+std::mutex& baselineMutex() {
   static std::mutex mu;
-  static std::map<std::string, double> baselines;
-  const std::lock_guard<std::mutex> LOCK(mu);
-  if (setUs > 0.0) {
-    baselines[suite] = setUs;
+  return mu;
+}
+
+std::map<std::string, SuiteBaseline>& baselineTable() {
+  static std::map<std::string, SuiteBaseline> table;
+  return table;
+}
+
+/**
+ * @brief Record @p medianUs as the CPU baseline of @p testName's suite.
+ *
+ * A case that measures a baseline twice (a repeated run) keeps one entry; a
+ * second, different case of the same suite makes the shared value ambiguous.
+ */
+void recordSuiteBaseline(const std::string& testName, double medianUs) {
+  if (medianUs <= 0.0) {
+    return;
   }
-  const auto IT = baselines.find(suite);
-  return (IT == baselines.end()) ? 0.0 : IT->second;
+  const std::lock_guard<std::mutex> LOCK(baselineMutex());
+  SuiteBaseline& entry = baselineTable()[suiteOf(testName)];
+  if (entry.medianUs > 0.0 && entry.recordedBy != testName) {
+    entry.ambiguous = true;
+    return;
+  }
+  entry.recordedBy = testName;
+  entry.medianUs = medianUs;
+}
+
+/**
+ * @brief The baseline @p testName's suite shares, for a case with none of its own.
+ * @return Median microseconds per call, 0.0 when the suite has no baseline or
+ *         more than one case recorded one.
+ */
+double sharedSuiteBaselineUs(const std::string& testName) {
+  const std::string SUITE = suiteOf(testName);
+  const std::lock_guard<std::mutex> LOCK(baselineMutex());
+  const auto IT = baselineTable().find(SUITE);
+  if (IT == baselineTable().end()) {
+    return 0.0;
+  }
+  if (IT->second.ambiguous) {
+    if (!IT->second.reported) {
+      IT->second.reported = true;
+      std::fprintf(stderr,
+                   "[gpu] suite %s measures a CPU baseline in more than one test, so a GPU test "
+                   "of that suite has no single baseline to be compared against and reports no "
+                   "speedup. Call cpuBaseline() in the GPU test itself, or keep one baseline "
+                   "test per suite.\n",
+                   SUITE.c_str());
+    }
+    return 0.0;
+  }
+  return IT->second.medianUs;
 }
 
 } // namespace
@@ -233,7 +288,7 @@ public:
 
     auto result = cpuPerf.throughputLoop(fn, label);
     cpuBaselineMedianUs_ = result.stats.median;
-    suiteBaselineUs(suiteOf(testName_), cpuBaselineMedianUs_);
+    recordSuiteBaseline(testName_, cpuBaselineMedianUs_);
 
     return result;
   }
@@ -588,8 +643,7 @@ private:
    * @return Median microseconds per call, 0.0 when the suite has no baseline.
    */
   [[nodiscard]] double baselineUs() const {
-    return (cpuBaselineMedianUs_ > 0.0) ? cpuBaselineMedianUs_
-                                        : suiteBaselineUs(suiteOf(testName_));
+    return (cpuBaselineMedianUs_ > 0.0) ? cpuBaselineMedianUs_ : sharedSuiteBaselineUs(testName_);
   }
 
   void queryDeviceInfo() {

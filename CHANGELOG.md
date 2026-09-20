@@ -241,13 +241,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured against a baseline kept on the `PerfGpuCase` object, and GoogleTest
   builds one object per test case, so the usual layout (a `CpuBaseline` case
   next to the GPU cases of the same suite) left every GPU case without a
-  baseline and `speedupVsCpu` was 0 in the CSV and on the console. A baseline
-  measured by `perf.cpuBaseline(...)` is recorded for its test suite and read
-  by the GPU cases of that suite, whichever object measured it; a case that
-  measures its own baseline still uses that one, and two suites in a binary
-  never share. The multi-GPU path reads the same baseline, so
-  `totalSpeedupVsCpu` and `multiGpuEfficiency` report measured numbers when the
-  baseline was measured by another case of the suite.
+  baseline and `speedupVsCpu` was 0 in the CSV and on the console. The rule: a
+  GPU test is compared against the baseline its own test measured, and a test
+  that measured none is compared against its suite's baseline only while
+  exactly one test of that suite has recorded one; once a second test of the
+  suite records a baseline there is no single answer, so GPU tests without
+  their own baseline report no speedup (an empty `speedupVsCpu` cell) and the
+  suite is named once on stderr, pointing at `cpuBaseline()` in the GPU test as
+  the fix. Two suites in one binary never share a baseline. The multi-GPU path
+  follows the same rule, so `totalSpeedupVsCpu` and `multiGpuEfficiency` report
+  measured numbers where a shared baseline applies.
 - **A GPU row carries the stability verdict the console printed** -- GPU rows
   were assembled field by field and never set `stable` or `cvThreshold`, so
   every GPU row in a CSV read `stable=1` and `cvThreshold=0.05` whatever the

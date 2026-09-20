@@ -20,6 +20,7 @@
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
 
 namespace ub = vernier::bench;
 
@@ -112,6 +113,44 @@ protected:
     auto row = ub::PerfRegistry::instance().take();
     EXPECT_TRUE(row.has_value()) << "the harness published no row";
     return row.value_or(ub::PerfRow{});
+  }
+
+  /**
+   * @brief Measure a CPU baseline in a case of its own.
+   * @param suite    Suite the case belongs to.
+   * @param caseName Case name inside that suite.
+   * @param passes   Passes over the vectors per call: the cost knob.
+   * @return The baseline median in microseconds.
+   */
+  double recordBaseline(const std::string& suite, const std::string& caseName, int passes) {
+    ub::PerfGpuCase baselineCase{suite + "." + caseName, cfg_};
+    std::vector<float> x(ELEMENTS, 1.0F);
+    std::vector<float> y(ELEMENTS, 2.0F);
+    const ub::PerfResult CPU = baselineCase.cpuBaseline([&] {
+      for (int p = 0; p < passes; ++p) {
+        for (int i = 0; i < ELEMENTS; ++i) {
+          y[i] = 2.0F * x[i] + y[i];
+        }
+      }
+    });
+    (void)ub::PerfRegistry::instance().take();
+    return CPU.stats.median;
+  }
+
+  /** @brief What a GPU case without a baseline of its own reported. */
+  struct KernelOutcome {
+    double speedup{};
+    bool cellSet{};
+  };
+
+  /** @brief Measure a kernel in a case of @p suite that records no baseline. */
+  KernelOutcome measureKernelCase(const std::string& suite, const SaxpyFixtureData& data,
+                                  const std::string& caseName = "Kernel") {
+    ub::PerfGpuCase gpuCase{suite + "." + caseName, cfg_};
+    gpuCase.cudaWarmup(data.launch());
+    const ub::PerfGpuResult RESULT = gpuCase.cudaKernel(data.launch(), "saxpy").measure();
+    const ub::PerfRow ROW = lastRow();
+    return KernelOutcome{RESULT.speedupVsCpu, ROW.speedupVsCpu.has_value()};
   }
 };
 
@@ -246,6 +285,89 @@ TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   const ub::PerfRow ROW = lastRow();
   ASSERT_TRUE(ROW.speedupVsCpu.has_value());
   EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.totalSpeedupVsCpu);
+}
+
+/**
+ * @test A suite whose cases measured two different baselines has no baseline
+ *       to share: the GPU case reports no speedup, in either order, rather
+ *       than whichever baseline ran last.
+ */
+TEST_F(PerfGpuHarnessTest, TwoBaselinesInASuiteLeaveTheSpeedupEmpty) {
+  SaxpyFixtureData data;
+
+  const std::string CHEAP_FIRST_SUITE = uniqueSuite("GpuTwoBaselines");
+  const double CHEAP = recordBaseline(CHEAP_FIRST_SUITE, "CheapBaseline", 1);
+  const double EXPENSIVE = recordBaseline(CHEAP_FIRST_SUITE, "ExpensiveBaseline", 8);
+  const KernelOutcome CHEAP_FIRST = measureKernelCase(CHEAP_FIRST_SUITE, data);
+
+  const std::string CHEAP_LAST_SUITE = uniqueSuite("GpuTwoBaselines");
+  (void)recordBaseline(CHEAP_LAST_SUITE, "ExpensiveBaseline", 8);
+  (void)recordBaseline(CHEAP_LAST_SUITE, "CheapBaseline", 1);
+  const KernelOutcome CHEAP_LAST = measureKernelCase(CHEAP_LAST_SUITE, data);
+
+  // Precondition: the two baselines are far enough apart that a last-writer
+  // rule shows up as a different number, not as noise.
+  ASSERT_GT(EXPENSIVE, 4.0 * CHEAP) << "the two baselines must differ clearly";
+
+  EXPECT_DOUBLE_EQ(CHEAP_FIRST.speedup, CHEAP_LAST.speedup)
+      << "the speedup depends on which baseline case ran last";
+  EXPECT_DOUBLE_EQ(CHEAP_FIRST.speedup, 0.0);
+  EXPECT_FALSE(CHEAP_FIRST.cellSet) << "an ambiguous baseline must leave the cell empty";
+  EXPECT_FALSE(CHEAP_LAST.cellSet) << "an ambiguous baseline must leave the cell empty";
+}
+
+/** @test A case's own baseline is used even where its suite's is ambiguous. */
+TEST_F(PerfGpuHarnessTest, CaseBaselineWinsOverAnAmbiguousSuite) {
+  SaxpyFixtureData data;
+  const std::string SUITE = uniqueSuite("GpuOwnBaselineWins");
+  const double CHEAP = recordBaseline(SUITE, "CheapBaseline", 1);
+  const double EXPENSIVE = recordBaseline(SUITE, "ExpensiveBaseline", 8);
+  ASSERT_GT(EXPENSIVE, 4.0 * CHEAP) << "the two baselines must differ clearly";
+
+  ub::PerfGpuCase gpuCase{SUITE + ".KernelWithOwnBaseline", cfg_};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+  const ub::PerfResult OWN = gpuCase.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+  (void)ub::PerfRegistry::instance().take();
+
+  gpuCase.cudaWarmup(data.launch());
+  const ub::PerfGpuResult RESULT = gpuCase.cudaKernel(data.launch(), "saxpy").measure();
+
+  ASSERT_GT(OWN.stats.median, 0.0);
+  EXPECT_NEAR(RESULT.speedupVsCpu, OWN.stats.median / RESULT.totalTimeUs, 1e-9);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.speedupVsCpu.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.speedupVsCpu);
+}
+
+/** @test The ambiguity is reported once for a suite, naming it, not once per case. */
+TEST_F(PerfGpuHarnessTest, AmbiguousSuiteBaselineIsReportedOncePerSuite) {
+  SaxpyFixtureData data;
+  const std::string SUITE = uniqueSuite("GpuAmbiguousWarning");
+  (void)recordBaseline(SUITE, "CheapBaseline", 1);
+  (void)recordBaseline(SUITE, "ExpensiveBaseline", 8);
+
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    (void)measureKernelCase(SUITE, data, "FirstKernel");
+    (void)measureKernelCase(SUITE, data, "SecondKernel");
+    captured = capture.text();
+  }
+
+  std::size_t mentions = 0;
+  for (std::size_t at = captured.find(SUITE); at != std::string::npos;
+       at = captured.find(SUITE, at + SUITE.size())) {
+    ++mentions;
+  }
+  EXPECT_EQ(mentions, 1U) << "stderr said:\n" << captured;
+  EXPECT_NE(captured.find("cpuBaseline"), std::string::npos)
+      << "the message must say what to do; stderr said:\n"
+      << captured;
 }
 
 /* ----------------------------- Stability ----------------------------- */
