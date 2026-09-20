@@ -758,24 +758,11 @@ private:
   }
 
   void publishResult(const PerfGpuResult& result) {
-    auto [timestamp, gitHash, hostname, platform] = captureMetadata(true);
-
-    PerfRow row{};
-    row.testName = testName_;
-    row.cycles = cpuCfg_.cycles;
-    row.repeats = cpuCfg_.repeats;
-    row.warmup = cpuCfg_.warmup;
-    row.threads = 1;
-    row.msgBytes = cpuCfg_.msgBytes;
-    row.console = cpuCfg_.console;
-    row.nonBlocking = cpuCfg_.nonBlocking;
-    row.minLevel = cpuCfg_.minLevel;
-    row.stats = result.stats.cpuStats;
-    row.callsPerSecond = result.callsPerSecond;
-    row.timestamp = timestamp;
-    row.gitHash = gitHash;
-    row.hostname = hostname;
-    row.platform = platform;
+    // The row builder the CPU path uses: the config, metadata and stability
+    // columns of a GPU row are then the same columns, filled the same way,
+    // and the CSV `stable` verdict is the one the console printed.
+    PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
+                               result.stats.cpuStats, result.callsPerSecond);
 
     row.gpuModel = result.stats.deviceInfo.name;
     row.computeCapability = std::to_string(result.stats.deviceInfo.computeCapability[0]) + "." +
@@ -836,29 +823,13 @@ private:
   }
 
   void publishMultiGpuResult(const MultiGpuResult& result) {
-    auto [timestamp, gitHash, hostname, platform] = captureMetadata(true);
-
     if (result.perDevice.empty())
       return;
 
     const auto& firstDev = result.perDevice[0];
 
-    PerfRow row{};
-    row.testName = testName_;
-    row.cycles = cpuCfg_.cycles;
-    row.repeats = cpuCfg_.repeats;
-    row.warmup = cpuCfg_.warmup;
-    row.threads = 1;
-    row.msgBytes = cpuCfg_.msgBytes;
-    row.console = cpuCfg_.console;
-    row.nonBlocking = cpuCfg_.nonBlocking;
-    row.minLevel = cpuCfg_.minLevel;
-    row.stats = firstDev.stats.cpuStats;
-    row.callsPerSecond = firstDev.callsPerSecond;
-    row.timestamp = timestamp;
-    row.gitHash = gitHash;
-    row.hostname = hostname;
-    row.platform = platform;
+    PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
+                               firstDev.stats.cpuStats, firstDev.callsPerSecond);
 
     row.gpuModel = firstDev.stats.deviceInfo.name;
     row.computeCapability = std::to_string(firstDev.stats.deviceInfo.computeCapability[0]) + "." +

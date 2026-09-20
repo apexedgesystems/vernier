@@ -247,3 +247,20 @@ TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   ASSERT_TRUE(ROW.speedupVsCpu.has_value());
   EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.totalSpeedupVsCpu);
 }
+
+/* ----------------------------- Stability ----------------------------- */
+
+/** @test A GPU row carries the stability verdict the console prints, not the defaults. */
+TEST_F(PerfGpuHarnessTest, RowCarriesTheStabilityVerdict) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuStability") + ".Kernel", cfg_};
+  perf.cudaWarmup(data.launch());
+
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  const double THRESHOLD = ub::recommendedCVThreshold(cfg_);
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_DOUBLE_EQ(ROW.cvThreshold, THRESHOLD);
+  EXPECT_EQ(ROW.stable, RESULT.stats.cpuStats.cv < THRESHOLD);
+  EXPECT_DOUBLE_EQ(ROW.stats.cv, RESULT.stats.cpuStats.cv);
+}

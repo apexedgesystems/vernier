@@ -248,6 +248,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   never share. The multi-GPU path reads the same baseline, so
   `totalSpeedupVsCpu` and `multiGpuEfficiency` report measured numbers when the
   baseline was measured by another case of the suite.
+- **A GPU row carries the stability verdict the console printed** -- GPU rows
+  were assembled field by field and never set `stable` or `cvThreshold`, so
+  every GPU row in a CSV read `stable=1` and `cvThreshold=0.05` whatever the
+  run did: a summary called a test stable while its own console line said
+  `[UNSTABLE]`, and the threshold shown was not the one the verdict used. GPU
+  rows are built by the same row builder the CPU path uses, so the two columns
+  hold the adaptive threshold for the case's payload size and the verdict
+  measured against it. The config and metadata columns of a GPU row are
+  unchanged.
 - **An unknown GPU speedup is an empty cell** -- with no baseline to compare
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
