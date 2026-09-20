@@ -71,6 +71,17 @@ cmake --build build -j$(nproc)
 source build/.env          # puts the bench CLI on PATH
 ```
 
+A build directory first configured by Vernier 1.0.3 or earlier holds a
+cached `CMAKE_CUDA_ARCHITECTURES` that the compiler chose (`75` on this
+board), next to `CUDA_ARCHS=110`. The two differ, so the first configure
+after an update stops with "Conflicting CUDA architectures". Clear the stale
+value once, or start from an empty build directory:
+
+```bash
+cmake -S . -B build -UCMAKE_CUDA_ARCHITECTURES
+# -- [cuda] architectures: 110 (from CUDA_ARCHS)
+```
+
 Check that the GPU code was compiled for this board:
 
 ```bash
