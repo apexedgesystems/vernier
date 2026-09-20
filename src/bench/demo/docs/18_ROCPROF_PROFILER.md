@@ -5,8 +5,11 @@ has one ([Reference Rigs](../../docs/rigs/README.md)).
 **Build:** Release
 **Example:** none. The demo tree has no HIP workload; see
 [The Example](#the-example).
-**Captured:** 2026-09-19, Vernier 1.0.4, on an x86-64 Linux host with no AMD
-GPU, no ROCm and no rocprof installed.
+**Captured:** 2026-09-19, on an x86-64 Linux host with no AMD GPU, no ROCm
+and no rocprof installed.
+**Versions:** written for the Vernier 1.0.4 release. The captures come from
+the development tree ahead of it, whose CMake project version is 1.0.3 and
+whose CLI reported `bench 1.0.2` at capture time.
 
 **This walkthrough is not validated on AMD hardware.** The backend ships and
 is selectable, and nobody on this project has run it against an AMD GPU. The
@@ -22,19 +25,32 @@ where it applies.
 
 ## Overview
 
-`rocprof` is the profiler that AMD's ROCm stack provides for AMD GPUs. This
-page describes what Vernier's rocprof backend does and does not do, shows
-what you see when rocprof is missing, and gives the first reader with an AMD
-GPU a short recipe to validate the backend and report what it prints.
+`rocprof` is the command-line profiler of the first ROCProfiler generation on
+AMD GPUs. Vernier's backend targets that command by name, and AMD deprecates
+it in favour of a newer tool, so this page is an unvalidated integration with
+a legacy tool rather than a route to current ROCm profiling. It describes
+what the backend does and does not do, shows what you see when `rocprof` is
+missing, and gives the first reader with an AMD GPU a short recipe to
+validate the backend and report what it prints.
 
 ## What is rocprof?
 
-`rocprof` is the command-line profiler in AMD's ROCm stack; per AMD's
-documentation it records kernel timings and HIP and HSA activity, in formats
-that documentation defines. Nothing on this page was produced by running it,
-so its behaviour is not described further here. What Vernier assumes of it is
-narrower and is visible in the backend's code: a tool invoked from outside the
-process, as `rocprof [mode flag] -o <file> <binary> [args]`.
+`rocprof` is the CLI of the first version of ROCProfiler. AMD's
+[tool status page](https://rocm.docs.amd.com/projects/rocprofiler/en/latest/)
+lists ROCProfiler, ROCTracer, `rocprof` and `rocprofv2` as deprecated and
+strongly recommends upgrading to the ROCprofiler-SDK library and its
+[`rocprofv3` tool](https://rocm.docs.amd.com/projects/rocprofiler-sdk/en/docs-7.0.1/how-to/using-rocprofv3.html),
+whose own page calls it backward compatible with `rocprof`. **Vernier's
+backend provides no `rocprofv3` integration:** it looks for the exact name
+`rocprof`, and an installation that ships only the newer command does not
+satisfy it.
+
+Per AMD's documentation the tool records kernel timings and HIP and HSA
+activity, in formats that documentation defines. Nothing on this page was
+produced by running it, so its behaviour is not described further here. What
+Vernier assumes of it is narrower and is visible in the backend's code: a
+tool invoked from outside the process, as
+`rocprof [mode flag] -o <file> <binary> [args]`.
 
 - **Best for:** what AMD's documentation points it at -- kernel timing and API
   tracing of HIP workloads on AMD GPUs.
@@ -71,8 +87,10 @@ process, as `rocprof [mode flag] -o <file> <binary> [args]`.
   `ncu`. It runs the binary directly, so the run is unprofiled unless you
   invoke rocprof yourself.
 
-**Needs:** an AMD GPU with a working ROCm install (kernel driver present and
-`rocprof` on `PATH`), plus a HIP workload to profile. Vernier ships neither.
+**Needs:** three separate things, none of which Vernier ships or tests here.
+Working AMD GPU hardware with its kernel driver. A ROCm installation that
+exposes the legacy `rocprof` command under that name; no ROCm version is
+claimed to have been tested with this backend. And a HIP workload to profile.
 
 ## The Example
 
@@ -115,6 +133,11 @@ What to read: the measurement still runs and the binary still exits 0. The
 only sign that nothing was profiled is that warning, once per test. No
 artifact directory is created, because the backend was never constructed.
 
+The install line in that warning is generic. What the backend needs is a
+program named exactly `rocprof`; which package provides it, and whether the
+ROCm release you install still carries the legacy command, depends on your
+distribution and ROCm version.
+
 Note what is absent: the backend's wrap instruction. That hint comes from the
 backend, and the backend exists only when rocprof is on `PATH`.
 
@@ -155,18 +178,21 @@ backends and the readiness section above them are cut):
   12 backend(s), 5 fail.
 ```
 
-The backend probes two things separately -- whether `rocprof` is on `PATH`,
-and whether a ROCm runtime or GPU kernel driver is present -- so the row has
-four states. The capture above is the first of them. The messages of the
-other three are quoted from the backend's environment check in the source,
-not from a run on a machine in that state:
+This row is a marker check, not a capability test. The backend looks for two
+things: a program named `rocprof` on `PATH`, and either
+`/opt/rocm/lib/libhsa-runtime64.so` or `/sys/class/kfd/kfd/topology/nodes`
+openable as a file. It enumerates no GPUs, tests no device permissions, runs
+no HIP code and never starts the profiler. The four states below are the four
+combinations of those two lookups. The capture above is the first of them;
+the messages of the other three are quoted from the backend's environment
+check in the source, not from a run on a machine in that state:
 
-| Tag      | Message                                                            | What it means                                                                                                     |
-| -------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| `[FAIL]` | `ROCm not detected (no rocprof on PATH, no /opt/rocm)`             | neither piece is present. This is the row captured above                                                          |
-| `[FAIL]` | `ROCm runtime present but rocprof binary missing`                  | the ROCm stack is installed, the profiler package is not                                                          |
-| `[WARN]` | `rocprof present but no ROCm runtime / GPU kernel driver detected` | the tool is installed and no AMD GPU is visible to it, commonly in a container started without the driver devices |
-| `[OK]`   | `rocprof + ROCm runtime available`                                 | both present. This is the state the profiling steps below assume                                                  |
+| Tag      | Message                                                            | What was found                                                                                                                                   |
+| -------- | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `[FAIL]` | `ROCm not detected (no rocprof on PATH, no /opt/rocm)`             | no `rocprof` on `PATH` and neither marker path openable. This is the row captured above                                                          |
+| `[FAIL]` | `ROCm runtime present but rocprof binary missing`                  | a marker path opened, no `rocprof` on `PATH`. The command may be installed under another name, or outside this `PATH`                            |
+| `[WARN]` | `rocprof present but no ROCm runtime / GPU kernel driver detected` | `rocprof` found, neither marker path openable. A GPU and a driver may still be present at paths this check does not look at                      |
+| `[OK]`   | `rocprof + ROCm runtime available`                                 | both lookups succeeded. That is a precondition for Step 3, not proof of GPU access, of a compatible stack, or that a capture will produce output |
 
 For a script or a CI lane, ask for the verdict instead of the table:
 
@@ -188,8 +214,10 @@ Captured output (exit status 1):
 _Not run: needs an AMD GPU. No output is shown for this step because nobody
 has run it._
 
-On a host that the doctor reports as ready, wrap your own HIP performance
-test in rocprof and let Vernier measure inside it:
+This step needs three things the doctor does not establish: working AMD GPU
+hardware, a ROCm installation that provides the legacy `rocprof` command, and
+a HIP performance test of your own. With those, wrap the test in rocprof and
+let Vernier measure inside it:
 
 ```bash
 # Not run: needs an AMD GPU.
@@ -198,8 +226,10 @@ rocprof -o <Suite>.<Test>.rocprof/results.csv \
     --gtest_filter='<Suite>.<Test>'
 ```
 
-The artifact directory is named after the test the backend is attached to,
-which is why the path carries the full GoogleTest name.
+That block is a template, not a runnable example: every `<...>` is yours to
+fill, and no binary in this repository matches it. The artifact directory is
+named after the test the backend is attached to, which is why the path
+carries the full GoogleTest name.
 
 Run the binary once without the wrap first. The backend prints the rocprof
 command it expects, naming the artifact directory it will use and leaving
@@ -226,16 +256,20 @@ states what a run produced.
 
 If you have an AMD GPU and ten minutes, this is the missing piece. Four
 outputs are enough to replace the stub with a walkthrough written from a real
-run.
+run. The recipe applies to an installation that still exposes the legacy
+`rocprof` command; on a ROCm release that ships only `rocprofv3`, the backend
+has nothing to find, and that result is worth reporting too.
 
-1. Build Release and confirm the backend is ready:
+1. Build Release and confirm both lookups succeed:
 
    ```bash
    # Not run here: needs an AMD GPU.
    bench doctor ./build/bin/ptests/<YourHipPtest> --require rocprof
    ```
 
-   Expect the check to report rocprof ready, and exit status 0.
+   Expect the check to report rocprof ready, and exit status 0. That means
+   the command and a marker path were found; whether a capture works is what
+   the next two steps test.
 
 2. Run your HIP test once with `--profile rocprof` and no wrap, and keep the
    `[rocprof]` block it prints.
@@ -263,11 +297,20 @@ timing line in Step 1 belongs to a CPU demo and is incidental.
 
 ## If It Does Not Match
 
-- **The doctor fails with `ROCm not detected`.** rocprof is not on `PATH`.
-  Install the ROCm profiler package for your distribution.
-- **The doctor warns that rocprof has no runtime or kernel driver.** The tool
-  is installed but no AMD GPU is visible -- commonly a container started
-  without the driver devices.
+- **The doctor fails with `ROCm not detected`.** Neither lookup succeeded: no
+  program named `rocprof` on this `PATH`, and neither marker path openable.
+  That is not a statement about what is installed. Check whether an
+  installation is present but outside `PATH`, and whether it provides the
+  legacy command at all, rather than only the current one.
+- **The doctor fails because the `rocprof` binary is missing.** A marker path
+  opened and the command did not resolve. A ROCm installation whose CLI is
+  `rocprofv3` reaches this state: the backend looks for the older name and
+  invokes nothing else.
+- **The doctor warns that rocprof has no runtime or kernel driver.** The
+  command resolved and neither of the two marker paths could be opened. A GPU
+  and its driver may still be present -- a container without the driver
+  devices produces this state, and so does an installation that places those
+  files elsewhere.
 - **You wrapped the run in rocprof and still got the "NOT running under
   rocprof" hint.** The backend infers the wrap from `ROCP_TOOL_LIB`,
   `ROCPROFILER_LIBRARY` or `LD_PRELOAD`; a rocprof release that sets none of
