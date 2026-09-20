@@ -16,6 +16,15 @@ add_library(demo_helpers INTERFACE)
 target_include_directories(demo_helpers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 
 # ------------------------------------------------------------------------------
+# Shared Examples
+# ------------------------------------------------------------------------------
+# The code the walkthroughs measure, with its unit tests. A demo links the
+# example it walks through instead of declaring its own workload.
+# ------------------------------------------------------------------------------
+
+add_subdirectory(examples)
+
+# ------------------------------------------------------------------------------
 # CPU Demo Sources
 # ------------------------------------------------------------------------------
 
@@ -49,6 +58,15 @@ foreach (DEMO ${CPU_DEMOS})
     demo_helpers
   )
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# Demos Built on a Shared Example (1)
+# ------------------------------------------------------------------------------
+
+target_link_libraries(
+  BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
 
 # ------------------------------------------------------------------------------
 # GPU Demo Sources
