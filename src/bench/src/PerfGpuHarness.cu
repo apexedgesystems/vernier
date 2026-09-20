@@ -286,8 +286,11 @@ public:
       CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
       d2hTimes.push_back(d2hMs * 1000.0);
 
-      totalTimes.push_back((h2dTimes.back() + kernelTimes.back() + d2hTimes.back()) /
-                           cpuCfg_.cycles);
+      // One round trip is one H2D leg, one kernel launch and one D2H leg.
+      // kernelTimes holds the per-launch time (already divided by the cycle
+      // count above) and the transfer legs run once per repeat, so the sum is
+      // the per-call wall time.
+      totalTimes.push_back(h2dTimes.back() + kernelTimes.back() + d2hTimes.back());
     }
 
     if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {

@@ -217,6 +217,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   value stands under its own column name. CSV files captured from a GPU binary
   before this fix cannot be read by column position; reread them by counting
   from the left edge, or capture them again.
+- **A GPU test's wall time is one round trip** -- the per-call wall time of a
+  `PERF_GPU_TEST` was the round trip divided by the cycle count a second time,
+  after the kernel leg had already been divided by it, so every wall column
+  (`wallMedian` and its percentiles), the console `us/call` line, `calls/s` and
+  the speedup were wrong by a factor of `--cycles`: a 21 us round trip printed
+  as 0.005 us/call at the default 10,000 cycles. One round trip is the
+  host-to-device leg, one kernel launch and the device-to-host leg, and that is
+  what the wall columns now report. Kernel and transfer columns are unchanged.
+  GPU CSVs captured before this fix are comparable among themselves only at
+  equal `--cycles`; multiply their wall columns by the `cycles` column to
+  recover the real time.
 
 ## v1.0.3 - 2026-06-28
 
