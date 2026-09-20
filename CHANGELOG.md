@@ -120,13 +120,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.001 us/call, faster than `ReuseBuffer`, and failed their CV check
   intermittently. The allocation is kept; in the reference optimized build they
   report tens of nanoseconds per call, slower than reuse.
+- **The bench libraries are `libbench.so.2` and `libbench_cuda.so.2`** --
+  `PerfConfig` grew from 232 to 240 bytes since 1.0.3 and `Stats` from 64 to 80,
+  which also grew every GPU result that embeds `Stats`, while the exported
+  functions that take and return them kept their names. Under the previous
+  SONAME (`libbench.so.1`) a benchmark built against 1.0.3 loaded these
+  libraries and entered those functions with the smaller objects; the start-up
+  check below cannot help there, because a benchmark compiled before it never
+  calls it. Both bench libraries now carry SONAME `.so.2`, so that pairing ends
+  at `libbench.so.1: cannot open shared object file` before any vernier code
+  runs. `libmonitor` is unchanged at `.so.1`.
+  **Action needed:** rebuild benchmarks that link `vernier::bench` or
+  `vernier::bench_cuda` against these headers. There is no `.so.1` link to the
+  new libraries: an installed 1.0.3 keeps its own `libbench.so.1` and its
+  `libbench.so.1.0.3` file, which these libraries (installed as
+  `libbench.so.2.<minor>.<patch>`) do not overwrite, so both can serve their own
+  consumers from one directory. The number lives in `src/bench/CMakeLists.txt`
+  as `BENCH_ABI_SOVERSION` and covers both libraries; `README.md` records the
+  policy.
 - **A benchmark and a bench library from different builds stop with a message**
   -- `libbench` and `libbench_cuda` read `PerfConfig`, `Stats` and
   `PerfGpuConfig` objects laid out by header code compiled into the benchmark,
-  under one SONAME (`libbench.so.1`). A library from another build (an installed
-  package next to newer headers, a stale copy found first on the library path)
-  read the wrong bytes and the run died inside a profiler constructor with
-  `basic_string::_M_construct null not valid`. `PERF_MAIN`, `PERF_GPU_MAIN`,
+  so the two sides share a layout under one SONAME. A library from another build
+  of the same ABI (an installed package next to newer headers, a stale copy
+  found first on the library path) read the wrong bytes and the run died inside
+  a profiler constructor with `basic_string::_M_construct null not valid`. `PERF_MAIN`, `PERF_GPU_MAIN`,
   the GPU guard and `Profiler::make` (so a benchmark with its own `main()` is
   covered on first use) report what the benchmark was compiled with, and the
   library compares it with its own build. On a mismatch the run prints one line
@@ -142,10 +160,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   has sits at its 1.0.3 offset), and every layout change raises
   `BENCH_ABI_VERSION`; a unit test pins the member count, order, types and
   offsets of the current version. A member added into existing padding without
-  a version change is caught by that test, not at run time. A library built
-  before this check has no such entry point, so a benchmark built with these
-  headers refuses to start against it with the loader's
-  `undefined symbol: vernier::bench::checkBenchAbi(...)`.
+  a version change is caught by that test, not at run time. `BENCH_ABI_VERSION`
+  and the SONAME number are separate: the SONAME decides which file the loader
+  picks and also has to move when an exported signature changes, while
+  `BENCH_ABI_VERSION` is compared inside the process and catches a layout change
+  that leaves both the struct sizes and the file name alone.
 - **`Perf.hpp` compiles without warnings for consumers** -- the profile
   watchdog's signal handler discarded the result of five `write(2)` calls, so an
   optimized consumer build with `-Wall` (where the C library marks `write`

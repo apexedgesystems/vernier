@@ -24,7 +24,18 @@
  *
  * Not covered: a benchmark built from headers older than this check never
  * calls it, and one that constructs a PerfGpuCase without PERF_GPU_MAIN or the
- * GPU guard reaches libbench_cuda unchecked.
+ * GPU guard reaches libbench_cuda unchecked. The SONAME of libbench and
+ * libbench_cuda covers that gap from outside the process: a benchmark whose
+ * headers predate this check asks the loader for the SONAME those headers
+ * shipped with, so it never reaches a library built from a later layout.
+ *
+ * BENCH_ABI_VERSION and the SONAME are separate numbers for the same layout.
+ * The SONAME is set in src/bench/CMakeLists.txt, names the file the loader
+ * picks, and also has to move when an exported signature changes, which this
+ * check cannot see. BENCH_ABI_VERSION is compared inside the process and is
+ * what catches a layout change that leaves both the size and the file name
+ * alone. Raise both for a layout change; the numbers do not have to agree,
+ * and they do not today.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
