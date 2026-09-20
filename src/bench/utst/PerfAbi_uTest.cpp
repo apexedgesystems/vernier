@@ -4,15 +4,19 @@
  * for the start-up check that compares both sides of it.
  *
  * Notes:
- *  - libbench reads PerfConfig and Stats through references handed over by
- *    header-inline code compiled into the consumer, so member offsets are part
- *    of the shared library's ABI even though no symbol names them.
- *  - The layout rule is "append only". Each pinned member must start exactly
- *    where the previous pinned member ends (rounded up to its alignment), and
- *    must keep its type. That holds on any platform, and it fails as soon as a
- *    member is inserted, removed, reordered or retyped ahead of the tail.
- *  - A failure here means: move the new member to the end of the struct. If
- *    the layout truly has to change, raise the library's SOVERSION with it.
+ *  - libbench and libbench_cuda read, copy and hand back PerfConfig, Stats and
+ *    PerfGpuConfig objects laid out by header-inline code compiled into the
+ *    consumer, so the layout is part of the shared libraries' ABI even though
+ *    no symbol names it.
+ *  - The layout described here belongs to one BENCH_ABI_VERSION. The member
+ *    count is fixed at compile time (a structured binding names every member),
+ *    each binding must be the expected member, and each member must start
+ *    exactly where the previous one ends (rounded up to its alignment) and keep
+ *    its type. Together that fails for a member added anywhere, including
+ *    into padding where sizeof cannot show it, removed, reordered or retyped.
+ *  - A failure or compile error here means the layout changed: put a new
+ *    member at the end of its struct, raise BENCH_ABI_VERSION in PerfAbi.hpp,
+ *    then describe the new layout here.
  */
 
 #include "src/bench/inc/PerfAbi.hpp"
@@ -38,7 +42,6 @@ using vernier::bench::PerfGpuConfig;
 using vernier::bench::Stats;
 using vernier::bench::detail::AbiField;
 using vernier::bench::detail::abiMismatchMessage;
-using vernier::bench::detail::AbiRule;
 
 // offsetof on a struct with std::string members is conditionally supported;
 // every toolchain this project builds with supports it, and the alternative
@@ -83,7 +86,40 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 
 } // namespace
 
+// The tables and bindings below describe this version and no other.
+static_assert(BENCH_ABI_VERSION == 1,
+              "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
+              "file to the layout of the new version, then update this assertion");
+
 /* ----------------------------- PerfConfig Layout Tests ----------------------------- */
+
+/** @test PerfConfig has exactly the members of this ABI version, in this order */
+TEST(PerfConfigLayoutTest, HasExactlyTheMembersOfThisAbiVersion) {
+  const PerfConfig CFG;
+  // Does not compile when the number of members changes, wherever the new
+  // member sits. See the file comment for what to do then.
+  const auto& [cycles, repeats, warmup, threads, msgBytes, console, nonBlocking, minLevel, csv,
+               profileTool, profileArgs, bpfScripts, artifactRoot, profileFrequency, profileAnalyze,
+               profileTestTimeoutSecs, quickMode, targetTimeUs] = CFG;
+  EXPECT_EQ(static_cast<const void*>(&cycles), &CFG.cycles);
+  EXPECT_EQ(static_cast<const void*>(&repeats), &CFG.repeats);
+  EXPECT_EQ(static_cast<const void*>(&warmup), &CFG.warmup);
+  EXPECT_EQ(static_cast<const void*>(&threads), &CFG.threads);
+  EXPECT_EQ(static_cast<const void*>(&msgBytes), &CFG.msgBytes);
+  EXPECT_EQ(static_cast<const void*>(&console), &CFG.console);
+  EXPECT_EQ(static_cast<const void*>(&nonBlocking), &CFG.nonBlocking);
+  EXPECT_EQ(static_cast<const void*>(&minLevel), &CFG.minLevel);
+  EXPECT_EQ(static_cast<const void*>(&csv), &CFG.csv);
+  EXPECT_EQ(static_cast<const void*>(&profileTool), &CFG.profileTool);
+  EXPECT_EQ(static_cast<const void*>(&profileArgs), &CFG.profileArgs);
+  EXPECT_EQ(static_cast<const void*>(&bpfScripts), &CFG.bpfScripts);
+  EXPECT_EQ(static_cast<const void*>(&artifactRoot), &CFG.artifactRoot);
+  EXPECT_EQ(static_cast<const void*>(&profileFrequency), &CFG.profileFrequency);
+  EXPECT_EQ(static_cast<const void*>(&profileAnalyze), &CFG.profileAnalyze);
+  EXPECT_EQ(static_cast<const void*>(&profileTestTimeoutSecs), &CFG.profileTestTimeoutSecs);
+  EXPECT_EQ(static_cast<const void*>(&quickMode), &CFG.quickMode);
+  EXPECT_EQ(static_cast<const void*>(&targetTimeUs), &CFG.targetTimeUs);
+}
 
 /** @test Members the 1.0.3 library knows keep their order, types and offsets */
 TEST(PerfConfigLayoutTest, ReleasedMembersStayWhereTheLibraryReadsThem) {
@@ -120,6 +156,13 @@ TEST(PerfConfigLayoutTest, NewMembersAreAppended) {
 }
 
 #if defined(__GLIBCXX__) && defined(__LP64__)
+/** @test On 64-bit libstdc++ the shared structs have the sizes of this ABI version */
+TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
+  EXPECT_EQ(sizeof(PerfConfig), 240U);
+  EXPECT_EQ(sizeof(Stats), 80U);
+  EXPECT_EQ(sizeof(PerfGpuConfig), 40U);
+}
+
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */
 TEST(PerfConfigLayoutTest, MatchesOffsetsMeasuredInReleasedLibrary) {
   EXPECT_EQ(offsetof(PerfConfig, minLevel), 24U);
@@ -134,6 +177,23 @@ TEST(PerfConfigLayoutTest, MatchesOffsetsMeasuredInReleasedLibrary) {
 #endif
 
 /* ----------------------------- Stats Layout Tests ----------------------------- */
+
+/** @test Stats has exactly the members of this ABI version, in this order */
+TEST(StatsLayoutTest, HasExactlyTheMembersOfThisAbiVersion) {
+  const Stats STATS;
+  const auto& [median, p10, p90, p99, p999, min, max, mean, stddev, cv] = STATS;
+  EXPECT_EQ(&median, &STATS.median);
+  EXPECT_EQ(&p10, &STATS.p10);
+  EXPECT_EQ(&p90, &STATS.p90);
+  EXPECT_EQ(&p99, &STATS.p99);
+  EXPECT_EQ(&p999, &STATS.p999);
+  EXPECT_EQ(&min, &STATS.min);
+  EXPECT_EQ(&max, &STATS.max);
+  EXPECT_EQ(&mean, &STATS.mean);
+  EXPECT_EQ(&stddev, &STATS.stddev);
+  EXPECT_EQ(&cv, &STATS.cv);
+  EXPECT_EQ(sizeof(Stats), 10 * sizeof(double)) << "no room for a member the binding cannot see";
+}
 
 /** @test Stats members keep their order and types */
 TEST(StatsLayoutTest, MembersStayInOrder) {
@@ -150,6 +210,24 @@ TEST(StatsLayoutTest, MembersStayInOrder) {
 }
 
 /* ----------------------------- PerfGpuConfig Layout Tests ----------------------------- */
+
+/** @test PerfGpuConfig has exactly the members of this ABI version, in this order */
+TEST(PerfGpuConfigLayoutTest, HasExactlyTheMembersOfThisAbiVersion) {
+  const PerfGpuConfig GPU;
+  const auto& [gpuWarmup, memStrategy, captureOccupancy, captureClockSpeeds, captureMemoryBandwidth,
+               captureUnifiedMemory, deviceId, useHighPriorityStream, minSpeedupVsCpu,
+               maxTransferOverhead] = GPU;
+  EXPECT_EQ(static_cast<const void*>(&gpuWarmup), &GPU.gpuWarmup);
+  EXPECT_EQ(static_cast<const void*>(&memStrategy), &GPU.memStrategy);
+  EXPECT_EQ(static_cast<const void*>(&captureOccupancy), &GPU.captureOccupancy);
+  EXPECT_EQ(static_cast<const void*>(&captureClockSpeeds), &GPU.captureClockSpeeds);
+  EXPECT_EQ(static_cast<const void*>(&captureMemoryBandwidth), &GPU.captureMemoryBandwidth);
+  EXPECT_EQ(static_cast<const void*>(&captureUnifiedMemory), &GPU.captureUnifiedMemory);
+  EXPECT_EQ(static_cast<const void*>(&deviceId), &GPU.deviceId);
+  EXPECT_EQ(static_cast<const void*>(&useHighPriorityStream), &GPU.useHighPriorityStream);
+  EXPECT_EQ(static_cast<const void*>(&minSpeedupVsCpu), &GPU.minSpeedupVsCpu);
+  EXPECT_EQ(static_cast<const void*>(&maxTransferOverhead), &GPU.maxTransferOverhead);
+}
 
 /** @test PerfGpuConfig members keep their order and types */
 TEST(PerfGpuConfigLayoutTest, MembersStayInOrder) {
@@ -192,11 +270,23 @@ TEST_F(BenchAbiCheckTest, MatchingBuildPasses) {
   SUCCEED() << "both calls returned";
 }
 
-/** @test Accepts a benchmark whose structs are larger: members are appended */
-TEST_F(BenchAbiCheckTest, LargerBenchmarkStructsPass) {
-  checkBenchAbi(BENCH_ABI_VERSION, sizeof(PerfConfig) + sizeof(int),
-                sizeof(Stats) + sizeof(double));
-  SUCCEED() << "returned";
+/** @test A benchmark whose PerfConfig is larger than the library's is refused, naming both sizes */
+TEST_F(BenchAbiCheckTest, LargerPerfConfigIsRefused) {
+  const std::string EXPECTED = "sizeof\\(PerfConfig\\): benchmark " +
+                               std::to_string(sizeof(PerfConfig) + sizeof(std::string)) +
+                               ", library " + std::to_string(sizeof(PerfConfig)) + "\\)";
+  EXPECT_EXIT(
+      checkBenchAbi(BENCH_ABI_VERSION, sizeof(PerfConfig) + sizeof(std::string), sizeof(Stats)),
+      ::testing::ExitedWithCode(BENCH_ABI_MISMATCH_EXIT_CODE), EXPECTED);
+}
+
+/** @test A benchmark whose Stats is larger than the library's is refused, naming both sizes */
+TEST_F(BenchAbiCheckTest, LargerStatsIsRefused) {
+  const std::string EXPECTED = "sizeof\\(Stats\\): benchmark " +
+                               std::to_string(sizeof(Stats) + sizeof(double)) + ", library " +
+                               std::to_string(sizeof(Stats)) + "\\)";
+  EXPECT_EXIT(checkBenchAbi(BENCH_ABI_VERSION, sizeof(PerfConfig), sizeof(Stats) + sizeof(double)),
+              ::testing::ExitedWithCode(BENCH_ABI_MISMATCH_EXIT_CODE), EXPECTED);
 }
 
 /** @test A different ABI version prints both values and exits with the mismatch status */
@@ -221,13 +311,13 @@ TEST_F(BenchAbiCheckTest, SmallerPerfConfigIsRefused) {
               ::testing::ExitedWithCode(BENCH_ABI_MISMATCH_EXIT_CODE), EXPECTED);
 }
 
-/** @test Every violated field appears in the one message, in order; satisfied fields do not */
-TEST(AbiMismatchMessageTest, ListsEachViolatedFieldOnce) {
+/** @test Every differing field appears in the one message, in order; equal fields do not */
+TEST(AbiMismatchMessageTest, ListsEachDifferingFieldOnce) {
   const AbiField FIELDS[] = {
-      {"ABI version", 2, 1, AbiRule::EQUAL},
-      {"sizeof(A)", 48, 40, AbiRule::BENCHMARK_AT_LEAST_LIBRARY},
-      {"sizeof(B)", 32, 40, AbiRule::BENCHMARK_AT_LEAST_LIBRARY},
-      {"sizeof(C)", 88, 80, AbiRule::EQUAL},
+      {"ABI version", 2, 1},
+      {"sizeof(A)", 40, 40},
+      {"sizeof(B)", 32, 40},
+      {"sizeof(C)", 88, 80},
   };
   const std::string MESSAGE = abiMismatchMessage("libbench_cuda", FIELDS, 4);
   EXPECT_NE(MESSAGE.find("(ABI version: benchmark 2, library 1; sizeof(B): benchmark 32, "
@@ -240,11 +330,11 @@ TEST(AbiMismatchMessageTest, ListsEachViolatedFieldOnce) {
   EXPECT_EQ(MESSAGE.find('\n'), MESSAGE.size() - 1) << "one line: " << MESSAGE;
 }
 
-/** @test No violated field yields no message */
-TEST(AbiMismatchMessageTest, EmptyWhenEveryFieldHolds) {
+/** @test Equal fields yield no message */
+TEST(AbiMismatchMessageTest, EmptyWhenEveryFieldIsEqual) {
   const AbiField FIELDS[] = {
-      {"ABI version", 1, 1, AbiRule::EQUAL},
-      {"sizeof(A)", 48, 40, AbiRule::BENCHMARK_AT_LEAST_LIBRARY},
+      {"ABI version", 1, 1},
+      {"sizeof(A)", 40, 40},
   };
   EXPECT_TRUE(abiMismatchMessage("libbench", FIELDS, 2).empty());
   EXPECT_TRUE(abiMismatchMessage("libbench", nullptr, 0).empty());

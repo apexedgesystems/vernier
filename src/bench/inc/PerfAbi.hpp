@@ -6,20 +6,25 @@
  * were built from compatible headers.
  *
  * Header-inline code compiled into the benchmark hands PerfConfig, Stats and
- * PerfGpuConfig objects to libbench and libbench_cuda. Their layout is
- * therefore shared between two separately built binaries, and a library from
- * another build reads the wrong bytes. The benchmark reports what it was
- * compiled with; the library compares that with what it was compiled with and,
- * on a mismatch, prints one message and ends the process instead of running
- * into undefined behavior.
+ * PerfGpuConfig objects to libbench and libbench_cuda, which copy them into
+ * storage of their own size, destroy the copies, embed them in results and
+ * hand back references to them. The layout is therefore shared between two
+ * separately built binaries. The benchmark reports what it was compiled with;
+ * the library compares that with what it was compiled with and, on any
+ * difference, prints one message and ends the process before an object of
+ * these types is passed across.
  *
- * The rule per value:
- *  - the ABI version must be equal;
- *  - a struct the library only reads (PerfConfig, PerfGpuConfig, and Stats for
- *    libbench) may be larger in the benchmark than in the library, because
- *    members are appended and the library reads the part it knows;
- *  - a struct the library embeds in results it hands back (Stats for
- *    libbench_cuda) must have the same size on both sides.
+ * Policy: the ABI version and the size of every compared struct must be equal
+ * on both sides. There is no tolerated difference, a member appended at the
+ * end included. Every layout change raises BENCH_ABI_VERSION, because a member
+ * that fits into existing padding leaves the size unchanged and only the
+ * version can show it. PerfAbi_uTest.cpp pins the member count, order, types
+ * and offsets that belong to the current version, so a layout change without a
+ * version change fails there.
+ *
+ * Not covered: a benchmark built from headers older than this check never
+ * calls it, and one that constructs a PerfGpuCase without PERF_GPU_MAIN or the
+ * GPU guard reaches libbench_cuda unchecked.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -36,11 +41,10 @@ namespace bench {
 
 /* ----------------------------- Constants ----------------------------- */
 
-/// Version of the layout shared with the bench libraries. Appending a member
-/// to a shared struct needs no change here (the sizes carry it). Raise it,
-/// together with the libraries' SOVERSION, for any change the sizes cannot
-/// show or that an older library cannot tolerate: a reordered, retyped or
-/// removed member.
+/// Version of the layout shared with the bench libraries. Raise it for every
+/// change to the members of PerfConfig, Stats, PerfGpuConfig or of a struct the
+/// libraries hand back (GpuStats, PerfGpuResult, MultiGpuResult, PerfRow):
+/// added (also at the end), removed, reordered or retyped.
 inline constexpr std::uint32_t BENCH_ABI_VERSION = 1;
 
 /// Exit status of a process ended by a failed check.
@@ -50,22 +54,15 @@ inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;
 
 namespace detail {
 
-/// How the benchmark's value must relate to the library's.
-enum class AbiRule : std::uint8_t {
-  EQUAL,                     ///< Must match exactly.
-  BENCHMARK_AT_LEAST_LIBRARY ///< Benchmark may be larger (appended members).
-};
-
-/// One compared value, as each side was compiled.
+/// One compared value, as each side was compiled. The two must be equal.
 struct AbiField {
   const char* name;      ///< What is compared, e.g. "sizeof(PerfConfig)".
   std::size_t benchmark; ///< Value compiled into the benchmark.
   std::size_t library;   ///< Value compiled into the library.
-  AbiRule rule;          ///< Relation that must hold.
 };
 
 /**
- * @brief Describe every violated field, or return an empty string when all hold.
+ * @brief Describe every field that differs, or return an empty string when none does.
  * @param libraryName Library doing the comparison, e.g. "libbench".
  * @note NOT RT-safe (heap allocation).
  */
@@ -73,7 +70,7 @@ struct AbiField {
                                              std::size_t count);
 
 /**
- * @brief Return when every field holds; otherwise print abiMismatchMessage()
+ * @brief Return when every field is equal; otherwise print abiMismatchMessage()
  * to stderr and end the process with BENCH_ABI_MISMATCH_EXIT_CODE.
  * @note Ends the process without unwinding: after a mismatch no object shared
  * with the library can be trusted, including during static destruction.

@@ -54,10 +54,11 @@ struct PerfConfig {
   bool quickMode = false; ///< Apply reduced cycles/repeats for development iteration
 
   // ---- Append-only tail ----
-  // libbench reads this struct through a reference, so a member's offset is
-  // part of the shared library's ABI. Members above this line sit where the
-  // 1.0.3 library expects them (pinned by PerfAbi_uTest.cpp); new members go
-  // at the very end, never between existing ones.
+  // libbench reads and copies this struct, so its layout is part of the shared
+  // library's ABI. Members above this line sit where the 1.0.3 library expects
+  // them; new members go at the very end, never between existing ones, and
+  // every change to the members, an append included, raises BENCH_ABI_VERSION
+  // (PerfAbi.hpp). PerfAbi_uTest.cpp pins the layout of the current version.
   int targetTimeUs = 0; ///< >0: auto-size cycles so one repeat spans ~this wall time
 };
 

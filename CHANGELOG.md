@@ -121,13 +121,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[bench] ABI mismatch: this benchmark and the libbench it loaded were built
   from different vernier headers (sizeof(PerfConfig): benchmark 232, library
   240). Rebuild the benchmark against this libbench, or load the libbench that
-  matches the benchmark's headers. Exiting.` A benchmark whose structs are
-  larger than the library's is accepted: members are only ever appended
+  matches the benchmark's headers. Exiting.` The ABI version and the size of
+  each of the three structs must be equal on both sides; a larger struct in the
+  benchmark is refused like a smaller one, because the libraries copy these
+  objects into storage of their own size. Members are still only appended
   (`targetTimeUs` is the last member of `PerfConfig`, and every member 1.0.3
-  has sits at its 1.0.3 offset), and a unit test fails if one is inserted
-  mid-struct. A library built before this check has no such entry point, so a
-  benchmark built with these headers refuses to start against it with the
-  loader's `undefined symbol: vernier::bench::checkBenchAbi(...)`.
+  has sits at its 1.0.3 offset), and every layout change raises
+  `BENCH_ABI_VERSION`; a unit test pins the member count, order, types and
+  offsets of the current version. A member added into existing padding without
+  a version change is caught by that test, not at run time. A library built
+  before this check has no such entry point, so a benchmark built with these
+  headers refuses to start against it with the loader's
+  `undefined symbol: vernier::bench::checkBenchAbi(...)`.
 - **`Perf.hpp` compiles without warnings for consumers** -- the profile
   watchdog's signal handler discarded the result of five `write(2)` calls, so an
   optimized consumer build with `-Wall` (where the C library marks `write`

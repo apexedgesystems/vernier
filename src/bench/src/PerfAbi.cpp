@@ -11,19 +11,6 @@
 namespace vernier {
 namespace bench {
 
-/* ----------------------------- File Helpers ----------------------------- */
-
-namespace {
-
-bool holds(const detail::AbiField& field) noexcept {
-  if (field.rule == detail::AbiRule::EQUAL) {
-    return field.benchmark == field.library;
-  }
-  return field.benchmark >= field.library;
-}
-
-} // namespace
-
 /* ----------------------------- API ----------------------------- */
 
 namespace detail {
@@ -31,7 +18,7 @@ namespace detail {
 std::string abiMismatchMessage(const char* libraryName, const AbiField* fields, std::size_t count) {
   std::string differences;
   for (std::size_t i = 0; i < count; ++i) {
-    if (holds(fields[i])) {
+    if (fields[i].benchmark == fields[i].library) {
       continue;
     }
     if (!differences.empty()) {
@@ -66,10 +53,9 @@ void requireAbiMatch(const char* libraryName, const AbiField* fields, std::size_
 void checkBenchAbi(std::uint32_t abiVersion, std::size_t sizeofPerfConfig,
                    std::size_t sizeofStats) noexcept {
   const detail::AbiField FIELDS[] = {
-      {"ABI version", abiVersion, BENCH_ABI_VERSION, detail::AbiRule::EQUAL},
-      {"sizeof(PerfConfig)", sizeofPerfConfig, sizeof(PerfConfig),
-       detail::AbiRule::BENCHMARK_AT_LEAST_LIBRARY},
-      {"sizeof(Stats)", sizeofStats, sizeof(Stats), detail::AbiRule::BENCHMARK_AT_LEAST_LIBRARY},
+      {"ABI version", abiVersion, BENCH_ABI_VERSION},
+      {"sizeof(PerfConfig)", sizeofPerfConfig, sizeof(PerfConfig)},
+      {"sizeof(Stats)", sizeofStats, sizeof(Stats)},
   };
   detail::requireAbiMatch("libbench", FIELDS, sizeof(FIELDS) / sizeof(FIELDS[0]));
 }
