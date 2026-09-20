@@ -91,10 +91,26 @@ jobs:
       - name: List artifacts
         run: ls -la output/
 
-      # Runs in both modes, ahead of the publish step, so a rehearsal proves the
-      # asset set too. Names each expected file that is missing and fails.
+      # The published set is scripts/release-assets.txt, resolved once here in
+      # both modes. The step output is the publish step's `files:` input, and
+      # the next step checks that same output, so a rehearsal validates the
+      # exact string a tagged run uploads.
+      - name: Resolve release assets
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          files="$(scripts/check-release-assets.sh resolve "$VERSION" output)"
+          {
+            echo "files<<RELEASE_ASSETS_EOF"
+            printf '%s\n' "$files"
+            echo "RELEASE_ASSETS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Verify release assets
-        run: scripts/check-release-assets.sh "${{ steps.version.outputs.version }}" output
+        env:
+          RELEASE_FILES: ${{ steps.assets.outputs.files }}
+        run: printf '%s\n' "$RELEASE_FILES" | scripts/check-release-assets.sh verify
 
       - name: Create GitHub Release
         if: github.event_name == 'push'
@@ -105,11 +121,4 @@ jobs:
           prerelease: false
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: |
-            output/vernier-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-x86_64-linux-cuda.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-aarch64-jetson.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-aarch64-rpi.tar.gz
-            output/vernier-${{ steps.version.outputs.version }}-riscv64-linux.tar.gz
-            output/vernier-tools-${{ steps.version.outputs.version }}-x86_64-linux.tar.gz
-            output/vernier_py_tools-${{ steps.version.outputs.version }}-py3-none-any.whl
+          files: ${{ steps.assets.outputs.files }}
