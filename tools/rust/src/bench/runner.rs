@@ -138,12 +138,16 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         }
     }
 
-    // Tell the child which tool already wraps it so its in-process backend
-    // stays passive (no re-attach, no manual-wrap hint for a wrap that
-    // happened). See profiler_env::externalWrapTool() on the C++ side.
+    // Tell the child which tool already wraps it, and which folder that wrap
+    // writes into. Its in-process backend then stays passive (no re-attach,
+    // no manual-wrap hint), creates no per-test folder of its own, and reports
+    // this folder as the artifact location, which is what the CSV records.
+    // See profiler_env::externalWrapTool() / externalWrapDir() on the C++ side.
     if wrap.is_some() || env_wrap.is_some() {
         if let Some(ref tool) = cfg.profile {
-            cmd.env("VERNIER_EXTERNAL_WRAP", tool);
+            for (k, v) in wrap_child_env(tool, &cfg.binary, cfg.profile_output_dir.as_deref()) {
+                cmd.env(k, v);
+            }
         }
     }
 
@@ -198,6 +202,20 @@ fn wrap_artifact_dir(tool: &str, binary: &Path, output_dir: Option<&Path>) -> Pa
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("bench-out"))
         .join(format!("{stem}.{tool}"))
+}
+
+/// Environment a wrapped child gets: the wrapping tool's name and the folder
+/// the wrap writes into (the same `wrap_artifact_dir` the wrap command uses).
+fn wrap_child_env(tool: &str, binary: &Path, output_dir: Option<&Path>) -> [(String, String); 2] {
+    [
+        ("VERNIER_EXTERNAL_WRAP".to_string(), tool.to_string()),
+        (
+            "VERNIER_EXTERNAL_WRAP_DIR".to_string(),
+            wrap_artifact_dir(tool, binary, output_dir)
+                .display()
+                .to_string(),
+        ),
+    ]
 }
 
 /// Program that wraps the benchmark binary for a wrap-externally backend,
@@ -577,6 +595,44 @@ mod tests {
         assert!(require_launch_programs(true, Some("massif"), only("taskset")).is_err());
         // In-process profiles are driven by the binary itself: nothing to resolve.
         assert!(require_launch_programs(false, Some("perf"), |_| None).is_ok());
+    }
+
+    /// @test The child is told the same folder the wrap command writes into.
+    #[test]
+    fn wrap_child_env_names_the_wrap_folder() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_wrap_env");
+        for tool in [
+            "callgrind",
+            "massif",
+            "heaptrack",
+            "nsight",
+            "ncu",
+            "jemalloc",
+        ] {
+            let env = wrap_child_env(tool, Path::new("./my_test"), Some(&root));
+            let expected = root.join(format!("my_test.{tool}"));
+            assert_eq!(
+                env[0],
+                ("VERNIER_EXTERNAL_WRAP".to_string(), tool.to_string())
+            );
+            assert_eq!(
+                env[1],
+                (
+                    "VERNIER_EXTERNAL_WRAP_DIR".to_string(),
+                    expected.display().to_string()
+                )
+            );
+            if let Some((_, args)) = wrap_command_for(tool, Path::new("./my_test"), Some(&root)) {
+                assert!(
+                    args.iter()
+                        .any(|a| a.contains(&expected.display().to_string())),
+                    "{tool}: wrap command does not write into {}: {args:?}",
+                    expected.display()
+                );
+            }
+        }
+        let default_root = wrap_child_env("ncu", Path::new("./my_test"), None);
+        assert_eq!(default_root[1].1, "bench-out/my_test.ncu");
     }
 
     /// @test wrap_command_for returns None for in-process backends.

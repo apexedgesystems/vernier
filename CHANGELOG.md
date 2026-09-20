@@ -25,6 +25,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
+- **One rule for profile artifact folders: a folder is named after what its
+  data covers** -- per-test data goes to `<root>/<Suite.Case>.<tool>/`,
+  per-process data (a tool that `bench run` wraps around the whole binary) to
+  `<root>/<binary>.<tool>/`. What changes for a user:
+  - Under `bench run --profile callgrind|massif|memcheck|helgrind|heaptrack|
+    compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
+    empty `<Suite.Case>.<tool>/` folder per test next to the real output in
+    `bench-out/<binary>.<tool>/`, and the CSV `profileDir` column names that
+    real folder instead of the empty one. Running the binary under the tool by
+    hand is unchanged: the per-test folder is created and the printed hint
+    points at it.
+  - A parameterized or typed test (GoogleTest puts `/` in its name) gets one
+    flat folder with `/` replaced by `_` (`Sizes_Copy.Run_3.gperf/`), not a
+    folder nested inside directories named after fragments of the test name
+    (`Sizes/Copy.Run/3.gperf/`). Scripts that read the nested path need the
+    flat one.
+  - `--profile ncu` names its per-test folder `<Suite.Case>.ncu/` (it was
+    `.nsight`), matching `bench-out/<binary>.ncu/`. `--profile nsight` keeps
+    `.nsight` in every mode.
+  - The rocprof and compute-sanitizer hints print their folder with a leading
+    `./`, as the other backends do; the folder is the same.
+  Default roots are unchanged: the working directory for in-process backends,
+  `bench-out/` for wrapped ones.
 - **Unknown long options produce a warning** -- a test binary given a `--option`
   that neither vernier nor GoogleTest recognizes prints one stderr line naming
   it (`[WARN] unknown option '--target-tmie': ...`); the argument is still

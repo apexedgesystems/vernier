@@ -69,14 +69,8 @@ ComputeSanitizerProfiler::ComputeSanitizerProfiler(const PerfConfig& cfg, std::s
   sanitizerTool_ = sanitizerToolFromArgs(cfg_.profileArgs);
   runningUnderSanitizer_ = detectUnderSanitizer();
 
-  // Artifact directory mirrors the convention used by other backends
-  // (e.g. <Suite.Case>.compute-sanitizer/).
-  artifactDir_ = cfg_.artifactRoot.empty()
-                     ? testName_ + ".compute-sanitizer"
-                     : cfg_.artifactRoot + "/" + testName_ + ".compute-sanitizer";
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
-  (void)ec;
+  artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
+                                                  "compute-sanitizer");
 }
 
 void ComputeSanitizerProfiler::beforeMeasure() {

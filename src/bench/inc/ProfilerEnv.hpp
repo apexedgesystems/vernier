@@ -6,13 +6,17 @@
  *
  * These checks live here (rather than duplicated in each TU) so the
  * Docker / valgrind / binary-on-PATH detection logic stays consistent
- * across backends. All functions are header-only and side-effect-free.
+ * across backends. All functions are header-only; resolveArtifactDir() is the
+ * only one that touches the filesystem.
  */
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 #include <cerrno>
 #include <csignal>
@@ -125,6 +129,68 @@ inline bool isRunningUnderValgrind() {
 inline std::string externalWrapTool() {
   const char* v = std::getenv("VERNIER_EXTERNAL_WRAP");
   return (v != nullptr) ? std::string{v} : std::string{};
+}
+
+/* ----------------------------- Artifact Directories ----------------------------- */
+
+/**
+ * @brief Directory the runner's wrap writes into, or "".
+ *
+ * Set by `bench run` (VERNIER_EXTERNAL_WRAP_DIR) next to VERNIER_EXTERNAL_WRAP.
+ * A wrapping tool records the whole process into one place, so that directory,
+ * not a per-test one, is where a wrapped run's artifacts are.
+ */
+inline std::string externalWrapDir() {
+  const char* v = std::getenv("VERNIER_EXTERNAL_WRAP_DIR");
+  return (v != nullptr) ? std::string{v} : std::string{};
+}
+
+/**
+ * @brief Folder name for one test's artifacts: `<test>.<suffix>`, with every
+ * '/' in the test name replaced by '_'.
+ *
+ * GoogleTest puts '/' into the names of parameterized and typed tests
+ * (`Sizes/Copy.Run/3`); left in, it would nest the folder inside directories
+ * named after fragments of the test name.
+ */
+inline std::string artifactDirName(std::string_view testName, std::string_view suffix) {
+  std::string name{testName};
+  for (char& ch : name) {
+    if (ch == '/') {
+      ch = '_';
+    }
+  }
+  name += '.';
+  name += suffix;
+  return name;
+}
+
+/**
+ * @brief The one rule for where a backend's artifacts go; creates the folder
+ * when this process owns it.
+ *
+ * A folder is named after what its data covers:
+ *  - the runner wrapped this process with @p profileTool: the data covers the
+ *    whole process and lives in the runner's folder (externalWrapDir()). No
+ *    per-test folder is created. Returns "" when the runner did not say where.
+ *  - otherwise: `<artifactRoot or .>/<artifactDirName(testName, suffix)>`,
+ *    created here.
+ *
+ * @param profileTool  The `--profile` value this backend was selected by.
+ * @param suffix       Folder suffix without the dot, e.g. "gperf".
+ * @note NOT RT-safe (filesystem, heap allocation).
+ */
+inline std::string resolveArtifactDir(const std::string& profileTool,
+                                      const std::string& artifactRoot, std::string_view testName,
+                                      std::string_view suffix) {
+  if (!profileTool.empty() && externalWrapTool() == profileTool) {
+    return externalWrapDir();
+  }
+  const std::string ROOT = artifactRoot.empty() ? std::string{"."} : artifactRoot;
+  std::string dir = ROOT + "/" + artifactDirName(testName, suffix);
+  std::error_code ec;
+  std::filesystem::create_directories(dir, ec);
+  return dir;
 }
 
 /* ----------------------------- cuptiMustYield ----------------------------- */

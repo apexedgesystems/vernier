@@ -92,7 +92,7 @@ void populateFromPerfConfig(BpfConfig& out, const PerfConfig& perf, const std::s
   }
 
   if (!perf.artifactRoot.empty()) {
-    out.outputDir = perf.artifactRoot + "/" + testName + ".bpf";
+    out.outputDir = perf.artifactRoot + "/" + profiler_env::artifactDirName(testName, "bpf");
   }
 }
 
@@ -304,13 +304,15 @@ public:
     populateFromEnv(bpfCfg_);
     populateFromPerfConfig(bpfCfg_, cfg_, testName_);
 
+    // PERF_BPF_OUT or the artifact root already fixed the folder; otherwise
+    // the shared rule names it.
     if (bpfCfg_.outputDir.empty()) {
-      artifactDir_ = "./" + testName_ + ".bpf";
+      artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, "", testName_, "bpf");
     } else {
       artifactDir_ = bpfCfg_.outputDir;
+      std::error_code ec;
+      std::filesystem::create_directories(artifactDir_, ec);
     }
-    std::error_code ec;
-    std::filesystem::create_directories(artifactDir_, ec);
   }
 
   void beforeMeasure() {

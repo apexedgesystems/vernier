@@ -382,3 +382,49 @@ fn run_taskset_names_missing_program() {
         "raw OS error leaked: {err}"
     );
 }
+
+/* ----------------------------- Run: Wrap Folder ----------------------------- */
+
+/// @test A wrapped run tells the benchmark which folder holds the wrap's output.
+#[test]
+fn run_wrapped_exports_wrap_folder_to_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A stand-in for valgrind that records what the runner exported and
+    // exits cleanly; built from shell builtins because PATH holds only it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    let record = dir.path().join("exported.txt");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n%s\\n' \"$VERNIER_EXTERNAL_WRAP\" \"$VERNIER_EXTERNAL_WRAP_DIR\" > '{}'\n",
+        record.display()
+    );
+    let fake = tools.join("valgrind");
+    std::fs::write(&fake, script).expect("write fake valgrind");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let target = bin();
+    let stem = target.file_stem().unwrap().to_string_lossy().into_owned();
+    let out = Command::new(bin())
+        .args(["run", &target.to_string_lossy(), "--profile", "massif"])
+        .env("PATH", &tools)
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn bench");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let exported = std::fs::read_to_string(&record).expect("fake valgrind ran");
+    let mut lines = exported.lines();
+    assert_eq!(lines.next(), Some("massif"));
+    assert_eq!(
+        lines.next(),
+        Some(format!("bench-out/{stem}.massif").as_str()),
+        "VERNIER_EXTERNAL_WRAP_DIR must name the folder the wrap writes into"
+    );
+    assert!(dir.path().join(format!("bench-out/{stem}.massif")).is_dir());
+}

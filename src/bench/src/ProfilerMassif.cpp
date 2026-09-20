@@ -55,11 +55,8 @@ bool isRunningUnderValgrind() {
 
 MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".massif"
-                                           : cfg_.artifactRoot + "/" + testName_ + ".massif";
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
-  (void)ec;
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "massif");
 
   runningUnderValgrind_ = isRunningUnderValgrind();
   if (!runningUnderValgrind_) {

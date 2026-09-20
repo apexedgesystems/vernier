@@ -79,11 +79,8 @@ RocprofProfiler::RocprofProfiler(const PerfConfig& cfg, std::string testName)
   mode_ = modeFromArgs(cfg_.profileArgs);
   runningUnderRocprof_ = detectUnderRocprof();
 
-  artifactDir_ = cfg_.artifactRoot.empty() ? testName_ + ".rocprof"
-                                           : cfg_.artifactRoot + "/" + testName_ + ".rocprof";
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
-  (void)ec;
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "rocprof");
 }
 
 void RocprofProfiler::beforeMeasure() {
