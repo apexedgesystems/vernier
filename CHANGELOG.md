@@ -37,9 +37,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     hand is unchanged: the per-test folder is created and the printed hint
     points at it.
   - A parameterized or typed test (GoogleTest puts `/` in its name) gets one
-    flat folder with `/` replaced by `_` (`Sizes_Copy.Run_3.gperf/`), not a
-    folder nested inside directories named after fragments of the test name
-    (`Sizes/Copy.Run/3.gperf/`). Scripts that read the nested path need the
+    flat folder in which `/` is written as `+2F` and `+` as `+2B`
+    (`Sizes+2FCopy.Run+2F3.gperf/`), not a folder nested inside directories
+    named after fragments of the test name (`Sizes/Copy.Run/3.gperf/`). The
+    folder name decodes back to exactly one test name, so two tests whose
+    names differ only in `/` versus another character (`A_B/C.Run/0`,
+    `A/B_C.Run/0`) keep separate folders. Names without `/` or `+` are
+    unchanged. `+` was chosen because the folder is passed on to tools that
+    give other characters a meaning of their own in output paths (valgrind
+    and nsys expand `%`, jemalloc's `MALLOC_CONF` splits on `,` and `:`), and
+    it needs no quoting in a shell. Scripts that read the nested path need the
     flat one.
   - `--profile ncu` names its per-test folder `<Suite.Case>.ncu/` (it was
     `.nsight`), matching `bench-out/<binary>.ncu/`. `--profile nsight` keeps

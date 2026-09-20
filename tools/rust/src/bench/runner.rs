@@ -191,8 +191,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 
 /// Per-binary artifact dir for a wrapped run:
 /// `<output-dir-or-bench-out>/<binary-stem>.<tool>/`. The wrap tool writes
-/// its raw output there; the C++ harness then layers per-test subdirs
-/// alongside as needed.
+/// its output there; the wrapped benchmark creates no per-test folders and
+/// reports this one as its artifact location (see `wrap_child_env`).
 fn wrap_artifact_dir(tool: &str, binary: &Path, output_dir: Option<&Path>) -> PathBuf {
     let stem = binary
         .file_stem()

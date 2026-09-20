@@ -146,18 +146,34 @@ inline std::string externalWrapDir() {
 }
 
 /**
- * @brief Folder name for one test's artifacts: `<test>.<suffix>`, with every
- * '/' in the test name replaced by '_'.
+ * @brief Folder name for one test's artifacts: the encoded test name, a dot,
+ * and @p suffix.
  *
  * GoogleTest puts '/' into the names of parameterized and typed tests
  * (`Sizes/Copy.Run/3`); left in, it would nest the folder inside directories
- * named after fragments of the test name.
+ * named after fragments of the test name. '/' is written as "+2F" instead, and
+ * '+' itself as "+2B"; every other character stays, so a name with neither is
+ * unchanged. Because the escape character is encoded too, the folder name
+ * decodes back to exactly one test name ("+2F" -> '/', "+2B" -> '+', left to
+ * right), so different test names get different folders.
+ *
+ * The escape is '+' because the folder is handed on, in hints and in commands
+ * the backends run, to tools with substitution characters of their own:
+ * valgrind and nsys expand '%' in output paths, jemalloc's MALLOC_CONF splits
+ * on ',' and ':', and an unquoted shell word must not gain a metacharacter.
+ * '+' means nothing to any of them, also at the start of a word or where a
+ * word with '=' would read as an assignment.
  */
 inline std::string artifactDirName(std::string_view testName, std::string_view suffix) {
-  std::string name{testName};
-  for (char& ch : name) {
-    if (ch == '/') {
-      ch = '_';
+  std::string name;
+  name.reserve(testName.size() + suffix.size() + 1);
+  for (const char CH : testName) {
+    if (CH == '/') {
+      name += "+2F";
+    } else if (CH == '+') {
+      name += "+2B";
+    } else {
+      name += CH;
     }
   }
   name += '.';
