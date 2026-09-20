@@ -228,6 +228,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   GPU CSVs captured before this fix are comparable among themselves only at
   equal `--cycles`; multiply their wall columns by the `cycles` column to
   recover the real time.
+- **A GPU test with no transfers records no transfer time** -- the harness
+  timed a host-to-device and a device-to-host leg every repeat even when the
+  test declared neither, so a kernel-only `PERF_GPU_TEST` reported a couple of
+  microseconds of `transferTimeUs` (2.18 us per repeat on the reference board)
+  against `h2dBytes` and `d2hBytes` of zero, and that phantom time entered the
+  wall columns. An empty leg is not timed: `transferTimeUs` is 0 and the wall
+  time of a kernel-only test is its kernel time. Tests that do declare
+  transfers are timed as before; the per-launch kernel time is unchanged
+  (median 4.57 us before, 4.39 us after, across six alternating runs).
 
 ## v1.0.3 - 2026-06-28
 

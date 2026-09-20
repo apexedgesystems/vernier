@@ -254,15 +254,20 @@ public:
     }
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
-      CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
-      for (const auto& xfer : h2d) {
-        CUDA_CHECK(
-            cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, stream_));
-      }
-      CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-      CUDA_CHECK(cudaEventSynchronize(eventStop_));
+      // A test that declares no transfer has no leg to time: an event pair
+      // around nothing measures the event round trip itself and books it as
+      // transfer time.
       float h2dMs = 0.0f;
-      CUDA_CHECK(cudaEventElapsedTime(&h2dMs, eventStart_, eventStop_));
+      if (!h2d.empty()) {
+        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        for (const auto& xfer : h2d) {
+          CUDA_CHECK(
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, stream_));
+        }
+        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
+        CUDA_CHECK(cudaEventSynchronize(eventStop_));
+        CUDA_CHECK(cudaEventElapsedTime(&h2dMs, eventStart_, eventStop_));
+      }
       h2dTimes.push_back(h2dMs * 1000.0);
 
       CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
@@ -275,15 +280,17 @@ public:
       CUDA_CHECK(cudaEventElapsedTime(&kernelMs, eventStart_, eventStop_));
       kernelTimes.push_back(kernelMs * 1000.0 / cpuCfg_.cycles);
 
-      CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
-      for (const auto& xfer : d2h) {
-        CUDA_CHECK(
-            cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, stream_));
-      }
-      CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-      CUDA_CHECK(cudaEventSynchronize(eventStop_));
       float d2hMs = 0.0f;
-      CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
+      if (!d2h.empty()) {
+        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        for (const auto& xfer : d2h) {
+          CUDA_CHECK(
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, stream_));
+        }
+        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
+        CUDA_CHECK(cudaEventSynchronize(eventStop_));
+        CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
+      }
       d2hTimes.push_back(d2hMs * 1000.0);
 
       // One round trip is one H2D leg, one kernel launch and one D2H leg.

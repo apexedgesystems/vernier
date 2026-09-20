@@ -143,3 +143,25 @@ TEST_F(PerfGpuHarnessTest, RoundTripIsTransfersPlusOneLaunch) {
   EXPECT_DOUBLE_EQ(ROW.stats.median, RESULT.totalTimeUs);
   EXPECT_DOUBLE_EQ(*ROW.kernelTimeUs, RESULT.kernelTimeUs);
 }
+
+/**
+ * @test A kernel-only test records no transfer time: with no declared
+ *       transfers there is no leg to time.
+ */
+TEST_F(PerfGpuHarnessTest, KernelOnlyRecordsNoTransferTime) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuKernelOnly") + ".NoTransfers", cfg_};
+  perf.cudaWarmup(data.launch());
+
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_DOUBLE_EQ(RESULT.transferTimeUs, 0.0);
+  EXPECT_DOUBLE_EQ(RESULT.stats.transfers.h2dTimeUs, 0.0);
+  EXPECT_DOUBLE_EQ(RESULT.stats.transfers.d2hTimeUs, 0.0);
+  EXPECT_EQ(RESULT.stats.transfers.h2dBytes, 0U);
+  EXPECT_DOUBLE_EQ(RESULT.totalTimeUs, RESULT.kernelTimeUs);
+
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.transferTimeUs.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.transferTimeUs, 0.0);
+}
