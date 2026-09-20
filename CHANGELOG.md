@@ -57,6 +57,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   clamped to at least 10, so a target shorter than the operation stretched each
   repeat to ten calls (a 60 ms target on a 200 ms call ran 2 s per repeat). The
   floor is 1: a call that already outlasts the target runs once per repeat.
+- **Sample allocation benchmarks measure the allocation** -- in optimized builds
+  the compiler removed the buffer from `AllocationOverhead.AllocateEachCall` and
+  `SemanticMacros.AllocationPattern` (`BenchmarkCPU_PTEST`), which reported about
+  0.001 us/call, faster than `ReuseBuffer`, and failed their CV check
+  intermittently. The allocation is kept; in the reference optimized build they
+  report tens of nanoseconds per call, slower than reuse.
 - **A failing test fails `make test`, `make testp` and `make verify`** -- the
   test recipes pipe ctest through `tee` to write `ctest.log`, and the recipe
   shell had no `pipefail`, so the target's status was `tee`'s: a run printing
