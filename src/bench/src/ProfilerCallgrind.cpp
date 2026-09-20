@@ -49,13 +49,8 @@ bool isRunningUnderValgrind() {
 CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
 #ifdef __linux__
-  if (!cfg_.artifactRoot.empty()) {
-    artifactDir_ = cfg_.artifactRoot + "/" + testName_ + ".callgrind";
-  } else {
-    artifactDir_ = "./" + testName_ + ".callgrind";
-  }
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "callgrind");
 
   runningUnderValgrind_ = isRunningUnderValgrind();
   canToggle_ =

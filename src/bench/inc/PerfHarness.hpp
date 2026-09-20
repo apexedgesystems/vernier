@@ -10,6 +10,7 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -141,6 +142,23 @@ inline char g_testName[160] = {0};
 inline char g_profileTool[32] = {0};
 inline unsigned int g_timeoutSecs = 0;
 
+// Writes the whole buffer to stderr, resuming after a short write or EINTR.
+// Any other failure ends the attempt: the caller is about to _exit and has no
+// other channel to report on. Async-signal-safe: write(2) and errno only.
+inline void writeStderr(const char* data, std::size_t len) noexcept {
+  while (len > 0) {
+    const ssize_t WRITTEN = ::write(STDERR_FILENO, data, len);
+    if (WRITTEN < 0 && errno == EINTR) {
+      continue;
+    }
+    if (WRITTEN <= 0) {
+      return;
+    }
+    data += WRITTEN;
+    len -= static_cast<std::size_t>(WRITTEN);
+  }
+}
+
 // SIGALRM handler. Prints a diagnostic and exits hard.
 // Must be async-signal-safe -- only write(2) + _exit(2) here.
 inline void handler(int /*sig*/) {
@@ -151,11 +169,11 @@ inline void handler(int /*sig*/) {
       "[bench] Likely cause: drain loop, blocking I/O, or filter that holds the\n"
       "[bench] measured loop. Identify the test, exclude it via --gtest_filter,\n"
       "[bench] or raise --profile-test-timeout. Aborting.\n";
-  ::write(STDERR_FILENO, kPrefix, sizeof(kPrefix) - 1);
-  ::write(STDERR_FILENO, g_testName, std::strlen(g_testName));
-  ::write(STDERR_FILENO, kMid, sizeof(kMid) - 1);
-  ::write(STDERR_FILENO, g_profileTool, std::strlen(g_profileTool));
-  ::write(STDERR_FILENO, kSuffix, sizeof(kSuffix) - 1);
+  writeStderr(kPrefix, sizeof(kPrefix) - 1);
+  writeStderr(g_testName, std::strlen(g_testName));
+  writeStderr(kMid, sizeof(kMid) - 1);
+  writeStderr(g_profileTool, std::strlen(g_profileTool));
+  writeStderr(kSuffix, sizeof(kSuffix) - 1);
   ::_exit(2);
 }
 

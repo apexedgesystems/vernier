@@ -57,9 +57,11 @@ administrators on Jetson, so `--profile ncu` runs under `sudo`.
 
 ## 3. Build
 
-Release, native on the board, with the GPU architecture stated. Vernier
-reads the architecture from its own `CUDA_ARCHS` option (default `89`) and
-assigns it over `CMAKE_CUDA_ARCHITECTURES`, so pass `CUDA_ARCHS`:
+Release, native on the board, with the GPU architecture stated: left
+unstated, Vernier builds GPU code for architecture `89`, which this board
+could only run through driver JIT compilation. `CUDA_ARCHS` is Vernier's
+shorthand for the standard `CMAKE_CUDA_ARCHITECTURES`; either works, and
+configuration stops if both are given with different values:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
@@ -67,6 +69,17 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
   -DVERNIER_BUILD_TOOLS=ON -DPROJECT_BUILD_DOCS=OFF
 cmake --build build -j$(nproc)
 source build/.env          # puts the bench CLI on PATH
+```
+
+A build directory first configured by Vernier 1.0.3 or earlier holds a
+cached `CMAKE_CUDA_ARCHITECTURES` that the compiler chose (`75` on this
+board), next to `CUDA_ARCHS=110`. The two differ, so the first configure
+after an update stops with "Conflicting CUDA architectures". Clear the stale
+value once, or start from an empty build directory:
+
+```bash
+cmake -S . -B build -UCMAKE_CUDA_ARCHITECTURES
+# -- [cuda] architectures: 110 (from CUDA_ARCHS)
 ```
 
 Check that the GPU code was compiled for this board:

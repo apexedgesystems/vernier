@@ -10,6 +10,7 @@
 #include <string>
 #include <utility>
 
+#include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
@@ -69,6 +70,9 @@ private:
 
 inline std::unique_ptr<Profiler> Profiler::make(const PerfConfig& cfg,
                                                 const std::string& testName) {
+  // First contact with libbench for a benchmark that brings its own main().
+  ensureBenchAbi();
+
   // Default: no profiling requested.
   if (cfg.profileTool.empty()) {
     return std::make_unique<detail::NoOpProfiler>();

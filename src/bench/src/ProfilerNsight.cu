@@ -25,14 +25,11 @@ namespace bench {
 NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
 
-  if (!cfg_.artifactRoot.empty()) {
-    artifactDir_ = cfg_.artifactRoot + "/" + testName_ + ".nsight";
-  } else {
-    artifactDir_ = "./" + testName_ + ".nsight";
-  }
-
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
+  // The folder carries the name of the tool that was asked for: `.ncu` for
+  // --profile ncu, `.nsight` for --profile nsight in any of its modes.
+  const char* suffix = (cfg_.profileTool == "ncu") ? "ncu" : "nsight";
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, suffix);
 
   if (cfg_.profileTool == "ncu") {
     // First-class Nsight Compute (--profile ncu). Replay stays the same

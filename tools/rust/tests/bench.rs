@@ -285,3 +285,146 @@ fn invalid_sort_column() {
     assert_ne!(code, 0);
     assert!(err.contains("unknown sort column"));
 }
+
+/* ----------------------------- Run: Missing Wrapper ----------------------------- */
+
+/// Run `bench` with a PATH that resolves nothing, from an empty working
+/// directory so a relative `bench-out/` cannot land in the source tree.
+fn run_without_tools(cwd: &std::path::Path, args: &[&str]) -> (i32, String, String) {
+    let empty_path = cwd.join("empty-path");
+    std::fs::create_dir_all(&empty_path).expect("create empty PATH dir");
+    let out = Command::new(bin())
+        .args(args)
+        .env("PATH", &empty_path)
+        .current_dir(cwd)
+        .output()
+        .expect("spawn bench");
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// @test A wrapped profile whose wrapper is absent fails by naming the wrapper and the profile.
+#[test]
+fn run_profile_names_missing_wrapper() {
+    // The benchmark argument only has to be an existing file: the wrapper is
+    // checked before anything is spawned.
+    let target = bin().to_string_lossy().into_owned();
+    for (profile, program) in [
+        ("callgrind", "valgrind"),
+        ("massif", "valgrind"),
+        ("memcheck", "valgrind"),
+        ("helgrind", "valgrind"),
+        ("heaptrack", "heaptrack"),
+        ("compute-sanitizer", "compute-sanitizer"),
+        ("nsight", "nsys"),
+        ("ncu", "ncu"),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (code, _, err) = run_without_tools(dir.path(), &["run", &target, "--profile", profile]);
+        assert_ne!(code, 0, "--profile {profile}: exit status");
+        assert!(
+            err.contains(&format!("'{program}'")),
+            "--profile {profile}: stderr should name '{program}': {err}"
+        );
+        assert!(
+            err.contains(&format!("--profile {profile}")),
+            "--profile {profile}: stderr should name the profile: {err}"
+        );
+        assert!(
+            !err.contains("No such file or directory"),
+            "--profile {profile}: raw OS error leaked: {err}"
+        );
+    }
+}
+
+/// @test A missing wrapper leaves no artifact directory behind.
+#[test]
+fn run_profile_missing_wrapper_creates_no_artifacts() {
+    let target = bin().to_string_lossy().into_owned();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out_dir = dir.path().join("artifacts");
+    let out_arg = out_dir.to_string_lossy().into_owned();
+    let (code, _, _) = run_without_tools(
+        dir.path(),
+        &[
+            "run",
+            &target,
+            "--profile",
+            "callgrind",
+            "--profile-output-dir",
+            &out_arg,
+        ],
+    );
+    assert_ne!(code, 0);
+    assert!(
+        !out_dir.exists(),
+        "artifact directory created for a run that never started"
+    );
+    assert!(!dir.path().join("bench-out").exists());
+}
+
+/// @test --taskset without the taskset program fails by naming it.
+#[test]
+fn run_taskset_names_missing_program() {
+    let target = bin().to_string_lossy().into_owned();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (code, _, err) = run_without_tools(dir.path(), &["run", &target, "--taskset", "0"]);
+    assert_ne!(code, 0);
+    assert!(
+        err.contains("'taskset'"),
+        "stderr should name taskset: {err}"
+    );
+    assert!(
+        !err.contains("No such file or directory"),
+        "raw OS error leaked: {err}"
+    );
+}
+
+/* ----------------------------- Run: Wrap Folder ----------------------------- */
+
+/// @test A wrapped run tells the benchmark which folder holds the wrap's output.
+#[test]
+fn run_wrapped_exports_wrap_folder_to_child() {
+    use std::os::unix::fs::PermissionsExt;
+
+    // A stand-in for valgrind that records what the runner exported and
+    // exits cleanly; built from shell builtins because PATH holds only it.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    let record = dir.path().join("exported.txt");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n%s\\n' \"$VERNIER_EXTERNAL_WRAP\" \"$VERNIER_EXTERNAL_WRAP_DIR\" > '{}'\n",
+        record.display()
+    );
+    let fake = tools.join("valgrind");
+    std::fs::write(&fake, script).expect("write fake valgrind");
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+    let target = bin();
+    let stem = target.file_stem().unwrap().to_string_lossy().into_owned();
+    let out = Command::new(bin())
+        .args(["run", &target.to_string_lossy(), "--profile", "massif"])
+        .env("PATH", &tools)
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn bench");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let exported = std::fs::read_to_string(&record).expect("fake valgrind ran");
+    let mut lines = exported.lines();
+    assert_eq!(lines.next(), Some("massif"));
+    assert_eq!(
+        lines.next(),
+        Some(format!("bench-out/{stem}.massif").as_str()),
+        "VERNIER_EXTERNAL_WRAP_DIR must name the folder the wrap writes into"
+    );
+    assert!(dir.path().join(format!("bench-out/{stem}.massif")).is_dir());
+}

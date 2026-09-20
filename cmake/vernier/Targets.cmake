@@ -159,6 +159,32 @@ function (vernier_add_interface_library)
 endfunction ()
 
 # ------------------------------------------------------------------------------
+# _vernier_set_library_version(<target> <abi_version>)
+#
+# Internal helper: give a shared library its file version and its SONAME.
+#
+# Without an ABI version the library follows the project version:
+# libfoo.so.<PROJECT_VERSION> with SONAME libfoo.so.<PROJECT_VERSION_MAJOR>.
+# With one, that number becomes the SONAME and also the first component of the
+# file version, so the file name changes whenever the SONAME does. Keeping the
+# project major there instead would let a release whose ABI broke install a
+# file of the same name as the previous release's, under which the old
+# SONAME symlink resolves to incompatible code.
+# ------------------------------------------------------------------------------
+function (_vernier_set_library_version TARGET ABI)
+  if (ABI STREQUAL "")
+    set_target_properties(
+      ${TARGET} PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}
+    )
+  else ()
+    set_target_properties(
+      ${TARGET} PROPERTIES VERSION "${ABI}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
+                           SOVERSION ${ABI}
+    )
+  endif ()
+endfunction ()
+
+# ------------------------------------------------------------------------------
 # vernier_add_library(...)
 #
 # Define a compiled library (STATIC/SHARED).
@@ -175,11 +201,13 @@ endfunction ()
 #   DEPS_PUBLIC  <targets...>       optional
 #   DEPS_PRIVATE <targets...>       optional
 #   REQUIRES     <reqs...>          optional (POSIX, OPENSSL, LINUX, etc.)
+#   ABI_VERSION  <number>           optional (SHARED only; SONAME number,
+#                                   default PROJECT_VERSION_MAJOR)
 #   BAREMETAL                       optional flag (enables bare-metal build)
 # ------------------------------------------------------------------------------
 function (vernier_add_library)
   cmake_parse_arguments(
-    AL "BAREMETAL" "NAME;TYPE;INC" "SRC;DEPS_PUBLIC;DEPS_PRIVATE;REQUIRES" ${ARGN}
+    AL "BAREMETAL" "NAME;TYPE;INC;ABI_VERSION" "SRC;DEPS_PUBLIC;DEPS_PRIVATE;REQUIRES" ${ARGN}
   )
   vernier_require(AL_NAME AL_TYPE AL_INC AL_SRC)
 
@@ -211,9 +239,7 @@ function (vernier_add_library)
   add_library(vernier::${AL_NAME} ALIAS ${AL_NAME})
 
   if (_type STREQUAL "SHARED")
-    set_target_properties(
-      ${AL_NAME} PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}
-    )
+    _vernier_set_library_version(${AL_NAME} "${AL_ABI_VERSION}")
   endif ()
 
   target_sources(${AL_NAME} PRIVATE ${AL_SRC})
@@ -478,6 +504,9 @@ endfunction ()
 #   INC                    <include_dir>      optional
 #   DEPS_PUBLIC            <targets...>       optional
 #   DEPS_PRIVATE           <targets...>       optional
+#   ABI_VERSION            <number>           optional (SHARED only; SONAME
+#                                             number, default
+#                                             PROJECT_VERSION_MAJOR)
 #   SEPARABLE                                 optional flag
 #   RESOLVE_DEVICE_SYMBOLS                    optional flag
 #   NO_CUDART                                 optional flag
@@ -485,7 +514,7 @@ endfunction ()
 # ------------------------------------------------------------------------------
 function (vernier_add_library_cuda)
   cmake_parse_arguments(
-    ACL "SEPARABLE;RESOLVE_DEVICE_SYMBOLS;NO_CUDART;NO_NVML" "NAME;CORE;TYPE;INC"
+    ACL "SEPARABLE;RESOLVE_DEVICE_SYMBOLS;NO_CUDART;NO_NVML" "NAME;CORE;TYPE;INC;ABI_VERSION"
     "SRC;DEPS_PUBLIC;DEPS_PRIVATE" ${ARGN}
   )
   vernier_require(ACL_NAME ACL_SRC)
@@ -522,9 +551,7 @@ function (vernier_add_library_cuda)
     add_library(vernier::${ACL_NAME} ALIAS ${ACL_NAME})
 
     if (ACL_TYPE STREQUAL "SHARED")
-      set_target_properties(
-        ${ACL_NAME} PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR}
-      )
+      _vernier_set_library_version(${ACL_NAME} "${ACL_ABI_VERSION}")
     endif ()
 
     if (ACL_INC)

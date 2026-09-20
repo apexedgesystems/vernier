@@ -62,11 +62,8 @@ tracepoint:sched:sched_process_exit /pid == $1/ {
 
 OffCpuProfiler::OffCpuProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".offcpu"
-                                           : cfg_.artifactRoot + "/" + testName_ + ".offcpu";
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
-  (void)ec;
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "offcpu");
   outputPath_ = artifactDir_ + "/offcpu.txt";
 }
 
