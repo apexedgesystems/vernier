@@ -193,3 +193,8 @@ TEST(PerfStatsTest, LargeDatasetFiniteValues) {
   EXPECT_DOUBLE_EQ(S.max, 10000.0);
   EXPECT_DOUBLE_EQ(S.mean, 5000.5);
 }
+
+/** @test Deliberate failure: proves a failing test fails the hosted C++ job. Never merged. */
+TEST(GateVerification, DeliberateFailure) {
+  FAIL() << "deliberate failure for release-gate verification";
+}
