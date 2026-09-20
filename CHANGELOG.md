@@ -205,6 +205,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PerfHarness.hpp`, under both GCC and Clang, and failed outright under
   `-Werror`. The handler writes through a helper that resumes after a short
   write or `EINTR`; it remains async-signal-safe and its message is unchanged.
+- **Every CSV row has its file's columns** -- a row was written with the column
+  groups its own values happened to fill, while the header states the groups
+  once for the whole file, so rows of a GPU binary did not line up with it. A
+  GPU run with `--csv` and `--profile` wrote a 57-column header and 55-value
+  GPU rows, putting every value after `cvThreshold` (`gpuModel`,
+  `kernelTimeUs`, the CUPTI and multi-GPU columns) under the wrong name; a CPU
+  baseline case in the same binary wrote 26 values against the same header,
+  with or without a profiler. Rows carry the header's groups, with an empty
+  cell where a row has no value, so a row is as wide as the header and each
+  value stands under its own column name. CSV files captured from a GPU binary
+  before this fix cannot be read by column position; reread them by counting
+  from the left edge, or capture them again.
 
 ## v1.0.3 - 2026-06-28
 
