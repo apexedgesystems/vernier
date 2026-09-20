@@ -62,7 +62,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   shell had no `pipefail`, so the target's status was `tee`'s: a run printing
   `99% tests passed, 1 tests failed` exited 0, and the CI C++ job, which runs
   `make testp`, could not go red. Recipes run under bash with
-  `-o pipefail -e`; a failing lane stops the target with ctest's status, and
+  `-o pipefail -e`; a failing lane fails the target, and
   the parallel lane prints the failing test's output (`--output-on-failure`)
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.

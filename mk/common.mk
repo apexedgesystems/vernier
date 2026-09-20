@@ -11,12 +11,10 @@ COMMON_MK_GUARD := 1
 # ------------------------------------------------------------------------------
 # Recipe Shell
 # ------------------------------------------------------------------------------
-# Recipes run under bash with pipefail and errexit, so a recipe line's status is
-# that of its first failing command, not of the last stage of a pipeline. The
-# test recipes pipe ctest through tee to keep a log: without pipefail the status
-# would be tee's and a failing test could not fail the target. A recipe that
-# tolerates a non-zero status says so explicitly with `|| true` (or a test of
-# the status), which still holds under these flags.
+# Recipes run under bash with pipefail and errexit so that a failure propagates
+# through a logging pipeline: the test recipes pipe ctest into tee, and without
+# pipefail the line's status would be tee's. A recipe that tolerates a status
+# says so explicitly (`|| true`, or a test of `$$?`).
 SHELL       := /bin/bash
 .SHELLFLAGS := -o pipefail -ec
 
