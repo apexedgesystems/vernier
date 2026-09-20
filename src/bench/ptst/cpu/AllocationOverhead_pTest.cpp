@@ -13,14 +13,23 @@
  *  - Allocation tracking in MemoryProfile
  *
  * Expected behavior:
- *  - Both cases fill the same 4 KiB buffer; AllocateEachCall adds one
- *    operator new and one operator delete per call, and nothing else
- *  - AllocateEachCall is the slower of the two. With a general-purpose
- *    allocator the allocate/free pair costs about as much as the fill
- *    itself (tens of nanoseconds), so expect roughly 1.5x to 2x, not
- *    orders of magnitude
- *  - A result where AllocateEachCall is the faster case means the
- *    allocation was optimized away and the case measures nothing
+ *  - AllocateEachCall allocates a 4 KiB buffer, fills it and frees it on
+ *    every call; ReuseBuffer fills a caller-owned buffer of the same size
+ *    that grew once, during warmup
+ *  - The cases do not differ by the allocate/free pair alone. In an
+ *    optimized build the reuse path may also call vector::resize and take
+ *    its fill length from the vector at run time, while the allocating path
+ *    fills a length known at compile time. The difference between the two
+ *    results indicates allocation cost; it does not isolate it
+ *  - Reference observation, not a guarantee: in an optimized x86-64 build
+ *    with a general-purpose system allocator, both cases take tens of
+ *    nanoseconds per call and AllocateEachCall is roughly 1.5x to 2x slower.
+ *    The ratio depends on the compiler, the allocator and the host
+ *  - An unexpected ordering proves nothing by itself; timing noise alone can
+ *    produce one. Treat it as a reason to inspect the generated code or an
+ *    allocation count (for example from a heap profiler): an optimizing
+ *    compiler may remove an allocation whose contents are never observed,
+ *    which is why the helpers keep the buffer observable
  *  - Both patterns should produce stable measurements
  *
  * Usage:
@@ -64,9 +73,9 @@ inline const ub::PerfConfig& config() { return ub::detail::getPerfConfig(); }
  * @brief Per-call allocation overhead measurement
  *
  * Measures performance when allocating a new buffer on each iteration,
- * simulating code that doesn't reuse memory. Each call pays for one
- * allocation and one deallocation on top of the fill; the helper keeps the
- * buffer observable so an optimized build cannot remove them.
+ * simulating code that doesn't reuse memory. Each call allocates one buffer,
+ * fills it and frees it; the helper keeps the buffer observable so that an
+ * optimizing compiler does not discard that work.
  *
  * @test AllocateEachCall
  *
@@ -75,8 +84,8 @@ inline const ub::PerfConfig& config() { return ub::detail::getPerfConfig(); }
  *  - Measurements are stable despite allocation variance
  *
  * Expected performance:
- *  - Slower than ReuseBuffer, by roughly 1.5x to 2x with a general-purpose
- *    allocator
+ *  - Reference observation: roughly 1.5x to 2x slower than ReuseBuffer;
+ *    compiler, allocator and host dependent (see the file comment)
  *  - Throughput still reasonable (>1000 calls/sec)
  */
 PERF_TEST(AllocationOverhead, AllocateEachCall) {
@@ -103,7 +112,8 @@ PERF_TEST(AllocationOverhead, AllocateEachCall) {
  *
  * Measures performance when reusing a pre-allocated buffer across iterations,
  * simulating optimized code that minimizes allocation overhead. The buffer
- * grows once, during warmup; the measured calls only fill it.
+ * grows once, during warmup; the measured calls resize it to the size it
+ * already has and fill it.
  *
  * @test ReuseBuffer
  *
@@ -112,7 +122,9 @@ PERF_TEST(AllocationOverhead, AllocateEachCall) {
  *  - Measurements are stable
  *
  * Expected performance:
- *  - Faster than AllocateEachCall by the cost of one allocate/free pair
+ *  - Reference observation: faster than AllocateEachCall; the difference
+ *    indicates allocation cost but is not an isolated measurement of the
+ *    allocate/free pair (see the file comment)
  *  - High throughput (>10000 calls/sec)
  */
 PERF_TEST(AllocationOverhead, ReuseBuffer) {

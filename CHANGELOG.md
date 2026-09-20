@@ -61,7 +61,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the compiler removed the buffer from `AllocationOverhead.AllocateEachCall` and
   `SemanticMacros.AllocationPattern` (`BenchmarkCPU_PTEST`), which reported about
   0.001 us/call, faster than `ReuseBuffer`, and failed their CV check
-  intermittently. They report tens of nanoseconds per call, slower than reuse.
+  intermittently. The allocation is kept; in the reference optimized build they
+  report tens of nanoseconds per call, slower than reuse.
 
 ## v1.0.3 - 2026-06-28
 
