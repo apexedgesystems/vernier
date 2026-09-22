@@ -68,9 +68,10 @@ bench summary results.csv --json
 | `--sort COLUMN` | Sort by: name, median, cv, throughput | name    |
 | `--json`        | Machine-readable JSON output          | --      |
 
-### compare - Regression Detection
+### compare - Median Change Between Two Runs
 
-Statistical comparison of two benchmark CSVs.
+Compare two benchmark CSVs test by test, and label each test by how far its
+reported median moved.
 
 ```bash
 bench compare baseline.csv candidate.csv
@@ -81,12 +82,46 @@ bench compare baseline.csv candidate.csv --markdown
 
 **Options:**
 
-| Flag                   | Description                                   | Default |
-| ---------------------- | --------------------------------------------- | ------- |
-| `--threshold PCT`      | Regression threshold in %                     | 5       |
-| `--fail-on-regression` | Exit code 1 if regressions detected (CI mode) | --      |
-| `--json`               | Machine-readable JSON output                  | --      |
-| `--markdown`           | Markdown table output (for PR comments)       | --      |
+| Flag                   | Description                                            | Default |
+| ---------------------- | ------------------------------------------------------ | ------- |
+| `--threshold PCT`      | Median change, in %, beyond which a test is labelled   | 5       |
+| `--fail-on-regression` | Exit code 1 on a regression or a missing baseline test | --      |
+| `--json`               | Machine-readable JSON output                           | --      |
+| `--markdown`           | Markdown table output (for PR comments)                | --      |
+
+**What the labels mean.** A test is `REGRESSION` when the candidate's median
+is more than `--threshold` percent above the baseline's, `IMPROVEMENT` when
+it is more than that below it, and `neutral` otherwise, including at exactly
+the threshold. The labels describe the difference between two runs. They are
+not a test for statistical significance: the CSVs carry summary statistics,
+not the observations such a test needs. Each row shows both runs' CV as
+context for how spread out each run was on its own; neither CV measures the
+spread between the two runs, so a small median change on noisy tests is worth
+re-running before acting on it. Accounting for run-to-run noise is a known
+limit of this comparison rather than something it does.
+
+**Tests that are not in both runs.** The comparison covers the tests both
+CSVs report. Tests only the baseline reports are listed as missing from the
+candidate, tests only the candidate reports as new, and a renamed test shows
+up as both. Two CSVs with no test name in common are an error: the command
+exits 1 rather than reporting that nothing regressed.
+
+**Input it refuses.** A `--threshold` that is not a finite percentage of zero
+or more, a test name a CSV reports twice, a `wallMedian` or `wallCV` that is
+not a finite number, a `wallMedian` of zero or less, and a negative `wallCV`
+each end the command with exit code 1 and a message naming the run, the test
+and the value. Nothing is printed to stdout in that case.
+
+**Advisory or gate.** Plain `bench compare` reports and exits 0 whatever the
+labels say. `--fail-on-regression` is the gate: it exits 1 when a test is
+labelled `REGRESSION`, or when the candidate does not run a test the baseline
+did, since nothing measured that test. A test only the candidate runs is
+reported as new and does not fail on its own; adopt it into the baseline
+deliberately.
+
+**JSON shape.** `--json` prints one document: `threshold_pct`, a `results`
+array of per-test objects, and the `baseline_only` and `candidate_only` name
+lists. Each result's `p_value` is `null`, because none was computed.
 
 ### validate - Environment Checks
 
@@ -423,7 +458,7 @@ bench flamegraph MyComponent.Throughput.perf/perf.data --output before.svg
 # 5. Measure again
 bench run MyComponent_PTEST -- --repeats 30 --csv optimized.csv
 
-# 6. Statistical comparison
+# 6. Compare the medians
 bench compare baseline.csv optimized.csv --threshold 5
 
 # 7. Visualize (optional)
@@ -478,7 +513,12 @@ bench compare baseline.csv candidate.csv \
   --markdown > pr_comment.md
 ```
 
-Exit code 1 on regression. `--markdown` produces a table suitable for PR comments.
+`--fail-on-regression` is what makes this a gate: exit code 1 on a median
+more than 5% above its baseline, and on a baseline test the candidate did not
+run. Without the flag the command reports and exits 0. Unusable input --
+including two CSVs with no test in common -- exits 1 either way, so a job
+that compares the wrong pair of files fails instead of passing silently.
+`--markdown` produces a table suitable for PR comments.
 
 ---
 
