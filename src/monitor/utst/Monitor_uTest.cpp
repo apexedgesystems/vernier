@@ -11,6 +11,9 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
+#include <cstddef>
 #include <cstdio>
 
 #include <chrono>
@@ -25,6 +28,32 @@ using vernier::monitor::MonitorTag;
 using vernier::monitor::ScopeGuard;
 using vernier::monitor::SINK_FILE;
 using vernier::monitor::SINK_NONE;
+
+namespace {
+
+/* ----------------------------- Test Helpers ----------------------------- */
+
+/// Number of newline-terminated records in a sink file (0 if it does not exist).
+std::size_t countLines(const std::filesystem::path& path) {
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    return 0;
+  }
+  std::size_t lines = 0;
+  std::string line;
+  while (std::getline(f, line)) {
+    ++lines;
+  }
+  return lines;
+}
+
+/// Unique sink path per test, so a shuffled or repeated run never shares a file.
+std::filesystem::path sinkPath(const char* stem) {
+  return std::filesystem::temp_directory_path() /
+         ("vernier_mon_" + std::string(stem) + "_" + std::to_string(::getpid()) + ".log");
+}
+
+} // namespace
 
 /* ----------------------------- Monitor Method Tests ----------------------------- */
 
@@ -229,6 +258,48 @@ TEST(MonitorTest, FileSinkOutput) {
   EXPECT_TRUE(line.find("COUNTER") != std::string::npos);
   EXPECT_TRUE(line.find("file/7") != std::string::npos);
   EXPECT_TRUE(line.find("event") != std::string::npos);
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/**
+ * @test Samples still queued when stop() is called reach both the summary and
+ *       the configured sink.
+ *
+ * The producer runs to completion and calls stop() immediately, leaving the
+ * queue non-empty: stop()'s join is the synchronization point, so no sleep is
+ * needed and none is used. Repeated rounds because a single round could find
+ * the queue already empty.
+ */
+TEST(MonitorTest, StopDrainsSamplesQueuedBeforeStop) {
+  const auto TMP_PATH = sinkPath("pending");
+  constexpr int ROUNDS = 20;
+  constexpr unsigned long SAMPLES_PER_ROUND = 64;
+  const MonitorTag TAG("pending", 9);
+
+  for (int round = 0; round < ROUNDS; ++round) {
+    std::filesystem::remove(TMP_PATH);
+
+    MonitorConfig cfg;
+    cfg.sinks = SINK_FILE;
+    cfg.filePath = TMP_PATH.string();
+    cfg.queueCapacity = 4096; // >> SAMPLES_PER_ROUND: overflow cannot explain a loss
+    Monitor mon(cfg);
+    mon.start();
+
+    for (unsigned long i = 0; i < SAMPLES_PER_ROUND; ++i) {
+      mon.increment("queued", TAG, 1.0);
+    }
+    mon.stop();
+
+    ASSERT_EQ(mon.queue().droppedCount(), 0u) << "round " << round;
+
+    const auto& ENTRIES = mon.summary().entries();
+    const auto IT = ENTRIES.find("pending/9::queued");
+    ASSERT_NE(IT, ENTRIES.end()) << "round " << round;
+    EXPECT_EQ(IT->second.count, SAMPLES_PER_ROUND) << "summary, round " << round;
+    EXPECT_EQ(countLines(TMP_PATH), SAMPLES_PER_ROUND) << "file sink, round " << round;
+  }
 
   std::filesystem::remove(TMP_PATH);
 }

@@ -276,8 +276,12 @@ private:
 
   void drainLoop() {
     Sample sample;
-    while (running_.load(std::memory_order_relaxed) || queue_.tryPop(sample)) {
-      // Drain batch
+    for (;;) {
+      // Sampled before the drain below, so the round that observes the stop
+      // still drains a queue filled just before stop() cleared the flag.
+      const bool RUNNING = running_.load(std::memory_order_acquire);
+
+      // The only pop in this loop: every popped sample is processed here.
       while (queue_.tryPop(sample)) {
         for (auto& sink : sinks_) {
           sink->write(sample);
@@ -285,18 +289,12 @@ private:
         summary_.record(sample);
       }
 
-      if (running_.load(std::memory_order_relaxed)) {
-        // Brief sleep to avoid busy-spinning when queue is empty
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!RUNNING) {
+        break;
       }
-    }
 
-    // Final drain after stop
-    while (queue_.tryPop(sample)) {
-      for (auto& sink : sinks_) {
-        sink->write(sample);
-      }
-      summary_.record(sample);
+      // Brief sleep to avoid busy-spinning when the queue is empty
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     for (auto& sink : sinks_) {

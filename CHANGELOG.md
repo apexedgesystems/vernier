@@ -67,6 +67,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
+  the drain thread's loop condition popped a sample once the running flag had
+  cleared and then dropped it: the body popped again and processed only what it
+  found. A run whose producer queued work right before `stop()` lost one sample
+  per run, counted in `Total samples` but missing from the summary table and
+  from the file sink, with the drop counter at 0. The drain loop reads the flag
+  once per round and pops in one place, so a stop with a full queue reports the
+  same counts as a stop with an idle one. Measurements taken with an earlier
+  release are short by up to one sample per run, in the last scope, counter or
+  gauge recorded.
 - **`CMAKE_CUDA_ARCHITECTURES` is honored** -- the root `CMakeLists.txt` assigned
   its own `CUDA_ARCHS` option (default `89`) over the standard variable, so
   `-DCMAKE_CUDA_ARCHITECTURES=...`, a preset, a parent project's setting or the
