@@ -4,14 +4,29 @@
  * @file Monitor.hpp
  * @brief Main runtime performance monitor API.
  *
- * Usage:
+ * Usage -- configure, set thresholds, start, instrument, let the producers
+ * finish, stop:
+ *
  *   vernier::monitor::Monitor mon(config);
- *   mon.start();
+ *   mon.setThreshold("stage", tag.id, thresholdUs); // before start()
+ *   mon.start();                                    // sinks + I/O thread
  *   {
  *       VERNIER_MONITOR_SCOPE(mon, "stage", tag);
  *       doWork();
  *   }
- *   mon.stop(); // prints summary
+ *   mon.stop(); // drains every queued sample, then reports
+ *
+ * Construction alone starts nothing. A disabled monitor's start() creates no
+ * worker, no sink and no output file, and reports nothing at stop(); activate
+ * it with setEnabled(true) followed by start(). stop() writes the summary
+ * table to stderr when the console sink is configured, and collects in memory
+ * either way: mon.summary() carries the whole table even for SINK_NONE.
+ *
+ * Recording a sample takes no lock and no allocation: a steady-clock read per
+ * scope boundary, a fixed-size record copied into one slot of a bounded ring
+ * buffer, and a drain thread that feeds the sinks and the summary. A disabled
+ * monitor records nothing, but the clock reads, the name copies and the
+ * arguments passed to the macros still cost what they cost.
  */
 
 #include "src/monitor/inc/MonitorConfig.hpp"

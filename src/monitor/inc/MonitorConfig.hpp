@@ -43,8 +43,9 @@ struct MonitorConfig {
   AlertLevel consoleLevel{AlertLevel::INFO}; ///< Minimum alert level that reaches the console sink.
   AlertLevel fileLevel{AlertLevel::INFO};    ///< Minimum alert level that reaches the file sink.
 
-  /// Global enable/disable switch. When false, all instrumentation
-  /// becomes a no-op (checked once per sample, not per-call).
+  /// Global enable/disable switch, read by each recording call. When false,
+  /// start() creates nothing and no sample is queued; the scope guard still
+  /// reads the clock and copies the scope name.
   bool enabled{true};
 };
 
@@ -104,16 +105,18 @@ inline AlertLevel parseAlertLevel(const char* s, AlertLevel fallback) {
  *
  * Recognized env vars:
  *
- *   VERNIER_MONITOR           truthy enables the monitor (default: same as the
- *                             struct default, currently true)
+ *   VERNIER_MONITOR           truthy enables the monitor, falsy disables it;
+ *                             unset leaves the struct default (enabled)
  *   VERNIER_MONITOR_DISABLE   truthy forces disabled (overrides VERNIER_MONITOR)
  *   VERNIER_MONITOR_FILE      path; sets filePath and turns on the file sink
  *   VERNIER_MONITOR_CONSOLE   INFO | WARNING | CRITICAL | off; controls
  *                             console sink and its minimum alert level
  *   VERNIER_MONITOR_QUEUE     ring-buffer capacity; rounded up to pow2
  *
- * Designed for zero-code-change enablement: a binary instrumented with the
- * VERNIER_MONITOR_* macros stays silent until the operator sets the env var.
+ * One instrumented binary serves several deployments without a rebuild. The
+ * defaults are this struct's: enabled, console sink at INFO, no file. A run
+ * that should write nothing to the console needs VERNIER_MONITOR_CONSOLE=off,
+ * and one that should record nothing needs VERNIER_MONITOR_DISABLE=1.
  */
 [[nodiscard]] inline MonitorConfig configFromEnv() {
   MonitorConfig cfg{};

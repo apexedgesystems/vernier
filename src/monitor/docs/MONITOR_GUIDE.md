@@ -11,18 +11,52 @@ targets observability in real runs you can't repeat.
 
 ## At a glance
 
-| Capability            | API                                                        |
-| --------------------- | ---------------------------------------------------------- |
-| Scoped timer          | `VERNIER_MONITOR_SCOPE(monitor, "name", tag)`              |
-| Point-in-time gauge   | `VERNIER_MONITOR_GAUGE(monitor, "name", tag, value)`       |
-| Counter increment     | `VERNIER_MONITOR_INCREMENT(monitor, "name", tag[, delta])` |
-| Threshold alert       | `monitor.setThreshold("name", tag.id, thresholdUs)`        |
-| End-of-run summary    | `monitor.stop()` (also auto-called by the destructor)      |
-| Zero-overhead disable | `cfg.enabled = false` or `VERNIER_MONITOR=0`               |
+| Capability          | API                                                        |
+| ------------------- | ---------------------------------------------------------- |
+| Scoped timer        | `VERNIER_MONITOR_SCOPE(monitor, "name", tag)`              |
+| Point-in-time gauge | `VERNIER_MONITOR_GAUGE(monitor, "name", tag, value)`       |
+| Counter increment   | `VERNIER_MONITOR_INCREMENT(monitor, "name", tag[, delta])` |
+| Threshold alert     | `monitor.setThreshold("name", tag.id, thresholdUs)`        |
+| End-of-run summary  | `monitor.stop()` (also auto-called by the destructor)      |
+| Disable             | `cfg.enabled = false`, `VERNIER_MONITOR=0`, `setEnabled()` |
 
-The hot path is lock-free and bounded: scope entry/exit cost is a clock
-read plus a single MPMC queue write (~100-200ns). A dedicated I/O
-thread drains the queue and feeds the configured sinks.
+Recording a sample takes no lock and no allocation: the scope guard reads
+a steady clock on entry and exit and copies the scope name into a
+fixed-size record, and the record is published into one slot of a bounded
+MPMC ring buffer. A dedicated I/O thread drains that queue into the
+configured sinks and into the in-memory summary. Disabling stops a sample
+at the enabled check inside the recording call -- the queue is still
+allocated at construction, the scope guard still reads the clock and
+copies the name, and the arguments you pass to the macros are still
+evaluated -- so "disabled" means "records nothing", not "costs nothing".
+This guide quotes no per-sample time: the repository measures none.
+
+## Lifecycle
+
+The documented sequence is: configure, set thresholds, `start()`,
+instrument, let the producers finish, `stop()`.
+
+```cpp
+vernier::monitor::Monitor monitor(cfg);
+monitor.setThreshold("decode", decoder.id, 5000);  // before start()
+monitor.start();                                   // sinks + I/O thread
+// ... instrumented work on any number of threads ...
+monitor.stop();                                    // drains, then reports
+```
+
+| Call                              | What it does                                                                                                                                |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Construction                      | Allocates the queue. No thread, no sink, no output file.                                                                                    |
+| `start()`                         | Freezes the thresholds, opens the configured sinks, starts the I/O thread. Idempotent.                                                      |
+| `start()` while disabled          | Nothing: no thread, no sink, no output file, no summary at `stop()`, and `isRunning()` stays false.                                         |
+| `setEnabled(true)` then `start()` | Starts a monitor that was disabled at its first `start()`.                                                                                  |
+| `setEnabled(false)` while running | Later recording calls return at the enabled check. It is a switch, not a barrier: samples already queued are kept and reported.             |
+| `stop()`                          | Writes every sample queued before it to the sinks and the summary, joins the I/O thread, then reports. Idempotent; the destructor calls it. |
+
+`stop()` prints the summary table to stderr only when the console sink is
+configured. Output selection does not affect measurement: with
+`SINK_NONE`, or with the console sink off, samples are still collected
+and `monitor.summary()` still carries the whole table.
 
 ## Construction
 
@@ -40,37 +74,44 @@ vernier::monitor::Monitor monitor(cfg);
 const vernier::monitor::MonitorTag decoder{"decoder", 1};
 ```
 
-## Zero-code-change enablement via env vars
+## Configuration from the environment
 
-A binary instrumented with the `VERNIER_MONITOR_*` macros stays silent
-until the operator sets the relevant env var. Build a config from the
-environment instead of hard-coding it:
+`configFromEnv()` builds the same `MonitorConfig` from environment
+variables, so one instrumented binary covers several deployments without
+a rebuild:
 
 ```cpp
 auto cfg = vernier::monitor::configFromEnv();
 vernier::monitor::Monitor monitor(cfg);
 ```
 
-Recognized env vars:
+The defaults are the struct's own: enabled, console sink at `INFO`, no
+file, 4096-slot queue. Set the variables to change them.
 
-| Var                                  | Effect                                               |
-| ------------------------------------ | ---------------------------------------------------- |
-| `VERNIER_MONITOR=1`                  | enable; default behavior is enabled-when-constructed |
-| `VERNIER_MONITOR_DISABLE=1`          | hard-disable (overrides `VERNIER_MONITOR`)           |
-| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | enable file sink with this path                      |
-| `VERNIER_MONITOR_CONSOLE=WARNING`    | console sink at this min level (or `off`)            |
-| `VERNIER_MONITOR_QUEUE=8192`         | ring-buffer capacity (rounded up to pow2)            |
+| Var                                  | Effect                                                    |
+| ------------------------------------ | --------------------------------------------------------- |
+| `VERNIER_MONITOR=0`                  | disable; any other value enables. Unset leaves it enabled |
+| `VERNIER_MONITOR_DISABLE=1`          | disable, whatever `VERNIER_MONITOR` says                  |
+| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | add the file sink with this path                          |
+| `VERNIER_MONITOR_CONSOLE=WARNING`    | console minimum level; `off` removes the console sink     |
+| `VERNIER_MONITOR_QUEUE=8192`         | ring-buffer capacity (rounded up to a power of two)       |
 
 Same code, different deployments:
 
 ```bash
-# Production: quiet
+# Default: per-sample lines and the summary table on stderr
 ./my_app
 
-# Investigation: warnings to console, all samples to file
+# Silent run: no console output, no summary, samples collected in memory
+VERNIER_MONITOR_CONSOLE=off ./my_app
+
+# Investigation: breaches and the summary on the console, all in the file
 VERNIER_MONITOR_FILE=/tmp/issue.vmon \
 VERNIER_MONITOR_CONSOLE=WARNING \
 ./my_app
+
+# Records nothing at all
+VERNIER_MONITOR_DISABLE=1 ./my_app
 ```
 
 ## Instrumentation patterns
@@ -117,8 +158,11 @@ VERNIER_MONITOR_GAUGE(monitor, "queue_depth", decoder, queue.size());
 ```cpp
 // Warn (and flag in summary) if "decode" ever exceeds 5 ms.
 // setThreshold takes the numeric tag id, not the full MonitorTag.
-monitor.setThreshold("decode", decoder.id, 5000);
+monitor.setThreshold("decode", decoder.id, 5000);  // before start()
 ```
+
+`start()` freezes the thresholds into the table the recording path reads,
+so a threshold set afterwards applies only to a later `start()`.
 
 When a scope exceeds its threshold, the sample is flagged as
 `THRESHOLD_BREACH` and -- if `consoleLevel <= WARNING` -- a line is
@@ -139,6 +183,12 @@ vernier::monitor summary
 --------------------------------------------------------------------------
  Total samples: 31263 | Dropped: 0 | Wall time: 62.3 s
 ```
+
+`stop()` writes it to stderr when the console sink is configured, after
+the queue has been drained: `Total samples` counts every sample the
+monitor accepted, `Dropped` counts what the ring buffer had no room for,
+and the `Calls` column adds up to the difference. When the console sink
+is off, the same table is still available through `monitor.summary()`.
 
 The file sink writes a tab-delimited record per sample, suitable for
 post-run analysis with awk / pandas / `bench` Python tools.

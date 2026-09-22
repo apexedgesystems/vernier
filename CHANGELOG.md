@@ -24,6 +24,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   parsed the summary off stderr from a file-only run needs the console sink
   enabled; one that tested for the created file as a sign that a disabled run
   had started needs another signal.
+- **The monitor guide, headers and example describe the shipped behaviour** --
+  `MONITOR_GUIDE.md` gains a lifecycle section (configure, set thresholds,
+  `start()`, instrument, let the producers finish, `stop()`) and states what a
+  disabled monitor and a console-off monitor do. Three claims are gone, because
+  the repository does not support them: a "zero-overhead disable" row (a
+  disabled monitor still reads the clock, copies the scope name and evaluates
+  the arguments you pass the macros), a per-sample cost of "~100-200ns" (no
+  measurement backs a figure), and "stays silent until the operator sets the
+  env var" (the default configuration is enabled with the console sink, and
+  `VERNIER_MONITOR_CONSOLE=off` or `VERNIER_MONITOR_DISABLE=1` is what makes a
+  run quiet). `MonitorEnvVarExample` shows the same four environments and the
+  explicit `stop()`.
 - **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
   and every `vernier_add_ptest` target link `libtcmalloc` only when configured
   with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev
