@@ -9,6 +9,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`vernier::monitor`: a disabled monitor produces nothing, and the summary
+  follows the console sink** -- `start()` on a monitor whose configuration has
+  `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
+  without creating the I/O thread, without opening the output file at
+  `filePath` and without arming a summary: `isRunning()` reports false, no empty
+  file appears next to the run and `stop()` prints no empty summary table.
+  Activate such a monitor with `setEnabled(true)` followed by `start()`. `stop()` prints the
+  summary table to stderr only when the console sink is configured, so
+  `VERNIER_MONITOR_CONSOLE=off` and a file-only or `SINK_NONE` configuration are
+  silent. Measurement is unaffected by that choice: `SINK_NONE` still collects
+  in memory and `summary()` still carries the full table, and samples recorded
+  before `setEnabled(false)` are kept and reported at `stop()`. A script that
+  parsed the summary off stderr from a file-only run needs the console sink
+  enabled; one that tested for the created file as a sign that a disabled run
+  had started needs another signal.
 - **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
   and every `vernier_add_ptest` target link `libtcmalloc` only when configured
   with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev

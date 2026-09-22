@@ -57,9 +57,17 @@ public:
 
   /**
    * @brief Start the async I/O backend. Idempotent.
+   *
+   * On a disabled monitor this does nothing: no worker thread, no sink, no
+   * output file and no summary at stop(). Activate such a monitor with
+   * setEnabled(true) followed by start().
+   *
    * @note NOT RT-safe: Thread creation, heap allocation.
    */
   void start() {
+    if (!enabled_.load(std::memory_order_relaxed))
+      return;
+
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true))
       return;
@@ -100,7 +108,14 @@ public:
   }
 
   /**
-   * @brief Stop the I/O backend, flush remaining samples, and print summary.
+   * @brief Stop the I/O backend, write every queued sample, and print summary.
+   *
+   * Call it after the producers have finished: every sample they queued is
+   * written to the sinks and recorded in the summary before this returns. The
+   * summary table goes to the console only when the console sink is
+   * configured; the in-memory summary is complete either way, and the enabled
+   * flag's value at this point does not discard what was already recorded.
+   *
    * @note NOT RT-safe: Thread join, I/O operations.
    */
   void stop() {
@@ -113,9 +128,11 @@ public:
       ioThread_.join();
     }
 
-    // Print summary
-    const std::uint64_t WALL_NS = nowNs() - startTimeNs_;
-    summary_.print(WALL_NS, totalSamples_.load(), queue_.droppedCount());
+    // Print summary where the console sink is the configured output
+    if (cfg_.sinks & SINK_CONSOLE) {
+      const std::uint64_t WALL_NS = nowNs() - startTimeNs_;
+      summary_.print(WALL_NS, totalSamples_.load(), queue_.droppedCount());
+    }
 
     sinks_.clear();
   }
@@ -235,6 +252,13 @@ public:
 
   /**
    * @brief Enable or disable monitoring at runtime.
+   *
+   * A lightweight switch read by the next recording call, not a barrier:
+   * samples a producer has already passed to the monitor are kept, and
+   * disabling an active monitor neither stops the worker nor discards the
+   * history collected so far. Enabling a monitor that was started while
+   * disabled takes effect on the next start().
+   *
    * @param on True to enable, false to disable.
    * @note RT-safe: Atomic store.
    */
