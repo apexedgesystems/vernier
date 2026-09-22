@@ -17,7 +17,14 @@ pub enum Error {
     Parse(String),
     InvalidArgs(String),
     ToolNotFound(String),
-    Regression(usize),
+    /// Two runs cannot be compared; the cause names itself.
+    Compare(compare::CompareError),
+    /// `bench compare --fail-on-regression` found a labelled regression or a
+    /// baseline test the candidate does not run.
+    Gate {
+        regressions: usize,
+        missing: usize,
+    },
 }
 
 impl std::error::Error for Error {}
@@ -30,7 +37,15 @@ impl fmt::Display for Error {
             Error::Parse(s) => write!(f, "parse error: {s}"),
             Error::InvalidArgs(s) => write!(f, "invalid arguments: {s}"),
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
-            Error::Regression(n) => write!(f, "{n} regression(s) detected"),
+            Error::Compare(e) => write!(f, "{e}"),
+            Error::Gate {
+                regressions,
+                missing,
+            } => write!(
+                f,
+                "--fail-on-regression: {regressions} regression(s), \
+                 {missing} baseline test(s) missing from the candidate"
+            ),
         }
     }
 }
@@ -46,6 +61,13 @@ impl From<csv::Error> for Error {
     #[inline]
     fn from(e: csv::Error) -> Self {
         Error::Csv(e)
+    }
+}
+
+impl From<compare::CompareError> for Error {
+    #[inline]
+    fn from(e: compare::CompareError) -> Self {
+        Error::Compare(e)
     }
 }
 
@@ -148,10 +170,10 @@ pub mod workflow;
 
 /* ----------------------------- Re-exports ----------------------------- */
 
-pub use compare::{compare_runs, has_regressions, CompareResult};
+pub use compare::{compare_runs, has_regressions, CompareError, CompareResult, Comparison};
 pub use csv_loader::{load_csv, BenchRow};
 pub use flamegraph::generate_flamegraph;
 pub use report::{print_comparison_table, print_summary_table, to_json, to_markdown};
 pub use runner::run_benchmark;
-pub use stats::{mann_whitney_u, median, percentile};
+pub use stats::{median, percentile};
 pub use validate::run_checks;

@@ -2,7 +2,7 @@
 //!
 //! Uses ANSI escape codes for colored terminal output.
 
-use super::{BenchRow, Classification, CompareResult, SortColumn};
+use super::{BenchRow, Classification, Comparison, SortColumn};
 
 /* ----------------------------- ANSI Colors ----------------------------- */
 
@@ -14,12 +14,18 @@ const RESET: &str = "\x1b[0m";
 
 /* ----------------------------- Comparison Table ----------------------------- */
 
+/// What the labels mean, in the lines a terminal shows them on.
+fn labelling_rule(threshold_pct: f64) -> [String; 3] {
+    [
+        format!("Labels compare the median change against the {threshold_pct:.1}% threshold."),
+        "They describe the difference between two runs, not a significance test;".to_string(),
+        "the CV of each run is its own spread, not the spread between the runs.".to_string(),
+    ]
+}
+
 /// Print a colored comparison table to stdout.
-pub fn print_comparison_table(results: &[CompareResult]) {
-    if results.is_empty() {
-        println!("No common tests to compare.");
-        return;
-    }
+pub fn print_comparison_table(comparison: &Comparison) {
+    let results = &comparison.results;
 
     // Calculate column widths
     let name_width = results
@@ -32,18 +38,20 @@ pub fn print_comparison_table(results: &[CompareResult]) {
     // Header
     println!();
     println!(
-        "{BOLD}{:<width$}  {:>12}  {:>12}  {:>10}  {:>8}  {:>8}  {:>12}{RESET}",
+        "{BOLD}{:<width$}  {:>12}  {:>12}  {:>10}  {:>8}  {:>8}  {:>8}  {:>12}{RESET}",
         "Test",
         "Baseline",
         "Candidate",
         "Delta",
         "%",
-        "p-value",
+        "Base CV",
+        "Cand CV",
         "Result",
         width = name_width
     );
     println!(
-        "{:-<width$}  {:-<12}  {:-<12}  {:-<10}  {:-<8}  {:-<8}  {:-<12}",
+        "{:-<width$}  {:-<12}  {:-<12}  {:-<10}  {:-<8}  {:-<8}  {:-<8}  {:-<12}",
+        "",
         "",
         "",
         "",
@@ -62,13 +70,14 @@ pub fn print_comparison_table(results: &[CompareResult]) {
         };
 
         println!(
-            "{color}{:<width$}  {:>12.5}  {:>12.5}  {:>+10.5}  {:>+7.1}%  {:>8.4}  {:<12}{RESET}",
+            "{color}{:<width$}  {:>12.5}  {:>12.5}  {:>+10.5}  {:>+7.1}%  {:>7.1}%  {:>7.1}%  {:<12}{RESET}",
             r.test,
             r.baseline_median,
             r.candidate_median,
             r.delta_us,
             r.delta_pct,
-            r.p_value,
+            r.baseline_cv * 100.0,
+            r.candidate_cv * 100.0,
             label,
             width = name_width,
             color = color,
@@ -76,10 +85,7 @@ pub fn print_comparison_table(results: &[CompareResult]) {
     }
 
     // Summary line
-    let reg_count = results
-        .iter()
-        .filter(|r| r.classification == Classification::Regression)
-        .count();
+    let reg_count = comparison.regression_count();
     let imp_count = results
         .iter()
         .filter(|r| r.classification == Classification::Improvement)
@@ -97,8 +103,27 @@ pub fn print_comparison_table(results: &[CompareResult]) {
     if imp_count > 0 {
         print!("{GREEN}{imp_count} improvement(s){RESET}  ");
     }
-    print!("{neu_count} neutral");
+    println!("{neu_count} neutral");
+
+    if !comparison.baseline_only.is_empty() {
+        println!(
+            "  {YELLOW}Missing from the candidate ({}): {}{RESET}",
+            comparison.baseline_only.len(),
+            comparison.baseline_only.join(", ")
+        );
+    }
+    if !comparison.candidate_only.is_empty() {
+        println!(
+            "  New in the candidate ({}): {}",
+            comparison.candidate_only.len(),
+            comparison.candidate_only.join(", ")
+        );
+    }
+
     println!();
+    for line in labelling_rule(comparison.threshold_pct) {
+        println!("  {line}");
+    }
 }
 
 /* ----------------------------- Summary Table ----------------------------- */
@@ -198,14 +223,14 @@ pub fn print_summary_table(rows: &[BenchRow], sort: SortColumn) {
 
 /* ----------------------------- Markdown ----------------------------- */
 
-/// Format comparison results as a markdown table.
-pub fn to_markdown(results: &[CompareResult]) -> String {
+/// Format a comparison as a markdown table with its unmatched tests.
+pub fn to_markdown(comparison: &Comparison) -> String {
     let mut out = String::new();
 
-    out.push_str("| Test | Baseline | Candidate | Delta | % | Result |\n");
-    out.push_str("|------|----------|-----------|-------|---|--------|\n");
+    out.push_str("| Test | Baseline | Candidate | Delta | % | Base CV | Cand CV | Result |\n");
+    out.push_str("|------|----------|-----------|-------|---|---------|---------|--------|\n");
 
-    for r in results {
+    for r in &comparison.results {
         let marker = match r.classification {
             Classification::Regression => "[!]",
             Classification::Improvement => "[+]",
@@ -213,25 +238,52 @@ pub fn to_markdown(results: &[CompareResult]) -> String {
         };
 
         out.push_str(&format!(
-            "| {} | {:.5} | {:.5} | {:+.5} | {:+.1}% | {} {} |\n",
+            "| {} | {:.5} | {:.5} | {:+.5} | {:+.1}% | {:.1}% | {:.1}% | {} {} |\n",
             r.test,
             r.baseline_median,
             r.candidate_median,
             r.delta_us,
             r.delta_pct,
+            r.baseline_cv * 100.0,
+            r.candidate_cv * 100.0,
             marker,
             r.classification,
         ));
     }
+
+    if !comparison.baseline_only.is_empty() {
+        out.push_str(&format!(
+            "\nMissing from the candidate ({}): {}\n",
+            comparison.baseline_only.len(),
+            comparison.baseline_only.join(", ")
+        ));
+    }
+    if !comparison.candidate_only.is_empty() {
+        out.push_str(&format!(
+            "\nNew in the candidate ({}): {}\n",
+            comparison.candidate_only.len(),
+            comparison.candidate_only.join(", ")
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n{}\n",
+        labelling_rule(comparison.threshold_pct).join(" ")
+    ));
 
     out
 }
 
 /* ----------------------------- JSON ----------------------------- */
 
-/// Format comparison results as a JSON array.
-pub fn to_json(results: &[CompareResult]) -> String {
-    let entries: Vec<serde_json::Value> = results
+/// Format a comparison as a JSON document.
+///
+/// `p_value` is null: the comparison reads summary statistics, so no test for
+/// statistical significance was run. `baseline_only` holds the tests the
+/// candidate does not run, `candidate_only` the tests that have no baseline.
+pub fn to_json(comparison: &Comparison) -> String {
+    let entries: Vec<serde_json::Value> = comparison
+        .results
         .iter()
         .map(|r| {
             serde_json::json!({
@@ -248,7 +300,14 @@ pub fn to_json(results: &[CompareResult]) -> String {
         })
         .collect();
 
-    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+    let document = serde_json::json!({
+        "threshold_pct": comparison.threshold_pct,
+        "results": entries,
+        "baseline_only": comparison.baseline_only,
+        "candidate_only": comparison.candidate_only,
+    });
+
+    serde_json::to_string_pretty(&document).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// Format summary rows as a JSON array.
@@ -303,14 +362,11 @@ pub fn validate_to_json(checks: &[super::CheckResult]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bench::CompareResult;
 
     fn make_result(test: &str, base: f64, cand: f64) -> CompareResult {
         let delta = cand - base;
-        let pct = if base > 0.0 {
-            (delta / base) * 100.0
-        } else {
-            0.0
-        };
+        let pct = (delta / base) * 100.0;
         CompareResult {
             test: test.to_string(),
             baseline_median: base,
@@ -324,36 +380,71 @@ mod tests {
             } else {
                 Classification::Neutral
             },
-            p_value: 0.01,
+            p_value: None,
             baseline_cv: 0.02,
             candidate_cv: 0.03,
         }
     }
 
-    /// @test Markdown output contains header row.
-    #[test]
-    fn markdown_has_header() {
-        let results = vec![make_result("Foo", 1.0, 1.5)];
-        let md = to_markdown(&results);
-        assert!(md.contains("| Test |"));
-        assert!(md.contains("Foo"));
+    fn make_comparison(results: Vec<CompareResult>) -> Comparison {
+        Comparison {
+            threshold_pct: 5.0,
+            results,
+            baseline_only: Vec::new(),
+            candidate_only: Vec::new(),
+        }
     }
 
-    /// @test JSON output is valid and contains test name.
+    /// @test Markdown carries the header, the CV context and the rule.
+    #[test]
+    fn markdown_has_header_and_rule() {
+        let comparison = make_comparison(vec![make_result("Foo", 1.0, 1.5)]);
+        let md = to_markdown(&comparison);
+        assert!(
+            md.contains("| Test | Baseline | Candidate | Delta | % | Base CV | Cand CV | Result |")
+        );
+        assert!(md.contains(
+            "| Foo | 1.00000 | 1.50000 | +0.50000 | +50.0% | 2.0% | 3.0% | [!] REGRESSION |"
+        ));
+        assert!(md.contains("median change against the 5.0% threshold"));
+        assert!(!md.to_lowercase().contains("p-value"), "{md}");
+    }
+
+    /// @test Markdown names the tests only one run reports.
+    #[test]
+    fn markdown_lists_unmatched_tests() {
+        let mut comparison = make_comparison(vec![make_result("Foo", 1.0, 1.0)]);
+        comparison.baseline_only = vec!["Gone".to_string()];
+        comparison.candidate_only = vec!["New".to_string()];
+        let md = to_markdown(&comparison);
+        assert!(
+            md.contains("\nMissing from the candidate (1): Gone\n"),
+            "{md}"
+        );
+        assert!(md.contains("\nNew in the candidate (1): New\n"), "{md}");
+    }
+
+    /// @test JSON carries the results, the threshold and an explicit null p-value.
     #[test]
     fn json_valid() {
-        let results = vec![make_result("Bar", 2.0, 1.8)];
-        let json = to_json(&results);
+        let comparison = make_comparison(vec![make_result("Bar", 2.0, 1.8)]);
+        let json = to_json(&comparison);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed.is_array());
-        assert_eq!(parsed[0]["test"], "Bar");
+        assert_eq!(parsed["threshold_pct"], 5.0);
+        assert_eq!(parsed["results"][0]["test"], "Bar");
+        assert_eq!(parsed["results"][0]["classification"], "IMPROVEMENT");
+        assert!(parsed["results"][0]["p_value"].is_null(), "{json}");
+        assert!(parsed["baseline_only"].as_array().unwrap().is_empty());
     }
 
-    /// @test Empty results produce valid output.
+    /// @test JSON names the tests only one run reports.
     #[test]
-    fn empty_results() {
-        assert_eq!(to_markdown(&[]), "| Test | Baseline | Candidate | Delta | % | Result |\n|------|----------|-----------|-------|---|--------|\n");
-        let json = to_json(&[]);
-        assert_eq!(json, "[]");
+    fn json_lists_unmatched_tests() {
+        let mut comparison = make_comparison(vec![make_result("Foo", 1.0, 1.0)]);
+        comparison.baseline_only = vec!["Gone".to_string()];
+        comparison.candidate_only = vec!["New".to_string()];
+        let parsed: serde_json::Value = serde_json::from_str(&to_json(&comparison)).unwrap();
+        assert_eq!(parsed["baseline_only"][0], "Gone");
+        assert_eq!(parsed["candidate_only"][0], "New");
     }
 }
