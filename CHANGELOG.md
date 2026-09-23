@@ -205,6 +205,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PerfHarness.hpp`, under both GCC and Clang, and failed outright under
   `-Werror`. The handler writes through a helper that resumes after a short
   write or `EINTR`; it remains async-signal-safe and its message is unchanged.
+- **Installed headers compile for `find_package(vernier)` consumers** -- the
+  install copied each library's headers flat into `<includedir>/`, while the
+  headers include one another as `src/bench/inc/...` and `src/monitor/inc/...`,
+  so an installed consumer's `#include "Perf.hpp"` stopped at
+  `'src/bench/inc/PerfConfig.hpp' file not found`, and the source-qualified
+  `#include "src/bench/inc/Perf.hpp"` found nothing. With a
+  `CMAKE_INSTALL_INCLUDEDIR` other than `include`, the exported targets also
+  named `<prefix>/include`, and configuring a consumer failed with
+  `Imported target "vernier::bench" includes non-existent path`. Headers are
+  installed once, at their source paths under
+  `<includedir>/vernier/src/<module>/inc/`, and every exported target (bench,
+  bench_cuda, monitor) adds that `vernier/` directory and its module's
+  directory to the include path, so both include forms work with no include
+  directory of the consumer's own, also with a relative
+  `CMAKE_INSTALL_INCLUDEDIR` other than `include` and from a prefix moved after
+  installation. The README's link example adds the `GTest::gtest` that a
+  `PERF_MAIN()` benchmark needs. Library names and SONAMEs are unchanged.
+  **For packagers:** the headers' installed location changes from
+  `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
+  use the exported targets need no change.
 
 ## v1.0.3 - 2026-06-28
 

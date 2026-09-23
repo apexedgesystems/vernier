@@ -86,3 +86,12 @@ set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarkin
 # ------------------------------------------------------------------------------
 
 include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
+
+# ------------------------------------------------------------------------------
+# Installed Package Consumers (1)
+# ------------------------------------------------------------------------------
+# An install of this tree used by a project outside it, through
+# find_package(vernier) alone.
+# ------------------------------------------------------------------------------
+
+include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")

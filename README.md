@@ -120,11 +120,30 @@ Consumers use `find_package(vernier)`:
 
 ```cmake
 find_package(vernier REQUIRED)
-target_link_libraries(my_benchmark PRIVATE vernier::bench)
+target_link_libraries(my_benchmark PRIVATE vernier::bench GTest::gtest)
+target_link_libraries(my_app PRIVATE vernier::monitor)
 ```
+
+`PERF_MAIN()` supplies `main()` and runs the GoogleTest cases, so a benchmark
+links `GTest::gtest`, not `GTest::gtest_main`. `find_package(vernier)` looks up
+GTest even for a consumer that uses only the monitor, so GTest must be installed
+where CMake finds it. A GPU benchmark links `vernier::bench_cuda` together with
+`vernier::bench`.
 
 The install tree contains headers, shared libraries, CMake config, and documentation
 under `build/native-linux-release/install/`.
+
+#### Header layout
+
+Headers keep their source-tree paths under one directory,
+`<prefix>/<includedir>/vernier/src/<module>/inc/`, where `<includedir>` is
+`CMAKE_INSTALL_INCLUDEDIR` (`include` by default). The exported targets put
+that `vernier/` directory and the module's directory on the include path, so
+`#include "Perf.hpp"` and `#include "src/bench/inc/Perf.hpp"` both work, as do
+`"Monitor.hpp"` and `"src/monitor/inc/Monitor.hpp"`, with no include directory
+of the consumer's own. With relative install directories (the default), the
+package finds its files relative to its own location, so an installed prefix
+can be moved.
 
 #### Library versions
 

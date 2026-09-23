@@ -3,14 +3,23 @@
 #
 # Provides imported targets:
 #   vernier::bench       - CPU benchmarking library
-#   vernier::bench_cuda  - GPU benchmarking library (when CUDA available)
+#   vernier::bench_cuda  - GPU benchmarking library (when CUDA available;
+#                          linked together with vernier::bench)
+#   vernier::monitor     - Runtime performance monitor
+#
+# Headers are installed at their source paths under
+# <includedir>/vernier/src/<module>/inc/. Each target adds that root and its
+# module directory to the include path, so "Perf.hpp" and
+# "src/bench/inc/Perf.hpp" (likewise "Monitor.hpp") both resolve.
 #
 # Usage:
 #   find_package(vernier REQUIRED)
-#   target_link_libraries(my_bench PRIVATE vernier::bench GTest::gtest_main)
+#   target_link_libraries(my_bench PRIVATE vernier::bench GTest::gtest)
+#   target_link_libraries(my_app PRIVATE vernier::monitor)
 #
 # Requirements:
-#   GTest must be available (framework macros expand to TEST()).
+#   GTest must be available (framework macros expand to TEST()). PERF_MAIN()
+#   supplies main(), so a benchmark links GTest::gtest, not GTest::gtest_main.
 # ==============================================================================
 
 @PACKAGE_INIT@
