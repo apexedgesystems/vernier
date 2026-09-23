@@ -325,6 +325,58 @@ ls -la /usr/local/cuda/targets/x86_64-linux/lib/libnvidia-ml.so
 
 ## Runtime Issues
 
+### "ABI mismatch" and Exit Status 3
+
+**Symptoms:** the benchmark prints one line and exits with status 3 before
+any profiler is constructed:
+
+```
+[bench] ABI mismatch: this benchmark and the libbench it loaded were built from different vernier headers (sizeof(PerfConfig): benchmark 272, library 240). Rebuild the benchmark against this libbench, or load the libbench that matches the benchmark's headers. Exiting.
+```
+
+The parentheses list each value that differs: `ABI version`,
+`sizeof(PerfConfig)`, `sizeof(Stats)`, and for `libbench_cuda` also
+`sizeof(PerfGpuConfig)`.
+
+**Cause:** the benchmark was compiled from the vernier headers of another
+build than the `libbench` or `libbench_cuda` it loaded, for example an
+installed package next to newer headers, or a stale copy of the library found
+first on the library path. The two sides exchange `PerfConfig`, `Stats` and
+`PerfGpuConfig` objects, so the run stops instead of reading them with the
+wrong layout.
+
+**Fix:** rebuild the benchmark against the headers that ship with the library
+it loads, or have it load the library it was built with. `ldd` shows which
+file the loader picked:
+
+```bash
+ldd ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST | grep libbench
+```
+
+---
+
+### "libbench.so.1: cannot open shared object file"
+
+**Symptoms:** a benchmark built against an earlier release does not start;
+nothing from vernier is printed and the exit status is 127:
+
+```
+./MyComponent_PTEST: error while loading shared libraries: libbench.so.1: cannot open shared object file: No such file or directory
+```
+
+**Cause:** the benchmark was linked against the `.so.1` bench libraries. The
+current ones are `libbench.so.2` and `libbench_cuda.so.2`: the layout they
+share with the benchmark changed, and there is no `libbench.so.1` link to
+them, so an old binary stops at the loader instead of running against an
+incompatible layout.
+
+**Fix:** rebuild the benchmark against the current headers and libraries. To
+keep running the old binary as it is, keep the earlier release's
+`libbench.so.1` where its loader looks; both versions can be installed in one
+directory. See [Library versions](../../../README.md#library-versions).
+
+---
+
 ### CSV File Not Generated
 
 **Symptoms:** No CSV after test completes.
@@ -661,6 +713,27 @@ cudaDeviceReset();  // Nuclear option
 
 ## Profiler Issues
 
+### `bench run`: "tool not found: ... is not on PATH"
+
+**Symptoms:** `bench run` exits with status 1 before it starts the benchmark
+or creates an output folder:
+
+```
+Error: tool not found: 'nsys' is not on PATH; --profile nsight runs the benchmark under it. Install nsys, or run `bench doctor` to see which profilers this machine can use
+```
+
+**Cause:** these profiles run the benchmark under an external program that
+must be on `PATH`: `callgrind`, `massif`, `memcheck` and `helgrind`
+(`valgrind`), `heaptrack`, `compute-sanitizer`, `nsight` (`nsys`) and `ncu`.
+`--taskset` needs `taskset` the same way. `bench profile-all` reports the same
+line for that profiler and moves on to the next one.
+
+**Fix:** install the named program, or add the directory that holds it to
+`PATH`. `bench doctor <binary>` lists each profiler backend the binary has and
+whether its tool is available.
+
+---
+
 ### perf Not Working
 
 **Symptoms:**
@@ -669,15 +742,26 @@ cudaDeviceReset();  // Nuclear option
 perf: command not found
 ```
 
+or Ubuntu's `perf` launcher finds no build for the running kernel:
+
+```
+WARNING: perf not found for kernel 6.8.0-138
+```
+
 **Solutions:**
 
-**1. Install perf**:
+**1. Install perf** for the running kernel:
 
 ```bash
 sudo apt-get install linux-tools-generic linux-tools-$(uname -r)
 ```
 
-**2. Check permissions**:
+A package for the running kernel may not exist (a vendor kernel, for example);
+then install a generic perf build and put it first on `PATH`, as the
+[Thor rig](rigs/RIG_THOR_AGX.md) does. In a container, see
+[Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
+
+**2. Check permissions** (a `perf` that runs can still be refused):
 
 ```bash
 # Option 1: Run as root
@@ -742,11 +826,19 @@ which nsys
 which ncu
 ```
 
-**2. Check artifact directory**:
+**2. Check the artifact directory**. A direct run writes one folder per
+profiled test, named after the test; under `bench run` the whole run's data is
+in one folder named after the binary, and no per-test folder is created:
 
 ```bash
-ls -la test.nsight/
+# ./test --profile nsight
+ls -la Suite.Case.nsight/
+
+# bench run ./test --profile nsight
+ls -la bench-out/test.nsight/
 ```
+
+`--profile ncu` writes `.ncu` folders in place of `.nsight` in both cases.
 
 **3. Use manual profiling**:
 
@@ -857,14 +949,8 @@ ENV PATH="/opt/FlameGraph:${PATH}"
 ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 ```
 
-**3. Perf not available** (must mount from host):
-
-```bash
-docker run --rm \
-    -v /usr/bin/perf:/usr/bin/perf:ro \
-    -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-    mybench:latest
-```
+**3. Perf not available**: see
+[Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
 
 ---
 
@@ -874,24 +960,31 @@ docker run --rm \
 
 **Solutions:**
 
-**1. Must mount from host** (kernel version must match):
+**1. Give the image a perf for the host's kernel.** On Ubuntu, `perf` runs
+the build for the running kernel, and a container runs on the host's kernel.
+The dev images install that build when they are built; rebuild them on the
+host that runs the container after a kernel change, and in place of an image
+pulled from the registry:
 
 ```bash
-docker run --rm --privileged \
-    -v /usr/bin/perf:/usr/bin/perf:ro \
-    -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-    -v /dev/cpu:/dev/cpu \
-    mybench:latest
+make docker-dev        # or: make docker-dev-cuda
 ```
 
-**2. Need --privileged or adjust paranoid**:
+`docker compose run` and the `compose-*` targets do not rebuild the image. A
+package for the host's kernel may not exist: the build then prints
+`WARN: linux-tools-<release> unavailable; perf may not match the host kernel`.
+Details, and images of your own:
+[Docker Setup Guide](DOCKER_SETUP.md#perf-profiling).
+
+**2. Access is a separate question**, and a rebuild does not change it: the
+host's `kernel.perf_event_paranoid`, `CAP_PERFMON` and the container's policy
+decide. On the tested host, at `perf_event_paranoid=4`, `perf stat` in the
+privileged `dev` service works when run as root (uid 0) and is refused for the
+image's non-root user (uid 1001). For user profiling, lower the level on the
+host:
 
 ```bash
-# On host
 sudo sysctl -w kernel.perf_event_paranoid=-1
-
-# Or use --privileged
-docker run --rm --privileged ...
 ```
 
 ---
@@ -1018,9 +1111,16 @@ about.
 ./MyTest --profile gperf --profile-output-dir bench-out/2026-05-24/
 ```
 
-Every backend in the registry writes to a per-test subdirectory of that root.
-For multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the
-same root: each tool's artifacts go into a separate `<Test>.<tool>/` subdir.
+A direct run writes each profiled test's artifacts to a `<Test>.<tool>/`
+subdirectory of that root (`.bpf` for bpftrace). A `/` in a parameterized
+test's name is written `+2F` and a `+` as `+2B`, so `Parts/Join.V0/n1000` gets
+`Parts+2FJoin.V0+2Fn1000.gperf/`. Under `bench run`, a profiler that
+`bench run` wraps around the whole process (the valgrind tools, heaptrack,
+compute-sanitizer, nsight, ncu, and jemalloc when its library can be
+preloaded) writes one `<binary>.<tool>/` folder for the run instead, and no
+per-test folders; its root is `--profile-output-dir`, else `bench-out/`. For
+multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the same
+root: the tool is part of every folder name, so their artifacts stay apart.
 
 ---
 

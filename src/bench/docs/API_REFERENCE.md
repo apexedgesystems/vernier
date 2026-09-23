@@ -191,8 +191,12 @@ struct PerfConfig {
   std::string artifactRoot;            // Profiler artifact directory
   int profileFrequency = 10000;        // Sampling Hz for CPU profilers
   bool profileAnalyze = false;         // Auto-run analysis after profiling
+  int profileTestTimeoutSecs = 0;      // Per-test watchdog seconds under --profile
 
   bool quickMode = false;              // Apply reduced cycles/repeats
+
+  // Append-only tail: libbench shares this layout, new members go last
+  int targetTimeUs = 0;                // >0: auto-size cycles so one repeat spans ~this (us)
 };
 ```
 

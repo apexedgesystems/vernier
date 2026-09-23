@@ -20,13 +20,16 @@
  * Usage:
  *   @code{.sh}
  *   # Run all payload scaling tests
- *   ./TestBenchSamples_PTEST --gtest_filter="PayloadScaling.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Sizes/PayloadScaling.*"
  *
- *   # Run specific size
- *   ./TestBenchSamples_PTEST --gtest_filter="PayloadScaling.MeasureScaling/0"
+ *   # Run one size (index 0 is the 64-byte payload)
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Sizes/PayloadScaling.MeasureScaling/0"
  *
  *   # With CSV output
- *   ./TestBenchSamples_PTEST --gtest_filter="PayloadScaling.*" --csv scaling.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Sizes/PayloadScaling.*" --csv scaling.csv
  *   @endcode
  *
  * Performance expectations:

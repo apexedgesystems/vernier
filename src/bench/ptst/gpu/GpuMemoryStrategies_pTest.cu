@@ -21,10 +21,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all memory strategy tests
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuMemoryStrategies.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMemoryStrategies.*"
  *
  *   # Test specific strategy
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuMemoryStrategies.ExplicitMemory"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMemoryStrategies.ExplicitMemory"
  *   @endcode
  *
  * Performance expectations:

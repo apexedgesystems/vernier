@@ -21,7 +21,8 @@
  * Usage:
  *   @code{.sh}
  *   # Run all multi-GPU tests
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuMultiDevice.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMultiDevice.*"
  *
  *   # Requires 2+ GPUs
  *   # Tests will skip if insufficient GPUs available
