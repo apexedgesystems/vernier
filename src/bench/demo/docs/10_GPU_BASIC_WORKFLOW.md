@@ -78,7 +78,7 @@ void saxpyCpu(float a, const std::vector<float>& x, std::vector<float>& y) {
 ```
 
 and the kernel, one element per thread
-([`SaxpyGpu.cu`](../examples/saxpy/src/SaxpyGpu.cu)):
+([`SaxpyKernel.cu`](../examples/saxpy/src/SaxpyKernel.cu)):
 
 ```cpp
 __global__ void saxpyKernel(float a, const float* x, float* y, std::size_t n) {
