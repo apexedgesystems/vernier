@@ -27,7 +27,19 @@ if (NOT TARGET ReadinessFixtureTarget)
   return()
 endif ()
 
-set(_readiness_cli_cases DoctorLabel DoctorJsonKeys SelectedRowMatchesRun)
+set(_readiness_cli_cases
+    DoctorLabel
+    DoctorJsonKeys
+    SelectedRowMatchesRun
+    BpfNoOptInNeverCallsSudo
+    BpfConflictNamesWinner
+    BpfInvalidValueLaunchesNothing
+    BpfAttachRefusedVersionAllowed
+    BpfRunStopsThroughRoute
+    BpfRunReportsRefusedStop
+    OffcpuCurrentUserRun
+    OffcpuNoStacksClaimWhenKilled
+)
 
 foreach (_case IN LISTS _readiness_cli_cases)
   add_test(

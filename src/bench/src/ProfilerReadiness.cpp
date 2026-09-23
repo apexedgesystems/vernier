@@ -19,6 +19,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -655,6 +656,36 @@ std::string outputTail(const std::string& text, std::size_t maxLines) {
     out += lines[i];
   }
   return out;
+}
+
+/* ----------------------------- Probe Scratch ----------------------------- */
+
+ProbeScratch::ProbeScratch(const ReadinessContext& ctx) {
+  std::string base = ctx.get("TMPDIR").value_or("");
+  if (base.empty()) {
+    base = "/tmp";
+  }
+  std::string pattern = base + "/vernier_probe_XXXXXX";
+  if (::mkdtemp(pattern.data()) != nullptr) {
+    path_ = pattern;
+  }
+}
+
+ProbeScratch::~ProbeScratch() {
+  if (!path_.empty()) {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+}
+
+std::string ProbeScratch::write(const std::string& name, const std::string& text) const {
+  if (path_.empty()) {
+    return {};
+  }
+  const std::string TARGET = path_ + "/" + name;
+  std::ofstream out(TARGET, std::ios::binary | std::ios::trunc);
+  out << text;
+  return out ? TARGET : std::string{};
 }
 
 /* ----------------------------- Owned Helpers ----------------------------- */

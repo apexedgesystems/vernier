@@ -133,6 +133,71 @@ endfunction ()
 # Fast runs: the cases measure nothing that matters here.
 set(_quick --cycles 50 --repeats 2 --warmup 0)
 
+# The bpftrace fakes, and a scripts directory holding one sched script.
+macro (bpf_fakes)
+  fake(fake_bpftrace.sh bpftrace)
+  fake(fake_sudo.sh sudo)
+  fake(fake_kill.sh kill)
+  file(WRITE "${WORK_DIR}/scripts/probe_script.bt"
+       "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n"
+  )
+  list(APPEND _env "PERF_BPF_SCRIPTS=${WORK_DIR}/scripts")
+endmacro ()
+
+# The fake log's text ("" when nothing was logged).
+function (read_log out)
+  set(_text "")
+  if (EXISTS "${_log}")
+    file(READ "${_log}" _text)
+  endif ()
+  set(${out}
+      "${_text}"
+      PARENT_SCOPE
+  )
+endfunction ()
+
+# Pids of the fake tracers (every "pid=" the log holds) into <out>.
+function (tracer_pids out)
+  read_log(_text)
+  string(REGEX MATCHALL "pid=[0-9]+" _found "${_text}")
+  string(REPLACE "pid=" "" _found "${_found}")
+  set(${out}
+      "${_found}"
+      PARENT_SCOPE
+  )
+endfunction ()
+
+# Record a problem for every fake tracer still running, and for every pid a
+# fake kill was asked to signal that is not one of them.
+function (expect_owned_and_gone what)
+  tracer_pids(_pids)
+  foreach (_pid IN LISTS _pids)
+    execute_process(
+      COMMAND kill -0 ${_pid}
+      RESULT_VARIABLE _alive
+      OUTPUT_QUIET ERROR_QUIET
+    )
+    if (_alive EQUAL 0)
+      execute_process(COMMAND kill -9 ${_pid} OUTPUT_QUIET ERROR_QUIET)
+      set(_problems
+          "${_problems}\n  ${what}: tracer ${_pid} survived the run"
+          PARENT_SCOPE
+      )
+    endif ()
+  endforeach ()
+  read_log(_text)
+  string(REGEX MATCHALL "kill -[0-9]+ [0-9]+" _kills "${_text}")
+  foreach (_kill IN LISTS _kills)
+    string(REGEX REPLACE "kill -[0-9]+ " "" _target "${_kill}")
+    if (NOT _target IN_LIST _pids)
+      set(_problems
+          "${_problems}\n  ${what}: '${_kill}' signalled a pid it does not own"
+          PARENT_SCOPE
+      )
+    endif ()
+  endforeach ()
+endfunction ()
+
 # ------------------------------------------------------------------------------
 # Cases
 # ------------------------------------------------------------------------------
@@ -262,11 +327,203 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
   expect_eq("${_times}" "1" "notices for two guarded cases")
   expect_not("${run_ERR}" "requested but unavailable" "run notice")
 
+elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
+  # No opt-in: the attach runs as the current user, a denial says how to get
+  # access, and sudo is never asked, even though it is on PATH.
+  bpf_fakes()
+  list(APPEND _env FAKE_BPFTRACE_MODE=eperm)
+  run(doctor --profile bpftrace --bpf probe_script --profile-check-json)
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  string(
+    JSON
+    _hint
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${doctor_OUT}"
+    selected
+    hint
+  )
+  expect_eq(
+    "${_message}"
+    "denied: script 'probe_script' could not attach as the current user: ERROR: bpftrace currently only supports running as the root user."
+    "selected message"
+  )
+  expect_has(
+    "${_hint}" "Set BENCH_SUDO=1 with a scoped sudoers grant for ${WORK_DIR}/bin/bpftrace"
+    "selected hint"
+  )
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
+  read_log(_text)
+  expect_not("${_text}" "sudo " "fake log")
+
+elseif (CASE STREQUAL "BpfConflictNamesWinner")
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=0 PERF_BPF_SUDO=1)
+  run(doctor --profile bpftrace --bpf probe_script --profile-check-json)
+  string(
+    JSON
+    _status
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    status
+  )
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  expect_eq("${_status}" "warn" "selected status")
+  expect_has(
+    "${_message}"
+    "BENCH_SUDO=0 and PERF_BPF_SUDO=1 disagree; BENCH_SUDO wins (the probe tool runs as the current user). PERF_BPF_SUDO is deprecated: remove it."
+    "selected message"
+  )
+  read_log(_text)
+  expect_not("${_text}" "sudo " "fake log")
+
+elseif (CASE STREQUAL "BpfInvalidValueLaunchesNothing")
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=maybe)
+  run(doctor --profile bpftrace --bpf probe_script --profile-check-json)
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  expect_eq("${_message}" "configuration: BENCH_SUDO='maybe' is not a boolean" "selected message")
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}" "run notice")
+  read_log(_text)
+  expect_eq("${_text}" "" "fake log (nothing may run)")
+
+elseif (CASE STREQUAL "BpfAttachRefusedVersionAllowed")
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=-q)
+  run(doctor --profile bpftrace --bpf probe_script --profile-check-json)
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  string(
+    JSON
+    _hint
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${doctor_OUT}"
+    selected
+    hint
+  )
+  expect_eq(
+    "${_message}"
+    "denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q ${WORK_DIR}/scripts/probe_script.bt: sudo: a password is required"
+    "selected message"
+  )
+  expect_has("${_hint}" "The grant must allow ${WORK_DIR}/bin/bpftrace" "selected hint")
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
+
+elseif (CASE STREQUAL "BpfRunStopsThroughRoute")
+  # The run launches the checked tools through sudo, stops each tracer with
+  # SIGINT through sudo -n kill, signals only its own tracers, leaves none.
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1)
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
+  read_log(_text)
+  count_of(_launches "${_text}" "sudo -n -- ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.")
+  expect_eq("${_launches}" "2" "launches through sudo (one per guarded case)")
+  count_of(_interrupts "${_text}" "sudo -n -- ${WORK_DIR}/bin/kill -2 ")
+  expect_eq("${_interrupts}" "3" "SIGINT through sudo (the probe and two launches)")
+  expect_not("${_text}" "kill -15" "fake log")
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "BpfRunReportsRefusedStop")
+  # The run's tracer ignores SIGINT and SIGTERM is refused: both are reported,
+  # SIGKILL ends it, and no tracer survives.
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 FAKE_BPFTRACE_MODE=ignore-int-run "FAKE_SUDO_DENY=kill -15")
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_has(
+    "${run_ERR}" "[bpftrace] script 'probe_script': could not deliver SIGTERM to tracer "
+    "run report"
+  )
+  expect_has("${run_ERR}" "-n -- ${WORK_DIR}/bin/kill -15 " "run report names the command")
+  expect_has("${run_ERR}" ": sudo: a password is required" "run report names the refusal")
+  expect_has(
+    "${run_ERR}"
+    "[bpftrace] script 'probe_script': the tracer ignored SIGINT and SIGTERM and was killed"
+    "run report"
+  )
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "OffcpuCurrentUserRun")
+  bpf_fakes()
+  run(run --profile offcpu ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  read_log(_text)
+  expect_not("${_text}" "sudo " "fake log")
+  count_of(_launches "${_text}" "bpftrace -e ")
+  expect_eq("${_launches}" "3" "offcpu attaches (the probe and two launches)")
+  count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
+  expect_eq("${_written}" "2" "stacks written, once per case")
+  if (NOT EXISTS "${WORK_DIR}/ReadinessFixture.First.offcpu/offcpu.err.txt")
+    string(APPEND _problems "\n  offcpu.err.txt was not written")
+  endif ()
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 FAKE_BPFTRACE_MODE=ignore-int-run "FAKE_SUDO_DENY=kill -15")
+  run(run --profile offcpu ${_quick})
+  expect_has(
+    "${run_ERR}"
+    "[offcpu] the off-CPU script: the tracer ignored SIGINT and SIGTERM and was killed"
+    "run report"
+  )
+  expect_not("${run_ERR}" "stacks written" "run report")
+  expect_owned_and_gone("run")
+
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")
 endif ()
 
+read_log(_final_log)
 file(REMOVE_RECURSE "${WORK_DIR}")
 if (NOT _problems STREQUAL "")
-  message(FATAL_ERROR "ReadinessCli ${CASE}:${_problems}")
+  message(FATAL_ERROR "ReadinessCli ${CASE}:${_problems}\n--- fake log\n${_final_log}")
 endif ()

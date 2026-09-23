@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -47,6 +48,7 @@ using vernier::bench::PrivilegeDecision;
 using vernier::bench::PrivilegeRoute;
 using vernier::bench::PROBE_OUTPUT_LIMIT;
 using vernier::bench::ProbeResult;
+using vernier::bench::ProbeScratch;
 using vernier::bench::ProbeStreams;
 using vernier::bench::ReadinessCause;
 using vernier::bench::ReadinessContext;
@@ -537,6 +539,26 @@ TEST(ReadinessProbes, RunsInProbeEnvironment) {
   EXPECT_NE(R.output.find("LC_ALL=C"), std::string::npos) << R.output;
   EXPECT_EQ(R.output.find("LD_PRELOAD"), std::string::npos) << R.output;
   EXPECT_EQ(R.output.find("VERNIER_EXTERNAL_WRAP"), std::string::npos) << R.output;
+}
+
+/** @test A probe scratch directory lives under the snapshot's TMPDIR and goes away with it. */
+TEST(ReadinessProbes, ScratchDirectoryIsPrivateAndRemoved) {
+  FakeToolDir base;
+  ASSERT_TRUE(base.ok());
+  std::string where;
+  {
+    const ProbeScratch SCRATCH(contextWith({{"TMPDIR", base.path()}}));
+    ASSERT_TRUE(SCRATCH.ok());
+    where = SCRATCH.path();
+    EXPECT_EQ(where.rfind(base.path() + "/vernier_probe_", 0), 0U) << where;
+    struct stat st{};
+    ASSERT_EQ(::stat(where.c_str(), &st), 0);
+    EXPECT_EQ(st.st_mode & 0777, 0700U);
+    const std::string FILE = SCRATCH.write("copy.bt", "text");
+    EXPECT_EQ(FILE, where + "/copy.bt");
+  }
+  struct stat gone{};
+  EXPECT_NE(::stat(where.c_str(), &gone), 0) << "the scratch directory outlived its owner";
 }
 
 /* ----------------------------- Owned Helpers ----------------------------- */

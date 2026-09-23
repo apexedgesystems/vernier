@@ -4,53 +4,73 @@
  * @file ProfilerOffCpu.hpp
  * @brief Off-CPU profiling backend via bpftrace.
  *
- * All six pre-existing profilers (perf, gperf, callgrind, bpftrace, rapl,
- * nsight) measure *on-CPU* work. Off-CPU profiling answers the
- * complementary question: where do threads spend time *blocked* (sleep,
- * mutex wait, I/O wait, scheduler delay)?
+ * The on-CPU profilers (perf, gperf, callgrind, bpftrace, rapl, nsight)
+ * measure work. Off-CPU profiling answers the complementary question: where
+ * do threads spend time *blocked* (sleep, mutex wait, I/O wait, scheduler
+ * delay)?
  *
- * Hot path: bpftrace attached to a kprobe on `finish_task_switch` collects
- * the user stack and elapsed nanoseconds every time a task is descheduled.
- * Aggregated stacks rank-ordered by total off-CPU time identify the
- * blocking call sites.
+ * Probes: an embedded bpftrace script on the sched tracepoints (a stable
+ * kernel interface). At switch-out it counts the user stack of each thread of
+ * this process that blocks; at switch-in it sums how long that thread was
+ * off the CPU. It exits by itself when this process exits.
  *
- * Requires root or CAP_BPF (same constraint as the bpftrace backend).
+ * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
+ * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
+ * sudo. The readiness check (checkOffCpuRequest) attaches the script through
+ * that route in a probe and stops it with SIGINT; the profiler launches and
+ * stops with exactly the tools and route it verified (OffCpuPlan).
  *
- * Output: `<testName>.offcpu/offcpu.txt` containing the bpftrace map dump.
+ * Output: `<testName>.offcpu/offcpu.txt` (the bpftrace map dump) and
+ * `offcpu.err.txt` (bpftrace's messages).
  *
  * Limitations:
- *  - Kernel symbol shape (`finish_task_switch`, with or without `.isra.0`
- *    suffix) varies across distros; bpftrace's wildcard match handles
- *    common cases but may need tuning per kernel.
- *  - PID filter narrows the trace to this process; child threads are
- *    included via the tid-keyed start map.
- *  - Docker constraint: tracefs (`/sys/kernel/tracing`) is not mounted
- *    in the default dev container. To exercise this backend inside
- *    Docker, run the container with `--mount
- * type=bind,source=/sys/kernel/tracing,target=/sys/kernel/tracing` (and `--privileged` for kernel
- * symbol access). On bare metal this works directly under sudo.
+ *  - The PID filter keeps this process; its threads are joined through the
+ *    tid-keyed start map.
+ *  - The sched tracepoints need tracefs (`/sys/kernel/tracing`). The default
+ *    dev container does not mount it, so there the check reports the
+ *    tracepoint as unsupported.
  */
 
 #include <memory>
 #include <string>
 
-#ifdef __linux__
-#include <sys/types.h> // pid_t
-#endif
-
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
+#include "src/bench/inc/ProfilerBpftrace.hpp" // BpftraceRoute
 
 namespace vernier {
 namespace bench {
+
+/* ----------------------------- OffCpuPlan ----------------------------- */
+
+/** @brief What the offcpu check verified, for the launch to use. */
+struct OffCpuPlan final : ReadinessPlan {
+  BpftraceRoute route;
+  std::shared_ptr<const ReadinessContext> context;
+};
+
+/**
+ * @brief The offcpu backend's readiness decision for @p request in @p ctx.
+ *
+ * On success the result's plan is an OffCpuPlan.
+ */
+ReadinessResult checkOffCpuRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
 
 /* ----------------------------- OffCpuProfiler ----------------------------- */
 
 class OffCpuProfiler final : public Profiler {
 public:
+  /**
+   * @brief Construct, deciding the request itself; when it cannot run, prints
+   * why and does nothing in the hooks.
+   */
   OffCpuProfiler(const PerfConfig& cfg, std::string testName);
-  ~OffCpuProfiler() override = default;
+
+  /** @brief Construct from a decision already made (the registry's path). */
+  OffCpuProfiler(const PerfConfig& cfg, std::string testName,
+                 std::shared_ptr<const OffCpuPlan> plan);
+  ~OffCpuProfiler() override;
 
   std::string toolName() const noexcept override { return "offcpu"; }
   std::string artifactDir() const noexcept override { return artifactDir_; }
@@ -66,14 +86,17 @@ private:
   std::string testName_;
   std::string artifactDir_;
   std::string outputPath_;
-#ifdef __linux__
-  pid_t childPid_ = -1;
-  bool viaSudo_ = false;
-#endif
+  std::string errorPath_;
+  std::shared_ptr<const OffCpuPlan> plan_;
+  std::unique_ptr<OwnedHelper> helper_;
 };
 
 /* --------------------------------- API --------------------------------- */
 
+/**
+ * @brief Factory: decides the request in a snapshot of this process first.
+ * @return Profiler instance, or nullptr if the request cannot run here.
+ */
 std::unique_ptr<Profiler> makeOffCpuProfiler(const PerfConfig& cfg, const std::string& testName);
 
 } // namespace bench

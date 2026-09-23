@@ -1,0 +1,382 @@
+/**
+ * @file ProfilerReadinessChecks_uTest.cpp
+ * @brief Unit tests for the backends' own readiness checks.
+ *
+ * Each test asks the registry for one backend's decision about one request in
+ * an explicit context whose PATH holds only fake tools (ReadinessFixtures.hpp),
+ * and reads what the fakes were asked to do from their log. Nothing here
+ * changes the process environment or needs privileges.
+ */
+
+#include "src/bench/inc/ProfilerBpftrace.hpp"
+#include "src/bench/inc/ProfilerOffCpu.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
+
+#include <gtest/gtest.h>
+
+#include <unistd.h>
+
+#include <cerrno>
+#include <csignal>
+#include <map>
+#include <memory>
+#include <string>
+#include <vector>
+
+using vernier::bench::BpftracePlan;
+using vernier::bench::EnvReport;
+using vernier::bench::OffCpuPlan;
+using vernier::bench::PrivilegeRoute;
+using vernier::bench::ProfilerRegistry;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessContext;
+using vernier::bench::ReadinessRequest;
+using vernier::bench::ReadinessResult;
+using vernier::bench::ReadinessScope;
+using vernier::bench::test::FakeToolDir;
+
+namespace {
+
+/** @brief A request for @p backend with @p scripts, as the doctor's selected row asks it. */
+ReadinessRequest requestFor(const std::string& backend, std::vector<std::string> scripts = {}) {
+  ReadinessRequest request;
+  request.backend = backend;
+  request.bpfScripts = std::move(scripts);
+  request.scope = ReadinessScope::PREFLIGHT;
+  return request;
+}
+
+/** @brief Pids of the fake bpftrace processes the log recorded. */
+std::vector<pid_t> tracerPids(const FakeToolDir& dir) {
+  std::vector<pid_t> pids;
+  for (const std::string& line : dir.logLines("bpftrace ")) {
+    const auto AT = line.rfind(" pid=");
+    if (AT != std::string::npos && line.find("--version") == std::string::npos) {
+      pids.push_back(static_cast<pid_t>(std::stol(line.substr(AT + 5))));
+    }
+  }
+  return pids;
+}
+
+/** @brief True when no process @p pid exists any more. */
+bool gone(pid_t pid) {
+  errno = 0;
+  return ::kill(pid, 0) != 0 && errno == ESRCH;
+}
+
+/** @brief Fake tools and a scripts directory holding one sched-tracepoint script. */
+class BpfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    bpftrace_ = dir_.install("fake_bpftrace.sh", "bpftrace");
+    dir_.makeDirectory("scripts");
+    script_ = dir_.writeFile("scripts/probe_script.bt",
+                             "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n");
+  }
+
+  void installSudoAndKill() {
+    sudo_ = dir_.install("fake_sudo.sh", "sudo");
+    kill_ = dir_.install("fake_kill.sh", "kill");
+  }
+
+  /** @brief The context: fakes on PATH, the scripts directory, and @p extra. */
+  ReadinessContext ctx(std::map<std::string, std::string> extra = {},
+                       uid_t euid = ::geteuid()) const {
+    extra["PERF_BPF_SCRIPTS"] = dir_.path() + "/scripts";
+    return dir_.context(std::move(extra), euid);
+  }
+
+  ReadinessResult check(const std::string& backend, const ReadinessContext& context) const {
+    return ProfilerRegistry::instance().checkRequest(
+        requestFor(backend, backend == "bpftrace" ? std::vector<std::string>{"probe_script"}
+                                                  : std::vector<std::string>{}),
+        context);
+  }
+
+  FakeToolDir dir_;
+  std::string bpftrace_;
+  std::string script_;
+  std::string sudo_;
+  std::string kill_;
+};
+
+} // namespace
+
+/* ----------------------------- bpftrace ----------------------------- */
+
+/** @test Without an opt-in the attach runs as the current user and sudo is never called. */
+TEST_F(BpfCheckTest, BpftraceCurrentUserAttaches) {
+  installSudoAndKill(); // present, and still unused
+  const ReadinessResult R = check("bpftrace", ctx());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("probe_script attached for 1000 ms as the current user and "
+                                  "stopped on SIGINT (probe with " +
+                                  bpftrace_ + ")"),
+            std::string::npos)
+      << R.report.message;
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("kill").empty()) << dir_.log();
+  EXPECT_EQ(dir_.logLines("bpftrace --version").size(), 1U) << dir_.log();
+  EXPECT_EQ(dir_.logLines("bpftrace -q ").size(), 1U) << dir_.log();
+}
+
+/** @test A current user bpftrace refuses is denied, with the ways to get access. */
+TEST_F(BpfCheckTest, BpftraceCurrentUserDenied) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message,
+            "denied: script 'probe_script' could not attach as the current user: ERROR: bpftrace "
+            "currently only supports running as the root user.");
+  EXPECT_EQ(R.report.hint, "Set BENCH_SUDO=1 with a scoped sudoers grant for " + bpftrace_ +
+                               " and " + kill_ +
+                               ", run with CAP_BPF and CAP_PERFMON, or run as root.");
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << "no opt-in, no sudo\n" << dir_.log();
+}
+
+/** @test The sudo route runs the resolved tools, and the plan carries them. */
+TEST_F(BpfCheckTest, BpftraceSudoRouteUsesResolvedTools) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("through sudo -n (BENCH_SUDO=1)"), std::string::npos);
+  const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->route.privilege.route, PrivilegeRoute::SCOPED_SUDO);
+  EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
+  EXPECT_EQ(PLAN->route.sudo, sudo_);
+  EXPECT_EQ(PLAN->route.kill, kill_);
+  ASSERT_EQ(PLAN->scriptPaths.size(), 1U);
+  EXPECT_EQ(PLAN->scriptPaths.front(), script_);
+  // The attach and the stop go through sudo; the version check never does.
+  const std::vector<std::string> SUDO = dir_.logLines("sudo ");
+  ASSERT_EQ(SUDO.size(), 2U) << dir_.log();
+  EXPECT_EQ(SUDO[0].rfind("sudo -n -- " + bpftrace_ + " -q ", 0), 0U) << SUDO[0];
+  EXPECT_EQ(SUDO[1].rfind("sudo -n -- " + kill_ + " -2 ", 0), 0U) << SUDO[1];
+  EXPECT_EQ(dir_.log().find("sudo -n -- " + bpftrace_ + " --version"), std::string::npos);
+}
+
+/** @test A grant that allows the version but not the attach is refused, never Ok. */
+TEST_F(BpfCheckTest, BpftraceAttachRefusedByGrant) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "-q"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message, "denied: sudo -n refused " + bpftrace_ + " -q " + script_ +
+                                  ": sudo: a password is required")
+      << "the message names the script, not its temporary copy";
+  EXPECT_EQ(R.report.hint.rfind("The grant must allow " + bpftrace_ +
+                                    " with the run's script arguments and " + kill_ +
+                                    " with -2, -15 and -9",
+                                0),
+            0U)
+      << R.report.hint;
+}
+
+/** @test A refused SIGINT is a denied cleanup, and the probe tracer does not survive. */
+TEST_F(BpfCheckTest, BpftraceStopSignalRefused) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -2"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0), 0U)
+      << R.report.message;
+  EXPECT_NE(R.report.hint.find("-2, -15 and -9"), std::string::npos);
+  const std::vector<pid_t> TRACERS = tracerPids(dir_);
+  ASSERT_EQ(TRACERS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(TRACERS.front())) << "the probe tracer outlived the check";
+}
+
+/** @test Grants for signals the stop never needed are not demanded. */
+TEST_F(BpfCheckTest, BpftraceUnusedSignalGrantsNotNeeded) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -15|kill -9"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+}
+
+/** @test Refusing invocations the check never makes does not reject the selected operation. */
+TEST_F(BpfCheckTest, BpftraceUnrelatedInvocationsRefused) {
+  installSudoAndKill();
+  const ReadinessResult R = check(
+      "bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "--version|kill -0|sudo -l|-l "}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  for (const std::string& line : dir_.logLines("sudo ")) {
+    EXPECT_EQ(line.find("--version"), std::string::npos) << line;
+    EXPECT_EQ(line.find("kill -0"), std::string::npos) << line;
+  }
+}
+
+/** @test A tracer that ignores SIGINT is a caveat: the run's output may be incomplete. */
+TEST_F(BpfCheckTest, BpftraceIgnoredInterruptIsCaveat) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_BPFTRACE_MODE", "ignore-int"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(R.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(R.report.message, "the probe tracer ignored SIGINT and stopped on SIGTERM; the run's "
+                              "output may be incomplete");
+  EXPECT_TRUE(R.collectionReady());
+}
+
+/** @test The sudo route needs sudo and kill on PATH. */
+TEST_F(BpfCheckTest, BpftraceSudoRouteNeedsItsHelpers) {
+  const ReadinessResult NO_SUDO = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  EXPECT_EQ(NO_SUDO.cause, ReadinessCause::MISSING_HELPER);
+  EXPECT_EQ(NO_SUDO.report.message.rfind("missing helper: sudo is not on PATH; BENCH_SUDO=1 runs "
+                                         "bpftrace through sudo -n",
+                                         0),
+            0U)
+      << NO_SUDO.report.message;
+  dir_.install("fake_sudo.sh", "sudo");
+  const ReadinessResult NO_KILL = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  EXPECT_EQ(NO_KILL.cause, ReadinessCause::MISSING_HELPER);
+  EXPECT_EQ(NO_KILL.report.message.rfind("missing helper: kill is not on PATH", 0), 0U)
+      << NO_KILL.report.message;
+  EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << "nothing runs before the route is complete";
+}
+
+/** @test An invalid setting is a configuration error and launches nothing. */
+TEST_F(BpfCheckTest, BpftraceInvalidSettingLaunchesNothing) {
+  installSudoAndKill();
+  for (const auto& [KEY, VALUE] : std::map<std::string, std::string>{
+           {"BENCH_SUDO", "maybe"}, {"PERF_BPF_SUDO", "sometimes"}}) {
+    const ReadinessResult R = check("bpftrace", ctx({{KEY, VALUE}}));
+    EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION);
+    EXPECT_EQ(R.report.message, "configuration: " + KEY + "='" + VALUE + "' is not a boolean");
+    EXPECT_EQ(R.report.hint, "Use 1, true, yes or on to run the probe tool with sudo -n; 0, false, "
+                             "no, off or an empty value to run it as the current user.");
+  }
+  EXPECT_EQ(dir_.log(), "") << "a configuration error must launch nothing";
+}
+
+/** @test The deprecated alias still selects the route, with a warning saying so. */
+TEST_F(BpfCheckTest, BpftraceLegacyAliasWarns) {
+  installSudoAndKill();
+  const ReadinessResult ON = check("bpftrace", ctx({{"PERF_BPF_SUDO", "1"}}));
+  EXPECT_EQ(ON.report.status, EnvReport::Status::Warning);
+  EXPECT_NE(ON.report.message.find("through sudo -n (PERF_BPF_SUDO=1 (deprecated alias))"),
+            std::string::npos)
+      << ON.report.message;
+  EXPECT_NE(ON.report.message.find("PERF_BPF_SUDO is deprecated; set BENCH_SUDO instead. "
+                                   "PERF_BPF_SUDO=1 selects: the probe tool runs with sudo -n."),
+            std::string::npos)
+      << ON.report.message;
+  EXPECT_FALSE(dir_.logLines("sudo ").empty());
+}
+
+/** @test Conflicting settings name the winner; equal ones are silent. */
+TEST_F(BpfCheckTest, BpftraceConflictNamesWinner) {
+  installSudoAndKill();
+  const ReadinessResult CONFLICT =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"PERF_BPF_SUDO", "0"}}));
+  EXPECT_EQ(CONFLICT.report.status, EnvReport::Status::Warning);
+  EXPECT_NE(CONFLICT.report.message.find(
+                "BENCH_SUDO=1 and PERF_BPF_SUDO=0 disagree; BENCH_SUDO wins (the probe tool runs "
+                "with sudo -n). PERF_BPF_SUDO is deprecated: remove it."),
+            std::string::npos)
+      << CONFLICT.report.message;
+  const ReadinessResult EQUAL =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"PERF_BPF_SUDO", "yes"}}));
+  EXPECT_EQ(EQUAL.report.status, EnvReport::Status::Ok) << EQUAL.report.message;
+}
+
+/** @test Root never calls sudo, and an opt-in is noted as unneeded. */
+TEST_F(BpfCheckTest, BpftraceRootNeverCallsSudo) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}, 0));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find(" as root and stopped on SIGINT"), std::string::npos);
+  EXPECT_NE(R.report.message.find("; running as root; BENCH_SUDO not needed"), std::string::npos);
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+}
+
+/** @test bpftrace's own attach errors keep their cause. */
+TEST_F(BpfCheckTest, BpftraceAttachErrorsKeepTheirCause) {
+  const ReadinessResult UNSUPPORTED =
+      check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  EXPECT_EQ(UNSUPPORTED.cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(UNSUPPORTED.report.message, "unsupported: script 'probe_script': stdin:1:1-36: ERROR: "
+                                        "tracepoint not found: syscalls:sys_enter_write");
+  const ReadinessResult BROKEN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "broken"}}));
+  EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(BROKEN.report.message, "unusable: script 'probe_script' did not stay attached: fake "
+                                   "bpftrace: the program could not be loaded");
+}
+
+/** @test A missing, non-executable or broken bpftrace, or a missing script, is an error. */
+TEST_F(BpfCheckTest, BpftraceToolAndScriptProblems) {
+  const ReadinessResult BROKEN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "version-fails"}}));
+  EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(
+      BROKEN.report.message.rfind("unusable: " + bpftrace_ + " --version: exit status 127: ", 0),
+      0U)
+      << BROKEN.report.message;
+
+  const ReadinessResult NO_SCRIPT =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"absent_script"}), ctx());
+  EXPECT_EQ(NO_SCRIPT.cause, ReadinessCause::MISSING);
+  EXPECT_EQ(NO_SCRIPT.report.message, "missing: bpftrace script 'absent_script' not found at " +
+                                          dir_.path() + "/scripts/absent_script.bt");
+
+  dir_.install("fake_bpftrace.sh", "bpftrace", 0644);
+  const ReadinessResult PLAIN = check("bpftrace", ctx());
+  EXPECT_EQ(PLAIN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(PLAIN.report.message, "unusable: " + bpftrace_ + " is not an executable file");
+
+  FakeToolDir empty;
+  const ReadinessResult MISSING = ProfilerRegistry::instance().checkRequest(
+      requestFor("bpftrace", {"probe_script"}), empty.context());
+  EXPECT_EQ(MISSING.cause, ReadinessCause::MISSING);
+  EXPECT_EQ(MISSING.report.message, "missing: bpftrace not found on PATH");
+}
+
+/* ----------------------------- offcpu ----------------------------- */
+
+/** @test offcpu attaches as the current user by default, in the launch's own shape. */
+TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
+  installSudoAndKill();
+  const ReadinessResult R = check("offcpu", ctx({{"PERF_BPF_SUDO", "1"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("the off-CPU script attached for 1500 ms as the current user"),
+            std::string::npos)
+      << R.report.message;
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
+  ASSERT_EQ(dir_.logLines("bpftrace -e ").size(), 1U) << dir_.log();
+  // The script text spans lines; the target pid is the argument after it.
+  EXPECT_NE(dir_.log().find("exit(); }\n " + std::to_string(::getpid()) + " pid="),
+            std::string::npos)
+      << dir_.log();
+  const auto PLAN = std::dynamic_pointer_cast<const OffCpuPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
+}
+
+/** @test offcpu with BENCH_SUDO goes through sudo; a refusal there is denied. */
+TEST_F(BpfCheckTest, OffCpuSudoRoute) {
+  installSudoAndKill();
+  const ReadinessResult OK = check("offcpu", ctx({{"BENCH_SUDO", "yes"}}));
+  EXPECT_EQ(OK.report.status, EnvReport::Status::Ok) << OK.report.message;
+  EXPECT_EQ(dir_.logLines("sudo -n -- " + bpftrace_ + " -e ").size(), 1U) << dir_.log();
+  const ReadinessResult REFUSED =
+      check("offcpu", ctx({{"BENCH_SUDO", "yes"}, {"FAKE_SUDO_DENY", "-e"}}));
+  EXPECT_EQ(REFUSED.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(REFUSED.report.message.rfind("denied: sudo -n refused " + bpftrace_ + " -e ", 0), 0U)
+      << REFUSED.report.message;
+}
+
+/** @test offcpu denied as the current user says how to get access. */
+TEST_F(BpfCheckTest, OffCpuCurrentUserDenied) {
+  installSudoAndKill();
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message.rfind("denied: the off-CPU script could not attach as the current "
+                                   "user: ERROR:",
+                                   0),
+            0U)
+      << R.report.message;
+  EXPECT_EQ(R.report.hint.rfind("Set BENCH_SUDO=1 with a scoped sudoers grant", 0), 0U);
+}

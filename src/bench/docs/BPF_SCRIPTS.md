@@ -7,7 +7,16 @@ performance, not by default in CI.
 ## Requirements
 
 - Linux with eBPF support and `bpftrace` installed
-- Sufficient privileges (root or `sudo -n` available)
+- Privileges to attach the scripts' tracepoints. `bpftrace` runs as the current
+  user unless you opt in, which works as root or with `CAP_BPF` and
+  `CAP_PERFMON`. `BENCH_SUDO=1` runs it, and the `kill` that stops it, through
+  `sudo -n`; the sudoers grant must allow `bpftrace` with the run's script
+  arguments and `kill` with `-2`, `-15` and `-9`. `PERF_BPF_SUDO` is a
+  deprecated alias honoured by the `bpftrace` backend only: `BENCH_SUDO` wins
+  when both are set, and an invalid value of either is a configuration error.
+- `--profile-check --profile bpftrace --bpf <scripts>` attaches each selected
+  script through that route for a second and stops it, and reports what failed;
+  a run makes the same decision before its first case.
 
 ## PID filtering
 

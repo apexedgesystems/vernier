@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (14 files)
+# Sources (15 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -25,6 +25,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerEnv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------

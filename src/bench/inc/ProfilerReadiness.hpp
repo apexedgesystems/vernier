@@ -343,6 +343,32 @@ enum class ProbeStreams : std::uint8_t {
  */
 [[nodiscard]] std::string outputTail(const std::string& text, std::size_t maxLines = 2);
 
+/**
+ * @brief A private directory for one decision's probe files, removed on destruction.
+ *
+ * Created under the snapshot's TMPDIR (or /tmp) with mode 0700.
+ */
+class ProbeScratch {
+public:
+  explicit ProbeScratch(const ReadinessContext& ctx);
+  ~ProbeScratch();
+
+  ProbeScratch(const ProbeScratch&) = delete;
+  ProbeScratch& operator=(const ProbeScratch&) = delete;
+
+  /** @brief True when the directory exists. */
+  [[nodiscard]] bool ok() const noexcept { return !path_.empty(); }
+
+  /** @brief The directory ("" when it could not be created). */
+  [[nodiscard]] const std::string& path() const noexcept { return path_; }
+
+  /** @brief Write @p text to @p name in the directory; returns its path, "" on failure. */
+  std::string write(const std::string& name, const std::string& text) const;
+
+private:
+  std::string path_;
+};
+
 /* ------------------------------ Owned Helpers ------------------------------ */
 
 /** @brief How an owned helper is stopped: the route and the bounded waits. */

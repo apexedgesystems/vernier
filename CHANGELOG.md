@@ -140,6 +140,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   after all flags are parsed, so their position on the command line no
   longer matters. A script that matched the old header line needs the new
   one.
+- **bpftrace and offcpu elevate only on request; `BENCH_SUDO` is the one
+  opt-in** -- `bpftrace` ran its scripts through `sudo -n` unless
+  `PERF_BPF_SUDO` was `0` or `false`, with no opt-in at all, and its doctor row
+  read `BENCH_SUDO` while its run read `PERF_BPF_SUDO`. Both backends run
+  bpftrace as the current user by default (root never uses sudo) and through
+  `sudo -n` only when `BENCH_SUDO` is `1`, `true`, `yes` or `on`.
+  `PERF_BPF_SUDO` remains for the `bpftrace` backend through 1.0.4 as a
+  deprecated alias that warns; `BENCH_SUDO` wins a conflict and the warning
+  says so; an invalid value of either is a configuration error that launches
+  nothing. **Action needed:** a setup that relied on the implicit sudo sets
+  `BENCH_SUDO=1`. The doctor, its selected row and the run make one decision:
+  they resolve `bpftrace` (and on the sudo route `sudo` and `kill`) on `PATH`,
+  run `bpftrace --version` as the current user, attach each selected script
+  through the route for the launch's start grace and stop it with SIGINT
+  through the same route, and the run executes exactly those resolved paths. A
+  sudoers grant must therefore allow `bpftrace` with the run's script
+  arguments and `kill` with `-2`, `-15` and `-9`; a refused attach or stop
+  signal is reported as `denied` with the command and sudo's own words.
+  offcpu no longer refuses a non-root run before trying: it attaches as the
+  current user and reports what bpftrace says. A run reports a tracer that
+  exits during its start grace, each stop signal it could not deliver, and a
+  tracer still running after the stop; offcpu prints `stacks written` only
+  when its tracer ended on SIGINT or SIGTERM, and writes bpftrace's messages
+  to `offcpu.err.txt`. Nothing needs `timeout(1)` any more. The public helpers
+  `benchSudoActive()`, `sudoBpftraceUsable()`, `bpftraceAttachViable()` and
+  `sudoKill()` stay and use the same policy and tools: `BENCH_SUDO=yes` or
+  `on` enables, `no` or `off` disables, and any other value is not an opt-in.
 
 ### Fixed
 
