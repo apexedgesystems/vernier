@@ -85,7 +85,8 @@ set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarkin
 # Fake tools (POSIX sh templates) that stand in for sudo, kill and the
 # profilers' own tools, so the readiness policy, its routing and its error
 # reports are tested without privileges or the real tools. The unit tests copy
-# them into a private directory and hand the checks a context whose PATH is it.
+# them into a private directory and hand the checks a context whose PATH is it;
+# the command-line tests run a fixture benchmark with that PATH.
 # ------------------------------------------------------------------------------
 
 if (TARGET TestBench)
@@ -94,6 +95,8 @@ if (TARGET TestBench)
     PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
   )
 endif ()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
 
 # ------------------------------------------------------------------------------
 # Layout Check Consumers (2)

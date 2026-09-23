@@ -106,6 +106,40 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--gpu-warmup`, `--gpu-device`, `--gpu-memory`, `--min-speedup`,
   `--capture-um`) are exempt. Consumers that pass their own long options
   through `PERF_MAIN` will see one line per option.
+- **A run reports the doctor's decision for its own request** -- the doctor
+  rows and the construction of a profiler ask the registry one question
+  (`ProfilerRegistry::checkRequest`) for the request that `--profile`,
+  `--profile-args`, `--bpf` and `--profile-analyze` state, in one snapshot of
+  the environment. The first guarded case of a run decides it and every later
+  case reuses the decision, and a report prints once: a failure prints the
+  doctor's cause and remedy (`[FAIL] Profiler 'massif': valgrind binary not
+  found on PATH`, then the fix) where the run printed the registration hint,
+  and the case runs unprofiled as before; a warning prints and the case is
+  profiled; an analysis the run cannot perform prints and the capture still
+  runs. A backend's zero-argument check vouches only for its default mode:
+  with `--profile-args`, its OK becomes `unverified: <name> checks its
+  default mode only; '<args>' was not checked`; a backend registered without
+  a check reports `unverified: no environment check is registered for
+  <name>` where it reported `OK no check defined`; and under the wrap of
+  `bench run` the check is not run (`unverified: collection is owned by the
+  <name> wrap; completion is checked at exit`). Backends register a check of
+  whole requests with `VERNIER_REGISTER_READINESS_BACKEND`
+  (`ProfilerReadiness.hpp`); `ProfilerRegistry::resetReadiness()` forgets the
+  kept decisions. Exit statuses are unchanged.
+- **The doctor says what its rows check, and checks one request on demand**
+  -- `--profile-check` prints `=== Profiler Backend Doctor (default mode of
+  each backend) ===` and a closing note: each row checks one backend's
+  default mode for this user and environment, a run checks its own request
+  when its profiler is created (only cases built with the profiler guard
+  create one), and `--require` accepts only `[OK]`. With `--profile <name>`
+  (and `--profile-args`, `--bpf`, `--profile-analyze`) it adds a `Selected
+  request` row that carries exactly the report a run of that request prints.
+  `--profile-check-json` gains `"backendScope": "default-mode"` and, with a
+  request, `"selected": {"name", "profileArgs", "status", "message",
+  "hint"}`; every existing key and row is unchanged. Both check flags act
+  after all flags are parsed, so their position on the command line no
+  longer matters. A script that matched the old header line needs the new
+  one.
 
 ### Fixed
 

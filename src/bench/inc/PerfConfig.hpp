@@ -97,6 +97,8 @@ inline long long parseDurationUs(const std::string& text) {
 
 inline void runProfileCheck();
 inline void runProfileCheckJson();
+inline void runProfileCheck(const PerfConfig& cfg);
+inline void runProfileCheckJson(const PerfConfig& cfg);
 
 namespace detail {
 
@@ -142,6 +144,9 @@ inline bool isUnclaimedOption(std::string_view arg) {
  *   --profile-frequency N  (sampling Hz for CPU profilers, default 10000)
  *   --profile-analyze      (auto-run analysis after profiling)
  *   --quick            (applies lighter defaults for fast iteration)
+ *   --profile-check / --profile-check-json
+ *                      (print the doctor, with a row for the --profile request
+ *                       the other flags state, and exit; flag order does not matter)
  *
  * @note NOT RT-safe (heap allocation, console I/O, may call exit()).
  */
@@ -180,6 +185,11 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
   bool cyclesSet = false;
   bool repeatsSet = false;
   bool warmupSet = false;
+
+  // The doctor runs after every flag is parsed, so it sees the whole request
+  // whatever the order; the first check flag given picks the format.
+  enum class ProfileCheck { NONE, TEXT, JSON };
+  ProfileCheck profileCheck = ProfileCheck::NONE;
 
   int w = 1;
   for (int i = 1; i < *argc; ++i) {
@@ -277,14 +287,16 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
 
     // ---- Profile check (runs diagnostics and exits) ----
     else if (a == "--profile-check") {
-      runProfileCheck();
-      std::exit(0);
+      if (profileCheck == ProfileCheck::NONE) {
+        profileCheck = ProfileCheck::TEXT;
+      }
     }
 
     // ---- Machine-readable profile check (for bench doctor --json/--require) ----
     else if (a == "--profile-check-json") {
-      runProfileCheckJson();
-      std::exit(0);
+      if (profileCheck == ProfileCheck::NONE) {
+        profileCheck = ProfileCheck::JSON;
+      }
     }
 
     // Pass-through to gtest
@@ -299,6 +311,15 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     }
   }
   *argc = w;
+
+  if (profileCheck == ProfileCheck::TEXT) {
+    runProfileCheck(cfg);
+    std::exit(0);
+  }
+  if (profileCheck == ProfileCheck::JSON) {
+    runProfileCheckJson(cfg);
+    std::exit(0);
+  }
 
   // Auto-set a generous watchdog when profiling and the user hasn't overridden.
   // 300 s = 5 min is comfortable headroom for callgrind's 20x overhead while
@@ -467,7 +488,10 @@ inline std::vector<ReadinessRow> collectReadinessChecks() {
   return rows;
 }
 
-inline void runProfileCheck() {
+inline void runProfileCheck() { runProfileCheck(PerfConfig{}); }
+
+/** @brief runProfileCheck() plus the doctor's row for the request @p cfg states. */
+inline void runProfileCheck(const PerfConfig& cfg) {
   const std::vector<ReadinessRow> ROWS = collectReadinessChecks();
   int passCount = 0;
   int warnCount = 0;
@@ -506,7 +530,7 @@ inline void runProfileCheck() {
   // valgrind installed, nsys/ncu present, etc.). Linked into this binary
   // (which transitively includes ProfilerRegistry via Profiler.hpp), so the
   // call resolves regardless of which backends the user has wired in.
-  ProfilerRegistry::instance().printDoctor();
+  ProfilerRegistry::instance().printDoctor(cfg);
 }
 
 namespace detail {
@@ -546,7 +570,16 @@ inline std::string jsonEscape(const std::string& in) {
  *  the binary readiness rows and every backend's doctor row. Consumed by
  *  `bench doctor --json` (fleet capability records) and `--require`
  *  (profile-lane gating). */
-inline void runProfileCheckJson() {
+inline void runProfileCheckJson() { runProfileCheckJson(PerfConfig{}); }
+
+/**
+ * @brief runProfileCheckJson() for the request @p cfg states.
+ *
+ * `backendScope` says what the `backends` rows check: each backend's default
+ * mode. With `--profile`, `selected` carries the decision for that request,
+ * the same report a run of it prints.
+ */
+inline void runProfileCheckJson(const PerfConfig& cfg) {
   const std::vector<ReadinessRow> ROWS = collectReadinessChecks();
   const auto STATUS = [](int s) { return s == 0 ? "ok" : (s == 1 ? "warn" : "fail"); };
 
@@ -562,7 +595,8 @@ inline void runProfileCheckJson() {
     out += "\n    {\"name\": \"" + detail::jsonEscape(r.label) + "\", \"status\": \"" +
            STATUS(r.status) + "\", \"detail\": \"" + detail::jsonEscape(r.detail) + "\"}";
   }
-  out += "\n  ], \"failures\": " + std::to_string(fails) + "},\n  \"backends\": [";
+  out += "\n  ], \"failures\": " + std::to_string(fails) +
+         "},\n  \"backendScope\": \"default-mode\",\n  \"backends\": [";
 
   first = true;
   int backendFails = 0;
@@ -579,7 +613,21 @@ inline void runProfileCheckJson() {
            "\", \"message\": \"" + detail::jsonEscape(REPORT.message) + "\", \"hint\": \"" +
            detail::jsonEscape(REPORT.hint) + "\"}";
   }
-  out += "\n  ],\n  \"backendFailures\": " + std::to_string(backendFails) + "\n}\n";
+  out += "\n  ],\n  \"backendFailures\": " + std::to_string(backendFails);
+  if (!cfg.profileTool.empty()) {
+    const ReadinessContext CTX = ReadinessContext::capture();
+    const ReadinessRequest REQUEST = readinessRequestFor(cfg, ReadinessScope::PREFLIGHT, CTX);
+    const EnvReport SELECTED = ProfilerRegistry::instance().checkRequest(REQUEST, CTX).report;
+    const char* status = SELECTED.status == EnvReport::Status::Ok
+                             ? "ok"
+                             : (SELECTED.status == EnvReport::Status::Warning ? "warn" : "fail");
+    out += ",\n  \"selected\": {\"name\": \"" + detail::jsonEscape(REQUEST.backend) +
+           "\", \"profileArgs\": \"" + detail::jsonEscape(REQUEST.profileArgs) +
+           "\", \"status\": \"" + status + "\", \"message\": \"" +
+           detail::jsonEscape(SELECTED.message) + "\", \"hint\": \"" +
+           detail::jsonEscape(SELECTED.hint) + "\"}";
+  }
+  out += "\n}\n";
   std::fwrite(out.data(), 1, out.size(), stdout);
 }
 
