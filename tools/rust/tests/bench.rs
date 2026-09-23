@@ -186,6 +186,149 @@ fn compare_threshold_boundary_is_neutral() {
     assert!(out.contains("REGRESSION"), "{out}");
 }
 
+/// `text` without its ANSI colour sequences.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            chars.by_ref().find(|&c| c == 'm');
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// Each test's label, as JSON, the table and the Markdown table print it.
+/// The three must agree.
+fn labels(base: &str, cand: &str, threshold: &str) -> Vec<(String, String)> {
+    let (code, out, err) = run(&["compare", base, cand, "--threshold", threshold, "--json"]);
+    assert_eq!(code, 0, "advisory comparison exits 0: {err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let json: Vec<(String, String)> = parsed["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|r| {
+            (
+                r["test"].as_str().expect("test").to_string(),
+                r["classification"].as_str().expect("label").to_string(),
+            )
+        })
+        .collect();
+
+    let (_, out, _) = run(&["compare", base, cand, "--threshold", threshold]);
+    let table = strip_ansi(&out);
+    let (_, markdown, _) = run(&[
+        "compare",
+        base,
+        cand,
+        "--threshold",
+        threshold,
+        "--markdown",
+    ]);
+    for (test, label) in &json {
+        let row = table
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(test.as_str()))
+            .expect("table row");
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some(label.as_str()),
+            "{table}"
+        );
+        let row = markdown
+            .lines()
+            .find(|line| line.starts_with(&format!("| {test} |")))
+            .expect("Markdown row");
+        assert!(row.ends_with(&format!(" {label} |")), "{markdown}");
+    }
+    json
+}
+
+fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(test, label)| (test.to_string(), label.to_string()))
+        .collect()
+}
+
+/// @test A median change of exactly the threshold in the CSV's decimals is
+/// neutral; a change just past it is labelled, in every format and at the gate.
+#[test]
+fn compare_decimal_threshold_boundary() {
+    let base = fixture("compare_boundary_baseline.csv");
+    for (file, down, up, gate) in [
+        ("compare_boundary_at.csv", "neutral", "neutral", 0),
+        ("compare_boundary_inside.csv", "neutral", "neutral", 0),
+        (
+            "compare_boundary_outside.csv",
+            "IMPROVEMENT",
+            "REGRESSION",
+            1,
+        ),
+    ] {
+        let cand = fixture(file);
+        assert_eq!(
+            labels(&base, &cand, "5"),
+            pairs(&[("Edge.Down", down), ("Edge.Up", up)]),
+            "{file}"
+        );
+        let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+        assert_eq!(code, gate, "{file}: {err}");
+    }
+
+    // 1 -> 1.05 prints as +5.0% and is neutral beside it.
+    let (_, out, _) = run(&["compare", &base, &fixture("compare_boundary_at.csv")]);
+    let up: Vec<String> = strip_ansi(&out)
+        .lines()
+        .find(|line| line.starts_with("Edge.Up"))
+        .expect("Edge.Up row")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(up[4..], ["+5.0%", "1.0%", "1.0%", "neutral"], "{out}");
+}
+
+/// @test A zero threshold labels any change in a reported median and nothing else.
+#[test]
+fn compare_zero_threshold_labels_every_change() {
+    let base = fixture("compare_boundary_baseline.csv");
+    assert_eq!(
+        labels(&base, &base, "0"),
+        pairs(&[("Edge.Down", "neutral"), ("Edge.Up", "neutral")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &base,
+        "--threshold",
+        "0",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+
+    let tiny = fixture("compare_boundary_tiny.csv");
+    assert_eq!(
+        labels(&base, &tiny, "0"),
+        pairs(&[("Edge.Down", "IMPROVEMENT"), ("Edge.Up", "REGRESSION")])
+    );
+    let (code, _, _) = run(&[
+        "compare",
+        &base,
+        &tiny,
+        "--threshold",
+        "0",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 1, "a 0.0001% rise fails a zero-threshold gate");
+    assert_eq!(
+        labels(&base, &tiny, "5"),
+        pairs(&[("Edge.Down", "neutral"), ("Edge.Up", "neutral")])
+    );
+}
+
 /// @test A median that rose while the outer quantiles held still is a regression.
 #[test]
 fn compare_quantile_contradiction_is_a_regression() {

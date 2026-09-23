@@ -68,7 +68,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a test is labelled `REGRESSION` when the candidate's median is more than
   `--threshold` percent above the baseline's, `IMPROVEMENT` when it is more
   than `--threshold` percent below it, and `neutral` otherwise, including at
-  exactly the threshold. The comparison reads two summary CSVs, which carry
+  exactly the threshold. Exactly means in the decimals the CSVs report: a
+  candidate median of 1.05 against a baseline of 1 is 5% and stays neutral
+  at `--threshold 5`, although binary floating point computes the change as
+  5.000000000000004%. The comparison reads two summary CSVs, which carry
   no observations, so it runs no test for statistical significance: the
   p-value the table and the Markdown table printed is gone, the
   `p_value` field of the JSON output is `null`, and the label no longer

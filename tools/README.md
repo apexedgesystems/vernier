@@ -92,7 +92,8 @@ bench compare baseline.csv candidate.csv --markdown
 **What the labels mean.** A test is `REGRESSION` when the candidate's median
 is more than `--threshold` percent above the baseline's, `IMPROVEMENT` when
 it is more than that below it, and `neutral` otherwise, including at exactly
-the threshold. The labels describe the difference between two runs. They are
+the threshold as the CSVs' decimals give it: from 1 to 1.05 is 5%, neutral at
+`--threshold 5`. The labels describe the difference between two runs. They are
 not a test for statistical significance: the CSVs carry summary statistics,
 not the observations such a test needs. Each row shows both runs' CV as
 context for how spread out each run was on its own; neither CV measures the
@@ -122,7 +123,10 @@ deliberately.
 
 **JSON shape.** `--json` prints one document: `threshold_pct`, a `results`
 array of per-test objects, and the `baseline_only` and `candidate_only` name
-lists. Each result's `p_value` is `null`, because none was computed.
+lists. Each result's `p_value` is `null`, because none was computed. Read the
+label from `classification`: `delta_pct` is the change as binary floating
+point computes it, so a change exactly at the threshold in the CSVs' decimals
+can read a few units in its last digit past it (`5.000000000000004`).
 
 ### validate - Environment Checks
 

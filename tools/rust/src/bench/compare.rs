@@ -177,11 +177,21 @@ impl Comparison {
 /// Label a percentage change against the threshold.
 ///
 /// A positive change means the candidate's median is the larger of the two.
-/// A change of exactly the threshold is inside it and stays neutral.
+/// A change of exactly the threshold, judged on the medians as the CSV
+/// reports them, is inside it and stays neutral. Binary floating point holds
+/// most decimals only approximately (1 to 1.05 computes as
+/// 5.000000000000004%), and rounding the two medians, the threshold and the
+/// arithmetic moves the change by no more than about
+/// `EPSILON * (100 + 3 * |change|)`. A change is labelled only when it passes
+/// the threshold by more than twice that: under 2e-13 percentage points for
+/// thresholds up to 100%, far finer than the six significant digits a CSV
+/// gives a median. The margin never exceeds the threshold, so with a zero
+/// threshold only medians that parse to the same value are neutral.
 fn classify(delta_pct: f64, threshold: f64) -> Classification {
-    if delta_pct > threshold {
+    let margin = (2.0 * f64::EPSILON * (100.0 + 3.0 * delta_pct.abs())).min(threshold);
+    if delta_pct > threshold + margin {
         Classification::Regression
-    } else if delta_pct < -threshold {
+    } else if delta_pct < -(threshold + margin) {
         Classification::Improvement
     } else {
         Classification::Neutral
@@ -369,12 +379,15 @@ mod tests {
         assert_eq!(classify(-0.0, 5.0), Classification::Neutral);
     }
 
-    /// @test A change just beyond the threshold is labelled.
+    /// @test A change beyond the threshold is labelled; rounding past it is not.
     #[test]
-    fn classify_just_beyond_the_threshold_is_labelled() {
-        let just_over = 5.0 + f64::EPSILON * 8.0;
-        assert_eq!(classify(just_over, 5.0), Classification::Regression);
-        assert_eq!(classify(-just_over, 5.0), Classification::Improvement);
+    fn classify_separates_a_real_change_from_rounding() {
+        // 1 -> 1.05 computes as 5.000000000000004%: rounding, not a change.
+        assert_eq!(classify(5.000000000000004, 5.0), Classification::Neutral);
+        assert_eq!(classify(-5.000000000000004, 5.0), Classification::Neutral);
+        // 1 -> 1.0500001 is +5.00001%, beyond the threshold.
+        assert_eq!(classify(5.00001, 5.0), Classification::Regression);
+        assert_eq!(classify(-5.00001, 5.0), Classification::Improvement);
     }
 
     /// @test A zero threshold labels every change that is not exactly zero.
@@ -386,6 +399,98 @@ mod tests {
             classify(-f64::MIN_POSITIVE, 0.0),
             Classification::Improvement
         );
+    }
+
+    /// Parse `mantissa`e`exponent` as the loader parses a CSV field.
+    fn decimal(mantissa: u64, exponent: i32) -> f64 {
+        format!("{mantissa}e{exponent}").parse().expect("a decimal")
+    }
+
+    /// The label `compare_runs` gives the change between two medians.
+    fn label(baseline: f64, candidate: f64, threshold: f64) -> Classification {
+        compare_one(baseline, candidate, threshold).classification
+    }
+
+    /// @test A median exactly at a decimal boundary is neutral; one unit past it is labelled.
+    #[test]
+    fn decimal_threshold_boundary_holds() {
+        // (mantissa, decimal places): 1%, 2.5%, 5%, 7.5%, 10%, 12.5%, 33.3%, 50%, 99%.
+        let thresholds: [(u64, u32); 9] = [
+            (1, 0),
+            (25, 1),
+            (5, 0),
+            (75, 1),
+            (10, 0),
+            (125, 1),
+            (333, 1),
+            (50, 0),
+            (99, 0),
+        ];
+        // Six significant digits, as the CSV writer prints a median.
+        let baselines: Vec<u64> = (100_003..1_000_000).step_by(8_999).collect();
+        for (t_mantissa, t_places) in thresholds {
+            let threshold = decimal(t_mantissa, -(t_places as i32));
+            let hundred = 100 * 10u64.pow(t_places);
+            for &b_mantissa in &baselines {
+                for b_exponent in [-9, -3, 0, 3] {
+                    let baseline = decimal(b_mantissa, b_exponent);
+                    // candidate = baseline * (100 +/- T) / 100, written exactly.
+                    let exponent = b_exponent - t_places as i32 - 2;
+                    let up = b_mantissa * (hundred + t_mantissa);
+                    let down = b_mantissa * (hundred - t_mantissa);
+                    for (mantissa, want) in [
+                        (up, Classification::Neutral),
+                        (up + 1, Classification::Regression),
+                        (up - 1, Classification::Neutral),
+                        (down, Classification::Neutral),
+                        (down - 1, Classification::Improvement),
+                        (down + 1, Classification::Neutral),
+                    ] {
+                        let candidate = decimal(mantissa, exponent);
+                        assert_eq!(
+                            label(baseline, candidate, threshold),
+                            want,
+                            "{b_mantissa}e{b_exponent} -> {mantissa}e{exponent} at {threshold}%"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// @test The rounding margin hides no change a fifteen-digit median can express.
+    #[test]
+    fn rounding_margin_hides_no_real_change() {
+        for b_mantissa in [
+            100_000_000_001u64,
+            123_456_789_012,
+            555_555_555_557,
+            999_999_999_989,
+        ] {
+            let baseline = decimal(b_mantissa, -12);
+            let (up, down) = (b_mantissa * 105, b_mantissa * 95);
+            let at = |mantissa: u64| label(baseline, decimal(mantissa, -14), 5.0);
+            assert_eq!(at(up), Classification::Neutral, "{b_mantissa}");
+            assert_eq!(at(up + 1), Classification::Regression, "{b_mantissa}");
+            assert_eq!(at(down), Classification::Neutral, "{b_mantissa}");
+            assert_eq!(at(down - 1), Classification::Improvement, "{b_mantissa}");
+        }
+    }
+
+    /// @test With a zero threshold the smallest representable change is labelled.
+    #[test]
+    fn zero_threshold_labels_the_smallest_change() {
+        let one = decimal(1, 0);
+        let above = decimal(10_000_000_000_000_002, -16);
+        let below = decimal(9_999_999_999_999_999, -16);
+        assert_eq!(above, 1.0 + f64::EPSILON);
+        assert_eq!(below, 1.0 - f64::EPSILON / 2.0);
+        assert_eq!(label(one, above, 0.0), Classification::Regression);
+        assert_eq!(label(one, below, 0.0), Classification::Improvement);
+        assert_eq!(label(one, one, 0.0), Classification::Neutral);
+        // The same changes are rounding-sized against any threshold above zero.
+        assert_eq!(label(one, above, 5.0), Classification::Neutral);
+        assert_eq!(label(one, below, 5.0), Classification::Neutral);
     }
 
     /// @test A larger threshold covers a change a smaller one labels.
