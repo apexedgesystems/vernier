@@ -163,11 +163,15 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/py/pyproject.toml")
       CONTENT "${_PY_SOURCE_LINES}\n"
     )
 
+    # pyproject.toml's readme is this directory's README.md: Poetry embeds it
+    # in the wheel's METADATA, so it is a packaging input like the manifest.
+    set(_PY_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
     add_custom_command(
       OUTPUT "${_PY_STAMP}"
       COMMAND bash "${_PY_BUILD_SCRIPT}"
       COMMAND bash "${_ENV_HELPER}"
-      DEPENDS ${_PY_SOURCES} "${_PY_SRC}/pyproject.toml" "${_PY_SRC}/poetry.lock"
+      DEPENDS ${_PY_SOURCES} "${_PY_SRC}/pyproject.toml" "${_PY_SRC}/poetry.lock" "${_PY_README}"
               "${_PY_SOURCE_LIST}"
       COMMENT "Building ${PROJECT_NAME} Python tools"
       VERBATIM

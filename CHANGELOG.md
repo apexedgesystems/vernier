@@ -99,15 +99,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the `lib/python` tree it installs kept what the first build produced:
   editing a tool module, its metadata or its lock file changed neither until
   the build directory was deleted. The rule tracks the packaged modules,
-  `pyproject.toml` and `poetry.lock`, and runs once per change to them,
-  including a module added or removed; a build that changes none of them does
-  nothing. The rule also owns its wheel directory: it clears it before each
-  build and installs the wheel it just produced, so a wheel from an earlier
-  version cannot be installed beside the new one or make the install fail on a
+  `pyproject.toml`, `poetry.lock` and the README the package embeds in its
+  metadata (`tools/README.md`), and runs once per change to them, including a
+  module added or removed; a build that changes none of them does nothing.
+  The rule also owns its wheel directory: it clears it before each build and
+  installs the wheel it just produced, so a wheel from an earlier version
+  cannot be installed beside the new one or make the install fail on a
   version conflict, and it drops this package's other metadata from the
   installed tree, so `importlib.metadata` reports the version the tree
-  declares. Clean build directories, which is what CI and the release builders
-  use, are unaffected.
+  declares. Clean build directories, which is what CI and the release
+  builders use, are unaffected.
 - **CSV rows keep the case's own config columns** -- the CSV listener overwrote
   `cycles`, `repeats`, `threads`, `msgBytes`, `console`, `nonBlocking` and
   `minLevel` in every row with the process-wide flags. A `--target-time` run
