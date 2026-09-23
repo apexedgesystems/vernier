@@ -483,6 +483,42 @@ fn compare_decimal_threshold_boundary() {
     assert_eq!(up[4..], ["+5.0%", "1.0%", "1.0%", "neutral"], "{out}");
 }
 
+/// @test A finite change near the largest double is labelled against a huge
+/// threshold, and stays neutral under a larger one.
+#[test]
+fn compare_huge_change_is_labelled() {
+    let base = fixture("compare_huge_baseline.csv");
+    let cand = fixture("compare_huge_candidate.csv");
+    // 1 -> 1e306 is +1e308%.
+    assert_eq!(
+        labels(&base, &cand, "8e307"),
+        pairs(&[("Scale.Huge", "REGRESSION")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "8e307",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 1, "{err}");
+
+    assert_eq!(
+        labels(&base, &cand, "1.5e308"),
+        pairs(&[("Scale.Huge", "neutral")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "1.5e308",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+}
+
 /// @test A zero threshold labels any change in a reported median and nothing else.
 #[test]
 fn compare_zero_threshold_labels_every_change() {

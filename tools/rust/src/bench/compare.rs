@@ -207,12 +207,14 @@ impl Comparison {
 /// the threshold by more than twice that: under 2e-13 percentage points for
 /// thresholds up to 100%, far finer than the six significant digits a CSV
 /// gives a median. The margin never exceeds the threshold, so with a zero
-/// threshold only medians that parse to the same value are neutral.
+/// threshold only medians that parse to the same value are neutral. The
+/// margin applies the small factor first and is compared with the change's
+/// excess over the threshold, so no step overflows however large the change.
 fn classify(delta_pct: f64, threshold: f64) -> Classification {
-    let margin = (2.0 * f64::EPSILON * (100.0 + 3.0 * delta_pct.abs())).min(threshold);
-    if delta_pct > threshold + margin {
+    let margin = (200.0 * f64::EPSILON + 6.0 * f64::EPSILON * delta_pct.abs()).min(threshold);
+    if delta_pct - threshold > margin {
         Classification::Regression
-    } else if delta_pct < -(threshold + margin) {
+    } else if -delta_pct - threshold > margin {
         Classification::Improvement
     } else {
         Classification::Neutral
@@ -539,6 +541,20 @@ mod tests {
         // The same changes are rounding-sized against any threshold above zero.
         assert_eq!(label(one, above, 5.0), Classification::Neutral);
         assert_eq!(label(one, below, 5.0), Classification::Neutral);
+    }
+
+    /// @test A change near the largest double is labelled without overflow.
+    #[test]
+    fn classify_a_huge_change_without_overflow() {
+        assert_eq!(classify(1e308, 8e307), Classification::Regression);
+        assert_eq!(
+            classify(f64::MAX, f64::MAX / 2.0),
+            Classification::Regression
+        );
+        assert_eq!(classify(1e308, 1.5e308), Classification::Neutral);
+        assert_eq!(classify(-100.0, f64::MAX), Classification::Neutral);
+        // 1 -> 1e306 is a finite +1e308%, beyond a threshold of 8e307%.
+        assert_eq!(label(1.0, 1e306, 8e307), Classification::Regression);
     }
 
     /// @test A larger threshold covers a change a smaller one labels.
