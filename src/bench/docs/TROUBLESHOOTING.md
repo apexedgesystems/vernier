@@ -742,15 +742,26 @@ whether its tool is available.
 perf: command not found
 ```
 
+or Ubuntu's `perf` launcher finds no build for the running kernel:
+
+```
+WARNING: perf not found for kernel 6.8.0-138
+```
+
 **Solutions:**
 
-**1. Install perf**:
+**1. Install perf** for the running kernel:
 
 ```bash
 sudo apt-get install linux-tools-generic linux-tools-$(uname -r)
 ```
 
-**2. Check permissions**:
+A package for the running kernel may not exist (a vendor kernel, for example);
+then install a generic perf build and put it first on `PATH`, as the
+[Thor rig](rigs/RIG_THOR_AGX.md) does. In a container, see
+[Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
+
+**2. Check permissions** (a `perf` that runs can still be refused):
 
 ```bash
 # Option 1: Run as root
@@ -930,14 +941,8 @@ ENV PATH="/opt/FlameGraph:${PATH}"
 ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 ```
 
-**3. Perf not available** (must mount from host):
-
-```bash
-docker run --rm \
-    -v /usr/bin/perf:/usr/bin/perf:ro \
-    -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-    mybench:latest
-```
+**3. Perf not available**: see
+[Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
 
 ---
 
@@ -947,24 +952,29 @@ docker run --rm \
 
 **Solutions:**
 
-**1. Must mount from host** (kernel version must match):
+**1. Give the image a perf for the host's kernel.** On Ubuntu, `perf` runs
+the build for the running kernel, and a container runs on the host's kernel.
+The dev images install that build when they are built; rebuild them on the
+host that runs the container after a kernel change, and in place of an image
+pulled from the registry:
 
 ```bash
-docker run --rm --privileged \
-    -v /usr/bin/perf:/usr/bin/perf:ro \
-    -v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-    -v /dev/cpu:/dev/cpu \
-    mybench:latest
+make docker-dev        # or: make docker-dev-cuda
 ```
 
-**2. Need --privileged or adjust paranoid**:
+`docker compose run` and the `compose-*` targets do not rebuild the image. A
+package for the host's kernel may not exist: the build then prints
+`WARN: linux-tools-<release> unavailable; perf may not match the host kernel`.
+Details, and images of your own:
+[Docker Setup Guide](DOCKER_SETUP.md#perf-profiling).
+
+**2. Access is a separate question**, and a rebuild does not change it: the
+host's `kernel.perf_event_paranoid`, `CAP_PERFMON` and the container's policy
+decide. At `perf_event_paranoid=4` the privileged `dev` service counts as root
+and refuses the default user. For user profiling, lower the level on the host:
 
 ```bash
-# On host
 sudo sysctl -w kernel.perf_event_paranoid=-1
-
-# Or use --privileged
-docker run --rm --privileged ...
 ```
 
 ---

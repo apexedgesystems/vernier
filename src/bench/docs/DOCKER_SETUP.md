@@ -278,6 +278,10 @@ mybench:latest \
 bash -c "make tools-rust && source build/native-linux-debug/.env && bench validate"
 ```
 
+The two perf mounts in the `docker run` example are not enough on every host;
+see [Perf Profiling](#perf-profiling) for how an image gets a perf for the
+host's kernel.
+
 For GPU containers, add `bench gpu-env` to check GPU environment readiness
 (CUDA, Nsight Systems, Nsight Compute). For a deeper per-backend check tied
 to a specific binary, run `bench doctor <ptest-binary>`.
@@ -286,7 +290,9 @@ to a specific binary, run `bench doctor <ptest-binary>`.
 
 1. **Python Dependencies** - pandas, matplotlib, seaborn, scipy, plotly
 2. **FlameGraph Tools** - PATH, $FLAMEGRAPH_DIR, scripts available
-3. **Perf Profiling** - perf command, kernel match, permissions
+3. **Perf Profiling** - whether `perf` runs (on Ubuntu it needs the build for
+   the running kernel) and the `perf_event_paranoid` level, as separate checks;
+   see [Perf Profiling](#perf-profiling)
 4. **GPU Tools** (optional) - CUDA, Nsight Systems, Nsight Compute
 5. **Framework Smoke Test** - Actual benchmark execution
 
@@ -352,24 +358,55 @@ CMD . build/native-linux-debug/.env && bench validate || exit 1
 
 ### Perf Profiling
 
-**Challenge:** perf must match the host kernel version.
+On Ubuntu, `perf` is a launcher script: it runs the perf build for the running
+kernel from `/usr/lib/linux-tools/<release>/` and refuses to run without one. A
+container shares the host's kernel, so an image needs the perf build for the
+kernel of the host that runs it.
 
-**Solution:** Mount perf from host:
+**The project's dev images** install it when they are built:
+`docker/base.Dockerfile` installs `linux-tools-<release>` for the kernel named
+by the `HOST_KERNEL` build argument, and `make docker-dev` and
+`make docker-dev-cuda` pass the running kernel (`uname -r`). Rebuild on the
+host that runs the container after it boots a different kernel, and in place
+of an image pulled from the registry, which is built without `HOST_KERNEL`:
 
 ```bash
-docker run --rm --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
--v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
--v /dev/cpu:/dev/cpu \
-mybench:latest \
-./ptests/MyComponent_PTEST --profile perf
+make docker-dev        # CPU dev image (the dev service)
+make docker-dev-cuda   # CUDA dev image (dev-cuda, where make compose-debug runs)
 ```
 
-**Why each mount:**
+`docker compose run` and the `compose-*` targets start the image that is
+tagged and do not rebuild it. A stale image prints:
 
-- `/usr/bin/perf` - perf command
-- `/usr/lib/linux-tools` - Kernel-specific tools
-- `/dev/cpu` - MSR access for RAPL energy profiling
+```
+WARNING: perf not found for kernel 6.8.0-138
+  You may need to install the following packages for this specific kernel:
+    linux-tools-6.8.0-138-generic
+  ...
+```
+
+What a rebuild does not do:
+
+- **Find a package for every kernel.** A vendor kernel, for example, may have
+  none. The build then prints
+  `WARN: linux-tools-<release> unavailable; perf may not match the host kernel`
+  and the image keeps only the generic build; install a generic perf build and
+  put it first on `PATH`, as the [Thor rig](rigs/RIG_THOR_AGX.md) does.
+- **Grant access.** Whether counters can be read is decided by the host's
+  `kernel.perf_event_paranoid`, the capabilities of the process (`CAP_PERFMON`,
+  `CAP_SYS_ADMIN`) and the container's policy. With the host at
+  `perf_event_paranoid=4`, `perf stat` in the privileged `dev` service counts
+  as root and is refused for the default user, in the same image.
+  `bench validate` reports the `perf` executable and `perf_event_paranoid` on
+  separate lines.
+
+**An image of your own** can do the same: take the host's `uname -r` as a
+build argument and install `linux-tools-<release>`, as `docker/base.Dockerfile`
+does. Mounting the host's `/usr/bin/perf` and `/usr/lib/linux-tools` into the
+container is not enough on every host: on an Ubuntu 22.04 host with an HWE
+kernel, `/usr/lib/linux-tools/<release>/perf` is a link into
+`/usr/lib/linux-hwe-6.8-tools-<version>/`, which those mounts leave out, and
+the launcher still reports no perf for the kernel.
 
 ### FlameGraph Tools
 
@@ -659,8 +696,8 @@ RUN git clone https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
 ENV PATH="/opt/FlameGraph:${PATH}"
 
 # 3. Perf not available
-# Mount from host (can't install in container)
-docker run -v /usr/bin/perf:/usr/bin/perf:ro ...
+# Install linux-tools for the host's kernel when the image is built
+# (see Perf Profiling)
 ```
 
 ### Perf Doesn't Work in Container
@@ -670,16 +707,13 @@ docker run -v /usr/bin/perf:/usr/bin/perf:ro ...
 **Solutions:**
 
 ```bash
-# 1. Must mount from host (kernel version match)
-docker run --rm \
--v /usr/bin/perf:/usr/bin/perf:ro \
--v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-mybench:latest
+# 1. The image needs perf for the host's kernel (see Perf Profiling).
+#    Rebuild the dev images on the host that runs them:
+make docker-dev        # or: make docker-dev-cuda
 
-# 2. Need --privileged or perf_event_paranoid
-docker run --rm --privileged ...
-
-# Or on host:
+# 2. Access is separate from the executable: at perf_event_paranoid=4 the
+#    privileged dev service counts as root and refuses the default user.
+#    For user profiling, lower the level on the host:
 sudo sysctl -w kernel.perf_event_paranoid=-1
 
 # 3. Mount /dev/cpu for RAPL
