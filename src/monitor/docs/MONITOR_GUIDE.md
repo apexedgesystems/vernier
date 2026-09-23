@@ -88,13 +88,17 @@ vernier::monitor::Monitor monitor(cfg);
 The defaults are the struct's own: enabled, console sink at `INFO`, no
 file, 4096-slot queue. Set the variables to change them.
 
-| Var                                  | Effect                                                    |
-| ------------------------------------ | --------------------------------------------------------- |
-| `VERNIER_MONITOR=0`                  | disable; any other value enables. Unset leaves it enabled |
-| `VERNIER_MONITOR_DISABLE=1`          | disable, whatever `VERNIER_MONITOR` says                  |
-| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | add the file sink with this path                          |
-| `VERNIER_MONITOR_CONSOLE=WARNING`    | console minimum level; `off` removes the console sink     |
-| `VERNIER_MONITOR_QUEUE=8192`         | ring-buffer capacity (rounded up to a power of two)       |
+| Var                                  | Effect                                                |
+| ------------------------------------ | ----------------------------------------------------- |
+| `VERNIER_MONITOR=0`                  | a false value disables; unset leaves it enabled       |
+| `VERNIER_MONITOR_DISABLE=1`          | disable, whatever `VERNIER_MONITOR` says              |
+| `VERNIER_MONITOR_FILE=/tmp/run.vmon` | add the file sink with this path                      |
+| `VERNIER_MONITOR_CONSOLE=WARNING`    | console minimum level; `off` removes the console sink |
+| `VERNIER_MONITOR_QUEUE=8192`         | ring-buffer capacity (rounded up to a power of two)   |
+
+`VERNIER_MONITOR` and `VERNIER_MONITOR_DISABLE` treat `0`, `false`, `off`,
+`no` and an empty value as false and any other value as true. The
+comparison is exact, so `FALSE` and `Off` count as true.
 
 Same code, different deployments:
 
