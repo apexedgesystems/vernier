@@ -225,8 +225,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `Perf.hpp` includes `gtest/gtest.h` and `PERF_MAIN()` runs GoogleTest, yet a
   consumer that linked only `vernier::bench` got neither and stopped at
   `'gtest/gtest.h' file not found`. A benchmark links `vernier::bench` alone; an
-  explicit `GTest::gtest` link still works. Library names and SONAMEs are
-  unchanged.
+  explicit `GTest::gtest` link still works. The GoogleTest that
+  `find_package(vernier)` finds must define `GTest::gtest` (CMake 3.20 or
+  newer does through FindGTest, GoogleTest's own package configuration does
+  too); one that does not stops `find_package(vernier)` with a message naming
+  `GTest::gtest`, for every consumer. Library names and SONAMEs are unchanged.
   **For packagers:** the headers' installed location changes from
   `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
   use the exported targets need no change.

@@ -24,6 +24,10 @@
 # 5. Each program resolves its vernier library in the moved prefix and runs
 #    with LD_LIBRARY_PATH unset: `make test` and `make testp` point that
 #    variable at the build tree's libraries, which would otherwise be loaded.
+# 6. A GoogleTest found without its GTest::gtest target (a stub package
+#    configuration standing in for a find module older than CMake 3.20) makes
+#    the consumer's configure stop, with a message naming GTest::gtest, instead
+#    of letting the benchmark fail later at gtest/gtest.h.
 #
 # Every step runs without CPATH, C_INCLUDE_PATH, CPLUS_INCLUDE_PATH,
 # LIBRARY_PATH and LD_LIBRARY_PATH, which add search paths behind CMake's back.
@@ -321,6 +325,34 @@ foreach (_style short qualified)
     )
   endif ()
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# 6. A GoogleTest without GTest::gtest is refused by name
+# ------------------------------------------------------------------------------
+
+file(WRITE "${WORK_DIR}/gtest-stub/GTestConfig.cmake"
+     "# GoogleTest reported found, with no imported target defined.\n"
+)
+execute_process(
+  COMMAND
+    "${CMAKE_COMMAND}" -E env ${_clean_env} "${CMAKE_COMMAND}" -S "${WORK_DIR}/consumer" -B
+    "${WORK_DIR}/consumer-stub-build" ${_toolchain} -DCMAKE_PREFIX_PATH=${_prefix}
+    -DGTest_DIR=${WORK_DIR}/gtest-stub
+  WORKING_DIRECTORY "${WORK_DIR}/run"
+  RESULT_VARIABLE _rc
+  OUTPUT_VARIABLE _out
+  ERROR_VARIABLE _out
+)
+file(WRITE "${_logs}/consumer_configure_gtest_stub.log" "${_out}")
+if (_rc EQUAL 0)
+  string(APPEND _problems
+         "\n  a GoogleTest without GTest::gtest was accepted: the consumer configured"
+  )
+elseif (NOT _out MATCHES "GTest::gtest")
+  string(APPEND _problems
+         "\n  a GoogleTest without GTest::gtest failed without naming GTest::gtest"
+  )
+endif ()
 
 if (NOT _problems STREQUAL "")
   message(FATAL_ERROR "InstallConsumer:${_problems}\nwork directory kept: ${WORK_DIR}")

@@ -21,8 +21,10 @@
 #   GTest must be available, also to a consumer that uses only the monitor.
 #   vernier::bench carries GTest::gtest in its usage requirements (framework
 #   macros expand to TEST() and PERF_MAIN() runs them); find_dependency(GTest)
-#   below provides that target. PERF_MAIN() supplies main(), so a benchmark
-#   needs no GTest::gtest_main.
+#   below provides that target. CMake 3.20 or newer defines it through its
+#   FindGTest module, and GoogleTest's own package configuration defines it;
+#   without it the package stops with a message naming GTest::gtest.
+#   PERF_MAIN() supplies main(), so a benchmark needs no GTest::gtest_main.
 # ==============================================================================
 
 @PACKAGE_INIT@
@@ -31,6 +33,24 @@ include(CMakeFindDependencyMacro)
 
 # GTest is required -- Vernier's PERF_TEST macros expand to GTest TEST()
 find_dependency(GTest)
+
+# vernier::bench's usage requirements name the GTest::gtest target. A GoogleTest
+# found without it (CMake's FindGTest before 3.20) is refused here, by name,
+# rather than surfacing later as a missing gtest/gtest.h.
+if (NOT TARGET GTest::gtest)
+  set(vernier_FOUND FALSE)
+  string(
+    CONCAT
+      vernier_NOT_FOUND_MESSAGE
+      "vernier::bench requires GoogleTest's imported target GTest::gtest, and the "
+      "GoogleTest that was found does not define it. CMake's FindGTest module "
+      "defines it from CMake 3.20, and GoogleTest's own package configuration "
+      "(GTestConfig.cmake) defines it. Point CMake at an installed GoogleTest: set "
+      "GTest_DIR to the directory that holds its GTestConfig.cmake, or add its "
+      "install prefix to CMAKE_PREFIX_PATH."
+  )
+  return()
+endif ()
 
 # CUDA is optional -- needed only for vernier::bench_cuda
 find_package(CUDAToolkit QUIET)
