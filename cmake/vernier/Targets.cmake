@@ -91,6 +91,54 @@ function (_vernier_check_requirements result_var)
 endfunction ()
 
 # ------------------------------------------------------------------------------
+# _vernier_public_headers(<target> <PUBLIC|INTERFACE> <include_dir>)
+#
+# Internal helper: the include layout of every library, in the build tree and
+# in an install. The library helpers call it; nothing else sets an include
+# directory for installed consumers.
+#
+# Headers include one another by their path from the source root
+# ("src/bench/inc/PerfConfig.hpp"), and consumers may also name an entry point
+# alone ("Perf.hpp"). Both resolve when the include path holds that root and the
+# module's header directory. The build uses the source tree itself; an install
+# keeps the same tree under one root and exports both directories:
+#
+#   <prefix>/${CMAKE_INSTALL_INCLUDEDIR}/vernier/src/<module>/inc/<header>
+#
+# The vernier/ level keeps the tree's generic src/ directory out of a shared
+# include directory such as /usr/include. A header directory is installed once,
+# by the first library that names it, so libraries sharing one (bench and
+# bench_cuda) leave one copy.
+# ------------------------------------------------------------------------------
+function (_vernier_public_headers TARGET SCOPE INC)
+  # One spelling per directory ("inc" and "inc/" alike), so it is installed once.
+  cmake_path(ABSOLUTE_PATH INC BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}" NORMALIZE)
+  string(REGEX REPLACE "/+$" "" INC "${INC}")
+  cmake_path(IS_PREFIX PROJECT_SOURCE_DIR "${INC}" NORMALIZE _inside)
+  file(RELATIVE_PATH _module_dir "${PROJECT_SOURCE_DIR}" "${INC}")
+  if (NOT _inside OR _module_dir STREQUAL "")
+    message(FATAL_ERROR "[vernier] ${TARGET}: header directory '${INC}' must be a "
+                        "subdirectory of ${PROJECT_SOURCE_DIR}"
+    )
+  endif ()
+
+  # Evaluated per call: this file is included once, in the first module's
+  # directory scope, so a variable set at include time would not reach others.
+  set(_root "${CMAKE_INSTALL_INCLUDEDIR}/vernier")
+
+  target_include_directories(
+    ${TARGET} ${SCOPE} $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<BUILD_INTERFACE:${INC}>
+    $<INSTALL_INTERFACE:${_root}> $<INSTALL_INTERFACE:${_root}/${_module_dir}>
+  )
+
+  get_property(_installed GLOBAL PROPERTY VERNIER_INSTALLED_HEADER_DIRS)
+  if (NOT INC IN_LIST _installed)
+    set_property(GLOBAL APPEND PROPERTY VERNIER_INSTALLED_HEADER_DIRS "${INC}")
+    install(DIRECTORY "${INC}/" DESTINATION "${_root}/${_module_dir}")
+  endif ()
+endfunction ()
+
+# ------------------------------------------------------------------------------
 # vernier_add_interface_library(...)
 #
 # Define a header-only module as an INTERFACE target.
@@ -133,10 +181,7 @@ function (vernier_add_interface_library)
   add_library(${IL_NAME} INTERFACE)
   add_library(vernier::${IL_NAME} ALIAS ${IL_NAME})
 
-  target_include_directories(
-    ${IL_NAME} INTERFACE $<BUILD_INTERFACE:${IL_INC}>
-                         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  )
+  _vernier_public_headers(${IL_NAME} INTERFACE "${IL_INC}")
 
   if (IL_DEPS_INTERFACE)
     target_link_libraries(${IL_NAME} INTERFACE ${IL_DEPS_INTERFACE})
@@ -151,7 +196,6 @@ function (vernier_add_interface_library)
   endif ()
 
   install(TARGETS ${IL_NAME} EXPORT vernierTargets)
-  install(DIRECTORY "${IL_INC}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
   if (VERNIER_TARGETS_VERBOSE)
     message(STATUS "[vernier] INTERFACE ${IL_NAME} inc='${IL_INC}' deps='${IL_DEPS_INTERFACE}'")
@@ -243,10 +287,7 @@ function (vernier_add_library)
   endif ()
 
   target_sources(${AL_NAME} PRIVATE ${AL_SRC})
-  target_include_directories(
-    ${AL_NAME} PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<BUILD_INTERFACE:${AL_INC}>
-                      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-  )
+  _vernier_public_headers(${AL_NAME} PUBLIC "${AL_INC}")
 
   if (AL_DEPS_PUBLIC)
     target_link_libraries(${AL_NAME} PUBLIC ${AL_DEPS_PUBLIC})
@@ -263,7 +304,6 @@ function (vernier_add_library)
     LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
     ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   )
-  install(DIRECTORY "${AL_INC}/" DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
 
   if (VERNIER_TARGETS_VERBOSE)
     list(LENGTH AL_SRC _src_count)
@@ -501,7 +541,9 @@ endfunction ()
 #   SRC                    <cu/cpp...>        required
 #   CORE                   <cpu_target>       optional (link core PRIVATE)
 #   TYPE                   STATIC|SHARED      optional (default SHARED)
-#   INC                    <include_dir>      optional
+#   INC                    <include_dir>      optional (public headers, as for
+#                                             vernier_add_library; may be the
+#                                             CORE library's directory)
 #   DEPS_PUBLIC            <targets...>       optional
 #   DEPS_PRIVATE           <targets...>       optional
 #   ABI_VERSION            <number>           optional (SHARED only; SONAME
@@ -555,7 +597,7 @@ function (vernier_add_library_cuda)
     endif ()
 
     if (ACL_INC)
-      target_include_directories(${ACL_NAME} PRIVATE ${ACL_INC})
+      _vernier_public_headers(${ACL_NAME} PUBLIC "${ACL_INC}")
     endif ()
 
     if (ACL_CORE)
@@ -620,6 +662,10 @@ function (vernier_add_library_cuda)
     # INTERFACE shim when CUDA inactive
     add_library(${ACL_NAME} INTERFACE)
     add_library(vernier::${ACL_NAME} ALIAS ${ACL_NAME})
+
+    if (ACL_INC)
+      _vernier_public_headers(${ACL_NAME} INTERFACE "${ACL_INC}")
+    endif ()
 
     if (ACL_CORE)
       vernier_guard(${ACL_CORE})

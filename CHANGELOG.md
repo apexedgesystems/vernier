@@ -24,6 +24,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **`vernier::monitor`: a disabled monitor produces nothing, and the summary
+  follows the console sink** -- `start()` on a monitor whose configuration has
+  `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
+  without creating the I/O thread, without opening the output file at
+  `filePath` and without arming a summary: `isRunning()` reports false, no empty
+  file appears next to the run and `stop()` prints no empty summary table.
+  Activate such a monitor with `setEnabled(true)` followed by `start()`. `stop()` prints the
+  summary table to stderr only when the console sink is configured, so
+  `VERNIER_MONITOR_CONSOLE=off` and a file-only or `SINK_NONE` configuration are
+  silent. Measurement is unaffected by that choice: `SINK_NONE` still collects
+  in memory and `summary()` still carries the full table, and samples recorded
+  before `setEnabled(false)` are kept and reported at `stop()`. A script that
+  parsed the summary off stderr from a file-only run needs the console sink
+  enabled; one that tested for the created file as a sign that a disabled run
+  had started needs another signal.
+- **The monitor guide, headers and example describe the shipped behaviour** --
+  `MONITOR_GUIDE.md` gains a lifecycle section (configure, set thresholds,
+  `start()`, instrument, let the producers finish, `stop()`) and states what a
+  disabled monitor and a console-off monitor do. Three claims are gone, because
+  the repository does not support them: a "zero-overhead disable" row (a
+  disabled monitor still reads the clock, copies the scope name and evaluates
+  the arguments you pass the macros), a per-sample cost of "~100-200ns" (no
+  measurement backs a figure), and "stays silent until the operator sets the
+  env var" (the default configuration is enabled with the console sink, and
+  `VERNIER_MONITOR_CONSOLE=off` or `VERNIER_MONITOR_DISABLE=1` is what makes a
+  run quiet). `MonitorEnvVarExample` shows the same four environments and the
+  explicit `stop()`.
 - **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
   and every `vernier_add_ptest` target link `libtcmalloc` only when configured
   with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev
@@ -82,6 +109,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
+  the drain thread's loop condition popped a sample once the running flag had
+  cleared and then dropped it: the body popped again and processed only what it
+  found. A run whose producer queued work right before `stop()` lost one sample
+  per run, counted in `Total samples` but missing from the summary table and
+  from the file sink, with the drop counter at 0. The drain loop reads the flag
+  once per round and pops in one place, so a stop with a full queue reports the
+  same counts as a stop with an idle one. Measurements taken with an earlier
+  release are short by up to one sample per run, in the last scope, counter or
+  gauge recorded.
 - **`CMAKE_CUDA_ARCHITECTURES` is honored** -- the root `CMakeLists.txt` assigned
   its own `CUDA_ARCHS` option (default `89`) over the standard variable, so
   `-DCMAKE_CUDA_ARCHITECTURES=...`, a preset, a parent project's setting or the
@@ -109,6 +146,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs the benchmark under it. ...` and a non-zero exit, and points at
   `bench doctor`. `bench profile-all` reports the same line for that profiler
   and continues with the next.
+- **The Python tools wheel follows its inputs** -- the rule that builds the
+  wheel declared no dependencies, so in an existing build directory the wheel
+  and the `lib/python` tree it installs kept what the first build produced:
+  editing a tool module, its metadata or its lock file changed neither until
+  the build directory was deleted. The rule tracks the packaged modules,
+  `pyproject.toml`, `poetry.lock`, the README the package embeds in its
+  metadata (`tools/README.md`) and the commands it runs to build and install
+  the wheel, and runs once per change to them, including a module added or
+  removed; a build or a re-configure that changes none of them does nothing.
+  The rule also owns its wheel directory: it clears it before each build and
+  installs the wheel it just produced, so a wheel from an earlier version
+  cannot be installed beside the new one or make the install fail on a
+  version conflict, and it drops this package's other metadata from the
+  installed tree, so `importlib.metadata` reports the version the tree
+  declares. Clean build directories, which is what CI and the release
+  builders use, are unaffected.
 - **CSV rows keep the case's own config columns** -- the CSV listener overwrote
   `cycles`, `repeats`, `threads`, `msgBytes`, `console`, `nonBlocking` and
   `minLevel` in every row with the process-wide flags. A `--target-time` run
@@ -220,6 +273,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PerfHarness.hpp`, under both GCC and Clang, and failed outright under
   `-Werror`. The handler writes through a helper that resumes after a short
   write or `EINTR`; it remains async-signal-safe and its message is unchanged.
+- **Installed headers compile for `find_package(vernier)` consumers** -- the
+  install copied each library's headers flat into `<includedir>/`, while the
+  headers include one another as `src/bench/inc/...` and `src/monitor/inc/...`,
+  so an installed consumer's `#include "Perf.hpp"` stopped at
+  `'src/bench/inc/PerfConfig.hpp' file not found`, and the source-qualified
+  `#include "src/bench/inc/Perf.hpp"` found nothing. With a
+  `CMAKE_INSTALL_INCLUDEDIR` other than `include`, the exported targets also
+  named `<prefix>/include`, and configuring a consumer failed with
+  `Imported target "vernier::bench" includes non-existent path`. Headers are
+  installed once, at their source paths under
+  `<includedir>/vernier/src/<module>/inc/`, and every exported target (bench,
+  bench_cuda, monitor) adds that `vernier/` directory and its module's
+  directory to the include path, so both include forms work with no include
+  directory of the consumer's own, also with a relative
+  `CMAKE_INSTALL_INCLUDEDIR` other than `include` and from a prefix moved after
+  installation. `vernier::bench` also carries GoogleTest's headers and library
+  (the `GTest::gtest` that the package's `find_dependency(GTest)` provides):
+  `Perf.hpp` includes `gtest/gtest.h` and `PERF_MAIN()` runs GoogleTest, yet a
+  consumer that linked only `vernier::bench` got neither and stopped at
+  `'gtest/gtest.h' file not found`. A benchmark links `vernier::bench` alone; an
+  explicit `GTest::gtest` link still works. The GoogleTest that
+  `find_package(vernier)` finds must define `GTest::gtest` (CMake 3.20 or
+  newer does through FindGTest, GoogleTest's own package configuration does
+  too); one that does not stops `find_package(vernier)` with a message naming
+  `GTest::gtest`, for every consumer. Library names and SONAMEs are unchanged.
+  **For packagers:** the headers' installed location changes from
+  `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
+  use the exported targets need no change.
 - **Every CSV row has its file's columns** -- a row was written with the column
   groups its own values happened to fill, while the header states the groups
   once for the whole file, so rows of a GPU binary did not line up with it. A

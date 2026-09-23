@@ -116,32 +116,72 @@ if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/py/pyproject.toml")
     set(_PY_STAMP "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps/py-tools.built")
 
     # Generate build script (handles shell globs that VERBATIM mode cannot expand)
+    # with file(GENERATE), which rewrites it only when its content differs: the
+    # rule depends on the script, so a changed command reruns the rule, and a
+    # configure that changes no command leaves the script and the stamp current.
     set(_PY_BUILD_SCRIPT "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-build-py-tools.sh")
-    file(
-      WRITE "${_PY_BUILD_SCRIPT}"
-      "#!/bin/bash\nset -e\n"
-      # Install the dependencies offline from the dev image's baked wheelhouse
-      # when present (VERNIER_PIP_WHEELHOUSE, set in the build-base tier). poetry
-      # build itself is already offline (poetry-core is bundled). Local dev (no
-      # such env) resolves online from PyPI.
-      "FINDLINKS=\n"
-      "if [ -n \"\${VERNIER_PIP_WHEELHOUSE:-}\" ]; then FINDLINKS=\"--no-index --find-links \${VERNIER_PIP_WHEELHOUSE}\"; fi\n"
-      "mkdir -p '${_PY_OUT}' '${_PY_LIB}' '${_PY_WHEELS}'\n"
-      "cd '${_PY_SRC}'\n"
-      "'${POETRY_EXECUTABLE}' build --format wheel --output '${_PY_WHEELS}'\n"
-      "'${PIP_EXECUTABLE}' install --quiet --no-deps --target '${_PY_LIB}' --upgrade ${_PY_WHEELS}/*.whl\n"
-      "rm -rf '${_PY_OUT}'\n"
-      "mv '${_PY_LIB}/bin' '${_PY_OUT}'\n"
-      "'${PIP_EXECUTABLE}' install --quiet \${FINDLINKS} --target '${_PY_LIB}' --upgrade ${_PY_WHEELS}/*.whl\n"
-      "rm -rf '${_PY_LIB}/bin'\n"
-      "mkdir -p '${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps'\n"
-      "touch '${_PY_STAMP}'\n"
+    string(
+      CONCAT
+        _PY_BUILD_COMMANDS
+        "#!/bin/bash\nset -e\n"
+        # Install the dependencies offline from the dev image's baked wheelhouse
+        # when present (VERNIER_PIP_WHEELHOUSE, set in the build-base tier). poetry
+        # build itself is already offline (poetry-core is bundled). Local dev (no
+        # such env) resolves online from PyPI.
+        "FINDLINKS=\n"
+        "if [ -n \"\${VERNIER_PIP_WHEELHOUSE:-}\" ]; then FINDLINKS=\"--no-index --find-links \${VERNIER_PIP_WHEELHOUSE}\"; fi\n"
+        "rm -rf '${_PY_WHEELS}'\n"
+        "mkdir -p '${_PY_OUT}' '${_PY_LIB}' '${_PY_WHEELS}'\n"
+        "cd '${_PY_SRC}'\n"
+        "'${POETRY_EXECUTABLE}' build --format wheel --output '${_PY_WHEELS}'\n"
+        "WHEEL=\$(ls '${_PY_WHEELS}'/*.whl)\n"
+        "DIST=\$(basename \"\${WHEEL}\")\n"
+        # pip replaces the package directory under --target --upgrade but leaves
+        # the metadata of any other version of it beside the new one, which makes
+        # the installed version ambiguous. This rule owns the tree, so it drops
+        # this distribution's metadata before installing.
+        "rm -rf '${_PY_LIB}'/\${DIST%%-*}-*.dist-info\n"
+        "'${PIP_EXECUTABLE}' install --quiet --no-deps --target '${_PY_LIB}' --upgrade \"\${WHEEL}\"\n"
+        "rm -rf '${_PY_OUT}'\n"
+        "mv '${_PY_LIB}/bin' '${_PY_OUT}'\n"
+        "'${PIP_EXECUTABLE}' install --quiet \${FINDLINKS} --target '${_PY_LIB}' --upgrade \"\${WHEEL}\"\n"
+        "rm -rf '${_PY_LIB}/bin'\n"
+        "mkdir -p '${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps'\n"
+        "touch '${_PY_STAMP}'\n"
     )
+    file(
+      GENERATE
+      OUTPUT "${_PY_BUILD_SCRIPT}"
+      CONTENT "${_PY_BUILD_COMMANDS}"
+    )
+
+    # Track the packaged modules so editing one dirties the stamp: without
+    # this, an existing build directory keeps shipping the wheel it built
+    # first. CONFIGURE_DEPENDS re-globs on build so a new module is picked up
+    # too. A deleted module leaves the stamp newer than every module that
+    # remains, so the module list is also written to a file the rule depends
+    # on: its content changes whenever the set does, in either direction.
+    file(GLOB_RECURSE _PY_SOURCES CONFIGURE_DEPENDS "${_PY_SRC}/src/*.py")
+    # file(GENERATE) rewrites the file only when its content differs, so a
+    # configure that does not change the module set leaves the timestamp alone.
+    set(_PY_SOURCE_LIST "${CMAKE_BINARY_DIR}/${PROJECT_NAME}-stamps/py-tools.sources")
+    string(REPLACE ";" "\n" _PY_SOURCE_LINES "${_PY_SOURCES}")
+    file(
+      GENERATE
+      OUTPUT "${_PY_SOURCE_LIST}"
+      CONTENT "${_PY_SOURCE_LINES}\n"
+    )
+
+    # pyproject.toml's readme is this directory's README.md: Poetry embeds it
+    # in the wheel's METADATA, so it is a packaging input like the manifest.
+    set(_PY_README "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 
     add_custom_command(
       OUTPUT "${_PY_STAMP}"
       COMMAND bash "${_PY_BUILD_SCRIPT}"
       COMMAND bash "${_ENV_HELPER}"
+      DEPENDS ${_PY_SOURCES} "${_PY_SRC}/pyproject.toml" "${_PY_SRC}/poetry.lock" "${_PY_README}"
+              "${_PY_SOURCE_LIST}" "${_PY_BUILD_SCRIPT}"
       COMMENT "Building ${PROJECT_NAME} Python tools"
       VERBATIM
     )

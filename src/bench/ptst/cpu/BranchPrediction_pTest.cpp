@@ -19,10 +19,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all branch prediction tests
- *   ./TestBenchSamples_PTEST --gtest_filter="BranchPrediction.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="BranchPrediction.*"
  *
  *   # Compare branchy vs branchless
- *   ./TestBenchSamples_PTEST --gtest_filter="BranchPrediction.*" --csv branch_compare.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="BranchPrediction.*" --csv branch_compare.csv
  *   @endcode
  *
  * Performance expectations:

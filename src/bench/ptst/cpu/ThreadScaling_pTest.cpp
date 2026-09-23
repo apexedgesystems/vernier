@@ -20,10 +20,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all thread scaling tests
- *   ./TestBenchSamples_PTEST --gtest_filter="ThreadScaling.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="ThreadScaling.*"
  *
  *   # Control thread count
- *   ./TestBenchSamples_PTEST --gtest_filter="ThreadScaling.*" --threads 2
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="ThreadScaling.*" --threads 2
  *   @endcode
  *
  * Performance expectations:
