@@ -9,6 +9,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
+  code the walkthroughs measure, starting with `join`: `joinV0` builds the
+  result with `out = out + part + sep`, `joinV1` reserves once and appends in
+  place, and unit tests registered with `ctest` hold both versions to the same
+  answers. Demo 01 measured `std::accumulate` against a manual pointer loop,
+  which an optimizing compiler turns into the same loop, and it kept two
+  measurements in one test, so only the second reached the CSV. It now
+  measures one version per test, one CSV row each, and a third test fails when
+  V0 stops being at least three times slower than V1. Its walkthrough,
+  `src/bench/demo/docs/01_BASIC_WORKFLOW.md`, is rewritten from a Release run
+  on the documented Raspberry Pi 4 rig, and that run's CSV is committed at
+  `src/bench/demo/reference/pi4/01_basic_workflow.csv`; the opening section of
+  `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
+  test names change, so CSVs captured from it before this release do not join
+  with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
