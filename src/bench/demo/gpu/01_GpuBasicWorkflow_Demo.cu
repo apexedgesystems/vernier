@@ -165,6 +165,11 @@ PERF_GPU_COMPARISON(GpuBasicWorkflow, GpuWithTransfers) {
   const auto LAUNCH = [&](cudaStream_t s) {
     ubd::launchSaxpy(A, device.x(), device.y(), N, BLOCK_SIZE, s);
   };
+
+  // The warmup launches the kernel, which reads both vectors, so the device
+  // gets real inputs first; the measured copies declared below repeat them.
+  ASSERT_EQ(cudaMemcpy(device.x(), X.data(), BYTES, cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(device.y(), y.data(), BYTES, cudaMemcpyHostToDevice), cudaSuccess);
   perf.cudaWarmup(LAUNCH);
 
   const ub::PerfGpuResult RESULT = perf.cudaKernel(LAUNCH, "saxpy_gpu_with_transfers")

@@ -5,7 +5,11 @@
 **Example:** `saxpy` (see [Shared Examples](../README.md#shared-examples))
 **Captured:** 2026-09-23 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`.
+reported `bench 1.0.3`. The capture predates two later fixes, to how the SAXPY
+example releases what it allocated when a CUDA call fails and to the transfer
+test filling its device buffers before its warmup; neither touches a measured
+path, and three locked runs of Step 1's command after them landed inside the
+ranges this page states.
 
 ## Overview
 
@@ -236,8 +240,8 @@ and out is not. With the clocks left to the governor the kernel alone still
 reads 8.61x to 8.75x (six runs), but the round trip with its copies reads
 0.82x to 0.98x: slower than the CPU loop. Every speedup on this page is stated
 with its clock procedure for that reason. The round trip is also the noisiest
-of the three measurements: its CV reached 6.3% in the locked runs on record,
-the reference run's own included, so a single run can land a few percent
+of the three measurements: its CV reached 8.7% in the locked runs on record
+(6.3% in the reference run's own), so a single run can land a few percent
 outside any range stated here.
 
 ## What Should Reproduce
@@ -270,7 +274,7 @@ stops beating the loop by 3x.
 
   Lock them as the rig document says and run again. With the clocks locked, a
   round trip a few percent away from the reference is within what this rig
-  produces (its CV reached 6.3% in the locked runs on record).
+  produces (its CV reached 8.7% in the locked runs on record).
 
 - **The speedup check was skipped.** `GpuKernelOnly` takes its speedup from
   `CpuBaseline`, which has to run first in the same process. A run filtered to
