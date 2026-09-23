@@ -99,9 +99,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the `lib/python` tree it installs kept what the first build produced:
   editing a tool module, its metadata or its lock file changed neither until
   the build directory was deleted. The rule tracks the packaged modules,
-  `pyproject.toml`, `poetry.lock` and the README the package embeds in its
-  metadata (`tools/README.md`), and runs once per change to them, including a
-  module added or removed; a build that changes none of them does nothing.
+  `pyproject.toml`, `poetry.lock`, the README the package embeds in its
+  metadata (`tools/README.md`) and the commands it runs to build and install
+  the wheel, and runs once per change to them, including a module added or
+  removed; a build or a re-configure that changes none of them does nothing.
   The rule also owns its wheel directory: it clears it before each build and
   installs the wheel it just produced, so a wheel from an earlier version
   cannot be installed beside the new one or make the install fail on a
