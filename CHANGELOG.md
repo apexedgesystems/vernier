@@ -24,6 +24,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **`vernier::monitor`: a disabled monitor produces nothing, and the summary
+  follows the console sink** -- `start()` on a monitor whose configuration has
+  `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
+  without creating the I/O thread, without opening the output file at
+  `filePath` and without arming a summary: `isRunning()` reports false, no empty
+  file appears next to the run and `stop()` prints no empty summary table.
+  Activate such a monitor with `setEnabled(true)` followed by `start()`. `stop()` prints the
+  summary table to stderr only when the console sink is configured, so
+  `VERNIER_MONITOR_CONSOLE=off` and a file-only or `SINK_NONE` configuration are
+  silent. Measurement is unaffected by that choice: `SINK_NONE` still collects
+  in memory and `summary()` still carries the full table, and samples recorded
+  before `setEnabled(false)` are kept and reported at `stop()`. A script that
+  parsed the summary off stderr from a file-only run needs the console sink
+  enabled; one that tested for the created file as a sign that a disabled run
+  had started needs another signal.
+- **The monitor guide, headers and example describe the shipped behaviour** --
+  `MONITOR_GUIDE.md` gains a lifecycle section (configure, set thresholds,
+  `start()`, instrument, let the producers finish, `stop()`) and states what a
+  disabled monitor and a console-off monitor do. Three claims are gone, because
+  the repository does not support them: a "zero-overhead disable" row (a
+  disabled monitor still reads the clock, copies the scope name and evaluates
+  the arguments you pass the macros), a per-sample cost of "~100-200ns" (no
+  measurement backs a figure), and "stays silent until the operator sets the
+  env var" (the default configuration is enabled with the console sink, and
+  `VERNIER_MONITOR_CONSOLE=off` or `VERNIER_MONITOR_DISABLE=1` is what makes a
+  run quiet). `MonitorEnvVarExample` shows the same four environments and the
+  explicit `stop()`.
 - **tcmalloc is opt-in (`VERNIER_LINK_TCMALLOC`, default `OFF`)** -- `libbench`
   and every `vernier_add_ptest` target link `libtcmalloc` only when configured
   with `-DVERNIER_LINK_TCMALLOC=ON`, instead of whenever the gperftools dev
@@ -82,6 +109,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
+  the drain thread's loop condition popped a sample once the running flag had
+  cleared and then dropped it: the body popped again and processed only what it
+  found. A run whose producer queued work right before `stop()` lost one sample
+  per run, counted in `Total samples` but missing from the summary table and
+  from the file sink, with the drop counter at 0. The drain loop reads the flag
+  once per round and pops in one place, so a stop with a full queue reports the
+  same counts as a stop with an idle one. Measurements taken with an earlier
+  release are short by up to one sample per run, in the last scope, counter or
+  gauge recorded.
 - **`CMAKE_CUDA_ARCHITECTURES` is honored** -- the root `CMakeLists.txt` assigned
   its own `CUDA_ARCHS` option (default `89`) over the standard variable, so
   `-DCMAKE_CUDA_ARCHITECTURES=...`, a preset, a parent project's setting or the

@@ -11,6 +11,10 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 #include <chrono>
@@ -23,8 +27,92 @@ using vernier::monitor::Monitor;
 using vernier::monitor::MonitorConfig;
 using vernier::monitor::MonitorTag;
 using vernier::monitor::ScopeGuard;
+using vernier::monitor::SINK_CONSOLE;
 using vernier::monitor::SINK_FILE;
 using vernier::monitor::SINK_NONE;
+
+namespace {
+
+/* ----------------------------- Test Helpers ----------------------------- */
+
+/// Number of newline-terminated records in a sink file (0 if it does not exist).
+std::size_t countLines(const std::filesystem::path& path) {
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    return 0;
+  }
+  std::size_t lines = 0;
+  std::string line;
+  while (std::getline(f, line)) {
+    ++lines;
+  }
+  return lines;
+}
+
+/// Unique sink path per test, so a shuffled or repeated run never shares a file.
+std::filesystem::path sinkPath(const char* stem) {
+  return std::filesystem::temp_directory_path() /
+         ("vernier_mon_" + std::string(stem) + "_" + std::to_string(::getpid()) + ".log");
+}
+
+/**
+ * @brief Redirects the process's stderr to a temp file until text() is read.
+ *
+ * Works at the file-descriptor level, so it sees what the console sink and the
+ * summary write from the monitor's I/O thread as well as from this one.
+ */
+class StderrCapture {
+public:
+  StderrCapture() : file_(std::tmpfile()) {
+    if (file_ == nullptr) {
+      return;
+    }
+    std::fflush(stderr);
+    saved_ = ::dup(STDERR_FILENO);
+    ::dup2(::fileno(file_), STDERR_FILENO);
+  }
+
+  ~StderrCapture() {
+    restore();
+    if (file_ != nullptr) {
+      std::fclose(file_);
+    }
+  }
+
+  StderrCapture(const StderrCapture&) = delete;
+  StderrCapture& operator=(const StderrCapture&) = delete;
+
+  /// Stop capturing and return everything written so far.
+  std::string text() {
+    restore();
+    std::string out;
+    if (file_ == nullptr) {
+      return out;
+    }
+    std::rewind(file_);
+    char buf[256];
+    std::size_t got = 0;
+    while ((got = std::fread(buf, 1, sizeof(buf), file_)) > 0) {
+      out.append(buf, got);
+    }
+    return out;
+  }
+
+private:
+  void restore() {
+    if (saved_ >= 0) {
+      std::fflush(stderr);
+      ::dup2(saved_, STDERR_FILENO);
+      ::close(saved_);
+      saved_ = -1;
+    }
+  }
+
+  std::FILE* file_;
+  int saved_ = -1;
+};
+
+} // namespace
 
 /* ----------------------------- Monitor Method Tests ----------------------------- */
 
@@ -229,6 +317,234 @@ TEST(MonitorTest, FileSinkOutput) {
   EXPECT_TRUE(line.find("COUNTER") != std::string::npos);
   EXPECT_TRUE(line.find("file/7") != std::string::npos);
   EXPECT_TRUE(line.find("event") != std::string::npos);
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/**
+ * @test Samples still queued when stop() is called reach both the summary and
+ *       the configured sink.
+ *
+ * Each round pushes 64 samples and calls stop() at once. Nothing holds the I/O
+ * thread back, so a round tests stop() with samples still queued only if the
+ * I/O thread, which start() has just created, has not drained them by the
+ * time it sees the stop. The pushes take microseconds, so that is the usual
+ * case, and a drain that loses a queued sample then fails the round. A round
+ * whose samples were drained first passes however stop() treats queued
+ * samples, so the round is repeated: a loss goes unseen only if every round
+ * drains early. stop() joins the I/O thread, so the checks need no sleep.
+ */
+TEST(MonitorTest, StopDrainsSamplesQueuedBeforeStop) {
+  const auto TMP_PATH = sinkPath("pending");
+  constexpr int ROUNDS = 20;
+  constexpr unsigned long SAMPLES_PER_ROUND = 64;
+  const MonitorTag TAG("pending", 9);
+
+  for (int round = 0; round < ROUNDS; ++round) {
+    std::filesystem::remove(TMP_PATH);
+
+    MonitorConfig cfg;
+    cfg.sinks = SINK_FILE;
+    cfg.filePath = TMP_PATH.string();
+    cfg.queueCapacity = 4096; // >> SAMPLES_PER_ROUND: overflow cannot explain a loss
+    Monitor mon(cfg);
+    mon.start();
+
+    for (unsigned long i = 0; i < SAMPLES_PER_ROUND; ++i) {
+      mon.increment("queued", TAG, 1.0);
+    }
+    mon.stop();
+
+    ASSERT_EQ(mon.queue().droppedCount(), 0u) << "round " << round;
+
+    const auto& ENTRIES = mon.summary().entries();
+    const auto IT = ENTRIES.find("pending/9::queued");
+    ASSERT_NE(IT, ENTRIES.end()) << "round " << round;
+    EXPECT_EQ(IT->second.count, SAMPLES_PER_ROUND) << "summary, round " << round;
+    EXPECT_EQ(countLines(TMP_PATH), SAMPLES_PER_ROUND) << "file sink, round " << round;
+  }
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/* ----------------------------- Lifecycle Contract Tests ----------------------------- */
+
+/** @test Construction alone starts no worker, opens no file and reports nothing */
+TEST(MonitorTest, ConstructionStartsNothing) {
+  const auto TMP_PATH = sinkPath("constructed");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.sinks = static_cast<std::uint8_t>(SINK_CONSOLE | SINK_FILE);
+  cfg.filePath = TMP_PATH.string();
+
+  const MonitorTag TAG("unstarted", 14);
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      Monitor mon(cfg);
+      EXPECT_FALSE(mon.isRunning());
+      mon.increment("events", TAG, 1.0); // queued, but nothing drains it
+      EXPECT_EQ(mon.summary().size(), 0u);
+    } // destructor: stop() finds nothing to stop
+    captured = capture.text();
+  }
+
+  EXPECT_TRUE(captured.empty()) << "stderr: " << captured;
+  EXPECT_FALSE(std::filesystem::exists(TMP_PATH)) << "output file opened without start()";
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/** @test A disabled start() creates no worker, opens no file and prints nothing */
+TEST(MonitorTest, DisabledStartIsInert) {
+  const auto TMP_PATH = sinkPath("disabled_start");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.enabled = false;
+  cfg.sinks = static_cast<std::uint8_t>(SINK_CONSOLE | SINK_FILE);
+  cfg.filePath = TMP_PATH.string();
+  Monitor mon(cfg);
+
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    EXPECT_FALSE(mon.isRunning());
+    mon.stop();
+    captured = capture.text();
+  }
+
+  EXPECT_TRUE(captured.empty()) << "stderr: " << captured;
+  EXPECT_FALSE(std::filesystem::exists(TMP_PATH)) << "output file opened while disabled";
+  EXPECT_EQ(mon.summary().size(), 0u);
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/** @test setEnabled(true) followed by start() activates a monitor that started disabled */
+TEST(MonitorTest, EnableThenStartActivatesAfterDisabledStart) {
+  MonitorConfig cfg;
+  cfg.enabled = false;
+  cfg.sinks = SINK_NONE;
+  Monitor mon(cfg);
+
+  mon.start();
+  ASSERT_FALSE(mon.isRunning());
+
+  mon.setEnabled(true);
+  mon.start();
+  EXPECT_TRUE(mon.isRunning());
+
+  const MonitorTag TAG("late", 10);
+  mon.increment("events", TAG, 1.0);
+  mon.stop();
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto IT = ENTRIES.find("late/10::events");
+  ASSERT_NE(IT, ENTRIES.end());
+  EXPECT_EQ(IT->second.count, 1u);
+}
+
+/** @test A file-only monitor collects and writes without printing to the console */
+TEST(MonitorTest, ConsoleOffSuppressesAutomaticSummary) {
+  const auto TMP_PATH = sinkPath("file_only");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("fileonly", 11);
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    mon.increment("events", TAG, 1.0);
+    mon.stop();
+    captured = capture.text();
+  }
+
+  EXPECT_TRUE(captured.empty()) << "stderr: " << captured;
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto IT = ENTRIES.find("fileonly/11::events");
+  ASSERT_NE(IT, ENTRIES.end());
+  EXPECT_EQ(IT->second.count, 1u);
+  EXPECT_EQ(countLines(TMP_PATH), 1u);
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/** @test SINK_NONE still collects in memory and writes nowhere */
+TEST(MonitorTest, SinkNoneCollectsInMemoryAndPrintsNothing) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_NONE;
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("silent", 12);
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    mon.increment("events", TAG, 1.0);
+    mon.increment("events", TAG, 1.0);
+    mon.increment("events", TAG, 1.0);
+    mon.stop();
+    captured = capture.text();
+  }
+
+  EXPECT_TRUE(captured.empty()) << "stderr: " << captured;
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto IT = ENTRIES.find("silent/12::events");
+  ASSERT_NE(IT, ENTRIES.end());
+  EXPECT_EQ(IT->second.count, 3u);
+}
+
+/**
+ * @test Disabling a running monitor rejects later samples and keeps earlier ones,
+ *       including in the summary printed at stop.
+ */
+TEST(MonitorTest, DisableMidRunKeepsEarlierHistory) {
+  const auto TMP_PATH = sinkPath("disable_midrun");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.sinks = static_cast<std::uint8_t>(SINK_CONSOLE | SINK_FILE);
+  cfg.filePath = TMP_PATH.string();
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("history", 13);
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    mon.increment("kept", TAG, 1.0);
+    mon.increment("kept", TAG, 1.0);
+    mon.increment("kept", TAG, 1.0);
+
+    mon.setEnabled(false);
+    mon.increment("rejected", TAG, 1.0);
+    mon.increment("rejected", TAG, 1.0);
+
+    mon.stop();
+    captured = capture.text();
+  }
+
+  EXPECT_NE(captured.find("vernier::monitor summary"), std::string::npos) << "stderr: " << captured;
+  EXPECT_NE(captured.find("history/13"), std::string::npos) << "stderr: " << captured;
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto KEPT = ENTRIES.find("history/13::kept");
+  ASSERT_NE(KEPT, ENTRIES.end());
+  EXPECT_EQ(KEPT->second.count, 3u);
+  EXPECT_EQ(ENTRIES.find("history/13::rejected"), ENTRIES.end());
+  EXPECT_EQ(mon.queue().droppedCount(), 0u);
+  EXPECT_EQ(countLines(TMP_PATH), 3u);
 
   std::filesystem::remove(TMP_PATH);
 }

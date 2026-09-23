@@ -74,7 +74,7 @@ cmake --build --preset native-linux-debug
 - NVTX timeline annotation API auto-injected into Nsight Systems runs
 - Companion `vernier::monitor` library for lightweight runtime
   instrumentation in production runs (lock-free queue, env-var-driven
-  enablement, console + file sinks)
+  configuration, console + file sinks)
 - Statistical analysis: median, percentiles, CV%, adaptive stability detection
 - Memory bandwidth analysis with efficiency calculations
 - Multi-threaded contention benchmarking with synchronized start gates

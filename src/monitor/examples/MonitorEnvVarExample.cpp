@@ -2,18 +2,25 @@
  * @file MonitorEnvVarExample.cpp
  * @brief End-to-end example: env-var-driven Monitor configuration.
  *
- * The same binary stays silent in production and emits a full report once
- * the operator sets the relevant env var:
+ * The same binary serves several deployments; only the environment changes:
  *
- *   ./MonitorEnvVarExample                       # quiet (default config)
- *   VERNIER_MONITOR=1 ./MonitorEnvVarExample     # console output
+ *   ./MonitorEnvVarExample                       # default config: a line per
+ *                                                # sample plus the summary
+ *                                                # table, both on stderr
+ *
+ *   VERNIER_MONITOR_CONSOLE=off \
+ *       ./MonitorEnvVarExample                   # nothing on the console; the
+ *                                                # samples are still collected
  *
  *   VERNIER_MONITOR_FILE=/tmp/run.vmon \
  *   VERNIER_MONITOR_CONSOLE=WARNING \
- *       ./MonitorEnvVarExample                   # warnings on console, all
- *                                                # samples in /tmp/run.vmon
+ *       ./MonitorEnvVarExample                   # threshold breaches and the
+ *                                                # summary on the console,
+ *                                                # every sample in the file
  *
- *   VERNIER_MONITOR_DISABLE=1 ./MonitorEnvVarExample  # hard-disable
+ *   VERNIER_MONITOR_DISABLE=1 \
+ *       ./MonitorEnvVarExample                   # records nothing, starts no
+ *                                                # thread, writes no file
  *
  * The application code does not need to change between these modes.
  */
@@ -54,12 +61,18 @@ int main() {
   // against the per-sample tag.id without a string compare.
   monitor.setThreshold("decode", DECODER_TAG.id, 5000);
 
-  // start() spins up the I/O drain thread and freezes the threshold table
-  // for the RT-safe hot path. stop() (called by the destructor) joins the
-  // thread, flushes, and prints the summary table to stderr.
+  // start() opens the configured sinks, freezes the threshold table the
+  // recording path reads, and spins up the I/O drain thread. A disabled
+  // configuration makes it do none of that.
   monitor.start();
   for (int i = 0; i < 50; ++i) {
     processFrame(monitor, i);
   }
+
+  // The producer is done, so stop() can drain: it writes every queued sample
+  // to the sinks, joins the thread, and prints the summary table when the
+  // console sink is configured. The destructor would do the same; calling it
+  // here keeps the reported window to the instrumented work.
+  monitor.stop();
   return 0;
 }
