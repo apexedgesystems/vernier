@@ -276,7 +276,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stated margin. The binary's hand-written `main()` is `PERF_GPU_MAIN()`, so
   the `--gpu-*` flags reach the harness and the CSV carries the GPU columns
   whatever the tests are named. A run filtered to one GPU test skips the
-  speedup comparison, which needs the baseline test of the same suite.
+  speedup comparison, which needs the baseline test of the same suite. Its
+  walkthrough (`10_GPU_BASIC_WORKFLOW.md`) is captured on the Jetson AGX Thor
+  reference rig, with the clock procedure stated beside every speedup, and
+  `src/bench/demo/reference/thor/10_gpu_basic_workflow.csv` is the reference
+  run for `bench compare`.
 - **An unknown GPU speedup is an empty cell** -- with no baseline to compare
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
