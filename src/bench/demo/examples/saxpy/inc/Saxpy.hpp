@@ -40,7 +40,8 @@ void saxpyCpu(float a, const std::vector<float>& x, std::vector<float>& y);
  * @param x Input vector.
  * @param y Vector read and overwritten with a*x + y; same size as @p x.
  * @note NOT RT-safe (device allocation, synchronous copies).
- * @throws std::runtime_error when a CUDA call fails.
+ * @throws std::runtime_error when a CUDA call fails; the buffers it had
+ *         allocated are freed first.
  */
 void saxpyG0(float a, const std::vector<float>& x, std::vector<float>& y);
 
@@ -56,7 +57,8 @@ class SaxpyG1 {
 public:
   /**
    * @brief Allocate the device and pinned host buffers for @p n elements.
-   * @throws std::runtime_error when a CUDA call fails.
+   * @throws std::runtime_error when a CUDA call fails; whatever had been
+   *         acquired before the failure is released.
    */
   explicit SaxpyG1(std::size_t n);
   ~SaxpyG1();
