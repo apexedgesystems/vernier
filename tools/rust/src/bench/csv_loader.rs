@@ -8,6 +8,9 @@
 //! Uses manual field extraction (not serde Deserialize) so that rows shorter
 //! than the header are handled gracefully -- missing trailing columns get defaults.
 //!
+//! Every row needs a test name that is not empty or only whitespace: the name
+//! is the row's identity, kept exactly as written, never trimmed.
+//!
 //! A caller that computes from or presents a numeric column states how it
 //! needs the column (`Need`) and loads with `load_csv_strict`: a row that
 //! falls short is an error naming the file, line, test, column and value,
@@ -178,6 +181,19 @@ fn unmet(column: &str, found: Found<'_>, need: Need, header_len: usize) -> Optio
     }
 }
 
+/// Why a test name cannot identify a row, or None when it can. The name is
+/// only checked: a name with spaces around it is kept, as a different test
+/// from the same name without them.
+fn unusable_test_name(test: &str) -> Option<String> {
+    if test.is_empty() {
+        Some("the row has no test name".to_string())
+    } else if test.trim().is_empty() {
+        Some(format!("test name {test:?} is only whitespace"))
+    } else {
+        None
+    }
+}
+
 /// Where a record is, for a message: the file and, when known, the line.
 fn location(path: &Path, record: &csv::StringRecord) -> String {
     match record.position() {
@@ -230,12 +246,16 @@ fn parse_row<'a>(
 /// old/new format, with/without GPU columns, short rows (CPU rows with
 /// GPU-extended headers). A numeric field that is missing, empty or not a
 /// number gets its default and a NaN or infinity is kept as read;
-/// `load_csv_strict` refuses them in the columns a caller names.
+/// `load_csv_strict` refuses them in the columns a caller names. A row whose
+/// test name is empty or only whitespace is an error here too.
 pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
     load_csv_strict(path, &[])
 }
 
 /// Load benchmark rows, checking every row against the caller's `needs`.
+///
+/// Every row, whatever the needs, must have a test name that is not empty or
+/// only whitespace.
 ///
 /// A caller that computes from or presents a numeric column cannot tell the
 /// default `load_csv` gives an unreadable field, or a NaN, from a measured
@@ -270,6 +290,12 @@ pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchR
     let mut rows = Vec::new();
     for result in rdr.records() {
         let record = result?;
+        if let Some(problem) = unusable_test_name(get_str(&record, &hmap, "test")) {
+            return Err(Error::Parse(format!(
+                "{}: {problem}",
+                location(path, &record)
+            )));
+        }
         let (row, found) = parse_row(&record, &hmap);
         for &(column, need) in needs {
             let held = found
@@ -584,6 +610,37 @@ mod tests {
             err.to_string().contains("no numeric column 'kernelTimeUs'"),
             "{err}"
         );
+    }
+
+    /// @test A row whose test name is empty or only whitespace is an error, loaded
+    /// leniently or strictly.
+    #[test]
+    fn blank_test_name_errors() {
+        for (row, problem) in [
+            (",1,0.1,1", "the row has no test name"),
+            ("\"\",1,0.1,1", "the row has no test name"),
+            ("   ,1,0.1,1", "test name \"   \" is only whitespace"),
+            ("\t,1,0.1,1", "test name \"\\t\" is only whitespace"),
+        ] {
+            let tmp = minimal_csv(&["A,1,0.1,1", row]);
+            let expected = format!("parse error: {}, line 3: {problem}", tmp.path().display());
+            assert_eq!(load_csv(tmp.path()).unwrap_err().to_string(), expected);
+            assert_eq!(
+                load_csv_strict(tmp.path(), &MEASURED)
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+        }
+    }
+
+    /// @test A test name is kept exactly as written, spaces around it included.
+    #[test]
+    fn test_name_is_kept_as_written() {
+        let tmp = minimal_csv(&[" Padded.Name ,1,0.1,1", "Padded.Name,1,0.1,1"]);
+        let rows = load_csv(tmp.path()).unwrap();
+        assert_eq!(rows[0].test, " Padded.Name ");
+        assert_eq!(rows[1].test, "Padded.Name");
     }
 
     /// @test A strict column absent from the header is a missing column.

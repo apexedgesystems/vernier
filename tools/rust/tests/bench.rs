@@ -214,6 +214,64 @@ fn summary_accepts_zeros_and_left_out_columns() {
     assert_eq!(rows.len(), 2);
 }
 
+/// A test name that is empty or only whitespace, and what the loader says.
+const BLANK_NAMES: [(&str, &str); 2] = [
+    ("compare_name_empty.csv", "the row has no test name"),
+    (
+        "compare_name_blank.csv",
+        "test name \"   \" is only whitespace",
+    ),
+];
+
+/// @test A row with an empty or whitespace-only test name fails summary, as
+/// text and as JSON, naming the file and line.
+#[test]
+fn summary_blank_test_name_is_an_error() {
+    let modes: [&[&str]; 2] = [&[], &["--json"]];
+    for (file, problem) in BLANK_NAMES {
+        let csv = fixture(file);
+        let expected = format!("{csv}, line 3: {problem}");
+        for mode in modes {
+            let mut args = vec!["summary", csv.as_str()];
+            args.extend_from_slice(mode);
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?} printed a summary: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test A test name with spaces around it is kept as written in summary.
+#[test]
+fn summary_keeps_a_padded_test_name() {
+    let rows = summary_json(&fixture("compare_name_padded.csv"));
+    assert!(rows.contains_key(" Queue.Latency "), "{rows:?}");
+    assert!(!rows.contains_key("Queue.Latency"), "{rows:?}");
+}
+
+/// @test A CSV without a test column is refused by summary and compare.
+#[test]
+fn missing_test_column_is_an_error() {
+    let csv = fixture("compare_no_test_column.csv");
+    let good = fixture("sample_bench.csv");
+    let (csv, good) = (csv.as_str(), good.as_str());
+    for args in [
+        vec!["summary", csv],
+        vec!["summary", csv, "--json"],
+        vec!["compare", good, csv],
+        vec!["compare", csv, good, "--json", "--fail-on-regression"],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(out.is_empty(), "{args:?}: {out}");
+        assert!(
+            err.contains(&format!("missing required column 'test' in {csv}")),
+            "{args:?}: {err}"
+        );
+    }
+}
+
 /* ----------------------------- Compare ----------------------------- */
 
 /// @test Two identical runs label every test neutral and exit 0.
@@ -648,6 +706,69 @@ fn compare_unrepresentable_change_is_an_error() {
     assert_eq!(
         parsed["results"][0]["classification"], "IMPROVEMENT",
         "{out}"
+    );
+}
+
+/// @test A blank test name fails a comparison on either side or both, advisory
+/// or gated, in every format.
+#[test]
+fn compare_blank_test_name_is_an_error() {
+    let good = fixture("sample_bench.csv");
+    for (file, problem) in BLANK_NAMES {
+        let bad = fixture(file);
+        let expected = format!("{bad}, line 3: {problem}");
+        for (base, cand) in [(&good, &bad), (&bad, &good), (&bad, &bad)] {
+            for mode in COMPARE_MODES {
+                let mut args = vec!["compare", base.as_str(), cand.as_str()];
+                args.extend_from_slice(mode);
+                let (code, out, err) = run(&args);
+                assert_eq!(code, 1, "{args:?}: {err}");
+                assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+                assert!(err.contains(&expected), "{args:?}: {err}");
+            }
+        }
+    }
+}
+
+/// @test A padded test name is its own identity: it matches itself, and against
+/// the plain name it is one missing test and one new one.
+#[test]
+fn compare_keeps_a_padded_test_name() {
+    let padded = fixture("compare_name_padded.csv");
+    let plain = fixture("sample_bench.csv");
+
+    let (code, out, err) = run(&[
+        "compare",
+        &padded,
+        &padded,
+        "--json",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let names: Vec<&str> = parsed["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|r| r["test"].as_str().expect("test"))
+        .collect();
+    assert!(names.contains(&" Queue.Latency "), "{out}");
+
+    let (code, out, _) = run(&["compare", &plain, &padded, "--json"]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(
+        parsed["baseline_only"],
+        serde_json::json!(["Queue.Latency"])
+    );
+    assert_eq!(
+        parsed["candidate_only"],
+        serde_json::json!([" Queue.Latency "])
+    );
+    let (code, _, err) = run(&["compare", &plain, &padded, "--fail-on-regression"]);
+    assert_eq!(
+        code, 1,
+        "the plain name is missing from the candidate: {err}"
     );
 }
 

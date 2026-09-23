@@ -68,13 +68,15 @@ bench summary results.csv --json
 | `--sort COLUMN` | Sort by: name, median, cv, throughput | name    |
 | `--json`        | Machine-readable JSON output          | --      |
 
-**Input it refuses.** Every row must hold a finite number in `wallMedian`,
-`wallCV` and `callsPerSecond`. `wallP10`, `wallP90`, `stable`, `cvThreshold`,
-`cycles` and `repeats` may be left out, by the CSV's layout, by a row that
-stops early or by an empty field, and then show their defaults, but where a
-row gives one it must be a finite number of its kind. Anything else exits 1
-with nothing on stdout and a message naming the file, line, test, column and
-value, as text and as JSON. Zeros are values.
+**Input it refuses.** Every row must have a test name that is not empty or
+only whitespace, and a finite number in `wallMedian`, `wallCV` and
+`callsPerSecond`. `wallP10`, `wallP90`, `stable`, `cvThreshold`, `cycles` and
+`repeats` may be left out, by the CSV's layout, by a row that stops early or
+by an empty field, and then show their defaults, but where a row gives one it
+must be a finite number of its kind. Anything else exits 1 with nothing on
+stdout, as text and as JSON, and a message naming the file and line and what
+it found there: the test, column and value, or the blank name. Zeros are
+values.
 
 ### compare - Median Change Between Two Runs
 
@@ -109,19 +111,21 @@ spread between the two runs, so a small median change on noisy tests is worth
 re-running before acting on it. Accounting for run-to-run noise is a known
 limit of this comparison rather than something it does.
 
-**Tests that are not in both runs.** The comparison covers the tests both
-CSVs report. Tests only the baseline reports are listed as missing from the
+**Tests that are not in both runs.** The comparison covers the tests both CSVs
+report. Tests only the baseline reports are listed as missing from the
 candidate, tests only the candidate reports as new, and a renamed test shows
-up as both. Two CSVs with no test name in common are an error: the command
+up as both. Names are matched exactly as written, case and any spaces around
+them included. Two CSVs with no test name in common are an error: the command
 exits 1 rather than reporting that nothing regressed.
 
 **Input it refuses.** The command exits 1 with nothing on stdout, and a
 message naming the file or run, the test, the column and the value involved,
 when given a `--threshold` that is not a finite percentage of zero or more, a
-test name a CSV reports twice, a `wallMedian` or `wallCV` that is missing from
-its row, empty, not a number or not finite, a `wallMedian` of zero or less, a
-negative `wallCV`, or a candidate median so many times its baseline that the
-percentage change overflows.
+row whose test name is empty or only whitespace, a test name a CSV reports
+twice, a `wallMedian` or `wallCV` that is missing from its row, empty, not a
+number or not finite, a `wallMedian` of zero or less, a negative `wallCV`, or
+a candidate median so many times its baseline that the percentage change
+overflows.
 
 **Advisory or gate.** Plain `bench compare` reports and exits 0 whatever the
 labels say. `--fail-on-regression` is the gate: it exits 1 when a test is

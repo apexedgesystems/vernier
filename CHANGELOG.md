@@ -269,6 +269,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Anything else exits 1 with nothing printed, naming the file, line, test,
   column and value, as text and as JSON. `bench run --analyze` applies the
   same rule to the summary it prints after a run.
+- **A row without a test name is refused** -- a row whose `test` field was
+  empty or only whitespace loaded as a test with that name, so two CSVs with
+  one such row each compared them as the same test and passed
+  `--fail-on-regression`, and `bench summary` listed an unnamed row. `bench
+  summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
+  row, naming the file and line. A name is otherwise kept exactly as
+  written: spaces around it, or a difference in case, make it a different
+  test.
 
 ## v1.0.3 - 2026-06-28
 

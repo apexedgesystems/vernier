@@ -55,6 +55,8 @@ impl fmt::Display for Run {
 pub enum CompareError {
     /// The threshold is negative or not a number.
     InvalidThreshold(f64),
+    /// A row's test name is empty or only whitespace.
+    BlankTest { run: Run, test: String },
     /// One run reports the same test name more than once.
     DuplicateTest { run: Run, test: String },
     /// A reported measurement is NaN or infinite.
@@ -90,6 +92,10 @@ impl fmt::Display for CompareError {
             CompareError::InvalidThreshold(value) => write!(
                 f,
                 "--threshold {value} is not a usable percentage: expected a finite value of zero or more"
+            ),
+            CompareError::BlankTest { run, test } => write!(
+                f,
+                "a {run} row has the test name {test:?}: a comparison needs a test name that is not empty or only whitespace"
             ),
             CompareError::DuplicateTest { run, test } => write!(
                 f,
@@ -218,6 +224,12 @@ fn index_rows(rows: &[BenchRow], run: Run) -> Result<BTreeMap<&str, &BenchRow>, 
     let mut indexed: BTreeMap<&str, &BenchRow> = BTreeMap::new();
 
     for row in rows {
+        if row.test.trim().is_empty() {
+            return Err(CompareError::BlankTest {
+                run,
+                test: row.test.clone(),
+            });
+        }
         for (field, value_of) in MEASUREMENTS {
             let value = value_of(row);
             if !value.is_finite() {
@@ -281,10 +293,18 @@ pub fn measured_columns() -> Vec<(&'static str, Need)> {
 /// `threshold` is the percentage change (for example 5.0 for 5%) beyond which
 /// a test is labelled a regression or an improvement.
 ///
+/// Every row must have a test name that is not empty or only whitespace (the
+/// name is the join key and is compared exactly as written, spaces and case
+/// included), a finite `wall_median` greater than zero and a finite `wall_cv`
+/// of zero or more, and no run may report a name twice. Rows loaded with
+/// `load_csv_strict` and `measured_columns` already meet the name and value
+/// rules, with the file and line in any error; this function checks every
+/// rule again, so rows built any other way cannot bypass them.
+///
 /// Returns the named cause when the two runs cannot be compared: an unusable
-/// threshold, a duplicate test identity, a measurement that is not a finite
-/// positive number, no test in common, or a percentage change too large to
-/// represent.
+/// threshold, a blank or duplicate test identity, a measurement that is not a
+/// finite positive number, no test in common, or a percentage change too
+/// large to represent.
 pub fn compare_runs(
     baseline: &[BenchRow],
     candidate: &[BenchRow],
@@ -701,6 +721,49 @@ mod tests {
                 test: "Test.A".to_string(),
             }
         );
+    }
+
+    /// @test A row given directly with a blank test name is an error on either side.
+    #[test]
+    fn blank_test_name_is_an_error() {
+        let good = vec![make_row("Test.A", 0.05, 0.02)];
+        for name in ["", "   ", "\t"] {
+            let blank = vec![make_row("Test.A", 0.05, 0.02), make_row(name, 0.05, 0.02)];
+            assert_eq!(
+                compare_runs(&blank, &good, 5.0).unwrap_err(),
+                CompareError::BlankTest {
+                    run: Run::Baseline,
+                    test: name.to_string(),
+                }
+            );
+            assert_eq!(
+                compare_runs(&good, &blank, 5.0).unwrap_err(),
+                CompareError::BlankTest {
+                    run: Run::Candidate,
+                    test: name.to_string(),
+                }
+            );
+        }
+    }
+
+    /// @test Test names are compared exactly: spaces or case make a different test.
+    #[test]
+    fn test_names_are_compared_exactly() {
+        let base = vec![
+            make_row("Kept", 0.05, 0.02),
+            make_row(" Padded ", 0.05, 0.02),
+            make_row("Cased", 0.05, 0.02),
+        ];
+        let cand = vec![
+            make_row("Kept", 0.05, 0.02),
+            make_row("Padded", 0.05, 0.02),
+            make_row("cased", 0.05, 0.02),
+        ];
+        let comparison = compare_runs(&base, &cand, 5.0).expect("comparable");
+        assert_eq!(comparison.results.len(), 1);
+        assert_eq!(comparison.results[0].test, "Kept");
+        assert_eq!(comparison.baseline_only, [" Padded ", "Cased"]);
+        assert_eq!(comparison.candidate_only, ["Padded", "cased"]);
     }
 
     /// @test An unusable threshold is an error.

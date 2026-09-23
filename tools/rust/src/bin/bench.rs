@@ -26,16 +26,18 @@
 //! Unusable input exits 1 with the cause on stderr and no comparison on
 //! stdout, with or without the gate flag: an unusable `--threshold`, a
 //! `wallMedian` or `wallCV` that is missing, empty or not a finite number, a
-//! median of zero or less, a negative CV, a duplicate test identity, no test
-//! in both runs, or a percentage change too large to represent.
+//! median of zero or less, a negative CV, a blank or duplicate test identity,
+//! no test in both runs, or a percentage change too large to represent. Test
+//! names are matched exactly as written.
 //!
 //! The summary contract:
 //!
 //! `bench summary`, and the summary `bench run --analyze` prints after a run,
 //! show every row's wallMedian, wallCV and callsPerSecond, and its wallP10,
 //! wallP90, stable, cvThreshold, cycles and repeats where the row gives them.
-//! A required value that is missing, or any shown value that is not a finite
-//! number of its kind, exits 1 with the cause on stderr and nothing on stdout.
+//! A row whose test name is empty or only whitespace, a required value that
+//! is missing, or any shown value that is not a finite number of its kind
+//! exits 1 with the cause on stderr and nothing on stdout.
 
 use std::{path::PathBuf, process::ExitCode};
 
