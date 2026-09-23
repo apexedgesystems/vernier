@@ -325,6 +325,58 @@ ls -la /usr/local/cuda/targets/x86_64-linux/lib/libnvidia-ml.so
 
 ## Runtime Issues
 
+### "ABI mismatch" and Exit Status 3
+
+**Symptoms:** the benchmark prints one line and exits with status 3 before
+any profiler is constructed:
+
+```
+[bench] ABI mismatch: this benchmark and the libbench it loaded were built from different vernier headers (sizeof(PerfConfig): benchmark 272, library 240). Rebuild the benchmark against this libbench, or load the libbench that matches the benchmark's headers. Exiting.
+```
+
+The parentheses list each value that differs: `ABI version`,
+`sizeof(PerfConfig)`, `sizeof(Stats)`, and for `libbench_cuda` also
+`sizeof(PerfGpuConfig)`.
+
+**Cause:** the benchmark was compiled from the vernier headers of another
+build than the `libbench` or `libbench_cuda` it loaded, for example an
+installed package next to newer headers, or a stale copy of the library found
+first on the library path. The two sides exchange `PerfConfig`, `Stats` and
+`PerfGpuConfig` objects, so the run stops instead of reading them with the
+wrong layout.
+
+**Fix:** rebuild the benchmark against the headers that ship with the library
+it loads, or have it load the library it was built with. `ldd` shows which
+file the loader picked:
+
+```bash
+ldd ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST | grep libbench
+```
+
+---
+
+### "libbench.so.1: cannot open shared object file"
+
+**Symptoms:** a benchmark built against an earlier release does not start;
+nothing from vernier is printed and the exit status is 127:
+
+```
+./MyComponent_PTEST: error while loading shared libraries: libbench.so.1: cannot open shared object file: No such file or directory
+```
+
+**Cause:** the benchmark was linked against the `.so.1` bench libraries. The
+current ones are `libbench.so.2` and `libbench_cuda.so.2`: the layout they
+share with the benchmark changed, and there is no `libbench.so.1` link to
+them, so an old binary stops at the loader instead of running against an
+incompatible layout.
+
+**Fix:** rebuild the benchmark against the current headers and libraries. To
+keep running the old binary as it is, keep the earlier release's
+`libbench.so.1` where its loader looks; both versions can be installed in one
+directory. See [Library versions](../../../README.md#library-versions).
+
+---
+
 ### CSV File Not Generated
 
 **Symptoms:** No CSV after test completes.
@@ -660,6 +712,27 @@ cudaDeviceReset();  // Nuclear option
 ---
 
 ## Profiler Issues
+
+### `bench run`: "tool not found: ... is not on PATH"
+
+**Symptoms:** `bench run` exits with status 1 before it starts the benchmark
+or creates an output folder:
+
+```
+Error: tool not found: 'nsys' is not on PATH; --profile nsight runs the benchmark under it. Install nsys, or run `bench doctor` to see which profilers this machine can use
+```
+
+**Cause:** these profiles run the benchmark under an external program that
+must be on `PATH`: `callgrind`, `massif`, `memcheck` and `helgrind`
+(`valgrind`), `heaptrack`, `compute-sanitizer`, `nsight` (`nsys`) and `ncu`.
+`--taskset` needs `taskset` the same way. `bench profile-all` reports the same
+line for that profiler and moves on to the next one.
+
+**Fix:** install the named program, or add the directory that holds it to
+`PATH`. `bench doctor <binary>` lists each profiler backend the binary has and
+whether its tool is available.
+
+---
 
 ### perf Not Working
 
