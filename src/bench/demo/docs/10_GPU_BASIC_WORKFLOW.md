@@ -109,10 +109,12 @@ and times the launch with no copies declared.
 
 Each test asserts the effect it demonstrates, with a bound well inside what
 this rig measures: the copies of a round trip cost more than 2.5 times the
-kernel (6.60 to 7.00 over thirteen runs with the clocks locked), and the kernel
+kernel (6.60 to 7.00 over sixteen runs with the clocks locked), and the kernel
 alone beats the CPU loop by more than 3x (8.91x to 9.60x over the same runs).
-The speedup of the round trip with its copies is not asserted, because its
-direction depends on the clocks (below).
+Both bounds were also checked on a discrete GPU, where the copies cost 234 to
+255 times the kernel and the kernel alone beat the loop roughly 19x to 22x
+(Step 3). The speedup of the round trip with its copies is not asserted,
+because its direction depends on the clocks and on the memory system (below).
 
 ## Step 1: Measure
 
@@ -211,8 +213,12 @@ round trip: the kernel is cheap, and moving its data is not.
 On this rig the CPU and the GPU share DRAM, so a "transfer" is a copy from one
 place in the same memory to another, at about 92 GB/s here
 (`memBandwidthGBs` in the CSV). **These transfer costs are specific to this
-rig.** A discrete GPU moves the same bytes over PCIe, where they cost more;
-this walkthrough has not been captured on one.
+rig.** A discrete GPU moves the same bytes over PCIe. One pass of this demo
+on an NVIDIA RTX 5000 Ada laptop GPU (compute capability 8.9), with the clocks
+as found and the laptop busy with other work, so that only its GPU-side figures
+are exact, read: the kernel about 8 us, the copies 1.87 to 2.06 ms, 234 to 255
+times the kernel. The round trip took roughly 11 to 13 times as long as the CPU
+loop there, while the kernel alone was roughly 19x to 22x faster than it.
 
 ## Step 4: The Kernel on Its Own
 
@@ -229,16 +235,19 @@ The kernel is nine times faster than the loop; a call that copies its data in
 and out is not. With the clocks left to the governor the kernel alone still
 reads 8.61x to 8.75x (six runs), but the round trip with its copies reads
 0.82x to 0.98x: slower than the CPU loop. Every speedup on this page is stated
-with its clock procedure for that reason.
+with its clock procedure for that reason. The round trip is also the noisiest
+of the three measurements: its CV reached 6.3% in the locked runs on record,
+the reference run's own included, so a single run can land a few percent
+outside any range stated here.
 
 ## What Should Reproduce
 
-| Reading                            | On this rig                                                    | Elsewhere                                                               |
-| ---------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| kernel alone vs the CPU loop       | 9.19x, clocks locked (8.91x to 9.60x over thirteen runs)       | the kernel wins by a wide margin; its size depends on the memory system |
-| round trip with copies vs the loop | 1.19x, clocks locked (1.16x to 1.23x); 0.82x to 0.98x as found | may go either way: it depends on the copy cost and on the clocks        |
-| copies / kernel in one round trip  | 6.76 (6.60 to 7.00, clocks locked)                             | the copies dominate; over PCIe, by more                                 |
-| absolute times                     | 186.2 / 155.9 / 20.3 us                                        | will differ                                                             |
+| Reading                            | On this rig                                                                                              | Elsewhere                                                                                           |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| kernel alone vs the CPU loop       | 9.19x, clocks locked (8.91x to 9.60x over sixteen runs)                                                  | the kernel wins by a wide margin: roughly 19x to 22x on the discrete GPU in Step 3                  |
+| round trip with copies vs the loop | 1.19x, clocks locked (1.13x to 1.23x over sixteen runs, wall 153.5 to 163.0 us); 0.82x to 0.98x as found | may go either way: on the discrete GPU in Step 3 it took roughly 11 to 13 times as long as the loop |
+| copies / kernel in one round trip  | 6.76 (6.60 to 7.00, clocks locked)                                                                       | the copies dominate: 234 to 255 over PCIe on the discrete GPU in Step 3                             |
+| absolute times                     | 186.2 / 155.9 / 20.3 us                                                                                  | will differ                                                                                         |
 
 The demo fails if the copies stop costing 2.5 times the kernel or the kernel
 stops beating the loop by 3x.
@@ -259,14 +268,22 @@ stops beating the loop by 3x.
     2 regression(s)  1 neutral
   ```
 
-  Lock them as the rig document says and run again.
+  Lock them as the rig document says and run again. With the clocks locked, a
+  round trip a few percent away from the reference is within what this rig
+  produces (its CV reached 6.3% in the locked runs on record).
 
 - **The speedup check was skipped.** `GpuKernelOnly` takes its speedup from
   `CpuBaseline`, which has to run first in the same process. A run filtered to
-  one GPU test still measures it, then skips the comparison and says why:
+  one GPU test still measures it and writes its CSV row, then skips the
+  comparison and says why. The run passes no test, lists this one as skipped,
+  and exits 0:
 
   ```
   no CPU baseline in this run: run the whole suite for the speedup
+  ...
+  [  PASSED  ] 0 tests.
+  [  SKIPPED ] 1 test, listed below:
+  [  SKIPPED ] GpuBasicWorkflow.GpuKernelOnly
   ```
 
 - **No device is visible.** With `CUDA_VISIBLE_DEVICES` empty, every test of

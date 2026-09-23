@@ -56,10 +56,10 @@ constexpr float Y_VALUE = 0.5F;                  ///< Every element of y at the 
  *
  * The walkthrough's claim is that transfers dominate a round trip of this
  * shape, so the test fails where they stop dominating, not where a machine is
- * noisy. Measured on the reference rig (Jetson AGX Thor, Release): 6.60 to
- * 7.00 over thirteen runs with the clocks locked per the rig document, 7.90 to
- * 8.16 over six with them left to the governor. The lowest reading is 2.64
- * times the bound.
+ * noisy. Reference rig (Jetson AGX Thor, Release): 6.60 to 7.00 over sixteen
+ * runs with the clocks locked per the rig document, 7.90 to 8.16 over six with
+ * them left to the governor; a discrete GPU over PCIe, 234 to 255. The lowest
+ * reading is 2.64 times the bound.
  */
 constexpr double MIN_TRANSFER_TO_KERNEL = 2.5;
 
@@ -68,9 +68,9 @@ constexpr double MIN_TRANSFER_TO_KERNEL = 2.5;
  *
  * The bound states the direction the demo teaches, not the reference rig's
  * figure, which depends on the memory system and on whether the clocks are
- * pinned. Measured on the reference rig: 8.91x to 9.60x over thirteen runs
- * with the clocks locked, 8.61x to 8.75x over six with them left to the
- * governor. The lowest reading is 2.87 times the bound.
+ * pinned. Reference rig: 8.91x to 9.60x over sixteen runs with the clocks
+ * locked, 8.61x to 8.75x over six with them left to the governor; a discrete
+ * GPU over PCIe, roughly 19x to 22x. The lowest reading is 2.87 times the bound.
  */
 constexpr double MIN_KERNEL_ONLY_SPEEDUP = 3.0;
 
