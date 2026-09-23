@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (13 files)
+# Sources (14 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -24,6 +24,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerArtifactDir_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerEnv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -77,6 +78,22 @@ add_test(NAME CudaArchitecturesResolveTest
                  "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/CudaArchitectures_test.cmake"
 )
 set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")
+
+# ------------------------------------------------------------------------------
+# Readiness Fixtures
+# ------------------------------------------------------------------------------
+# Fake tools (POSIX sh templates) that stand in for sudo, kill and the
+# profilers' own tools, so the readiness policy, its routing and its error
+# reports are tested without privileges or the real tools. The unit tests copy
+# them into a private directory and hand the checks a context whose PATH is it.
+# ------------------------------------------------------------------------------
+
+if (TARGET TestBench)
+  target_compile_definitions(
+    TestBench
+    PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+  )
+endif ()
 
 # ------------------------------------------------------------------------------
 # Layout Check Consumers (2)

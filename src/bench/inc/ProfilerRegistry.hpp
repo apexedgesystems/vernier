@@ -25,6 +25,8 @@
 #include <utility>
 #include <vector>
 
+#include "src/bench/inc/ProfilerReadiness.hpp" // EnvReport and the readiness types
+
 namespace vernier {
 namespace bench {
 
@@ -32,24 +34,6 @@ namespace bench {
 // (PerfConfig.hpp pulls registry-driven diagnostics back in).
 struct PerfConfig;
 class Profiler;
-
-/* ------------------------------ EnvReport ------------------------------ */
-
-/**
- * @brief Structured result of a backend's environment pre-flight check.
- *
- * Status:
- *  - Ok       backend is fully functional in the current environment
- *  - Warning  backend works with caveats (e.g. kernel-symbol resolution degraded)
- *  - Error    backend cannot run as-is; `hint` describes the fix
- */
-struct EnvReport {
-  enum class Status { Ok, Warning, Error };
-
-  Status status = Status::Ok;
-  std::string message;
-  std::string hint;
-};
 
 /* ------------------------------ Registry ------------------------------ */
 
