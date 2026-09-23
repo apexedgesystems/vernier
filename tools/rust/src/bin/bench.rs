@@ -26,8 +26,8 @@
 //! Unusable input exits 1 with the cause on stderr and no comparison on
 //! stdout, with or without the gate flag: an unusable `--threshold`, a
 //! `wallMedian` or `wallCV` that is missing, empty or not a finite number, a
-//! median of zero or less, a negative CV, a duplicate test identity, or no
-//! test in both runs.
+//! median of zero or less, a negative CV, a duplicate test identity, no test
+//! in both runs, or a percentage change too large to represent.
 
 use std::{path::PathBuf, process::ExitCode};
 

@@ -8,8 +8,8 @@
 //! result as context: each is a within-run spread, not a measurement of the
 //! spread between the two runs.
 //!
-//! Every input problem is found before any test is compared, so a comparison
-//! either describes both runs or names why it cannot. That holds for a value a
+//! Every problem is found before a `Comparison` exists, so a comparison either
+//! describes both runs or names why it cannot. That holds for a value a
 //! CSV does not hold as a number when both runs are loaded with
 //! `measured_columns` strict; the lenient loader reads one as zero.
 
@@ -73,6 +73,13 @@ pub enum CompareError {
         baseline_only: Vec<String>,
         candidate_only: Vec<String>,
     },
+    /// The candidate's median is so many times the baseline's that the
+    /// percentage change overflows.
+    UnrepresentableChange {
+        test: String,
+        baseline: f64,
+        candidate: f64,
+    },
 }
 
 impl std::error::Error for CompareError {}
@@ -121,6 +128,14 @@ impl fmt::Display for CompareError {
                 baseline_only.join(", "),
                 candidate_only.len(),
                 candidate_only.join(", ")
+            ),
+            CompareError::UnrepresentableChange {
+                test,
+                baseline,
+                candidate,
+            } => write!(
+                f,
+                "wallMedian for test '{test}' goes from {baseline:e} in the baseline to {candidate:e} in the candidate: the percentage change is too large to represent"
             ),
         }
     }
@@ -265,7 +280,8 @@ pub fn measured_columns() -> Vec<&'static str> {
 ///
 /// Returns the named cause when the two runs cannot be compared: an unusable
 /// threshold, a duplicate test identity, a measurement that is not a finite
-/// positive number, or no test in common.
+/// positive number, no test in common, or a percentage change too large to
+/// represent.
 pub fn compare_runs(
     baseline: &[BenchRow],
     candidate: &[BenchRow],
@@ -300,10 +316,19 @@ pub fn compare_runs(
             let b = base_map[test];
             let c = cand_map[test];
 
+            // Two finite positive medians differ by a finite amount, and a
+            // fall is at most 100%, but a rise can overflow the percentage.
             let delta_us = c.wall_median - b.wall_median;
             let delta_pct = (delta_us / b.wall_median) * 100.0;
+            if !delta_pct.is_finite() {
+                return Err(CompareError::UnrepresentableChange {
+                    test: test.to_string(),
+                    baseline: b.wall_median,
+                    candidate: c.wall_median,
+                });
+            }
 
-            CompareResult {
+            Ok(CompareResult {
                 test: test.to_string(),
                 baseline_median: b.wall_median,
                 candidate_median: c.wall_median,
@@ -313,9 +338,9 @@ pub fn compare_runs(
                 p_value: None,
                 baseline_cv: b.wall_cv,
                 candidate_cv: c.wall_cv,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Comparison {
         threshold_pct: threshold,
@@ -688,6 +713,24 @@ mod tests {
                 "threshold {bad}"
             );
         }
+    }
+
+    /// @test A rise too large for a percentage is an error; the same fall is -100%.
+    #[test]
+    fn unrepresentable_change_is_an_error() {
+        let tiny = vec![make_row("Test.A", 1e-300, 0.02)];
+        let huge = vec![make_row("Test.A", 1e300, 0.02)];
+        assert_eq!(
+            compare_runs(&tiny, &huge, 5.0).unwrap_err(),
+            CompareError::UnrepresentableChange {
+                test: "Test.A".to_string(),
+                baseline: 1e-300,
+                candidate: 1e300,
+            }
+        );
+        let fall = compare_runs(&huge, &tiny, 5.0).expect("a fall is representable");
+        assert_eq!(fall.results[0].delta_pct, -100.0);
+        assert_eq!(fall.results[0].classification, Classification::Improvement);
     }
 
     /// @test Two runs with no test in common are an error naming both sides.

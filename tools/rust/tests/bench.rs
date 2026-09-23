@@ -486,6 +486,37 @@ fn compare_unreadable_measurement_is_an_error() {
     }
 }
 
+/// @test A rise too large to express as a percentage is refused in every mode.
+#[test]
+fn compare_unrepresentable_change_is_an_error() {
+    let small = fixture("compare_extreme_small.csv");
+    let large = fixture("compare_extreme_large.csv");
+    for mode in COMPARE_MODES {
+        let mut args = vec!["compare", small.as_str(), large.as_str()];
+        args.extend_from_slice(mode);
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+        assert!(
+            err.contains(
+                "wallMedian for test 'Scale.Extreme' goes from 1e-300 in the baseline \
+                 to 1e300 in the candidate: the percentage change is too large to represent"
+            ),
+            "{args:?}: {err}"
+        );
+    }
+
+    // The same pair the other way round is a fall of exactly 100%.
+    let (code, out, err) = run(&["compare", &large, &small, "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(parsed["results"][0]["delta_pct"], -100.0, "{out}");
+    assert_eq!(
+        parsed["results"][0]["classification"], "IMPROVEMENT",
+        "{out}"
+    );
+}
+
 /// @test A wallCV of 0 is a measured value, not a failed parse: the comparison runs.
 #[test]
 fn compare_zero_cv_is_a_value() {

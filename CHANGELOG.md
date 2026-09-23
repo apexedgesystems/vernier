@@ -239,10 +239,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
   is missing from its row, empty, not a number (the loader read all three as
   0) or not finite, a `wallMedian` of zero or less (a relative change against
-  a zero baseline was reported as a neutral `+0.0%`), and a negative
-  `wallCV`. Each exits 1 naming the file or run, the test, the column and the
-  value, and prints no comparison for a reader or a gate to mistake for a
-  pass. Only those two columns are read this strictly: CSVs from earlier
+  a zero baseline was reported as a neutral `+0.0%`), a negative `wallCV`,
+  and a candidate median so many times its baseline that the percentage
+  change overflows (it printed as `+inf%` in the table and `null` in the
+  JSON output). Each exits 1 naming the file or run, the test, the column
+  and the value, and prints no comparison for a reader or a gate to mistake
+  for a pass. Only those two columns are read this strictly: CSVs from earlier
   releases, and GPU CSVs whose CPU rows stop before the GPU columns, compare
   as before.
 - **A comparison reports the tests only one of the two runs ran** -- tests
