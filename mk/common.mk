@@ -9,6 +9,16 @@ ifndef COMMON_MK_GUARD
 COMMON_MK_GUARD := 1
 
 # ------------------------------------------------------------------------------
+# Recipe Shell
+# ------------------------------------------------------------------------------
+# Recipes run under bash with pipefail and errexit so that a failure propagates
+# through a logging pipeline: the test recipes pipe ctest into tee, and without
+# pipefail the line's status would be tee's. A recipe that tolerates a status
+# says so explicitly (`|| true`, or a test of `$$?`).
+SHELL       := /bin/bash
+.SHELLFLAGS := -o pipefail -ec
+
+# ------------------------------------------------------------------------------
 # Build Configuration
 # ------------------------------------------------------------------------------
 

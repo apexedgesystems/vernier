@@ -126,6 +126,31 @@ target_link_libraries(my_benchmark PRIVATE vernier::bench)
 The install tree contains headers, shared libraries, CMake config, and documentation
 under `build/native-linux-release/install/`.
 
+#### Library versions
+
+A shared library's SONAME is its ABI identity and is separate from the release
+number. `libmonitor` follows the release major (`libmonitor.so.1`,
+file `libmonitor.so.<release>`). `libbench` and `libbench_cuda` carry their own
+ABI number, currently 2 (`libbench.so.2`, file `libbench.so.2.<minor>.<patch>`):
+they exchange `PerfConfig`, `Stats` and `PerfGpuConfig` objects with header code
+compiled into the benchmark, and that layout changed after the `.so.1`
+libraries, so the two ABIs are not interchangeable.
+
+For a packager this means:
+
+- The first component of a bench library's file name is the ABI number, not the
+  release major, so installing a new release never overwrites the file an older
+  SONAME symlink points at. `libbench.so.1` and `libbench.so.2` can sit in one
+  directory, each resolving to the library built for it.
+- There is no `libbench.so.1` compatibility link to the current libraries. A
+  benchmark built against the older ABI stops at
+  `libbench.so.1: cannot open shared object file` instead of running against an
+  incompatible layout. Rebuild it against the headers that ship with these
+  libraries.
+- Raise the ABI number in `src/bench/CMakeLists.txt` (`BENCH_ABI_SOVERSION`) for
+  any change to those shared structs or to an exported signature. Both bench
+  libraries read that one number.
+
 ---
 
 ## 4. CLI Tools and Backends

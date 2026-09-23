@@ -85,13 +85,23 @@ if (VERNIER_BUILD_GPU)
   find_package(CUDAToolkit QUIET)
 
   if (CUDAToolkit_FOUND AND (NOT CMAKE_CROSSCOMPILING OR DEFINED CMAKE_CUDA_COMPILER))
+    # Architectures: the standard CMAKE_CUDA_ARCHITECTURES (or the CUDAARCHS
+    # environment variable) is honored; CUDA_ARCHS is a shorthand for it; 89
+    # applies when neither is given. Resolved before the language is enabled,
+    # while a user's choice can still be told apart from the compiler default
+    # CMake would cache.
+    set(CUDA_ARCHS
+        ""
+        CACHE STRING "CUDA SM architectures (shorthand for CMAKE_CUDA_ARCHITECTURES; default 89)"
+    )
+    set(VERNIER_CUDA_ARCHITECTURES_DEFAULT "89")
+    include(vernier/CudaArchitectures)
+    vernier_resolve_cuda_architectures(_cuda_archs _cuda_archs_source)
+    set(CMAKE_CUDA_ARCHITECTURES "${_cuda_archs}")
+    message(STATUS "[cuda] architectures: ${_cuda_archs} (from ${_cuda_archs_source})")
+
     enable_language(CUDA)
 
-    set(CUDA_ARCHS
-        "89"
-        CACHE STRING "CUDA SM architectures"
-    )
-    set(CMAKE_CUDA_ARCHITECTURES "${CUDA_ARCHS}")
     set(CMAKE_CUDA_STANDARD 20)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 

@@ -19,6 +19,7 @@ vernier_module(bench)
 # ------------------------------------------------------------------------------
 
 set(CPP_SOURCES
+    "${SRC_DIR}/PerfAbi.cpp"
     "${SRC_DIR}/ProfilerRegistry.cpp"
     "${SRC_DIR}/ProfilerPerf.cpp"
     "${SRC_DIR}/ProfilerGperf.cpp"
@@ -34,9 +35,24 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerJemalloc.cpp"
 )
 
-set(CUDA_SOURCES "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
-                 "${SRC_DIR}/ProfilerComputeSanitizer.cu" "${SRC_DIR}/CuptiCollector.cu"
+set(CUDA_SOURCES
+    "${SRC_DIR}/PerfGpuAbi.cu" "${SRC_DIR}/PerfGpuHarness.cu" "${SRC_DIR}/ProfilerNsight.cu"
+    "${SRC_DIR}/ProfilerComputeSanitizer.cu" "${SRC_DIR}/CuptiCollector.cu"
 )
+
+# ------------------------------------------------------------------------------
+# Shared-library ABI
+# ------------------------------------------------------------------------------
+# bench and bench_cuda exchange PerfConfig, Stats and PerfGpuConfig objects
+# with header code compiled into the benchmark, and bench_cuda embeds Stats in
+# the results it returns. The two therefore carry one object layout and one
+# SONAME number, stated here once so the GPU library cannot drift from the
+# core one. Raise it whenever that layout changes or an exported signature
+# does; the loader then refuses a benchmark built against the previous number
+# instead of binding it to incompatible code.
+# ------------------------------------------------------------------------------
+
+set(BENCH_ABI_SOVERSION 2)
 
 # ------------------------------------------------------------------------------
 # Library
@@ -53,6 +69,8 @@ vernier_add_library(
   ${CPP_SOURCES}
   REQUIRES
   POSIX
+  ABI_VERSION
+  ${BENCH_ABI_SOVERSION}
 )
 
 # Consumer surface: FetchContent and installed consumers get the include
@@ -94,7 +112,16 @@ vernier_nvtx_enable(${LIB_NAME})
 # ------------------------------------------------------------------------------
 
 if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
-  vernier_add_library_cuda(NAME ${LIB_NAME}_cuda CORE ${LIB_NAME} SRC ${CUDA_SOURCES})
+  vernier_add_library_cuda(
+    NAME
+    ${LIB_NAME}_cuda
+    CORE
+    ${LIB_NAME}
+    SRC
+    ${CUDA_SOURCES}
+    ABI_VERSION
+    ${BENCH_ABI_SOVERSION}
+  )
   vernier_standard_optins(${LIB_NAME}_cuda)
   target_include_directories(
     ${LIB_NAME}_cuda PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}> $<INSTALL_INTERFACE:include>

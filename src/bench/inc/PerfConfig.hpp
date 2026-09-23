@@ -26,7 +26,6 @@ namespace bench {
 /** @brief Common benchmark configuration values (CLI-overridable). */
 struct PerfConfig {
   int cycles = 10000;               ///< Operations per repeat
-  int targetTimeUs = 0;             ///< >0: auto-size cycles so one repeat spans ~this wall time
   int repeats = 10;                 ///< Samples collected
   int warmup = 1;                   ///< Warmup repeats (0 = auto-scale: <1k->5, <10k->3, >=10k->1)
   int threads = 1;                  ///< Worker threads
@@ -53,6 +52,14 @@ struct PerfConfig {
 
   // ---- Quick mode (lighter defaults for fast iteration) ----
   bool quickMode = false; ///< Apply reduced cycles/repeats for development iteration
+
+  // ---- Append-only tail ----
+  // libbench reads and copies this struct, so its layout is part of the shared
+  // library's ABI. Members above this line sit where the 1.0.3 library expects
+  // them; new members go at the very end, never between existing ones, and
+  // every change to the members, an append included, raises BENCH_ABI_VERSION
+  // (PerfAbi.hpp). PerfAbi_uTest.cpp pins the layout of the current version.
+  int targetTimeUs = 0; ///< >0: auto-size cycles so one repeat spans ~this wall time
 };
 
 /* --------------------------------- API --------------------------------- */

@@ -25,6 +25,36 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
+- **One rule for profile artifact folders: a folder is named after what its
+  data covers** -- per-test data goes to `<root>/<Suite.Case>.<tool>/`,
+  per-process data (a tool that `bench run` wraps around the whole binary) to
+  `<root>/<binary>.<tool>/`. What changes for a user:
+  - Under `bench run --profile callgrind|massif|memcheck|helgrind|heaptrack|
+    compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
+    empty `<Suite.Case>.<tool>/` folder per test next to the real output in
+    `bench-out/<binary>.<tool>/`, and the CSV `profileDir` column names that
+    real folder instead of the empty one. Running the binary under the tool by
+    hand is unchanged: the per-test folder is created and the printed hint
+    points at it.
+  - A parameterized or typed test (GoogleTest puts `/` in its name) gets one
+    flat folder in which `/` is written as `+2F` and `+` as `+2B`
+    (`Sizes+2FCopy.Run+2F3.gperf/`), not a folder nested inside directories
+    named after fragments of the test name (`Sizes/Copy.Run/3.gperf/`). The
+    folder name decodes back to exactly one test name, so two tests whose
+    names differ only in `/` versus another character (`A_B/C.Run/0`,
+    `A/B_C.Run/0`) keep separate folders. Names without `/` or `+` are
+    unchanged. `+` was chosen because the folder is passed on to tools that
+    give other characters a meaning of their own in output paths (valgrind
+    and nsys expand `%`, jemalloc's `MALLOC_CONF` splits on `,` and `:`), and
+    it needs no quoting in a shell. Scripts that read the nested path need the
+    flat one.
+  - `--profile ncu` names its per-test folder `<Suite.Case>.ncu/` (it was
+    `.nsight`), matching `bench-out/<binary>.ncu/`. `--profile nsight` keeps
+    `.nsight` in every mode.
+  - The rocprof and compute-sanitizer hints print their folder with a leading
+    `./`, as the other backends do; the folder is the same.
+  Default roots are unchanged: the working directory for in-process backends,
+  `bench-out/` for wrapped ones.
 - **Unknown long options produce a warning** -- a test binary given a `--option`
   that neither vernier nor GoogleTest recognizes prints one stderr line naming
   it (`[WARN] unknown option '--target-tmie': ...`); the argument is still
@@ -37,6 +67,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`CMAKE_CUDA_ARCHITECTURES` is honored** -- the root `CMakeLists.txt` assigned
+  its own `CUDA_ARCHS` option (default `89`) over the standard variable, so
+  `-DCMAKE_CUDA_ARCHITECTURES=...`, a preset, a parent project's setting or the
+  `CUDAARCHS` environment variable were all discarded without a message, and
+  the GPU code was built for architecture 89 and JIT-compiled by the driver on
+  any other GPU. The standard variable (then `CUDAARCHS`) decides; `CUDA_ARCHS`
+  remains as a shorthand; `89` applies only when none is given; the configure
+  output states the value and where it came from
+  (`[cuda] architectures: 110 (from CMAKE_CUDA_ARCHITECTURES)`). Giving both
+  with different values stops configuration with a message naming both.
+  **Action needed for existing GPU build directories:** a directory configured
+  by an earlier release caches both variables (the compiler's default and
+  `89`), which reads as a conflict. Reconfigure it once with
+  `-UCMAKE_CUDA_ARCHITECTURES` (add `-UCUDA_ARCHS` if you never set it), or
+  start from an empty build directory.
+- **`bench run` names a missing wrapper program** -- `bench run --profile
+  callgrind` on a machine without valgrind failed with
+  `I/O error: No such file or directory`, naming neither the file nor the
+  cause, and left an empty `bench-out/<binary>.callgrind/` directory behind.
+  The CLI resolves the programs it launches a run through before creating or
+  starting anything: the wrapper of a wrap-externally profile (`valgrind` for
+  callgrind, massif, memcheck and helgrind; `heaptrack`; `compute-sanitizer`;
+  `nsys` for nsight; `ncu`) and `taskset` for `--taskset`. A missing one
+  fails with `tool not found: 'valgrind' is not on PATH; --profile callgrind
+  runs the benchmark under it. ...` and a non-zero exit, and points at
+  `bench doctor`. `bench profile-all` reports the same line for that profiler
+  and continues with the next.
 - **The Python tools wheel follows its inputs** -- the rule that builds the
   wheel declared no dependencies, so in an existing build directory the wheel
   and the `lib/python` tree it installs kept what the first build produced:
@@ -77,6 +134,91 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   0.001 us/call, faster than `ReuseBuffer`, and failed their CV check
   intermittently. The allocation is kept; in the reference optimized build they
   report tens of nanoseconds per call, slower than reuse.
+- **A failing test fails `make test`, `make testp` and `make verify`** -- the
+  test recipes pipe ctest through `tee` to write `ctest.log`, and the recipe
+  shell had no `pipefail`, so the target's status was `tee`'s: a run printing
+  `99% tests passed, 1 tests failed` exited 0, and the CI C++ job, which runs
+  `make testp`, could not go red. Recipes run under bash with
+  `-o pipefail -e`; a failing lane fails the target, and
+  the parallel lane prints the failing test's output (`--output-on-failure`)
+  like the serial lanes. `ctest.log` is still written and
+  `make test-py` still accepts pytest's "no tests collected" status.
+  `make docker-disk-usage` succeeds when no vernier image exists.
+- **A release cannot publish with an asset missing** -- the v1.0.3 release
+  carries six assets and no Python wheel: the wheel was built under the Python
+  tools' own version, the upload list named it by the project version, and an
+  unmatched upload pattern is not an error by default. The published set is
+  one list, `scripts/release-assets.txt`. After the artifact build, in tag and
+  rehearsal (`workflow_dispatch`) runs alike, the release workflow resolves it
+  for the version (`scripts/check-release-assets.sh resolve`) into a step
+  output that is both the publish step's `files` input and the input of
+  `check-release-assets.sh verify`, which names every path that is missing,
+  empty or not a regular file and fails the job before the publish step. The
+  publish step also sets `fail_on_unmatched_files`.
+- **The tools report the project version** -- `tools/rust/Cargo.toml` and
+  `tools/py/pyproject.toml` carried 1.0.2 while the project was 1.0.3, so
+  `bench --version` printed `bench 1.0.2` from a 1.0.3 tree and the wheel was
+  named `vernier_py_tools-1.0.2-py3-none-any.whl`. Both carry the version in
+  `CMakeLists.txt`.
+- **When the dev image needs a rebuild for `perf` is written down** -- the dev
+  images carry `perf` for the kernel of the host that built them. After a host
+  kernel update, or in an image pulled from the registry, `perf` prints
+  `perf not found for kernel <release>` and `--profile perf` cannot run.
+  `docker/base.Dockerfile` states the trigger next to the host-matched install
+  step: run `make docker-dev` (or `make docker-dev-cuda`) on the host that runs
+  the container; the changed `HOST_KERNEL` build argument rebuilds that layer.
+- **The bench libraries are `libbench.so.2` and `libbench_cuda.so.2`** --
+  `PerfConfig` grew from 232 to 240 bytes since 1.0.3 and `Stats` from 64 to 80,
+  which also grew every GPU result that embeds `Stats`, while the exported
+  functions that take and return them kept their names. Under the previous
+  SONAME (`libbench.so.1`) a benchmark built against 1.0.3 loaded these
+  libraries and entered those functions with the smaller objects; the start-up
+  check below cannot help there, because a benchmark compiled before it never
+  calls it. Both bench libraries now carry SONAME `.so.2`, so that pairing ends
+  at `libbench.so.1: cannot open shared object file` before any vernier code
+  runs. `libmonitor` is unchanged at `.so.1`.
+  **Action needed:** rebuild benchmarks that link `vernier::bench` or
+  `vernier::bench_cuda` against these headers. There is no `.so.1` link to the
+  new libraries: an installed 1.0.3 keeps its own `libbench.so.1` and its
+  `libbench.so.1.0.3` file, which these libraries (installed as
+  `libbench.so.2.<minor>.<patch>`) do not overwrite, so both can serve their own
+  consumers from one directory. The number lives in `src/bench/CMakeLists.txt`
+  as `BENCH_ABI_SOVERSION` and covers both libraries; `README.md` records the
+  policy.
+- **A benchmark and a bench library from different builds stop with a message**
+  -- `libbench` and `libbench_cuda` read `PerfConfig`, `Stats` and
+  `PerfGpuConfig` objects laid out by header code compiled into the benchmark,
+  so the two sides share a layout under one SONAME. A library from another build
+  of the same ABI (an installed package next to newer headers, a stale copy
+  found first on the library path) read the wrong bytes and the run died inside
+  a profiler constructor with `basic_string::_M_construct null not valid`. `PERF_MAIN`, `PERF_GPU_MAIN`,
+  the GPU guard and `Profiler::make` (so a benchmark with its own `main()` is
+  covered on first use) report what the benchmark was compiled with, and the
+  library compares it with its own build. On a mismatch the run prints one line
+  and exits with status 3, before any profiler is constructed:
+  `[bench] ABI mismatch: this benchmark and the libbench it loaded were built
+  from different vernier headers (sizeof(PerfConfig): benchmark 232, library
+  240). Rebuild the benchmark against this libbench, or load the libbench that
+  matches the benchmark's headers. Exiting.` The ABI version and the size of
+  each of the three structs must be equal on both sides; a larger struct in the
+  benchmark is refused like a smaller one, because the libraries copy these
+  objects into storage of their own size. Members are still only appended
+  (`targetTimeUs` is the last member of `PerfConfig`, and every member 1.0.3
+  has sits at its 1.0.3 offset), and every layout change raises
+  `BENCH_ABI_VERSION`; a unit test pins the member count, order, types and
+  offsets of the current version. A member added into existing padding without
+  a version change is caught by that test, not at run time. `BENCH_ABI_VERSION`
+  and the SONAME number are separate: the SONAME decides which file the loader
+  picks and also has to move when an exported signature changes, while
+  `BENCH_ABI_VERSION` is compared inside the process and catches a layout change
+  that leaves both the struct sizes and the file name alone.
+- **`Perf.hpp` compiles without warnings for consumers** -- the profile
+  watchdog's signal handler discarded the result of five `write(2)` calls, so an
+  optimized consumer build with `-Wall` (where the C library marks `write`
+  `warn_unused_result`) reported five `-Wunused-result` warnings from
+  `PerfHarness.hpp`, under both GCC and Clang, and failed outright under
+  `-Werror`. The handler writes through a helper that resumes after a short
+  write or `EINTR`; it remains async-signal-safe and its message is unchanged.
 
 ## v1.0.3 - 2026-06-28
 

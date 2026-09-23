@@ -84,11 +84,8 @@ bool detectUnderJemalloc() {
 JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
   runningUnderJemalloc_ = detectUnderJemalloc();
-  artifactDir_ = cfg_.artifactRoot.empty() ? "./" + testName_ + ".jemalloc"
-                                           : cfg_.artifactRoot + "/" + testName_ + ".jemalloc";
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
-  (void)ec;
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "jemalloc");
 }
 
 void JemallocProfiler::beforeMeasure() {

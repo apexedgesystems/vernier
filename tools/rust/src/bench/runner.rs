@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use super::Error;
+use super::{find_in_path, Error};
 
 /* ----------------------------- RunConfig ----------------------------- */
 
@@ -90,6 +90,11 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     args.extend(cfg.extra_args.iter().cloned());
 
+    // Every program the runner itself spawns must resolve before anything
+    // is created or started: a spawn failure only says "No such file or
+    // directory", without saying which file.
+    require_launch_programs(cfg.taskset.is_some(), cfg.profile.as_deref(), find_in_path)?;
+
     // If the requested profile is a wrap-externally backend we know how to
     // wrap, build the wrap command (e.g. `valgrind --tool=massif ...`) and
     // run the benchmark binary under it. Otherwise execute the binary
@@ -133,12 +138,16 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         }
     }
 
-    // Tell the child which tool already wraps it so its in-process backend
-    // stays passive (no re-attach, no manual-wrap hint for a wrap that
-    // happened). See profiler_env::externalWrapTool() on the C++ side.
+    // Tell the child which tool already wraps it, and which folder that wrap
+    // writes into. Its in-process backend then stays passive (no re-attach,
+    // no manual-wrap hint), creates no per-test folder of its own, and reports
+    // this folder as the artifact location, which is what the CSV records.
+    // See profiler_env::externalWrapTool() / externalWrapDir() on the C++ side.
     if wrap.is_some() || env_wrap.is_some() {
         if let Some(ref tool) = cfg.profile {
-            cmd.env("VERNIER_EXTERNAL_WRAP", tool);
+            for (k, v) in wrap_child_env(tool, &cfg.binary, cfg.profile_output_dir.as_deref()) {
+                cmd.env(k, v);
+            }
         }
     }
 
@@ -182,8 +191,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 
 /// Per-binary artifact dir for a wrapped run:
 /// `<output-dir-or-bench-out>/<binary-stem>.<tool>/`. The wrap tool writes
-/// its raw output there; the C++ harness then layers per-test subdirs
-/// alongside as needed.
+/// its output there; the wrapped benchmark creates no per-test folders and
+/// reports this one as its artifact location (see `wrap_child_env`).
 fn wrap_artifact_dir(tool: &str, binary: &Path, output_dir: Option<&Path>) -> PathBuf {
     let stem = binary
         .file_stem()
@@ -193,6 +202,62 @@ fn wrap_artifact_dir(tool: &str, binary: &Path, output_dir: Option<&Path>) -> Pa
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("bench-out"))
         .join(format!("{stem}.{tool}"))
+}
+
+/// Environment a wrapped child gets: the wrapping tool's name and the folder
+/// the wrap writes into (the same `wrap_artifact_dir` the wrap command uses).
+fn wrap_child_env(tool: &str, binary: &Path, output_dir: Option<&Path>) -> [(String, String); 2] {
+    [
+        ("VERNIER_EXTERNAL_WRAP".to_string(), tool.to_string()),
+        (
+            "VERNIER_EXTERNAL_WRAP_DIR".to_string(),
+            wrap_artifact_dir(tool, binary, output_dir)
+                .display()
+                .to_string(),
+        ),
+    ]
+}
+
+/// Program that wraps the benchmark binary for a wrap-externally backend,
+/// `None` for every other backend.
+fn wrap_program(tool: &str) -> Option<&'static str> {
+    match tool {
+        "callgrind" | "massif" | "memcheck" | "helgrind" => Some("valgrind"),
+        "heaptrack" => Some("heaptrack"),
+        "compute-sanitizer" => Some("compute-sanitizer"),
+        "nsight" => Some("nsys"),
+        "ncu" => Some("ncu"),
+        _ => None,
+    }
+}
+
+/// Check that the programs a run is launched through resolve: `taskset` when
+/// pinning, and the wrapper of a wrap-externally profile. `lookup` is the
+/// PATH search (injected so tests need not edit the process environment).
+fn require_launch_programs(
+    pinned: bool,
+    profile: Option<&str>,
+    lookup: impl Fn(&str) -> Option<PathBuf>,
+) -> Result<(), Error> {
+    if pinned && lookup("taskset").is_none() {
+        return Err(Error::ToolNotFound(
+            "'taskset' is not on PATH; --taskset runs the benchmark under it. \
+             Install taskset, or drop --taskset"
+                .to_string(),
+        ));
+    }
+    if let Some(tool) = profile {
+        if let Some(program) = wrap_program(tool) {
+            if lookup(program).is_none() {
+                return Err(Error::ToolNotFound(format!(
+                    "'{program}' is not on PATH; --profile {tool} runs the benchmark under it. \
+                     Install {program}, or run `bench doctor` to see which profilers this \
+                     machine can use"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Wrap command (program + prefix args ending in the binary path) for a
@@ -210,28 +275,15 @@ fn wrap_command_for(
     // per-tool artifact directory the C++ harness will never use --
     // perf/gperf/rapl/bpftrace/offcpu manage their own per-test dirs and
     // jemalloc/rocprof need wraps that aren't reducible to argv.
-    if !matches!(
-        tool,
-        "callgrind"
-            | "massif"
-            | "memcheck"
-            | "helgrind"
-            | "heaptrack"
-            | "compute-sanitizer"
-            | "nsight"
-            | "ncu"
-    ) {
-        return None;
-    }
+    let program = wrap_program(tool)?.to_string();
 
     let bin = binary.to_str()?.to_string();
     let per_dir = wrap_artifact_dir(tool, binary, output_dir);
     fs::create_dir_all(&per_dir).ok()?;
     let dir = per_dir.display().to_string();
 
-    match tool {
-        "callgrind" => Some((
-            "valgrind".into(),
+    let args = match tool {
+        "callgrind" => {
             // `--instr-atstart=no` would require `callgrind_control` to
             // toggle instrumentation around the measured region, which
             // can't cross PID namespaces (i.e. fails in Docker). Letting
@@ -242,52 +294,46 @@ fn wrap_command_for(
                 "--tool=callgrind".into(),
                 format!("--callgrind-out-file={dir}/callgrind.out"),
                 bin,
-            ],
-        )),
-        "massif" => Some((
-            "valgrind".into(),
+            ]
+        }
+        "massif" => {
             vec![
                 "--tool=massif".into(),
                 format!("--massif-out-file={dir}/massif.out"),
                 bin,
-            ],
-        )),
-        "memcheck" => Some((
-            "valgrind".into(),
+            ]
+        }
+        "memcheck" => {
             vec![
                 "--tool=memcheck".into(),
                 "--leak-check=full".into(),
                 "--error-exitcode=0".into(),
                 format!("--log-file={dir}/memcheck.log"),
                 bin,
-            ],
-        )),
-        "helgrind" => Some((
-            "valgrind".into(),
+            ]
+        }
+        "helgrind" => {
             vec![
                 "--tool=helgrind".into(),
                 format!("--log-file={dir}/helgrind.log"),
                 bin,
-            ],
-        )),
-        "heaptrack" => Some((
-            "heaptrack".into(),
-            vec!["-o".into(), format!("{dir}/run"), bin],
-        )),
-        "compute-sanitizer" => Some((
-            "compute-sanitizer".into(),
+            ]
+        }
+        "heaptrack" => {
+            vec!["-o".into(), format!("{dir}/run"), bin]
+        }
+        "compute-sanitizer" => {
             vec![
                 "--tool=memcheck".into(),
                 "--log-file".into(),
                 format!("{dir}/sanitizer.log"),
                 bin,
-            ],
-        )),
+            ]
+        }
         // Mirrors the wrap command the C++ backend prints as its Docker
         // fallback hint; the child's backend stays passive via
         // VERNIER_EXTERNAL_WRAP and the runner extracts stats post-run.
-        "nsight" => Some((
-            "nsys".into(),
+        "nsight" => {
             vec![
                 "profile".into(),
                 "-o".into(),
@@ -299,12 +345,11 @@ fn wrap_command_for(
                 "--force-overwrite".into(),
                 "true".into(),
                 bin,
-            ],
-        )),
+            ]
+        }
         // First-class Nsight Compute: same external-wrap pattern; the
         // replay pass stays a --profile-args opt-in inside the binary.
-        "ncu" => Some((
-            "ncu".into(),
+        "ncu" => {
             vec![
                 "-o".into(),
                 format!("{dir}/kernel_profile"),
@@ -312,10 +357,11 @@ fn wrap_command_for(
                 "--target-processes".into(),
                 "all".into(),
                 bin,
-            ],
-        )),
-        _ => unreachable!("matches! filter above kept only wrap-externally tools"),
-    }
+            ]
+        }
+        _ => unreachable!("wrap_program() admits only the tools matched above"),
+    };
+    Some((program, args))
 }
 
 /// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
@@ -494,6 +540,99 @@ mod tests {
             s,
             "valgrind --tool=massif --massif-out-file=out/foo.massif/massif.out ./my_test --profile massif"
         );
+    }
+
+    /// @test Each wrap-externally profile maps to the program that wraps it.
+    #[test]
+    fn wrap_program_names_the_wrapper() {
+        for (tool, program) in [
+            ("callgrind", "valgrind"),
+            ("massif", "valgrind"),
+            ("memcheck", "valgrind"),
+            ("helgrind", "valgrind"),
+            ("heaptrack", "heaptrack"),
+            ("compute-sanitizer", "compute-sanitizer"),
+            ("nsight", "nsys"),
+            ("ncu", "ncu"),
+        ] {
+            assert_eq!(wrap_program(tool), Some(program), "tool {tool}");
+        }
+        for tool in [
+            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "rocprof",
+        ] {
+            assert_eq!(wrap_program(tool), None, "tool {tool}");
+        }
+    }
+
+    /// @test A missing wrapper is reported by program and profile name.
+    #[test]
+    fn require_launch_programs_names_missing_wrapper() {
+        let err = require_launch_programs(false, Some("callgrind"), |_| None)
+            .expect_err("valgrind does not resolve");
+        assert!(matches!(err, Error::ToolNotFound(_)), "got {err:?}");
+        let text = err.to_string();
+        assert!(text.contains("'valgrind'"), "{text}");
+        assert!(text.contains("--profile callgrind"), "{text}");
+    }
+
+    /// @test A missing taskset is reported when pinning is requested, and only then.
+    #[test]
+    fn require_launch_programs_names_missing_taskset() {
+        let err =
+            require_launch_programs(true, None, |_| None).expect_err("taskset does not resolve");
+        assert!(err.to_string().contains("'taskset'"), "{err}");
+        assert!(require_launch_programs(false, None, |_| None).is_ok());
+    }
+
+    /// @test Only the programs a run needs are looked up.
+    #[test]
+    fn require_launch_programs_looks_up_only_what_it_needs() {
+        let only = |wanted: &'static str| {
+            move |name: &str| (name == wanted).then(|| PathBuf::from("/usr/bin").join(name))
+        };
+        assert!(require_launch_programs(false, Some("massif"), only("valgrind")).is_ok());
+        assert!(require_launch_programs(true, None, only("taskset")).is_ok());
+        assert!(require_launch_programs(true, Some("massif"), only("taskset")).is_err());
+        // In-process profiles are driven by the binary itself: nothing to resolve.
+        assert!(require_launch_programs(false, Some("perf"), |_| None).is_ok());
+    }
+
+    /// @test The child is told the same folder the wrap command writes into.
+    #[test]
+    fn wrap_child_env_names_the_wrap_folder() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_wrap_env");
+        for tool in [
+            "callgrind",
+            "massif",
+            "heaptrack",
+            "nsight",
+            "ncu",
+            "jemalloc",
+        ] {
+            let env = wrap_child_env(tool, Path::new("./my_test"), Some(&root));
+            let expected = root.join(format!("my_test.{tool}"));
+            assert_eq!(
+                env[0],
+                ("VERNIER_EXTERNAL_WRAP".to_string(), tool.to_string())
+            );
+            assert_eq!(
+                env[1],
+                (
+                    "VERNIER_EXTERNAL_WRAP_DIR".to_string(),
+                    expected.display().to_string()
+                )
+            );
+            if let Some((_, args)) = wrap_command_for(tool, Path::new("./my_test"), Some(&root)) {
+                assert!(
+                    args.iter()
+                        .any(|a| a.contains(&expected.display().to_string())),
+                    "{tool}: wrap command does not write into {}: {args:?}",
+                    expected.display()
+                );
+            }
+        }
+        let default_root = wrap_child_env("ncu", Path::new("./my_test"), None);
+        assert_eq!(default_root[1].1, "bench-out/my_test.ncu");
     }
 
     /// @test wrap_command_for returns None for in-process backends.

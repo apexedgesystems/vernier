@@ -23,6 +23,8 @@ export HOST_UID := $(shell id -u)
 export HOST_GID := $(shell id -g)
 # Host running-kernel version so dev-base installs the matching linux-tools
 # (perf needs the exact match; the generic package drifts ahead of the host).
+# A new kernel changes this build arg, so the next docker-* build refreshes the
+# perf layer; see "Rebuild trigger" in docker/base.Dockerfile.
 export HOST_KERNEL := $(shell uname -r)
 
 # Artifact output directory
@@ -218,7 +220,7 @@ docker-disk-usage:
 	@docker system df
 	@echo ""
 	@echo "Vernier Image Sizes:"
-	@docker images --format "  {{.Repository}}:{{.Tag}} => {{.Size}}" | grep vernier | sort
+	@docker images --format "  {{.Repository}}:{{.Tag}} => {{.Size}}" | { grep vernier || true; } | sort
 
 # ------------------------------------------------------------------------------
 # Validation

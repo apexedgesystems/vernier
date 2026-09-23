@@ -67,6 +67,7 @@
 // transitively. This keeps bench's interface clean of gtest for downstream
 // projects that FetchContent vernier alongside their own gtest setup.
 
+#include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
@@ -212,6 +213,7 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
 
 #define PERF_MAIN()                                                                                \
   int main(int argc, char** argv) {                                                                \
+    vernier::bench::ensureBenchAbi();                                                              \
     auto& cfg = vernier::bench::detail::perfConfigSingleton();                                     \
     vernier::bench::parsePerfFlags(cfg, &argc, argv);                                              \
     vernier::bench::setGlobalPerfConfig(&cfg);                                                     \

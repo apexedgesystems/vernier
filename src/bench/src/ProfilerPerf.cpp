@@ -25,14 +25,8 @@ namespace bench {
 PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
 #ifdef __linux__
-  // Resolve artifact directory: <artifactRoot>/<Suite.Case>.perf/
-  if (!cfg_.artifactRoot.empty()) {
-    artifactDir_ = cfg_.artifactRoot + "/" + testName_ + ".perf";
-  } else {
-    artifactDir_ = "./" + testName_ + ".perf";
-  }
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "perf");
 #else
   (void)cfg_;
   (void)testName_;

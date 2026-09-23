@@ -55,14 +55,8 @@ bool detectDwarfV5Warning() {
 
 GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  // Resolve artifact directory: <artifactRoot>/<Suite.Case>.gperf/
-  if (!cfg_.artifactRoot.empty()) {
-    artifactDir_ = cfg_.artifactRoot + "/" + testName_ + ".gperf";
-  } else {
-    artifactDir_ = "./" + testName_ + ".gperf";
-  }
-  std::error_code ec;
-  std::filesystem::create_directories(artifactDir_, ec);
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
 
   // Parse mode from profileArgs (simple substring contains)
   std::string args = cfg_.profileArgs;
