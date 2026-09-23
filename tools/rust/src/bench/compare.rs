@@ -16,7 +16,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use super::{BenchRow, Classification};
+use super::{BenchRow, Classification, Need};
 
 /* ----------------------------- Constants ----------------------------- */
 
@@ -264,13 +264,16 @@ fn only_in(from: &BTreeMap<&str, &BenchRow>, other: &BTreeMap<&str, &BenchRow>) 
 
 /* ----------------------------- API ----------------------------- */
 
-/// The CSV columns a comparison computes from.
+/// The CSV columns a comparison computes from, each needed in every row.
 ///
-/// Load both runs with these columns strict (`load_csv_strict`): the lenient
-/// loader reads a missing, empty or unparsable field as 0.0, which a
-/// comparison cannot tell from a measured value.
-pub fn measured_columns() -> Vec<&'static str> {
-    MEASUREMENTS.iter().map(|(column, _)| *column).collect()
+/// Load both runs with these (`load_csv_strict`): the lenient loader reads a
+/// missing, empty or unparsable field as 0.0, which a comparison cannot tell
+/// from a measured value.
+pub fn measured_columns() -> Vec<(&'static str, Need)> {
+    MEASUREMENTS
+        .iter()
+        .map(|&(column, _)| (column, Need::Required))
+        .collect()
 }
 
 /// Compare two runs, joining on test name.

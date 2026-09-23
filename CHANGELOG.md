@@ -256,6 +256,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   candidate-only test is reported as new and does not fail on its own. A
   renamed test is both: one missing test and one new one, and the gate fails
   until the baseline is updated on purpose.
+- **`bench summary` refuses a measurement it cannot show** -- the summary
+  read its CSV with defaults: a `wallMedian`, `wallCV` or `callsPerSecond`
+  that was missing, empty or not a number printed as 0, and a `nan` or `inf`
+  printed as `NaN` or `inf` in the table and `null` in the JSON, all with
+  exit 0, so a damaged capture read as zero time, zero variation or zero
+  throughput. Those three columns must hold a finite number in every row, and
+  the other columns the summary shows (`wallP10`, `wallP90`, `stable`,
+  `cvThreshold`, `cycles`, `repeats`) a finite number of their kind wherever
+  a row gives one. A column that a layout or a row leaves out, or an empty
+  field in one of those six, still shows its default, and zeros are values.
+  Anything else exits 1 with nothing printed, naming the file, line, test,
+  column and value, as text and as JSON. `bench run --analyze` applies the
+  same rule to the summary it prints after a run.
 
 ## v1.0.3 - 2026-06-28
 

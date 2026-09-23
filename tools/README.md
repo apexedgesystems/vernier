@@ -68,6 +68,14 @@ bench summary results.csv --json
 | `--sort COLUMN` | Sort by: name, median, cv, throughput | name    |
 | `--json`        | Machine-readable JSON output          | --      |
 
+**Input it refuses.** Every row must hold a finite number in `wallMedian`,
+`wallCV` and `callsPerSecond`. `wallP10`, `wallP90`, `stable`, `cvThreshold`,
+`cycles` and `repeats` may be left out, by the CSV's layout, by a row that
+stops early or by an empty field, and then show their defaults, but where a
+row gives one it must be a finite number of its kind. Anything else exits 1
+with nothing on stdout and a message naming the file, line, test, column and
+value, as text and as JSON. Zeros are values.
+
 ### compare - Median Change Between Two Runs
 
 Compare two benchmark CSVs test by test, and label each test by how far its

@@ -2,7 +2,7 @@
 //!
 //! Uses ANSI escape codes for colored terminal output.
 
-use super::{BenchRow, Classification, Comparison, SortColumn};
+use super::{BenchRow, Classification, Comparison, Need, SortColumn};
 
 /* ----------------------------- ANSI Colors ----------------------------- */
 
@@ -127,6 +127,23 @@ pub fn print_comparison_table(comparison: &Comparison) {
 }
 
 /* ----------------------------- Summary Table ----------------------------- */
+
+/// The columns the summary table and the summary JSON present, and how each
+/// is needed. A results CSV carries the three measurements in every row; the
+/// others are shown where a row gives them and take their defaults where a
+/// layout or a row leaves them out, but a value that is there must be a
+/// finite number of its kind. Rows for a summary are loaded with these.
+pub const SUMMARY_COLUMNS: [(&str, Need); 9] = [
+    ("wallMedian", Need::Required),
+    ("wallCV", Need::Required),
+    ("callsPerSecond", Need::Required),
+    ("wallP10", Need::IfPresent),
+    ("wallP90", Need::IfPresent),
+    ("stable", Need::IfPresent),
+    ("cvThreshold", Need::IfPresent),
+    ("cycles", Need::IfPresent),
+    ("repeats", Need::IfPresent),
+];
 
 /// Print a single-CSV summary table to stdout.
 pub fn print_summary_table(rows: &[BenchRow], sort: SortColumn) {

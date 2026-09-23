@@ -80,6 +80,140 @@ fn summary_old_format_csv() {
     assert!(out.contains("Queue.Throughput"));
 }
 
+/// Summary JSON rows by test name.
+fn summary_json(csv: &str) -> serde_json::Map<String, serde_json::Value> {
+    let (code, out, err) = run(&["summary", csv, "--json"]);
+    assert_eq!(code, 0, "{csv}: {err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    parsed
+        .as_array()
+        .expect("an array of rows")
+        .iter()
+        .map(|row| (row["test"].as_str().expect("test").to_string(), row.clone()))
+        .collect()
+}
+
+/// @test A value summary cannot show truthfully fails it, as text and as JSON,
+/// naming the file, line, test, column and value, with nothing on stdout.
+#[test]
+fn summary_unreadable_measurement_is_an_error() {
+    let modes: [&[&str]; 2] = [&[], &["--json"]];
+    for (file, found) in [
+        (
+            "compare_median_malformed.csv",
+            "has wallMedian 'n/a', which is not a number",
+        ),
+        (
+            "compare_median_blank.csv",
+            "has no wallMedian value: the field is empty",
+        ),
+        (
+            "compare_median_absent.csv",
+            "has no wallMedian value: the row ends after 9 of 20 columns",
+        ),
+        (
+            "compare_cv_malformed.csv",
+            "has wallCV 'garbage', which is not a number",
+        ),
+        (
+            "compare_cv_blank.csv",
+            "has no wallCV value: the field is empty",
+        ),
+        (
+            "compare_cv_absent.csv",
+            "has no wallCV value: the row ends after 16 of 20 columns",
+        ),
+        (
+            "summary_throughput_malformed.csv",
+            "has callsPerSecond 'garbage', which is not a number",
+        ),
+        (
+            "summary_throughput_blank.csv",
+            "has no callsPerSecond value: the field is empty",
+        ),
+        (
+            "summary_throughput_absent.csv",
+            "has no callsPerSecond value: the row ends after 17 of 20 columns",
+        ),
+        (
+            "compare_non_finite.csv",
+            "has wallMedian 'nan', which is not a finite number",
+        ),
+        (
+            "summary_cv_infinite.csv",
+            "has wallCV 'inf', which is not a finite number",
+        ),
+        (
+            "summary_throughput_infinite.csv",
+            "has callsPerSecond '-inf', which is not a finite number",
+        ),
+        (
+            "summary_p10_malformed.csv",
+            "has wallP10 'garbage', which is not a number",
+        ),
+        (
+            "summary_p90_not_finite.csv",
+            "has wallP90 'NaN', which is not a finite number",
+        ),
+        (
+            "summary_cycles_malformed.csv",
+            "has cycles '1.5', which is not a whole number from 0 to 4294967295",
+        ),
+        (
+            "summary_stable_malformed.csv",
+            "has stable 'yes', which is not a whole number from 0 to 255",
+        ),
+    ] {
+        let csv = fixture(file);
+        let expected = format!("{csv}, line 3: test 'Queue.Latency' {found}");
+        for mode in modes {
+            let mut args = vec!["summary", csv.as_str()];
+            args.extend_from_slice(mode);
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?} printed a summary: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test Zeros are values, and optional columns a layout or a row leaves out
+/// take their defaults, as do the columns a GPU CSV's CPU rows stop before.
+#[test]
+fn summary_accepts_zeros_and_left_out_columns() {
+    let rows = summary_json(&fixture("compare_cv_zero.csv"));
+    assert_eq!(rows["Queue.Latency"]["wall_cv"], 0.0);
+
+    // A median, CV and throughput of 0: summary shows them though compare
+    // would refuse the median.
+    let zeros = fixture("summary_zeros.csv");
+    let rows = summary_json(&zeros);
+    for field in ["wall_median", "wall_p10", "wall_cv", "calls_per_second"] {
+        assert_eq!(rows["Queue.Latency"][field], 0.0, "{field}");
+    }
+    let (code, out, err) = run(&["summary", &zeros]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 tests"), "{out}");
+
+    // No cycles, repeats or cvThreshold column; an empty wallP10; a row that
+    // stops before stable.
+    let rows = summary_json(&fixture("summary_left_out.csv"));
+    let latency = &rows["Queue.Latency"];
+    assert_eq!(latency["wall_p10"], 0.0);
+    assert_eq!(latency["wall_p90"], 0.013);
+    assert_eq!(latency["stable"], true);
+    assert_eq!(latency["cycles"], 0);
+    assert_eq!(rows["Queue.Throughput"]["wall_p10"], 0.042);
+
+    let rows = summary_json(&fixture("summary_gpu_rows.csv"));
+    assert_eq!(rows["Saxpy.Cpu"]["wall_median"], 0.045);
+    assert_eq!(rows["Saxpy.Gpu"]["wall_median"], 0.015);
+
+    let rows = summary_json(&fixture("sample_bench_old_format.csv"));
+    assert_eq!(rows["Queue.Latency"]["stable"], true);
+    assert_eq!(rows.len(), 2);
+}
+
 /* ----------------------------- Compare ----------------------------- */
 
 /// @test Two identical runs label every test neutral and exit 0.
@@ -930,6 +1064,58 @@ fn run_taskset_names_missing_program() {
         !err.contains("No such file or directory"),
         "raw OS error leaked: {err}"
     );
+}
+
+/* ----------------------------- Run: Analyze ----------------------------- */
+
+/// @test bench run --analyze refuses, before printing it, a summary bench summary refuses.
+#[test]
+fn run_analyze_refuses_an_unreadable_measurement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let written = dir.path().join("results.csv");
+    let written_arg = written.to_string_lossy().into_owned();
+    for (i, (source, code)) in [("sample_bench.csv", 0), ("compare_cv_malformed.csv", 1)]
+        .into_iter()
+        .enumerate()
+    {
+        // A stand-in benchmark that copies a fixture to where --csv points.
+        let fake = dir.path().join(format!("fake_bench_{i}"));
+        let script = format!(
+            "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --csv ]; then cp '{}' \"$2\"; fi\n  shift\ndone\n",
+            fixture(source)
+        );
+        std::fs::write(&fake, script).expect("write the stand-in");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let out = Command::new(bin())
+            .args([
+                "run",
+                &fake.to_string_lossy(),
+                "--csv",
+                &written_arg,
+                "--analyze",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .expect("spawn bench");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{source}: {stderr}");
+        if code == 0 {
+            assert!(stdout.contains("--- Post-run analysis ---"), "{stdout}");
+            assert!(stdout.contains("Queue.Latency"), "{stdout}");
+        } else {
+            assert!(!stdout.contains("Post-run analysis"), "{stdout}");
+            assert!(
+                stderr.contains(&format!(
+                    "{written_arg}, line 3: test 'Queue.Latency' has wallCV 'garbage', which is not a number"
+                )),
+                "{stderr}"
+            );
+        }
+    }
 }
 
 /* ----------------------------- Run: Wrap Folder ----------------------------- */

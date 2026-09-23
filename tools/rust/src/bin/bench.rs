@@ -28,6 +28,14 @@
 //! `wallMedian` or `wallCV` that is missing, empty or not a finite number, a
 //! median of zero or less, a negative CV, a duplicate test identity, no test
 //! in both runs, or a percentage change too large to represent.
+//!
+//! The summary contract:
+//!
+//! `bench summary`, and the summary `bench run --analyze` prints after a run,
+//! show every row's wallMedian, wallCV and callsPerSecond, and its wallP10,
+//! wallP90, stable, cvThreshold, cycles and repeats where the row gives them.
+//! A required value that is missing, or any shown value that is not a finite
+//! number of its kind, exits 1 with the cause on stderr and nothing on stdout.
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -330,7 +338,9 @@ fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
             let sort_col: SortColumn = sort.parse()?;
-            let rows = bench::load_csv(&csv)?;
+            // A value the summary could not show truthfully is refused before
+            // anything is printed.
+            let rows = bench::load_csv_strict(&csv, &bench::report::SUMMARY_COLUMNS)?;
 
             if json {
                 println!("{}", bench::report::summary_to_json(&rows));
@@ -427,9 +437,9 @@ fn run(args: Args) -> Result<(), Error> {
 
             if analyze {
                 if let Some(ref path) = csv_path {
+                    let rows = bench::load_csv_strict(path, &bench::report::SUMMARY_COLUMNS)?;
                     println!();
                     println!("--- Post-run analysis ---");
-                    let rows = bench::load_csv(path)?;
                     bench::print_summary_table(&rows, SortColumn::Name);
                 } else {
                     eprintln!("Warning: --analyze requires --csv to produce output");
