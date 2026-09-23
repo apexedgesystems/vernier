@@ -30,6 +30,7 @@ Complete guide to GPU/CUDA performance benchmarking. This guide assumes you're f
 
 ```cpp
 #include <gtest/gtest.h>
+#include "Perf.hpp"
 #include "PerfGpu.hpp"
 
 namespace ub = vernier::bench;
