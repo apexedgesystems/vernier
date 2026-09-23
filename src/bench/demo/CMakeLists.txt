@@ -18,8 +18,8 @@ target_include_directories(demo_helpers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 # ------------------------------------------------------------------------------
 # Shared Examples
 # ------------------------------------------------------------------------------
-# A workload a demo and its walkthrough share with the unit tests that hold it
-# to its answers. One library per example, with its own tests.
+# The code the walkthroughs measure, with its unit tests. A demo links the
+# example it walks through instead of declaring its own workload.
 # ------------------------------------------------------------------------------
 
 add_subdirectory(examples)
@@ -83,11 +83,16 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example
+# Demos Built on a Shared Example (2)
 # ------------------------------------------------------------------------------
-# The demo measures the example; the example owns the workload and proves its
-# versions agree. Link one to the other here, next to the demo that needs it.
+# After both demo lists, so every demo target exists. The GPU demo and its
+# example are only built where the GPU demos are.
 # ------------------------------------------------------------------------------
+
+target_link_libraries(
+  BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
 
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)

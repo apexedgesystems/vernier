@@ -24,46 +24,50 @@ is a runnable executable paired with a step-by-step walkthrough. Start with Demo
 
 ## 1. Getting Started
 
-Build the framework, run a demo, and analyze results in under two minutes:
+Build Release first: the
+[Raspberry Pi 4 rig document](../docs/rigs/RIG_PI4.md) has the build command
+the output below came from, and [docs/rigs/README.md](../docs/rigs/README.md)
+covers other machines.
+
+Demo 01 joins 1,000 words two ways. Measure it, then read the rows it wrote:
 
 ```bash
-# Build framework and demos
-make compose-debug
-
-# Build the bench analysis tool
-make tools-rust
+source build/.env     # puts the bench CLI on PATH
+taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
+  --target-time 50ms --repeats 10 --csv run1.csv
+bench summary run1.csv
 ```
 
-Run Demo 01 (basic throughput measurement) and analyze the results:
-
-```bash
-docker compose run --rm -T dev bash -c '
-  cd build/native-linux-debug
-  ./bin/ptests/BenchDemo_01_BasicWorkflow --quick --csv /tmp/demo01.csv
-  source .env
-  bench summary /tmp/demo01.csv
-'
-```
-
-You will see output like this:
+Captured on the Raspberry Pi 4 rig, 2026-09-20, Release build. The three
+result lines, without GoogleTest's framing, the harness's calibration lines
+and the end-of-run table:
 
 ```
-[BasicWorkflow.SimpleThroughput]  325 us/call  CV=0.8%  ~3.1K calls/s
-  Memory bandwidth: 2457 MB/s (0.8 MB read, 0.0 MB written per call)
-  Estimated efficiency: 20.5% of theoretical peak (~12000 MB/s)
-
-[BasicWorkflow.AccumulateVsManualLoop]  325 us/call  CV=0.7%  ~3.1K calls/s
-[BasicWorkflow.AccumulateVsManualLoop]  164 us/call  CV=0.5%  ~6.1K calls/s
-
-[BasicWorkflow.QuickModeIteration]  32 us/call  CV=0.2%  ~31.0K calls/s
+[BasicWorkflow.JoinV0]  927.611 us/call  CV=0.1%  ~1.1K calls/s  (p10=927.056 p90=928.317 sd=0.544)
+[BasicWorkflow.JoinV1]  21.044 us/call  CV=0.7%  ~47.5K calls/s  (p10=20.752 p90=21.123 sd=0.149)
+[BasicWorkflow.JoinSpeedup]  V0 927.564 us/call  V1 20.511 us/call  45.2x
 ```
 
-The manual pointer loop is 2x faster than `std::accumulate`. The framework
-measured it, exported CSV, and `bench summary` formatted the results. Every demo
-follows this same pattern: measure something slow, measure something fast, compare.
+Then the CSV, read back:
+
+```
+Test                   Median (us)       P10       P90        CV       Calls/sec  Stable
+--------------------  ------------  --------  --------  --------  --------------  ------
+BasicWorkflow.JoinV0     927.61100  927.05600  928.31700      0.1%            1078  yes
+BasicWorkflow.JoinV1      21.04410  20.75180  21.12340      0.7%           47519  yes
+
+  2 tests, sorted by name
+```
+
+Reserving the result once instead of copying it per part is 44 times faster
+in this capture. The third test fails if the speedup falls to three times or
+less. The framework measured both versions, wrote the CSV, and `bench summary`
+read it back. Every demo follows the same pattern: measure something slow,
+measure something fast, compare.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
-walkthrough of what the code does and why.
+walkthrough: how to read those lines, what reproduces on another machine, and
+how to compare two runs.
 
 ---
 
@@ -71,7 +75,7 @@ walkthrough of what the code does and why.
 
 | #   | Demo                  | Concept                            | Slow Path                   | Fast Path                  | Walkthrough                                                 |
 | --- | --------------------- | ---------------------------------- | --------------------------- | -------------------------- | ----------------------------------------------------------- |
-| 01  | Basic Workflow        | Measure-export-analyze cycle       | std::accumulate             | Manual pointer loop        | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
+| 01  | Basic Workflow        | Measure-export-analyze cycle       | join V0 (copy per part)     | join V1 (reserve, append)  | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
 | 02  | perf Profiler         | Hardware counter profiling         | Stride-512 array walk       | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
 | 03  | gperftools Profiler   | Function-level flamegraphs         | Bubble sort O(n^2)          | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
 | 04  | Cache-Friendly Layout | AoS vs SoA data transformation     | 128B struct (81% waste)     | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
@@ -186,16 +190,18 @@ and dependency chains), and designed to show measurable differences.
 
 ### Shared Examples
 
-A shared example is a workload with a library of its own under
-[examples/](examples/), measured by a demo and read by that demo's
-walkthrough. The example owns the code and the unit tests that hold its
-versions to the same answers; the demo owns how it is measured. Running
-`TestDemoExamples` answers "do the versions still agree", which is the
-question a timing comparison depends on.
+Code a walkthrough teaches from lives in its own directory beside these
+helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
+and unit tests that hold the example's versions to the same answers,
+registered under the `demo` label (`ctest --test-dir build -L demo`). The
+first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
 
-| Example                               | Versions                                                                                     | Used In |
-| ------------------------------------- | -------------------------------------------------------------------------------------------- | ------- |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads | Demo 10 |
+| Example                               | Versions                                                                                                  | Used In |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------- |
+| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demo 01 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10 |
+
+The saxpy example and its tests are built only where the GPU demos are.
 
 ---
 
