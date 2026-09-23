@@ -20,13 +20,16 @@
  * Usage:
  *   @code{.sh}
  *   # Run without profiler (tests will skip)
- *   ./TestBenchSamples_PTEST --gtest_filter="Profilers.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Profilers.*"
  *
  *   # Run with perf profiler
- *   ./TestBenchSamples_PTEST --gtest_filter="Profilers.PerfIntegration" --profile perf
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Profilers.PerfIntegration" --profile perf
  *
  *   # Run with gperf profiler
- *   ./TestBenchSamples_PTEST --gtest_filter="Profilers.GperfIntegration" --profile gperf
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Profilers.GperfIntegration" --profile gperf
  *   @endcode
  *
  * Performance expectations:

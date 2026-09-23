@@ -20,10 +20,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all coalescing tests
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuMemoryCoalescing.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMemoryCoalescing.*"
  *
  *   # Run specific test
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuMemoryCoalescing.CoalescedAccess"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMemoryCoalescing.CoalescedAccess"
  *   @endcode
  *
  * Performance expectations:

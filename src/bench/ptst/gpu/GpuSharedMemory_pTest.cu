@@ -20,10 +20,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all shared memory tests
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuSharedMemory.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuSharedMemory.*"
  *
  *   # Run specific test
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuSharedMemory.SharedMemoryOptimized"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuSharedMemory.SharedMemoryOptimized"
  *   @endcode
  *
  * Performance expectations:

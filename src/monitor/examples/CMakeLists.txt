@@ -1,9 +1,9 @@
 # ==============================================================================
 # Examples: monitor
 #
-# Demonstrates env-var-driven Monitor configuration: the same binary stays
-# silent in production and emits a full report when an operator sets the
-# relevant VERNIER_MONITOR_* env var.
+# Demonstrates env-var-driven Monitor configuration: the same binary reports
+# to the console, to a file, to neither, or records nothing at all, depending
+# on the VERNIER_MONITOR_* env vars an operator sets.
 # ==============================================================================
 
 # ------------------------------------------------------------------------------

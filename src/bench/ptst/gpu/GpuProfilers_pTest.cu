@@ -18,10 +18,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all GPU profiler tests
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuProfilers.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuProfilers.*"
  *
  *   # With Nsight Systems profiling
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuProfilers.NsightIntegration" \
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuProfilers.NsightIntegration" \
  *       --profile nsight --artifact-root profiler_artifacts
  *   @endcode
  *

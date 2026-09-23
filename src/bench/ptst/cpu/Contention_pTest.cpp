@@ -20,13 +20,16 @@
  * Usage:
  *   @code{.sh}
  *   # Run all contention tests
- *   ./TestBenchSamples_PTEST --gtest_filter="Contention.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Contention.*"
  *
  *   # Compare synchronization primitives
- *   ./TestBenchSamples_PTEST --gtest_filter="Contention.*" --csv contention_compare.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Contention.*" --csv contention_compare.csv
  *
  *   # Control thread count
- *   ./TestBenchSamples_PTEST --gtest_filter="Contention.*" --threads 2
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Contention.*" --threads 2
  *   @endcode
  *
  * Performance expectations:

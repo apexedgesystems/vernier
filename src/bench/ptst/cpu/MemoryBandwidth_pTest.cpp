@@ -22,10 +22,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all memory bandwidth tests
- *   ./TestBenchSamples_PTEST --gtest_filter="MemoryBandwidth.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MemoryBandwidth.*"
  *
  *   # With CSV output to compare patterns
- *   ./TestBenchSamples_PTEST --gtest_filter="MemoryBandwidth.*" --csv bandwidth.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MemoryBandwidth.*" --csv bandwidth.csv
  *   @endcode
  *
  * Performance expectations:

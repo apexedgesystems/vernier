@@ -4,14 +4,29 @@
  * @file Monitor.hpp
  * @brief Main runtime performance monitor API.
  *
- * Usage:
+ * Usage -- configure, set thresholds, start, instrument, let the producers
+ * finish, stop:
+ *
  *   vernier::monitor::Monitor mon(config);
- *   mon.start();
+ *   mon.setThreshold("stage", tag.id, thresholdUs); // before start()
+ *   mon.start();                                    // sinks + I/O thread
  *   {
  *       VERNIER_MONITOR_SCOPE(mon, "stage", tag);
  *       doWork();
  *   }
- *   mon.stop(); // prints summary
+ *   mon.stop(); // drains every queued sample, then reports
+ *
+ * Construction alone starts nothing. A disabled monitor's start() creates no
+ * worker, no sink and no output file, and reports nothing at stop(); activate
+ * it with setEnabled(true) followed by start(). stop() writes the summary
+ * table to stderr when the console sink is configured, and collects in memory
+ * either way: mon.summary() carries the whole table even for SINK_NONE.
+ *
+ * Recording a sample takes no lock and no allocation: a steady-clock read per
+ * scope boundary, a fixed-size record copied into one slot of a bounded ring
+ * buffer, and a drain thread that feeds the sinks and the summary. A disabled
+ * monitor records nothing, but the clock reads, the name copies and the
+ * arguments passed to the macros still cost what they cost.
  */
 
 #include "src/monitor/inc/MonitorConfig.hpp"
@@ -57,9 +72,17 @@ public:
 
   /**
    * @brief Start the async I/O backend. Idempotent.
+   *
+   * On a disabled monitor this does nothing: no worker thread, no sink, no
+   * output file and no summary at stop(). Activate such a monitor with
+   * setEnabled(true) followed by start().
+   *
    * @note NOT RT-safe: Thread creation, heap allocation.
    */
   void start() {
+    if (!enabled_.load(std::memory_order_relaxed))
+      return;
+
     bool expected = false;
     if (!running_.compare_exchange_strong(expected, true))
       return;
@@ -100,7 +123,14 @@ public:
   }
 
   /**
-   * @brief Stop the I/O backend, flush remaining samples, and print summary.
+   * @brief Stop the I/O backend, write every queued sample, and print summary.
+   *
+   * Call it after the producers have finished: every sample they queued is
+   * written to the sinks and recorded in the summary before this returns. The
+   * summary table goes to the console only when the console sink is
+   * configured; the in-memory summary is complete either way, and the enabled
+   * flag's value at this point does not discard what was already recorded.
+   *
    * @note NOT RT-safe: Thread join, I/O operations.
    */
   void stop() {
@@ -113,9 +143,11 @@ public:
       ioThread_.join();
     }
 
-    // Print summary
-    const std::uint64_t WALL_NS = nowNs() - startTimeNs_;
-    summary_.print(WALL_NS, totalSamples_.load(), queue_.droppedCount());
+    // Print summary where the console sink is the configured output
+    if (cfg_.sinks & SINK_CONSOLE) {
+      const std::uint64_t WALL_NS = nowNs() - startTimeNs_;
+      summary_.print(WALL_NS, totalSamples_.load(), queue_.droppedCount());
+    }
 
     sinks_.clear();
   }
@@ -235,6 +267,13 @@ public:
 
   /**
    * @brief Enable or disable monitoring at runtime.
+   *
+   * A lightweight switch read by the next recording call, not a barrier:
+   * samples a producer has already passed to the monitor are kept, and
+   * disabling an active monitor neither stops the worker nor discards the
+   * history collected so far. Enabling a monitor that was started while
+   * disabled takes effect on the next start().
+   *
    * @param on True to enable, false to disable.
    * @note RT-safe: Atomic store.
    */
@@ -276,8 +315,12 @@ private:
 
   void drainLoop() {
     Sample sample;
-    while (running_.load(std::memory_order_relaxed) || queue_.tryPop(sample)) {
-      // Drain batch
+    for (;;) {
+      // Sampled before the drain below, so the round that observes the stop
+      // still drains a queue filled just before stop() cleared the flag.
+      const bool RUNNING = running_.load(std::memory_order_acquire);
+
+      // The only pop in this loop: every popped sample is processed here.
       while (queue_.tryPop(sample)) {
         for (auto& sink : sinks_) {
           sink->write(sample);
@@ -285,18 +328,12 @@ private:
         summary_.record(sample);
       }
 
-      if (running_.load(std::memory_order_relaxed)) {
-        // Brief sleep to avoid busy-spinning when queue is empty
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      if (!RUNNING) {
+        break;
       }
-    }
 
-    // Final drain after stop
-    while (queue_.tryPop(sample)) {
-      for (auto& sink : sinks_) {
-        sink->write(sample);
-      }
-      summary_.record(sample);
+      // Brief sleep to avoid busy-spinning when the queue is empty
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
     for (auto& sink : sinks_) {
