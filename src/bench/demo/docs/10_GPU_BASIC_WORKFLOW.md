@@ -240,9 +240,9 @@ and out is not. With the clocks left to the governor the kernel alone still
 reads 8.61x to 8.75x (six runs), but the round trip with its copies reads
 0.82x to 0.98x: slower than the CPU loop. Every speedup on this page is stated
 with its clock procedure for that reason. The round trip is also the noisiest
-of the three measurements: its CV reached 8.7% in the locked runs on record
-(6.3% in the reference run's own), so a single run can land a few percent
-outside any range stated here.
+of the three measurements. Across the recorded locked runs, within-run
+round-trip CV reached 8.7%; it was 6.3% in the reference run. A single run can
+therefore land a few percent outside any range stated here.
 
 ## What Should Reproduce
 
@@ -274,7 +274,8 @@ stops beating the loop by 3x.
 
   Lock them as the rig document says and run again. With the clocks locked, a
   round trip a few percent away from the reference is within what this rig
-  produces (its CV reached 8.7% in the locked runs on record).
+  produces: across the recorded locked runs, within-run round-trip CV reached
+  8.7%; it was 6.3% in the reference run.
 
 - **The speedup check was skipped.** `GpuKernelOnly` takes its speedup from
   `CpuBaseline`, which has to run first in the same process. A run filtered to
