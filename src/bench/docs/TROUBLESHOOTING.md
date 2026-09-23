@@ -826,11 +826,19 @@ which nsys
 which ncu
 ```
 
-**2. Check artifact directory**:
+**2. Check the artifact directory**. A direct run writes one folder per
+profiled test, named after the test; under `bench run` the whole run's data is
+in one folder named after the binary, and no per-test folder is created:
 
 ```bash
-ls -la test.nsight/
+# ./test --profile nsight
+ls -la Suite.Case.nsight/
+
+# bench run ./test --profile nsight
+ls -la bench-out/test.nsight/
 ```
+
+`--profile ncu` writes `.ncu` folders in place of `.nsight` in both cases.
 
 **3. Use manual profiling**:
 
@@ -1101,9 +1109,16 @@ about.
 ./MyTest --profile gperf --profile-output-dir bench-out/2026-05-24/
 ```
 
-Every backend in the registry writes to a per-test subdirectory of that root.
-For multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the
-same root: each tool's artifacts go into a separate `<Test>.<tool>/` subdir.
+A direct run writes each profiled test's artifacts to a `<Test>.<tool>/`
+subdirectory of that root (`.bpf` for bpftrace). A `/` in a parameterized
+test's name is written `+2F` and a `+` as `+2B`, so `Parts/Join.V0/n1000` gets
+`Parts+2FJoin.V0+2Fn1000.gperf/`. Under `bench run`, a profiler that
+`bench run` wraps around the whole process (the valgrind tools, heaptrack,
+compute-sanitizer, nsight, ncu, and jemalloc when its library can be
+preloaded) writes one `<binary>.<tool>/` folder for the run instead, and no
+per-test folders; its root is `--profile-output-dir`, else `bench-out/`. For
+multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the same
+root: the tool is part of every folder name, so their artifacts stay apart.
 
 ---
 
