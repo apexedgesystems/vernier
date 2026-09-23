@@ -21,10 +21,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all semantic macro tests
- *   ./BenchmarkCPU_PTEST --gtest_filter="SemanticMacros.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="SemanticMacros.*"
  *
  *   # Export results
- *   ./BenchmarkCPU_PTEST --gtest_filter="SemanticMacros.*" --csv semantic.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="SemanticMacros.*" --csv semantic.csv
  *   @endcode
  *
  * Performance expectations:

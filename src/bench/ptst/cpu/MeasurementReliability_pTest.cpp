@@ -24,10 +24,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all reliability tests
- *   ./TestBenchSamples_PTEST --gtest_filter="MeasurementReliability.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MeasurementReliability.*"
  *
  *   # With higher repeat count for better statistics
- *   ./TestBenchSamples_PTEST --gtest_filter="MeasurementReliability.*" --repeats 20
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MeasurementReliability.*" --repeats 20
  *   @endcode
  *
  * Performance expectations:

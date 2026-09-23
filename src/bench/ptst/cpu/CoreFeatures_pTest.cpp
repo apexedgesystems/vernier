@@ -23,13 +23,16 @@
  * Usage:
  *   @code{.sh}
  *   # Run all core feature tests
- *   ./TestBenchSamples_PTEST --gtest_filter="CoreFeatures.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CoreFeatures.*"
  *
  *   # Run with CSV export
- *   ./TestBenchSamples_PTEST --gtest_filter="CoreFeatures.*" --csv core_results.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CoreFeatures.*" --csv core_results.csv
  *
  *   # Run in quick mode for fast validation
- *   ./TestBenchSamples_PTEST --gtest_filter="CoreFeatures.*" --quick
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CoreFeatures.*" --quick
  *   @endcode
  *
  * Performance expectations:

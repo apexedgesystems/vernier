@@ -35,10 +35,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all allocation overhead tests
- *   ./BenchmarkCPU_PTEST --gtest_filter="AllocationOverhead.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="AllocationOverhead.*"
  *
  *   # Compare allocation patterns
- *   ./BenchmarkCPU_PTEST --gtest_filter="AllocationOverhead.*" --csv alloc_compare.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="AllocationOverhead.*" --csv alloc_compare.csv
  *   @endcode
  *
  * Performance expectations:

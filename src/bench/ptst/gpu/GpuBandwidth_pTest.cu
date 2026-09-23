@@ -20,10 +20,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all bandwidth tests
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuBandwidth.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuBandwidth.*"
  *
  *   # Test specific bandwidth type
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuBandwidth.HostToDevice"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuBandwidth.HostToDevice"
  *   @endcode
  *
  * Performance expectations:

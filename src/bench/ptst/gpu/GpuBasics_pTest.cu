@@ -21,10 +21,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all GPU basics tests
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuBasics.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuBasics.*"
  *
  *   # With specific GPU device
- *   ./TestBenchSamples_PTEST --gtest_filter="GpuBasics.*" --gpu-device 0
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuBasics.*" --gpu-device 0
  *   @endcode
  *
  * Performance expectations:
