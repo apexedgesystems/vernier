@@ -220,8 +220,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   directory to the include path, so both include forms work with no include
   directory of the consumer's own, also with a relative
   `CMAKE_INSTALL_INCLUDEDIR` other than `include` and from a prefix moved after
-  installation. The README's link example adds the `GTest::gtest` that a
-  `PERF_MAIN()` benchmark needs. Library names and SONAMEs are unchanged.
+  installation. `vernier::bench` also carries GoogleTest's headers and library
+  (the `GTest::gtest` that the package's `find_dependency(GTest)` provides):
+  `Perf.hpp` includes `gtest/gtest.h` and `PERF_MAIN()` runs GoogleTest, yet a
+  consumer that linked only `vernier::bench` got neither and stopped at
+  `'gtest/gtest.h' file not found`. A benchmark links `vernier::bench` alone; an
+  explicit `GTest::gtest` link still works. Library names and SONAMEs are
+  unchanged.
   **For packagers:** the headers' installed location changes from
   `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
   use the exported targets need no change.

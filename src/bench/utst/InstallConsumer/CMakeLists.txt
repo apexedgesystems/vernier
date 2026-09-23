@@ -22,13 +22,13 @@ find_package(vernier REQUIRED)
 # ------------------------------------------------------------------------------
 # Consumer Programs (4)
 # ------------------------------------------------------------------------------
-# PERF_MAIN() supplies main() and runs GoogleTest, so the benchmark links
-# GTest::gtest, which the package's find_dependency(GTest) provides.
+# Each program links its vernier target and nothing else. PERF_MAIN() runs
+# GoogleTest, which arrives through vernier::bench's usage requirements.
 # ------------------------------------------------------------------------------
 
 foreach (_style short qualified)
   add_executable(bench_consumer_${_style} BenchConsumer.cpp)
-  target_link_libraries(bench_consumer_${_style} PRIVATE vernier::bench GTest::gtest)
+  target_link_libraries(bench_consumer_${_style} PRIVATE vernier::bench)
 
   add_executable(monitor_consumer_${_style} MonitorConsumer.cpp)
   target_link_libraries(monitor_consumer_${_style} PRIVATE vernier::monitor)

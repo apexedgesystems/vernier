@@ -50,7 +50,9 @@ vernier_add_gtest(
 # warnings as errors. The C library marks write(2) and similar calls
 # warn_unused_result only in optimized, fortified builds, which is how
 # consumers ship, so the check pins that configuration whatever the build type.
-# Object library: compiled with every build, never linked or run.
+# It uses bench alone, as a consumer does: GoogleTest's headers reach it through
+# bench's usage requirements. Object library: compiled with every build, never
+# linked or run.
 # ------------------------------------------------------------------------------
 
 add_library(
@@ -58,7 +60,7 @@ add_library(
 )
 target_link_libraries(
   BenchConsumerWarningCheck
-  PRIVATE bench GTest::gtest
+  PRIVATE bench
 )
 target_compile_options(
   BenchConsumerWarningCheck

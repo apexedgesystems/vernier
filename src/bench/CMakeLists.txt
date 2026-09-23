@@ -73,6 +73,20 @@ vernier_add_library(
   ${BENCH_ABI_SOVERSION}
 )
 
+# GoogleTest is part of the benchmark API: Perf.hpp includes gtest/gtest.h and
+# PERF_MAIN() runs the GoogleTest cases. The requirement is for consumers only;
+# the library does not use it. The build tree links the fetched GTest::gtest.
+# An install names the GTest::gtest that the package's find_dependency(GTest)
+# provides; written through TARGET_NAME_IF_EXISTS, the name reaches the export
+# unresolved and is resolved in the consumer. A plain name would be resolved
+# here, to the fetched target that is not installed, and install(EXPORT) would
+# reject it.
+target_link_libraries(
+  ${LIB_NAME}
+  INTERFACE $<BUILD_INTERFACE:GTest::gtest>
+            $<INSTALL_INTERFACE:$<TARGET_NAME_IF_EXISTS:GTest::gtest>>
+)
+
 # gperftools (optional): the CPU profiler links whenever it is installed.
 find_library(GPERF_PROFILER_LIB NAMES profiler)
 if (GPERF_PROFILER_LIB)
@@ -117,6 +131,12 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
     ${BENCH_ABI_SOVERSION}
   )
   vernier_standard_optins(${LIB_NAME}_cuda)
+
+  # bench_cuda links bench for its symbols and so also receives bench's
+  # GoogleTest requirement, which it does not use. Linking as needed keeps the
+  # build's GoogleTest library out of bench_cuda's runtime dependencies, also
+  # with toolchains that do not link that way by default.
+  target_link_options(${LIB_NAME}_cuda PRIVATE "LINKER:--as-needed")
 
   # CUPTI is the CUDA Profiling Tools Interface. find_package(CUDAToolkit)
   # exposes it as the CUDA::cupti imported target on any system layout

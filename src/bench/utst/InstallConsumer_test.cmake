@@ -17,8 +17,10 @@
 #    at the path it has in the source tree, under the vernier root.
 # 4. The consumer project finds vernier through CMAKE_PREFIX_PATH and GTest
 #    through GTest_ROOT, and builds a PERF_MAIN benchmark and a monitor
-#    program in both include styles. Every include directory its compile
-#    commands carry lies in the moved prefix or the GTest prefix.
+#    program in both include styles. Each links only its vernier target, so
+#    GoogleTest reaches the benchmark through vernier::bench alone. Every
+#    include directory the compile commands carry lies in the moved prefix or
+#    the GTest prefix.
 # 5. Each program resolves its vernier library in the moved prefix and runs
 #    with LD_LIBRARY_PATH unset: `make test` and `make testp` point that
 #    variable at the build tree's libraries, which would otherwise be loaded.

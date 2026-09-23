@@ -120,15 +120,17 @@ Consumers use `find_package(vernier)`:
 
 ```cmake
 find_package(vernier REQUIRED)
-target_link_libraries(my_benchmark PRIVATE vernier::bench GTest::gtest)
+target_link_libraries(my_benchmark PRIVATE vernier::bench)
 target_link_libraries(my_app PRIVATE vernier::monitor)
 ```
 
-`PERF_MAIN()` supplies `main()` and runs the GoogleTest cases, so a benchmark
-links `GTest::gtest`, not `GTest::gtest_main`. `find_package(vernier)` looks up
-GTest even for a consumer that uses only the monitor, so GTest must be installed
-where CMake finds it. A GPU benchmark links `vernier::bench_cuda` together with
-`vernier::bench`.
+`vernier::bench` brings GoogleTest's headers and library with it: `Perf.hpp`
+includes GoogleTest and `PERF_MAIN()` runs the GoogleTest cases.
+`find_package(vernier)` looks up GTest even for a consumer that uses only the
+monitor, so GTest must be installed where CMake finds it. A benchmark may still
+link `GTest::gtest` itself; it needs no `GTest::gtest_main`, because
+`PERF_MAIN()` supplies `main()`. A GPU benchmark links `vernier::bench_cuda`
+together with `vernier::bench`.
 
 The install tree contains headers, shared libraries, CMake config, and documentation
 under `build/native-linux-release/install/`.

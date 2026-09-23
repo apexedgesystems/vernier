@@ -14,12 +14,15 @@
 #
 # Usage:
 #   find_package(vernier REQUIRED)
-#   target_link_libraries(my_bench PRIVATE vernier::bench GTest::gtest)
+#   target_link_libraries(my_bench PRIVATE vernier::bench)
 #   target_link_libraries(my_app PRIVATE vernier::monitor)
 #
 # Requirements:
-#   GTest must be available (framework macros expand to TEST()). PERF_MAIN()
-#   supplies main(), so a benchmark links GTest::gtest, not GTest::gtest_main.
+#   GTest must be available, also to a consumer that uses only the monitor.
+#   vernier::bench carries GTest::gtest in its usage requirements (framework
+#   macros expand to TEST() and PERF_MAIN() runs them); find_dependency(GTest)
+#   below provides that target. PERF_MAIN() supplies main(), so a benchmark
+#   needs no GTest::gtest_main.
 # ==============================================================================
 
 @PACKAGE_INIT@
