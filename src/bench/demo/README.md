@@ -60,10 +60,10 @@ BasicWorkflow.JoinV1      21.04410  20.75180  21.12340      0.7%           47519
 ```
 
 Reserving the result once instead of copying it per part is 44 times faster
-here, and the third test fails if that ever stops being true. The framework
-measured both versions, wrote the CSV, and `bench summary` read it back. Every
-demo follows the same pattern: measure something slow, measure something fast,
-compare.
+in this capture. The third test fails if the speedup falls to three times or
+less. The framework measured both versions, wrote the CSV, and `bench summary`
+read it back. Every demo follows the same pattern: measure something slow,
+measure something fast, compare.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
 walkthrough: how to read those lines, what reproduces on another machine, and
