@@ -5,12 +5,22 @@
 
 #include "src/bench/inc/ProfilerPerf.hpp"
 
-#ifdef __linux__
-#include <array>
+#include "src/bench/inc/ProfilerRegistry.hpp"
+
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <csignal>
 #include <cstring>
+#include <fstream>
+#include <initializer_list>
+#include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
+
+#ifdef __linux__
+#include <array>
+#include <csignal>
 #include <filesystem>
 #include <thread>
 #include <chrono>
@@ -22,48 +32,282 @@
 namespace vernier {
 namespace bench {
 
+/* ----------------------------- Readiness ----------------------------- */
+
+namespace {
+
+bool startsWithTrim(const std::string& s, const char* prefix) {
+  std::size_t i = 0;
+  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) {
+    ++i;
+  }
+  const std::size_t PLEN = std::strlen(prefix);
+  return (s.size() >= i + PLEN && s.compare(i, PLEN, prefix) == 0);
+}
+
+const char* modeName(PerfMode mode) {
+  switch (mode) {
+  case PerfMode::RECORD:
+    return "record";
+  case PerfMode::MEM:
+    return "mem";
+  case PerfMode::C2C:
+    return "c2c";
+  case PerfMode::STAT:
+    break;
+  }
+  return "stat";
+}
+
+bool containsAny(const std::string& text, std::initializer_list<const char*> needles) {
+  for (const char* needle : needles) {
+    if (text.find(needle) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief The first line of @p text containing @p needle, else its last lines. */
+std::string lineWith(const std::string& text, const char* needle) {
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.find(needle) != std::string::npos) {
+      return outputTail(line, 1);
+    }
+  }
+  return outputTail(text);
+}
+
+/** @brief Events `perf stat -x,` marked `<not supported>`, comma-separated. */
+std::string unsupportedEvents(const std::string& csv) {
+  std::istringstream in(csv);
+  std::string line;
+  std::string events;
+  while (std::getline(in, line)) {
+    if (line.rfind("<not supported>", 0) != 0) {
+      continue;
+    }
+    // <value>,<unit>,<event>,...
+    const std::size_t FIRST = line.find(',');
+    const std::size_t SECOND = FIRST == std::string::npos ? FIRST : line.find(',', FIRST + 1);
+    if (SECOND == std::string::npos) {
+      continue;
+    }
+    const std::size_t THIRD = line.find(',', SECOND + 1);
+    events += (events.empty() ? "" : ", ") + line.substr(SECOND + 1, THIRD - SECOND - 1);
+  }
+  return events;
+}
+
+#ifdef __linux__
+/** @brief True when this process holds CAP_PERFMON or CAP_SYS_ADMIN. */
+bool hasCounterCapability() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("CapEff:", 0) == 0) {
+      const std::uint64_t CAPS = std::strtoull(line.c_str() + 7, nullptr, 16);
+      constexpr std::uint64_t SYS_ADMIN = 1ULL << 21;
+      constexpr std::uint64_t PERFMON = 1ULL << 38;
+      return (CAPS & (SYS_ADMIN | PERFMON)) != 0;
+    }
+  }
+  return false;
+}
+
+/** @brief "; kernel.perf_event_paranoid=N limits ..." when it restricts this user, else "". */
+std::string paranoidNote(const ReadinessContext& ctx) {
+  if (ctx.euid() == 0 || hasCounterCapability()) {
+    return {};
+  }
+  std::ifstream in("/proc/sys/kernel/perf_event_paranoid");
+  int paranoid = -1;
+  if (!(in >> paranoid) || paranoid < 2) {
+    return {};
+  }
+  return "; kernel.perf_event_paranoid=" + std::to_string(paranoid) +
+         " limits this user to user-space events";
+}
+#endif
+
+} // namespace
+
+PerfMode parsePerfMode(const std::string& profileArgs) {
+  if (startsWithTrim(profileArgs, "record")) {
+    return PerfMode::RECORD;
+  }
+  if (startsWithTrim(profileArgs, "mem")) {
+    return PerfMode::MEM;
+  }
+  if (startsWithTrim(profileArgs, "c2c")) {
+    return PerfMode::C2C;
+  }
+  return PerfMode::STAT;
+}
+
+ReadinessResult checkPerfRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
+#ifdef __linux__
+  auto plan = std::make_shared<PerfPlan>();
+  plan->mode = parsePerfMode(request.profileArgs);
+  const auto TOOL = resolveExecutable("perf", ctx);
+  if (!TOOL) {
+    return readinessResult(ReadinessCause::MISSING, "perf not found on PATH",
+                           "Install linux-tools-$(uname -r), the perf that matches the running "
+                           "kernel.");
+  }
+  if (!TOOL->executable) {
+    return readinessResult(ReadinessCause::UNUSABLE, TOOL->path + " is not an executable file",
+                           "Reinstall linux-tools, or fix PATH so it finds a working perf.");
+  }
+  plan->perf = TOOL->path;
+
+  // The executable runs: a perf wrapper without the kernel-matched build
+  // fails here and is never launched.
+  const ProbeResult VERSION = runBoundedProbe({plan->perf, "--version"}, 5000, ctx);
+  if (!VERSION.succeeded()) {
+    const std::string TAIL = outputTail(VERSION.output, 3);
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           plan->perf + " --version: " + VERSION.describe() +
+                               (TAIL.empty() ? std::string{} : ": " + TAIL),
+                           "Install linux-tools matching the running kernel: apt install "
+                           "linux-tools-$(uname -r).");
+  }
+
+  // Effective access, not the sysctl: count this process for 100 ms as this
+  // user. Root, CAP_PERFMON and container policy all show up here.
+  const std::string SELF = std::to_string(static_cast<long>(ctx.self()));
+  const ProbeResult ACCESS = runBoundedProbe(
+      {plan->perf, "stat", "-x,", "-e", PERF_STAT_EVENTS, "-p", SELF, "--timeout", "100"}, 5000,
+      ctx);
+  if (!ACCESS.succeeded()) {
+    if (containsAny(ACCESS.output, {"Access to performance monitoring", "Permission denied",
+                                    "Operation not permitted", "No permission"})) {
+      return readinessResult(
+          ReadinessCause::DENIED,
+          "perf stat cannot open the counters as this user: " +
+              lineWith(ACCESS.output, "Access to performance monitoring"),
+          "Grant CAP_PERFMON to the benchmark, lower kernel.perf_event_paranoid (sudo sysctl -w "
+          "kernel.perf_event_paranoid=2), or run as root; vernier does not elevate perf.");
+    }
+    const std::string TAIL = outputTail(ACCESS.output);
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           "perf stat -p " + SELF + ": " + ACCESS.describe() +
+                               (TAIL.empty() ? std::string{} : ": " + TAIL),
+                           "Run the same perf stat by hand to see why.");
+  }
+
+  const std::string UNSUPPORTED = unsupportedEvents(ACCESS.output);
+  const std::string NOTE = paranoidNote(ctx);
+  ReadinessResult result;
+  if (plan->mode != PerfMode::STAT) {
+    result =
+        readinessResult(ReadinessCause::UNVERIFIED,
+                        std::string{"perf stat counts this process; perf "} + modeName(plan->mode) +
+                            " itself is not probed before the run" + NOTE,
+                        "");
+  } else if (!UNSUPPORTED.empty()) {
+    result = readinessResult(ReadinessCause::CAVEAT,
+                             "perf stat counts this process, but " + UNSUPPORTED +
+                                 " <not supported> here; those columns stay empty" + NOTE,
+                             "");
+  } else {
+    result = readinessResult(ReadinessCause::READY,
+                             std::string{"perf stat counted "} + PERF_STAT_EVENTS +
+                                 " on this process (probe with " + plan->perf + ")" + NOTE,
+                             "");
+  }
+  result.plan = std::move(plan);
+  return result;
+#else
+  (void)request;
+  (void)ctx;
+  return readinessResult(ReadinessCause::UNSUPPORTED, "perf is Linux-only",
+                         "Run on Linux or use a different profiler.");
+#endif
+}
+
+/* ----------------------------- PerfStatProfiler ----------------------------- */
+
+namespace {
+
+std::shared_ptr<const PerfPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const PerfPlan>(result.plan);
+}
+
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "perf";
+  return checkPerfRequest(request, CTX);
+}
+
+} // namespace
+
 PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
 #ifdef __linux__
+  // A profiler built for a test owns that test's folder, ready or not.
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "perf");
-#else
-  (void)cfg_;
-  (void)testName_;
+#endif
+  const ReadinessResult DECISION = decideNow(cfg_);
+  plan_ = readyPlan(DECISION);
+  if (!plan_) {
+    std::fprintf(stderr, "[perf] not started: %s\n", DECISION.report.message.c_str());
+    if (!DECISION.report.hint.empty()) {
+      std::fprintf(stderr, "[perf] %s\n", DECISION.report.hint.c_str());
+    }
+  }
+}
+
+PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName,
+                                   std::shared_ptr<const PerfPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+#ifdef __linux__
+  if (plan_) {
+    artifactDir_ =
+        profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "perf");
+  }
 #endif
 }
 
 void PerfStatProfiler::beforeMeasure() {
 #ifdef __linux__
-  if (!isPerfAvailable()) {
+  if (!plan_) {
     return;
   }
 
+  // The executable the check ran, by its absolute path.
+  const std::string PERF = "'" + plan_->perf + "'";
   pid_t targetPid = ::getpid();
-  const bool useRecord = startsWithTrim(cfg_.profileArgs, "record");
-  const bool useMem = startsWithTrim(cfg_.profileArgs, "mem");
-  const bool useC2c = startsWithTrim(cfg_.profileArgs, "c2c");
 
-  if (useMem) {
+  if (plan_->mode == PerfMode::MEM) {
     // perf mem -- memory-access profiling. Captures load/store latency
     // distribution; useful for finding L1/L2/LLC stalls.
     dataPath_ = artifactDir_ + "/perf.mem.data";
     errPath_ = artifactDir_ + "/mem.err.txt";
-    std::string cmd = "perf mem record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
+    std::string cmd =
+        PERF + " mem record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
-  } else if (useC2c) {
+  } else if (plan_->mode == PerfMode::C2C) {
     // perf c2c -- cache-line contention profiling. Surfaces false sharing
     // by attributing HITM events to the source line of the contended write.
     dataPath_ = artifactDir_ + "/perf.c2c.data";
     errPath_ = artifactDir_ + "/c2c.err.txt";
-    std::string cmd = "perf c2c record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
+    std::string cmd =
+        PERF + " c2c record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
-  } else if (useRecord) {
+  } else if (plan_->mode == PerfMode::RECORD) {
     // perf record mode
     dataPath_ = artifactDir_ + "/perf.data";
     errPath_ = artifactDir_ + "/record.err.txt";
     // Build: perf record <args> -p PID
-    std::string cmd = "perf record ";
+    std::string cmd = PERF + " record ";
     if (!cfg_.profileArgs.empty()) {
       // strip leading "record"
       auto i = cfg_.profileArgs.find_first_not_of(" \t", 6);
@@ -75,8 +319,7 @@ void PerfStatProfiler::beforeMeasure() {
   } else {
     // perf stat mode (default)
     statPath_ = artifactDir_ + "/stat.txt";
-    std::string events = "cpu-cycles,instructions,branches,branch-misses,cache-misses";
-    std::string cmd = "perf stat -e " + events + " -p " + std::to_string(targetPid);
+    std::string cmd = PERF + " stat -e " + PERF_STAT_EVENTS + " -p " + std::to_string(targetPid);
     if (!cfg_.profileArgs.empty()) {
       cmd += " " + cfg_.profileArgs;
     }
@@ -169,27 +412,11 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
 #endif
 }
 
-bool PerfStatProfiler::isPerfAvailable() const {
-#ifdef __linux__
-  return (std::system("command -v perf >/dev/null 2>&1") == 0);
-#else
-  return false;
-#endif
-}
-
-bool PerfStatProfiler::startsWithTrim(const std::string& s, const char* prefix) {
-  std::size_t i = 0;
-  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) {
-    ++i;
-  }
-  auto plen = std::strlen(prefix);
-  return (s.size() >= i + plen && s.compare(i, plen, prefix) == 0);
-}
-
 void PerfStatProfiler::launchBackground(const std::string& cmdCore, const std::string& stdoutPath,
                                         const std::string& stderrPath) {
 #ifdef __linux__
-  // Build: sh -c "<cmd> >STDOUT 2>STDERR & echo $!"
+  // popen() runs "<cmd> >STDOUT 2>STDERR & echo $!" with /bin/sh itself, so
+  // the launch needs no sh on PATH, and $! is perf's own pid.
   std::string cmd = cmdCore;
   std::string redirs;
   if (!stdoutPath.empty()) {
@@ -198,7 +425,7 @@ void PerfStatProfiler::launchBackground(const std::string& cmdCore, const std::s
   if (!stderrPath.empty()) {
     redirs += " 2>'" + stderrPath + "'";
   }
-  std::string shellCmd = "sh -c '" + cmd + redirs + " & echo $!'";
+  std::string shellCmd = cmd + redirs + " & echo $!";
 
   FILE* pipe = ::popen(shellCmd.c_str(), "r");
   if (!pipe) {
@@ -235,71 +462,30 @@ bool PerfStatProfiler::killChild(int sig) noexcept {
 
 // Factory implementation
 std::unique_ptr<Profiler> makePerfProfiler(const PerfConfig& cfg, const std::string& testName) {
-#ifdef __linux__
-  return std::make_unique<PerfStatProfiler>(cfg, testName);
-#else
-  (void)cfg;
-  (void)testName;
-  return nullptr;
-#endif
+  auto plan = readyPlan(decideNow(cfg));
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<PerfStatProfiler>(cfg, testName, std::move(plan));
 }
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedPerfProfiler(const PerfConfig& cfg,
+                                                  const std::string& testName,
+                                                  const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<PerfStatProfiler>(cfg, testName, std::move(plan));
+}
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-namespace vernier {
-namespace bench {
-
-EnvReport checkPerfEnvironment() {
-#ifdef __linux__
-  // 1) Is the perf binary even on PATH?
-  if (std::system("command -v perf >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error, "perf binary not found on PATH",
-                     "Install linux-tools-$(uname -r) inside the dev container."};
-  }
-  // 1b) The perf wrapper can be present while the kernel-matched build is not
-  // (linux-tools must match the RUNNING kernel). If so the wrapper exists but
-  // `perf --version` fails -- report it rather than a false [OK].
-  if (std::system("perf --version >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "perf wrapper present but no kernel-matched build (perf --version failed)",
-                     "Install linux-tools matching the running kernel: "
-                     "apt install linux-tools-$(uname -r)."};
-  }
-  // 2) perf_event_paranoid gates hardware counter access.
-  std::FILE* fp = std::fopen("/proc/sys/kernel/perf_event_paranoid", "r");
-  if (!fp) {
-    return EnvReport{EnvReport::Status::Warning, "cannot read /proc/sys/kernel/perf_event_paranoid",
-                     "Run inside Linux; non-Linux platforms cannot run perf."};
-  }
-  int paranoid = 4;
-  if (std::fscanf(fp, "%d", &paranoid) != 1) {
-    paranoid = 4; // unreadable: assume the most restrictive setting
-  }
-  std::fclose(fp);
-  if (paranoid <= 1) {
-    return EnvReport{EnvReport::Status::Ok,
-                     "perf available, perf_event_paranoid=" + std::to_string(paranoid), ""};
-  }
-  if (paranoid <= 2) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "perf_event_paranoid=" + std::to_string(paranoid) +
-                         " (kernel profiling blocked; userspace counters still work)",
-                     "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1"};
-  }
-  return EnvReport{EnvReport::Status::Error,
-                   "perf_event_paranoid=" + std::to_string(paranoid) + " (all perf access blocked)",
-                   "Lower with: sudo sysctl -w kernel.perf_event_paranoid=1 "
-                   "(resets on reboot; rerun each session)."};
-#else
-  return EnvReport{EnvReport::Status::Error, "perf is Linux-only",
-                   "Run on Linux or use a different profiler."};
-#endif
-}
-
-} // namespace bench
-} // namespace vernier
-
-VERNIER_REGISTER_PROFILER_BACKEND("perf", ::vernier::bench::makePerfProfiler,
-                                  ::vernier::bench::checkPerfEnvironment,
-                                  "Install linux-tools-$(uname -r) or run outside Docker.")
+VERNIER_REGISTER_READINESS_BACKEND("perf", ::vernier::bench::checkPerfRequest,
+                                   ::vernier::bench::makePlannedPerfProfiler,
+                                   "Install linux-tools-$(uname -r) or run outside Docker.")

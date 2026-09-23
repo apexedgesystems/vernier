@@ -167,6 +167,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `benchSudoActive()`, `sudoBpftraceUsable()`, `bpftraceAttachViable()` and
   `sudoKill()` stay and use the same policy and tools: `BENCH_SUDO=yes` or
   `on` enables, `no` or `off` disables, and any other value is not an opt-in.
+- **perf's doctor row and run follow its real counter access** -- the row
+  read `kernel.perf_event_paranoid` and failed at 3 or more even where perf
+  counts (as root in a privileged container), and a perf whose `--version`
+  failed was reported as a warning and then launched anyway. The check
+  resolves `perf` on `PATH`, requires `perf --version` to succeed, and counts
+  this process for 100 ms with `perf stat -e
+  cpu-cycles,instructions,branches,branch-misses,cache-misses -p <pid>` as the
+  current user: refused access is `denied` with the remedies (vernier never
+  elevates perf), an event the CPU lacks is a caveat whose column stays empty,
+  and `record`, `mem` and `c2c` are reported `unverified` beyond that access.
+  The run launches the absolute path the check ran, started by `/bin/sh`
+  rather than an `sh` looked up on `PATH`; a perf that fails its check is
+  never launched.
 
 ### Fixed
 

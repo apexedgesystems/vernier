@@ -518,6 +518,85 @@ elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")
   expect_not("${run_ERR}" "stacks written" "run report")
   expect_owned_and_gone("run")
 
+elseif (CASE STREQUAL "PerfLaunchesTheResolvedPath")
+  # The run launches the perf the check ran, by its absolute path.
+  fake(fake_perf.sh perf)
+  run(run --profile perf ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  read_log(_text)
+  count_of(
+    _launches
+    "${_text}"
+    "perf ${WORK_DIR}/bin/perf stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses -p "
+  )
+  expect_eq("${_launches}" "2" "launches of the resolved perf (one per guarded case)")
+  expect_not("${_text}" "perf perf " "fake log (perf run by bare name)")
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "PerfBrokenNeverLaunched")
+  fake(fake_perf.sh perf)
+  list(APPEND _env FAKE_PERF_MODE=broken)
+  run(doctor --profile perf --profile-check-json)
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  string(
+    JSON
+    _hint
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${doctor_OUT}"
+    selected
+    hint
+  )
+  expect_has(
+    "${_message}"
+    "unusable: ${WORK_DIR}/bin/perf --version: exit status 2: WARNING: perf not found for kernel"
+    "selected message"
+  )
+  run(run --profile perf ${_quick})
+  expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
+  read_log(_text)
+  expect_not("${_text}" " stat " "fake log (a broken perf must not run)")
+
+elseif (CASE STREQUAL "PerfDeniedMatchesDoctor")
+  fake(fake_perf.sh perf)
+  list(APPEND _env FAKE_PERF_MODE=denied)
+  run(doctor --profile perf --profile-check-json)
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${doctor_OUT}"
+    selected
+    message
+  )
+  string(
+    JSON
+    _hint
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${doctor_OUT}"
+    selected
+    hint
+  )
+  expect_has(
+    "${_message}" "denied: perf stat cannot open the counters as this user" "selected message"
+  )
+  run(run --profile perf ${_quick})
+  expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
+
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")
 endif ()

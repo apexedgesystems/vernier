@@ -135,6 +135,39 @@ private:
   std::string log_;
 };
 
+/* ----------------------------- ScopedEnv ----------------------------- */
+
+/**
+ * @brief Sets one process environment variable for a scope and restores it.
+ *
+ * For tests of what a launch inherits from the live environment; readiness
+ * decisions take an explicit context instead.
+ */
+class ScopedEnv {
+public:
+  ScopedEnv(const char* name, const std::string& value) : name_(name) {
+    if (const char* old = std::getenv(name)) {
+      old_ = old;
+      hadOld_ = true;
+    }
+    ::setenv(name, value.c_str(), 1);
+  }
+  ~ScopedEnv() {
+    if (hadOld_) {
+      ::setenv(name_.c_str(), old_.c_str(), 1);
+    } else {
+      ::unsetenv(name_.c_str());
+    }
+  }
+  ScopedEnv(const ScopedEnv&) = delete;
+  ScopedEnv& operator=(const ScopedEnv&) = delete;
+
+private:
+  std::string name_;
+  std::string old_;
+  bool hadOld_ = false;
+};
+
 } // namespace test
 } // namespace bench
 } // namespace vernier

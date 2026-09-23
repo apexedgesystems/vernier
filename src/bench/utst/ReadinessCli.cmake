@@ -39,6 +39,9 @@ set(_readiness_cli_cases
     BpfRunReportsRefusedStop
     OffcpuCurrentUserRun
     OffcpuNoStacksClaimWhenKilled
+    PerfLaunchesTheResolvedPath
+    PerfBrokenNeverLaunched
+    PerfDeniedMatchesDoctor
 )
 
 foreach (_case IN LISTS _readiness_cli_cases)

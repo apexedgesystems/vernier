@@ -10,6 +10,7 @@
 
 #include "src/bench/inc/ProfilerBpftrace.hpp"
 #include "src/bench/inc/ProfilerOffCpu.hpp"
+#include "src/bench/inc/ProfilerPerf.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
@@ -28,6 +29,9 @@
 using vernier::bench::BpftracePlan;
 using vernier::bench::EnvReport;
 using vernier::bench::OffCpuPlan;
+using vernier::bench::parsePerfMode;
+using vernier::bench::PerfMode;
+using vernier::bench::PerfPlan;
 using vernier::bench::PrivilegeRoute;
 using vernier::bench::ProfilerRegistry;
 using vernier::bench::ReadinessCause;
@@ -36,6 +40,7 @@ using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::test::FakeToolDir;
+using vernier::bench::test::ScopedEnv;
 
 namespace {
 
@@ -379,4 +384,146 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserDenied) {
             0U)
       << R.report.message;
   EXPECT_EQ(R.report.hint.rfind("Set BENCH_SUDO=1 with a scoped sudoers grant", 0), 0U);
+}
+
+/* ----------------------------- perf ----------------------------- */
+
+namespace {
+
+/** @brief A fake perf on PATH, asked about one request. */
+class PerfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    perf_ = dir_.install("fake_perf.sh", "perf");
+  }
+
+  ReadinessResult check(std::map<std::string, std::string> env, const std::string& args = "",
+                        uid_t euid = 0) const {
+    ReadinessRequest request;
+    request.backend = "perf";
+    request.profileArgs = args;
+    request.scope = ReadinessScope::PREFLIGHT;
+    return ProfilerRegistry::instance().checkRequest(request, dir_.context(std::move(env), euid));
+  }
+
+  FakeToolDir dir_;
+  std::string perf_;
+};
+
+} // namespace
+
+/** @test One parser decides the mode for the check and the launch. */
+TEST(PerfModeTest, ParsesTheSelectedMode) {
+  EXPECT_EQ(parsePerfMode(""), PerfMode::STAT);
+  EXPECT_EQ(parsePerfMode("-a --per-thread"), PerfMode::STAT);
+  EXPECT_EQ(parsePerfMode("record -g"), PerfMode::RECORD);
+  EXPECT_EQ(parsePerfMode("  record"), PerfMode::RECORD);
+  EXPECT_EQ(parsePerfMode("mem"), PerfMode::MEM);
+  EXPECT_EQ(parsePerfMode("c2c"), PerfMode::C2C);
+}
+
+/** @test Counting access is probed with the resolved perf, which the plan keeps. */
+TEST_F(PerfCheckTest, CountsWithTheResolvedTool) {
+  const ReadinessResult R = check({});
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "perf stat counted cpu-cycles,instructions,branches,branch-misses,"
+                              "cache-misses on this process (probe with " +
+                                  perf_ + ")");
+  const auto PLAN = std::dynamic_pointer_cast<const PerfPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->perf, perf_);
+  EXPECT_EQ(PLAN->mode, PerfMode::STAT);
+  EXPECT_EQ(dir_.logLines("perf " + perf_ +
+                          " stat -x, -e cpu-cycles,instructions,branches,"
+                          "branch-misses,cache-misses -p " +
+                          std::to_string(::getpid()) + " --timeout 100")
+                .size(),
+            1U)
+      << dir_.log();
+}
+
+/** @test A perf whose --version fails is unusable, and is never asked to count. */
+TEST_F(PerfCheckTest, BrokenPerfIsNeverRun) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "broken"}});
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(R.report.message.rfind("unusable: " + perf_ +
+                                       " --version: exit status 2: WARNING: "
+                                       "perf not found for kernel 6.8.0-138",
+                                   0),
+            0U)
+      << R.report.message;
+  EXPECT_NE(R.report.hint.find("linux-tools-$(uname -r)"), std::string::npos);
+  EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
+}
+
+/** @test Refused counter access is denied, with the remedies and no elevation. */
+TEST_F(PerfCheckTest, DeniedAccessNamesTheRemedy) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "denied"}}, "", 1000);
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message, "denied: perf stat cannot open the counters as this user: Access to "
+                              "performance monitoring and observability operations is limited.");
+  EXPECT_EQ(R.report.hint, "Grant CAP_PERFMON to the benchmark, lower kernel.perf_event_paranoid "
+                           "(sudo sysctl -w kernel.perf_event_paranoid=2), or run as root; vernier "
+                           "does not elevate perf.");
+}
+
+/** @test An event the PMU lacks is a caveat, not a failure. */
+TEST_F(PerfCheckTest, UnsupportedEventIsCaveat) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "unsupported"}});
+  EXPECT_EQ(R.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(R.report.message, "perf stat counts this process, but cache-misses <not supported> "
+                              "here; those columns stay empty");
+}
+
+/** @test Modes beyond stat get the access probe and stay unverified past it. */
+TEST_F(PerfCheckTest, OtherModesUnverifiedBeyondAccess) {
+  const ReadinessResult RECORD = check({}, "record -g");
+  EXPECT_EQ(RECORD.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(RECORD.report.message,
+            "unverified: perf stat counts this process; perf record itself is not probed before "
+            "the run");
+  const auto PLAN = std::dynamic_pointer_cast<const PerfPlan>(RECORD.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->mode, PerfMode::RECORD);
+  const ReadinessResult DENIED = check({{"FAKE_PERF_MODE", "denied"}}, "c2c", 1000);
+  EXPECT_EQ(DENIED.cause, ReadinessCause::DENIED) << "known unavailability is not unverified";
+}
+
+/** @test A missing or non-executable perf is an error. */
+TEST_F(PerfCheckTest, MissingOrNotExecutable) {
+  dir_.install("fake_perf.sh", "perf", 0644);
+  const ReadinessResult PLAIN = check({});
+  EXPECT_EQ(PLAIN.report.message, "unusable: " + perf_ + " is not an executable file");
+  FakeToolDir empty;
+  ReadinessRequest request;
+  request.backend = "perf";
+  const ReadinessResult MISSING =
+      ProfilerRegistry::instance().checkRequest(request, empty.context());
+  EXPECT_EQ(MISSING.report.message, "missing: perf not found on PATH");
+}
+
+/** @test The launch runs the perf the plan names, not whatever PATH finds then. */
+TEST_F(PerfCheckTest, LaunchRunsThePlannedPath) {
+  FakeToolDir other; // the live PATH: no perf at all
+  ASSERT_TRUE(other.ok());
+  auto plan = std::make_shared<PerfPlan>();
+  plan->perf = perf_;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "perf";
+  cfg.artifactRoot = other.path();
+  {
+    ScopedEnv path("PATH", other.path());
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    vernier::bench::PerfStatProfiler profiler(cfg, "Perf.Launch", plan);
+    profiler.beforeMeasure();
+    profiler.afterMeasure(vernier::bench::Stats{});
+  }
+  EXPECT_EQ(dir_.logLines("perf " + perf_ +
+                          " stat -e cpu-cycles,instructions,branches,"
+                          "branch-misses,cache-misses -p " +
+                          std::to_string(::getpid()))
+                .size(),
+            1U)
+      << dir_.log();
 }
