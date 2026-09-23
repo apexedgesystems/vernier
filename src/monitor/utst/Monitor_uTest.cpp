@@ -325,10 +325,14 @@ TEST(MonitorTest, FileSinkOutput) {
  * @test Samples still queued when stop() is called reach both the summary and
  *       the configured sink.
  *
- * The producer runs to completion and calls stop() immediately, leaving the
- * queue non-empty: stop()'s join is the synchronization point, so no sleep is
- * needed and none is used. Repeated rounds because a single round could find
- * the queue already empty.
+ * Each round pushes 64 samples and calls stop() at once. Nothing holds the I/O
+ * thread back, so a round tests stop() with samples still queued only if the
+ * I/O thread, which start() has just created, has not drained them by the
+ * time it sees the stop. The pushes take microseconds, so that is the usual
+ * case, and a drain that loses a queued sample then fails the round. A round
+ * whose samples were drained first passes however stop() treats queued
+ * samples, so the round is repeated: a loss goes unseen only if every round
+ * drains early. stop() joins the I/O thread, so the checks need no sleep.
  */
 TEST(MonitorTest, StopDrainsSamplesQueuedBeforeStop) {
   const auto TMP_PATH = sinkPath("pending");
