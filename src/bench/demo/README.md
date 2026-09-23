@@ -97,14 +97,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                    | Slow Path              | Fast Path               | Walkthrough                                               |
-| --- | ------------------ | -------------------------- | ---------------------- | ----------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels   | Deliberate OOB write   | Bounds-checked scale    | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
+| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
+
+Demo 01 measures the shared SAXPY example (see
+[Shared Examples](#shared-examples)); the other three carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -180,6 +183,19 @@ slow/fast workload pairs used across demos:
 
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
 and dependency chains), and designed to show measurable differences.
+
+### Shared Examples
+
+A shared example is a workload with a library of its own under
+[examples/](examples/), measured by a demo and read by that demo's
+walkthrough. The example owns the code and the unit tests that hold its
+versions to the same answers; the demo owns how it is measured. Running
+`TestDemoExamples` answers "do the versions still agree", which is the
+question a timing comparison depends on.
+
+| Example                               | Versions                                                                                     | Used In |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- | ------- |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads | Demo 10 |
 
 ---
 

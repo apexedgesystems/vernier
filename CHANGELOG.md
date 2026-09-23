@@ -263,6 +263,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   hold the adaptive threshold for the case's payload size and the verdict
   measured against it. The config and metadata columns of a GPU row are
   unchanged.
+- **The GPU basic-workflow demo measures a shared example and asserts what it
+  teaches** -- `BenchDemo_Gpu_01_GpuBasicWorkflow` carried its own vector-add
+  kernel and checked `callsPerSecond > 10`, which no plausible result can fail,
+  so the demo could not notice when the numbers behind its walkthrough stopped
+  being true. It measures the shared SAXPY example
+  (`src/bench/demo/examples/saxpy`, whose unit tests hold the CPU loop and both
+  GPU versions to the same answers) and each test asserts the effect it
+  demonstrates: the baseline that its loop computed `a*x + y`, the transferring
+  test that the copies cost several times the kernel, the kernel-only test that
+  no transfer time is recorded and that the kernel beats the CPU loop by a
+  stated margin. The binary's hand-written `main()` is `PERF_GPU_MAIN()`, so
+  the `--gpu-*` flags reach the harness and the CSV carries the GPU columns
+  whatever the tests are named. A run filtered to one GPU test skips the
+  speedup comparison, which needs the baseline test of the same suite.
 - **An unknown GPU speedup is an empty cell** -- with no baseline to compare
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
