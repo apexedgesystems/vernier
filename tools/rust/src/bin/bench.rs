@@ -23,10 +23,11 @@
 //! exits 0; `--fail-on-regression` is the gate and exits 1 when a test is
 //! labelled REGRESSION or the candidate does not run a baseline test.
 //! Candidate-only tests are reported as new and do not fail on their own.
-//! Unusable input -- an unusable `--threshold`, a duplicate test identity, a
-//! median that is not a finite positive number, or no test in both runs --
-//! exits 1 with the cause on stderr and no comparison on stdout, with or
-//! without the gate flag.
+//! Unusable input exits 1 with the cause on stderr and no comparison on
+//! stdout, with or without the gate flag: an unusable `--threshold`, a
+//! `wallMedian` or `wallCV` that is missing, empty or not a finite number, a
+//! median of zero or less, a negative CV, a duplicate test identity, or no
+//! test in both runs.
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -346,8 +347,9 @@ fn run(args: Args) -> Result<(), Error> {
             markdown,
             fail_on_regression,
         } => {
-            let base_rows = bench::load_csv(&baseline)?;
-            let cand_rows = bench::load_csv(&candidate)?;
+            let columns = bench::compare::measured_columns();
+            let base_rows = bench::load_csv_strict(&baseline, &columns)?;
+            let cand_rows = bench::load_csv_strict(&candidate, &columns)?;
             // Unusable input is reported instead of a comparison, so nothing
             // reaches stdout that a gate could read as a pass.
             let comparison = bench::compare_runs(&base_rows, &cand_rows, threshold)?;

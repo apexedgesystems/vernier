@@ -108,9 +108,10 @@ exits 1 rather than reporting that nothing regressed.
 
 **Input it refuses.** A `--threshold` that is not a finite percentage of zero
 or more, a test name a CSV reports twice, a `wallMedian` or `wallCV` that is
-not a finite number, a `wallMedian` of zero or less, and a negative `wallCV`
-each end the command with exit code 1 and a message naming the run, the test
-and the value. Nothing is printed to stdout in that case.
+missing from its row, empty, not a number or not finite, a `wallMedian` of
+zero or less, and a negative `wallCV` each end the command with exit code 1
+and a message naming the file or run, the test, the column and the value.
+Nothing is printed to stdout in that case.
 
 **Advisory or gate.** Plain `bench compare` reports and exits 0 whatever the
 labels say. `--fail-on-regression` is the gate: it exits 1 when a test is

@@ -7,6 +7,10 @@
 //!
 //! Uses manual field extraction (not serde Deserialize) so that rows shorter
 //! than the header are handled gracefully -- missing trailing columns get defaults.
+//!
+//! A caller that computes from a column can load it strictly instead: a row
+//! whose value there is missing, empty or not a number is an error rather than
+//! a default that looks like a measurement.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -112,6 +116,56 @@ fn get_f64_or(
     }
 }
 
+/// Why a strict column holds no number in a row.
+enum Unreadable<'a> {
+    /// The row ends before the column.
+    Missing,
+    /// The field is present and empty.
+    Empty,
+    /// The field holds text that does not parse as a number.
+    NotANumber(&'a str),
+}
+
+/// Get a float field that must hold a number. Where `get_f64` gives a
+/// missing, empty or unparsable value the default 0.0, this says which it was.
+fn require_f64<'a>(
+    record: &'a csv::StringRecord,
+    hmap: &HashMap<String, usize>,
+    name: &str,
+) -> Result<f64, Unreadable<'a>> {
+    match hmap.get(name).and_then(|&i| record.get(i)) {
+        None => Err(Unreadable::Missing),
+        Some("") => Err(Unreadable::Empty),
+        Some(text) => text.parse().map_err(|_| Unreadable::NotANumber(text)),
+    }
+}
+
+/// The error for a strict column without a number: the file and line, the
+/// test, the column, and what the field held.
+fn unreadable_error(
+    path: &Path,
+    record: &csv::StringRecord,
+    hmap: &HashMap<String, usize>,
+    header_len: usize,
+    name: &str,
+    problem: Unreadable<'_>,
+) -> Error {
+    let location = match record.position() {
+        Some(pos) => format!("{}, line {}", path.display(), pos.line()),
+        None => path.display().to_string(),
+    };
+    let test = get_str(record, hmap, "test");
+    let found = match problem {
+        Unreadable::Missing => format!(
+            "has no {name} value: the row ends after {} of {header_len} columns",
+            record.len()
+        ),
+        Unreadable::Empty => format!("has no {name} value: the field is empty"),
+        Unreadable::NotANumber(text) => format!("has {name} '{text}', which is not a number"),
+    };
+    Error::Parse(format!("{location}: test '{test}' {found}"))
+}
+
 /// Parse a single CSV record into a BenchRow.
 fn parse_row(record: &csv::StringRecord, hmap: &HashMap<String, usize>) -> BenchRow {
     BenchRow {
@@ -144,8 +198,21 @@ fn parse_row(record: &csv::StringRecord, hmap: &HashMap<String, usize>) -> Bench
 ///
 /// Uses flexible mode and manual field extraction to handle all CSV variants:
 /// old/new format, with/without GPU columns, short rows (CPU rows with
-/// GPU-extended headers).
+/// GPU-extended headers). A numeric field that is missing, empty or not a
+/// number gets its default; `load_csv_strict` refuses one instead.
 pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
+    load_csv_strict(path, &[])
+}
+
+/// Load benchmark rows, requiring a number in every row for each column in
+/// `strict`.
+///
+/// A caller that computes from a column cannot tell the default `load_csv`
+/// gives a missing, empty or unparsable field from a measured value, so it
+/// names the column here. A row without a number there is an error naming
+/// the file, the line, the test, the column and what the field held. Every
+/// other column is read as `load_csv` reads it.
+pub fn load_csv_strict(path: &Path, strict: &[&str]) -> Result<Vec<BenchRow>, Error> {
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(true)
@@ -156,7 +223,7 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
 
     // Validate required headers are present
     let required = ["test", "wallMedian", "wallCV", "callsPerSecond"];
-    for &col in &required {
+    for &col in required.iter().chain(strict) {
         if !hmap.contains_key(col) {
             return Err(Error::Parse(format!(
                 "missing required column '{}' in {}",
@@ -169,6 +236,18 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
     let mut rows = Vec::new();
     for result in rdr.records() {
         let record = result?;
+        for &column in strict {
+            if let Err(problem) = require_f64(&record, &hmap, column) {
+                return Err(unreadable_error(
+                    path,
+                    &record,
+                    &hmap,
+                    headers.len(),
+                    column,
+                    problem,
+                ));
+            }
+        }
         rows.push(parse_row(&record, &hmap));
     }
 
@@ -259,5 +338,121 @@ mod tests {
 
         let result = load_csv(tmp.path());
         assert!(result.is_err());
+    }
+
+    /// Write `rows` under the four columns every results CSV carries.
+    fn minimal_csv(rows: &[&str]) -> tempfile::NamedTempFile {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "test,wallMedian,wallCV,callsPerSecond").unwrap();
+        for row in rows {
+            writeln!(tmp, "{row}").unwrap();
+        }
+        tmp.flush().unwrap();
+        tmp
+    }
+
+    const MEASURED: [&str; 2] = ["wallMedian", "wallCV"];
+
+    /// @test A strict column that is not a number names the file, line, test, column and text.
+    #[test]
+    fn strict_column_not_a_number_errors() {
+        let tmp = minimal_csv(&["A,1,0.1,1", "B,1,garbage,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 3: test 'B' has wallCV 'garbage', which is not a number",
+                tmp.path().display()
+            )
+        );
+
+        let tmp = minimal_csv(&["A,n/a,0.1,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has wallMedian 'n/a', which is not a number",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test An empty strict column is an error, not a zero.
+    #[test]
+    fn strict_column_empty_errors() {
+        let tmp = minimal_csv(&["A,1,,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has no wallCV value: the field is empty",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test A row that ends before a strict column is an error, not a zero.
+    #[test]
+    fn strict_column_cut_off_by_a_short_row_errors() {
+        let tmp = minimal_csv(&["A,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has no wallCV value: the row ends after 2 of 4 columns",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test A strict column holding 0 loads as the value 0.
+    #[test]
+    fn strict_column_zero_is_a_value() {
+        let tmp = minimal_csv(&["A,1,0,1"]);
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wall_cv, 0.0);
+        assert_eq!(rows[0].wall_median, 1.0);
+    }
+
+    /// @test Columns not named strict keep their defaults, as do short GPU-style rows.
+    #[test]
+    fn strict_columns_leave_the_others_lenient() {
+        let tmp = minimal_csv(&["A,1,0.1,garbage"]);
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows[0].calls_per_second, 0.0);
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            "test,wallMedian,wallCV,callsPerSecond,gpuModel,kernelTimeUs"
+        )
+        .unwrap();
+        writeln!(tmp, "Foo.Cpu,0.05,0.2,20000000").unwrap();
+        writeln!(tmp, "Foo.Gpu,0.03,0.15,33333333,Generic GPU,11.7").unwrap();
+        tmp.flush().unwrap();
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    /// @test The lenient loader still gives an unreadable field its default.
+    #[test]
+    fn lenient_load_defaults_unreadable_fields() {
+        let tmp = minimal_csv(&["A,1,garbage,1", "B,1"]);
+        let rows = load_csv(tmp.path()).unwrap();
+        assert_eq!(rows[0].wall_cv, 0.0);
+        assert_eq!(rows[1].wall_cv, 0.0);
+    }
+
+    /// @test A strict column absent from the header is a missing column.
+    #[test]
+    fn strict_column_absent_from_header_errors() {
+        let tmp = minimal_csv(&["A,1,0.1,1"]);
+        let err = load_csv_strict(tmp.path(), &["wallP90"]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing required column 'wallP90'"),
+            "{err}"
+        );
     }
 }

@@ -288,6 +288,104 @@ fn compare_non_finite_measurement_is_an_error() {
     assert!(out.trim().is_empty(), "{out}");
 }
 
+/// The ways a comparison can be run: advisory or gated, in each output format.
+const COMPARE_MODES: [&[&str]; 6] = [
+    &[],
+    &["--fail-on-regression"],
+    &["--json"],
+    &["--json", "--fail-on-regression"],
+    &["--markdown"],
+    &["--markdown", "--fail-on-regression"],
+];
+
+/// @test A measured field the CSV does not hold as a number fails every mode, on either side.
+#[test]
+fn compare_unreadable_measurement_is_an_error() {
+    let good = fixture("sample_bench.csv");
+    for (file, found) in [
+        (
+            "compare_cv_malformed.csv",
+            "has wallCV 'garbage', which is not a number",
+        ),
+        (
+            "compare_cv_blank.csv",
+            "has no wallCV value: the field is empty",
+        ),
+        (
+            "compare_cv_absent.csv",
+            "has no wallCV value: the row ends after 16 of 20 columns",
+        ),
+        (
+            "compare_median_malformed.csv",
+            "has wallMedian 'n/a', which is not a number",
+        ),
+        (
+            "compare_median_blank.csv",
+            "has no wallMedian value: the field is empty",
+        ),
+        (
+            "compare_median_absent.csv",
+            "has no wallMedian value: the row ends after 9 of 20 columns",
+        ),
+    ] {
+        let bad = fixture(file);
+        let expected = format!("{bad}, line 3: test 'Queue.Latency' {found}");
+        for (base, cand) in [(&good, &bad), (&bad, &good)] {
+            for mode in COMPARE_MODES {
+                let mut args = vec!["compare", base.as_str(), cand.as_str()];
+                args.extend_from_slice(mode);
+                let (code, out, err) = run(&args);
+                assert_eq!(code, 1, "{args:?}: {err}");
+                assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+                assert!(err.contains(&expected), "{args:?}: {err}");
+            }
+        }
+    }
+}
+
+/// @test A wallCV of 0 is a measured value, not a failed parse: the comparison runs.
+#[test]
+fn compare_zero_cv_is_a_value() {
+    let good = fixture("sample_bench.csv");
+    let zero = fixture("compare_cv_zero.csv");
+    for (base, cand, field) in [
+        (&good, &zero, "candidate_cv"),
+        (&zero, &good, "baseline_cv"),
+    ] {
+        let (code, out, err) = run(&["compare", base, cand, "--json", "--fail-on-regression"]);
+        assert_eq!(code, 0, "{err}");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let latency = parsed["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .find(|r| r["test"] == "Queue.Latency")
+            .expect("Queue.Latency is compared");
+        assert_eq!(latency[field], 0.0, "{out}");
+        assert_eq!(latency["classification"], "neutral", "{out}");
+    }
+
+    let (code, out, _) = run(&["compare", &good, &zero]);
+    assert_eq!(code, 0);
+    let row: Vec<&str> = out
+        .lines()
+        .find(|line| line.starts_with("Queue.Latency"))
+        .expect("Queue.Latency row")
+        .split_whitespace()
+        .collect();
+    assert_eq!(row[5..7], ["8.3%", "0.0%"], "Base CV, Cand CV: {out}");
+}
+
+/// @test A CSV without the stable and cvThreshold columns still compares.
+#[test]
+fn compare_older_csv_format_still_compares() {
+    let old = fixture("sample_bench_old_format.csv");
+    let new = fixture("sample_bench.csv");
+    let (code, out, err) = run(&["compare", &old, &new, "--fail-on-regression"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("2 neutral"), "{out}");
+}
+
 /// @test A baseline test the candidate does not run is reported and fails the gate.
 #[test]
 fn compare_missing_baseline_test_fails_the_gate() {

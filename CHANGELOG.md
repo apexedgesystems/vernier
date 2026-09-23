@@ -234,10 +234,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   holds for input a comparison cannot be built from: a `--threshold` that is
   not a finite percentage of zero or more, a test name a CSV reports twice
   (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
-  is not a finite number, a `wallMedian` of zero or less (a relative change
-  against a zero baseline was reported as a neutral `+0.0%`), and a negative
-  `wallCV`. Each exits 1 naming the run, the test and the value, and prints
-  no comparison for a reader or a gate to mistake for a pass.
+  is missing from its row, empty, not a number (the loader read all three as
+  0) or not finite, a `wallMedian` of zero or less (a relative change against
+  a zero baseline was reported as a neutral `+0.0%`), and a negative
+  `wallCV`. Each exits 1 naming the file or run, the test, the column and the
+  value, and prints no comparison for a reader or a gate to mistake for a
+  pass. Only those two columns are read this strictly: CSVs from earlier
+  releases, and GPU CSVs whose CPU rows stop before the GPU columns, compare
+  as before.
 - **A comparison reports the tests only one of the two runs ran** -- tests
   present in just one CSV were dropped from the table, the Markdown table and
   the JSON output without a word, so a suite that lost a test still showed

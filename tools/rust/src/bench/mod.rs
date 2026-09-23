@@ -171,7 +171,7 @@ pub mod workflow;
 /* ----------------------------- Re-exports ----------------------------- */
 
 pub use compare::{compare_runs, has_regressions, CompareError, CompareResult, Comparison};
-pub use csv_loader::{load_csv, BenchRow};
+pub use csv_loader::{load_csv, load_csv_strict, BenchRow};
 pub use flamegraph::generate_flamegraph;
 pub use report::{print_comparison_table, print_summary_table, to_json, to_markdown};
 pub use runner::run_benchmark;

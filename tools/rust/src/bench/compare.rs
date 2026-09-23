@@ -9,14 +9,30 @@
 //! spread between the two runs.
 //!
 //! Every input problem is found before any test is compared, so a comparison
-//! either describes both runs or names why it cannot.
+//! either describes both runs or names why it cannot. That holds for a value a
+//! CSV does not hold as a number when both runs are loaded with
+//! `measured_columns` strict; the lenient loader reads one as zero.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::{BenchRow, Classification};
 
+/* ----------------------------- Constants ----------------------------- */
+
+/// The columns a comparison computes from, each with the row field it is read
+/// into. `measured_columns` names them for the strict load and `index_rows`
+/// refuses a value in them that is not finite, so the two checks cover the
+/// same columns.
+const MEASUREMENTS: [(&str, Getter); 2] = [
+    ("wallMedian", |row| row.wall_median),
+    ("wallCV", |row| row.wall_cv),
+];
+
 /* ----------------------------- Types ----------------------------- */
+
+/// Reads the value of one measured column out of a row.
+type Getter = fn(&BenchRow) -> f64;
 
 /// Which of the two runs a value came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -177,7 +193,8 @@ fn index_rows(rows: &[BenchRow], run: Run) -> Result<BTreeMap<&str, &BenchRow>, 
     let mut indexed: BTreeMap<&str, &BenchRow> = BTreeMap::new();
 
     for row in rows {
-        for (field, value) in [("wallMedian", row.wall_median), ("wallCV", row.wall_cv)] {
+        for (field, value_of) in MEASUREMENTS {
+            let value = value_of(row);
             if !value.is_finite() {
                 return Err(CompareError::NonFinite {
                     run,
@@ -221,6 +238,15 @@ fn only_in(from: &BTreeMap<&str, &BenchRow>, other: &BTreeMap<&str, &BenchRow>) 
 }
 
 /* ----------------------------- API ----------------------------- */
+
+/// The CSV columns a comparison computes from.
+///
+/// Load both runs with these columns strict (`load_csv_strict`): the lenient
+/// loader reads a missing, empty or unparsable field as 0.0, which a
+/// comparison cannot tell from a measured value.
+pub fn measured_columns() -> Vec<&'static str> {
+    MEASUREMENTS.iter().map(|(column, _)| *column).collect()
+}
 
 /// Compare two runs, joining on test name.
 ///
