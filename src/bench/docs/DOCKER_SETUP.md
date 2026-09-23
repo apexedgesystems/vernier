@@ -394,10 +394,10 @@ What a rebuild does not do:
   put it first on `PATH`, as the [Thor rig](rigs/RIG_THOR_AGX.md) does.
 - **Grant access.** Whether counters can be read is decided by the host's
   `kernel.perf_event_paranoid`, the capabilities of the process (`CAP_PERFMON`,
-  `CAP_SYS_ADMIN`) and the container's policy. With the host at
+  `CAP_SYS_ADMIN`) and the container's policy. On the tested host, at
   `perf_event_paranoid=4`, `perf stat` in the privileged `dev` service works
-  when run as root (uid 0) and is refused for the default user (uid 1001), in
-  the same image.
+  when run as root (uid 0) and is refused for the image's non-root user
+  (uid 1001), in the same image.
   `bench validate` reports the `perf` executable and `perf_event_paranoid` on
   separate lines.
 
@@ -712,9 +712,10 @@ ENV PATH="/opt/FlameGraph:${PATH}"
 #    Rebuild the dev images on the host that runs them:
 make docker-dev        # or: make docker-dev-cuda
 
-# 2. Access is separate from the executable: at perf_event_paranoid=4,
-#    perf stat in the privileged dev service works when run as root (uid 0)
-#    and is refused for the default user (uid 1001).
+# 2. Access is separate from the executable: on the tested host, at
+#    perf_event_paranoid=4, perf stat in the privileged dev service works
+#    when run as root (uid 0) and is refused for the image's non-root user
+#    (uid 1001).
 #    For user profiling, lower the level on the host:
 sudo sysctl -w kernel.perf_event_paranoid=-1
 

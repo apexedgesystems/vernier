@@ -978,9 +978,10 @@ Details, and images of your own:
 
 **2. Access is a separate question**, and a rebuild does not change it: the
 host's `kernel.perf_event_paranoid`, `CAP_PERFMON` and the container's policy
-decide. With the host at `perf_event_paranoid=4`, `perf stat` in the
+decide. On the tested host, at `perf_event_paranoid=4`, `perf stat` in the
 privileged `dev` service works when run as root (uid 0) and is refused for the
-default user (uid 1001). For user profiling, lower the level on the host:
+image's non-root user (uid 1001). For user profiling, lower the level on the
+host:
 
 ```bash
 sudo sysctl -w kernel.perf_event_paranoid=-1
