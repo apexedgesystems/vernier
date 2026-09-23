@@ -62,8 +62,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  prints how to enable heap mode and skips it, and `bench doctor` reports the
-  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  (or `both`) is a readiness error that names this option: the run prints it
+  once and proceeds unprofiled, the doctor's selected row for that request
+  fails with it, and the gperf row reports `built: cpu` rather than `built:
+  cpu, heap`. With it, the heaptrack backend
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
@@ -180,6 +182,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The run launches the absolute path the check ran, started by `/bin/sh`
   rather than an `sh` looked up on `PATH`; a perf that fails its check is
   never launched.
+- **gperf checks the requested mode and runs the analyzer it found** -- the
+  gperf row said `gperftools linked` whatever was asked, and
+  `--profile-analyze` looked for `google-pprof` or `pprof` but always ran
+  `google-pprof`, through `sh` and `head`, ignoring its exit status: with only
+  `pprof` installed it printed empty analysis headers. The check parses the
+  mode with the profiler's own parser, and a mode the build lacks is a
+  readiness error. With `--profile-analyze` the analyzer is the first of
+  `google-pprof` and `pprof` on `PATH`; with neither, the request is an
+  analysis error (`analysis: missing: ...`) printed once, while the capture
+  still runs and `cpu.prof` is kept; without `--profile-analyze` a missing
+  analyzer is only noted in the row. The analysis runs the analyzer the check
+  found, directly and bounded, prints the first lines of each view without
+  the analyzer's own messages, and reports a failing analyzer with its status,
+  its error output and where the raw profile is kept.
 
 ### Fixed
 

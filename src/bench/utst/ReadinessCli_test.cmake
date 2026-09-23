@@ -597,6 +597,154 @@ elseif (CASE STREQUAL "PerfDeniedMatchesDoctor")
   run(run --profile perf ${_quick})
   expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
 
+elseif (CASE MATCHES "^Gperf")
+  # gperf cases need gperftools compiled into libbench.
+  run(inventory --profile-check-json)
+  set(_gperf_status "")
+  if (inventory_OUT MATCHES "\"name\": \"gperf\", \"status\": \"([a-z]+)\"")
+    set(_gperf_status "${CMAKE_MATCH_1}")
+  endif ()
+  if (NOT _gperf_status STREQUAL "ok")
+    message(STATUS "READINESS_CLI_SKIPPED: gperf is not usable in this build (${_gperf_status})")
+    file(REMOVE_RECURSE "${WORK_DIR}")
+    return()
+  endif ()
+  set(_prof "${WORK_DIR}/ReadinessFixture.First.gperf/cpu.prof")
+
+  if (CASE STREQUAL "GperfAnalyzerFoundIsRun")
+    # Only pprof exists: the analysis runs it, by its path, and prints its lines.
+    fake(fake_pprof.sh pprof)
+    run(run --profile gperf --profile-analyze ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status")
+    read_log(_text)
+    expect_has("${_text}" "pprof ${WORK_DIR}/bin/pprof --text --cum --lines " "fake log")
+    expect_not("${_text}" "google-pprof" "fake log")
+    expect_has("${run_OUT}" "Analyzer: ${WORK_DIR}/bin/pprof" "analysis header")
+    expect_has("${run_OUT}" "fake pprof line 20\n" "cumulative view")
+    expect_not("${run_OUT}" "fake pprof line 21\n\n--- Self time" "cumulative view is cut at 20")
+    expect_not("${run_OUT}" "using local file" "analysis text (the analyzer's stderr)")
+    expect_not("${run_ERR}" "Profiler 'gperf'" "run notice")
+
+  elseif (CASE STREQUAL "GperfAnalyzerMissingIsAnalysisError")
+    run(doctor --profile gperf --profile-analyze --profile-check-json)
+    string(
+      JSON
+      _status
+      ERROR_VARIABLE
+      _e1
+      GET
+      "${doctor_OUT}"
+      selected
+      status
+    )
+    string(
+      JSON
+      _message
+      ERROR_VARIABLE
+      _e2
+      GET
+      "${doctor_OUT}"
+      selected
+      message
+    )
+    string(
+      JSON
+      _hint
+      ERROR_VARIABLE
+      _e3
+      GET
+      "${doctor_OUT}"
+      selected
+      hint
+    )
+    expect_eq("${_status}" "fail" "selected status")
+    expect_has(
+      "${_message}" "analysis: missing: --profile-analyze needs google-pprof or pprof"
+      "selected message"
+    )
+    run(run --profile gperf --profile-analyze ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status")
+    expect_has(
+      "${run_ERR}"
+      "[FAIL] Profiler 'gperf': ${_message}\n   ${_hint}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+      "run notice"
+    )
+    expect_has(
+      "${run_ERR}" "[gperf] analysis skipped: no google-pprof or pprof; raw profile kept at "
+      "analysis note"
+    )
+    if (NOT EXISTS "${_prof}")
+      string(APPEND _problems "\n  cpu.prof was not written")
+    endif ()
+
+  elseif (CASE STREQUAL "GperfAnalyzerFailureKeepsRaw")
+    fake(fake_pprof.sh google-pprof)
+    list(APPEND _env FAKE_PPROF_MODE=fail)
+    run(run --profile gperf --profile-analyze ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status")
+    expect_has(
+      "${run_ERR}"
+      "[gperf] ${WORK_DIR}/bin/google-pprof failed: exit status 1: fake pprof: cannot read profile; raw profile kept at "
+      "analysis failure"
+    )
+    if (NOT EXISTS "${_prof}")
+      string(APPEND _problems "\n  cpu.prof was not kept")
+    endif ()
+
+  elseif (CASE STREQUAL "GperfWithoutAnalyzeNeedsNone")
+    # The same environment as the missing-analyzer case, without the promise.
+    run(doctor --profile gperf --profile-check-json)
+    string(
+      JSON
+      _status
+      ERROR_VARIABLE
+      _e1
+      GET
+      "${doctor_OUT}"
+      selected
+      status
+    )
+    expect_eq("${_status}" "ok" "selected status")
+    run(run --profile gperf ${_quick})
+    expect_not("${run_ERR}" "Profiler 'gperf'" "run notice")
+    if (NOT EXISTS "${_prof}")
+      string(APPEND _problems "\n  cpu.prof was not written")
+    endif ()
+
+  elseif (CASE STREQUAL "GperfHeapWithoutSupport")
+    run(doctor --profile gperf --profile-args heap --profile-check-json)
+    string(
+      JSON
+      _status
+      ERROR_VARIABLE
+      _e1
+      GET
+      "${doctor_OUT}"
+      selected
+      status
+    )
+    string(
+      JSON
+      _message
+      ERROR_VARIABLE
+      _e2
+      GET
+      "${doctor_OUT}"
+      selected
+      message
+    )
+    if (HEAP_BUILT)
+      expect_eq("${_status}" "ok" "selected status (heap compiled in)")
+    else ()
+      expect_eq("${_status}" "fail" "selected status")
+      expect_has("${_message}" "unsupported: heap profiling is not compiled in" "selected message")
+      run(run --profile gperf --profile-args heap ${_quick})
+      expect_has("${run_ERR}" "[FAIL] Profiler 'gperf': ${_message}" "run notice")
+      count_of(_times "${run_ERR}" "-DVERNIER_LINK_TCMALLOC=ON")
+      expect_eq("${_times}" "1" "the remedy, once for two guarded cases")
+    endif ()
+  endif ()
+
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")
 endif ()

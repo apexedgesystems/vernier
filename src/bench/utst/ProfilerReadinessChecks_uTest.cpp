@@ -9,11 +9,13 @@
  */
 
 #include "src/bench/inc/ProfilerBpftrace.hpp"
+#include "src/bench/inc/ProfilerGperf.hpp"
 #include "src/bench/inc/ProfilerOffCpu.hpp"
 #include "src/bench/inc/ProfilerPerf.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -28,7 +30,9 @@
 
 using vernier::bench::BpftracePlan;
 using vernier::bench::EnvReport;
+using vernier::bench::GperfPlan;
 using vernier::bench::OffCpuPlan;
+using vernier::bench::parseGperfModes;
 using vernier::bench::parsePerfMode;
 using vernier::bench::PerfMode;
 using vernier::bench::PerfPlan;
@@ -526,4 +530,170 @@ TEST_F(PerfCheckTest, LaunchRunsThePlannedPath) {
                 .size(),
             1U)
       << dir_.log();
+}
+
+/* ----------------------------- gperf ----------------------------- */
+
+namespace {
+
+/** @brief Analyzer fakes on PATH, asked about one gperf request. */
+class GperfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    if (UB_HAS_GPERF_CPU == 0) {
+      GTEST_SKIP() << "gperftools CPU profiling is not compiled in";
+    }
+  }
+
+  /** @brief What the row says the build supports. */
+  static std::string built() {
+    return UB_HAS_GPERF_HEAP != 0 ? " (built: cpu, heap)" : " (built: cpu)";
+  }
+
+  ReadinessResult check(bool analyze, const std::string& args = "") const {
+    ReadinessRequest request;
+    request.backend = "gperf";
+    request.profileArgs = args;
+    request.analyze = analyze;
+    request.scope = ReadinessScope::PREFLIGHT;
+    return ProfilerRegistry::instance().checkRequest(request, dir_.context());
+  }
+
+  FakeToolDir dir_;
+};
+
+} // namespace
+
+/** @test One parser decides the modes for the check and the profiler. */
+TEST(GperfModeTest, ParsesTheSelectedModes) {
+  EXPECT_TRUE(parseGperfModes("").cpu);
+  EXPECT_FALSE(parseGperfModes("").heap);
+  EXPECT_FALSE(parseGperfModes("heap").cpu);
+  EXPECT_TRUE(parseGperfModes("heap").heap);
+  EXPECT_TRUE(parseGperfModes("both").cpu && parseGperfModes("both").heap);
+  EXPECT_TRUE(parseGperfModes("cpu,heap").cpu && parseGperfModes("cpu,heap").heap);
+}
+
+/** @test Without --profile-analyze a missing analyzer is only information. */
+TEST_F(GperfCheckTest, AnalysisOffNeedsNoAnalyzer) {
+  const ReadinessResult R = check(false);
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "gperftools profiles cpu" + built() +
+                                  "; no analyzer on PATH (only --profile-analyze needs one)");
+}
+
+/** @test The same environment with --profile-analyze is an analysis error that still collects. */
+TEST_F(GperfCheckTest, AnalysisOnWithoutAnalyzerIsAnalysisError) {
+  const ReadinessResult R = check(true);
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_TRUE(R.collectionReady()) << "the capture still runs";
+  EXPECT_EQ(R.report.message, "analysis: missing: --profile-analyze needs google-pprof or pprof, "
+                              "and neither is on PATH; the cpu capture still runs and cpu.prof "
+                              "is kept");
+  EXPECT_EQ(R.report.hint, "Install an analyzer (google-pprof from gperftools, or Go's pprof), or "
+                           "drop --profile-analyze.");
+  const auto PLAN = std::dynamic_pointer_cast<const GperfPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_TRUE(PLAN->analyzer.empty());
+}
+
+/** @test The analyzer is the first of google-pprof and pprof found, whichever exists. */
+TEST_F(GperfCheckTest, EitherAnalyzerSpellingIsFound) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  const ReadinessResult ONLY_PPROF = check(true);
+  EXPECT_EQ(ONLY_PPROF.report.status, EnvReport::Status::Ok) << ONLY_PPROF.report.message;
+  EXPECT_EQ(ONLY_PPROF.report.message,
+            "gperftools profiles cpu" + built() + "; --profile-analyze runs " + PPROF);
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(ONLY_PPROF.plan)->analyzer, PPROF);
+
+  const std::string GOOGLE = dir_.install("fake_pprof.sh", "google-pprof");
+  const ReadinessResult BOTH = check(true);
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(BOTH.plan)->analyzer, GOOGLE)
+      << "google-pprof is tried first";
+
+  FakeToolDir onlyGoogle;
+  const std::string ALONE = onlyGoogle.install("fake_pprof.sh", "google-pprof");
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.analyze = true;
+  const ReadinessResult GOOGLE_ONLY =
+      ProfilerRegistry::instance().checkRequest(request, onlyGoogle.context());
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(GOOGLE_ONLY.plan)->analyzer, ALONE);
+}
+
+/** @test A heap request without heap support is a collection error naming the option. */
+TEST_F(GperfCheckTest, HeapWithoutSupportIsCollectionError) {
+  if (UB_HAS_GPERF_HEAP != 0) {
+    GTEST_SKIP() << "heap profiling is compiled in";
+  }
+  for (const char* ARGS : {"heap", "both"}) {
+    const ReadinessResult R = check(false, ARGS);
+    EXPECT_EQ(R.report.status, EnvReport::Status::Error) << ARGS;
+    EXPECT_FALSE(R.collectionReady()) << ARGS;
+    EXPECT_EQ(R.report.message.rfind("unsupported: heap profiling is not compiled in", 0), 0U);
+    EXPECT_NE(R.report.hint.find("-DVERNIER_LINK_TCMALLOC=ON"), std::string::npos);
+  }
+}
+
+/** @test A failing analyzer is reported with its status, and cpu.prof is kept. */
+TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  auto plan = std::make_shared<GperfPlan>();
+  plan->modes.cpu = true;
+  plan->analyze = true;
+  plan->analyzer = PPROF;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "gperf";
+  cfg.profileAnalyze = true;
+  cfg.artifactRoot = dir_.path();
+  std::string err;
+  {
+    ScopedEnv mode("FAKE_PPROF_MODE", "fail");
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    vernier::bench::GperfProfiler profiler(cfg, "Gperf.Fails", plan);
+    vernier::bench::test::StderrCapture capture;
+    profiler.beforeMeasure();
+    volatile double sink = 0;
+    for (int i = 0; i < 2000000; ++i) {
+      sink = sink + i * 0.5;
+    }
+    profiler.afterMeasure(vernier::bench::Stats{});
+    err = capture.text();
+  }
+  const std::string CPU_PROF = dir_.path() + "/Gperf.Fails.gperf/cpu.prof";
+  EXPECT_NE(
+      err.find("[gperf] " + PPROF +
+               " failed: exit status 1: fake pprof: cannot read profile; raw profile kept at " +
+               CPU_PROF),
+      std::string::npos)
+      << err;
+  std::error_code ec;
+  EXPECT_TRUE(std::filesystem::exists(CPU_PROF, ec)) << "the raw capture is never removed";
+  EXPECT_EQ(dir_.logLines("pprof " + PPROF + " --text --cum --lines ").size(), 1U) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("pprof " + PPROF + " --text --lines ").empty())
+      << "the second view is skipped after a failure";
+}
+
+/** @test An analyzer that prints no report is said to, instead of leaving empty headers. */
+TEST_F(GperfCheckTest, EmptyReportIsSaidSo) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  auto plan = std::make_shared<GperfPlan>();
+  plan->modes.cpu = true;
+  plan->analyze = true;
+  plan->analyzer = PPROF;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "gperf";
+  cfg.profileAnalyze = true;
+  cfg.artifactRoot = dir_.path();
+  ScopedEnv mode("FAKE_PPROF_MODE", "empty");
+  vernier::bench::GperfProfiler profiler(cfg, "Gperf.Empty", plan);
+  profiler.beforeMeasure();
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(vernier::bench::Stats{});
+  const std::string OUT = testing::internal::GetCapturedStdout();
+  EXPECT_NE(OUT.find("(the analyzer printed no report; a very short run may hold no samples)"),
+            std::string::npos)
+      << OUT;
 }
