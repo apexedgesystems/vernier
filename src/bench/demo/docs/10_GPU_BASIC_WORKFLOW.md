@@ -9,7 +9,9 @@ reported `bench 1.0.3`. The capture predates two later fixes, to how the SAXPY
 example releases what it allocated when a CUDA call fails and to the transfer
 test filling its device buffers before its warmup; neither touches a measured
 path, and three locked runs of Step 1's command after them landed inside the
-ranges this page states.
+ranges this page states. The two `bench compare` outputs were produced from the
+saved CSVs of the runs they show, by the CLI of a later development tree, which
+also reports `bench 1.0.3`.
 
 ## Overview
 
@@ -263,19 +265,24 @@ stops beating the loop by 3x.
   compared against the reference:
 
   ```
-  Test                                   Baseline     Candidate       Delta         %   p-value        Result
-  ---------------------------------  ------------  ------------  ----------  --------  --------  ------------
-  GpuBasicWorkflow.CpuBaseline          186.24800     183.67100    -2.57700     -1.4%    0.0002  neutral
-  GpuBasicWorkflow.GpuKernelOnly         20.27680      21.32940    +1.05260     +5.2%    0.0002  REGRESSION
-  GpuBasicWorkflow.GpuWithTransfers     155.93000     188.04500   +32.11500    +20.6%    0.0002  REGRESSION
+  Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+  ---------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+  GpuBasicWorkflow.CpuBaseline          186.24800     183.67100    -2.57700     -1.4%      0.1%      0.1%  neutral
+  GpuBasicWorkflow.GpuKernelOnly         20.27680      21.32940    +1.05260     +5.2%      0.1%      0.1%  REGRESSION
+  GpuBasicWorkflow.GpuWithTransfers     155.93000     188.04500   +32.11500    +20.6%      6.3%     48.5%  REGRESSION
 
     2 regression(s)  1 neutral
+
+    Labels compare the median change against the 5.0% threshold.
+    They describe the difference between two runs, not a significance test;
+    the CV of each run is its own spread, not the spread between the runs.
   ```
 
-  Lock them as the rig document says and run again. With the clocks locked, a
-  round trip a few percent away from the reference is within what this rig
-  produces: across the recorded locked runs, within-run round-trip CV reached
-  8.7%; it was 6.3% in the reference run.
+  In that run the round trip's own CV was 48.5% (`Cand CV`). Lock the clocks
+  as the rig document says and run again. With the clocks locked, a round trip
+  a few percent away from the reference is within what this rig produces:
+  across the recorded locked runs, within-run round-trip CV reached 8.7%; it
+  was 6.3% in the reference run.
 
 - **The speedup check was skipped.** `GpuKernelOnly` takes its speedup from
   `CpuBaseline`, which has to run first in the same process. A run filtered to
@@ -310,20 +317,25 @@ bench compare src/bench/demo/reference/thor/10_gpu_basic_workflow.csv gpu_basic_
 A later run on the same rig, clocks locked:
 
 ```
-Test                                   Baseline     Candidate       Delta         %   p-value        Result
----------------------------------  ------------  ------------  ----------  --------  --------  ------------
-GpuBasicWorkflow.CpuBaseline          186.24800     186.07800    -0.17000     -0.1%    0.0757  neutral
-GpuBasicWorkflow.GpuKernelOnly         20.27680      20.27640    -0.00040     -0.0%    0.5205  neutral
-GpuBasicWorkflow.GpuWithTransfers     155.93000     159.18900    +3.25900     +2.1%    0.7337  neutral
+Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+---------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+GpuBasicWorkflow.CpuBaseline          186.24800     186.07800    -0.17000     -0.1%      0.1%      0.1%  neutral
+GpuBasicWorkflow.GpuKernelOnly         20.27680      20.27640    -0.00040     -0.0%      0.1%      0.1%  neutral
+GpuBasicWorkflow.GpuWithTransfers     155.93000     159.18900    +3.25900     +2.1%      6.3%      3.7%  neutral
 
   3 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
-`bench compare` labels a test `REGRESSION` or `IMPROVEMENT` when its median
-moved by more than the threshold (5% unless `--threshold` says otherwise) and
-the p-value it prints is below 0.05. That p-value is computed from samples the
-CLI reconstructs from each row's percentiles, not from the measured samples, so
-read the label as a threshold label and nothing more.
+`bench compare` labels a test `REGRESSION` when its median is more than the
+threshold (5% unless `--threshold` says otherwise) above the reference's,
+`IMPROVEMENT` when it is more than that below it, and `neutral` otherwise. The
+labels describe the difference between two runs and are not a significance
+test; the two CV columns are each run's own spread, not the spread between the
+runs.
 
 The reference CSV is one of five runs captured with the clocks locked: the one
 whose three medians sit closest to the median of each test across the five. It
