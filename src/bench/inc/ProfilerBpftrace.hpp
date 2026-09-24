@@ -7,10 +7,14 @@
  * Behavior:
  *  - The readiness check (checkBpftraceRequest) decides the privilege route,
  *    resolves bpftrace (and, on the sudo route, sudo and kill) on PATH,
- *    resolves every selected script, runs `bpftrace --version` as the current
- *    user, and attaches each selected script through the route in a probe
- *    that it then stops with SIGINT. The profiler launches and stops with
- *    exactly the tools and route that check verified (BpftracePlan).
+ *    resolves and reads every selected script, runs `bpftrace --version` as
+ *    the current user, and runs a probe copy of each script (with a 5 s
+ *    self-exit added) through the route for the start grace, stopping it
+ *    with SIGINT. The run's own command reads a copy in its capture folder,
+ *    which does not exist yet, so on the sudo route a grant refusal of the
+ *    probe copy is unverified rather than denied: the run's start decides.
+ *    The profiler launches and stops with exactly the tools and route that
+ *    check verified (BpftracePlan).
  *  - In beforeMeasure(), starts one bpftrace process per selected script
  *    (e.g. "write_latency", "fsync_latency") with {{PID}} replaced by the
  *    current PID, and reports a tracer that exits during its start grace.
@@ -25,6 +29,7 @@
  *  - Linux-only. Safe no-op on other platforms (compile-time guard).
  */
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -77,26 +82,53 @@ std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
 std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
                                                const ReadinessContext& ctx);
 
+/** @brief One attach probe: what runs, how reports name it, and how it relates to the run. */
+struct AttachProbe {
+  std::vector<std::string> toolArgs; ///< The arguments after bpftrace.
+  std::string what;                  ///< How reports name it: "script 'x'", "the off-CPU script".
+  std::string commandLine;           ///< The bpftrace command line as reports show it.
+  /**
+   * Empty when the probe runs the run's own arguments (its target pid
+   * aside), so that sudo's answer to it holds for the run. Otherwise how the
+   * run's command reads: a grant refusal of the probe is then unverified.
+   */
+  std::string runCommand;
+  int graceMs = 1000;              ///< The start grace, the run's own.
+  std::function<void()> afterStop; ///< Called once the stop is over (ends a probe's target).
+};
+
 /**
- * @brief Attach through the route and stop with the real first stop signal.
+ * @brief Run a probe through the route and stop it with the run's first stop signal.
  *
- * Runs route.command() + @p toolArgs (a probe copy of the selected script
- * that exits by itself) as an owned helper, waits @p graceMs, and stops it
- * with SIGINT through the route (then SIGTERM and SIGKILL if needed).
- * @return nullopt when it stayed attached and stopped on SIGINT; otherwise
- *         the Error (refused, unsupported, denied, unusable) or the Warning
- *         (it ignored SIGINT).
+ * Runs route.command() + probe.toolArgs as an owned helper, waits the
+ * grace, and stops it with SIGINT through the route (then SIGTERM and
+ * SIGKILL if needed). afterStop then runs, and the helper, if it still
+ * runs, gets up to 2 s to end by itself (a script that exits with its
+ * target ends when the target does).
+ * @return nullopt when it stayed running for the grace and stopped on
+ *         SIGINT; otherwise the Error (refused, unsupported, denied,
+ *         unusable), or the Warning (it ignored SIGINT, or sudo refused a
+ *         probe command that differs from the run's).
  */
-std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route,
-                                           const std::vector<std::string>& toolArgs,
-                                           const std::string& what, int graceMs,
+std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const AttachProbe& probe,
                                            const ReadinessContext& ctx,
                                            const std::string& scratchDir);
 
-/** @brief The Error for a tracer that exited at start, from its stderr. */
+/**
+ * @brief The result for a tracer that exited at start, from its stderr.
+ *
+ * @p commandLine is the command that was refused, as attempted. On the sudo
+ * route, sudo's policy refusal ("a password is required", "is not allowed
+ * to execute") depends on the exact arguments: it is DENIED when
+ * @p runCommand is empty (the refused command is the run's own), and
+ * UNVERIFIED, naming both commands, when @p runCommand says how the run's
+ * differing command reads. Any other sudo failure is DENIED whatever the
+ * arguments.
+ */
 ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::string& what,
                                       const std::string& commandLine, const std::string& stderrText,
-                                      const ReadinessContext& ctx);
+                                      const ReadinessContext& ctx,
+                                      const std::string& runCommand = {});
 
 /** @brief How to get access without elevation or with a scoped grant. */
 std::string optInRemedy(const BpftraceRoute& route, const ReadinessContext& ctx);

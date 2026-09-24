@@ -5,12 +5,21 @@
 
 #include "src/bench/inc/ProfilerOffCpu.hpp"
 
+#include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
+
+#include <cerrno>
+#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -57,9 +66,80 @@ constexpr int KILL_WAIT_MS = 2000;
 const char* const WHAT = "the off-CPU script";
 
 /** @brief `-e <script> <pid>`: the arguments every launch passes; $1 binds the pid. */
-std::vector<std::string> launchArgs(const std::string& script, long pid) {
-  return {"-e", script, std::to_string(pid)};
+std::vector<std::string> launchArgs(long pid) { return {"-e", OFFCPU_SCRIPT, std::to_string(pid)}; }
+
+/** @brief The launch's command line as reports show it, the embedded script named. */
+std::string commandLine(const BpftraceRoute& route, long pid) {
+  return route.bpftrace + " -e <the off-CPU script> " + std::to_string(pid);
 }
+
+#ifdef __linux__
+/**
+ * @brief Close every descriptor above 2, in a forked child (async-signal-safe).
+ *
+ * close_range(2) where the kernel has it; otherwise the first 1024.
+ */
+void closeInheritedDescriptors() {
+#ifdef SYS_close_range
+  if (::syscall(SYS_close_range, 3U, ~0U, 0U) == 0) {
+    return;
+  }
+#endif
+  for (int fd = 3; fd < 1024; ++fd) {
+    (void)::close(fd);
+  }
+}
+
+/**
+ * @brief A process that only waits, for the readiness probe to trace in
+ * place of this one.
+ *
+ * The script exits when its target exits, so ending the target also ends a
+ * probe tracer whose stop was refused. The child holds no descriptor of this
+ * process beyond 0 to 2 (a pipe another probe waits on stays unheld) and has
+ * its own process group, out of reach of the terminal's signals.
+ */
+class ProbeTarget {
+public:
+  ProbeTarget() {
+    pid_ = ::fork();
+    if (pid_ == 0) {
+      (void)::setpgid(0, 0);
+      closeInheritedDescriptors();
+      for (;;) {
+        (void)::pause();
+      }
+    }
+    if (pid_ < 0) {
+      error_ = errno;
+    }
+  }
+
+  ~ProbeTarget() { end(); }
+
+  ProbeTarget(const ProbeTarget&) = delete;
+  ProbeTarget& operator=(const ProbeTarget&) = delete;
+
+  [[nodiscard]] pid_t pid() const noexcept { return pid_; }
+  [[nodiscard]] int error() const noexcept { return error_; }
+
+  /** @brief Kill and reap the target; safe to call more than once. */
+  void end() noexcept {
+    if (pid_ <= 0) {
+      return;
+    }
+    (void)::kill(pid_, SIGKILL);
+    int status = 0;
+    while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {
+    }
+    pid_ = -1;
+  }
+
+private:
+  pid_t pid_ = -1;
+  int error_ = 0;
+};
+#endif
 
 std::shared_ptr<const OffCpuPlan> readyPlan(const ReadinessResult& result) {
   if (!result.collectionReady()) {
@@ -90,25 +170,45 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
   }
-  // The launch's own argument shape, on a script that also exits by itself.
+  // The run's own command, through the route, for the run's start grace: the
+  // same script and arguments, with a probe process's pid in place of the
+  // benchmark's. Ending that process after the stop ends a tracer whose
+  // stop was refused, since the script exits with its target.
+  ProbeTarget target;
+  if (target.pid() < 0) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           "cannot start a process for the off-CPU probe to trace: " +
+                               std::system_category().message(target.error()),
+                           "Check this user's process limit (ulimit -u).");
+  }
+  const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const ProbeScratch SCRATCH(ctx);
-  auto verdict = bpftrace_tool::probeAttach(
-      plan->route,
-      launchArgs(std::string{OFFCPU_SCRIPT} + "interval:s:5 { exit(); }\n",
-                 static_cast<long>(ctx.self())),
-      WHAT, START_GRACE_MS, ctx, SCRATCH.path());
+  bpftrace_tool::AttachProbe probe;
+  probe.toolArgs = launchArgs(static_cast<long>(target.pid()));
+  probe.what = WHAT;
+  probe.commandLine = commandLine(plan->route, static_cast<long>(target.pid()));
+  probe.graceMs = START_GRACE_MS;
+  probe.afterStop = [&target] { target.end(); };
+  auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
   if (verdict && verdict->report.status == EnvReport::Status::Error) {
     return *verdict;
   }
-  std::string message = std::string{WHAT} + " attached for " + std::to_string(START_GRACE_MS) +
-                        " ms " + plan->route.describe() + " and stopped on SIGINT (probe with " +
-                        plan->route.bpftrace + ")";
+  std::string message =
+      std::string{WHAT} + ", with the run's arguments on a probe process, stayed running for the " +
+      std::to_string(START_GRACE_MS) + " ms start grace " + plan->route.describe() +
+      " and stopped on SIGINT" + (SUDO ? " through sudo -n kill" : "") + " (probe with " +
+      plan->route.bpftrace + ")";
   if (plan->route.privilege.route == PrivilegeRoute::ALREADY_ROOT && plan->route.privilege.optIn) {
     message += "; running as root; BENCH_SUDO not needed";
   }
+  message += std::string{"; not checked: "} +
+             (SUDO ? "SIGTERM and SIGKILL through sudo, and " : "") + "the run's capture";
   ReadinessResult result;
   if (verdict) {
     result = *verdict;
+    if (!plan->route.privilege.warning.empty()) {
+      result.report.message += "; " + plan->route.privilege.warning;
+    }
   } else if (!plan->route.privilege.warning.empty()) {
     result =
         readinessResult(ReadinessCause::CAVEAT, message + "; " + plan->route.privilege.warning, "");
@@ -163,7 +263,7 @@ void OffCpuProfiler::beforeMeasure() {
 void OffCpuProfiler::afterMeasure(const Stats& /*s*/) { stopBpftrace(); }
 
 void OffCpuProfiler::spawnBpftrace() {
-  const std::vector<std::string> ARGS = launchArgs(OFFCPU_SCRIPT, static_cast<long>(::getpid()));
+  const std::vector<std::string> ARGS = launchArgs(static_cast<long>(::getpid()));
   std::vector<std::string> argv = plan_->route.command();
   argv.insert(argv.end(), ARGS.begin(), ARGS.end());
   // The capture files are opened by the child as the invoking user, so they
@@ -178,9 +278,9 @@ void OffCpuProfiler::spawnBpftrace() {
     return;
   }
   if (STARTED.exitedEarly) {
-    std::string commandLine = plan_->route.bpftrace + " -e <script> " + ARGS.back();
     const ReadinessResult WHY = bpftrace_tool::classifyAttachFailure(
-        plan_->route, WHAT, commandLine, STARTED.errorTail, *plan_->context);
+        plan_->route, WHAT, commandLine(plan_->route, static_cast<long>(::getpid())),
+        STARTED.errorTail, *plan_->context);
     std::fprintf(stderr, "[offcpu] the tracer exited during its start grace: %s\n",
                  WHY.report.message.c_str());
     if (!WHY.report.hint.empty()) {

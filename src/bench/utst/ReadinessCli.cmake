@@ -34,10 +34,12 @@ set(_readiness_cli_cases
     BpfNoOptInNeverCallsSudo
     BpfConflictNamesWinner
     BpfInvalidValueLaunchesNothing
-    BpfAttachRefusedVersionAllowed
+    BpfProbeRefusedRunDecides
+    BpfRunAllowedProbeRefused
     BpfRunStopsThroughRoute
     BpfRunReportsRefusedStop
     OffcpuCurrentUserRun
+    OffcpuRunAllowedOldProbeRefused
     OffcpuNoStacksClaimWhenKilled
     PerfLaunchesTheResolvedPath
     PerfBrokenNeverLaunched

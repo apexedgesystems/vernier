@@ -470,38 +470,57 @@ elseif (CASE STREQUAL "BpfInvalidValueLaunchesNothing")
   read_log(_text)
   expect_eq("${_text}" "" "fake log (nothing may run)")
 
-elseif (CASE STREQUAL "BpfAttachRefusedVersionAllowed")
+elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
+  # A grant that refuses every -q command. The check's probe copy is not the
+  # run's command, so its refusal leaves the run unverified: the doctor warns
+  # and names the command sudo refused, and each launch then reports the
+  # refusal of its own command; no tracer runs.
   bpf_fakes()
   list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=-q)
-  run(doctor --profile bpftrace --bpf probe_script --profile-check-json)
-  string(
-    JSON
-    _message
-    ERROR_VARIABLE
-    _e1
-    GET
-    "${doctor_OUT}"
-    selected
-    message
-  )
-  string(
-    JSON
-    _hint
-    ERROR_VARIABLE
-    _e2
-    GET
-    "${doctor_OUT}"
-    selected
-    hint
-  )
-  expect_eq(
-    "${_message}"
-    "denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q ${WORK_DIR}/scripts/probe_script.bt: sudo: a password is required"
+  selected_row(row --profile bpftrace --bpf probe_script)
+  expect_eq("${row_STATUS}" "warn" "selected status")
+  expect_has(
+    "${row_MESSAGE}" "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -q "
     "selected message"
   )
-  expect_has("${_hint}" "The grant must allow ${WORK_DIR}/bin/bpftrace" "selected hint")
+  expect_has(
+    "${row_MESSAGE}"
+    "/probe0.bt: sudo: a password is required; the run executes ${WORK_DIR}/bin/bpftrace -q <capture folder>/probe_script.tmp.bt instead, which only the run can try"
+    "selected message"
+  )
+  expect_not("${row_MESSAGE}" "${WORK_DIR}/scripts/" "selected message (a command not attempted)")
+  expect_has("${row_HINT}" "The grant must allow ${WORK_DIR}/bin/bpftrace" "selected hint")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
+  expect_eq("${run_RC}" "0" "run exit status")
+  count_of(_notices "${run_ERR}"
+           "[WARN] Profiler 'bpftrace': unverified: sudo -n refused the probe"
+  )
+  expect_eq("${_notices}" "1" "run notices")
+  foreach (_case First Second)
+    expect_has(
+      "${run_ERR}"
+      "[bpftrace] the tracer exited during its start grace: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
+      "run report (${_case})"
+    )
+  endforeach ()
+  read_log(_text)
+  expect_not("${_text}" "\nbpftrace -q " "fake log (no tracer ran)")
+
+elseif (CASE STREQUAL "BpfRunAllowedProbeRefused")
+  # A grant for the run's command that refuses the check's probe copy: the
+  # doctor warns, and the run starts both cases' tracers through sudo and
+  # stops them there.
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=/probe0.bt)
+  selected_row(row --profile bpftrace --bpf probe_script)
+  expect_eq("${row_STATUS}" "warn" "selected status")
+  run(run --profile bpftrace --bpf probe_script ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_not("${run_ERR}" "[bpftrace]" "run reports")
+  read_log(_text)
+  count_of(_launches "${_text}" "\nbpftrace -q ./ReadinessFixture.")
+  expect_eq("${_launches}" "2" "tracers the run started (one per guarded case)")
+  expect_owned_and_gone("run")
 
 elseif (CASE STREQUAL "BpfRunStopsThroughRoute")
   # The run launches the checked tools through sudo, stops each tracer with
@@ -552,6 +571,20 @@ elseif (CASE STREQUAL "OffcpuCurrentUserRun")
   if (NOT EXISTS "${WORK_DIR}/ReadinessFixture.First.offcpu/offcpu.err.txt")
     string(APPEND _problems "\n  offcpu.err.txt was not written")
   endif ()
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "OffcpuRunAllowedOldProbeRefused")
+  # A grant that refuses any program carrying a self-exit interval allows
+  # only the run's own command, which is what the check runs: the doctor is
+  # ok and the run writes its stacks.
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=interval:)
+  selected_row(row --profile offcpu)
+  expect_eq("${row_STATUS}" "ok" "selected status")
+  run(run --profile offcpu ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
+  expect_eq("${_written}" "2" "stacks written, once per case")
   expect_owned_and_gone("run")
 
 elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")

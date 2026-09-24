@@ -22,21 +22,26 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
+using vernier::bench::BpftraceProfiler;
 using vernier::bench::decideGperfAnalysis;
 using vernier::bench::EnvReport;
 using vernier::bench::GperfAnalysis;
 using vernier::bench::GperfModes;
 using vernier::bench::GperfPlan;
 using vernier::bench::OffCpuPlan;
+using vernier::bench::OffCpuProfiler;
 using vernier::bench::parseGperfModes;
 using vernier::bench::parsePerfMode;
 using vernier::bench::PerfMode;
@@ -81,6 +86,56 @@ bool gone(pid_t pid) {
   return ::kill(pid, 0) != 0 && errno == ESRCH;
 }
 
+/** @brief One logged `-e <program> <target>` invocation. */
+struct InlineCall {
+  std::string program;
+  pid_t target = -1;
+  pid_t pid = -1; ///< The fake's pid, where the log line records it.
+};
+
+/**
+ * @brief The `<prefix> -e <program> <target>[ pid=<n>]` invocations the log
+ * holds, in order. The program spans lines; the line that closes the entry
+ * holds only the target and the pid.
+ */
+std::vector<InlineCall> inlineCalls(const FakeToolDir& dir, const std::string& prefix) {
+  std::vector<InlineCall> calls;
+  std::istringstream in(dir.log());
+  const std::string START = prefix + " -e ";
+  std::string line;
+  bool open = false;
+  InlineCall call;
+  while (std::getline(in, line)) {
+    if (!open) {
+      if (line.rfind(START, 0) == 0) {
+        open = true;
+        call = InlineCall{};
+        call.program = line.substr(START.size());
+      }
+      continue;
+    }
+    if (line.size() > 1 && line[0] == ' ' && std::isdigit(static_cast<unsigned char>(line[1]))) {
+      call.target = static_cast<pid_t>(std::stol(line.substr(1)));
+      const auto AT = line.find(" pid=");
+      call.pid = AT == std::string::npos ? -1 : static_cast<pid_t>(std::stol(line.substr(AT + 5)));
+      calls.push_back(call);
+      open = false;
+    } else {
+      call.program += "\n" + line;
+    }
+  }
+  return calls;
+}
+
+/** @brief The last word of the first log line starting with @p prefix ("" if none). */
+std::string lastWordOf(const FakeToolDir& dir, const std::string& prefix) {
+  const std::vector<std::string> LINES = dir.logLines(prefix);
+  if (LINES.empty()) {
+    return {};
+  }
+  return LINES.front().substr(LINES.front().rfind(' ') + 1);
+}
+
 /** @brief Fake tools and a scripts directory holding one sched-tracepoint script. */
 class BpfCheckTest : public ::testing::Test {
 protected:
@@ -111,6 +166,42 @@ protected:
         context);
   }
 
+  /** @brief Where planned runs write their capture folders. */
+  std::string captures() const { return dir_.path() + "/captures"; }
+
+  /**
+   * @brief Run one case of @p backend from @p decision's plan, with @p env set
+   * in the live environment the launch inherits; returns what it printed.
+   */
+  std::string runPlanned(const std::string& backend, const ReadinessResult& decision,
+                         const std::string& testName,
+                         const std::map<std::string, std::string>& env = {}) const {
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = backend;
+    cfg.artifactRoot = captures();
+    if (backend == "bpftrace") {
+      cfg.bpfScripts = {"probe_script"};
+    }
+    std::vector<std::unique_ptr<ScopedEnv>> scoped;
+    scoped.push_back(std::make_unique<ScopedEnv>("FAKE_LOG", dir_.logPath()));
+    for (const auto& [KEY, VALUE] : env) {
+      scoped.push_back(std::make_unique<ScopedEnv>(KEY.c_str(), VALUE));
+    }
+    StderrCapture err;
+    if (backend == "bpftrace") {
+      BpftraceProfiler profiler(cfg, testName,
+                                std::dynamic_pointer_cast<const BpftracePlan>(decision.plan));
+      profiler.beforeMeasure();
+      profiler.afterMeasure(vernier::bench::Stats{});
+    } else {
+      OffCpuProfiler profiler(cfg, testName,
+                              std::dynamic_pointer_cast<const OffCpuPlan>(decision.plan));
+      profiler.beforeMeasure();
+      profiler.afterMeasure(vernier::bench::Stats{});
+    }
+    return err.text();
+  }
+
   FakeToolDir dir_;
   std::string bpftrace_;
   std::string script_;
@@ -127,11 +218,10 @@ TEST_F(BpfCheckTest, BpftraceCurrentUserAttaches) {
   installSudoAndKill(); // present, and still unused
   const ReadinessResult R = check("bpftrace", ctx());
   EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_NE(R.report.message.find("probe_script attached for 1000 ms as the current user and "
-                                  "stopped on SIGINT (probe with " +
-                                  bpftrace_ + ")"),
-            std::string::npos)
-      << R.report.message;
+  EXPECT_EQ(R.report.message, "probe_script: a probe copy with a 5 s self-exit stayed running for "
+                              "the 1000 ms start grace as the current user and stopped on SIGINT "
+                              "(probe with " +
+                                  bpftrace_ + "); not checked: the run's capture");
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
   EXPECT_TRUE(dir_.logLines("kill").empty()) << dir_.log();
   EXPECT_EQ(dir_.logLines("bpftrace --version").size(), 1U) << dir_.log();
@@ -158,7 +248,13 @@ TEST_F(BpfCheckTest, BpftraceSudoRouteUsesResolvedTools) {
   installSudoAndKill();
   const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
   ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_NE(R.report.message.find("through sudo -n (BENCH_SUDO=1)"), std::string::npos);
+  EXPECT_EQ(R.report.message,
+            "probe_script: a probe copy with a 5 s self-exit stayed running for the 1000 ms "
+            "start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n "
+            "kill (probe with " +
+                bpftrace_ + "); not checked: the grant for the run's own command (" + bpftrace_ +
+                " -q <capture folder>/probe_script.tmp.bt), SIGTERM and SIGKILL through sudo, "
+                "and the run's capture");
   const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
   ASSERT_NE(PLAN, nullptr);
   EXPECT_EQ(PLAN->route.privilege.route, PrivilegeRoute::SCOPED_SUDO);
@@ -175,19 +271,120 @@ TEST_F(BpfCheckTest, BpftraceSudoRouteUsesResolvedTools) {
   EXPECT_EQ(dir_.log().find("sudo -n -- " + bpftrace_ + " --version"), std::string::npos);
 }
 
-/** @test A grant that allows the version but not the attach is refused, never Ok. */
-TEST_F(BpfCheckTest, BpftraceAttachRefusedByGrant) {
+/**
+ * @test A grant that refuses the probe copy leaves the run's own command
+ * unverified, not denied: the report names the command sudo refused, as
+ * attempted, and the run's command, which only the run can try.
+ */
+TEST_F(BpfCheckTest, BpftraceGrantRefusalOfTheProbeCopyIsUnverified) {
   installSudoAndKill();
   const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "-q"}}));
-  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
-  EXPECT_EQ(R.report.message, "denied: sudo -n refused " + bpftrace_ + " -q " + script_ +
-                                  ": sudo: a password is required")
-      << "the message names the script, not its temporary copy";
+  EXPECT_EQ(R.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(R.collectionReady());
+  const std::string COPY = lastWordOf(dir_, "sudo -n -- " + bpftrace_ + " -q ");
+  ASSERT_NE(COPY.find("/vernier_probe_"), std::string::npos) << dir_.log();
+  EXPECT_EQ(R.report.message, "unverified: sudo -n refused the probe command " + bpftrace_ +
+                                  " -q " + COPY +
+                                  ": sudo: a password is required; the run "
+                                  "executes " +
+                                  bpftrace_ +
+                                  " -q <capture folder>/probe_script.tmp.bt instead, which "
+                                  "only the run can try");
+  EXPECT_EQ(R.report.message.find(script_), std::string::npos)
+      << "the script's own path is not the command sudo refused";
   EXPECT_EQ(R.report.hint.rfind("The grant must allow " + bpftrace_ +
                                     " with the run's script arguments and " + kill_ +
                                     " with -2, -15 and -9",
                                 0),
             0U)
+      << R.report.hint;
+}
+
+/** @test The unverified row is runnable, so it keeps the settings notice an Error row drops. */
+TEST_F(BpfCheckTest, BpftraceUnverifiedRowKeepsTheNotice) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"PERF_BPF_SUDO", "1"}, {"FAKE_SUDO_DENY", "-q"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(R.report.message.ends_with(
+      "only the run can try; PERF_BPF_SUDO is deprecated; set BENCH_SUDO instead. "
+      "PERF_BPF_SUDO=1 selects: the probe tool runs with sudo -n."))
+      << R.report.message;
+}
+
+/**
+ * @test A grant for the run's command that refuses the probe copy (the
+ * reviewer's inverse grant): the request stays runnable and the run starts
+ * and stops its tracer through sudo.
+ */
+TEST_F(BpfCheckTest, BpftraceRunAllowedProbeRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "/probe0.bt"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  ASSERT_TRUE(R.collectionReady());
+  const std::string ERR = runPlanned("bpftrace", R, "Bpf.Allowed", POLICY);
+  EXPECT_EQ(ERR.find("[bpftrace]"), std::string::npos) << ERR;
+  const std::string RUN_COPY = captures() + "/Bpf.Allowed.bpf/probe_script.tmp.bt";
+  EXPECT_EQ(dir_.logLines("sudo -n -- " + bpftrace_ + " -q " + RUN_COPY).size(), 1U) << dir_.log();
+  const std::vector<std::string> RUN = dir_.logLines("bpftrace -q " + RUN_COPY + " pid=");
+  ASSERT_EQ(RUN.size(), 1U) << dir_.log();
+  const std::string TRACER = RUN.front().substr(RUN.front().rfind('=') + 1);
+  EXPECT_EQ(dir_.logLines("sudo -n -- " + kill_ + " -2 " + TRACER).size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(static_cast<pid_t>(std::stol(TRACER))));
+}
+
+/**
+ * @test A grant that allows the probe copy but refuses the run's command:
+ * the check does not claim the run's grant, and the run reports the refusal
+ * of the command it attempted.
+ */
+TEST_F(BpfCheckTest, BpftraceProbeAllowedRunRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", ".tmp.bt"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("not checked: the grant for the run's own command"),
+            std::string::npos)
+      << R.report.message;
+  const std::string ERR = runPlanned("bpftrace", R, "Bpf.Refused", POLICY);
+  const std::string RUN_COPY = captures() + "/Bpf.Refused.bpf/probe_script.tmp.bt";
+  EXPECT_NE(ERR.find("[bpftrace] the tracer exited during its start grace: denied: sudo -n "
+                     "refused " +
+                     bpftrace_ + " -q " + RUN_COPY + ": sudo: a password is required"),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("[bpftrace] The grant must allow " + bpftrace_), std::string::npos) << ERR;
+  EXPECT_TRUE(dir_.logLines("bpftrace -q " + RUN_COPY).empty()) << "the run's tracer never ran";
+}
+
+/** @test sudo failing whatever the arguments is denied, with a remedy other than a grant. */
+TEST_F(BpfCheckTest, BpftraceSudoItselfFailingIsDenied) {
+  installSudoAndKill();
+  const std::string NNP = "sudo: The \"no new privileges\" flag is set, which prevents sudo from "
+                          "running as root.";
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_FAIL", NNP}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  const std::string COPY = lastWordOf(dir_, "sudo -n -- " + bpftrace_ + " -q ");
+  EXPECT_EQ(R.report.message,
+            "denied: sudo -n failed for " + bpftrace_ + " -q " + COPY + ": " + NNP);
+  EXPECT_EQ(R.report.hint, "sudo cannot run commands as root here, whatever the grant; unset "
+                           "BENCH_SUDO and run with CAP_BPF and CAP_PERFMON, or run as root.");
+}
+
+/** @test bpftrace refused although sudo ran it as root is denied, with the root remedy. */
+TEST_F(BpfCheckTest, BpftraceRefusedAsRootIsDenied) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message,
+            "denied: script 'probe_script' could not attach through sudo -n (BENCH_SUDO=1): "
+            "ERROR: bpftrace currently only supports running as the root user.");
+  EXPECT_EQ(R.report.hint.rfind("bpftrace was refused although it ran as root", 0), 0U)
       << R.report.hint;
 }
 
@@ -304,8 +501,11 @@ TEST_F(BpfCheckTest, BpftraceRootNeverCallsSudo) {
   installSudoAndKill();
   const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}, 0));
   EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_NE(R.report.message.find(" as root and stopped on SIGINT"), std::string::npos);
-  EXPECT_NE(R.report.message.find("; running as root; BENCH_SUDO not needed"), std::string::npos);
+  EXPECT_NE(R.report.message.find(" as root and stopped on SIGINT (probe with " + bpftrace_ +
+                                  "); running as root; BENCH_SUDO not needed; not checked: the "
+                                  "run's capture"),
+            std::string::npos)
+      << R.report.message;
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
 }
 
@@ -406,36 +606,152 @@ TEST_F(BpfCheckTest, BpftraceProbeCopyUnwritable) {
 
 /* ----------------------------- offcpu ----------------------------- */
 
-/** @test offcpu attaches as the current user by default, in the launch's own shape. */
+/**
+ * @test offcpu runs as the current user by default, with the launch's own
+ * script and arguments on a probe process, which is gone afterwards.
+ */
 TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
   installSudoAndKill();
   const ReadinessResult R = check("offcpu", ctx({{"PERF_BPF_SUDO", "1"}}));
   EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_NE(R.report.message.find("the off-CPU script attached for 1500 ms as the current user"),
-            std::string::npos)
-      << R.report.message;
+  EXPECT_EQ(R.report.message, "the off-CPU script, with the run's arguments on a probe process, "
+                              "stayed running for the 1500 ms start grace as the current user and "
+                              "stopped on SIGINT (probe with " +
+                                  bpftrace_ + "); not checked: the run's capture");
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
-  ASSERT_EQ(dir_.logLines("bpftrace -e ").size(), 1U) << dir_.log();
-  // The script text spans lines; the target pid is the argument after it.
-  EXPECT_NE(dir_.log().find("exit(); }\n " + std::to_string(::getpid()) + " pid="),
-            std::string::npos)
-      << dir_.log();
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_EQ(CALLS.front().program.find("interval"), std::string::npos)
+      << "the probe runs the launch's script unchanged";
+  EXPECT_NE(CALLS.front().target, ::getpid());
+  EXPECT_TRUE(gone(CALLS.front().target)) << "the probe process outlived the check";
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
   const auto PLAN = std::dynamic_pointer_cast<const OffCpuPlan>(R.plan);
   ASSERT_NE(PLAN, nullptr);
   EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
 }
 
-/** @test offcpu with BENCH_SUDO goes through sudo; a refusal there is denied. */
+/**
+ * @test offcpu with BENCH_SUDO goes through sudo; sudo refusing that
+ * command, the run's own, is denied and names the command as attempted.
+ */
 TEST_F(BpfCheckTest, OffCpuSudoRoute) {
   installSudoAndKill();
   const ReadinessResult OK = check("offcpu", ctx({{"BENCH_SUDO", "yes"}}));
   EXPECT_EQ(OK.report.status, EnvReport::Status::Ok) << OK.report.message;
-  EXPECT_EQ(dir_.logLines("sudo -n -- " + bpftrace_ + " -e ").size(), 1U) << dir_.log();
+  EXPECT_EQ(OK.report.message,
+            "the off-CPU script, with the run's arguments on a probe process, stayed running for "
+            "the 1500 ms start grace through sudo -n (BENCH_SUDO=yes) and stopped on SIGINT "
+            "through sudo -n kill (probe with " +
+                bpftrace_ +
+                "); not checked: SIGTERM and SIGKILL through sudo, and the run's capture");
+  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_).size(), 1U) << dir_.log();
   const ReadinessResult REFUSED =
       check("offcpu", ctx({{"BENCH_SUDO", "yes"}, {"FAKE_SUDO_DENY", "-e"}}));
   EXPECT_EQ(REFUSED.cause, ReadinessCause::DENIED);
-  EXPECT_EQ(REFUSED.report.message.rfind("denied: sudo -n refused " + bpftrace_ + " -e ", 0), 0U)
-      << REFUSED.report.message;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
+  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
+  EXPECT_EQ(REFUSED.report.message,
+            "denied: sudo -n refused " + bpftrace_ + " -e <the off-CPU script> " +
+                std::to_string(CALLS.back().target) + ": sudo: a password is required");
+}
+
+/**
+ * @test The probe runs what the run runs: the same program through the same
+ * route, the target pid aside (a probe process, then the benchmark).
+ */
+TEST_F(BpfCheckTest, OffCpuProbeRunsTheRunsCommand) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Same", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] stacks written to " + captures() + "/OffCpu.Same.offcpu/offcpu.txt"),
+            std::string::npos)
+      << ERR;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
+  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
+  EXPECT_EQ(CALLS[0].program, CALLS[1].program);
+  EXPECT_NE(CALLS[0].target, ::getpid());
+  EXPECT_EQ(CALLS[1].target, ::getpid());
+}
+
+/**
+ * @test The reviewer's inverse grant, refusing any program that carries a
+ * self-exit interval (the old probe) while allowing the run's: the check is
+ * ready and the run captures.
+ */
+TEST_F(BpfCheckTest, OffCpuRunAllowedOldProbeRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "interval:"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Allowed", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] stacks written to "), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find("could not"), std::string::npos) << ERR;
+}
+
+/**
+ * @test A grant that allows the probe but refuses the run (it names the
+ * benchmark's pid): the check is ready, and the run reports the refusal of
+ * the command it attempted and writes no stacks.
+ */
+TEST_F(BpfCheckTest, OffCpuProbeAllowedRunRefused) {
+  installSudoAndKill();
+  const std::string SELF = std::to_string(::getpid());
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", " " + SELF + "$"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Refused", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] the tracer exited during its start grace: denied: sudo -n "
+                     "refused " +
+                     bpftrace_ + " -e <the off-CPU script> " + SELF +
+                     ": sudo: a password is required"),
+            std::string::npos)
+      << ERR;
+  EXPECT_EQ(ERR.find("stacks written"), std::string::npos) << ERR;
+}
+
+/**
+ * @test A refused stop is denied (the run's stop would be refused alike),
+ * and the probe tracer ends with its probe process instead of lingering.
+ */
+TEST_F(BpfCheckTest, OffCpuRefusedStopEndsWithTheTarget) {
+  installSudoAndKill();
+  const auto START = std::chrono::steady_clock::now();
+  const ReadinessResult R =
+      check("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -"}}));
+  const auto ELAPSED = std::chrono::steady_clock::now() - START;
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0), 0U)
+      << R.report.message;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  EXPECT_TRUE(gone(CALLS.front().target)) << "the probe process outlived the check";
+  EXPECT_LT(ELAPSED, std::chrono::seconds(6));
+}
+
+/**
+ * @test A probe tracer that outlives both its refused stop and its target
+ * (bpftrace not seeing the target's pid) is reported as still running.
+ */
+TEST_F(BpfCheckTest, OffCpuTracerOutlivingItsTargetIsReported) {
+  installSudoAndKill();
+  const ReadinessResult R = check("offcpu", ctx({{"BENCH_SUDO", "1"},
+                                                 {"FAKE_SUDO_DENY", "kill -"},
+                                                 {"FAKE_BPFTRACE_MODE", "ignore-target"}}));
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  const std::string TAIL = "; the probe tracer " + std::to_string(CALLS.front().pid) +
+                           " outlived its target and still runs";
+  EXPECT_TRUE(R.report.message.ends_with(TAIL)) << R.report.message;
+  EXPECT_EQ(R.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0), 0U)
+      << R.report.message;
+  (void)::kill(CALLS.front().pid, SIGKILL);
 }
 
 /** @test offcpu denied as the current user says how to get access. */

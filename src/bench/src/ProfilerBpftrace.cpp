@@ -21,6 +21,7 @@
 
 #include <cctype>
 #include <cerrno>
+#include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <filesystem>
@@ -29,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -107,14 +109,6 @@ std::string failureLine(const std::string& text) {
   }
   const std::string TAIL = outputTail(text, 2);
   return TAIL.empty() ? std::string{"no message"} : TAIL;
-}
-
-std::string join(const std::vector<std::string>& parts, const char* separator) {
-  std::string out;
-  for (const std::string& part : parts) {
-    out += (out.empty() ? "" : separator) + part;
-  }
-  return out;
 }
 
 const char* signalName(int sig) {
@@ -201,14 +195,29 @@ std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
 
 ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::string& what,
                                       const std::string& commandLine, const std::string& stderrText,
-                                      const ReadinessContext& ctx) {
+                                      const ReadinessContext& ctx, const std::string& runCommand) {
   const std::string LINE = failureLine(stderrText);
-  const bool SUDO_REFUSED =
-      route.privilege.route == PrivilegeRoute::SCOPED_SUDO &&
-      containsAny(stderrText, {"sudo:", "is not allowed to execute", "a password is required"});
-  if (SUDO_REFUSED) {
-    return readinessResult(ReadinessCause::DENIED, "sudo -n refused " + commandLine + ": " + LINE,
-                           grantRemedy(route, ctx));
+  if (route.privilege.route == PrivilegeRoute::SCOPED_SUDO) {
+    // sudo's policy answers for the exact command line: a refusal holds for
+    // the run only when the refused command is the run's own.
+    if (containsAny(stderrText, {"a password is required", "is not allowed to execute"})) {
+      if (!runCommand.empty()) {
+        return readinessResult(ReadinessCause::UNVERIFIED,
+                               "sudo -n refused the probe command " + commandLine + ": " + LINE +
+                                   "; the run executes " + runCommand +
+                                   " instead, which only the run can try",
+                               grantRemedy(route, ctx));
+      }
+      return readinessResult(ReadinessCause::DENIED, "sudo -n refused " + commandLine + ": " + LINE,
+                             grantRemedy(route, ctx));
+    }
+    // Any other failure of sudo itself does not depend on the arguments.
+    if (containsAny(stderrText, {"sudo:"})) {
+      return readinessResult(ReadinessCause::DENIED,
+                             "sudo -n failed for " + commandLine + ": " + LINE,
+                             "sudo cannot run commands as root here, whatever the grant; unset "
+                             "BENCH_SUDO and run with CAP_BPF and CAP_PERFMON, or run as root.");
+    }
   }
   if (containsAny(stderrText, {"only supports running as the root user", "Operation not permitted",
                                "Permission denied", "EPERM", "EACCES"})) {
@@ -230,43 +239,54 @@ ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::str
                          "Run the script by hand with " + route.bpftrace + " to see why.");
 }
 
-std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route,
-                                           const std::vector<std::string>& toolArgs,
-                                           const std::string& what, int graceMs,
+std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const AttachProbe& probe,
                                            const ReadinessContext& ctx,
                                            const std::string& scratchDir) {
   std::vector<std::string> argv = route.command();
-  argv.insert(argv.end(), toolArgs.begin(), toolArgs.end());
-  std::vector<std::string> toolLine{route.bpftrace};
-  toolLine.insert(toolLine.end(), toolArgs.begin(), toolArgs.end());
-  const std::string COMMAND_LINE = join(toolLine, " ");
+  argv.insert(argv.end(), probe.toolArgs.begin(), probe.toolArgs.end());
+  const std::string& what = probe.what;
 
   OwnedHelper helper(
       route.stopPolicy(2000, 1000, 1000, std::make_shared<const ReadinessContext>(ctx)));
-  const HelperStart START =
-      helper.start(argv, "", scratchDir.empty() ? "" : scratchDir + "/attach.err", graceMs, &ctx);
+  const HelperStart START = helper.start(
+      argv, "", scratchDir.empty() ? "" : scratchDir + "/attach.err", probe.graceMs, &ctx);
   if (!START.started) {
     return readinessResult(ReadinessCause::UNUSABLE, what + ": " + START.errorTail,
                            "Check that " + argv.front() + " can be executed.");
   }
   if (START.exitedEarly) {
-    return classifyAttachFailure(route, what, COMMAND_LINE, START.errorTail, ctx);
+    return classifyAttachFailure(route, what, probe.commandLine, START.errorTail, ctx,
+                                 probe.runCommand);
   }
   const HelperStopResult STOP = helper.stop();
+  std::string lingering;
+  if (probe.afterStop) {
+    // A tracer whose stop failed ends by itself once its target is gone.
+    probe.afterStop();
+    const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (helper.running() && std::chrono::steady_clock::now() < UNTIL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    if (helper.running()) {
+      lingering = "; the probe tracer " + std::to_string(helper.pid()) +
+                  " outlived its target and still runs";
+    }
+  }
   for (const StopDelivery& delivery : STOP.deliveries) {
     if (delivery.delivered) {
       continue;
     }
     // The run's stop would be refused the same way, losing the flush on SIGINT.
     if (route.privilege.route == PrivilegeRoute::SCOPED_SUDO) {
-      return readinessResult(ReadinessCause::DENIED,
-                             "cleanup: sudo -n refused " + route.kill + " -" +
-                                 std::to_string(delivery.signal) + " " +
-                                 std::to_string(delivery.target) + ": " + delivery.detail,
-                             grantRemedy(route, ctx));
+      return readinessResult(
+          ReadinessCause::DENIED,
+          "cleanup: sudo -n refused " + route.kill + " -" + std::to_string(delivery.signal) + " " +
+              std::to_string(delivery.target) + ": " + delivery.detail + lingering,
+          grantRemedy(route, ctx));
     }
     return readinessResult(ReadinessCause::DENIED,
-                           "cleanup: " + delivery.command + " failed: " + delivery.detail,
+                           "cleanup: " + delivery.command + " failed: " + delivery.detail +
+                               lingering,
                            "The tracer runs as another user; stop it through the same route.");
   }
   if (STOP.stillAlive) {
@@ -286,7 +306,7 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route,
     std::ifstream err(scratchDir + "/attach.err");
     std::stringstream text;
     text << err.rdbuf();
-    return classifyAttachFailure(route, what, COMMAND_LINE, text.str(), ctx);
+    return classifyAttachFailure(route, what, probe.commandLine, text.str(), ctx, probe.runCommand);
   }
   return std::nullopt;
 }
@@ -344,6 +364,7 @@ bool reportStop(const char* tag, const std::string& what, const HelperStopResult
 namespace { // Internal implementation details
 
 constexpr int START_GRACE_MS = 1000; // bpftrace attaches within this before measuring
+constexpr int PROBE_SELF_EXIT_S = 5; // a readiness probe copy exits by itself after this
 constexpr int INTERRUPT_WAIT_MS = 2000;
 constexpr int TERMINATE_WAIT_MS = 1000;
 constexpr int KILL_WAIT_MS = 1000;
@@ -384,15 +405,6 @@ int readScript(const std::string& path, std::string& text) {
 
 std::string errnoText(int err) { return std::system_category().message(err); }
 
-void replaceAll(std::string& text, const std::string& from, const std::string& to) {
-  if (from.empty()) {
-    return;
-  }
-  for (std::size_t pos = 0; (pos = text.find(from, pos)) != std::string::npos; pos += to.size()) {
-    text.replace(pos, from.size(), to);
-  }
-}
-
 void replacePid(std::string& text, long pid) {
   const std::string TOKEN = "{{PID}}";
   const std::string VALUE = std::to_string(pid);
@@ -410,6 +422,20 @@ std::vector<std::string> launchArgs(const std::string& format, const std::string
   }
   args.push_back(script);
   return args;
+}
+
+/** @brief `<bpftrace> <args...>` as reports show a command. */
+std::string commandLineOf(const std::string& bpftrace, const std::vector<std::string>& args) {
+  std::string line = bpftrace;
+  for (const std::string& arg : args) {
+    line += " " + arg;
+  }
+  return line;
+}
+
+/** @brief Where the run writes its copy of script @p name inside capture folder @p outdir. */
+std::string runCopyPath(const std::string& outdir, const std::string& name) {
+  return (std::filesystem::path(outdir) / (name + ".tmp.bt")).string();
 }
 
 /** @brief One tracer for one script, started and stopped through the plan's route. */
@@ -442,7 +468,7 @@ public:
     const std::filesystem::path OUTDIR(outdir_);
     std::error_code ec;
     std::filesystem::create_directories(OUTDIR, ec);
-    const std::string TEMP_SCRIPT = (OUTDIR / (name_ + ".tmp.bt")).string();
+    const std::string TEMP_SCRIPT = runCopyPath(outdir_, name_);
     {
       std::ofstream out(TEMP_SCRIPT);
       out << src;
@@ -474,14 +500,9 @@ public:
       return false;
     }
     if (STARTED.exitedEarly) {
-      std::vector<std::string> toolLine{plan_->route.bpftrace};
-      toolLine.insert(toolLine.end(), ARGS.begin(), ARGS.end());
-      std::string commandLine;
-      for (const std::string& part : toolLine) {
-        commandLine += (commandLine.empty() ? "" : " ") + part;
-      }
       const ReadinessResult WHY = bpftrace_tool::classifyAttachFailure(
-          plan_->route, "script '" + name_ + "'", commandLine, STARTED.errorTail, *plan_->context);
+          plan_->route, "script '" + name_ + "'", commandLineOf(plan_->route.bpftrace, ARGS),
+          STARTED.errorTail, *plan_->context);
       std::fprintf(stderr, "[bpftrace] the tracer exited during its start grace: %s\n",
                    WHY.report.message.c_str());
       if (!WHY.report.hint.empty()) {
@@ -561,14 +582,22 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     return *failure;
   }
 
-  // Attach each selected script the way the run will, on a copy that also
-  // exits by itself, and stop it with the run's first stop signal.
+  // Run a copy of each selected script through the route, for the run's start
+  // grace, and stop it with the run's first stop signal. The copy also exits
+  // by itself, and it lives in a private directory: the run's own copy goes
+  // in a capture folder that does not exist before the run.
+  const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const ProbeScratch SCRATCH(ctx);
   std::optional<ReadinessResult> caveat;
+  std::string runCommands;
   for (std::size_t i = 0; i < plan->scripts.size(); ++i) {
+    const std::string RUN_COMMAND =
+        commandLineOf(plan->route.bpftrace,
+                      launchArgs(plan->format, runCopyPath("<capture folder>", plan->scripts[i])));
+    runCommands += (runCommands.empty() ? "" : ", ") + RUN_COMMAND;
     std::string copy = sources[i];
     replacePid(copy, static_cast<long>(ctx.self()));
-    copy += "\ninterval:s:5 { exit(); }\n";
+    copy += "\ninterval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
     const std::string COPY_PATH = SCRATCH.write("probe" + std::to_string(i) + ".bt", copy);
     if (COPY_PATH.empty()) {
       const std::string BASE = ctx.get("TMPDIR").value_or("");
@@ -580,14 +609,13 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
                                  "' in " + WHERE,
                              "Point TMPDIR at a writable directory, or make /tmp writable.");
     }
-    auto verdict = bpftrace_tool::probeAttach(plan->route, launchArgs(plan->format, COPY_PATH),
-                                              "script '" + plan->scripts[i] + "'", START_GRACE_MS,
-                                              ctx, SCRATCH.path());
-    if (verdict) {
-      // Name the script, not its temporary copy, so every decision about it
-      // reads the same.
-      replaceAll(verdict->report.message, COPY_PATH, plan->scriptPaths[i]);
-    }
+    bpftrace_tool::AttachProbe probe;
+    probe.toolArgs = launchArgs(plan->format, COPY_PATH);
+    probe.what = "script '" + plan->scripts[i] + "'";
+    probe.commandLine = commandLineOf(plan->route.bpftrace, probe.toolArgs);
+    probe.runCommand = RUN_COMMAND;
+    probe.graceMs = START_GRACE_MS;
+    auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
     if (verdict && verdict->report.status == EnvReport::Status::Error) {
       return *verdict;
     }
@@ -596,16 +624,25 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     }
   }
 
+  // Say what the probe showed and what only the run can show.
   std::string names;
   for (const std::string& name : plan->scripts) {
     names += (names.empty() ? "" : ", ") + name;
   }
-  std::string message = names + " attached for " + std::to_string(START_GRACE_MS) + " ms " +
-                        plan->route.describe() + " and stopped on SIGINT (probe with " +
-                        plan->route.bpftrace + ")";
+  std::string message =
+      names + ": " + (plan->scripts.size() == 1 ? "a probe copy" : "a probe copy of each") +
+      " with a " + std::to_string(PROBE_SELF_EXIT_S) + " s self-exit stayed running for the " +
+      std::to_string(START_GRACE_MS) + " ms start grace " + plan->route.describe() +
+      " and stopped on SIGINT" + (SUDO ? " through sudo -n kill" : "") + " (probe with " +
+      plan->route.bpftrace + ")";
   if (plan->route.privilege.route == PrivilegeRoute::ALREADY_ROOT && plan->route.privilege.optIn) {
     message += "; running as root; BENCH_SUDO not needed";
   }
+  message += "; not checked: " +
+             (SUDO ? "the grant for the run's own command (" + runCommands +
+                         "), SIGTERM and SIGKILL through sudo, and "
+                   : std::string{}) +
+             "the run's capture";
   ReadinessResult result;
   if (caveat) {
     result = *caveat;

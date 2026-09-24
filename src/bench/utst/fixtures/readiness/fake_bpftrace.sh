@@ -2,14 +2,20 @@
 # Fake bpftrace for the readiness tests.
 #
 # `--version` prints a version, or fails in mode version-fails. Any other
-# invocation is an attach (`-q [-f json] <script>` or `-e <script> [pid]`),
+# invocation is an attach (`-q [-f json] <script>` or `-e <program> [pid]`),
 # which FAKE_BPFTRACE_MODE selects:
-#   ok           run until signalled, or until the program's own
-#                interval:s:N / interval:ms:N probe ends it (at most 30 s)
+#   ok           run until signalled; a program with an interval:s:N or
+#                interval:ms:N probe ends by itself then, and a program that
+#                exits on sched_process_exit ends when its target pid does
+#                (at most 30 s otherwise)
 #   ignore-int   like ok, but ignore SIGINT
+#   ignore-target
+#                like ok, but a program never ends with its target (a pid
+#                bpftrace does not see, as across a pid namespace)
 #   ignore-int-run
-#                like ok for a program with an interval probe (a readiness
-#                probe copy); ignore SIGINT for one without (a run's launch)
+#                like ok for a readiness probe; ignore SIGINT for a run's
+#                launch: a script without an interval probe, or a program
+#                whose target is the process that started it
 #   eperm        exit 1 at once with bpftrace's message for a non-root user
 #   unsupported  exit 1 at once with bpftrace's message for a missing tracepoint
 #   broken       exit 1 at once with a message of no known kind
@@ -32,10 +38,13 @@ if [ "${1:-}" = "--version" ]; then
 fi
 
 program=""
+inline=no
+target=""
 while [ $# -gt 0 ]; do
   case "$1" in
   -e)
     program=$2
+    inline=yes
     shift 2
     ;;
   -f)
@@ -47,6 +56,8 @@ while [ $# -gt 0 ]; do
   *)
     if [ -z "$program" ] && [ -f "$1" ]; then
       program=$(cat "$1")
+    elif [ "$inline" = yes ]; then
+      target=$1
     fi
     shift
     ;;
@@ -77,10 +88,27 @@ if [ -n "$seconds" ]; then
 elif [ -n "$millis" ]; then
   limit=$(printf '%d.%03d' $((millis / 1000)) $((millis % 1000)))
 fi
+
+# A run's launch, as opposed to a readiness probe: a script without the
+# probe copy's self-exit, or a program traced on the process that started it
+# (a probe traces a process of its own instead).
+run_launch=no
+if [ "$inline" = no ] && [ -z "$seconds" ] && [ -z "$millis" ]; then
+  run_launch=yes
+fi
+if [ "$inline" = yes ] && [ "$target" = "$PPID" ]; then
+  run_launch=yes
+fi
 if [ "$mode" = "ignore-int" ]; then
   trap '' INT
 fi
-if [ "$mode" = "ignore-int-run" ] && [ -z "$seconds" ] && [ -z "$millis" ]; then
+if [ "$mode" = "ignore-int-run" ] && [ "$run_launch" = yes ]; then
   trap '' INT
+fi
+
+# bpftrace's exit() on the target's sched_process_exit: end with the target.
+if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+  printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
+  exec tail -s 0.1 -f /dev/null --pid="$target"
 fi
 exec sleep "$limit"
