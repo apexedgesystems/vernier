@@ -42,10 +42,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   them into their callers; GCC may still specialize them when it sees every
   caller, and a profile then names the copy
   `vernier::bench::demo::joinV0 [clone .constprop.0]`, which the test counts as
-  the function. Demo 03's test names change (`BubbleSortHotspot` and
-  `StdSortOptimized` are gone), so its CSVs from earlier releases do not join
-  with newer ones, and `bubbleSort` and `fastSort` leave
-  `helpers/DemoWorkloads.hpp`.
+  the function. Its walkthrough, `src/bench/demo/docs/03_GPERF_PROFILER.md`, is
+  rewritten from a Release run on the documented Raspberry Pi 4 rig: the
+  `google-pprof` report of each version read row by row, the sampling rate the
+  profiles record (100 samples per second of CPU time), and what the report
+  shows without the C library's debug symbols; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/03_gperf_profiler.csv`. Demo 03's test names
+  change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
+  from earlier releases do not join with newer ones, and `bubbleSort` and
+  `fastSort` leave `helpers/DemoWorkloads.hpp`.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
