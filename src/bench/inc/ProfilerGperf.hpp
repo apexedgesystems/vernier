@@ -11,9 +11,10 @@
  *
  * Readiness (checkGperfRequest): every requested mode must be compiled in; a
  * request that is not is a collection error. With --profile-analyze the
- * analyzer is the first of google-pprof and pprof found on PATH; without
- * one the request is an analysis error, and the capture still runs and keeps
- * cpu.prof. The analysis runs exactly the analyzer the check found.
+ * analyzer is the first of google-pprof and pprof found on PATH, and it must
+ * run; a missing or broken analyzer is an analysis error, and the capture
+ * still runs and keeps cpu.prof. The analysis runs exactly the analyzer the
+ * check found.
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
@@ -28,6 +29,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -67,9 +69,30 @@ GperfModes parseGperfModes(const std::string& profileArgs);
 /** @brief What the gperf check verified, for the profiler to use. */
 struct GperfPlan final : ReadinessPlan {
   GperfModes modes;
-  bool analyze = false; ///< --profile-analyze was requested.
-  std::string analyzer; ///< Absolute path of the analyzer to run; empty when none.
+  bool analyze = false;        ///< --profile-analyze was requested.
+  std::string analyzer;        ///< Absolute path of the selected analyzer; empty when none.
+  bool analysisReady = false;  ///< The promised analysis can run with that analyzer.
+  std::string analysisSkipped; ///< Why it cannot, for the run's note; empty when it can.
 };
+
+/** @brief The analysis half of a gperf decision. */
+struct GperfAnalysis {
+  std::string analyzer;                 ///< The selected analyzer's path; empty when none.
+  std::optional<ReadinessResult> error; ///< The analysis-stage Error, when there is one.
+};
+
+/**
+ * @brief Which analyzer a promised analysis runs, and whether it can.
+ *
+ * The analyzer is the first of google-pprof and pprof on the snapshot's PATH.
+ * It matters only to a request that promises an analysis of a CPU capture:
+ * then a missing analyzer, or one that does not answer `--help`, is an
+ * ANALYSIS-stage Error naming it and the remedy, while collection still runs.
+ * Otherwise the analyzer is only named, never run. Needs no gperftools, so
+ * the rule holds, and is tested, on every build.
+ */
+GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
+                                  const ReadinessContext& ctx);
 
 /**
  * @brief The gperf backend's readiness decision for @p request in @p ctx.

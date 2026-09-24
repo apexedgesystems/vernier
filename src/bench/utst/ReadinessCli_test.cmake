@@ -112,6 +112,54 @@ function (expect_eq actual expected what)
   endif ()
 endfunction ()
 
+# Ask the doctor about the request <args> states; sets <prefix>_STATUS,
+# <prefix>_MESSAGE and <prefix>_HINT from its JSON's selected row.
+function (selected_row prefix)
+  run(_row ${ARGN} --profile-check-json)
+  string(
+    JSON
+    _status
+    ERROR_VARIABLE
+    _e1
+    GET
+    "${_row_OUT}"
+    selected
+    status
+  )
+  string(
+    JSON
+    _message
+    ERROR_VARIABLE
+    _e2
+    GET
+    "${_row_OUT}"
+    selected
+    message
+  )
+  string(
+    JSON
+    _hint
+    ERROR_VARIABLE
+    _e3
+    GET
+    "${_row_OUT}"
+    selected
+    hint
+  )
+  set(${prefix}_STATUS
+      "${_status}"
+      PARENT_SCOPE
+  )
+  set(${prefix}_MESSAGE
+      "${_message}"
+      PARENT_SCOPE
+  )
+  set(${prefix}_HINT
+      "${_hint}"
+      PARENT_SCOPE
+  )
+endfunction ()
+
 # Count the occurrences of <needle> in <text> into <out>.
 function (count_of out text needle)
   string(LENGTH "${needle}" _len)
@@ -626,60 +674,80 @@ elseif (CASE MATCHES "^Gperf")
     expect_not("${run_ERR}" "Profiler 'gperf'" "run notice")
 
   elseif (CASE STREQUAL "GperfAnalyzerMissingIsAnalysisError")
-    run(doctor --profile gperf --profile-analyze --profile-check-json)
-    string(
-      JSON
-      _status
-      ERROR_VARIABLE
-      _e1
-      GET
-      "${doctor_OUT}"
-      selected
-      status
-    )
-    string(
-      JSON
-      _message
-      ERROR_VARIABLE
-      _e2
-      GET
-      "${doctor_OUT}"
-      selected
-      message
-    )
-    string(
-      JSON
-      _hint
-      ERROR_VARIABLE
-      _e3
-      GET
-      "${doctor_OUT}"
-      selected
-      hint
-    )
-    expect_eq("${_status}" "fail" "selected status")
+    # The promised analysis without an analyzer is an Error at the analysis
+    # stage in the doctor's row, its JSON and the run, which still collects;
+    # the same request without the promise is Ok.
+    selected_row(on --profile gperf --profile-analyze)
+    selected_row(off --profile gperf)
+    expect_eq("${on_STATUS}" "fail" "selected status with --profile-analyze")
     expect_has(
-      "${_message}" "analysis: missing: --profile-analyze needs google-pprof or pprof"
+      "${on_MESSAGE}" "analysis: missing: --profile-analyze needs google-pprof or pprof"
       "selected message"
+    )
+    expect_eq("${off_STATUS}" "ok" "selected status without --profile-analyze")
+    run(text --profile gperf --profile-analyze --profile-check)
+    expect_has(
+      "${text_OUT}" "--profile-analyze\n  [FAIL] gperf      analysis: missing: "
+      "text selected row"
     )
     run(run --profile gperf --profile-analyze ${_quick})
     expect_eq("${run_RC}" "0" "run exit status")
+    set(_notice
+        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+    )
+    expect_has("${run_ERR}" "${_notice}" "run notice")
+    count_of(_times "${run_ERR}" "${_notice}")
+    expect_eq("${_times}" "1" "notices for two guarded cases")
     expect_has(
       "${run_ERR}"
-      "[FAIL] Profiler 'gperf': ${_message}\n   ${_hint}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
-      "run notice"
-    )
-    expect_has(
-      "${run_ERR}" "[gperf] analysis skipped: no google-pprof or pprof; raw profile kept at "
+      "[gperf] analysis skipped: no google-pprof or pprof on PATH; raw profile kept at "
       "analysis note"
     )
     if (NOT EXISTS "${_prof}")
       string(APPEND _problems "\n  cpu.prof was not written")
     endif ()
+    run(plain --profile gperf ${_quick})
+    expect_not("${plain_ERR}" "Profiler 'gperf'" "run notice without --profile-analyze")
 
-  elseif (CASE STREQUAL "GperfAnalyzerFailureKeepsRaw")
+  elseif (CASE STREQUAL "GperfAnalyzerBrokenIsAnalysisError")
+    # An analyzer that does not run is the same Error, found before the run;
+    # the analysis-off twin, with the same broken analyzer on PATH, is Ok.
     fake(fake_pprof.sh google-pprof)
     list(APPEND _env FAKE_PPROF_MODE=fail)
+    selected_row(on --profile gperf --profile-analyze)
+    selected_row(off --profile gperf)
+    expect_eq("${on_STATUS}" "fail" "selected status with --profile-analyze")
+    expect_has(
+      "${on_MESSAGE}"
+      "analysis: unusable: --profile-analyze would run ${WORK_DIR}/bin/google-pprof, which does not run: --help exit status 1: fake pprof: cannot read profile"
+      "selected message"
+    )
+    expect_eq("${off_STATUS}" "ok" "selected status without --profile-analyze")
+    run(run --profile gperf --profile-analyze ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status")
+    expect_has(
+      "${run_ERR}"
+      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+      "run notice"
+    )
+    expect_has(
+      "${run_ERR}"
+      "[gperf] analysis skipped: ${WORK_DIR}/bin/google-pprof does not run; raw profile kept at "
+      "analysis note"
+    )
+    read_log(_text)
+    expect_not("${_text}" " --text " "fake log (a broken analyzer is not run on the profile)")
+    if (NOT EXISTS "${_prof}")
+      string(APPEND _problems "\n  cpu.prof was not written")
+    endif ()
+
+  elseif (CASE STREQUAL "GperfAnalyzerFailsOnTheProfile")
+    # An analyzer that runs but fails on this profile is reported when it
+    # fails, and the raw capture is kept.
+    fake(fake_pprof.sh google-pprof)
+    list(APPEND _env FAKE_PPROF_MODE=fail-on-profile)
+    selected_row(on --profile gperf --profile-analyze)
+    expect_eq("${on_STATUS}" "ok" "selected status (the analyzer answers --help)")
     run(run --profile gperf --profile-analyze ${_quick})
     expect_eq("${run_RC}" "0" "run exit status")
     expect_has(

@@ -562,4 +562,56 @@ TEST(ProfilerReadinessRouting, DoctorJsonKeys) {
       << SELECTED;
 }
 
+/**
+ * @test An analysis-stage Error is a failure in every view of the request, and its analysis-off
+ * twin is Ok
+ *
+ * The run prints it as [FAIL] and still builds the profiler; the doctor's
+ * selected row is [FAIL]; the JSON's selected.status is "fail". The same
+ * backend asked without the analysis is Ok everywhere.
+ */
+TEST(ProfilerReadinessRouting, AnalysisStageErrorFailsEveryViewAndItsTwinIsOk) {
+  ScopedBackend backend("analysis-views");
+  backend.readiness([](const ReadinessRequest& request) {
+    return request.analyze ? readinessResult(ReadinessCause::MISSING, "no analyzer", "install one",
+                                             ReadinessStage::ANALYSIS)
+                           : readinessResult(ReadinessCause::READY, "collects", "");
+  });
+  PerfConfig promised = configFor(backend.name());
+  promised.profileAnalyze = true;
+  const PerfConfig PLAIN = configFor(backend.name());
+
+  testing::internal::CaptureStdout();
+  vernier::bench::runProfileCheckJson(promised);
+  const std::string JSON_ON = testing::internal::GetCapturedStdout();
+  EXPECT_NE(JSON_ON.find("\"selected\": {\"name\": \"" + backend.name() +
+                         "\", \"profileArgs\": \"\", \"status\": \"fail\""),
+            std::string::npos)
+      << JSON_ON;
+  testing::internal::CaptureStdout();
+  vernier::bench::runProfileCheckJson(PLAIN);
+  const std::string JSON_OFF = testing::internal::GetCapturedStdout();
+  EXPECT_NE(JSON_OFF.find("\"status\": \"ok\", \"message\": \"collects\""), std::string::npos)
+      << JSON_OFF;
+
+  testing::internal::CaptureStdout();
+  (void)ProfilerRegistry::instance().printDoctor(promised);
+  const std::string TEXT = testing::internal::GetCapturedStdout();
+  EXPECT_NE(TEXT.find("--profile-analyze\n  [FAIL] " + backend.name()), std::string::npos) << TEXT;
+
+  StderrCapture capture;
+  const auto PROFILER =
+      ProfilerRegistry::instance().make(backend.name(), promised, "T.V", contextWith());
+  const auto QUIET = ProfilerRegistry::instance().make(backend.name(), PLAIN, "T.V", contextWith());
+  const std::string ERR = capture.text();
+  EXPECT_NE(ERR.find("[FAIL] Profiler '" + backend.name() +
+                     "': analysis: missing: no analyzer\n"
+                     "   install one\n   Collection proceeds;"),
+            std::string::npos)
+      << ERR;
+  EXPECT_EQ(PROFILER->artifactDir(), "fake-artifacts") << "collection still runs";
+  EXPECT_EQ(QUIET->artifactDir(), "fake-artifacts");
+  EXPECT_EQ(ERR.find("collects"), std::string::npos) << "the Ok twin prints nothing";
+}
+
 } // namespace

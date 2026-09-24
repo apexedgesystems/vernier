@@ -29,7 +29,10 @@
 #include <vector>
 
 using vernier::bench::BpftracePlan;
+using vernier::bench::decideGperfAnalysis;
 using vernier::bench::EnvReport;
+using vernier::bench::GperfAnalysis;
+using vernier::bench::GperfModes;
 using vernier::bench::GperfPlan;
 using vernier::bench::OffCpuPlan;
 using vernier::bench::parseGperfModes;
@@ -644,13 +647,14 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
   plan->modes.cpu = true;
   plan->analyze = true;
   plan->analyzer = PPROF;
+  plan->analysisReady = true; // its --help worked; reading this profile fails
   vernier::bench::PerfConfig cfg;
   cfg.profileTool = "gperf";
   cfg.profileAnalyze = true;
   cfg.artifactRoot = dir_.path();
   std::string err;
   {
-    ScopedEnv mode("FAKE_PPROF_MODE", "fail");
+    ScopedEnv mode("FAKE_PPROF_MODE", "fail-on-profile");
     ScopedEnv log("FAKE_LOG", dir_.logPath());
     vernier::bench::GperfProfiler profiler(cfg, "Gperf.Fails", plan);
     vernier::bench::test::StderrCapture capture;
@@ -683,6 +687,7 @@ TEST_F(GperfCheckTest, EmptyReportIsSaidSo) {
   plan->modes.cpu = true;
   plan->analyze = true;
   plan->analyzer = PPROF;
+  plan->analysisReady = true;
   vernier::bench::PerfConfig cfg;
   cfg.profileTool = "gperf";
   cfg.profileAnalyze = true;
@@ -696,4 +701,116 @@ TEST_F(GperfCheckTest, EmptyReportIsSaidSo) {
   EXPECT_NE(OUT.find("(the analyzer printed no report; a very short run may hold no samples)"),
             std::string::npos)
       << OUT;
+}
+
+/** @test Through the registry, a broken analyzer makes the promised analysis an Error, alone. */
+TEST_F(GperfCheckTest, BrokenAnalyzerRequestIsAnalysisError) {
+  const std::string GOOGLE = dir_.install("fake_pprof.sh", "google-pprof");
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.scope = ReadinessScope::PREFLIGHT;
+  const ReadinessContext CTX = dir_.context({{"FAKE_PPROF_MODE", "fail"}});
+  request.analyze = true;
+  const ReadinessResult ON = ProfilerRegistry::instance().checkRequest(request, CTX);
+  EXPECT_EQ(ON.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(ON.collectionReady());
+  const auto PLAN = std::dynamic_pointer_cast<const GperfPlan>(ON.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_FALSE(PLAN->analysisReady);
+  EXPECT_EQ(PLAN->analysisSkipped, GOOGLE + " does not run");
+  request.analyze = false;
+  const ReadinessResult OFF = ProfilerRegistry::instance().checkRequest(request, CTX);
+  EXPECT_EQ(OFF.report.status, EnvReport::Status::Ok) << OFF.report.message;
+}
+
+/* ----------------------------- gperf analysis (every build) ----------------------------- */
+
+namespace {
+
+const GperfModes CPU{true, false};
+
+/** @brief The analysis decision in @p dir's context with @p extra settings. */
+GperfAnalysis analysisIn(const FakeToolDir& dir, bool analyze,
+                         std::map<std::string, std::string> extra = {}) {
+  return decideGperfAnalysis(CPU, analyze, dir.context(std::move(extra)));
+}
+
+} // namespace
+
+/**
+ * @test A promised analysis without an analyzer is an analysis-stage Error; without the promise
+ * the same environment is fine
+ *
+ * Needs no gperftools, so the rule is pinned on every build, not only where
+ * the gperf backend can run.
+ */
+TEST(GperfAnalysisTest, PromisedAnalysisWithoutAnalyzerIsAnalysisError) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const GperfAnalysis ON = analysisIn(dir, true);
+  ASSERT_TRUE(ON.error.has_value()) << "a promised analysis with no analyzer must not be ready";
+  EXPECT_EQ(ON.error->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.error->cause, ReadinessCause::MISSING);
+  EXPECT_TRUE(ON.error->collectionReady()) << "the capture still runs";
+  EXPECT_EQ(ON.error->report.message,
+            "analysis: missing: --profile-analyze needs google-pprof or pprof, and neither is on "
+            "PATH; the cpu capture still runs and cpu.prof is kept");
+  EXPECT_TRUE(ON.analyzer.empty());
+
+  const GperfAnalysis OFF = analysisIn(dir, false);
+  EXPECT_FALSE(OFF.error.has_value()) << "without the promise a missing analyzer is only noted";
+}
+
+/** @test An analyzer that does not run makes a promised analysis an Error; it is not run otherwise.
+ */
+TEST(GperfAnalysisTest, BrokenAnalyzerIsAnalysisError) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  const GperfAnalysis ON = analysisIn(dir, true, {{"FAKE_PPROF_MODE", "fail"}});
+  ASSERT_TRUE(ON.error.has_value()) << "a broken analyzer must not be ready";
+  EXPECT_EQ(ON.error->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.error->cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(ON.error->collectionReady());
+  EXPECT_EQ(ON.error->report.message,
+            "analysis: unusable: --profile-analyze would run " + PPROF +
+                ", which does not run: --help exit status 1: fake pprof: cannot read profile; the "
+                "cpu capture still runs and cpu.prof is kept");
+  EXPECT_EQ(ON.analyzer, PPROF);
+
+  const std::size_t RUNS = dir.logLines("pprof ").size();
+  const GperfAnalysis OFF = analysisIn(dir, false, {{"FAKE_PPROF_MODE", "fail"}});
+  EXPECT_FALSE(OFF.error.has_value());
+  EXPECT_EQ(OFF.analyzer, PPROF) << "the analyzer is still named";
+  EXPECT_EQ(dir.logLines("pprof ").size(), RUNS) << "without the promise it is not run";
+}
+
+/** @test Either spelling is found, google-pprof first, and only the selected one is probed. */
+TEST(GperfAnalysisTest, EitherSpellingOnlyTheSelectedRuns) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  const GperfAnalysis ONLY_PPROF = analysisIn(dir, true);
+  EXPECT_FALSE(ONLY_PPROF.error.has_value());
+  EXPECT_EQ(ONLY_PPROF.analyzer, PPROF);
+  EXPECT_EQ(dir.logLines("pprof " + PPROF + " --help").size(), 1U) << dir.log();
+
+  const std::string GOOGLE = dir.install("fake_pprof.sh", "google-pprof");
+  const GperfAnalysis BOTH = analysisIn(dir, true);
+  EXPECT_FALSE(BOTH.error.has_value());
+  EXPECT_EQ(BOTH.analyzer, GOOGLE);
+  EXPECT_EQ(dir.logLines("pprof " + GOOGLE + " --help").size(), 1U) << dir.log();
+  EXPECT_EQ(dir.logLines("pprof " + PPROF + " --help").size(), 1U) << "pprof was probed again";
+}
+
+/** @test A request without a CPU capture has nothing to analyze and needs no analyzer. */
+TEST(GperfAnalysisTest, NoCpuCaptureNeedsNoAnalyzer) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const GperfAnalysis HEAP = decideGperfAnalysis(GperfModes{false, true}, true, dir.context());
+  EXPECT_FALSE(HEAP.error.has_value());
 }

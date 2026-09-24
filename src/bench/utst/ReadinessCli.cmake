@@ -44,7 +44,8 @@ set(_readiness_cli_cases
     PerfDeniedMatchesDoctor
     GperfAnalyzerFoundIsRun
     GperfAnalyzerMissingIsAnalysisError
-    GperfAnalyzerFailureKeepsRaw
+    GperfAnalyzerBrokenIsAnalysisError
+    GperfAnalyzerFailsOnTheProfile
     GperfWithoutAnalyzeNeedsNone
     GperfHeapWithoutSupport
 )

@@ -58,6 +58,9 @@ bool detectDwarfV5Warning() {
 /** @brief The analyzers --profile-analyze may run, in the order they are tried. */
 constexpr const char* ANALYZERS[] = {"google-pprof", "pprof"};
 
+/** @brief Bound on the analyzer's --help probe. */
+constexpr int ANALYZER_PROBE_TIMEOUT_MS = 10000;
+
 // Used only by the analysis, which exists only where CPU profiling does.
 #if UB_HAS_GPERF_CPU && defined(__linux__)
 /** @brief Bound on one analyzer run; symbolizing a large binary takes a while. */
@@ -74,6 +77,14 @@ std::string firstLines(const std::string& text, std::size_t lines) {
   return out;
 }
 #endif
+
+/** @brief What the capture holds, for messages: "cpu", "heap" or "cpu and heap". */
+std::string capturedModes(const GperfModes& modes) {
+  if (modes.cpu && modes.heap) {
+    return "cpu and heap";
+  }
+  return modes.cpu ? "cpu" : "heap";
+}
 
 } // namespace
 
@@ -113,43 +124,21 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
                            "apt install libgperftools-dev (or equivalent), then rebuild.");
   }
 
-  std::string modes;
-  if (plan->modes.cpu) {
-    modes += "cpu";
-  }
-  if (plan->modes.heap) {
-    modes += modes.empty() ? "heap" : " and heap";
-  }
-
-  // The analyzer: the first candidate found on PATH, and nothing else.
-  std::string notExecutable;
-  for (const char* NAME : ANALYZERS) {
-    const auto FOUND = resolveExecutable(NAME, ctx);
-    if (FOUND && FOUND->executable) {
-      plan->analyzer = FOUND->path;
-      break;
-    }
-    if (FOUND && notExecutable.empty()) {
-      notExecutable = FOUND->path;
-    }
-  }
+  const std::string MODES = capturedModes(plan->modes);
+  const GperfAnalysis ANALYSIS = decideGperfAnalysis(plan->modes, plan->analyze, ctx);
+  plan->analyzer = ANALYSIS.analyzer;
+  plan->analysisReady = plan->analyze && plan->modes.cpu && !ANALYSIS.error;
 
   ReadinessResult result;
-  if (plan->analyze && plan->modes.cpu && plan->analyzer.empty()) {
-    // A promised analysis cannot run; the capture still can, and is kept.
-    result = readinessResult(
-        ReadinessCause::MISSING,
-        "--profile-analyze needs google-pprof or pprof, and neither is on PATH" +
-            (notExecutable.empty() ? std::string{}
-                                   : " as an executable (" + notExecutable + " is not one)") +
-            "; the " + modes + " capture still runs and cpu.prof is kept",
-        "Install an analyzer (google-pprof from gperftools, or Go's pprof), or drop "
-        "--profile-analyze.",
-        ReadinessStage::ANALYSIS);
+  if (ANALYSIS.error) {
+    // The promised analysis cannot run; the capture still can, and is kept.
+    result = *ANALYSIS.error;
+    plan->analysisSkipped = plan->analyzer.empty() ? std::string{"no google-pprof or pprof on PATH"}
+                                                   : plan->analyzer + " does not run";
   } else {
     std::string message =
-        "gperftools profiles " + modes + (HEAP_BUILT ? " (built: cpu, heap)" : " (built: cpu)");
-    if (plan->analyze && plan->modes.cpu) {
+        "gperftools profiles " + MODES + (HEAP_BUILT ? " (built: cpu, heap)" : " (built: cpu)");
+    if (plan->analysisReady) {
       message += "; --profile-analyze runs " + plan->analyzer;
     } else if (!plan->analyzer.empty()) {
       message += "; analyzer " + plan->analyzer;
@@ -160,6 +149,54 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
   }
   result.plan = std::move(plan);
   return result;
+}
+
+GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
+                                  const ReadinessContext& ctx) {
+  GperfAnalysis analysis;
+  // The analyzer: the first candidate found on PATH, and nothing else.
+  std::string notExecutable;
+  for (const char* NAME : ANALYZERS) {
+    const auto FOUND = resolveExecutable(NAME, ctx);
+    if (FOUND && FOUND->executable) {
+      analysis.analyzer = FOUND->path;
+      break;
+    }
+    if (FOUND && notExecutable.empty()) {
+      notExecutable = FOUND->path;
+    }
+  }
+  if (!analyze || !modes.cpu) {
+    return analysis; // no analysis promised: the analyzer is only named
+  }
+  const std::string KEPT =
+      "; the " + capturedModes(modes) + " capture still runs and cpu.prof is kept";
+  if (analysis.analyzer.empty()) {
+    analysis.error = readinessResult(
+        ReadinessCause::MISSING,
+        "--profile-analyze needs google-pprof or pprof, and neither is on PATH" +
+            (notExecutable.empty() ? std::string{}
+                                   : " as an executable (" + notExecutable + " is not one)") +
+            KEPT,
+        "Install an analyzer (google-pprof from gperftools, or Go's pprof), or drop "
+        "--profile-analyze.",
+        ReadinessStage::ANALYSIS);
+    return analysis;
+  }
+  // The analyzer runs: both google-pprof and Go's pprof answer --help.
+  const ProbeResult HELP =
+      runBoundedProbe({analysis.analyzer, "--help"}, ANALYZER_PROBE_TIMEOUT_MS, ctx);
+  if (!HELP.succeeded()) {
+    const std::string TAIL = outputTail(HELP.output);
+    analysis.error = readinessResult(
+        ReadinessCause::UNUSABLE,
+        "--profile-analyze would run " + analysis.analyzer + ", which does not run: --help " +
+            HELP.describe() + (TAIL.empty() ? std::string{} : ": " + TAIL) + KEPT,
+        "Repair or reinstall that analyzer, put a working google-pprof or pprof first on PATH, "
+        "or drop --profile-analyze.",
+        ReadinessStage::ANALYSIS);
+  }
+  return analysis;
 }
 
 /* ----------------------------- GperfProfiler Methods ----------------------------- */
@@ -279,10 +316,12 @@ void GperfProfiler::runPprofAnalysis() const {
 // Only ever called from the UB_HAS_GPERF_CPU branch of afterMeasure();
 // the body must compile out with it because cpuPath_ exists only there.
 #if UB_HAS_GPERF_CPU && defined(__linux__)
-  if (!plan_ || plan_->analyzer.empty()) {
-    // Reported when the profiler was created: no analyzer to run.
-    std::fprintf(stderr,
-                 "[gperf] analysis skipped: no google-pprof or pprof; raw profile kept at %s\n",
+  if (!plan_ || !plan_->analysisReady) {
+    // Reported when the profiler was created: the analysis cannot run.
+    const std::string WHY = (plan_ && !plan_->analysisSkipped.empty())
+                                ? plan_->analysisSkipped
+                                : std::string{"no analyzer was selected"};
+    std::fprintf(stderr, "[gperf] analysis skipped: %s; raw profile kept at %s\n", WHY.c_str(),
                  cpuPath_.c_str());
     return;
   }

@@ -189,13 +189,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pprof` installed it printed empty analysis headers. The check parses the
   mode with the profiler's own parser, and a mode the build lacks is a
   readiness error. With `--profile-analyze` the analyzer is the first of
-  `google-pprof` and `pprof` on `PATH`; with neither, the request is an
-  analysis error (`analysis: missing: ...`) printed once, while the capture
-  still runs and `cpu.prof` is kept; without `--profile-analyze` a missing
-  analyzer is only noted in the row. The analysis runs the analyzer the check
-  found, directly and bounded, prints the first lines of each view without
-  the analyzer's own messages, and reports a failing analyzer with its status,
-  its error output and where the raw profile is kept.
+  `google-pprof` and `pprof` on `PATH`, and it must answer `--help`; with
+  neither, or with one that does not run, the request is an analysis error
+  (`analysis: missing: ...` or `analysis: unusable: ...`, `[FAIL]` in the
+  doctor's selected row and `"status": "fail"` in its JSON) printed once by
+  the run, while the capture still runs and `cpu.prof` is kept; without
+  `--profile-analyze` the analyzer is only named in the row and never run.
+  The analysis runs the analyzer the check found, directly and bounded,
+  prints the first lines of each view without the analyzer's own messages,
+  and reports an analyzer that fails on the profile with its status, its
+  error output and where the raw profile is kept.
 - **A profiler built for a request that cannot run leaves no folder** -- a
   `PerfStatProfiler`, `GperfProfiler`, `BpftraceProfiler` or `OffCpuProfiler`
   constructed directly (without the registry) decides its request the way the
