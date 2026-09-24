@@ -458,71 +458,53 @@ docker run --rm --privileged mybench-prof:latest bash -c '
 
 ## CI Integration
 
+The [CI/CD Integration Guide](CI_CD_INTEGRATION.md) gates pull requests on a
+regression with one script. To run the benchmarks in the image of
+[CPU Benchmarks](#cpu-benchmarks) on each pull request and keep the CSV:
+
 ### GitHub Actions with Docker
+
+**.github/workflows/docker-benchmarks.yml:**
 
 ```yaml
 name: Docker Benchmarks
 
-on: [pull_request]
+on:
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-benchmark:
-runs-on: ubuntu-latest
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
-steps:
-- name: Checkout
-uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t mybench:latest .
 
-- name: Build Docker image
-run: docker build -t mybench:latest .
+      - name: Run the benchmarks
+        run: |
+          mkdir -p results
+          docker run --rm -v "$PWD/results:/results" mybench:latest \
+            ./build/MyComponent_PTEST --csv /results/results.csv
 
-- name: Validate container
-run: |
-docker run --rm --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
-mybench:latest \
-bash -c "source build/native-linux-debug/.env && bench validate"
-
-- name: Run benchmarks
-run: |
-docker run --rm \
--v $(pwd)/results:/results \
-mybench:latest \
-./ptests/MyComponent_PTEST --csv /results/results.csv
-
-- name: Upload results
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results
-path: results/
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: results/
 ```
 
-### GitLab CI with Docker
+### GitLab CI
 
-```yaml
-benchmark:
-image: docker:latest
-services:
-- docker:dind
-
-script:
-# Build image
-- docker build -t mybench:$CI_COMMIT_SHA .
-
-# Validate
-- docker run --rm mybench:$CI_COMMIT_SHA
-bash -c "source build/native-linux-debug/.env && bench validate"
-
-# Run benchmarks
-- docker run --rm
--v $(pwd)/results:/results
-mybench:$CI_COMMIT_SHA
-./ptests/MyComponent_PTEST --csv /results/results.csv
-
-artifacts:
-paths:
-- results/
-```
+A GitLab job runs in the Docker image its `image:` keyword names; the CI
+guide's [GitLab CI](CI_CD_INTEGRATION.md#gitlab-ci) job runs in
+`ubuntu:24.04`. Building an image of your own inside a job takes one of the
+setups on GitLab's "Use Docker to build Docker images" page, such as
+Docker-in-Docker or Docker socket binding, which this guide does not cover.
 
 ---
 

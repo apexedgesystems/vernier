@@ -1,18 +1,22 @@
 # CI/CD Integration Guide
 
-Integrate performance benchmarking into your continuous integration pipelines. Catch performance regressions before they reach production with automated benchmark validation.
+Fail a pull request that makes a benchmark slower: build the change and the
+commit it is based on in the same job, run both on the same machine, and
+compare the two runs with `bench compare --fail-on-regression`. One script does
+the work; each CI system's file checks out the history, gives the script the
+base commit, and keeps its report whether the gate passes or fails.
 
 ---
 
 ## Table of Contents
 
 - [Overview](#overview)
-- [Quick Start](#quick-start)
+- [The Gate Script](#the-gate-script)
 - [GitHub Actions](#github-actions)
 - [GitLab CI](#gitlab-ci)
-- [Jenkins](#jenkins)
 - [Azure Pipelines](#azure-pipelines)
-- [Local Pre-Commit Hooks](#local-pre-commit-hooks)
+- [Jenkins](#jenkins)
+- [Local Pre-Push Hook](#local-pre-push-hook)
 - [Best Practices](#best-practices)
 - [Troubleshooting](#troubleshooting)
 
@@ -20,527 +24,224 @@ Integrate performance benchmarking into your continuous integration pipelines. C
 
 ## Overview
 
-### What This Enables
-
-**Automatic regression detection** - Block PRs with performance regressions
-**Historical tracking** - Store benchmark results as CI artifacts
-**PR comments** - Post benchmark comparisons directly on pull requests
-**Baseline management** - Track performance across branches
-**Fail-fast** - Catch regressions before code review
-**Statistical validation** - Distinguish real regressions from noise
-
 ### How It Works
 
 ```
-+---------------+
-|  PR Created   |
-+-------+-------+
-        |
-        +--> Build & test baseline (main branch)
-        |    +--> baseline.csv
-        |
-        +--> Build & test candidate (PR branch)
-        |    +--> candidate.csv
-        |
-        +--> Compare with bench compare
-        |    +--> Statistical analysis
-        |    +--> Threshold checking (default: 5%)
-        |    +--> Exit code: 0=pass, 1=fail
-        |
-        +--> Generate reports
-             +--> Markdown (PR comment)
-             +--> JSON (artifact storage)
+pull request or merge request
+  |
+  +--> check out with full history (the base commit must be in the clone)
+  |
+  +--> ci/bench-gate.sh
+  |      build:   this checkout, with vernier's tools, and the base
+  |               commit in a separate worktree
+  |      run:     the benchmark of each build, one after the other
+  |                                     --> baseline.csv, candidate.csv
+  |      report:  bench compare         --> report.md, report.json
+  |      status:  bench compare --fail-on-regression (1 on a regression)
+  |
+  +--> keep bench-report/ (job summary, artifacts), pass or fail
 ```
 
-### Prerequisites
+The baseline is built and run in the same job as the candidate, so both runs
+come from the same machine, one right after the other once both builds are
+done; a baseline CSV saved by an earlier job may come from another machine.
 
-- Benchmarks built with this framework
-- Rust bench tool (`make tools-rust`)
-- Optional: Python bench-plot for visualizations (`make tools-py`)
+### What the Job Needs
+
+- A project laid out as in the guides: its `CMakeLists.txt` fetches vernier
+  (for example with `FetchContent`) and defines the benchmark,
+  `MyComponent_PTEST` here, at its top level, so it builds to `build/`
+- CMake 3.24 or newer, a C++20 compiler, git, and a Rust toolchain: the script
+  builds vernier's `bench` CLI (`-DVERNIER_BUILD_TOOLS=ON`) to compare the runs.
+  Ubuntu 24.04's packaged `cargo` (1.75) cannot read the CLI's `Cargo.lock`; a
+  toolchain from rustup can
+- The base commit in the clone: `actions/checkout` fetches one commit unless
+  told otherwise, new GitLab projects fetch 20, and new Azure pipelines may
+  fetch one, so each example below asks for the full history
 
 ---
 
-## Quick Start
+## The Gate Script
 
-**Minimal integration (works with any CI system):**
+**ci/bench-gate.sh:**
 
 ```bash
-#!/bin/bash
-# ci_benchmark.sh
+#!/usr/bin/env bash
+# Build and run a benchmark at the base commit and at this checkout, compare
+# the two runs, and exit 1 when bench compare reports a regression.
+#
+#   BENCH_BASE       commit to compare against (required)
+#   BENCH_TARGET     benchmark executable (default: MyComponent_PTEST)
+#   BENCH_THRESHOLD  regression threshold in percent (default: 5)
+#   BENCH_ARGS       extra benchmark arguments for both runs, e.g. "--quick"
+#   BENCH_OUT        report directory (default: bench-report)
+set -euo pipefail
 
-set -e
+: "${BENCH_BASE:?set BENCH_BASE to the commit to compare against}"
+base_rev=$(git rev-parse --verify --quiet "${BENCH_BASE}^{commit}") || {
+  echo "BENCH_BASE=$BENCH_BASE is not a commit in this clone" >&2
+  exit 2
+}
+target=${BENCH_TARGET:-MyComponent_PTEST}
+threshold=${BENCH_THRESHOLD:-5}
+read -r -a args <<<"${BENCH_ARGS:-}"
+mkdir -p "${BENCH_OUT:-bench-report}"
+out=$(cd "${BENCH_OUT:-bench-report}" && pwd)
 
-# Install Python dependencies
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
+# Candidate build: this checkout, with vernier's CLI tools for the comparison
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVERNIER_BUILD_TOOLS=ON
+cmake --build build --parallel "$(nproc)"
+bench=build/bin/tools/rust/bench
 
-# Build benchmarks
-cmake -B build -S . && cmake --build build
+# Baseline build: the base commit in a worktree outside the checkout
+work=$(mktemp -d)
+trap 'git worktree remove --force "$work/src" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
+git worktree add --quiet --detach "$work/src" "$base_rev"
+if ! {
+  cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release &&
+    cmake --build "$work/build" --parallel "$(nproc)" --target "$target"
+} >"$out/baseline-build.log" 2>&1; then
+  "build/$target" "${args[@]}" --csv "$out/candidate.csv"
+  {
+    echo "## Benchmark gate: no baseline"
+    echo
+    echo "$target did not build at $base_rev (see baseline-build.log),"
+    echo "so nothing was compared; candidate.csv holds this change's results."
+  } | tee "$out/report.md"
+  exit 0
+fi
 
-# Run baseline (from main branch)
-git checkout main
-cmake --build build
-./build/bin/ptests/MyComponent_PTEST --csv baseline.csv
-git checkout -
+# Both runs after both builds, one after the other
+"$work/build/$target" "${args[@]}" --csv "$out/baseline.csv"
+"build/$target" "${args[@]}" --csv "$out/candidate.csv"
 
-# Rebuild with PR changes
-cmake --build build
-
-# Run candidate benchmarks
-./build/bin/ptests/MyComponent_PTEST --csv candidate.csv
-
-# Compare with auto-fail on regression
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---fail-on-regression \
---markdown > pr_comment.md
-
-# Exit code 0 = pass, 1 = regression detected
+# Reports first; the gate's status is bench compare's
+status=0
+"$bench" compare "$out/baseline.csv" "$out/candidate.csv" \
+  --threshold "$threshold" --markdown --fail-on-regression \
+  >"$out/report.md" || status=$?
+"$bench" compare "$out/baseline.csv" "$out/candidate.csv" \
+  --threshold "$threshold" --json >"$out/report.json" || true
+cat "$out/report.md"
+exit "$status"
 ```
+
+Run it from the repository's top directory. Locally, against your main branch:
+
+```bash
+BENCH_BASE=origin/main bash ci/bench-gate.sh
+```
+
+**What it leaves in `bench-report/`:** `candidate.csv`, `baseline.csv`,
+`report.md` (the `bench compare --markdown` table), `report.json` and
+`baseline-build.log`; without a baseline, only `candidate.csv`, `report.md`
+and `baseline-build.log`. Which tests are compared, and how a test that is in
+only one of the two files is treated, is `bench compare`'s behavior; see
+`compare` in [tools/README.md](../../../tools/README.md).
+
+**Exit status:** 0 when `bench compare --fail-on-regression` succeeds, 1 when it
+fails (a regression makes it fail), 2 when `BENCH_BASE` is not a commit in the
+clone, and the failing command's status when the candidate's build or a
+benchmark run fails.
+
+**No baseline:** when the benchmark does not build at the base commit, for
+example because the change adds it, the script writes a `report.md` that says
+nothing was compared, and exits 0. Its `baseline-build.log` shows why the build
+failed.
 
 ---
 
 ## GitHub Actions
 
-### Basic Workflow
-
-**.github/workflows/performance.yml:**
+**.github/workflows/benchmarks.yml:**
 
 ```yaml
-name: Performance Benchmarks
+name: Benchmarks
 
 on:
-pull_request:
-branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
 
 jobs:
-benchmark:
-runs-on: ubuntu-latest
-timeout-minutes: 30
+  benchmark-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, so the base commit is in the clone
 
-steps:
-- name: Checkout code
-uses: actions/checkout@v4
-with:
-fetch-depth: 0 # Need full history
+      - name: Benchmark gate
+        env:
+          BENCH_BASE: ${{ github.event.pull_request.base.sha }}
+          BENCH_TARGET: MyComponent_PTEST
+        run: bash ci/bench-gate.sh
 
-- name: Install dependencies
-run: |
-sudo apt-get update
-sudo apt-get install -y cmake g++ libgtest-dev
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
+      - name: Job summary
+        if: always()
+        run: |
+          if [ -f bench-report/report.md ]; then
+            cat bench-report/report.md >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-- name: Build benchmarks
-run: |
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-
-- name: Run candidate benchmarks
-run: |
-./build/bin/ptests/MyComponent_PTEST --csv candidate.csv
-
-- name: Generate baseline
-run: |
-git checkout ${{ github.event.pull_request.base.sha }}
-cmake --build build
-./build/bin/ptests/MyComponent_PTEST --csv baseline.csv
-git checkout -
-
-- name: Compare and detect regressions
-id: compare
-run: |
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---fail-on-regression \
---markdown > pr_comment.md
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---json > regression_report.json
-
-- name: Post PR comment
-if: always()
-uses: actions/github-script@v7
-with:
-script: |
-const fs = require('fs');
-const comment = fs.readFileSync('pr_comment.md', 'utf8');
-github.rest.issues.createComment({
-issue_number: context.issue.number,
-owner: context.repo.owner,
-repo: context.repo.repo,
-body: comment
-});
-
-- name: Upload artifacts
-if: always()
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results
-path: |
-baseline.csv
-candidate.csv
-regression_report.json
-pr_comment.md
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-report
+          path: bench-report/
 ```
 
-### Advanced Workflow with Caching
-
-```yaml
-name: Performance CI (Advanced)
-
-on:
-pull_request:
-branches: [main]
-paths:
-- 'src/**'
-- 'benchmarks/**'
-
-jobs:
-benchmark:
-runs-on: ubuntu-latest
-timeout-minutes: 30
-
-steps:
-- name: Checkout with history
-uses: actions/checkout@v4
-with:
-fetch-depth: 0
-
-- name: Cache baseline results
-id: cache-baseline
-uses: actions/cache@v4
-with:
-path: baseline.csv
-key: benchmark-baseline-${{ github.event.pull_request.base.sha }}
-
-- name: Setup Python
-uses: actions/setup-python@v5
-with:
-python-version: '3.10'
-cache: 'pip'
-
-- name: Install Python dependencies
-run: make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-
-- name: Install build dependencies
-run: |
-sudo apt-get update
-sudo apt-get install -y cmake g++ libgtest-dev taskset
-
-- name: Build candidate
-run: |
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-
-- name: Run candidate benchmarks (with CPU pinning)
-run: |
-taskset -c 2-9 ./build/bin/ptests/MyComponent_PTEST \
---cycles 10000 \
---repeats 20 \
---csv candidate.csv
-
-- name: Generate baseline (if not cached)
-if: steps.cache-baseline.outputs.cache-hit != 'true'
-run: |
-git checkout ${{ github.event.pull_request.base.sha }}
-cmake --build build
-taskset -c 2-9 ./build/bin/ptests/MyComponent_PTEST \
---cycles 10000 \
---repeats 20 \
---csv baseline.csv
-git checkout -
-
-- name: Regression detection
-id: regression
-run: |
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---fail-on-regression \
---markdown > pr_comment.md
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---json > results.json
-continue-on-error: true
-
-- name: Generate visualizations
-if: always()
-run: |
-bench-plot plot candidate.csv \
---output comparison/
-
-- name: Post detailed PR comment
-if: always()
-uses: actions/github-script@v7
-with:
-script: |
-const fs = require('fs');
-let comment = fs.readFileSync('pr_comment.md', 'utf8');
-
-// Add link to artifacts
-comment += '\n\n---\n';
-comment += `\n [View detailed comparison](https://github.com/${{github.repository}}/actions/runs/${{github.run_id}})`;
-
-github.rest.issues.createComment({
-issue_number: context.issue.number,
-owner: context.repo.owner,
-repo: context.repo.repo,
-body: comment
-});
-
-- name: Upload all results
-if: always()
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results
-path: |
-baseline.csv
-candidate.csv
-results.json
-pr_comment.md
-comparison/
-
-- name: Fail if regressions detected
-if: steps.regression.outcome == 'failure'
-run: exit 1
-```
-
-### GPU Benchmarks in GitHub Actions
-
-```yaml
-name: GPU Performance
-
-on:
-pull_request:
-branches: [main]
-
-jobs:
-gpu-benchmark:
-runs-on: [self-hosted, gpu] # Self-hosted runner with NVIDIA GPU
-
-steps:
-- name: Checkout code
-uses: actions/checkout@v4
-with:
-fetch-depth: 0
-
-- name: Verify GPU access
-run: nvidia-smi
-
-- name: Install dependencies
-run: |
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-
-- name: Build GPU benchmarks
-run: |
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target MyKernel_GPU_PTEST
-
-- name: Run GPU benchmarks
-run: |
-./build/bin/ptests/MyKernel_GPU_PTEST --csv candidate.csv
-
-- name: Generate baseline
-run: |
-git checkout ${{ github.event.pull_request.base.sha }}
-cmake --build build --target MyKernel_GPU_PTEST
-./build/bin/ptests/MyKernel_GPU_PTEST --csv baseline.csv
-git checkout -
-
-- name: Compare GPU performance
-run: |
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---fail-on-regression \
---markdown > gpu_report.md
-
-# Upload and comment steps...
-```
+- `ubuntu-latest` (Ubuntu 24.04) comes with CMake, GCC, git and Rust, so the
+  job installs nothing.
+- The report is written to the run's job summary and kept as the
+  `benchmark-report` artifact, when the gate passes and when it fails. The
+  workflow only reads the repository: a pull request from a fork gets a
+  read-only token, so a step that comments on the pull request would fail
+  there.
+- For a GPU benchmark, run the same job on a self-hosted runner that has the
+  NVIDIA driver and the CUDA toolkit (for example `runs-on: [self-hosted, gpu]`,
+  with a label you gave the runner), and set `BENCH_TARGET` to the GPU
+  benchmark.
 
 ---
 
 ## GitLab CI
 
-### Basic Pipeline
-
 **.gitlab-ci.yml:**
 
 ```yaml
-stages:
-- build
-- benchmark
-- report
-
-variables:
-REGRESSION_THRESHOLD: "5"
-
-build:
-stage: build
-script:
-- cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-- cmake --build build -j$(nproc)
-artifacts:
-paths:
-- build/
-expire_in: 1 hour
-
-benchmark:
-stage: benchmark
-dependencies:
-- build
-script:
-# Install Python deps
-- make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-
-# Run candidate benchmarks
-- ./build/bin/ptests/MyComponent_PTEST --csv candidate.csv
-
-# Generate baseline
-- git fetch origin main
-- git checkout origin/main
-- cmake --build build
-- ./build/bin/ptests/MyComponent_PTEST --csv baseline.csv
-- git checkout $CI_COMMIT_SHA
-
-# Compare with auto-fail
-- bench compare baseline.csv candidate.csv
---threshold $REGRESSION_THRESHOLD
---fail-on-regression
---markdown > pr_comment.md
-- bench compare baseline.csv candidate.csv
---threshold $REGRESSION_THRESHOLD
---json > regression_report.json
-
-artifacts:
-when: always
-paths:
-- regression_report.json
-- candidate.csv
-- baseline.csv
-- pr_comment.md
-expire_in: 30 days
-reports:
-junit: regression_report.json
-
-report:
-stage: report
-dependencies:
-- benchmark
-script:
-- cat pr_comment.md
-when: always
+benchmark-gate:
+  image: ubuntu:24.04
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    GIT_DEPTH: "0" # full history, so the base commit is in the clone
+    BENCH_TARGET: MyComponent_PTEST
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends build-essential ca-certificates cmake curl git
+    - curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+    - export PATH="$HOME/.cargo/bin:$PATH"
+  script:
+    - BENCH_BASE=$CI_MERGE_REQUEST_DIFF_BASE_SHA bash ci/bench-gate.sh
+  artifacts:
+    when: always
+    paths:
+      - bench-report/
+    expire_in: 30 days
 ```
 
-### Merge Request Comments
-
-```yaml
-benchmark:
-stage: benchmark
-only:
-- merge_requests
-script:
-# ... benchmark steps ...
-
-# Post comment to MR
-- |
-curl --request POST \
---header "PRIVATE-TOKEN: $CI_JOB_TOKEN" \
---data-urlencode "body=$(cat pr_comment.md)" \
-"$CI_API_V4_URL/projects/$CI_PROJECT_ID/merge_requests/$CI_MERGE_REQUEST_IID/notes"
-```
-
----
-
-## Jenkins
-
-### Declarative Pipeline
-
-**Jenkinsfile:**
-
-```groovy
-pipeline {
-agent any
-
-parameters {
-string(name: 'THRESHOLD', defaultValue: '5.0', description: 'Regression threshold %')
-}
-
-environment {
-BASELINE_BRANCH = 'main'
-}
-
-stages {
-stage('Build') {
-steps {
-sh '''
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-'''
-}
-}
-
-stage('Candidate Benchmark') {
-steps {
-sh './build/bin/ptests/MyComponent_PTEST --csv candidate.csv'
-}
-}
-
-stage('Baseline Benchmark') {
-steps {
-sh '''
-git stash
-git checkout ${BASELINE_BRANCH}
-cmake --build build
-./build/bin/ptests/MyComponent_PTEST --csv baseline.csv
-git checkout -
-git stash pop || true
-'''
-}
-}
-
-stage('Compare') {
-steps {
-sh '''
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-bench compare baseline.csv candidate.csv \
---threshold ${THRESHOLD} \
---fail-on-regression \
---markdown > report.md
-bench compare baseline.csv candidate.csv \
---threshold ${THRESHOLD} \
---json > regression_report.json
-'''
-}
-}
-}
-
-post {
-always {
-archiveArtifacts artifacts: '*.csv,*.json,*.md', fingerprint: true
-
-script {
-def report = readFile('report.md')
-if (env.CHANGE_ID) {
-// Post to pull request if available
-pullRequest.comment(report)
-}
-}
-}
-
-success {
-echo ' No performance regressions detected'
-}
-
-failure {
-echo 'ERROR: Performance regressions detected!'
-}
-}
-}
-```
+- The job runs in merge request pipelines, where
+  `CI_MERGE_REQUEST_DIFF_BASE_SHA` is the base commit of the merge request's
+  diff.
+- Rust comes from rustup, since Ubuntu's `cargo` cannot read the CLI's
+  `Cargo.lock`.
+- `when: always` keeps `bench-report/` when the gate fails; GitLab keeps no
+  artifacts from a job that timed out.
 
 ---
 
@@ -549,485 +250,175 @@ echo 'ERROR: Performance regressions detected!'
 **azure-pipelines.yml:**
 
 ```yaml
-trigger:
-- main
+trigger: none
 
 pr:
-- main
+  branches:
+    include:
+      - main
 
 pool:
-vmImage: 'ubuntu-latest'
+  vmImage: ubuntu-latest
 
 steps:
-- checkout: self
-fetchDepth: 0
+  - checkout: self
+    fetchDepth: "0" # full history, so the base commit is in the clone
 
-- task: UsePythonVersion@0
-inputs:
-versionSpec: '3.10'
+  - script: bash ci/bench-gate.sh
+    displayName: Benchmark gate
+    env:
+      BENCH_BASE: HEAD^1 # a pull request build checks out a merge commit
+      BENCH_TARGET: MyComponent_PTEST
 
-- script: |
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-displayName: 'Install Python dependencies'
-
-- script: |
-sudo apt-get update
-sudo apt-get install -y cmake g++ libgtest-dev
-displayName: 'Install build dependencies'
-
-- script: |
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-displayName: 'Build benchmarks'
-
-- script: |
-./build/bin/ptests/MyComponent_PTEST --csv candidate.csv
-displayName: 'Run candidate benchmarks'
-
-- script: |
-git checkout $(System.PullRequest.TargetBranch)
-cmake --build build
-./build/bin/ptests/MyComponent_PTEST --csv baseline.csv
-git checkout -
-displayName: 'Generate baseline'
-condition: eq(variables['Build.Reason'], 'PullRequest')
-
-- script: |
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---fail-on-regression \
---markdown > pr_comment.md
-bench compare baseline.csv candidate.csv \
---threshold 5 \
---json > results.json
-displayName: 'Regression detection'
-
-- task: PublishBuildArtifacts@1
-inputs:
-pathToPublish: '$(Build.SourcesDirectory)'
-artifactName: 'benchmark-results'
-condition: always()
+  - publish: bench-report
+    artifact: benchmark-report
+    condition: always()
 ```
+
+- A pull request build checks out a merge commit of the source and target
+  branches. GitHub's merge commits have the target branch as their first
+  parent, `HEAD^1`; on another host, `git log -1 --format=%P` in a pull
+  request build shows the order of the parents.
+- `ubuntu-latest` is the same Ubuntu 24.04 image as on GitHub Actions, with
+  CMake, GCC, git and Rust.
+- The `pr` trigger applies to repositories on GitHub and Bitbucket Cloud. For a
+  repository in Azure Repos, pull request builds come from a build validation
+  branch policy on the target branch instead.
 
 ---
 
-## Local Pre-Commit Hooks
+## Jenkins
 
-Catch regressions before pushing to remote:
+**Jenkinsfile** (a multibranch pipeline; the agent needs the tools listed under
+[What the Job Needs](#what-the-job-needs)):
+
+```groovy
+pipeline {
+  agent any
+  options {
+    timeout(time: 60, unit: 'MINUTES')
+  }
+  stages {
+    stage('Benchmark gate') {
+      when { changeRequest() }
+      environment {
+        BENCH_TARGET = 'MyComponent_PTEST'
+      }
+      steps {
+        sh '''
+          git fetch --no-tags origin "+refs/heads/$CHANGE_TARGET:refs/remotes/origin/$CHANGE_TARGET"
+          BENCH_BASE=$(git merge-base HEAD "origin/$CHANGE_TARGET") bash ci/bench-gate.sh
+        '''
+      }
+    }
+  }
+  post {
+    always {
+      archiveArtifacts artifacts: 'bench-report/**', allowEmptyArchive: true
+    }
+  }
+}
+```
+
+- The stage runs for change requests (pull and merge requests), for which the
+  branch source sets `CHANGE_TARGET` to the branch the change would merge into.
+  It fetches that branch itself, so `git fetch` must work from a shell step on
+  the agent.
+- `archiveArtifacts` in `post { always { ... } }` keeps `bench-report/` when the
+  gate fails.
+
+---
+
+## Local Pre-Push Hook
+
+Run the gate before a push, against the branch's upstream:
 
 **.git/hooks/pre-push:**
 
 ```bash
-#!/bin/bash
-# Pre-push hook for performance regression detection
-
-set -e
-
-echo " Running performance checks..."
-
-# Build
-cmake --build build -j$(nproc)
-
-# Run benchmarks
-./build/bin/ptests/MyComponent_PTEST --quick --csv candidate.csv
-
-# Compare with cached baseline (if exists)
-if [ -f ".baseline.csv" ]; then
-bench compare \
-.baseline.csv candidate.csv \
---threshold 10 \
---fail-on-regression
-
-if [ $? -ne 0 ]; then
-echo "ERROR: Performance regression detected!"
-echo " Review changes or update baseline with:"
-echo " cp candidate.csv .baseline.csv"
-read -p "Push anyway? (y/N) " -n 1 -r
-echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-exit 1
-fi
-fi
-else
-echo "No baseline found. Creating one..."
-cp candidate.csv .baseline.csv
-fi
-
-echo " Performance checks passed"
+#!/usr/bin/env bash
+# Run the benchmark gate against the upstream branch before a push.
+set -euo pipefail
+upstream=$(git rev-parse --verify --quiet '@{upstream}') || {
+  echo "pre-push: no upstream branch; benchmark gate skipped"
+  exit 0
+}
+BENCH_BASE=$(git merge-base HEAD "$upstream") bash ci/bench-gate.sh
 ```
-
-Make executable:
 
 ```bash
 chmod +x .git/hooks/pre-push
 ```
 
+Git runs the hook from the top of the working tree and cancels the push when
+it exits nonzero. It gates the checked-out branch against the commit it shares
+with its upstream, builds in `build/` as the guides do, and writes
+`bench-report/`, which you may want in `.gitignore`. `git push --no-verify`
+skips it.
+
 ---
 
 ## Best Practices
 
-### 1. Baseline Management
+### 1. Gate on a Machine That Runs Nothing Else
 
-**Strategy: Branch-based baselines**
-
-```yaml
-# Cache baselines per base branch
-- name: Cache baseline
-uses: actions/cache@v4
-with:
-path: baseline.csv
-key: benchmark-${{ github.event.pull_request.base.sha }}
-```
-
-**Strategy: Periodic baseline updates**
-
-```yaml
-# Nightly job to update main baseline
-name: Update Baseline
-on:
-schedule:
-- cron: '0 2 * * *' # 2 AM daily
-
-jobs:
-update-baseline:
-runs-on: ubuntu-latest
-steps:
-- # ... build and run benchmarks ...
-- name: Upload new baseline
-uses: actions/upload-artifact@v4
-with:
-name: main-baseline
-path: baseline.csv
-```
+The gate compares two runs made one after the other, so what matters is that
+the machine's speed does not change between them. A self-hosted runner that runs
+one job at a time is the place for it; on shared hosted runners, raise the
+threshold instead.
 
 ### 2. Threshold Selection
 
-**Conservative (catch most regressions):**
+`BENCH_THRESHOLD` is passed to `bench compare --threshold` (percent, default 5).
+The CSVs' `wallCV` column is each test's spread over its repeats (standard
+deviation over mean; 0.05 is 5%): a test whose spread is close to the threshold
+can be reported as slower when nothing changed.
 
-```bash
---threshold 3 # Flag changes >3%
-```
+### 3. Shorter or Longer Runs
 
-**Balanced (default):**
+`BENCH_ARGS` is passed to both runs. `--quick` shortens them; `--repeats N` or
+`--target-time` (for example `--target-time 100ms`) gives each test more or
+longer repeats; `--gtest_filter` selects the tests that gate.
 
-```bash
---threshold 5 # Flag changes >5%
-```
+### 4. Keep Reports
 
-**Lenient (noisy environments):**
-
-```bash
---threshold 10 # Flag changes >10%
-```
-
-**Per-test thresholds (advanced):**
-
-```python
-# In Python wrapper script
-thresholds = {
-"MyComponent.CriticalPath": 3,
-"MyComponent.SlowTest": 10,
-"MyComponent.NoiseTest": 15
-}
-```
-
-### 3. CPU Pinning in CI
-
-Reduce variance with taskset:
-
-```yaml
-- name: Run benchmarks with pinning
-run: |
-taskset -c 2-9 ./build/bin/ptests/MyComponent_PTEST \
---cycles 10000 --repeats 20 --csv results.csv
-```
-
-### 4. Quick vs Full Benchmarks
-
-**Pull Request: Quick checks**
-
-```yaml
-on:
-pull_request:
-steps:
-  - run: ./test --quick --csv results.csv
-```
-
-**Nightly: Full characterization**
-
-```yaml
-on:
-schedule:
-  - cron: "0 2 * * *"
-steps:
-  - run: ./test --cycles 50000 --repeats 50 --csv results.csv
-```
-
-### 5. Artifact Retention
-
-```yaml
-- name: Upload artifacts
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results-${{ github.run_id }}
-path: |
-baseline.csv
-candidate.csv
-regression_report.json
-retention-days: 90 # Keep for 3 months
-```
+Each example keeps `bench-report/` as an artifact. To keep it longer or shorter
+than the provider's default, set `retention-days` in the upload step's `with:`
+on GitHub Actions or change `expire_in` on GitLab.
 
 ---
 
 ## Troubleshooting
 
-### False Positives (Noise Flagged as Regression)
+### A Test Is Reported Slower Without a Change
 
-**Cause:** Measurements too noisy for chosen threshold.
+1. Compare its `wallCV` in `baseline.csv` and `candidate.csv` with the
+   threshold (see [Threshold Selection](#2-threshold-selection)).
+2. Give it more repeats: `BENCH_ARGS="--repeats 30"`.
+3. Run the gate on a dedicated machine, or raise `BENCH_THRESHOLD`.
 
-**Solutions:**
+### The Report Says "no baseline"
 
-1. **Check CV% in baseline:**
+The benchmark did not build at the base commit. When the change adds or
+renames the benchmark, this is expected. Otherwise `baseline-build.log` in the
+report shows the error.
 
-```bash
-grep "wallCV" baseline.csv
-# If >0.10 (10%), measurements are inherently noisy
-```
+### "BENCH_BASE=... is not a commit in this clone"
 
-2. **Increase threshold:**
+The clone is shallow, or `BENCH_BASE` names something else. Fetch the full
+history (`fetch-depth: 0`, `GIT_DEPTH: "0"`, `fetchDepth: "0"` in the examples).
 
-```bash
---threshold 10 # More lenient
-```
+### "error: failed to parse lock file"
 
-3. **Add CPU pinning:**
+The `cargo` that builds vernier's CLI is too old for its `Cargo.lock`, as
+Ubuntu 24.04's packaged 1.75 is. Install Rust with rustup, as the GitLab
+example does.
 
-```bash
-taskset -c 2-9 ./test --csv results.csv
-```
+### The Job Runs Too Long
 
-4. **Increase samples:**
-
-```bash
-./test --repeats 30 --csv results.csv
-```
-
-### CI Timeouts
-
-**Cause:** Benchmarks take too long.
-
-**Solutions:**
-
-1. **Use --quick mode for PRs:**
-
-```bash
-./test --quick --csv results.csv
-```
-
-2. **Reduce cycles/repeats:**
-
-```bash
-./test --cycles 5000 --repeats 10
-```
-
-3. **Filter tests:**
-
-```bash
-./test --gtest_filter="Critical*" --csv results.csv
-```
-
-4. **Split into separate jobs:**
-
-```yaml
-jobs:
-quick-check: # Fast, on every PR
-run: ./test --quick
-
-full-benchmark: # Slow, nightly only
-if: github.event_name == 'schedule'
-run: ./test --cycles 50000
-```
-
-### Inconsistent Results Across CI Runs
-
-**Cause:** Shared CI runners, background processes.
-
-**Solutions:**
-
-1. **Use self-hosted runners** for consistent hardware
-
-2. **Relax thresholds** for shared runners:
-
-```bash
---threshold 10 # More tolerant
-```
-
-3. **Run multiple times and average:**
-
-```bash
-for i in {1..3}; do
-./test --csv run_$i.csv
-done
-# Merge results
-```
-
-### Missing Dependencies in CI
-
-**Python packages:**
-
-```yaml
-- name: Install Python deps
-run: make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts)
-```
-
-**Build tools:**
-
-```yaml
-- name: Install build deps
-run: |
-sudo apt-get update
-sudo apt-get install -y cmake g++ libgtest-dev
-```
-
----
-
-## Example: Production-Ready Workflow
-
-**Complete workflow with all best practices:**
-
-```yaml
-name: Performance CI (Production)
-
-on:
-pull_request:
-branches: [main, develop]
-paths:
-- 'src/**'
-- 'include/**'
-- 'benchmarks/**'
-schedule:
-- cron: '0 2 * * *' # Nightly full benchmark
-
-jobs:
-benchmark:
-runs-on: ubuntu-latest
-timeout-minutes: 45
-
-strategy:
-matrix:
-mode: [quick, full]
-exclude:
-- mode: full
-# Only run full on schedule
-${{ github.event_name != 'schedule' }}
-
-steps:
-- name: Checkout
-uses: actions/checkout@v4
-with:
-fetch-depth: 0
-
-- name: Cache baseline
-uses: actions/cache@v4
-with:
-path: baseline.csv
-key: benchmark-${{ github.event.pull_request.base.sha || 'main' }}
-
-- name: Setup
-run: |
-sudo apt-get update
-sudo apt-get install -y cmake g++ libgtest-dev taskset
-make tools-rust  # bench compare, bench summary
-make tools-py    # bench-plot (optional, for charts) plotly
-
-- name: Build
-run: |
-cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j$(nproc)
-
-- name: Run benchmarks
-run: |
-FLAGS=""
-if [ "${{ matrix.mode }}" = "quick" ]; then
-FLAGS="--quick"
-else
-FLAGS="--cycles 20000 --repeats 30"
-fi
-
-taskset -c 2-9 ./build/bin/ptests/MyComponent_PTEST \
-$FLAGS --csv candidate.csv
-
-- name: Generate baseline
-if: steps.cache-baseline.outputs.cache-hit != 'true'
-run: |
-git checkout ${{ github.event.pull_request.base.sha || 'main' }}
-cmake --build build
-taskset -c 2-9 ./build/bin/ptests/MyComponent_PTEST \
-$FLAGS --csv baseline.csv
-git checkout -
-
-- name: Regression detection
-id: regression
-run: |
-THRESHOLD=5
-if [ "${{ matrix.mode }}" = "quick" ]; then
-THRESHOLD=10
-fi
-
-bench compare baseline.csv candidate.csv \
---threshold $THRESHOLD \
---fail-on-regression \
---markdown > pr_comment.md
-bench compare baseline.csv candidate.csv \
---threshold $THRESHOLD \
---json > results.json
-continue-on-error: true
-
-- name: Generate visualizations
-if: always()
-run: |
-bench-plot plot \
-candidate.csv \
---output comparison/
-
-bench-plot dashboard \
-candidate.csv \
---output dashboard.html
-
-- name: Post PR comment
-if: github.event_name == 'pull_request' && always()
-uses: actions/github-script@v7
-with:
-script: |
-const fs = require('fs');
-const comment = fs.readFileSync('pr_comment.md', 'utf8');
-github.rest.issues.createComment({
-issue_number: context.issue.number,
-owner: context.repo.owner,
-repo: context.repo.repo,
-body: comment
-});
-
-- name: Upload artifacts
-if: always()
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results-${{ matrix.mode }}
-path: |
-baseline.csv
-candidate.csv
-results.json
-pr_comment.md
-comparison/
-dashboard.html
-retention-days: 90
-
-- name: Fail on regression
-if: steps.regression.outcome == 'failure'
-run: exit 1
-```
+Run fewer or shorter tests: `BENCH_ARGS="--quick"`, or a `--gtest_filter` in
+`BENCH_ARGS`. The gate builds two trees; the job's timeout (`timeout-minutes`
+on GitHub Actions) must cover both builds and both runs.
 
 ---
 
