@@ -97,3 +97,41 @@ include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 # ------------------------------------------------------------------------------
 
 include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
+
+# ------------------------------------------------------------------------------
+# Callgrind Window Probe (2 tests)
+# ------------------------------------------------------------------------------
+# A benchmark with work before, inside and after its measured window, run under
+# valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
+# prints must record the window and none of the work around it, the wrap
+# `bench run` uses the whole process. A test fixture, never installed; the
+# tests skip without valgrind.
+# ------------------------------------------------------------------------------
+
+vernier_add_app(
+  NAME
+  CallgrindWindowProbe
+  SRC
+  "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe.cpp"
+  LINK
+  bench
+  NO_INSTALL
+  NO_UPX
+)
+
+if (TARGET CallgrindWindowProbe)
+  foreach (_case Hint Runner)
+    string(TOLOWER "${_case}" _mode)
+    add_test(
+      NAME CallgrindWindow${_case}Test
+      COMMAND
+        "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe> -DCASE=${_mode}
+        -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_${_mode} -P
+        "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
+    )
+    set_tests_properties(
+      CallgrindWindow${_case}Test PROPERTIES LABELS "benchmarking;callgrind"
+                                             SKIP_REGULAR_EXPRESSION "-- SKIPPED: "
+    )
+  endforeach ()
+endif ()

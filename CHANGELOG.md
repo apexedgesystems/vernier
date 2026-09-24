@@ -109,6 +109,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The callgrind backend's wrap hint records the measured window** -- run
+  outside valgrind, `--profile callgrind` prints a `valgrind --tool=callgrind
+  --instr-atstart=no ...` command to use instead, and a run started with it
+  recorded nothing (`Collected : 0`), in a container or out of one. The backend
+  switched instrumentation on for the measured window with
+  `callgrind_control --pid=<pid>`, an option that tool does not have (it takes
+  the process id as a trailing argument, and exits 0 after rejecting an
+  option), and in a container it did not try at all while printing that the
+  whole process would be recorded. It switches instrumentation on before each
+  measured window and off after it, in a container too, so the profile holds
+  the measured calls and the harness's own work around them (timing, printing
+  and recording the result), and none of the test's work before or after the
+  window. `bench run --profile callgrind` records the whole process as before:
+  the backend does not switch a recording the runner started. With no
+  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
+  says the profile covers the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it
