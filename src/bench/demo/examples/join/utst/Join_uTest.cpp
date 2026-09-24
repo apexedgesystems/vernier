@@ -46,17 +46,30 @@ template <typename Op> std::size_t countNewCalls(Op&& op) {
   return newCallsOnThisThread - before;
 }
 
+/// The one allocation every replaced operator new makes, counted once.
+void* countedAllocate(std::size_t size) noexcept {
+  ++newCallsOnThisThread;
+  return std::malloc(size == 0 ? 1 : size);
+}
+
 } // namespace
 
 // Replacing the global allocation functions is how a test sees the allocations
-// std::string makes. They count, then forward to malloc and free, the same
-// allocator the default ones use.
+// std::string makes. Memory from one form of operator new may be released by
+// any delete of its family, so the whole scalar family is replaced together,
+// on malloc and free: throwing and nothrow new, plain, sized and nothrow
+// delete. Nothing then crosses between these and a runtime's own forms (a
+// sanitizer's, for one). Array and aligned forms pair only within their own
+// families and stay the runtime's.
 void* operator new(std::size_t size) {
-  ++newCallsOnThisThread;
-  if (void* p = std::malloc(size == 0 ? 1 : size)) {
+  if (void* p = countedAllocate(size)) {
     return p;
   }
   throw std::bad_alloc();
+}
+
+void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+  return countedAllocate(size);
 }
 
 // Out of line: inlined into a caller, free() would meet a pointer the compiler
@@ -64,6 +77,10 @@ void* operator new(std::size_t size) {
 [[gnu::noinline]] void operator delete(void* p) noexcept { std::free(p); }
 
 [[gnu::noinline]] void operator delete(void* p, std::size_t /*size*/) noexcept { std::free(p); }
+
+[[gnu::noinline]] void operator delete(void* p, const std::nothrow_t& /*tag*/) noexcept {
+  std::free(p);
+}
 
 /* ----------------------------- API Tests ----------------------------- */
 
