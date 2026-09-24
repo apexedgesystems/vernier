@@ -125,6 +125,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--gpu-warmup`, `--gpu-device`, `--gpu-memory`, `--min-speedup`,
   `--capture-um`) are exempt. Consumers that pass their own long options
   through `PERF_MAIN` will see one line per option.
+- **`bench compare` labels a test by the change in its reported median** --
+  a test is labelled `REGRESSION` when the candidate's median is more than
+  `--threshold` percent above the baseline's, `IMPROVEMENT` when it is more
+  than `--threshold` percent below it, and `neutral` otherwise, including at
+  exactly the threshold. Exactly means in the decimals the CSVs report: a
+  candidate median of 1.05 against a baseline of 1 is 5% and stays neutral
+  at `--threshold 5`, although binary floating point computes the change as
+  5.000000000000004%. The comparison reads two summary CSVs, which carry
+  no observations, so it runs no test for statistical significance: the
+  p-value the table and the Markdown table printed is gone, the
+  `p_value` field of the JSON output is `null`, and the label no longer
+  depends on it. A median 20% above its baseline whose reported outer
+  quantiles happened not to move was labelled `neutral` with `p 0.9941` and
+  passed `--fail-on-regression`; it is now a regression and fails that gate.
+  The table and the Markdown table carry each run's CV in place of the
+  p-value, as context for how spread out that run was; neither CV measures
+  the spread between the two runs. Noise-aware comparison from real
+  observations is future work, not part of this release.
+  **Action needed:** a consumer that reads the `--json` output takes the
+  results from the `results` array of the JSON document, which also carries
+  `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
+  bare array of results. A gate that was passing because a p-value suppressed
+  its labels will start failing on the changes it was always meant to catch.
 
 ### Fixed
 
@@ -320,6 +343,136 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **For packagers:** the headers' installed location changes from
   `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
   use the exported targets need no change.
+- **Every CSV row has its file's columns** -- a row was written with the column
+  groups its own values happened to fill, while the header states the groups
+  once for the whole file, so rows of a GPU binary did not line up with it. A
+  GPU run with `--csv` and `--profile` wrote a 57-column header and 55-value
+  GPU rows, putting every value after `cvThreshold` (`gpuModel`,
+  `kernelTimeUs`, the CUPTI and multi-GPU columns) under the wrong name; a CPU
+  baseline case in the same binary wrote 26 values against the same header,
+  with or without a profiler. A CPU-only file had the same gap wherever a row
+  carried no profiler metadata: 26 values under the 28-column header a
+  `--profile` run writes. Rows carry the header's groups, with an empty cell
+  where a row has no value, so a row is as wide as the header and each value
+  stands under its own column name. CSV files captured before this fix from a
+  GPU binary, or from any run whose rows differ in what they carry, cannot be
+  read by column position; reread them by counting from the left edge, or
+  capture them again.
+- **A GPU test's wall time is one round trip** -- the per-call wall time of a
+  `PERF_GPU_TEST` was the round trip divided by the cycle count a second time,
+  after the kernel leg had already been divided by it, so every wall column
+  (`wallMedian` and its percentiles), the console `us/call` line, `calls/s` and
+  the speedup were wrong by a factor of `--cycles`: a 21 us round trip printed
+  as 0.005 us/call at the default 10,000 cycles. One round trip is the
+  host-to-device leg, one kernel launch and the device-to-host leg, and that is
+  what the wall columns now report. Kernel and transfer columns are unchanged.
+  GPU CSVs captured before this fix are comparable among themselves only at
+  equal `--cycles`; multiply their wall columns by the `cycles` column to
+  recover the real time.
+- **A GPU test with no transfers records no transfer time** -- the harness
+  timed a host-to-device and a device-to-host leg every repeat even when the
+  test declared neither, so a kernel-only `PERF_GPU_TEST` reported a couple of
+  microseconds of `transferTimeUs` (2.18 us per repeat on the reference board)
+  against `h2dBytes` and `d2hBytes` of zero, and that phantom time entered the
+  wall columns. An empty leg is not timed: `transferTimeUs` is 0 and the wall
+  time of a kernel-only test is its kernel time. Tests that do declare
+  transfers are timed as before; the per-launch kernel time is unchanged
+  (median 4.57 us before, 4.39 us after, across six alternating runs).
+- **A CPU baseline reaches the GPU tests of its suite** -- `speedupVsCpu` was
+  measured against a baseline kept on the `PerfGpuCase` object, and GoogleTest
+  builds one object per test case, so the usual layout (a `CpuBaseline` case
+  next to the GPU cases of the same suite) left every GPU case without a
+  baseline and `speedupVsCpu` was 0 in the CSV and on the console. The rule: a
+  GPU test is compared against the baseline its own test measured, and a test
+  that measured none is compared against its suite's baseline only while
+  exactly one test of that suite has recorded one; once a second test of the
+  suite records a baseline there is no single answer, so GPU tests without
+  their own baseline report no speedup (an empty `speedupVsCpu` cell) and the
+  suite is named once on stderr, pointing at `cpuBaseline()` in the GPU test as
+  the fix. Two suites in one binary never share a baseline. The multi-GPU path
+  follows the same rule, so `totalSpeedupVsCpu` and `multiGpuEfficiency` report
+  measured numbers where a shared baseline applies.
+- **A GPU row carries the stability verdict the console printed** -- GPU rows
+  were assembled field by field and never set `stable` or `cvThreshold`, so
+  every GPU row in a CSV read `stable=1` and `cvThreshold=0.05` whatever the
+  run did: a summary called a test stable while its own console line said
+  `[UNSTABLE]`, and the threshold shown was not the one the verdict used. GPU
+  rows are built by the same row builder the CPU path uses, so the two columns
+  hold the adaptive threshold for the case's payload size and the verdict
+  measured against it. The config and metadata columns of a GPU row are
+  unchanged.
+- **The GPU basic-workflow demo measures a shared example and asserts what it
+  teaches** -- `BenchDemo_Gpu_01_GpuBasicWorkflow` carried its own vector-add
+  kernel and checked `callsPerSecond > 10`, which no plausible result can fail,
+  so the demo could not notice when the numbers behind its walkthrough stopped
+  being true. It measures the shared SAXPY example
+  (`src/bench/demo/examples/saxpy`, whose unit tests hold the CPU loop and both
+  GPU versions to the same answers) and each test asserts the effect it
+  demonstrates: the baseline that its loop computed `a*x + y`, the transferring
+  test that the copies cost several times the kernel, the kernel-only test that
+  no transfer time is recorded and that the kernel beats the CPU loop by a
+  stated margin. The binary's hand-written `main()` is `PERF_GPU_MAIN()`, so
+  the `--gpu-*` flags reach the harness and the CSV carries the GPU columns
+  whatever the tests are named. A run filtered to one GPU test skips the
+  speedup comparison, which needs the baseline test of the same suite. Its
+  walkthrough (`10_GPU_BASIC_WORKFLOW.md`) is captured on the Jetson AGX Thor
+  reference rig, with the clock procedure stated beside every speedup, and
+  `src/bench/demo/reference/thor/10_gpu_basic_workflow.csv` is the reference
+  run for `bench compare`.
+- **An unknown GPU speedup is an empty cell** -- with no baseline to compare
+  against, the `speedupVsCpu` column held `0.000000`, which reads as a
+  measured slowdown of infinity. The cell is empty instead, as the other GPU
+  columns are when they have no value.
+- **`bench compare` fails instead of certifying a comparison it cannot make**
+  -- two runs with no test name in common printed `No common tests to
+  compare.` and exited 0, so a CI job that compared the wrong pair of files,
+  or a suite whose tests had all been renamed, passed its regression gate
+  without comparing anything. Such a comparison exits 1, with or without
+  `--fail-on-regression`, and names the tests each side ran alone. The same
+  holds for input a comparison cannot be built from: a `--threshold` that is
+  not a finite percentage of zero or more, a test name a CSV reports twice
+  (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
+  is missing from its row, empty, not a number (the loader read all three as
+  0) or not finite, a `wallMedian` of zero or less (a relative change against
+  a zero baseline was reported as a neutral `+0.0%`), a negative `wallCV`,
+  and a candidate median so many times its baseline that the percentage
+  change overflows (it printed as `+inf%` in the table and `null` in the
+  JSON output). Each exits 1 naming the file or run, the test, the column
+  and the value, and prints no comparison for a reader or a gate to mistake
+  for a pass. Only those two columns are read this strictly: CSVs from earlier
+  releases, and GPU CSVs whose CPU rows stop before the GPU columns, compare
+  as before.
+- **A comparison reports the tests only one of the two runs ran** -- tests
+  present in just one CSV were dropped from the table, the Markdown table and
+  the JSON output without a word, so a suite that lost a test still showed
+  every remaining test as fine. Both lists are printed under the table and
+  carried in the JSON document. Under `--fail-on-regression` a baseline test
+  the candidate does not run fails the gate, because nothing measured it; a
+  candidate-only test is reported as new and does not fail on its own. A
+  renamed test is both: one missing test and one new one, and the gate fails
+  until the baseline is updated on purpose.
+- **`bench summary` refuses a measurement it cannot show** -- the summary
+  read its CSV with defaults: a `wallMedian`, `wallCV` or `callsPerSecond`
+  that was missing, empty or not a number printed as 0, and a `nan` or `inf`
+  printed as `NaN` or `inf` in the table and `null` in the JSON, all with
+  exit 0, so a damaged capture read as zero time, zero variation or zero
+  throughput. Those three columns must hold a finite number in every row, and
+  the other columns the summary shows (`wallP10`, `wallP90`, `stable`,
+  `cvThreshold`, `cycles`, `repeats`) a finite number of their kind wherever
+  a row gives one. A column that a layout or a row leaves out, or an empty
+  field in one of those six, still shows its default, and zeros are values.
+  Anything else exits 1 with nothing printed, naming the file, line, test,
+  column and value, as text and as JSON. `bench run --analyze` applies the
+  same rule to the summary it prints after a run: it exits 1 without the
+  summary, and the run's own output, printed before the check, is unaffected.
+- **A row without a test name is refused** -- a row whose `test` field was
+  empty or only whitespace loaded as a test with that name, so two CSVs with
+  one such row each compared them as the same test and passed
+  `--fail-on-regression`, and `bench summary` listed an unnamed row. `bench
+  summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
+  row, naming the file and line. A name is otherwise kept exactly as
+  written: spaces around it, or a difference in case, make it a different
+  test.
 
 ## v1.0.3 - 2026-06-28
 
