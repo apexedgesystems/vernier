@@ -60,11 +60,15 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (1)
+# Demos Built on a Shared Example (2)
 # ------------------------------------------------------------------------------
 
 target_link_libraries(
   BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_11_MassifProfiler
   PRIVATE demo_example_join
 )
 

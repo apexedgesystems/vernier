@@ -24,6 +24,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 11 measures the join example's peak heap** --
+  `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
+  example instead of allocating an 8 MB buffer per call. `Massif.JoinV0` and
+  `Massif.JoinV1` publish one CSV row each, and `Massif.JoinPeakHeap` counts
+  the bytes one call of each version holds at its peak and fails unless V0
+  holds more than three times what V1 holds. It skips itself under valgrind,
+  which replaces the counting. The demo's earlier tests asserted only that
+  each variant ran more than once a second, which still held with both
+  variants made identical. Demo 11's test names change (`Massif.SmallChurn` and
+  `Massif.PooledReuse` are gone), so CSVs captured from it before this release
+  do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

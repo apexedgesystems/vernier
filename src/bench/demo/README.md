@@ -85,7 +85,7 @@ how to compare two runs.
 | 08  | RAPL Profiler         | Energy/power measurement           | Naive dot product           | Vectorized inner product   | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)             |
 | 09  | bpftrace Profiler     | Syscall overhead tracing           | One write() per byte        | Single batched write()     | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)     |
 | 10  | NVTX Annotation       | Timeline labeling for Nsight       | Single opaque region        | Per-phase named ranges     | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)         |
-| 11  | Massif Profiler       | Heap usage timeline                | new[] each iteration        | Pooled buffer reuse        | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
+| 11  | Massif Profiler       | Peak heap, and who owns it         | join V0 (old and new live)  | join V1 (one buffer)       | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
 | 12  | Memcheck Profiler     | Leak / UAF detection               | Raw new[] (leaky)           | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
 | 13  | Off-CPU Profiler      | Where threads go to sleep          | std::mutex contention       | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
 | 14  | Helgrind Profiler     | Data-race / thread-error detection | Unguarded shared counter    | std::atomic counter        | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)     |
