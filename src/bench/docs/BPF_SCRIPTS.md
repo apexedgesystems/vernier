@@ -14,9 +14,15 @@ performance, not by default in CI.
   arguments and `kill` with `-2`, `-15` and `-9`. `PERF_BPF_SUDO` is a
   deprecated alias honoured by the `bpftrace` backend only: `BENCH_SUDO` wins
   when both are set, and an invalid value of either is a configuration error.
-- `--profile-check --profile bpftrace --bpf <scripts>` attaches each selected
-  script through that route for a second and stops it, and reports what failed;
-  a run makes the same decision before its first case.
+- `--profile-check --profile bpftrace --bpf <scripts>` runs a copy of each
+  selected script, with a 5 s self-exit added, through that route for a second
+  and stops it, and reports what failed; a run makes the same decision before
+  its first case. The copy lives in a private temporary directory, while the
+  run's own copy lives in its capture folder, so the check cannot try the run's
+  exact command: with `BENCH_SUDO=1`, a grant that refuses the check's copy is
+  reported as `unverified` rather than denied, and the run's start shows
+  whether the grant allows the run's command. A ready check lists what it did
+  not check.
 
 ## PID filtering
 
