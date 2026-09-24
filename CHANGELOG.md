@@ -33,8 +33,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   example's unit tests count the calls to `operator new` each version makes and
   fail unless `joinV1` makes one per call at every size tested and `joinV0`, at
   1,000 parts, makes at least 500 times as many; it makes about two per part.
-  The demo's test names change, so CSVs captured from it before this release do
-  not join with newer ones.
+  Its walkthrough, `src/bench/demo/docs/21_HEAPTRACK_PROFILER.md`, is rewritten
+  from a Release run on the documented Raspberry Pi 4 rig: it records each
+  version through `bench run --profile heaptrack`, reads the report with
+  `heaptrack_print` (1,995 allocations per call against 1), names the recording
+  with a glob because heaptrack writes `run.zst` or `run.gz` depending on the
+  installation, and shows what a build with tcmalloc does to the counts. That
+  run's CSV is committed at
+  `src/bench/demo/reference/pi4/21_heaptrack_profiler.csv`. The demo's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
