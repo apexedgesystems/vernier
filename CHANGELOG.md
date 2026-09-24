@@ -40,9 +40,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with a glob because heaptrack writes `run.zst` or `run.gz` depending on the
   installation, and shows what a build with tcmalloc does to the counts. That
   run's CSV is committed at
-  `src/bench/demo/reference/pi4/21_heaptrack_profiler.csv`. The demo's test
-  names change, so CSVs captured from it before this release do not join with
-  newer ones.
+  `src/bench/demo/reference/pi4/21_heaptrack_profiler.csv`. The demos README's
+  contract lets a walkthrough's check live in the unit tests of the example it
+  measures when a check inside the demo would change what the demo shows, as
+  here: a counting `operator new` in the demo would let heaptrack see its C++
+  allocations even with tcmalloc loaded. The demo's test names change, so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

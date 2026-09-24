@@ -8,6 +8,11 @@
  *  - How often each version allocates is what the heap-profiler walkthroughs
  *    read, so it is tested too: this binary replaces the global operator new
  *    to count the calls each version makes.
+ *  - The counts are those of a plain run. A tool preloaded into this binary
+ *    that allocates through operator new on the test's thread adds its own
+ *    calls: under heaptrack, a count taken through a call stack it has not
+ *    met before reads several calls high. The counter and a heap profiler
+ *    each disturb the other, which is why this guard is not in the demo.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 

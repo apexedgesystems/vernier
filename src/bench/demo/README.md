@@ -267,9 +267,11 @@ A walkthrough meets this contract:
 - **A named rig and a Release build.** Commands were run as written and
   output blocks are pasted from that run, with the capture date and the
   Vernier version.
-- **A test that asserts its own effect.** The demo's performance test
-  fails if the slow and fast variants stop differing, so a walkthrough
-  cannot drift silently.
+- **A test that asserts its own effect.** A test fails if the slow and
+  fast variants stop differing in what the walkthrough shows: the demo's
+  own performance test, or the unit tests of the example it measures when
+  a check inside the demo would change what the demo shows. The
+  walkthrough names its test, and cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
 - **Something runs it.** A walkthrough is re-run on its rig before every

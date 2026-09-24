@@ -453,6 +453,13 @@ Two things check what this page shows, and both fail loudly:
   100% tests passed, 0 tests failed out of 15
   ```
 
+  The check lives in the example's tests, not in the demo, because a counting
+  `operator new` and heaptrack each disturb the other. The counter hands
+  every C++ allocation to `malloc`, so in the demo heaptrack would see them
+  even in a build with tcmalloc, and the demo would stop behaving like a
+  program of your own; and under heaptrack, the counter also counts
+  heaptrack's own bookkeeping.
+
 - `bench doctor` reports heaptrack as a warning whenever tcmalloc is loaded
   into the benchmark, and `bench doctor --require heaptrack` then fails. The
   bench library's unit tests check that in a build configured with tcmalloc,
