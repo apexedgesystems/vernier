@@ -35,8 +35,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
-#include <string>
-#include <vector>
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
@@ -98,15 +96,6 @@ template <typename Op> std::size_t peakHeapDuring(Op&& op) {
   heapPeak.store(BASE, std::memory_order_relaxed);
   op();
   return heapPeak.load(std::memory_order_relaxed) - BASE;
-}
-
-/// Bytes a joined string holds: every part plus one separator each.
-std::size_t joinedSize(const std::vector<std::string>& parts) {
-  std::size_t total = 0;
-  for (const std::string& part : parts) {
-    total += part.size() + 1;
-  }
-  return total;
 }
 
 } // namespace
@@ -173,7 +162,7 @@ PERF_THROUGHPUT(Massif, JoinV0) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
@@ -185,7 +174,7 @@ PERF_THROUGHPUT(Massif, JoinV1) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
@@ -212,7 +201,7 @@ PERF_TEST(Massif, JoinPeakHeap) {
   volatile std::size_t sink = 0;
   const std::size_t V0_PEAK = peakHeapDuring([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
   const std::size_t V1_PEAK = peakHeapDuring([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
-  const std::size_t JOINED = joinedSize(PARTS);
+  const std::size_t JOINED = demo::joinedSize(PARTS);
 
   // V1 holds its result at its peak; less means the counting missed it.
   ASSERT_GE(V1_PEAK, JOINED) << "V1 held " << V1_PEAK << " bytes, less than its own " << JOINED

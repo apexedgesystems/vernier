@@ -32,7 +32,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   holds more than three times what V1 holds. It skips itself under valgrind,
   which replaces the counting. The demo's earlier tests asserted only that
   each variant ran more than once a second, which still held with both
-  variants made identical. Its walkthrough,
+  variants made identical. The join example gains `joinedSize()`, the length
+  of the string both versions return, which demo 11 checks each result
+  against. Its walkthrough,
   `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
   on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
   default instruction axis two of V1's three calls draw as one block), the

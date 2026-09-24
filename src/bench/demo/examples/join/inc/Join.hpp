@@ -38,6 +38,13 @@ namespace demo {
 [[nodiscard]] std::string joinV1(const std::vector<std::string>& parts, char sep);
 
 /**
+ * @brief Length of the string joinV0 and joinV1 return for @p parts: every
+ *        part plus one separator each.
+ * @note RT-safe: one pass over @p parts, no allocation.
+ */
+[[nodiscard]] std::size_t joinedSize(const std::vector<std::string>& parts) noexcept;
+
+/**
  * @brief Deterministic input: @p count words of 3 to 10 lowercase letters.
  * @param count Number of words.
  * @param seed Seed for the generator; the same seed gives the same words.

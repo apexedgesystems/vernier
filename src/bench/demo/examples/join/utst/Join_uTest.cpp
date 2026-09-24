@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 
+using vernier::bench::demo::joinedSize;
 using vernier::bench::demo::joinV0;
 using vernier::bench::demo::joinV1;
 using vernier::bench::demo::makeParts;
@@ -73,7 +74,26 @@ TEST_P(JoinSizesTest, JoinedLengthCoversEveryPart) {
   EXPECT_EQ(joinV1(parts_, ',').size(), expected);
 }
 
+/** @test joinedSize is the length every version returns at every input size */
+TEST_P(JoinSizesTest, JoinedSizeIsEveryVersionsLength) {
+  EXPECT_EQ(joinedSize(parts_), joinV0(parts_, ',').size());
+  EXPECT_EQ(joinedSize(parts_), joinV1(parts_, ',').size());
+}
+
 INSTANTIATE_TEST_SUITE_P(Counts, JoinSizesTest, ::testing::Values(0, 1, 10, 100, 1000, 10000));
+
+/* ----------------------------- joinedSize Tests ----------------------------- */
+
+/** @test joinedSize counts every part and one separator after each */
+TEST(JoinedSizeTest, CountsEveryPartAndOneSeparatorEach) {
+  const std::vector<std::string> none;
+  const std::vector<std::string> words = {"alpha", "beta", "gamma"};
+  const std::vector<std::string> empties = {"", ""};
+
+  EXPECT_EQ(joinedSize(none), 0u);
+  EXPECT_EQ(joinedSize(words), std::string("alpha,beta,gamma,").size());
+  EXPECT_EQ(joinedSize(empties), std::string("--").size());
+}
 
 /* ----------------------------- makeParts Tests ----------------------------- */
 
