@@ -158,10 +158,10 @@ Massif.JoinV1       470.807    0.3%        2.1K  OK
 2 tests | 2 stable | 0 unstable
 ```
 
-At 20,000 words V0 takes 398.7 ms per call and V1 0.47 ms, about 850 times
-less, with CVs of 0.6% and 0.3%: walkthrough 01's copying, at twenty times the
-words. `--target-time 50ms` ran V0 once per repeat, since one call outlasts
-the target, and V1 106 times.
+In this run, at 20,000 words, V0 took 398.7 ms per call and V1 0.47 ms, about
+850 times less, with CVs of 0.6% and 0.3%: walkthrough 01's copying, at twenty
+times the words. `--target-time 50ms` ran V0 once per repeat, since one call
+outlasts the target, and V1 106 times.
 
 The line this page is about is `JoinPeakHeap`'s. The joined string is 149,812
 bytes; at its peak V0's call held 749,048 bytes and V1's 149,816, five times as
@@ -477,13 +477,19 @@ different `--profile-output-dir` gives a run a file of its own.
 | who holds V0's peak                            | the input 640,000 bytes, `joinV0` 597,322 and 149,335, libstdc++ 73,728                                          | the same owners; the bytes depend on the standard library                                             |
 | total heap at the peak                         | 1,471,304 against 874,440 bytes, 1.68x                                                                           | depends on the size of `std::string` (32 bytes here) and on what else the process holds               |
 | byte counts from run to run                    | the join's entries identical in every run; the total within 64 bytes, moving with the command line and directory | should hold                                                                                           |
-| V0 and V1 per call                             | 398.7 ms and 0.47 ms, about 850x; 771x to 849x over eleven runs                                                  | will differ: V0's time grows with the square of the word count, and memory bandwidth decides the rest |
+| V0 and V1 per call                             | 398.7 ms and 0.47 ms in step 1's run (847x); the spread is below                                                 | will differ: V0's time grows with the square of the word count, and memory bandwidth decides the rest |
 
-Over the eleven Step 1 runs taken for this page, V0's median stayed between
-390.3 and 405.0 ms, and V1's between 465.6 and 513.0 us. Ten of them kept V1
-at or under 493.8 us with CVs of 2.2% or less; the eleventh ran seconds after a
-build had finished on the same board, and read 513.0 us with a CV of 4.8%, V0
-4.3%. The byte counts did not move in any of them.
+The byte counts are the reading this page checks, and they repeat: every run
+of the demo for this page printed the same `JoinPeakHeap` line. The times do
+not. Over the eleven step 1 runs behind this page, V0's median ranged from
+390.3 to 405.0 ms and V1's from 465.6 to 513.0 us, and V0 was 771 to 849 times
+slower than V1; the widest CVs, 4.3% and 4.8%, came from a run taken seconds
+after a build had finished on the board. That range describes those eleven
+runs. It is not a bound a run has to meet, here or on another board: later
+runs of the same step 1 command on this rig fell outside it. A separate build
+of the same source read 384.4 ms for V0 (779 times V1), and a rebuild after
+changes that leave the timed calls as they are read 450.0 us for V1 (871
+times). The times give the context; the byte counts are the check.
 
 ## If It Does Not Match
 
