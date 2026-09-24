@@ -186,8 +186,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   elevates perf), an event the CPU lacks is a caveat whose column stays empty,
   and `record`, `mem` and `c2c` are reported `unverified` beyond that access.
   The run launches the absolute path the check ran, started by `/bin/sh`
-  rather than an `sh` looked up on `PATH`; a perf that fails its check is
-  never launched.
+  rather than an `sh` looked up on `PATH`, with that path and the capture
+  paths quoted so that any character in them, an apostrophe included,
+  reaches perf unchanged; a perf that fails its check is never launched.
 - **gperf checks the requested mode and runs the analyzer it found** -- the
   gperf row said `gperftools linked` whatever was asked, and
   `--profile-analyze` looked for `google-pprof` or `pprof` but always ran

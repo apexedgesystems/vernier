@@ -593,6 +593,60 @@ TEST_F(PerfCheckTest, LaunchRunsThePlannedPath) {
       << dir_.log();
 }
 
+/**
+ * @test A perf and an artifact root whose paths hold shell punctuation run as
+ * checked: the launch executes the checked perf and writes where it says.
+ */
+TEST_F(PerfCheckTest, LaunchKeepsPunctuationInPaths) {
+  const std::string BIN_NAME = "tool's bin $HOME \"q\" `true`";
+  const std::string BIN = dir_.makeDirectory(BIN_NAME);
+  const std::string PERF = dir_.install("fake_perf.sh", BIN_NAME + "/perf");
+  ReadinessRequest request;
+  request.backend = "perf";
+  request.scope = ReadinessScope::PREFLIGHT;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+      request, ReadinessContext(0, ::getpid(), {{"PATH", BIN}, {"FAKE_LOG", dir_.logPath()}}));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const auto CHECKED = std::dynamic_pointer_cast<const PerfPlan>(R.plan);
+  ASSERT_NE(CHECKED, nullptr);
+  ASSERT_EQ(CHECKED->perf, PERF);
+
+  const std::string ROOT = dir_.makeDirectory("art's $PWD \"x\" `id`");
+  const std::string PID = std::to_string(::getpid());
+  for (const std::string& args : {std::string{}, std::string{"record -g"}}) {
+    auto plan = std::make_shared<PerfPlan>(*CHECKED);
+    plan->mode = parsePerfMode(args);
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = "perf";
+    cfg.profileArgs = args;
+    cfg.artifactRoot = ROOT;
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    StderrCapture err;
+    vernier::bench::PerfStatProfiler profiler(cfg, args.empty() ? "Perf.Stat" : "Perf.Record",
+                                              plan);
+    profiler.beforeMeasure();
+    profiler.afterMeasure(vernier::bench::Stats{});
+    const std::string TEXT = err.text();
+    EXPECT_EQ(TEXT.find("Syntax error"), std::string::npos) << TEXT;
+    EXPECT_EQ(TEXT.find("not found"), std::string::npos) << TEXT;
+  }
+  EXPECT_EQ(dir_.logLines("perf " + PERF +
+                          " stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses "
+                          "-p " +
+                          PID + " pid=")
+                .size(),
+            1U)
+      << dir_.log();
+  EXPECT_EQ(dir_.logLines("perf " + PERF + " record -g -p " + PID + " -o " + ROOT +
+                          "/Perf.Record.perf/perf.data pid=")
+                .size(),
+            1U)
+      << dir_.log();
+  EXPECT_TRUE(std::filesystem::exists(ROOT + "/Perf.Stat.perf/stat.txt"))
+      << "the stat redirect did not reach the artifact folder";
+  EXPECT_TRUE(std::filesystem::exists(ROOT + "/Perf.Record.perf/record.err.txt"));
+}
+
 /* ----------------------------- gperf ----------------------------- */
 
 namespace {

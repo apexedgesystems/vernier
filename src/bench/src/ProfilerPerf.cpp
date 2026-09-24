@@ -232,6 +232,22 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
 
 namespace {
 
+#ifdef __linux__
+/** @brief @p text as one POSIX sh word: single-quoted, each ' written as '\''. */
+std::string shellQuote(const std::string& text) {
+  std::string out = "'";
+  for (const char CH : text) {
+    if (CH == '\'') {
+      out += "'\\''";
+    } else {
+      out += CH;
+    }
+  }
+  out += "'";
+  return out;
+}
+#endif
+
 std::shared_ptr<const PerfPlan> readyPlan(const ReadinessResult& result) {
   if (!result.collectionReady()) {
     return nullptr;
@@ -283,8 +299,9 @@ void PerfStatProfiler::beforeMeasure() {
     return;
   }
 
-  // The executable the check ran, by its absolute path.
-  const std::string PERF = "'" + plan_->perf + "'";
+  // The executable the check ran, by its absolute path, as one shell word
+  // whatever it contains. --profile-args stays shell text on purpose.
+  const std::string PERF = shellQuote(plan_->perf);
   pid_t targetPid = ::getpid();
 
   if (plan_->mode == PerfMode::MEM) {
@@ -293,7 +310,7 @@ void PerfStatProfiler::beforeMeasure() {
     dataPath_ = artifactDir_ + "/perf.mem.data";
     errPath_ = artifactDir_ + "/mem.err.txt";
     std::string cmd =
-        PERF + " mem record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
+        PERF + " mem record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else if (plan_->mode == PerfMode::C2C) {
     // perf c2c -- cache-line contention profiling. Surfaces false sharing
@@ -301,7 +318,7 @@ void PerfStatProfiler::beforeMeasure() {
     dataPath_ = artifactDir_ + "/perf.c2c.data";
     errPath_ = artifactDir_ + "/c2c.err.txt";
     std::string cmd =
-        PERF + " c2c record -p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
+        PERF + " c2c record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else if (plan_->mode == PerfMode::RECORD) {
     // perf record mode
@@ -315,7 +332,7 @@ void PerfStatProfiler::beforeMeasure() {
       auto rest = (i == std::string::npos) ? std::string{} : cfg_.profileArgs.substr(i);
       cmd += rest + " ";
     }
-    cmd += "-p " + std::to_string(targetPid) + " -o '" + dataPath_ + "'";
+    cmd += "-p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
     launchBackground(cmd, /*stdoutPath*/ "", errPath_);
   } else {
     // perf stat mode (default)
@@ -421,10 +438,10 @@ void PerfStatProfiler::launchBackground(const std::string& cmdCore, const std::s
   std::string cmd = cmdCore;
   std::string redirs;
   if (!stdoutPath.empty()) {
-    redirs += " >'" + stdoutPath + "'";
+    redirs += " >" + shellQuote(stdoutPath);
   }
   if (!stderrPath.empty()) {
-    redirs += " 2>'" + stderrPath + "'";
+    redirs += " 2>" + shellQuote(stderrPath);
   }
   std::string shellCmd = cmd + redirs + " & echo $!";
 
