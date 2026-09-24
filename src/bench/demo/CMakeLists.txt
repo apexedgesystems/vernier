@@ -60,35 +60,6 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (2)
-# ------------------------------------------------------------------------------
-
-target_link_libraries(
-  BenchDemo_01_BasicWorkflow
-  PRIVATE demo_example_join
-)
-target_link_libraries(
-  BenchDemo_07_CallgrindProfiler
-  PRIVATE demo_example_join
-)
-
-# ------------------------------------------------------------------------------
-# Demo Checks Run by CTest (1)
-# ------------------------------------------------------------------------------
-# Demo binaries stay out of ctest, so that no timing runs beside a parallel
-# suite. Demo 07's check counts instructions under callgrind, which load does
-# not change, so ctest runs that one test; it skips where valgrind is missing.
-# ------------------------------------------------------------------------------
-
-add_test(NAME CallgrindDemoInstructionCountsTest
-         COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
-)
-set_tests_properties(
-  CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind" SKIP_REGULAR_EXPRESSION
-                                                "\\[  SKIPPED \\]"
-)
-
-# ------------------------------------------------------------------------------
 # GPU Demo Sources
 # ------------------------------------------------------------------------------
 
@@ -110,3 +81,39 @@ if (TARGET bench_cuda)
     )
   endforeach ()
 endif ()
+
+# ------------------------------------------------------------------------------
+# Demos Built on a Shared Example (3)
+# ------------------------------------------------------------------------------
+# After both demo lists, so every demo target exists. The GPU demo and its
+# example are only built where the GPU demos are.
+# ------------------------------------------------------------------------------
+
+target_link_libraries(
+  BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+
+if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
+  target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
+endif ()
+
+# ------------------------------------------------------------------------------
+# Demo Checks Run by CTest (1)
+# ------------------------------------------------------------------------------
+# Demo binaries stay out of ctest, so that no timing runs beside a parallel
+# suite. Demo 07's check counts instructions under callgrind, which load does
+# not change, so ctest runs that one test; it skips where valgrind is missing.
+# ------------------------------------------------------------------------------
+
+add_test(NAME CallgrindDemoInstructionCountsTest
+         COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
+)
+set_tests_properties(
+  CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind" SKIP_REGULAR_EXPRESSION
+                                                "\\[  SKIPPED \\]"
+)
