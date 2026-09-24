@@ -419,7 +419,9 @@ and 5 do not.
 - The same `ctest` label runs the two tests that hold the callgrind backend to
   its hint: run the way the hint says, the profile holds the measured calls and
   none of the work before or after them, and under `bench run` it holds the
-  whole process.
+  whole process. Where valgrind cannot read the probe's symbols, the profile
+  cannot show which functions ran, and both skip; `ctest -V` prints valgrind's
+  own reason.
 
   ```bash
   ctest --test-dir build -L callgrind

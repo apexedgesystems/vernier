@@ -15,8 +15,12 @@
 #         the whole process alone.
 #
 # Prints "SKIPPED: <reason>", the tests' skip expression, when valgrind is not
-# installed or cannot start the probe (a valgrind older than the compiler's
-# debug information gives up before the program runs).
+# installed, cannot start the probe (a valgrind older than the compiler's
+# debug information gives up before the program runs), or runs it without
+# reading its symbols: the profile then names none of the probe's functions,
+# and valgrind's own warning about the probe's debug information is the
+# reason given. A profile that names none of them while valgrind reported no
+# such trouble fails, as does a profile of zero instructions.
 # ==============================================================================
 
 cmake_minimum_required(VERSION 3.24)
@@ -117,6 +121,46 @@ endif ()
 file(READ "${_profile}" _data)
 string(REGEX MATCH "\ntotals: ([0-9]+)" _totals "${_data}")
 set(_totals "${CMAKE_MATCH_1}")
+
+# Whether the profile names any function of the probe: its three phases and
+# the test body GoogleTest generates. Where valgrind could not read the
+# probe's symbols, the probe's code is recorded under addresses, the phase
+# checks below cannot tell a right window from a wrong one, and valgrind says
+# so in its own output: skip with that reason. Without the warning, a profile
+# that names none of them is a window that missed the probe, and fails.
+set(_named "")
+foreach (_function workBeforeWindow workInsideWindow workAfterWindow CallgrindWindow_Phases_Test)
+  string(FIND "${_data}" "${_function}" _at)
+  if (NOT _at EQUAL -1)
+    list(APPEND _named ${_function})
+  endif ()
+endforeach ()
+if (_named STREQUAL ""
+    AND _problems STREQUAL ""
+    AND _totals GREATER 0
+)
+  get_filename_component(_probe_name "${PROBE}" NAME)
+  string(REPLACE "." "\\." _probe_name "${_probe_name}")
+  string(REGEX MATCH "When reading debug info from [^\n]*/${_probe_name}:\n[^\n]*-- ([^\n]*)"
+               _warning "${_out}"
+  )
+  if (NOT _warning STREQUAL "")
+    set(_reason "${CMAKE_MATCH_1}")
+    execute_process(
+      COMMAND "${_valgrind}" --version
+      OUTPUT_VARIABLE _version
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "SKIPPED: ${_version} could not read the probe's debug information "
+                   "(${_reason}), so the profile names none of its functions"
+    )
+    return()
+  endif ()
+  string(APPEND _problems " the profile names none of the probe's functions, and"
+         " valgrind reported no trouble reading the probe's debug information;"
+  )
+endif ()
+
 foreach (_phase IN LISTS _present)
   string(FIND "${_data}" "${_phase}" _at)
   if (_at EQUAL -1)

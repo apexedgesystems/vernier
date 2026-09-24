@@ -129,7 +129,8 @@ include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 # valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
 # prints must record the window and none of the work around it, the wrap
 # `bench run` uses the whole process. A test fixture, never installed; the
-# tests skip without valgrind.
+# tests skip without valgrind, or where valgrind cannot read the probe's
+# symbols and says so.
 # ------------------------------------------------------------------------------
 
 vernier_add_app(
