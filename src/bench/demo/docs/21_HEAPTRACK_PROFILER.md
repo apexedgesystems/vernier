@@ -443,7 +443,10 @@ Two things check what this page shows, and both fail loudly:
   `JoinAllocationTest.V0AllocatesFarMoreOftenThanV1` fails unless `joinV0`, at
   1,000 parts, makes at least 500 times as many as `joinV1`. They are
   registered with `ctest`, so ordinary CI runs them, with the other examples'
-  tests under the same label:
+  tests under the same label. The output below is from a CPU-only Release
+  build of this tree on an x86-64 laptop, not from the rig; how many tests the
+  label selects depends on the build, and one with the GPU demos adds the GPU
+  example's:
 
   ```bash
   ctest --test-dir build -L demo
