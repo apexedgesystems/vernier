@@ -196,6 +196,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   found, directly and bounded, prints the first lines of each view without
   the analyzer's own messages, and reports a failing analyzer with its status,
   its error output and where the raw profile is kept.
+- **A profiler built for a request that cannot run leaves no folder** -- a
+  `PerfStatProfiler`, `GperfProfiler`, `BpftraceProfiler` or `OffCpuProfiler`
+  constructed directly (without the registry) decides its request the way the
+  registry does, and when the request cannot run it prints why and creates no
+  per-test artifact folder, like the no-op the registry returns for it. Code
+  that constructs these profilers directly and expected their folder whatever
+  the environment gets no folder where the tool is unusable.
 
 ### Fixed
 

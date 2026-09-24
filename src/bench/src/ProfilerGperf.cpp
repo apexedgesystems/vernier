@@ -184,27 +184,27 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 
 GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  // A profiler built for a test owns that test's folder, ready or not.
-  artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
   const ReadinessResult DECISION = decideNow(cfg_);
   plan_ = readyPlan(DECISION);
   if (!plan_) {
+    // A rejected request leaves no folder behind.
     std::fprintf(stderr, "[gperf] not started: %s\n", DECISION.report.message.c_str());
     if (!DECISION.report.hint.empty()) {
       std::fprintf(stderr, "[gperf] %s\n", DECISION.report.hint.c_str());
     }
     return;
   }
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
   applyPlan();
 }
 
 GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName,
                              std::shared_ptr<const GperfPlan> plan)
     : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
-  artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
   if (plan_) {
+    artifactDir_ =
+        profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
     applyPlan();
   }
 }

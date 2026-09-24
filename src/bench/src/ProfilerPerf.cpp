@@ -250,19 +250,20 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 
 PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-#ifdef __linux__
-  // A profiler built for a test owns that test's folder, ready or not.
-  artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "perf");
-#endif
   const ReadinessResult DECISION = decideNow(cfg_);
   plan_ = readyPlan(DECISION);
   if (!plan_) {
+    // A rejected request leaves no folder behind.
     std::fprintf(stderr, "[perf] not started: %s\n", DECISION.report.message.c_str());
     if (!DECISION.report.hint.empty()) {
       std::fprintf(stderr, "[perf] %s\n", DECISION.report.hint.c_str());
     }
+    return;
   }
+#ifdef __linux__
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "perf");
+#endif
 }
 
 PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName,
