@@ -4,7 +4,9 @@
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-24, written for the Vernier 1.0.4 release; captured from
-the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`
+the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
+The `bench compare` output was produced from the CSVs that session saved, by
+the CLI of a later development tree, which reports `bench 1.0.3` too.
 
 ## Overview
 
@@ -377,24 +379,33 @@ A capture from this rig is committed with the demo:
 bench compare src/bench/demo/reference/pi4/07_callgrind_profiler.csv run1.csv
 ```
 
-Captured output, from the `bench` CLI built from the same tree as the demo:
+Output, for the captured session's `run1.csv`:
 
 ```
-Test                          Baseline     Candidate       Delta         %   p-value        Result
-------------------------  ------------  ------------  ----------  --------  --------  ------------
-CallgrindProfiler.JoinV0     961.81400    1004.54000   +42.72600     +4.4%    0.0002  neutral
-CallgrindProfiler.JoinV1      21.95140      19.81660    -2.13480     -9.7%    0.0002  IMPROVEMENT
+Test                          Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+CallgrindProfiler.JoinV0     961.81400    1004.54000   +42.72600     +4.4%      0.2%      0.1%  neutral
+CallgrindProfiler.JoinV1      21.95140      19.81660    -2.13480     -9.7%      1.4%      2.4%  IMPROVEMENT
 
   1 improvement(s)  1 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 The reference is step 1's command run once more in the same session, in a
 namespace whose host name is `pi4`, so that the CSV's `hostname` column names
-the rig rather than the board. Both rows moved by more than their own spread
-(`CV` of 0.1% to 2.8% over the seven runs): a fresh process measures a little
-differently, and over the seven runs V0's median moved by 5.8% and V1's by
-10.8%, as walkthrough 01 shows at length for its own runs. A timing moves
-between runs; the instruction counts of steps 4 and 5 do not.
+the rig rather than the board. The labels compare each median change with the
+5% threshold: V0's median moved by 4.4%, less than that, so its row is
+`neutral`; V1's moved by 9.7% in the faster direction, more than that, so its
+row reads `IMPROVEMENT`. That is all the label says: the two runs are the same
+binary on the same board, about six minutes apart. Both rows moved by more
+than their own spread (the `Base CV` and `Cand CV` columns, 0.1% to 2.4%): a
+fresh process measures a little differently, and over the seven runs V0's
+median moved by 5.8% and V1's by 10.8%, as walkthrough 01 shows at length for
+its own runs. A timing moves between runs; the instruction counts of steps 4
+and 5 do not.
 
 ## What Keeps This Page True
 
