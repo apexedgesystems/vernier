@@ -146,6 +146,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs the benchmark under it. ...` and a non-zero exit, and points at
   `bench doctor`. `bench profile-all` reports the same line for that profiler
   and continues with the next.
+- **`bench doctor` warns when heaptrack cannot see C++ allocations** -- in a
+  process with tcmalloc loaded (a build configured with
+  `-DVERNIER_LINK_TCMALLOC=ON`, or tcmalloc preloaded), tcmalloc's own
+  `operator new` serves every C++ allocation without calling the `malloc`
+  family heaptrack records, so a heaptrack trace of that process holds almost
+  none of them. `bench doctor <binary>`, which checks the benchmark's own
+  process, reported heaptrack `[OK]` there, and `bench doctor --require
+  heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
+  libtcmalloc is loaded: C++ allocations will be missing`, followed by the
+  build option that removes tcmalloc, and `--require heaptrack` fails, as it
+  does for any warning. The default build does not link tcmalloc and reports
+  `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
+  outside heaptrack names the trace `run.heaptrack.*` instead of
+  `run.heaptrack.zst`: heaptrack writes `.zst` when it was built with zstd
+  support and the `zstd` program is installed, and `.gz` otherwise.
 - **The Python tools wheel follows its inputs** -- the rule that builds the
   wheel declared no dependencies, so in an existing build directory the wheel
   and the `lib/python` tree it installs kept what the first build produced:

@@ -16,8 +16,8 @@
  *   heaptrack -o run.heaptrack \
  *       ./MyTest --profile heaptrack --cycles 1000 --gtest_filter='Foo.Bar'
  *
- *   heaptrack_print run.heaptrack.zst | head -40
- *   heaptrack_gui   run.heaptrack.zst      # interactive flamegraph
+ *   heaptrack_print run.heaptrack.* | head -40   # .gz or .zst, whichever was written
+ *   heaptrack_gui   run.heaptrack.*             # interactive flamegraph
  *
  * When to reach for which:
  *   - massif       full timeline, lab use, ~20x overhead
