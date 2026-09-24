@@ -32,9 +32,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   holds more than three times what V1 holds. It skips itself under valgrind,
   which replaces the counting. The demo's earlier tests asserted only that
   each variant ran more than once a second, which still held with both
-  variants made identical. Demo 11's test names change (`Massif.SmallChurn` and
-  `Massif.PooledReuse` are gone), so CSVs captured from it before this release
-  do not join with newer ones.
+  variants made identical. Its walkthrough,
+  `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
+  on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
+  default instruction axis two of V1's three calls draw as one block), the
+  peak and the call sites that hold it, and where the output lands (the file
+  `--massif-out-file` names; run by hand with `--profile massif`, the binary
+  also creates a `<Suite.Case>.massif/` folder per test, empty unless
+  `--massif-out-file` points into it). That run's CSV is committed at
+  `src/bench/demo/reference/pi4/14_massif_profiler.csv`. Demo 11's test names
+  change (`Massif.SmallChurn` and `Massif.PooledReuse` are gone), so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
