@@ -263,8 +263,8 @@ call stack that allocated it, largest first:
 | Bytes   | Allocated in                        | What it is                                                                                           |
 | ------- | ----------------------------------- | ---------------------------------------------------------------------------------------------------- |
 | 640,000 | `makeParts`                         | the input: 20,000 strings of 32 bytes each, every word short enough to live inside its string object |
-| 597,322 | `joinV0`, 0x11DB2F                  | the buffers `+ sep` moves the temporary into: two are live, the one `out` holds and the new one      |
-| 149,335 | `joinV0`, 0x11D7D3                  | the temporary `out + part`, at its exact size                                                        |
+| 597,322 | `joinV0`, the larger entry          | the buffers `+ sep` moves the temporary into: two are live, the one `out` holds and the new one      |
+| 149,335 | `joinV0`, the smaller entry         | the temporary `out + part`, at its exact size                                                        |
 | 73,728  | libstdc++ (`???`), from `call_init` | allocated by the standard library while the program loads, before `main`                             |
 | 10,048  | below 1%                            | everything else                                                                                      |
 
@@ -275,11 +275,12 @@ terminating null).
 What not to conclude:
 
 - **That the two `joinV0` entries were read off source lines.** A Release build
-  carries no debug information, so both print as `joinV0`, told apart by
-  their addresses and their sizes. Built with `-g`, the same `Join.cpp`, from
-  the same compiler, names them: the larger comes from `append` in the
-  `operator+` that adds a character, the smaller from `reserve` in the
-  `operator+` that joins two strings.
+  carries no debug information, so both print as `joinV0`, told apart only by
+  their sizes: the addresses in front of them belong to the build, and a
+  rebuild after this capture printed other ones. Built with `-g`, the same
+  `Join.cpp`, from the same compiler, names them: the larger comes from
+  `append` in the `operator+` that adds a character, the smaller from
+  `reserve` in the `operator+` that joins two strings.
 - **That massif's peak is exact.** It records a peak only when the heap passes
   the last recorded one by 1% (`--peak-inaccuracy`), so its peak snapshot can
   fall a little before the true one: here the temporary is 149,335 bytes, 477
