@@ -408,26 +408,29 @@ A capture from this rig is committed with the demo:
 bench compare src/bench/demo/reference/pi4/21_heaptrack_profiler.csv run1.csv
 ```
 
-Captured output, from the `bench` CLI built from the same tree:
+Output for the step-1 run above, from the `bench` CLI built from this tree:
 
 ```
-Test                  Baseline     Candidate       Delta         %   p-value        Result
-----------------  ------------  ------------  ----------  --------  --------  ------------
-Heaptrack.JoinV0     947.47100     966.06700   +18.59600     +2.0%    0.0002  neutral
-Heaptrack.JoinV1      21.01100      19.04840    -1.96260     -9.3%    0.0002  IMPROVEMENT
+Test                  Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+----------------  ------------  ------------  ----------  --------  --------  --------  ------------
+Heaptrack.JoinV0     947.47100     966.06700   +18.59600     +2.0%      0.1%      0.1%  neutral
+Heaptrack.JoinV1      21.01100      19.04840    -1.96260     -9.3%      2.1%      0.5%  IMPROVEMENT
 
   1 improvement(s)  1 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 The reference was captured by the same binary on this board 1 hour 41
-minutes before the run above. `bench compare` labels a row when its median
-moved more than its threshold (5% by default), so `joinV1`'s row says
+minutes before that run. As the note under the table says, a label only
+compares the median change with the threshold, so `joinV1`'s row says
 `IMPROVEMENT` at -9.3% although nothing changed. Against the reference, the
 session's six other runs put `joinV1` between 9.3% below it and 1.2% above,
-and `joinV0` between 1.4% below and 9.3% above.
-[Demo 01](01_BASIC_WORKFLOW.md#step-3-compare-two-runs) explains what the
-labels do and do not say. The reference holds times, not allocation counts;
-the counts are checked by the example's unit tests, below.
+and `joinV0` between 1.4% below and 9.3% above: read the medians and the CV
+columns yourself. The reference holds times, not allocation counts; the
+counts are checked by the example's unit tests, below.
 
 ## What Keeps This Page True
 
@@ -439,14 +442,15 @@ Two things check what this page shows, and both fail loudly:
   exactly one at 10, 100, 1,000 and 10,000 parts, and
   `JoinAllocationTest.V0AllocatesFarMoreOftenThanV1` fails unless `joinV0`, at
   1,000 parts, makes at least 500 times as many as `joinV1`. They are
-  registered with `ctest`, so ordinary CI runs them:
+  registered with `ctest`, so ordinary CI runs them, with the other examples'
+  tests under the same label:
 
   ```bash
   ctest --test-dir build -L demo
   ```
 
   ```
-  100% tests passed, 0 tests failed out of 10
+  100% tests passed, 0 tests failed out of 15
   ```
 
 - `bench doctor` reports heaptrack as a warning whenever tcmalloc is loaded

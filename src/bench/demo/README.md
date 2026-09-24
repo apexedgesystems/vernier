@@ -196,10 +196,10 @@ and unit tests that hold the example's versions to the same answers,
 registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
 
-| Example                               | Versions                                                                                                  | Used In |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------- |
-| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demo 01 |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10 |
+| Example                               | Versions                                                                                                  | Used In      |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------ |
+| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 21 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10      |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
