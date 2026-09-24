@@ -35,7 +35,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   variants made identical. The join example gains `joinedSize()`, the length
   of the string both versions return, computed without allocating; demo 11
   checks each result against it, and its guard checks that it holds no heap.
-  Its walkthrough,
+  `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
+  an ordinary test run includes it; the demo's timing tests are not
+  registered. Its walkthrough,
   `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
   on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
   default instruction axis two of V1's three calls draw as one block), the

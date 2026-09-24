@@ -111,9 +111,12 @@ template <typename Op> std::size_t peakHeapDuring(Op&& op) {
 }
 ```
 
-The test fails unless V0's call holds more than three times what V1's does. It
-writes no CSV row. Valgrind puts its own `operator new` in place of the
-demo's, so under valgrind the test counts nothing and skips itself.
+The test fails unless V0's call holds more than three times what V1's does,
+and it checks that the example's `joinedSize()`, which the size checks use,
+holds no heap at all. It writes no CSV row, and it runs with the example's
+unit tests under `ctest` ([below](#what-keeps-this-page-true)). Valgrind puts
+its own `operator new` in place of the demo's, so under valgrind the test
+counts nothing and skips itself.
 
 ## Step 1: Measure
 
@@ -489,7 +492,7 @@ build had finished on the same board, and read 513.0 us with a CV of 4.8%, V0
 - **`Massif.JoinPeakHeap` reports `SKIPPED`.** It ran under valgrind, which
   replaces the demo's counting `operator new`; the skip says
   `valgrind replaces this binary's operator new, so the heap is not counted; run this test without valgrind`.
-  Run it as in step 1.
+  Run it as in step 1, or with `ctest --test-dir build -L demo`.
 - **V1's graph is one block at the right edge.** The run left out
   `--time-unit=B`, or came from `bench run`, which does not pass it.
 - **V0 holds about four times V1's heap, not five.** The build uses another
@@ -535,24 +538,24 @@ run's own spread. The CSV carries times, not heap sizes: the heap is what
 
 ## What Keeps This Page True
 
-- `Massif.JoinPeakHeap`, in the demo binary, fails unless V0's call holds more
-  than three times the heap V1's call holds at its peak. It counts bytes, so a
-  busy machine does not change its answer.
-- The example's unit tests hold every version to the same answers and are
-  registered with `ctest`, so ordinary CI runs them:
+- `Massif.JoinPeakHeap` fails unless V0's call holds more than three times
+  the heap V1's call holds at its peak, and unless `joinedSize()` holds none.
+  It counts bytes, so a busy machine does not change its answer, and it is
+  registered with `ctest` under the `demo` label, the demo's only test that
+  is.
+- The example's unit tests hold every version to the same answers, under the
+  same label. An ordinary test run includes them and the guard, and every
+  test under the label should pass:
 
   ```bash
   ctest --test-dir build -L demo
   ```
 
-  ```
-  100% tests passed, 0 tests failed out of 8
-  ```
-
-This repository has no continuous-integration lane on the reference board, so
-nothing runs the demo itself automatically. Before a release it is run on the
-rig by hand, with the commands above, and the reference CSV is re-captured
-when the numbers move.
+The demo's two timing tests are not registered: what they measure belongs to
+the machine they run on. This repository has no continuous-integration lane on
+the reference board, so before a release the page's commands are run on the
+rig by hand, and the page and its reference CSV are re-captured when what they
+show changes.
 
 ## See Also
 
