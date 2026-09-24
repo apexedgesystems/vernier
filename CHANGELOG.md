@@ -364,7 +364,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   field in one of those six, still shows its default, and zeros are values.
   Anything else exits 1 with nothing printed, naming the file, line, test,
   column and value, as text and as JSON. `bench run --analyze` applies the
-  same rule to the summary it prints after a run.
+  same rule to the summary it prints after a run: it exits 1 without the
+  summary, and the run's own output, printed before the check, is unaffected.
 - **A row without a test name is refused** -- a row whose `test` field was
   empty or only whitespace loaded as a test with that name, so two CSVs with
   one such row each compared them as the same test and passed

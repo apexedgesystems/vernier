@@ -37,7 +37,9 @@
 //! wallP90, stable, cvThreshold, cycles and repeats where the row gives them.
 //! A row whose test name is empty or only whitespace, a required value that
 //! is missing, or any shown value that is not a finite number of its kind
-//! exits 1 with the cause on stderr and nothing on stdout.
+//! exits 1 with the cause on stderr and no summary output; `bench summary`
+//! leaves stdout empty, while `run --analyze` preserves run output already
+//! emitted.
 
 use std::{path::PathBuf, process::ExitCode};
 

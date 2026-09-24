@@ -1225,7 +1225,8 @@ fn run_taskset_names_missing_program() {
 
 /* ----------------------------- Run: Analyze ----------------------------- */
 
-/// @test bench run --analyze refuses, before printing it, a summary bench summary refuses.
+/// @test bench run --analyze refuses, before printing it, a summary bench summary
+/// refuses; the run's own output stays on stdout whether or not the summary follows.
 #[test]
 fn run_analyze_refuses_an_unreadable_measurement() {
     use std::os::unix::fs::PermissionsExt;
@@ -1237,10 +1238,11 @@ fn run_analyze_refuses_an_unreadable_measurement() {
         .into_iter()
         .enumerate()
     {
-        // A stand-in benchmark that copies a fixture to where --csv points.
+        // A stand-in benchmark that prints a line and copies a fixture to
+        // where --csv points.
         let fake = dir.path().join(format!("fake_bench_{i}"));
         let script = format!(
-            "#!/bin/sh\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --csv ]; then cp '{}' \"$2\"; fi\n  shift\ndone\n",
+            "#!/bin/sh\necho 'stand-in benchmark ran'\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --csv ]; then cp '{}' \"$2\"; fi\n  shift\ndone\n",
             fixture(source)
         );
         std::fs::write(&fake, script).expect("write the stand-in");
@@ -1260,6 +1262,12 @@ fn run_analyze_refuses_an_unreadable_measurement() {
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(code), "{source}: {stderr}");
+        // The run's own output is not held back when the analysis is refused.
+        assert!(stdout.contains("Running: "), "{source}: {stdout}");
+        assert!(
+            stdout.contains("stand-in benchmark ran"),
+            "{source}: {stdout}"
+        );
         if code == 0 {
             assert!(stdout.contains("--- Post-run analysis ---"), "{stdout}");
             assert!(stdout.contains("Queue.Latency"), "{stdout}");
