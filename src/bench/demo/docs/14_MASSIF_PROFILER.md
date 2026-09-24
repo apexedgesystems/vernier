@@ -510,21 +510,27 @@ bench compare src/bench/demo/reference/pi4/14_massif_profiler.csv run.csv
 ```
 
 Captured with the `bench` CLI built from this tree, which reported
-`bench 1.0.3`:
+`bench 1.0.3`, on the `run.csv` step 1 wrote:
 
 ```
-Test               Baseline     Candidate       Delta         %   p-value        Result
--------------  ------------  ------------  ----------  --------  --------  ------------
-Massif.JoinV0  400400.00000  398687.00000  -1713.00000     -0.4%    0.0757  neutral
-Massif.JoinV1     474.74300     470.80700    -3.93600     -0.8%    0.4274  neutral
+Test               Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+-------------  ------------  ------------  ----------  --------  --------  --------  ------------
+Massif.JoinV0  400400.00000  398687.00000  -1713.00000     -0.4%      1.3%      0.6%  neutral
+Massif.JoinV1     474.74300     470.80700    -3.93600     -0.8%      2.0%      0.3%  neutral
 
   2 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 The reference is the same binary on the same board, captured about two hours
-before the run above. Both rows moved by less than 1%, well inside the tool's
-5% default threshold and inside the spread above, and both are labelled
-`neutral`. The CSV carries times, not heap sizes: the heap is what
+before step 1's run. Both medians moved by less than 1%, inside the 5%
+threshold the labels are drawn at, so both rows are `neutral`. As the note
+under the table says, a label describes the difference between these two
+runs; it is not a significance test, and `Base CV` and `Cand CV` are each
+run's own spread. The CSV carries times, not heap sizes: the heap is what
 `JoinPeakHeap` checks.
 
 ## What Keeps This Page True
