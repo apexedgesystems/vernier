@@ -335,15 +335,17 @@ with other work, so its timings are noisier than the rig's.
   should list `gperf` as `gperftools linked: cpu`. "google-pprof is not on
   PATH" means the reader is missing (`google-perftools` on Debian). The test
   also skips under `--profile`, because it takes profiles of its own.
-- **Too few samples.** The rate stays at 100 per second of CPU time, and
-  `--profile-frequency` does not change it: profiles taken with
-  `--profile-frequency 1000` on this rig still record a 10,000-microsecond
-  period. gperftools takes its rate from `CPUPROFILE_FREQUENCY` in the
-  environment the process starts with, so either size the profiled run (the
-  steps above use `--target-time 200ms --repeats 10`, about 200 samples) or set
-  the variable for the whole run: `CPUPROFILE_FREQUENCY=250 bench run ...` took
-  475 samples in 1.9 s here. Asking for more gains nothing on this rig: its
-  kernel ticks 250 times a second, and asked for 1,000 samples a second,
+- **Too few samples.** The profiler's default is 100 samples per second of CPU
+  time, and `--profile-frequency` does not change it as Vernier applies it: the
+  gperf backend sets `CPUPROFILE_FREQUENCY` from the flag just before it starts
+  the profiler, and by then the installed gperftools has already read the
+  variable, so profiles taken with `--profile-frequency 1000` on this rig still
+  record a 10,000-microsecond period. Setting the variable before the process
+  starts does change the rate: `CPUPROFILE_FREQUENCY=250 bench run ...`
+  recorded a 4,000-microsecond period and took 475 samples in 1.9 s here. Or
+  size the profiled run: the steps above use `--target-time 200ms --repeats 10`
+  for about 200 samples. The rate asked for is not always the rate taken: this
+  rig's kernel ticks 250 times a second, and asked for 1,000 samples a second,
   gperftools took 249 a second.
 - **`joinV0 [clone .constprop.0]` instead of `joinV0`.** A build with
   link-time optimization lets GCC specialize the function for the one
