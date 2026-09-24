@@ -790,7 +790,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
---profile-frequency N  # Sampling Hz for CPU profilers (default: 10000)
+--profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
 --profile-analyze      # Auto-run analysis after profiling
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 ```
