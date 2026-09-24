@@ -7,6 +7,7 @@
 
 #include "src/bench/inc/ProfilerReadiness.hpp"
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
@@ -143,6 +144,90 @@ bool readSpawnFailure(int fd, int& step, int& err) {
 /** @brief Blocking reap of @p pid, retrying on EINTR. */
 void reapBlocking(pid_t pid, int& status) {
   while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+  }
+}
+
+/** @brief Where a probe's program stands. */
+enum class LeaderState : std::uint8_t {
+  RUNNING, ///< Still running.
+  ENDED,   ///< Ended, not yet reaped: its pid, which is its group's id, cannot be reused.
+  GONE     ///< Reaped elsewhere (ECHILD): nothing of it may be signalled.
+};
+
+/** @brief The state of @p child, observed without reaping it. */
+LeaderState leaderState(pid_t child) {
+  siginfo_t info{};
+  int rc = 0;
+  do {
+    info.si_pid = 0;
+    rc = ::waitid(P_PID, static_cast<id_t>(child), &info, WEXITED | WNOHANG | WNOWAIT);
+  } while (rc < 0 && errno == EINTR);
+  if (rc < 0) {
+    return LeaderState::GONE;
+  }
+  return info.si_pid == child ? LeaderState::ENDED : LeaderState::RUNNING;
+}
+
+#ifdef __linux__
+/** @brief True while a process of group @p group runs (a zombie has ended). */
+bool groupHasRunningMember(pid_t group) {
+  DIR* proc = ::opendir("/proc");
+  if (proc == nullptr) {
+    return false;
+  }
+  bool running = false;
+  while (!running) {
+    const dirent* entry = ::readdir(proc);
+    if (entry == nullptr) {
+      break;
+    }
+    if (entry->d_name[0] < '1' || entry->d_name[0] > '9') {
+      continue;
+    }
+    char path[sizeof("/proc//stat") + sizeof(entry->d_name)];
+    std::snprintf(path, sizeof(path), "/proc/%s/stat", entry->d_name);
+    const int FD = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (FD < 0) {
+      continue;
+    }
+    char text[512];
+    const ssize_t N = ::read(FD, text, sizeof(text) - 1);
+    ::close(FD);
+    if (N <= 0) {
+      continue;
+    }
+    text[N] = '\0';
+    // "<pid> (<comm>) <state> <ppid> <pgrp> ...": comm may hold spaces and ')'.
+    const char* commEnd = std::strrchr(text, ')');
+    char state = 0;
+    int parent = 0;
+    int pgrp = 0;
+    if (commEnd != nullptr && std::sscanf(commEnd + 1, " %c %d %d", &state, &parent, &pgrp) == 3 &&
+        pgrp == static_cast<int>(group) && state != 'Z' && state != 'X') {
+      running = true;
+    }
+  }
+  ::closedir(proc);
+  return running;
+}
+#endif
+
+/** @brief Wait until no process of group @p group runs, or until @p until. */
+void waitForGroup(pid_t group, Clock::time_point until) {
+  while (true) {
+    errno = 0;
+    if (::kill(-group, 0) != 0 && errno == ESRCH) {
+      return; // no member left at all
+    }
+#ifdef __linux__
+    if (!groupHasRunningMember(group)) {
+      return; // only zombies, awaiting their new parent
+    }
+#endif
+    if (Clock::now() >= until) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
 }
 
@@ -574,9 +659,12 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     return std::all_of(open.begin(), open.end(), [](const Stream& s) { return s.eof; });
   };
 
+  // Run until the program ends or the bound passes. The program is observed,
+  // not reaped: while it stays unreaped its pid, which is its group's id,
+  // cannot be reused, so the group signal below reaches only processes this
+  // probe started.
   const auto DEADLINE = Clock::now() + std::chrono::milliseconds(std::max(timeoutMs, 0));
-  int status = 0;
-  bool reaped = false;
+  LeaderState leader = LeaderState::RUNNING;
   while (true) {
     if (!ALL_EOF()) {
       const auto LEFT =
@@ -585,29 +673,52 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    const pid_t W = ::waitpid(CHILD, &status, WNOHANG);
-    if (W == CHILD || (W < 0 && errno != EINTR)) {
-      reaped = true;
-      // A process the probe left behind may still hold a pipe: take what is
-      // already there and stop reading.
-      while (!ALL_EOF() && PUMP(0)) {
-      }
+    leader = leaderState(CHILD);
+    if (leader != LeaderState::RUNNING) {
       break;
     }
     if (Clock::now() >= DEADLINE) {
       result.timedOut = true;
-      (void)::kill(-CHILD, SIGKILL);
-      (void)::kill(CHILD, SIGKILL);
-      for (int i = 0; i < 100 && !reaped; ++i) {
-        const pid_t GONE = ::waitpid(CHILD, &status, WNOHANG);
-        if (GONE == CHILD || (GONE < 0 && errno != EINTR)) {
-          reaped = true;
-          break;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-      }
       break;
     }
+  }
+
+  // Finish the group on every path: nothing the probe started may run on
+  // into the measurement it precedes.
+  if (leader != LeaderState::GONE) {
+    (void)::kill(-CHILD, SIGKILL);
+    (void)::kill(CHILD, SIGKILL); // the program itself, had it left its group
+  }
+
+  // What the pipes still hold. Processes the signal ended close them; one
+  // that left the group may keep them open, so the drain has its own bound.
+  const auto DRAIN_END = Clock::now() + std::chrono::milliseconds(PROBE_DRAIN_MS);
+  while (!ALL_EOF()) {
+    const auto LEFT =
+        std::chrono::duration_cast<std::chrono::milliseconds>(DRAIN_END - Clock::now()).count();
+    if (LEFT <= 0) {
+      break;
+    }
+    (void)PUMP(static_cast<int>(std::min<long long>(LEFT, 50)));
+  }
+
+  // Reap the program, then wait for the rest of its group; both bounded.
+  int status = 0;
+  bool reaped = leader == LeaderState::GONE; // ECHILD: reaped elsewhere; the status reads as 0
+  const auto REAP_END = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
+  while (!reaped) {
+    const pid_t W = ::waitpid(CHILD, &status, WNOHANG);
+    if (W == CHILD || (W < 0 && errno != EINTR)) {
+      reaped = true;
+      break;
+    }
+    if (Clock::now() >= REAP_END) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (reaped && leader != LeaderState::GONE) {
+    waitForGroup(CHILD, REAP_END);
   }
   CLOSE_ALL();
   if (reaped && !result.timedOut) {

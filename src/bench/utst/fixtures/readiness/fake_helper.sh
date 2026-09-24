@@ -10,6 +10,12 @@
 #   both         print one line on stdout and one on stderr
 #   parent       run one child and wait for it (a monitor with one child)
 #   parents      run two children and wait for them (an ambiguous monitor)
+#   orphan KIND [STATUS|stay]
+#                start one child and leave it behind: KIND quiet sleeps
+#                holding stdout, detached sleeps with its output closed,
+#                writer floods stdout, escaped floods stdout from a session
+#                of its own (outside the caller's process group); then exit
+#                with STATUS (default 0), or with "stay" run until signalled
 # Every start is recorded in FAKE_LOG with the helper's pid.
 
 if [ -n "${FAKE_LOG:-}" ]; then
@@ -59,6 +65,24 @@ parents)
     printf 'helper child pid=%s\nhelper child pid=%s\n' "$first" "$!" >>"$FAKE_LOG"
   fi
   wait
+  ;;
+orphan)
+  case "${2:-quiet}" in
+  detached) sleep 30 >/dev/null 2>&1 & ;;
+  writer) cat /dev/zero & ;;
+  escaped) setsid cat /dev/zero & ;;
+  *) sleep 30 & ;;
+  esac
+  if [ -n "${FAKE_LOG:-}" ]; then
+    printf 'helper child pid=%s\n' "$!" >>"$FAKE_LOG"
+  fi
+  case "${2:-quiet}" in
+  writer | escaped) sleep 0.3 ;; # the writer fills the pipe before this program ends
+  esac
+  if [ "${3:-0}" = "stay" ]; then
+    exec sleep 30
+  fi
+  exit "${3:-0}"
   ;;
 *)
   echo "fake helper: unknown mode $mode" >&2

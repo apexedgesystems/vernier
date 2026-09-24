@@ -25,6 +25,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <fstream>
+#include <future>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -86,6 +88,67 @@ void killLoggedChildren(const FakeToolDir& dir) {
     const pid_t PID = static_cast<pid_t>(std::stol(line.substr(line.find('=') + 1)));
     (void)::kill(PID, SIGKILL);
   }
+}
+
+/** @brief The pids of the children the fake helper logged ("helper child pid=N"). */
+std::vector<pid_t> loggedChildren(const FakeToolDir& dir) {
+  std::vector<pid_t> pids;
+  for (const std::string& line : dir.logLines("helper child pid=")) {
+    pids.push_back(static_cast<pid_t>(std::stol(line.substr(line.find('=') + 1))));
+  }
+  return pids;
+}
+
+/** @brief True when @p pid has ended: no such process, or a zombie awaiting its parent. */
+bool ended(pid_t pid) {
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string text;
+  if (!std::getline(stat, text)) {
+    return true;
+  }
+  const std::size_t COMM_END = text.rfind(')');
+  return COMM_END != std::string::npos && COMM_END + 2 < text.size() &&
+         (text[COMM_END + 2] == 'Z' || text[COMM_END + 2] == 'X');
+}
+
+/** @brief How a probe that leaves a child behind came out, observed as it returned. */
+struct OrphanOutcome {
+  bool returned = false; ///< It returned within the watchdog.
+  ProbeResult result;
+  std::chrono::milliseconds elapsed{0};
+  pid_t child = -1;        ///< The child the helper left behind.
+  bool childEnded = false; ///< That child had ended when the probe returned.
+};
+
+/**
+ * @brief Run `helper orphan KIND STATUS` bounded by @p timeoutMs on another
+ * thread. A probe that does not return within 10 s is reported, and its
+ * child killed so that it can; every logged child is killed afterwards.
+ */
+OrphanOutcome runOrphanProbe(const FakeToolDir& dir, const std::string& helper,
+                             const std::string& kind, const std::string& status, int timeoutMs) {
+  const ReadinessContext CTX = dir.context();
+  auto future = std::async(std::launch::async, [&] {
+    OrphanOutcome out;
+    const auto START = std::chrono::steady_clock::now();
+    out.result = runBoundedProbe({helper, "orphan", kind, status}, timeoutMs, CTX);
+    out.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - START);
+    const std::vector<pid_t> CHILDREN = loggedChildren(dir);
+    if (!CHILDREN.empty()) {
+      out.child = CHILDREN.front();
+      out.childEnded = ended(out.child);
+    }
+    return out;
+  });
+  const bool RETURNED = future.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  if (!RETURNED) {
+    killLoggedChildren(dir);
+  }
+  OrphanOutcome out = future.get();
+  out.returned = RETURNED;
+  killLoggedChildren(dir);
+  return out;
 }
 
 /** @brief Every thread arrives, then all proceed; false when @p count never arrive in time. */
@@ -523,6 +586,63 @@ TEST(ReadinessProbes, TimeoutKills) {
   const pid_t PID =
       static_cast<pid_t>(std::stol(STARTS.front().substr(STARTS.front().find('=') + 1)));
   EXPECT_NE(::kill(PID, 0), 0) << "the probe is still running after its bound";
+}
+
+/** @test A child the program leaves behind ends with the probe, whether it exits, fails or times
+ * out. */
+TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
+  const struct {
+    const char* kind;
+    const char* status;
+    int timeoutMs;
+    bool succeeded;
+    bool timedOut;
+  } ROWS[] = {{"quiet", "0", 5000, true, false},
+              {"quiet", "3", 5000, false, false},
+              {"quiet", "stay", 300, false, true},
+              {"detached", "0", 5000, true, false}};
+  for (const auto& row : ROWS) {
+    SCOPED_TRACE(std::string{"orphan "} + row.kind + " " + row.status);
+    FakeToolDir dir;
+    ASSERT_TRUE(dir.ok());
+    const std::string HELPER = dir.install("fake_helper.sh", "helper");
+    const OrphanOutcome OUT = runOrphanProbe(dir, HELPER, row.kind, row.status, row.timeoutMs);
+    ASSERT_TRUE(OUT.returned) << "the probe did not return";
+    EXPECT_EQ(OUT.result.succeeded(), row.succeeded) << OUT.result.describe();
+    EXPECT_EQ(OUT.result.timedOut, row.timedOut);
+    EXPECT_LT(OUT.elapsed, std::chrono::milliseconds(row.timeoutMs + 3000));
+    ASSERT_GT(OUT.child, 0) << dir.log();
+    EXPECT_TRUE(OUT.childEnded) << "child " << OUT.child << " outlived the probe";
+  }
+}
+
+/** @test A child that keeps writing does not hold the probe open, and ends with it. */
+TEST(ReadinessProbes, WritingChildEndsWithTheProbe) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const OrphanOutcome OUT = runOrphanProbe(dir, HELPER, "writer", "0", 5000);
+  ASSERT_TRUE(OUT.returned) << "the probe kept reading its child's output";
+  EXPECT_TRUE(OUT.result.succeeded()) << OUT.result.describe();
+  EXPECT_LT(OUT.elapsed, std::chrono::milliseconds(3000));
+  ASSERT_GT(OUT.child, 0) << dir.log();
+  EXPECT_TRUE(OUT.childEnded) << "child " << OUT.child << " outlived the probe";
+}
+
+/** @test A writer that left the probe's group cannot hold it open past the drain bound. */
+TEST(ReadinessProbes, DrainIsBoundedWhenAWriterLeavesTheGroup) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const auto SETSID = resolveExecutable("setsid", contextWith({{"PATH", "/usr/bin:/bin"}}));
+  if (!SETSID || !SETSID->executable) {
+    GTEST_SKIP() << "setsid(1) is not installed";
+  }
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const OrphanOutcome OUT = runOrphanProbe(dir, HELPER, "escaped", "0", 5000);
+  ASSERT_TRUE(OUT.returned) << "the probe kept reading output from outside its group";
+  EXPECT_TRUE(OUT.result.succeeded()) << OUT.result.describe();
+  EXPECT_FALSE(OUT.result.output.empty());
+  EXPECT_LT(OUT.elapsed, std::chrono::milliseconds(3000));
 }
 
 /** @test The probe's environment is the snapshot's probe environment, not the process's. */

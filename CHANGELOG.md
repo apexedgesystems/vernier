@@ -127,7 +127,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   <name> wrap; completion is checked at exit`). Backends register a check of
   whole requests with `VERNIER_REGISTER_READINESS_BACKEND`
   (`ProfilerReadiness.hpp`); `ProfilerRegistry::resetReadiness()` forgets the
-  kept decisions. Exit statuses are unchanged.
+  kept decisions. A check's probe is bounded, and when it ends, whether it
+  exits, fails or times out, everything it started in its process group is
+  stopped before the check returns, so nothing a check starts runs on into
+  the measurement. Exit statuses are unchanged.
 - **The doctor says what its rows check, and checks one request on demand**
   -- `--profile-check` prints `=== Profiler Backend Doctor (default mode of
   each backend) ===` and a closing note: each row checks one backend's

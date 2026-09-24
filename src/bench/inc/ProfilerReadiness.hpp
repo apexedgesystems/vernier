@@ -318,6 +318,12 @@ struct ProbeResult {
 /** @brief Bytes of output a probe keeps, per stream. */
 inline constexpr std::size_t PROBE_OUTPUT_LIMIT = 64 * 1024;
 
+/** @brief After a probe's program ends: how long its remaining output is read. */
+inline constexpr int PROBE_DRAIN_MS = 500;
+
+/** @brief Then: how long its reaping, and the end of the rest of its group, are awaited. */
+inline constexpr int PROBE_REAP_MS = 1000;
+
 /** @brief Where a probe's stderr goes. */
 enum class ProbeStreams : std::uint8_t {
   MERGED,  ///< Interleaved with stdout in ProbeResult::output.
@@ -329,8 +335,14 @@ enum class ProbeStreams : std::uint8_t {
  *
  * argv[0] is executed as given (a resolved absolute path; no PATH search),
  * with stdin from /dev/null, in its own process group, in the probe
- * environment of @p ctx. At @p timeoutMs the group is killed. Needs no
- * external helper such as timeout(1).
+ * environment of @p ctx. When the program ends, whatever its status, or at
+ * @p timeoutMs, the whole group is killed, so nothing the probe started runs
+ * on after it. The group is signalled before the program is reaped: its pid,
+ * the group's id, cannot belong to another process then. Output still in the
+ * pipes is read for at most PROBE_DRAIN_MS, and the call returns once the
+ * program is reaped and no process of its group runs, or PROBE_REAP_MS later
+ * at the most. A process that leaves the group, or that this user may not
+ * signal, is beyond its reach. Needs no external helper such as timeout(1).
  */
 [[nodiscard]] ProbeResult runBoundedProbe(const std::vector<std::string>& argv, int timeoutMs,
                                           const ReadinessContext& ctx,
