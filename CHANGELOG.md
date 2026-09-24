@@ -24,6 +24,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 15 (heaptrack) measures the shared `join` example** --
+  `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
+  without `reserve` against a reserved vector cleared and reused. It measures
+  `joinV0` and `joinV1` instead, one version per test (`Heaptrack.JoinV0`,
+  `Heaptrack.JoinV1`), and each test calls only its own version, so a heaptrack
+  trace of one test holds none of the other version's allocations. The
+  example's unit tests count the calls to `operator new` each version makes and
+  fail unless `joinV1` makes one per call at every size tested and `joinV0`, at
+  1,000 parts, makes at least 500 times as many; it makes about two per part.
+  The demo's test names change, so CSVs captured from it before this release do
+  not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

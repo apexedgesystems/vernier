@@ -1,113 +1,97 @@
 /**
  * @file 15_HeaptrackProfiler_Demo.cpp
- * @brief Demo 15: heaptrack low-overhead heap profiler -- find the alloc site.
+ * @brief Demo 15: heaptrack -- who allocates, and how often
  *
- * Where massif samples heap size over time, heaptrack records every allocation
- * with its call stack at low overhead, so its allocation-site view ranks the
- * exact lines responsible for the most allocations / bytes / temporaries.
+ * Measures the two versions of the shared join example, one version per test,
+ * so each can be run under heaptrack on its own:
+ *  1. One measurement per test, so each writes its own CSV row
+ *  2. A profiled run makes a known number of calls: one to check the answer,
+ *     the warmup, then cycles x repeats; heaptrack's counts divide by it
+ *  3. Each test calls only its own version, so its trace holds no allocation
+ *     of the other one
  *
- * Two variants exercise the same work at different allocation intensities:
- *   Slow: PerIterAlloc -- a fresh std::vector (no reserve) grown each iteration
- *   Fast: PooledReserve -- one vector reserved up-front, cleared and reused
- *
- * Story: building a result vector by repeated push_back without reserve looks
- * harmless, but every iteration allocates -- and reallocates as the vector
- * grows. heaptrack's "most allocations" view pins the cost to the push_back
- * site; reserving once (and reusing the buffer) removes it.
+ * The allocation counts this demo shows are guarded by the example's unit
+ * tests (examples/join/utst/Join_uTest.cpp), which fail when V0 stops
+ * allocating for its parts or V1 stops allocating once.
  *
  * Usage:
  *   @code{.sh}
- *   # Slow path -- many allocations / temporaries:
- *   heaptrack -o /tmp/slow.heaptrack \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_15_HeaptrackProfiler \
- *       --profile heaptrack --cycles 50 --gtest_filter='Heaptrack.PerIterAlloc'
- *   heaptrack_print /tmp/slow.heaptrack.zst | head -40
+ *   # Measure, sizing each repeat to about 50 ms
+ *   ./BenchDemo_15_HeaptrackProfiler --target-time 50ms --repeats 10 --csv run.csv
  *
- *   # Fast path -- one allocation, reused:
- *   heaptrack -o /tmp/fast.heaptrack \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_15_HeaptrackProfiler \
- *       --profile heaptrack --cycles 50 --gtest_filter='Heaptrack.PooledReserve'
- *   heaptrack_print /tmp/fast.heaptrack.zst | head -40
+ *   # Record V0 under heaptrack: 102 calls (check, warmup, 100 measured)
+ *   bench run ./BenchDemo_15_HeaptrackProfiler --profile heaptrack --cycles 100 \
+ *     --repeats 1 --profile-output-dir heaptrack-v0 -- --gtest_filter='Heaptrack.JoinV0'
+ *
+ *   # Read the trace (heaptrack writes .gz or .zst, depending on its build)
+ *   heaptrack_print heaptrack-v0/BenchDemo_15_HeaptrackProfiler.heaptrack/run.*
  *   @endcode
  *
- * @see docs/21_HEAPTRACK_PROFILER.md for the step-by-step walkthrough.
+ * @see docs/21_HEAPTRACK_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
+#include <cstddef>
+
+#include <string>
 #include <vector>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-static constexpr std::size_t WORK_SIZE = 100'000;
+namespace demo = vernier::bench::demo;
 
-/**
- * @test Slow: a fresh, unreserved vector grown by push_back each iteration.
- *
- * Every iteration allocates a new vector and reallocates it repeatedly as it
- * grows from 0 to WORK_SIZE. heaptrack's allocation-site view ranks this
- * push_back as the top allocator (calls and temporaries), pointing here.
- */
-PERF_THROUGHPUT(Heaptrack, PerIterAlloc) {
-  UB_PERF_GUARD(perf);
+/* ----------------------------- Constants ----------------------------- */
 
-  perf.warmup([&] {
-    std::vector<std::uint32_t> v;
-    for (std::size_t i = 0; i < WORK_SIZE; ++i)
-      v.push_back(static_cast<std::uint32_t>(i));
-  });
+/// Parts per join, as in demo 01, so the two walkthroughs measure the same call.
+static constexpr std::size_t PART_COUNT = 1000;
 
-  volatile std::uint32_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        // Fresh, unreserved vector each iteration -- repeated reallocation is
-        // the cost heaptrack's allocation-site view reveals.
-        std::vector<std::uint32_t> v;
-        for (std::size_t i = 0; i < WORK_SIZE; ++i)
-          v.push_back(static_cast<std::uint32_t>(i));
-        sink = v[WORK_SIZE - 1];
-      },
-      "per_iter_alloc");
+/// Fixed seed: every run joins the same words.
+static constexpr unsigned PART_SEED = 42;
 
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+static constexpr char SEPARATOR = ',';
+
+/* ----------------------------- File Helpers ----------------------------- */
+
+namespace {
+
+/// Bytes a joined string holds: every part plus one separator each. Computed
+/// without calling either version, so checking an answer allocates nothing.
+std::size_t joinedSize(const std::vector<std::string>& parts) {
+  std::size_t total = 0;
+  for (const std::string& part : parts) {
+    total += part.size() + 1;
+  }
+  return total;
 }
 
-/**
- * @test Fast: one vector reserved up-front, cleared and reused each iteration.
- *
- * Same arithmetic and same final contents; the only difference is that the
- * single up-front reserve removes the per-iteration allocations and growth
- * reallocations. heaptrack's allocation count for the loop drops to near zero.
- */
-PERF_THROUGHPUT(Heaptrack, PooledReserve) {
-  UB_PERF_GUARD(perf);
+} // namespace
 
-  // Allocate ONCE outside the measured loop, with the final capacity.
-  std::vector<std::uint32_t> v;
-  v.reserve(WORK_SIZE);
+/* ----------------------------- Tests ----------------------------- */
 
-  perf.warmup([&] {
-    v.clear();
-    for (std::size_t i = 0; i < WORK_SIZE; ++i)
-      v.push_back(static_cast<std::uint32_t>(i));
-  });
+/** @test Throughput of the one-liner: two temporaries and a full copy per part. */
+PERF_THROUGHPUT(Heaptrack, JoinV0) {
+  PERF_GUARD(perf);
 
-  volatile std::uint32_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        // clear() keeps capacity, so push_back reuses the existing buffer --
-        // no allocation happens inside the measured loop.
-        v.clear();
-        for (std::size_t i = 0; i < WORK_SIZE; ++i)
-          v.push_back(static_cast<std::uint32_t>(i));
-        sink = v[WORK_SIZE - 1];
-      },
-      "pooled_reserve");
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), joinedSize(PARTS));
 
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); }, "join_v0");
+}
+
+/** @test Throughput of the reserving version: one allocation per call. */
+PERF_THROUGHPUT(Heaptrack, JoinV1) {
+  PERF_GUARD(perf);
+
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); }, "join_v1");
 }
 
 PERF_MAIN()
