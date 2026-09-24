@@ -202,7 +202,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
   outside heaptrack names the trace `run.heaptrack.*` instead of
   `run.heaptrack.zst`: heaptrack writes `.zst` when it was built with zstd
-  support and the `zstd` program is installed, and `.gz` otherwise.
+  support and the `zstd` program is installed, and `.gz` otherwise. The
+  backend's header states heaptrack's cost as measured, a slowdown that grows
+  with the allocation rate (about 1.5x to 7.7x across the measured code),
+  where it gave a flat 1.5x.
 - **The Python tools wheel follows its inputs** -- the rule that builds the
   wheel declared no dependencies, so in an existing build directory the wheel
   and the `lib/python` tree it installs kept what the first build produced:

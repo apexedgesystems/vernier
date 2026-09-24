@@ -4,12 +4,16 @@
  * @file ProfilerHeaptrack.hpp
  * @brief Heaptrack heap profiler backend (low-overhead alternative to massif).
  *
- * Heaptrack uses LD_PRELOAD to intercept malloc / free at runtime, which is
- * an order of magnitude cheaper than valgrind massif (~1.5x vs ~20x) and so
- * usable on workloads where massif would be too slow. The trade-off is that
+ * Heaptrack uses LD_PRELOAD to intercept malloc / free at runtime and records
+ * every call with its call stack. The program otherwise runs natively and
+ * pays per allocation, so the slowdown grows with the allocation rate:
+ * measured at about 1.5x for code allocating a few hundred thousand times a
+ * second or less, about 4x at two million a second, and 7.5x to 7.7x at
+ * nineteen million. Massif runs every instruction under valgrind, so heaptrack
+ * stays usable where massif would be too slow. The trade-off is that
  * heaptrack captures less detail per allocation than massif's full timeline,
- * but it produces the same kind of "where is allocation pressure coming
- * from" picture via heaptrack_print / heaptrack_gui.
+ * but it produces the same kind of "where is allocation pressure coming from"
+ * picture via heaptrack_print / heaptrack_gui.
  *
  * Wraps the binary externally (same pattern as callgrind / massif):
  *
@@ -21,7 +25,7 @@
  *
  * When to reach for which:
  *   - massif       full timeline, lab use, ~20x overhead
- *   - heaptrack    production-ish runs, ~1.5x overhead, allocation-site rank
+ *   - heaptrack    allocation-site rank; cost grows with the allocation rate
  *   - jemalloc     sampling-based, ~5-10% overhead, requires libjemalloc
  *                  available at LD_PRELOAD time (see ProfilerJemalloc.hpp)
  */
