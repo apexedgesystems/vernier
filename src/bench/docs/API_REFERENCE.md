@@ -191,7 +191,7 @@ struct PerfConfig {
   std::string artifactRoot;            // Profiler artifact directory
   int profileFrequency = 10000;        // Sampling Hz for CPU profilers
   bool profileAnalyze = false;         // Auto-run analysis after profiling
-  int profileTestTimeoutSecs = 0;      // Per-test watchdog seconds under --profile
+  int profileTestTimeoutSecs = 0;      // Watchdog seconds per measured loop under --profile (0 means 300)
 
   bool quickMode = false;              // Apply reduced cycles/repeats
 
@@ -759,7 +759,7 @@ time; no `--profile` flag required.
 | `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof                                                                                               |
 | `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                                                                                                                 |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
-| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                                                                                                                                    |
+| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 means 300                                                                                                                                   |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |
 | `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
 | `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |

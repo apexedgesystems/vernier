@@ -524,10 +524,15 @@ before any profiler or `--repeats` run.
 
 **Built-in watchdog:**
 
-Under `--profile X`, vernier installs a SIGALRM-based per-test watchdog
-that auto-aborts after 300 s with a precise diagnostic naming the test
-and the profile tool. Override with `--profile-test-timeout <seconds>`;
-set to `0` to disable. The watchdog only fires while a profile is active.
+Under `--profile X`, vernier arms a SIGALRM watchdog around each measured loop
+(the repeats of `measured()` and `throughputLoop()`). A loop that runs longer
+than 300 s stops the run with exit status 2 and a diagnostic naming the test and
+the profile tool. `--profile-test-timeout <seconds>` changes the limit; under
+`--profile`, `0`, a negative value or a non-number means the 300 s default, so
+there the watchdog cannot be switched off. It is not armed without `--profile`,
+and it does not cover warmup, `--target-time` calibration, the profiler's own
+start and stop, `contentionRun()` or GPU measurements; an external `timeout`
+bounds those.
 
 **Debug:**
 
