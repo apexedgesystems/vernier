@@ -20,10 +20,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all cache effects tests
- *   ./TestBenchSamples_PTEST --gtest_filter="CacheEffects.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CacheEffects.*"
  *
  *   # Compare sequential vs strided with CSV output
- *   ./TestBenchSamples_PTEST --gtest_filter="CacheEffects.*" --csv cache_compare.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CacheEffects.*" --csv cache_compare.csv
  *   @endcode
  *
  * Performance expectations:

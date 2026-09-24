@@ -21,10 +21,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all cache hierarchy tests
- *   ./TestBenchSamples_PTEST --gtest_filter="CacheHierarchy.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CacheHierarchy.*"
  *
  *   # With CSV output to compare levels
- *   ./TestBenchSamples_PTEST --gtest_filter="CacheHierarchy.*" --csv cache_hierarchy.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="CacheHierarchy.*" --csv cache_hierarchy.csv
  *   @endcode
  *
  * Performance expectations:

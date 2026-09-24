@@ -22,10 +22,8 @@
  * Usage:
  *   @code{.sh}
  *   # Run all Unified Memory tests
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuUnifiedMemory.*"
- *
- *   # With verbose UM profiling
- *   ./TestBenchSamples_GPU_PTEST --gtest_filter="GpuUnifiedMemory.*" --verbose
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuUnifiedMemory.*"
  *   @endcode
  *
  * Performance expectations:
@@ -126,7 +124,7 @@ PERF_GPU_TEST(GpuUnifiedMemory, PageFaultDetection) {
   perf.cudaWarmup(
       [&](cudaStream_t s) { readUnifiedMemory<<<grid, block, 0, s>>>(um_data, d_sum, N); });
 
-  // First access will cause page faults (H→D migration)
+  // First access will cause page faults (H->D migration)
   auto result =
       perf.cudaKernel(
               [&](cudaStream_t s) { readUnifiedMemory<<<grid, block, 0, s>>>(um_data, d_sum, N); },
@@ -157,7 +155,7 @@ PERF_GPU_TEST(GpuUnifiedMemory, PageFaultDetection) {
 /**
  * @brief Host-to-device migration tracking
  *
- * Validates that H→D page migrations are correctly detected and counted
+ * Validates that H->D page migrations are correctly detected and counted
  * when GPU accesses pages that are resident on the host.
  *
  * @test MigrationPatterns
@@ -190,7 +188,7 @@ PERF_GPU_TEST(GpuUnifiedMemory, MigrationPatterns) {
   perf.cudaWarmup(
       [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 2.0f, N); });
 
-  // GPU write will cause H→D migration
+  // GPU write will cause H->D migration
   auto gpuWrite =
       perf.cudaKernel(
               [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 2.0f, N); },
@@ -206,16 +204,16 @@ PERF_GPU_TEST(GpuUnifiedMemory, MigrationPatterns) {
 
   const auto& umWrite = gpuWrite.stats.unifiedMemory.value();
 
-  // Should see H→D migrations
+  // Should see H->D migrations
   if (umWrite.h2dMigrations > 0) {
     EXPECT_GT(umWrite.h2dMigrations, 0u) << "H2D migrations should be detected";
   }
 
-  // Now access from host (will cause D→H migration)
+  // Now access from host (will cause D->H migration)
   cudaDeviceSynchronize();
   hostAccessUM(um_data, N);
 
-  // GPU access again (will cause H→D migration again)
+  // GPU access again (will cause H->D migration again)
   auto gpuRewrite =
       perf.cudaKernel(
               [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 3.0f, N); },

@@ -121,10 +121,36 @@ Consumers use `find_package(vernier)`:
 ```cmake
 find_package(vernier REQUIRED)
 target_link_libraries(my_benchmark PRIVATE vernier::bench)
+target_link_libraries(my_app PRIVATE vernier::monitor)
 ```
+
+`vernier::bench` brings GoogleTest's headers and library with it: `Perf.hpp`
+includes GoogleTest and `PERF_MAIN()` runs the GoogleTest cases.
+`find_package(vernier)` looks up GTest even for a consumer that uses only the
+monitor, so GoogleTest must be installed where CMake finds it and must provide
+the `GTest::gtest` target. CMake 3.20 or newer defines that target through its
+FindGTest module, and GoogleTest's own package configuration
+(`GTestConfig.cmake`) defines it; without it `find_package(vernier)` stops with
+a message naming `GTest::gtest`. To point CMake at an installed GoogleTest, set
+`GTest_DIR` to the directory holding its `GTestConfig.cmake`, or add its install
+prefix to `CMAKE_PREFIX_PATH`. A benchmark may still link `GTest::gtest` itself;
+it needs no `GTest::gtest_main`, because `PERF_MAIN()` supplies `main()`. A GPU
+benchmark links `vernier::bench_cuda` together with `vernier::bench`.
 
 The install tree contains headers, shared libraries, CMake config, and documentation
 under `build/native-linux-release/install/`.
+
+#### Header layout
+
+Headers keep their source-tree paths under one directory,
+`<prefix>/<includedir>/vernier/src/<module>/inc/`, where `<includedir>` is
+`CMAKE_INSTALL_INCLUDEDIR` (`include` by default). The exported targets put
+that `vernier/` directory and the module's directory on the include path, so
+`#include "Perf.hpp"` and `#include "src/bench/inc/Perf.hpp"` both work, as do
+`"Monitor.hpp"` and `"src/monitor/inc/Monitor.hpp"`, with no include directory
+of the consumer's own. With relative install directories (the default), the
+package finds its files relative to its own location, so an installed prefix
+can be moved.
 
 #### Library versions
 

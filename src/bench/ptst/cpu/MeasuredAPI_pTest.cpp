@@ -22,10 +22,12 @@
  * Usage:
  *   @code{.sh}
  *   # Run all measured API tests
- *   ./TestBenchSamples_PTEST --gtest_filter="MeasuredAPI.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MeasuredAPI.*"
  *
  *   # With CSV output
- *   ./TestBenchSamples_PTEST --gtest_filter="MeasuredAPI.*" --csv measured.csv
+ *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="MeasuredAPI.*" --csv measured.csv
  *   @endcode
  *
  * Performance expectations:
