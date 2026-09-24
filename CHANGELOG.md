@@ -381,6 +381,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
+- **`--profile nsight` and `--profile ncu` print the command that captures the
+  run instead of trying to attach** -- nsys and ncu record a process only when
+  they start it, yet the Nsight backend started `nsys profile ... -p <pid>` and
+  `ncu ... -p <pid>` from inside the benchmark (`-p` is nsys's NVTX-capture
+  option and ncu's port), which failed into `nsys.err.txt` or `ncu.out.txt`
+  in the test's folder while the run exited 0 with nothing captured; it did so
+  even when nsys or ncu had started the process already. In a container it
+  printed a hint instead, whose Compute-mode command named `ncu profile`, a
+  subcommand ncu does not have. The backend starts no process. Without an
+  Nsight session it prints, once per test, the command that captures the run in
+  its mode: `nsys profile ... <this-binary> --profile nsight [...]` with the
+  `bench run` form, or an `ncu` command with `--cycles 3 --repeats 1`, since ncu
+  replays every kernel launch and a full-length run takes hours (`--profile-args
+  replay` adds its metric list). Under a session, one that `bench run` started
+  or one typed by hand (recognised from `NSYS_PROFILING_SESSION_ID` and
+  `NV_NSIGHT_INJECTION_PORT_BASE`), it names the tool that owns the capture.
+  The four `nsys stats` summaries (`cuda_gpu_kern_sum.txt` and the others) are
+  written by `bench run --profile nsight`; after a wrap typed by hand, run
+  `nsys stats` on the report.
 
 ## v1.0.3 - 2026-06-28
 

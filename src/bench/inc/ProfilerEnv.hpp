@@ -131,6 +131,35 @@ inline std::string externalWrapTool() {
   return (v != nullptr) ? std::string{v} : std::string{};
 }
 
+/* ----------------------------- nsightSessionTool ----------------------------- */
+
+/**
+ * @brief The Nsight tool running this process: "nsys", "ncu", or "" for none.
+ *
+ * Neither nsys nor ncu can attach to a process that is already running, so a
+ * session exists only when the tool started this process. `bench run --profile
+ * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by hand is
+ * recognised from the variables each tool exports to the process it starts:
+ * NSYS_PROFILING_SESSION_ID (nsys) and NV_NSIGHT_INJECTION_PORT_BASE (ncu),
+ * as exported by nsys 2025.3 and ncu 2025.3.
+ */
+inline std::string nsightSessionTool() {
+  const std::string WRAP = externalWrapTool();
+  if (WRAP == "nsight" || WRAP == "nsys") {
+    return "nsys";
+  }
+  if (WRAP == "ncu") {
+    return "ncu";
+  }
+  if (std::getenv("NSYS_PROFILING_SESSION_ID") != nullptr) {
+    return "nsys";
+  }
+  if (std::getenv("NV_NSIGHT_INJECTION_PORT_BASE") != nullptr) {
+    return "ncu";
+  }
+  return {};
+}
+
 /* ----------------------------- Artifact Directories ----------------------------- */
 
 /**

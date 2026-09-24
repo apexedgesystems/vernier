@@ -1,7 +1,7 @@
 /**
  * @file ProfilerEnv_uTest.cpp
- * @brief Unit tests for profiler_env helpers: externalWrapTool() and
- *        cuptiMustYield().
+ * @brief Unit tests for profiler_env helpers: externalWrapTool(),
+ *        nsightSessionTool() and cuptiMustYield().
  *
  * The helpers read process environment variables, so each test scrubs
  * the variables it touches via an RAII guard to stay order-independent.
@@ -17,6 +17,7 @@
 
 using vernier::bench::profiler_env::cuptiMustYield;
 using vernier::bench::profiler_env::externalWrapTool;
+using vernier::bench::profiler_env::nsightSessionTool;
 
 namespace {
 
@@ -49,6 +50,38 @@ TEST(ProfilerEnv, ExternalWrapToolReadsEnv) {
   EnvScrub scrub{"VERNIER_EXTERNAL_WRAP"};
   ::setenv("VERNIER_EXTERNAL_WRAP", "nsight", 1);
   EXPECT_EQ(externalWrapTool(), "nsight");
+}
+
+/** @test Without a wrap or a session variable, no Nsight tool runs this process. */
+TEST(ProfilerEnv, NsightSessionToolEmptyWithoutASession) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE"};
+  EXPECT_EQ(nsightSessionTool(), "");
+}
+
+/** @test The runner's nsys or ncu wrap names the tool; any other wrap names none. */
+TEST(ProfilerEnv, NsightSessionToolReadsTheRunnersWrap) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE"};
+  ::setenv("VERNIER_EXTERNAL_WRAP", "nsight", 1);
+  EXPECT_EQ(nsightSessionTool(), "nsys");
+  ::setenv("VERNIER_EXTERNAL_WRAP", "nsys", 1);
+  EXPECT_EQ(nsightSessionTool(), "nsys");
+  ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
+  EXPECT_EQ(nsightSessionTool(), "ncu");
+  ::setenv("VERNIER_EXTERNAL_WRAP", "massif", 1);
+  EXPECT_EQ(nsightSessionTool(), "");
+}
+
+/** @test A wrap typed by hand is recognised from the variable each tool exports. */
+TEST(ProfilerEnv, NsightSessionToolRecognisesAHandTypedWrap) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE"};
+  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+  EXPECT_EQ(nsightSessionTool(), "nsys");
+  ::unsetenv("NSYS_PROFILING_SESSION_ID");
+  ::setenv("NV_NSIGHT_INJECTION_PORT_BASE", "49152", 1);
+  EXPECT_EQ(nsightSessionTool(), "ncu");
 }
 
 /** @test No env, non-Nsight tool: CUPTI stays on. */
