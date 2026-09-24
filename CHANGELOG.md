@@ -33,7 +33,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   run's timing CSV is committed at
   `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test names
   change, so CSVs captured from it before this release do not join with newer
-  ones.
+  ones, and `linearSearch` and `binarySearch` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
