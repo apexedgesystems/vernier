@@ -9,6 +9,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 07 counts the instructions of the shared join example** --
+  `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
+  its walkthrough quoted instruction counts and a 5000x ratio that workload
+  cannot produce. It measures `joinV0` and `joinV1` from
+  `src/bench/demo/examples/join`, one test and one CSV row each. A third test,
+  `CallgrindProfiler.InstructionCounts`, runs a fourth, `CountCalls`, under
+  callgrind with 10 and with 20 calls of each version and divides the difference
+  between the two program totals by 10, so the count per call does not depend on
+  callgrind's call graph, which on Arm can credit a function with calls it never
+  received. It fails unless V0 executes more than five times V1's instructions
+  per call and a second run counts exactly the same, and it skips where valgrind
+  is not installed; `CountCalls` skips itself when it is not run that way.
+  Instruction counts do not depend on machine load, so `InstructionCounts` is
+  registered with `ctest` (label `callgrind`) and an ordinary test run checks
+  what the walkthrough claims. The example library is compiled with `-g` in
+  every build type, which adds line tables and leaves the generated code as it
+  is, so a profiler can attribute its cost to source lines in an optimized
+  build. Demo 07's test names change, so CSVs captured from it before this
+  release do not join with newer ones.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in

@@ -27,6 +27,12 @@ set(UNIT_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/Join_uTest.cpp")
 
 add_library(demo_example_join STATIC ${CPP_SOURCES_JOIN})
 target_include_directories(demo_example_join PUBLIC "${PROJECT_SOURCE_DIR}")
+# Line tables in every build type, so a profiler can name the example's source
+# lines in an optimized build; -g adds debug sections and changes no code.
+target_compile_options(
+  demo_example_join
+  PRIVATE -g
+)
 
 # ------------------------------------------------------------------------------
 # Unit Tests
