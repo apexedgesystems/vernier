@@ -6,14 +6,13 @@
  *
  * Heaptrack uses LD_PRELOAD to intercept malloc / free at runtime and records
  * every call with its call stack. The program otherwise runs natively and
- * pays per allocation, so the slowdown grows with the allocation rate:
- * measured at about 1.5x for code allocating a few hundred thousand times a
- * second or less, about 4x at two million a second, and 7.5x to 7.7x at
- * nineteen million. Massif runs every instruction under valgrind, so heaptrack
- * stays usable where massif would be too slow. The trade-off is that
- * heaptrack captures less detail per allocation than massif's full timeline,
- * but it produces the same kind of "where is allocation pressure coming from"
- * picture via heaptrack_print / heaptrack_gui.
+ * pays per allocation, so the slowdown grows with the allocation rate: small
+ * for code that seldom allocates, several times for code that allocates
+ * millions of times a second. Massif runs every instruction under valgrind,
+ * so heaptrack stays usable where massif would be too slow. The trade-off is
+ * that heaptrack captures less detail per allocation than massif's full
+ * timeline, but it produces the same kind of "where is allocation pressure
+ * coming from" picture via heaptrack_print / heaptrack_gui.
  *
  * Wraps the binary externally (same pattern as callgrind / massif):
  *
