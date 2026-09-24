@@ -58,6 +58,8 @@ bool detectDwarfV5Warning() {
 /** @brief The analyzers --profile-analyze may run, in the order they are tried. */
 constexpr const char* ANALYZERS[] = {"google-pprof", "pprof"};
 
+// Used only by the analysis, which exists only where CPU profiling does.
+#if UB_HAS_GPERF_CPU && defined(__linux__)
 /** @brief Bound on one analyzer run; symbolizing a large binary takes a while. */
 constexpr int ANALYZER_TIMEOUT_MS = 120000;
 
@@ -71,6 +73,7 @@ std::string firstLines(const std::string& text, std::size_t lines) {
   }
   return out;
 }
+#endif
 
 } // namespace
 
