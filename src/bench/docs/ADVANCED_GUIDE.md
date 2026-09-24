@@ -561,18 +561,19 @@ the doctor never installs anything.
 # Enable perf (requires root, one-time setup)
 sudo sysctl -w kernel.perf_event_paranoid=-1
 
-# Run test with perf profiling
-./MyComponent_PTEST --profile perf --csv results.csv
+# Run test with perf profiling, recording call stacks for a report
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --csv results.csv
 
 # Analyze results
 perf report -i MyComponent.Throughput.perf/perf.data
 perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
 
-**Artifacts:** perf writes its capture to `perf-<Test>-<timestamp>.data`; the
-`profileTool` and `profileDir` CSV columns record that a profile was taken and
-where it landed. Counter detail lives in the perf report, not in extra CSV
-columns.
+**Artifacts:** each profiled test gets a `<Test>.perf/` folder: `stat.txt` from
+the default `perf stat`, or `perf.data` from `--profile-args "record ..."`. The
+`profileTool` and `profileDir` CSV columns record the tool and that folder.
+Counter detail lives in those files, not in extra CSV columns.
 
 ### Using RAPL
 

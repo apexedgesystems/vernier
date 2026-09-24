@@ -216,12 +216,16 @@ no `--profile` flag needed.
 
 ### flamegraph - Generate SVG Flamegraphs
 
-Generate flamegraphs from perf profiling data.
+Generate flamegraphs from the `perf.data` of a record-mode perf run
+(`--profile perf --profile-args "record -g"`; a plain `--profile perf` writes
+only `stat.txt`). Needs `perf` and the FlameGraph scripts, looked up in
+`$FLAMEGRAPH_DIR`, then `~/FlameGraph`, `/usr/local/FlameGraph` and
+`/opt/FlameGraph`, then as `flamegraph.pl` on `PATH`.
 
 ```bash
-bench flamegraph test.perf/perf.data
-bench flamegraph test.perf/perf.data --output hotspots.svg
-bench flamegraph candidate.perf/perf.data --baseline baseline.perf/perf.data
+bench flamegraph MyComponent.Test.perf/perf.data
+bench flamegraph MyComponent.Test.perf/perf.data --output hotspots.svg
+bench flamegraph optimized/MyComponent.Test.perf/perf.data --baseline baseline/MyComponent.Test.perf/perf.data
 ```
 
 **Options:**
@@ -414,8 +418,8 @@ bench validate
 # 2. Baseline measurement
 bench run MyComponent_PTEST -- --repeats 30 --csv baseline.csv
 
-# 3. Profile to find hotspots
-bench run MyComponent_PTEST -- --profile perf --cycles 100000
+# 3. Profile to find hotspots (record mode writes perf.data)
+bench run MyComponent_PTEST -- --profile perf --profile-args "record -g" --target-time 250ms
 bench flamegraph MyComponent.Throughput.perf/perf.data --output before.svg
 
 # 4. Make changes, rebuild

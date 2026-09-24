@@ -177,10 +177,11 @@ for (int i = 0; i < N; ++i) {
 volatile int sink = sum;  // Tell compiler: sum is used
 ```
 
-**3. Profile to find hotspots**:
+**3. Profile to find hotspots** (`record` makes perf write the `perf.data` a
+flamegraph needs; the default `--profile perf` writes only counter totals):
 
 ```bash
-./MyComponent_PTEST --profile perf --cycles 100000
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms
 bench flamegraph MyComponent.Test.perf/perf.data \
     --output hotspots.svg
 ```
@@ -774,10 +775,13 @@ sudo sysctl -w kernel.perf_event_paranoid=-1
 sudo setcap cap_perfmon=ep ./MyComponent_PTEST
 ```
 
-**3. Check perf data is valid**:
+**3. Check what perf wrote**: the default mode's `stat.txt` holds perf's
+output, the counts or its error message; a `--profile-args "record ..."` run
+writes `perf.data`:
 
 ```bash
-perf report -i test.perf/perf.data --stdio
+cat MyComponent.Test.perf/stat.txt
+perf report -i MyComponent.Test.perf/perf.data --stdio
 ```
 
 ---
@@ -1147,12 +1151,38 @@ pip install pandas matplotlib seaborn scipy
 **Symptoms:**
 
 ```
-flamegraph.pl not found
+Error: invalid arguments: input file not found: MyComponent.Test.perf/perf.data
+```
+
+or, when `perf.data` holds no samples,
+
+```
+Error: parse error: flamegraph.pl failed
+```
+
+or
+
+```
+Error: tool not found: FlameGraph scripts not found; set $FLAMEGRAPH_DIR or clone to ~/FlameGraph
 ```
 
 **Solutions:**
 
-**1. Install FlameGraph tools**:
+**1. Record call stacks, for long enough**: `--profile perf` on its own runs
+`perf stat` and writes only `stat.txt`. A flamegraph needs the `perf.data` that
+record mode writes, with samples in it. perf needs time to attach, so a measured
+phase of a few milliseconds can end before it samples (`perf report` then says
+the file has no samples); `--target-time` lengthens the phase:
+
+```bash
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --artifact-root artifacts/
+ls -lh artifacts/MyComponent.Test.perf/perf.data
+```
+
+**2. Install FlameGraph tools**: `bench flamegraph` looks in `$FLAMEGRAPH_DIR`,
+then `~/FlameGraph`, `/usr/local/FlameGraph` and `/opt/FlameGraph`, then for
+`flamegraph.pl` on `PATH`:
 
 ```bash
 git clone https://github.com/brendangregg/FlameGraph.git
@@ -1160,18 +1190,10 @@ export PATH=$PWD/FlameGraph:$PATH
 export FLAMEGRAPH_DIR=$PWD/FlameGraph
 ```
 
-**2. Check perf.data is valid**:
+**3. Check perf.data is valid**:
 
 ```bash
-perf report -i test.perf/perf.data --stdio
-```
-
-**3. Verify perf was profiling**:
-
-```bash
-./test --profile perf --artifact-root artifacts/
-ls -lh artifacts/test.perf/perf.data
-# Should be >1KB
+perf report -i artifacts/MyComponent.Test.perf/perf.data --stdio
 ```
 
 ---
@@ -1223,8 +1245,8 @@ head results.csv
 **2. Profile to find hotspots**:
 
 ```bash
-./test --profile perf --cycles 100000
-bench flamegraph test.perf/perf.data
+./test --profile perf --profile-args "record -g" --target-time 250ms
+bench flamegraph MyComponent.Test.perf/perf.data
 ```
 
 **3. Check memory bandwidth**:
@@ -1275,11 +1297,15 @@ cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
 ./test --warmup 10 --csv results.csv
 ```
 
-**4. Compare with differential flamegraph**:
+**4. Compare with differential flamegraph**: record each version into its own
+root, then diff the two captures of the same test:
 
 ```bash
-bench flamegraph optimized.perf/perf.data \
-    --baseline baseline.perf/perf.data
+./test --profile perf --profile-args "record -g" --target-time 250ms --profile-output-dir baseline
+# rebuild with the change, then:
+./test --profile perf --profile-args "record -g" --target-time 250ms --profile-output-dir optimized
+bench flamegraph optimized/MyComponent.Test.perf/perf.data \
+    --baseline baseline/MyComponent.Test.perf/perf.data
 ```
 
 ---

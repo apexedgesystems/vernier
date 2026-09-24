@@ -522,23 +522,32 @@ public:
 
 ### ProfilerPerf
 
-Linux `perf` integration for CPU profiling.
+Linux `perf` integration for CPU profiling. The backend attaches perf to the
+benchmark process for the measured phase only; `--profile-args` picks the mode:
 
-**Features:**
-
-- Hardware performance counters
-- Call graph sampling
-- Cache miss analysis
-- Branch prediction analysis
+| `--profile-args`     | Runs                                                                                          | Writes, in `<Test>.perf/`      |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------ |
+| none, or other flags | `perf stat` on cpu-cycles, instructions, branches, branch-misses and cache-misses, plus flags | `stat.txt`                     |
+| `record [flags]`     | `perf record [flags]`                                                                         | `perf.data`, `record.err.txt`  |
+| `mem`                | `perf mem record`                                                                             | `perf.mem.data`, `mem.err.txt` |
+| `c2c`                | `perf c2c record`                                                                             | `perf.c2c.data`, `c2c.err.txt` |
 
 **Usage:**
 
 ```bash
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
-# Generates: MyComponent.Throughput.perf/perf.data
+# Writes: MyComponent.Throughput.perf/stat.txt
+
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --gtest_filter="*Throughput"
+# Writes: MyComponent.Throughput.perf/perf.data
 ```
 
-**Analysis:**
+perf needs time to attach before it samples, and the backend gives it 200 ms; a
+measured phase of a few milliseconds can leave `perf.data` without samples,
+which `--target-time` (or more `--cycles`) avoids.
+
+**Analysis** (of a `record` run):
 
 ```bash
 perf report -i MyComponent.Throughput.perf/perf.data

@@ -555,10 +555,14 @@ PERF_TEST(Algorithm, PayloadScaling) {
 Find hotspots and optimization opportunities:
 
 ```bash
-# Profile with hardware counters
+# Count hardware events over the measured phase (perf stat, the default)
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
+# Writes: MyComponent.Throughput.perf/stat.txt
 
-# Generates: MyComponent.Throughput.perf/perf.data
+# Sample call stacks instead (perf record), for a report or a flamegraph
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --gtest_filter="*Throughput"
+# Writes: MyComponent.Throughput.perf/perf.data
 
 # View report
 perf report -i MyComponent.Throughput.perf/perf.data
@@ -569,6 +573,15 @@ perf annotate -i MyComponent.Throughput.perf/perf.data
 # Export for analysis
 perf script -i MyComponent.Throughput.perf/perf.data > profile.txt
 ```
+
+`stat.txt` holds perf's totals for cpu-cycles, instructions, branches,
+branch-misses and cache-misses. `perf.data` is written only when
+`--profile-args` starts with `record`; the rest of the string goes to
+`perf record` (`-g` samples call stacks). The backend starts perf just before
+the measured phase and gives it 200 ms to attach; perf can take longer to start
+sampling, so a measured phase of a few milliseconds may leave `perf.data`
+without samples. `--target-time 250ms` sizes the cycles so that each of the ten
+default repeats runs for roughly that long.
 
 **Common patterns to look for:**
 
@@ -1037,8 +1050,9 @@ bench compare baseline.csv optimized.csv
 **Don't guess - measure:**
 
 ```bash
-# Find hotspots
-./MyComponent_PTEST --profile perf --gtest_filter="*Slow"
+# Find hotspots (perf record writes the samples to perf.data)
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --gtest_filter="*Slow"
 
 # Analyze
 perf report -i MyComponent.Slow.perf/perf.data
