@@ -77,7 +77,7 @@ how to compare two runs.
 | --- | --------------------- | ---------------------------------- | --------------------------- | -------------------------- | ----------------------------------------------------------- |
 | 01  | Basic Workflow        | Measure-export-analyze cycle       | join V0 (copy per part)     | join V1 (reserve, append)  | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
 | 02  | perf Profiler         | Hardware counter profiling         | Stride-512 array walk       | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
-| 03  | gperftools Profiler   | Function-level flamegraphs         | Bubble sort O(n^2)          | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
+| 03  | gperftools Profiler   | Which function has the time        | join V0 (copy per part)     | join V1 (reserve, append)  | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
 | 04  | Cache-Friendly Layout | AoS vs SoA data transformation     | 128B struct (81% waste)     | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
 | 05  | Branch Optimization   | Branch prediction and avoidance    | Branchy + random data       | Branchless + multiply      | [05_BRANCH_OPTIMIZATION.md](docs/05_BRANCH_OPTIMIZATION.md) |
 | 06  | Thread Scaling        | Lock contention analysis           | Mutex-protected counter     | Atomic relaxed counter     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)           |
@@ -176,7 +176,6 @@ slow/fast workload pairs used across demos:
 | Cache       | Stride-512 walk     | Sequential walk        | Demo 02 |
 | Cache       | AoS position sum    | SoA position sum       | Demo 04 |
 | Branch      | Branchy conditional | Branchless multiply    | Demo 05 |
-| Sort        | Bubble sort O(n^2)  | std::sort O(n log n)   | Demo 03 |
 | Search      | Linear search O(n)  | Binary search O(log n) | Demo 07 |
 | Contention  | Mutex increment     | Atomic increment       | Demo 06 |
 | Dot product | Naive (dependency)  | std::inner_product     | Demo 08 |
