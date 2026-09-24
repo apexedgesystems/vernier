@@ -26,8 +26,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   what the walkthrough claims. The example library is compiled with `-g` in
   every build type, which adds line tables and leaves the generated code as it
   is, so a profiler can attribute its cost to source lines in an optimized
-  build. Demo 07's test names change, so CSVs captured from it before this
-  release do not join with newer ones.
+  build. Demo 07's walkthrough, `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`,
+  is rewritten from a Release run on the documented Raspberry Pi 4 rig: it reads
+  callgrind's per-function and per-line counts, which repeat from run to run,
+  and not its call graph, which is wrong for this program on that Arm board. The
+  run's timing CSV is committed at
+  `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test names
+  change, so CSVs captured from it before this release do not join with newer
+  ones.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
