@@ -182,12 +182,14 @@ PERF_THROUGHPUT(Massif, JoinV1) {
 }
 
 /**
- * @test V0 holds more than MIN_PEAK_RATIO times the heap V1 holds at its peak.
+ * @test V0 holds more than MIN_PEAK_RATIO times the heap V1 holds at its
+ *       peak, and joinedSize holds none.
  *
  * Counts what one call of each version holds at once, beyond what was live
  * before it, and writes no CSV row. Massif shows this peak from outside the
  * process; under valgrind this binary's counting is bypassed, so the test
- * skips itself there.
+ * skips itself there. joinedSize is checked here because this binary is the
+ * one that counts allocations.
  */
 PERF_TEST(Massif, JoinPeakHeap) {
   if (vernier::bench::profiler_env::isRunningUnderValgrind()) {
@@ -201,11 +203,15 @@ PERF_TEST(Massif, JoinPeakHeap) {
   volatile std::size_t sink = 0;
   const std::size_t V0_PEAK = peakHeapDuring([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
   const std::size_t V1_PEAK = peakHeapDuring([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
-  const std::size_t JOINED = demo::joinedSize(PARTS);
+  std::size_t joined = 0;
+  const std::size_t SIZE_PEAK = peakHeapDuring([&] { joined = demo::joinedSize(PARTS); });
+  const std::size_t JOINED = joined;
 
   // V1 holds its result at its peak; less means the counting missed it.
   ASSERT_GE(V1_PEAK, JOINED) << "V1 held " << V1_PEAK << " bytes, less than its own " << JOINED
                              << "-byte result: the heap is not being counted";
+  EXPECT_EQ(SIZE_PEAK, 0u) << "joinedSize held " << SIZE_PEAK
+                           << " bytes: it is meant to compute the length without allocating";
 
   std::printf("[Massif.JoinPeakHeap]  joined %zu bytes  V0 holds %zu  V1 holds %zu  %.1fx\n",
               JOINED, V0_PEAK, V1_PEAK,
