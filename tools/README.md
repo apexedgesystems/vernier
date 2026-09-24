@@ -26,22 +26,31 @@ for Vernier benchmark results.
 ## 1. Quick Start
 
 ```bash
-# Build tools
-make tools-rust        # bench (analysis, comparison, execution)
-make tools-py          # bench-plot (visualization, optional)
+# Build: the Release preset build (README Quick Start) includes the tools
+cmake --preset native-linux-release
+cmake --build --preset native-linux-release
 
-# Source from anywhere; .env embeds absolute paths.
-source build/native-linux-debug/.env
+# Put them on PATH; .env holds absolute paths, so any working directory works
+source build/native-linux-release/.env
 
 # Verify
 bench --help
-bench-plot --help      # Only if tools-py built
+bench-plot --help      # Only if the Python tools were built (poetry and pip)
 ```
 
-The `.env` file uses absolute paths to the tools in the build tree, so
-sourcing it from any cwd puts `bench` / `bench-plot` / `nsight-parse`
-on PATH. The build directory itself stays self-contained -- copy it
-anywhere, source the `.env` inside it, and the tools work.
+The `.env` file holds absolute paths into the build tree, so sourcing it from
+any working directory puts `bench`, `bench-plot` and `nsight-parse` on `PATH`.
+It works only where the tree was configured: a moved or copied tree's `.env`
+still names the original location, and a tree configured in a container names
+the container's paths. Configure a build where you need the tools instead. The
+`bench` executable itself needs only the C runtime and can be copied on its
+own; the Python tools need the tree's `lib/python`, which the `.env` puts on
+`PYTHONPATH`.
+
+`make tools-rust` and `make tools-py` rebuild only the tools, in
+`build/native-linux-debug` (configured with the Debug preset if it is not yet)
+unless `BUILD_DIR` names another build directory:
+`make tools-rust BUILD_DIR=build/native-linux-release`.
 
 ---
 
@@ -143,7 +152,7 @@ readiness section (frame pointers, DWARF, ASLR, gperftools linkage) and the
 per-backend doctor (whether each registered profiler can actually run here).
 
 ```bash
-bench doctor ./build/native-linux-debug/bin/ptests/MyComponent_PTEST
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST
 ```
 
 ### profile-all - Iterate Every Profiler
@@ -403,14 +412,14 @@ Output columns: `source` (nsys / ncu), `report`, `kernel`, `instances`,
 Quick test with immediate summary:
 
 ```bash
-source build/native-linux-debug/.env
+source build/native-linux-release/.env
 bench run MyComponent_PTEST --quick --csv results.csv --analyze
 ```
 
 ### Optimization Workflow
 
 ```bash
-source build/native-linux-debug/.env
+source build/native-linux-release/.env
 
 # 1. Validate environment
 bench validate
@@ -440,7 +449,7 @@ Full GPU benchmarking pipeline with environment validation, clock locking,
 and state monitoring:
 
 ```bash
-source build/native-linux-debug/.env
+source build/native-linux-release/.env
 
 # 1. Validate GPU environment
 bench gpu-env
@@ -452,7 +461,7 @@ bench gpu-lock lock
 bench gpu-monitor snapshot -o before.json
 
 # 4. Run benchmark
-./bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
+./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
 
 # 5. Snapshot after
 bench gpu-monitor snapshot -o after.json
@@ -470,7 +479,7 @@ bench gpu-lock reset
 Or use the wrapper mode to combine steps 2, 4, and 8:
 
 ```bash
-bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
+bench gpu-lock lock -- ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST --repeats 30 --csv gpu_results.csv
 ```
 
 ### CI Regression Detection
@@ -519,7 +528,9 @@ without these columns.
 make tools-rust
 ```
 
-Produces a single `bench` binary in `build/native-linux-debug/bin/tools/rust/`.
+Produces a single `bench` binary in `<build dir>/bin/tools/rust/`
+(`build/native-linux-debug` unless `BUILD_DIR` says otherwise; see
+[Quick Start](#1-quick-start)).
 CUDA-related features are enabled automatically when `nvcc` is on PATH.
 
 **Requirements:** Rust toolchain (rustup)

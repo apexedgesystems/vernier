@@ -43,21 +43,37 @@ PERF_MAIN()
 ### Build and Run (Docker)
 
 ```bash
-make compose-debug
-make compose-testp
+make compose-release
 
-docker compose run --rm -T dev-cuda bash -c '
-  ./build/native-linux-debug/bin/ptests/BenchmarkCPU_PTEST --csv results.csv
-'
+docker compose run --rm -T dev-cuda \
+  ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --csv results.csv
+```
+
+`make compose-release` builds with the Release preset in the `dev-cuda`
+service, which reserves the machine's NVIDIA GPUs (`docker-compose.yml`). The
+CPU `dev` service needs none:
+
+```bash
+docker compose run --rm -T dev make release
+docker compose run --rm -T dev \
+  ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --csv results.csv
 ```
 
 ### Build Without Docker
 
 ```bash
-cmake --preset native-linux-debug
-cmake --build --preset native-linux-debug
-./build/native-linux-debug/bin/ptests/BenchmarkCPU_PTEST --csv results.csv
+cmake --preset native-linux-release
+cmake --build --preset native-linux-release
+./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --csv results.csv
 ```
+
+The presets compile with `clang-21`; for GCC, add
+`-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++` to the configure line. The
+build also produces the CLI tools when `cargo` is on `PATH`, and the Python
+tools when `poetry` and `pip` are; `source build/native-linux-release/.env`
+puts them on `PATH`. The Docker and host routes share
+`build/native-linux-release`, and CMake refuses a tree configured on the other
+side, so remove the directory when switching between them.
 
 ---
 
@@ -90,32 +106,38 @@ cmake --build --preset native-linux-debug
 
 ### Optimization Workflow
 
+`MyComponent_PTEST` stands for a benchmark of your own project, defined at the
+top of its CMake build (see [Install as Library](#install-as-library)).
+
 ```bash
 # 1. Baseline measurement
-./bin/ptests/MyComponent_PTEST --repeats 30 --csv baseline.csv
+./build/MyComponent_PTEST --repeats 30 --csv baseline.csv
 
-# 2. Profile to find hotspots
-./bin/ptests/MyComponent_PTEST --profile perf
+# 2. Profile to find hotspots (perf record; see the CPU guide)
+./build/MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms
+perf report -i MyComponent.Throughput.perf/perf.data
 
 # 3. Make changes, rebuild, measure again
-./bin/ptests/MyComponent_PTEST --repeats 30 --csv optimized.csv
+./build/MyComponent_PTEST --repeats 30 --csv optimized.csv
 
-# 4. Statistical comparison
+# 4. Compare the two runs
 bench compare baseline.csv optimized.csv --threshold 5
 ```
 
 ### Quick Iteration
 
 ```bash
-./bin/ptests/BenchmarkCPU_PTEST --quick --gtest_filter="*Throughput*"
+./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --quick --gtest_filter="*Throughput*"
 ```
 
 ### Install as Library
 
 ```bash
-make compose-release
-make install
+make install            # on the host
+make compose-install    # or in the dev-cuda service
 ```
+
+Both run the Release preset build and install it.
 
 Consumers use `find_package(vernier)`:
 
@@ -182,8 +204,11 @@ For a packager this means:
 
 ## 4. CLI Tools and Backends
 
-CLI tools build with `make tools-rust` and `make tools-py`; source `.env`
-from the build directory to put them on PATH.
+The Quick Start's preset build also builds the CLI tools (when `cargo`, and
+`poetry` with `pip`, are available); `source build/native-linux-release/.env`
+puts them on `PATH`. `make tools-rust` and `make tools-py` rebuild only the
+tools, in `build/native-linux-debug` unless `BUILD_DIR` names another build
+directory.
 
 | Tool           | Language | Purpose                                                                                                                                                    |
 | -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -222,7 +247,7 @@ GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
 ```bash
 bench summary results.csv
 bench compare baseline.csv candidate.csv --fail-on-regression
-bench doctor ./build/native-linux-debug/bin/ptests/MyComponent_PTEST
+bench doctor ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST
 bench profile-all MyComponent --quick
 bench-plot plot results.csv --output charts/
 ```

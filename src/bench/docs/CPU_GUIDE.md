@@ -68,21 +68,26 @@ PERF_MAIN()
 
 ### Build and Run
 
+The commands assume your project's top-level `CMakeLists.txt` builds this file
+as `MyComponent_PTEST` and links `vernier::bench` (see the README's Install as
+Library), so the executable lands in `build/`:
+
 ```bash
-# Build
-cmake -B build -S . && cmake --build build
+# Build (Release: optimization is part of what you measure)
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 
 # Run all tests
-./build/native-linux-debug/bin/ptests/MyComponent_PTEST --csv results.csv
+./build/MyComponent_PTEST --csv results.csv
 
 # Quick mode for fast iteration
-./MyComponent_PTEST --quick
+./build/MyComponent_PTEST --quick
 
 # Run specific test
-./MyComponent_PTEST --gtest_filter="*BasicThroughput"
+./build/MyComponent_PTEST --gtest_filter="*BasicThroughput"
 
 # With profiling
-./MyComponent_PTEST --profile perf --gtest_filter="*BasicThroughput"
+./build/MyComponent_PTEST --profile perf --gtest_filter="*BasicThroughput"
 ```
 
 ---
