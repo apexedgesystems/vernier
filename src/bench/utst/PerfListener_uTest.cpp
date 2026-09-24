@@ -30,19 +30,26 @@ using vernier::bench::buildPerfRow;
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
+using vernier::bench::PerfRow;
 using vernier::bench::setGlobalPerfConfig;
 using vernier::bench::Stats;
 using vernier::bench::detail::CsvListener;
 
 namespace {
 
+/** @brief Split a CSV line, keeping empty cells including a trailing one. */
 std::vector<std::string> splitCsvLine(const std::string& line) {
   std::vector<std::string> out;
-  std::stringstream ss(line);
   std::string cell;
-  while (std::getline(ss, cell, ',')) {
-    out.push_back(cell);
+  for (const char C : line) {
+    if (C == ',') {
+      out.push_back(cell);
+      cell.clear();
+    } else {
+      cell += C;
+    }
   }
+  out.push_back(cell);
   return out;
 }
 
@@ -90,7 +97,9 @@ protected:
     std::string header;
     std::string row;
     std::getline(in, header);
-    std::getline(in, row);
+    if (!std::getline(in, row) || row.empty()) {
+      return {};
+    }
     const std::vector<std::string> names = splitCsvLine(header);
     const std::vector<std::string> cells = splitCsvLine(row);
     std::map<std::string, std::string> out;
@@ -158,4 +167,203 @@ TEST_F(CsvListenerTest, RowKeepsCalibratedCycles) {
 TEST_F(CsvListenerTest, NoRowWithoutResult) {
   const std::map<std::string, std::string> cols = emitAndRead();
   EXPECT_TRUE(cols.empty());
+}
+
+/* ----------------------------- Row Width Tests ----------------------------- */
+
+/**
+ * @brief Writes several rows of different kinds into one GPU CSV and reads
+ *        every cell back by header name.
+ *
+ * A GPU binary's file holds both kinds of row: the GPU harness's own rows and
+ * the plain CPU rows of a baseline case in the same binary. Whether a row
+ * carries profile metadata is decided per row, while the header is written
+ * once for the whole file.
+ */
+class GpuCsvListenerTest : public ::testing::Test {
+protected:
+  std::string path_;
+
+  void SetUp() override {
+    path_ = "/tmp/vernier_gpu_listener_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) +
+            ".csv";
+    (void)PerfRegistry::instance().take();
+  }
+
+  void TearDown() override {
+    (void)PerfRegistry::instance().take();
+    std::remove(path_.c_str());
+  }
+
+  /** @brief A row as the CPU harness leaves it: no GPU cells, no profile metadata. */
+  static PerfRow cpuRow() {
+    PerfRow row;
+    row.testName = "GpuSuite.CpuBaseline";
+    row.cycles = 1000;
+    row.repeats = 10;
+    row.warmup = 1;
+    row.threads = 1;
+    row.msgBytes = 64;
+    row.minLevel = "INFO";
+    row.stats.median = 166.0;
+    row.stats.cv = 0.02;
+    row.callsPerSecond = 6024.0;
+    row.timestamp = "2026-09-20T12:00:00Z";
+    row.gitHash = "0123abc";
+    row.hostname = "rig-host";
+    row.platform = "aarch64";
+    row.stable = true;
+    row.cvThreshold = 0.10;
+    return row;
+  }
+
+  /** @brief A row as the GPU harness leaves it: GPU cells, no profile metadata. */
+  static PerfRow gpuRow() {
+    PerfRow row = cpuRow();
+    row.testName = "GpuSuite.GpuKernelOnly";
+    row.stats.median = 21.18;
+    row.callsPerSecond = 47214.0;
+    row.gpuModel = "Test Device";
+    row.computeCapability = "11.0";
+    row.kernelTimeUs = 21.18;
+    row.transferTimeUs = 0.0;
+    row.h2dBytes = 0U;
+    row.d2hBytes = 0U;
+    row.memBandwidthGBs = 0.0;
+    row.occupancy = 0.667;
+    row.smClockMHz = 1400;
+    row.throttling = false;
+    row.deviceId = 0;
+    row.deviceCount = 1;
+    return row;
+  }
+
+  struct Csv {
+    std::vector<std::string> names;
+    std::vector<std::vector<std::string>> rows;
+
+    /** @brief Cell of row @p r under column @p name; "<no such column>" if absent. */
+    [[nodiscard]] std::string at(std::size_t r, const std::string& name) const {
+      for (std::size_t i = 0; i < names.size(); ++i) {
+        if (names[i] == name) {
+          return (i < rows[r].size()) ? rows[r][i] : std::string("<short row>");
+        }
+      }
+      return "<no such column>";
+    }
+  };
+
+  /** @brief Emit @p rows through one listener and read the file back. */
+  Csv emit(bool includeProfile, const std::vector<PerfRow>& rows, bool includeGpu = true) {
+    {
+      CsvListener listener(path_, includeProfile, includeGpu);
+      for (const auto& row : rows) {
+        PerfRegistry::instance().set(row);
+        listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+      }
+    }
+
+    Csv out;
+    std::ifstream in(path_);
+    std::string line;
+    if (std::getline(in, line)) {
+      out.names = splitCsvLine(line);
+    }
+    while (std::getline(in, line)) {
+      out.rows.push_back(splitCsvLine(line));
+    }
+    return out;
+  }
+};
+
+/** @test Under a profile, a GPU row and a CPU row both fill the header's columns */
+TEST_F(GpuCsvListenerTest, ProfiledFileRowsMatchHeaderColumns) {
+  const Csv CSV = emit(/*includeProfile=*/true, {gpuRow(), cpuRow()});
+
+  ASSERT_EQ(CSV.rows.size(), 2U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  EXPECT_EQ(CSV.rows[1].size(), CSV.names.size());
+
+  // The GPU row carries no profile metadata of its own: those two cells are
+  // empty, and every later value still stands under its own header.
+  EXPECT_EQ(CSV.at(0, "test"), "GpuSuite.GpuKernelOnly");
+  EXPECT_EQ(CSV.at(0, "profileTool"), "");
+  EXPECT_EQ(CSV.at(0, "profileDir"), "");
+  EXPECT_EQ(CSV.at(0, "timestamp"), "2026-09-20T12:00:00Z");
+  EXPECT_EQ(CSV.at(0, "hostname"), "rig-host");
+  EXPECT_EQ(CSV.at(0, "gpuModel"), "Test Device");
+  EXPECT_EQ(CSV.at(0, "computeCapability"), "11.0");
+  EXPECT_EQ(CSV.at(0, "deviceId"), "0");
+  EXPECT_EQ(CSV.at(0, "deviceCount"), "1");
+  EXPECT_EQ(CSV.at(0, "umThrashing"), "");
+
+  // The CPU row has no GPU values: its metadata still sits under the metadata
+  // headers, and the GPU cells are empty rather than absent.
+  EXPECT_EQ(CSV.at(1, "test"), "GpuSuite.CpuBaseline");
+  EXPECT_EQ(CSV.at(1, "timestamp"), "2026-09-20T12:00:00Z");
+  EXPECT_EQ(CSV.at(1, "gitHash"), "0123abc");
+  EXPECT_EQ(CSV.at(1, "platform"), "aarch64");
+  EXPECT_EQ(CSV.at(1, "gpuModel"), "");
+  EXPECT_EQ(CSV.at(1, "kernelTimeUs"), "");
+  EXPECT_EQ(CSV.at(1, "deviceCount"), "");
+}
+
+/** @test Without a profile, a GPU row and a CPU row both fill the header's columns */
+TEST_F(GpuCsvListenerTest, UnprofiledFileRowsMatchHeaderColumns) {
+  const Csv CSV = emit(/*includeProfile=*/false, {gpuRow(), cpuRow()});
+
+  ASSERT_EQ(CSV.rows.size(), 2U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  EXPECT_EQ(CSV.rows[1].size(), CSV.names.size());
+
+  // No profile columns exist at all in this file.
+  EXPECT_EQ(CSV.at(0, "profileTool"), "<no such column>");
+
+  EXPECT_EQ(CSV.at(0, "timestamp"), "2026-09-20T12:00:00Z");
+  EXPECT_EQ(CSV.at(0, "gpuModel"), "Test Device");
+  EXPECT_EQ(CSV.at(0, "occupancy"), "0.667000");
+  EXPECT_EQ(CSV.at(1, "hostname"), "rig-host");
+  EXPECT_EQ(CSV.at(1, "gpuModel"), "");
+  EXPECT_EQ(CSV.at(1, "umThrashing"), "");
+}
+
+/** @test In a CPU file with profile columns, a row without profile metadata fills them too */
+TEST_F(GpuCsvListenerTest, CpuFileRowWithoutProfileMetadataKeepsItsWidth) {
+  PerfRow profiled = cpuRow();
+  profiled.testName = "CpuSuite.Profiled";
+  profiled.profileTool = "callgrind";
+  profiled.profileDir = "./CpuSuite.Profiled.callgrind";
+
+  const Csv CSV = emit(/*includeProfile=*/true, {cpuRow(), profiled}, /*includeGpu=*/false);
+
+  // 22 result columns + 2 profile + 4 metadata.
+  ASSERT_EQ(CSV.rows.size(), 2U);
+  EXPECT_EQ(CSV.names.size(), 28U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  EXPECT_EQ(CSV.rows[1].size(), CSV.names.size());
+
+  EXPECT_EQ(CSV.at(0, "test"), "GpuSuite.CpuBaseline");
+  EXPECT_EQ(CSV.at(0, "profileTool"), "");
+  EXPECT_EQ(CSV.at(0, "profileDir"), "");
+  EXPECT_EQ(CSV.at(0, "timestamp"), "2026-09-20T12:00:00Z");
+  EXPECT_EQ(CSV.at(0, "platform"), "aarch64");
+
+  EXPECT_EQ(CSV.at(1, "profileTool"), "callgrind");
+  EXPECT_EQ(CSV.at(1, "profileDir"), "./CpuSuite.Profiled.callgrind");
+  EXPECT_EQ(CSV.at(1, "hostname"), "rig-host");
+}
+
+/** @test A row that does carry profile metadata keeps it under its own headers */
+TEST_F(GpuCsvListenerTest, ProfileMetadataStaysUnderItsHeaders) {
+  PerfRow row = gpuRow();
+  row.profileTool = "nsight";
+  row.profileDir = "/tmp/bench-out/GpuSuite.GpuKernelOnly.nsight";
+
+  const Csv CSV = emit(/*includeProfile=*/true, {row});
+
+  ASSERT_EQ(CSV.rows.size(), 1U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  EXPECT_EQ(CSV.at(0, "profileTool"), "nsight");
+  EXPECT_EQ(CSV.at(0, "profileDir"), "/tmp/bench-out/GpuSuite.GpuKernelOnly.nsight");
+  EXPECT_EQ(CSV.at(0, "gpuModel"), "Test Device");
 }

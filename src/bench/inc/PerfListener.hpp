@@ -66,7 +66,9 @@ public:
         row->profileDir.reset();
       }
 
-      writeCsvRow(out_, *row);
+      // The header's own flags, so the row has the header's column count
+      // whatever this particular row carries.
+      writeCsvRow(out_, *row, includeProfile_, /*includeMetadata=*/true, includeGpu_);
     }
   }
 

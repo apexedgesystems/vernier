@@ -53,10 +53,22 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
 }
 
 /**
- * @brief Write a single result row from a PerfRow struct.
+ * @brief Write a single result row under a header written with the same flags.
+ *
+ * Each enabled group is written whether or not the row has values for it
+ * (missing values are empty cells), so every row of a file has the column
+ * count of its header: a GPU row that carries no profile metadata, and a CPU
+ * row inside a GPU binary's file, both stay under the header names.
+ *
+ * @param csv             Output stream (opened in text mode).
+ * @param row             The result row.
+ * @param includeProfile  Same value the header was written with.
+ * @param includeMetadata Same value the header was written with.
+ * @param includeGpu      Same value the header was written with.
  * @note NOT RT-safe (file I/O, heap allocation).
  */
-inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
+inline void writeCsvRow(std::ofstream& csv, const PerfRow& row, bool includeProfile,
+                        bool includeMetadata, bool includeGpu) {
   csv << row.testName << "," << row.cycles << "," << row.repeats << "," << row.warmup << ","
       << row.threads << "," << row.msgBytes << "," << (row.console ? "1" : "0") << ","
       << (row.nonBlocking ? "1" : "0") << "," << row.minLevel << "," << row.stats.median << ","
@@ -66,28 +78,18 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
       << (row.stable ? "1" : "0") << "," << row.cvThreshold;
 
   // Profile columns
-  if (row.profileTool.has_value() || row.profileDir.has_value()) {
+  if (includeProfile) {
     csv << "," << (row.profileTool ? *row.profileTool : "");
     csv << "," << (row.profileDir ? *row.profileDir : "");
   }
 
   // Metadata columns
-  if (!row.timestamp.empty() || !row.gitHash.empty() || !row.hostname.empty() ||
-      !row.platform.empty()) {
+  if (includeMetadata) {
     csv << "," << row.timestamp << "," << row.gitHash << "," << row.hostname << "," << row.platform;
   }
 
   // GPU columns (base + multi-GPU + Unified Memory)
-  if (row.gpuModel.has_value() || row.computeCapability.has_value() ||
-      row.kernelTimeUs.has_value() || row.transferTimeUs.has_value() || row.h2dBytes.has_value() ||
-      row.d2hBytes.has_value() || row.speedupVsCpu.has_value() || row.memBandwidthGBs.has_value() ||
-      row.occupancy.has_value() || row.smClockMHz.has_value() || row.throttling.has_value() ||
-      row.deviceId.has_value() || row.deviceCount.has_value() ||
-      row.multiGpuEfficiency.has_value() || row.p2pBandwidthGBs.has_value() ||
-      row.umPageFaults.has_value() || row.umH2DMigrations.has_value() ||
-      row.umD2HMigrations.has_value() || row.umMigrationTimeUs.has_value() ||
-      row.umThrashing.has_value()) {
-
+  if (includeGpu) {
     csv << "," << (row.gpuModel ? *row.gpuModel : "");
     csv << "," << (row.computeCapability ? *row.computeCapability : "");
     csv << "," << (row.kernelTimeUs ? std::to_string(*row.kernelTimeUs) : "");
@@ -124,6 +126,31 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
   }
 
   csv << "\n";
+}
+
+/**
+ * @brief Write a single result row, taking the column groups from the row.
+ *
+ * For a file whose rows are all of one kind. When rows of different kinds
+ * share a file, pass the header's flags to the overload above instead.
+ *
+ * @note NOT RT-safe (file I/O, heap allocation).
+ */
+inline void writeCsvRow(std::ofstream& csv, const PerfRow& row) {
+  const bool HAS_PROFILE = row.profileTool.has_value() || row.profileDir.has_value();
+  const bool HAS_METADATA = !row.timestamp.empty() || !row.gitHash.empty() ||
+                            !row.hostname.empty() || !row.platform.empty();
+  const bool HAS_GPU = row.gpuModel.has_value() || row.computeCapability.has_value() ||
+                       row.kernelTimeUs.has_value() || row.transferTimeUs.has_value() ||
+                       row.h2dBytes.has_value() || row.d2hBytes.has_value() ||
+                       row.speedupVsCpu.has_value() || row.memBandwidthGBs.has_value() ||
+                       row.occupancy.has_value() || row.smClockMHz.has_value() ||
+                       row.throttling.has_value() || row.deviceId.has_value() ||
+                       row.deviceCount.has_value() || row.multiGpuEfficiency.has_value() ||
+                       row.p2pBandwidthGBs.has_value() || row.umPageFaults.has_value() ||
+                       row.umH2DMigrations.has_value() || row.umD2HMigrations.has_value() ||
+                       row.umMigrationTimeUs.has_value() || row.umThrashing.has_value();
+  writeCsvRow(csv, row, HAS_PROFILE, HAS_METADATA, HAS_GPU);
 }
 
 } // namespace bench

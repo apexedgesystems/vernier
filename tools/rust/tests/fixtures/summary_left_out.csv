@@ -1,0 +1,3 @@
+test,wallMedian,wallP10,wallP90,wallCV,callsPerSecond,stable
+Queue.Latency,0.01200,,0.01300,0.0833,83333333
+Queue.Throughput,0.04500,0.04200,0.04800,0.0667,22222222,1
