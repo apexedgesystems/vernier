@@ -7,14 +7,17 @@
  * PerfRegistry. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
- * involved (the per-suite CPU baseline), so the order tests run in, and
- * repeated runs in one process, cannot change an outcome.
+ * involved (the per-suite CPU baseline, the probe backend's call log), so the
+ * order tests run in, and repeated runs in one process, cannot change an
+ * outcome.
  */
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <cstddef>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -402,4 +405,157 @@ TEST_F(PerfGpuHarnessTest, RowCarriesTheStabilityVerdict) {
   EXPECT_DOUBLE_EQ(ROW.cvThreshold, THRESHOLD);
   EXPECT_EQ(ROW.stable, RESULT.stats.cpuStats.cv < THRESHOLD);
   EXPECT_DOUBLE_EQ(ROW.stats.cv, RESULT.stats.cpuStats.cv);
+}
+
+/* ----------------------------- Profiler Hooks ----------------------------- */
+
+namespace {
+
+/** @brief What one case's hooks saw. */
+struct HookLog {
+  std::string calls;          ///< 'b' per before hook, 'a' per after hook, in call order
+  double afterMedianUs = 0.0; ///< The median the last after hook received
+};
+
+/** @brief Hooks that log into @p log and stamp the row, as the GPU guard's hooks do. */
+void installLoggingHooks(ub::PerfGpuCase& pc, HookLog& log) {
+  pc.setBeforeMeasureHook([&log](const ub::PerfGpuCase&) { log.calls += 'b'; });
+  pc.setAfterMeasureHook([&log](const ub::PerfGpuCase&, const ub::GpuStats& s) {
+    log.calls += 'a';
+    log.afterMedianUs = s.cpuStats.median;
+    ub::PerfRegistry::instance().updateProfileMeta("hook-log", "hook-log-dir");
+  });
+}
+
+/** @brief Hook calls the probe backend saw, per test name. */
+std::map<std::string, std::string>& probeCalls() {
+  static std::map<std::string, std::string> calls;
+  return calls;
+}
+
+/** @brief A backend that records its hook calls: the registry path the GPU guard takes. */
+class GpuHookProbe final : public ub::Profiler {
+public:
+  explicit GpuHookProbe(std::string testName) : testName_(std::move(testName)) {}
+  std::string toolName() const noexcept override { return "gpu-hook-probe"; }
+  std::string artifactDir() const noexcept override { return "probe-dir/" + testName_; }
+  void beforeMeasure() override { probeCalls()[testName_] += 'b'; }
+  void afterMeasure(const ub::Stats& /*s*/) override { probeCalls()[testName_] += 'a'; }
+
+private:
+  std::string testName_;
+};
+
+std::unique_ptr<ub::Profiler> makeGpuHookProbe(const ub::PerfConfig& /*cfg*/,
+                                               const std::string& testName) {
+  return std::make_unique<GpuHookProbe>(testName);
+}
+
+ub::EnvReport checkGpuHookProbe() {
+  return ub::EnvReport{ub::EnvReport::Status::Ok, "test backend", ""};
+}
+
+} // namespace
+
+VERNIER_REGISTER_PROFILER_BACKEND("gpu-hook-probe", makeGpuHookProbe, checkGpuHookProbe,
+                                  "Registered by the GPU harness unit tests only.")
+
+/**
+ * @test A kernel measurement runs the before hook, then the after hook once its
+ *       row is published, with the measured stats
+ */
+TEST_F(PerfGpuHarnessTest, HooksBracketAKernelMeasurement) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksKernel") + ".Kernel", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  perf.cudaWarmup(data.launch());
+
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, RESULT.totalTimeUs);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the published row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/** @test A kernel builder that is never measured fires no hook */
+TEST_F(PerfGpuHarnessTest, UnmeasuredBuilderFiresNoHook) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksUnmeasured") + ".Kernel", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  {
+    const ub::CudaKernelBuilder BUILDER = perf.cudaKernel(data.launch(), "saxpy");
+    static_cast<void>(BUILDER);
+  }
+
+  EXPECT_EQ(log.calls, "");
+}
+
+/** @test A CPU baseline is measured inside the hooks, and its row is stamped */
+TEST_F(PerfGpuHarnessTest, HooksBracketABaseline) {
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksBaseline") + ".CpuBaseline", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+
+  const ub::PerfResult CPU = perf.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, CPU.stats.median);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the baseline row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/**
+ * @test A multi-GPU measurement is bracketed too, and its after hook gets the
+ *       times of the device whose row is published
+ */
+TEST_F(PerfGpuHarnessTest, HooksBracketAMultiGpuMeasurement) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksMulti") + ".MultiGpu", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure();
+
+  ASSERT_EQ(RESULT.perDevice.size(), 1U);
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, RESULT.perDevice[0].stats.cpuStats.median);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the published row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/**
+ * @test Through the GPU guard's attach path, the selected backend brackets the
+ *       window and the published row names the backend and its folder
+ */
+TEST_F(PerfGpuHarnessTest, GuardHooksStampTheRowWithTheBackend) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuHooksGuard") + ".Kernel";
+  cfg_.profileTool = "gpu-hook-probe";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  ub::attachGpuProfilerHooks(perf, cfg_);
+  perf.cudaWarmup(data.launch());
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+
+  EXPECT_EQ(probeCalls()[NAME], "ba");
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the backend's after hook did not stamp the row";
+  EXPECT_EQ(*ROW.profileTool, "gpu-hook-probe");
+  ASSERT_TRUE(ROW.profileDir.has_value());
+  EXPECT_EQ(*ROW.profileDir, "probe-dir/" + NAME);
 }

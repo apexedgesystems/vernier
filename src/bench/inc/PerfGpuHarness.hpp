@@ -151,6 +151,16 @@ public:
                                            std::string label = "multi_gpu_kernel");
 
   void cudaWarmup(KernelFn kernel);
+
+  /**
+   * @brief Hooks around every measurement this case makes: cpuBaseline(),
+   * cudaKernel(...).measure() and cudaKernelMultiGpu(...).measure().
+   *
+   * The before hook runs when a measurement starts, ahead of anything timed;
+   * the after hook runs once its row is published, with its stats. A builder
+   * that is never measured fires neither. The GPU guard installs the selected
+   * profiler's hooks here (attachGpuProfilerHooks()).
+   */
   void setBeforeMeasureHook(BeforeHook h);
   void setAfterMeasureHook(AfterHook h);
 

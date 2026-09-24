@@ -400,6 +400,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The four `nsys stats` summaries (`cuda_gpu_kern_sum.txt` and the others) are
   written by `bench run --profile nsight`; after a wrap typed by hand, run
   `nsys stats` on the report.
+- **A GPU test's profiler window closes when its measurement ends** -- the
+  after-measure hook the GPU guard installs was stored and never called, so a
+  GPU test's NVTX range was never closed (in an nsys capture of the GPU demo
+  the first test's range held the next test's kernels too, and both ended a
+  second after the last kernel, when the capture did), the selected profiler
+  was never told the window had ended, and GPU rows had empty `profileTool`
+  and `profileDir` cells under `--profile`; a `cpuBaseline()` ran outside the
+  hooks altogether. Every measurement a `PerfGpuCase` makes (`cpuBaseline()`,
+  `cudaKernel(...).measure()`, `cudaKernelMultiGpu(...).measure()`) runs the
+  before hook when it starts, ahead of anything timed, and the after hook once
+  its row is published, so the range spans that measurement and every row, the
+  baseline's included, names the profiler and its folder. Creating a kernel
+  builder fires no hook any more; a builder that is never measured fires
+  neither. The timed window is unchanged.
 
 ## v1.0.3 - 2026-06-28
 

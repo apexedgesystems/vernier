@@ -280,6 +280,19 @@ public:
 
   PerfResult cpuBaseline(std::function<void()> fn, std::string label) {
     PerfCase cpuPerf(testName_, cpuCfg_);
+    // The baseline is a measured window of this case like any other: the
+    // inner PerfCase runs the case's hooks around it, and its after hook
+    // follows the row it publishes, so the profiler stamps the baseline row.
+    if (beforeHook_) {
+      cpuPerf.setBeforeMeasureHook([this](const PerfCase&) { beforeHook_(*owner_); });
+    }
+    if (afterHook_) {
+      cpuPerf.setAfterMeasureHook([this](const PerfCase&, const Stats& s) {
+        GpuStats stats{};
+        stats.cpuStats = s;
+        afterHook_(*owner_, stats);
+      });
+    }
     cpuPerf.warmup([&]() {
       for (int i = 0; i < cpuCfg_.cycles; ++i) {
         fn();
@@ -308,6 +321,12 @@ public:
                               const std::vector<CudaKernelBuilder::Transfer>& d2h, dim3 grid,
                               dim3 block, size_t sharedMemBytes, bool hasLaunchConfig, int deviceId,
                               std::string label) {
+    // The profiler window opens here, before anything is timed, and closes
+    // after the row is published (below), so every hook pair brackets one
+    // measurement.
+    if (beforeHook_) {
+      beforeHook_(*owner_);
+    }
 
     std::vector<double> kernelTimes, h2dTimes, d2hTimes, totalTimes;
     kernelTimes.reserve(cpuCfg_.repeats);
@@ -502,6 +521,12 @@ public:
 
     publishResult(result);
 
+    // After publishResult(): the hook stamps profileTool/profileDir onto the
+    // row just published.
+    if (afterHook_) {
+      afterHook_(*owner_, result.stats);
+    }
+
     return result;
   }
 
@@ -509,6 +534,9 @@ public:
                                  dim3 grid, dim3 block, size_t sharedMemBytes, bool hasLaunchConfig,
                                  bool enableP2P, int p2pSrcDevice, int p2pDstDevice,
                                  size_t p2pTestBytes, std::string label) {
+    if (beforeHook_) {
+      beforeHook_(*owner_);
+    }
 
     MultiGpuResult result;
     result.label = std::move(label);
@@ -625,6 +653,16 @@ public:
     }
 
     publishMultiGpuResult(result);
+
+    // The published row carries the first device's times, so the hook gets
+    // the same: the aggregated struct holds no timing of its own.
+    if (afterHook_) {
+      GpuStats stats = result.aggregatedStats;
+      if (!result.perDevice.empty()) {
+        stats.cpuStats = result.perDevice.front().stats.cpuStats;
+      }
+      afterHook_(*owner_, stats);
+    }
 
     return result;
   }
@@ -918,6 +956,9 @@ private:
 
   PerfGpuCase::BeforeHook beforeHook_{};
   PerfGpuCase::AfterHook afterHook_{};
+  /// The case this implementation belongs to, for the hook signatures
+  /// (non-owning; set by the PerfGpuCase constructor).
+  const PerfGpuCase* owner_ = nullptr;
 
 #ifdef COMPAT_NVML_AVAILABLE
   nvmlDevice_t nvmlDevice_{};
@@ -958,7 +999,10 @@ MultiGpuResult MultiGpuKernelBuilder::measure() {
 // ============================================================================
 
 PerfGpuCase::PerfGpuCase(std::string testName, PerfConfig cpuCfg)
-    : impl_(std::make_unique<PerfGpuCaseImpl>(std::move(testName), std::move(cpuCfg))) {}
+    : impl_(std::make_unique<PerfGpuCaseImpl>(std::move(testName), std::move(cpuCfg))) {
+  // PerfGpuCase is neither copyable nor movable, so this address stays valid.
+  impl_->owner_ = this;
+}
 
 PerfGpuCase::~PerfGpuCase() = default;
 
@@ -967,17 +1011,11 @@ PerfResult PerfGpuCase::cpuBaseline(CpuFn fn, std::string label) {
 }
 
 CudaKernelBuilder PerfGpuCase::cudaKernel(KernelFn kernel, std::string label) {
-  if (impl_->beforeHook_) {
-    impl_->beforeHook_(*this);
-  }
   return CudaKernelBuilder(impl_.get(), std::move(kernel), std::move(label));
 }
 
 MultiGpuKernelBuilder PerfGpuCase::cudaKernelMultiGpu(int deviceCount, MultiGpuKernelFn kernel,
                                                       std::string label) {
-  if (impl_->beforeHook_) {
-    impl_->beforeHook_(*this);
-  }
   return MultiGpuKernelBuilder(impl_.get(), deviceCount, std::move(kernel), std::move(label));
 }
 
