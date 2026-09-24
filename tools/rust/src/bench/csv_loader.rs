@@ -7,9 +7,18 @@
 //!
 //! Uses manual field extraction (not serde Deserialize) so that rows shorter
 //! than the header are handled gracefully -- missing trailing columns get defaults.
+//!
+//! Every row needs a test name that is not empty or only whitespace: the name
+//! is the row's identity, kept exactly as written, never trimmed.
+//!
+//! A caller that computes from or presents a numeric column states how it
+//! needs the column (`Need`) and loads with `load_csv_strict`: a row that
+//! falls short is an error naming the file, line, test, column and value,
+//! rather than a default or a NaN that looks like a measurement.
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::str::FromStr;
 
 use super::Error;
 
@@ -42,6 +51,19 @@ pub struct BenchRow {
     pub cv_threshold: f64,
 }
 
+/* ----------------------------- Need ----------------------------- */
+
+/// How a caller needs one numeric column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// Every row holds a finite number in the column; the header must have it.
+    Required,
+    /// A row may leave the column out: the header lacks it, the row ends
+    /// before it, or the field is empty. A value a row does give must be a
+    /// finite number of the column's kind.
+    IfPresent,
+}
+
 /* ----------------------------- Helpers ----------------------------- */
 
 /// Build a column-name-to-index map from the CSV header.
@@ -62,80 +84,158 @@ fn get_str<'a>(
     hmap.get(name).and_then(|&i| record.get(i)).unwrap_or("")
 }
 
-/// Get a float field, defaulting to 0.0 if missing or empty.
-fn get_f64(record: &csv::StringRecord, hmap: &HashMap<String, usize>, name: &str) -> f64 {
-    let s = get_str(record, hmap, name);
-    if s.is_empty() {
-        0.0
-    } else {
-        s.parse().unwrap_or(0.0)
+/// A kind of number a column holds.
+trait Number: FromStr + Copy {
+    /// What a message calls a value of this kind.
+    const KIND: &'static str;
+
+    /// Whether a parsed value can stand for a measurement: NaN and the
+    /// infinities parse as `f64` but cannot.
+    fn usable(self) -> bool {
+        true
     }
 }
 
-/// Get a u32 field, defaulting to 0 if missing or empty.
-fn get_u32(record: &csv::StringRecord, hmap: &HashMap<String, usize>, name: &str) -> u32 {
-    let s = get_str(record, hmap, name);
-    if s.is_empty() {
-        0
-    } else {
-        s.parse().unwrap_or(0)
+impl Number for f64 {
+    const KIND: &'static str = "a number";
+
+    fn usable(self) -> bool {
+        self.is_finite()
     }
 }
 
-/// Get a u8 field, defaulting to the provided value if missing or empty.
-fn get_u8_or(
-    record: &csv::StringRecord,
-    hmap: &HashMap<String, usize>,
-    name: &str,
-    default: u8,
-) -> u8 {
-    let s = get_str(record, hmap, name);
-    if s.is_empty() {
-        default
-    } else {
-        s.parse().unwrap_or(default)
+impl Number for u32 {
+    const KIND: &'static str = "a whole number from 0 to 4294967295";
+}
+
+impl Number for u8 {
+    const KIND: &'static str = "a whole number from 0 to 255";
+}
+
+/// What one row holds in one numeric column.
+#[derive(Debug, Clone, Copy)]
+enum Found<'a> {
+    /// A finite number of the column's kind.
+    Value,
+    /// The header has no such column.
+    NoColumn,
+    /// The row ends before the column, after this many fields.
+    CutOff(usize),
+    /// The field is empty.
+    Empty,
+    /// Text that is not a number of the column's kind, and that kind.
+    NotANumber(&'a str, &'static str),
+    /// Text that parses to NaN or an infinity.
+    NotFinite(&'a str),
+}
+
+/// One record's numeric fields, read by column name. Each read notes what the
+/// row held, so a caller's needs can be checked once the row is parsed.
+struct Fields<'a> {
+    record: &'a csv::StringRecord,
+    hmap: &'a HashMap<String, usize>,
+    found: Vec<(&'static str, Found<'a>)>,
+}
+
+impl<'a> Fields<'a> {
+    /// The column read as `T`: `default` where the row holds no number of
+    /// that kind, and a NaN or infinity as read.
+    fn number<T: Number>(&mut self, name: &'static str, default: T) -> T {
+        let record: &'a csv::StringRecord = self.record;
+        let (found, value) = match self.hmap.get(name) {
+            None => (Found::NoColumn, default),
+            Some(&i) => match record.get(i) {
+                None => (Found::CutOff(record.len()), default),
+                Some("") => (Found::Empty, default),
+                Some(text) => match text.parse::<T>() {
+                    Ok(value) if value.usable() => (Found::Value, value),
+                    Ok(value) => (Found::NotFinite(text), value),
+                    Err(_) => (Found::NotANumber(text, T::KIND), default),
+                },
+            },
+        };
+        self.found.push((name, found));
+        value
     }
 }
 
-/// Get a f64 field, defaulting to the provided value if missing or empty.
-fn get_f64_or(
-    record: &csv::StringRecord,
-    hmap: &HashMap<String, usize>,
-    name: &str,
-    default: f64,
-) -> f64 {
-    let s = get_str(record, hmap, name);
-    if s.is_empty() {
-        default
-    } else {
-        s.parse().unwrap_or(default)
+/// What falls short when a row holds `found` in `column` and a caller needs
+/// it as `need`, or None when it does not.
+fn unmet(column: &str, found: Found<'_>, need: Need, header_len: usize) -> Option<String> {
+    match (found, need) {
+        (Found::Value, _) => None,
+        (Found::NoColumn | Found::CutOff(_) | Found::Empty, Need::IfPresent) => None,
+        (Found::NoColumn, Need::Required) => Some(format!("has no {column} column")),
+        (Found::CutOff(fields), Need::Required) => Some(format!(
+            "has no {column} value: the row ends after {fields} of {header_len} columns"
+        )),
+        (Found::Empty, Need::Required) => {
+            Some(format!("has no {column} value: the field is empty"))
+        }
+        (Found::NotANumber(text, kind), _) => {
+            Some(format!("has {column} '{text}', which is not {kind}"))
+        }
+        (Found::NotFinite(text), _) => Some(format!(
+            "has {column} '{text}', which is not a finite number"
+        )),
     }
 }
 
-/// Parse a single CSV record into a BenchRow.
-fn parse_row(record: &csv::StringRecord, hmap: &HashMap<String, usize>) -> BenchRow {
-    BenchRow {
+/// Why a test name cannot identify a row, or None when it can. The name is
+/// only checked: a name with spaces around it is kept, as a different test
+/// from the same name without them.
+fn unusable_test_name(test: &str) -> Option<String> {
+    if test.is_empty() {
+        Some("the row has no test name".to_string())
+    } else if test.trim().is_empty() {
+        Some(format!("test name {test:?} is only whitespace"))
+    } else {
+        None
+    }
+}
+
+/// Where a record is, for a message: the file and, when known, the line.
+fn location(path: &Path, record: &csv::StringRecord) -> String {
+    match record.position() {
+        Some(pos) => format!("{}, line {}", path.display(), pos.line()),
+        None => path.display().to_string(),
+    }
+}
+
+/// Parse a single CSV record into a BenchRow, with what each numeric column
+/// held.
+fn parse_row<'a>(
+    record: &'a csv::StringRecord,
+    hmap: &'a HashMap<String, usize>,
+) -> (BenchRow, Vec<(&'static str, Found<'a>)>) {
+    let mut fields = Fields {
+        record,
+        hmap,
+        found: Vec::new(),
+    };
+    let row = BenchRow {
         test: get_str(record, hmap, "test").to_string(),
-        cycles: get_u32(record, hmap, "cycles"),
-        repeats: get_u32(record, hmap, "repeats"),
-        warmup: get_u32(record, hmap, "warmup"),
-        threads: get_u32(record, hmap, "threads"),
-        msg_bytes: get_u32(record, hmap, "msgBytes"),
-        wall_median: get_f64(record, hmap, "wallMedian"),
-        wall_p10: get_f64(record, hmap, "wallP10"),
-        wall_p90: get_f64(record, hmap, "wallP90"),
-        // Absent in pre-v1.0.4 CSVs; get_f64 defaults them to 0.0.
-        wall_p99: get_f64(record, hmap, "wallP99"),
-        wall_p999: get_f64(record, hmap, "wallP999"),
-        wall_min: get_f64(record, hmap, "wallMin"),
-        wall_max: get_f64(record, hmap, "wallMax"),
-        wall_mean: get_f64(record, hmap, "wallMean"),
-        wall_stddev: get_f64(record, hmap, "wallStddev"),
-        wall_cv: get_f64(record, hmap, "wallCV"),
-        calls_per_second: get_f64(record, hmap, "callsPerSecond"),
-        stable: get_u8_or(record, hmap, "stable", 1),
-        cv_threshold: get_f64_or(record, hmap, "cvThreshold", 0.10),
-    }
+        cycles: fields.number("cycles", 0),
+        repeats: fields.number("repeats", 0),
+        warmup: fields.number("warmup", 0),
+        threads: fields.number("threads", 0),
+        msg_bytes: fields.number("msgBytes", 0),
+        wall_median: fields.number("wallMedian", 0.0),
+        wall_p10: fields.number("wallP10", 0.0),
+        wall_p90: fields.number("wallP90", 0.0),
+        // Absent in pre-v1.0.4 CSVs, which read them as 0.0.
+        wall_p99: fields.number("wallP99", 0.0),
+        wall_p999: fields.number("wallP999", 0.0),
+        wall_min: fields.number("wallMin", 0.0),
+        wall_max: fields.number("wallMax", 0.0),
+        wall_mean: fields.number("wallMean", 0.0),
+        wall_stddev: fields.number("wallStddev", 0.0),
+        wall_cv: fields.number("wallCV", 0.0),
+        calls_per_second: fields.number("callsPerSecond", 0.0),
+        stable: fields.number("stable", 1),
+        cv_threshold: fields.number("cvThreshold", 0.10),
+    };
+    (row, fields.found)
 }
 
 /* ----------------------------- API ----------------------------- */
@@ -144,8 +244,25 @@ fn parse_row(record: &csv::StringRecord, hmap: &HashMap<String, usize>) -> Bench
 ///
 /// Uses flexible mode and manual field extraction to handle all CSV variants:
 /// old/new format, with/without GPU columns, short rows (CPU rows with
-/// GPU-extended headers).
+/// GPU-extended headers). A numeric field that is missing, empty or not a
+/// number gets its default and a NaN or infinity is kept as read;
+/// `load_csv_strict` refuses them in the columns a caller names. A row whose
+/// test name is empty or only whitespace is an error here too.
 pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
+    load_csv_strict(path, &[])
+}
+
+/// Load benchmark rows, checking every row against the caller's `needs`.
+///
+/// Every row, whatever the needs, must have a test name that is not empty or
+/// only whitespace.
+///
+/// A caller that computes from or presents a numeric column cannot tell the
+/// default `load_csv` gives an unreadable field, or a NaN, from a measured
+/// value, so it names the column here with how it needs it. A row that falls
+/// short is an error naming the file, the line, the test, the column and
+/// what the field held. Every other column is read as `load_csv` reads it.
+pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchRow>, Error> {
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(true)
@@ -156,7 +273,11 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
 
     // Validate required headers are present
     let required = ["test", "wallMedian", "wallCV", "callsPerSecond"];
-    for &col in &required {
+    let needed = needs
+        .iter()
+        .filter(|(_, need)| *need == Need::Required)
+        .map(|(column, _)| column);
+    for &col in required.iter().chain(needed) {
         if !hmap.contains_key(col) {
             return Err(Error::Parse(format!(
                 "missing required column '{}' in {}",
@@ -169,7 +290,30 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
     let mut rows = Vec::new();
     for result in rdr.records() {
         let record = result?;
-        rows.push(parse_row(&record, &hmap));
+        if let Some(problem) = unusable_test_name(get_str(&record, &hmap, "test")) {
+            return Err(Error::Parse(format!(
+                "{}: {problem}",
+                location(path, &record)
+            )));
+        }
+        let (row, found) = parse_row(&record, &hmap);
+        for &(column, need) in needs {
+            let held = found
+                .iter()
+                .find(|(name, _)| *name == column)
+                .map(|&(_, held)| held)
+                .ok_or_else(|| {
+                    Error::InvalidArgs(format!("no numeric column '{column}' is read into a row"))
+                })?;
+            if let Some(problem) = unmet(column, held, need, headers.len()) {
+                return Err(Error::Parse(format!(
+                    "{}: test '{}' {problem}",
+                    location(path, &record),
+                    row.test
+                )));
+            }
+        }
+        rows.push(row);
     }
 
     if rows.is_empty() {
@@ -259,5 +403,255 @@ mod tests {
 
         let result = load_csv(tmp.path());
         assert!(result.is_err());
+    }
+
+    /// Write `rows` under the four columns every results CSV carries.
+    fn minimal_csv(rows: &[&str]) -> tempfile::NamedTempFile {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "test,wallMedian,wallCV,callsPerSecond").unwrap();
+        for row in rows {
+            writeln!(tmp, "{row}").unwrap();
+        }
+        tmp.flush().unwrap();
+        tmp
+    }
+
+    const MEASURED: [(&str, Need); 2] =
+        [("wallMedian", Need::Required), ("wallCV", Need::Required)];
+
+    /// @test A strict column that is not a number names the file, line, test, column and text.
+    #[test]
+    fn strict_column_not_a_number_errors() {
+        let tmp = minimal_csv(&["A,1,0.1,1", "B,1,garbage,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 3: test 'B' has wallCV 'garbage', which is not a number",
+                tmp.path().display()
+            )
+        );
+
+        let tmp = minimal_csv(&["A,n/a,0.1,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has wallMedian 'n/a', which is not a number",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test An empty strict column is an error, not a zero.
+    #[test]
+    fn strict_column_empty_errors() {
+        let tmp = minimal_csv(&["A,1,,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has no wallCV value: the field is empty",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test A row that ends before a strict column is an error, not a zero.
+    #[test]
+    fn strict_column_cut_off_by_a_short_row_errors() {
+        let tmp = minimal_csv(&["A,1"]);
+        let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "parse error: {}, line 2: test 'A' has no wallCV value: the row ends after 2 of 4 columns",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test A strict column holding 0 loads as the value 0.
+    #[test]
+    fn strict_column_zero_is_a_value() {
+        let tmp = minimal_csv(&["A,1,0,1"]);
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].wall_cv, 0.0);
+        assert_eq!(rows[0].wall_median, 1.0);
+    }
+
+    /// @test Columns not named strict keep their defaults, as do short GPU-style rows.
+    #[test]
+    fn strict_columns_leave_the_others_lenient() {
+        let tmp = minimal_csv(&["A,1,0.1,garbage"]);
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows[0].calls_per_second, 0.0);
+
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(
+            tmp,
+            "test,wallMedian,wallCV,callsPerSecond,gpuModel,kernelTimeUs"
+        )
+        .unwrap();
+        writeln!(tmp, "Foo.Cpu,0.05,0.2,20000000").unwrap();
+        writeln!(tmp, "Foo.Gpu,0.03,0.15,33333333,Generic GPU,11.7").unwrap();
+        tmp.flush().unwrap();
+        let rows = load_csv_strict(tmp.path(), &MEASURED).unwrap();
+        assert_eq!(rows.len(), 2);
+    }
+
+    /// @test The lenient loader still gives an unreadable field its default.
+    #[test]
+    fn lenient_load_defaults_unreadable_fields() {
+        let tmp = minimal_csv(&["A,1,garbage,1", "B,1"]);
+        let rows = load_csv(tmp.path()).unwrap();
+        assert_eq!(rows[0].wall_cv, 0.0);
+        assert_eq!(rows[1].wall_cv, 0.0);
+    }
+
+    /// Write `rows` under `header`.
+    fn csv_with(header: &str, rows: &[&str]) -> tempfile::NamedTempFile {
+        let mut tmp = tempfile::NamedTempFile::new().unwrap();
+        writeln!(tmp, "{header}").unwrap();
+        for row in rows {
+            writeln!(tmp, "{row}").unwrap();
+        }
+        tmp.flush().unwrap();
+        tmp
+    }
+
+    /// @test A required column holding NaN or an infinity is an error, not a measurement.
+    #[test]
+    fn strict_column_not_finite_errors() {
+        for (row, column, text) in [
+            ("A,nan,0.1,1", "wallMedian", "nan"),
+            ("A,1,-inf,1", "wallCV", "-inf"),
+        ] {
+            let tmp = minimal_csv(&[row]);
+            let err = load_csv_strict(tmp.path(), &MEASURED).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "parse error: {}, line 2: test 'A' has {column} '{text}', which is not a finite number",
+                    tmp.path().display()
+                )
+            );
+        }
+    }
+
+    /// @test An IfPresent column may be absent from the header, empty, or cut off.
+    #[test]
+    fn if_present_column_may_be_left_out() {
+        let needs = [
+            ("wallP10", Need::IfPresent),
+            ("wallP90", Need::IfPresent),
+            ("stable", Need::IfPresent),
+            ("cycles", Need::IfPresent),
+        ];
+        // No wallP90 or cycles column; A leaves wallP10 empty; B stops before stable.
+        let tmp = csv_with(
+            "test,wallMedian,wallCV,callsPerSecond,wallP10,stable",
+            &["A,1,0.1,1,,0", "B,1,0.1,1,0.9"],
+        );
+        let rows = load_csv_strict(tmp.path(), &needs).unwrap();
+        assert_eq!(rows[0].wall_p10, 0.0);
+        assert_eq!(rows[0].stable, 0);
+        assert_eq!(rows[1].wall_p10, 0.9);
+        assert_eq!(rows[1].stable, 1);
+        assert_eq!(rows[1].wall_p90, 0.0);
+        assert_eq!(rows[1].cycles, 0);
+    }
+
+    /// @test An IfPresent column must hold a finite number of its kind where a row gives one.
+    #[test]
+    fn if_present_column_must_be_usable_where_given() {
+        for (column, text, problem) in [
+            ("wallP10", "garbage", "which is not a number"),
+            ("wallP90", "NaN", "which is not a finite number"),
+            (
+                "cycles",
+                "1.5",
+                "which is not a whole number from 0 to 4294967295",
+            ),
+            ("stable", "yes", "which is not a whole number from 0 to 255"),
+        ] {
+            let tmp = csv_with(
+                &format!("test,wallMedian,wallCV,callsPerSecond,{column}"),
+                &[&format!("A,1,0.1,1,{text}")],
+            );
+            let err = load_csv_strict(tmp.path(), &[(column, Need::IfPresent)]).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "parse error: {}, line 2: test 'A' has {column} '{text}', {problem}",
+                    tmp.path().display()
+                )
+            );
+        }
+    }
+
+    /// @test The lenient loader keeps a NaN as read and defaults text it cannot parse.
+    #[test]
+    fn lenient_load_keeps_what_it_reads() {
+        let tmp = minimal_csv(&["A,nan,inf,garbage"]);
+        let rows = load_csv(tmp.path()).unwrap();
+        assert!(rows[0].wall_median.is_nan());
+        assert_eq!(rows[0].wall_cv, f64::INFINITY);
+        assert_eq!(rows[0].calls_per_second, 0.0);
+    }
+
+    /// @test A need for a column no row field is read from is an error, not a silent pass.
+    #[test]
+    fn need_for_an_unread_column_errors() {
+        let tmp = minimal_csv(&["A,1,0.1,1"]);
+        let err = load_csv_strict(tmp.path(), &[("kernelTimeUs", Need::IfPresent)]).unwrap_err();
+        assert!(
+            err.to_string().contains("no numeric column 'kernelTimeUs'"),
+            "{err}"
+        );
+    }
+
+    /// @test A row whose test name is empty or only whitespace is an error, loaded
+    /// leniently or strictly.
+    #[test]
+    fn blank_test_name_errors() {
+        for (row, problem) in [
+            (",1,0.1,1", "the row has no test name"),
+            ("\"\",1,0.1,1", "the row has no test name"),
+            ("   ,1,0.1,1", "test name \"   \" is only whitespace"),
+            ("\t,1,0.1,1", "test name \"\\t\" is only whitespace"),
+        ] {
+            let tmp = minimal_csv(&["A,1,0.1,1", row]);
+            let expected = format!("parse error: {}, line 3: {problem}", tmp.path().display());
+            assert_eq!(load_csv(tmp.path()).unwrap_err().to_string(), expected);
+            assert_eq!(
+                load_csv_strict(tmp.path(), &MEASURED)
+                    .unwrap_err()
+                    .to_string(),
+                expected
+            );
+        }
+    }
+
+    /// @test A test name is kept exactly as written, spaces around it included.
+    #[test]
+    fn test_name_is_kept_as_written() {
+        let tmp = minimal_csv(&[" Padded.Name ,1,0.1,1", "Padded.Name,1,0.1,1"]);
+        let rows = load_csv(tmp.path()).unwrap();
+        assert_eq!(rows[0].test, " Padded.Name ");
+        assert_eq!(rows[1].test, "Padded.Name");
+    }
+
+    /// @test A strict column absent from the header is a missing column.
+    #[test]
+    fn strict_column_absent_from_header_errors() {
+        let tmp = minimal_csv(&["A,1,0.1,1"]);
+        let err = load_csv_strict(tmp.path(), &[("wallP90", Need::Required)]).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("missing required column 'wallP90'"),
+            "{err}"
+        );
     }
 }

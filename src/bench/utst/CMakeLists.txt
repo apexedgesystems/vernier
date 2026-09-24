@@ -46,6 +46,30 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
+# GPU Unit Tests (1 file)
+# ------------------------------------------------------------------------------
+# What the GPU harness measures and publishes. They run a kernel, so they need
+# both the CUDA toolkit (to build) and a device (to run; they skip without
+# one) and exist only where libbench_cuda does.
+# ------------------------------------------------------------------------------
+
+if (TARGET bench_cuda)
+  vernier_add_gtest(
+    TARGET
+    TestBenchGpu
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/PerfGpuHarness_uTest.cu"
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    benchmarking
+    gpu
+    TIMING_ALL
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
 # Consumer Warning Check
 # ------------------------------------------------------------------------------
 # Compiles a consumer-style benchmark file against the public headers with

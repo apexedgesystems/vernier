@@ -1,0 +1,3 @@
+test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold
+Edge.Down,10000,10,1,1,64,0,0,INFO,0.9500001,0.9405,0.9595,0.931,0.9785,0.95095,0.0095,0.01,1.05263e+06,1,0.10
+Edge.Up,10000,10,1,1,64,0,0,INFO,1.0499999,1.0395,1.0605,1.029,1.0815,1.05105,0.0105,0.01,952381,1,0.10
