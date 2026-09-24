@@ -301,6 +301,86 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **For packagers:** the headers' installed location changes from
   `<includedir>/` to `<includedir>/vernier/src/<module>/inc/`; consumers that
   use the exported targets need no change.
+- **Every CSV row has its file's columns** -- a row was written with the column
+  groups its own values happened to fill, while the header states the groups
+  once for the whole file, so rows of a GPU binary did not line up with it. A
+  GPU run with `--csv` and `--profile` wrote a 57-column header and 55-value
+  GPU rows, putting every value after `cvThreshold` (`gpuModel`,
+  `kernelTimeUs`, the CUPTI and multi-GPU columns) under the wrong name; a CPU
+  baseline case in the same binary wrote 26 values against the same header,
+  with or without a profiler. A CPU-only file had the same gap wherever a row
+  carried no profiler metadata: 26 values under the 28-column header a
+  `--profile` run writes. Rows carry the header's groups, with an empty cell
+  where a row has no value, so a row is as wide as the header and each value
+  stands under its own column name. CSV files captured before this fix from a
+  GPU binary, or from any run whose rows differ in what they carry, cannot be
+  read by column position; reread them by counting from the left edge, or
+  capture them again.
+- **A GPU test's wall time is one round trip** -- the per-call wall time of a
+  `PERF_GPU_TEST` was the round trip divided by the cycle count a second time,
+  after the kernel leg had already been divided by it, so every wall column
+  (`wallMedian` and its percentiles), the console `us/call` line, `calls/s` and
+  the speedup were wrong by a factor of `--cycles`: a 21 us round trip printed
+  as 0.005 us/call at the default 10,000 cycles. One round trip is the
+  host-to-device leg, one kernel launch and the device-to-host leg, and that is
+  what the wall columns now report. Kernel and transfer columns are unchanged.
+  GPU CSVs captured before this fix are comparable among themselves only at
+  equal `--cycles`; multiply their wall columns by the `cycles` column to
+  recover the real time.
+- **A GPU test with no transfers records no transfer time** -- the harness
+  timed a host-to-device and a device-to-host leg every repeat even when the
+  test declared neither, so a kernel-only `PERF_GPU_TEST` reported a couple of
+  microseconds of `transferTimeUs` (2.18 us per repeat on the reference board)
+  against `h2dBytes` and `d2hBytes` of zero, and that phantom time entered the
+  wall columns. An empty leg is not timed: `transferTimeUs` is 0 and the wall
+  time of a kernel-only test is its kernel time. Tests that do declare
+  transfers are timed as before; the per-launch kernel time is unchanged
+  (median 4.57 us before, 4.39 us after, across six alternating runs).
+- **A CPU baseline reaches the GPU tests of its suite** -- `speedupVsCpu` was
+  measured against a baseline kept on the `PerfGpuCase` object, and GoogleTest
+  builds one object per test case, so the usual layout (a `CpuBaseline` case
+  next to the GPU cases of the same suite) left every GPU case without a
+  baseline and `speedupVsCpu` was 0 in the CSV and on the console. The rule: a
+  GPU test is compared against the baseline its own test measured, and a test
+  that measured none is compared against its suite's baseline only while
+  exactly one test of that suite has recorded one; once a second test of the
+  suite records a baseline there is no single answer, so GPU tests without
+  their own baseline report no speedup (an empty `speedupVsCpu` cell) and the
+  suite is named once on stderr, pointing at `cpuBaseline()` in the GPU test as
+  the fix. Two suites in one binary never share a baseline. The multi-GPU path
+  follows the same rule, so `totalSpeedupVsCpu` and `multiGpuEfficiency` report
+  measured numbers where a shared baseline applies.
+- **A GPU row carries the stability verdict the console printed** -- GPU rows
+  were assembled field by field and never set `stable` or `cvThreshold`, so
+  every GPU row in a CSV read `stable=1` and `cvThreshold=0.05` whatever the
+  run did: a summary called a test stable while its own console line said
+  `[UNSTABLE]`, and the threshold shown was not the one the verdict used. GPU
+  rows are built by the same row builder the CPU path uses, so the two columns
+  hold the adaptive threshold for the case's payload size and the verdict
+  measured against it. The config and metadata columns of a GPU row are
+  unchanged.
+- **The GPU basic-workflow demo measures a shared example and asserts what it
+  teaches** -- `BenchDemo_Gpu_01_GpuBasicWorkflow` carried its own vector-add
+  kernel and checked `callsPerSecond > 10`, which no plausible result can fail,
+  so the demo could not notice when the numbers behind its walkthrough stopped
+  being true. It measures the shared SAXPY example
+  (`src/bench/demo/examples/saxpy`, whose unit tests hold the CPU loop and both
+  GPU versions to the same answers) and each test asserts the effect it
+  demonstrates: the baseline that its loop computed `a*x + y`, the transferring
+  test that the copies cost several times the kernel, the kernel-only test that
+  no transfer time is recorded and that the kernel beats the CPU loop by a
+  stated margin. The binary's hand-written `main()` is `PERF_GPU_MAIN()`, so
+  the `--gpu-*` flags reach the harness and the CSV carries the GPU columns
+  whatever the tests are named. A run filtered to one GPU test skips the
+  speedup comparison, which needs the baseline test of the same suite. Its
+  walkthrough (`10_GPU_BASIC_WORKFLOW.md`) is captured on the Jetson AGX Thor
+  reference rig, with the clock procedure stated beside every speedup, and
+  `src/bench/demo/reference/thor/10_gpu_basic_workflow.csv` is the reference
+  run for `bench compare`.
+- **An unknown GPU speedup is an empty cell** -- with no baseline to compare
+  against, the `speedupVsCpu` column held `0.000000`, which reads as a
+  measured slowdown of infinity. The cell is empty instead, as the other GPU
+  columns are when they have no value.
 
 ## v1.0.3 - 2026-06-28
 

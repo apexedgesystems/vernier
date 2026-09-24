@@ -14,7 +14,10 @@
 
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <cstdio>
 #include <thread>
 
@@ -133,6 +136,95 @@ void trackUnifiedMemory(UnifiedMemoryProfile&, const UMSnapshot&, const UMSnapsh
 #endif
 
 // ============================================================================
+// Suite-wide CPU baseline
+// ============================================================================
+// A GoogleTest suite runs each of its cases in a PerfGpuCase of its own, so a
+// baseline measured in one case is out of reach of the next unless it is kept
+// beside the case objects. The rule: a GPU case is compared against the
+// baseline its own case measured; without one it is compared against its
+// suite's baseline only while exactly one case of that suite has recorded one.
+// Once a second case records a different baseline there is no answer to "which
+// one", so a GPU case without its own baseline reports no speedup and the
+// suite is named once on stderr. Keying by suite keeps two suites in one
+// binary from reading each other's baseline.
+// ============================================================================
+
+namespace {
+
+/** @brief "Suite.Case" -> "Suite". */
+std::string suiteOf(const std::string& testName) {
+  const auto DOT = testName.find('.');
+  return (DOT == std::string::npos) ? testName : testName.substr(0, DOT);
+}
+
+/** @brief What one suite recorded as its CPU baseline. */
+struct SuiteBaseline {
+  std::string recordedBy; ///< Full name of the case that recorded the median
+  double medianUs = 0.0;  ///< Baseline median (us per call)
+  bool ambiguous = false; ///< A second case recorded one: no shared answer
+  bool reported = false;  ///< The ambiguity has been named on stderr
+};
+
+std::mutex& baselineMutex() {
+  static std::mutex mu;
+  return mu;
+}
+
+std::map<std::string, SuiteBaseline>& baselineTable() {
+  static std::map<std::string, SuiteBaseline> table;
+  return table;
+}
+
+/**
+ * @brief Record @p medianUs as the CPU baseline of @p testName's suite.
+ *
+ * A case that measures a baseline twice (a repeated run) keeps one entry; a
+ * second, different case of the same suite makes the shared value ambiguous.
+ */
+void recordSuiteBaseline(const std::string& testName, double medianUs) {
+  if (medianUs <= 0.0) {
+    return;
+  }
+  const std::lock_guard<std::mutex> LOCK(baselineMutex());
+  SuiteBaseline& entry = baselineTable()[suiteOf(testName)];
+  if (entry.medianUs > 0.0 && entry.recordedBy != testName) {
+    entry.ambiguous = true;
+    return;
+  }
+  entry.recordedBy = testName;
+  entry.medianUs = medianUs;
+}
+
+/**
+ * @brief The baseline @p testName's suite shares, for a case with none of its own.
+ * @return Median microseconds per call, 0.0 when the suite has no baseline or
+ *         more than one case recorded one.
+ */
+double sharedSuiteBaselineUs(const std::string& testName) {
+  const std::string SUITE = suiteOf(testName);
+  const std::lock_guard<std::mutex> LOCK(baselineMutex());
+  const auto IT = baselineTable().find(SUITE);
+  if (IT == baselineTable().end()) {
+    return 0.0;
+  }
+  if (IT->second.ambiguous) {
+    if (!IT->second.reported) {
+      IT->second.reported = true;
+      std::fprintf(stderr,
+                   "[gpu] suite %s measures a CPU baseline in more than one test, so a GPU test "
+                   "of that suite has no single baseline to be compared against and reports no "
+                   "speedup. Call cpuBaseline() in the GPU test itself, or keep one baseline "
+                   "test per suite.\n",
+                   SUITE.c_str());
+    }
+    return 0.0;
+  }
+  return IT->second.medianUs;
+}
+
+} // namespace
+
+// ============================================================================
 // PerfGpuCaseImpl - PIMPL
 // ============================================================================
 
@@ -196,6 +288,7 @@ public:
 
     auto result = cpuPerf.throughputLoop(fn, label);
     cpuBaselineMedianUs_ = result.stats.median;
+    recordSuiteBaseline(testName_, cpuBaselineMedianUs_);
 
     return result;
   }
@@ -254,15 +347,20 @@ public:
     }
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
-      CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
-      for (const auto& xfer : h2d) {
-        CUDA_CHECK(
-            cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, stream_));
-      }
-      CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-      CUDA_CHECK(cudaEventSynchronize(eventStop_));
+      // A test that declares no transfer has no leg to time: an event pair
+      // around nothing measures the event round trip itself and books it as
+      // transfer time.
       float h2dMs = 0.0f;
-      CUDA_CHECK(cudaEventElapsedTime(&h2dMs, eventStart_, eventStop_));
+      if (!h2d.empty()) {
+        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        for (const auto& xfer : h2d) {
+          CUDA_CHECK(
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, stream_));
+        }
+        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
+        CUDA_CHECK(cudaEventSynchronize(eventStop_));
+        CUDA_CHECK(cudaEventElapsedTime(&h2dMs, eventStart_, eventStop_));
+      }
       h2dTimes.push_back(h2dMs * 1000.0);
 
       CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
@@ -275,19 +373,24 @@ public:
       CUDA_CHECK(cudaEventElapsedTime(&kernelMs, eventStart_, eventStop_));
       kernelTimes.push_back(kernelMs * 1000.0 / cpuCfg_.cycles);
 
-      CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
-      for (const auto& xfer : d2h) {
-        CUDA_CHECK(
-            cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, stream_));
-      }
-      CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-      CUDA_CHECK(cudaEventSynchronize(eventStop_));
       float d2hMs = 0.0f;
-      CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
+      if (!d2h.empty()) {
+        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        for (const auto& xfer : d2h) {
+          CUDA_CHECK(
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, stream_));
+        }
+        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
+        CUDA_CHECK(cudaEventSynchronize(eventStop_));
+        CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
+      }
       d2hTimes.push_back(d2hMs * 1000.0);
 
-      totalTimes.push_back((h2dTimes.back() + kernelTimes.back() + d2hTimes.back()) /
-                           cpuCfg_.cycles);
+      // One round trip is one H2D leg, one kernel launch and one D2H leg.
+      // kernelTimes holds the per-launch time (already divided by the cycle
+      // count above) and the transfer legs run once per repeat, so the sum is
+      // the per-call wall time.
+      totalTimes.push_back(h2dTimes.back() + kernelTimes.back() + d2hTimes.back());
     }
 
     if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
@@ -323,8 +426,9 @@ public:
     result.callsPerSecond = (totalStats.median > 0.0) ? 1e6 / totalStats.median : 0.0;
     result.deviceId = deviceId;
 
-    if (cpuBaselineMedianUs_ > 0.0) {
-      result.speedupVsCpu = cpuBaselineMedianUs_ / totalStats.median;
+    const double BASELINE_US = baselineUs();
+    if (BASELINE_US > 0.0 && totalStats.median > 0.0) {
+      result.speedupVsCpu = BASELINE_US / totalStats.median;
     }
 
     result.stats.cpuStats = totalStats;
@@ -459,8 +563,9 @@ public:
         devResult.callsPerSecond = (stats.median > 0.0) ? 1e6 / stats.median : 0.0;
         devResult.stats.cpuStats = stats;
 
-        if (cpuBaselineMedianUs_ > 0.0) {
-          devResult.speedupVsCpu = cpuBaselineMedianUs_ / stats.median;
+        const double BASELINE_US = baselineUs();
+        if (BASELINE_US > 0.0 && stats.median > 0.0) {
+          devResult.speedupVsCpu = BASELINE_US / stats.median;
         }
 
         if (hasLaunchConfig) {
@@ -497,8 +602,9 @@ public:
     MultiGpuMetrics mgpu;
     mgpu.deviceCount = deviceCount;
     mgpu.loadImbalance = (minTime > 0.0) ? (maxTime / minTime) : 1.0;
-    mgpu.scalingEfficiency =
-        (cpuBaselineMedianUs_ > 0.0 && deviceCount > 0) ? totalSpeedup / deviceCount : 0.0;
+    mgpu.scalingEfficiency = (totalSpeedup > 0.0 && deviceCount > 0)
+                                 ? totalSpeedup / static_cast<double>(deviceCount)
+                                 : 0.0;
     mgpu.p2pEnabled = enableP2P;
     if (result.aggregatedStats.p2pProfile.has_value()) {
       mgpu.p2pBandwidthGBs = result.aggregatedStats.p2pProfile->bandwidthGBs();
@@ -531,6 +637,15 @@ public:
   cudaStream_t stream() const noexcept { return stream_; }
 
 private:
+  /**
+   * @brief The CPU baseline a speedup is measured against: this case's own
+   *        when it ran one, otherwise the one its suite recorded.
+   * @return Median microseconds per call, 0.0 when the suite has no baseline.
+   */
+  [[nodiscard]] double baselineUs() const {
+    return (cpuBaselineMedianUs_ > 0.0) ? cpuBaselineMedianUs_ : sharedSuiteBaselineUs(testName_);
+  }
+
   void queryDeviceInfo() {
     CUDA_CHECK(cudaGetDeviceProperties(&deviceProp_, gpuCfg_.deviceId));
 
@@ -697,24 +812,11 @@ private:
   }
 
   void publishResult(const PerfGpuResult& result) {
-    auto [timestamp, gitHash, hostname, platform] = captureMetadata(true);
-
-    PerfRow row{};
-    row.testName = testName_;
-    row.cycles = cpuCfg_.cycles;
-    row.repeats = cpuCfg_.repeats;
-    row.warmup = cpuCfg_.warmup;
-    row.threads = 1;
-    row.msgBytes = cpuCfg_.msgBytes;
-    row.console = cpuCfg_.console;
-    row.nonBlocking = cpuCfg_.nonBlocking;
-    row.minLevel = cpuCfg_.minLevel;
-    row.stats = result.stats.cpuStats;
-    row.callsPerSecond = result.callsPerSecond;
-    row.timestamp = timestamp;
-    row.gitHash = gitHash;
-    row.hostname = hostname;
-    row.platform = platform;
+    // The row builder the CPU path uses: the config, metadata and stability
+    // columns of a GPU row are then the same columns, filled the same way,
+    // and the CSV `stable` verdict is the one the console printed.
+    PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
+                               result.stats.cpuStats, result.callsPerSecond);
 
     row.gpuModel = result.stats.deviceInfo.name;
     row.computeCapability = std::to_string(result.stats.deviceInfo.computeCapability[0]) + "." +
@@ -723,7 +825,11 @@ private:
     row.transferTimeUs = result.transferTimeUs;
     row.h2dBytes = result.stats.transfers.h2dBytes;
     row.d2hBytes = result.stats.transfers.d2hBytes;
-    row.speedupVsCpu = result.speedupVsCpu;
+    // An unknown speedup is an empty cell, not a zero a reader would take for
+    // a measurement.
+    if (result.speedupVsCpu > 0.0) {
+      row.speedupVsCpu = result.speedupVsCpu;
+    }
     row.memBandwidthGBs = result.stats.transfers.bandwidthGBs();
     row.occupancy = result.stats.occupancy.achievedOccupancy;
     row.smClockMHz = result.stats.clocks.smClockMHzEnd;
@@ -771,35 +877,21 @@ private:
   }
 
   void publishMultiGpuResult(const MultiGpuResult& result) {
-    auto [timestamp, gitHash, hostname, platform] = captureMetadata(true);
-
     if (result.perDevice.empty())
       return;
 
     const auto& firstDev = result.perDevice[0];
 
-    PerfRow row{};
-    row.testName = testName_;
-    row.cycles = cpuCfg_.cycles;
-    row.repeats = cpuCfg_.repeats;
-    row.warmup = cpuCfg_.warmup;
-    row.threads = 1;
-    row.msgBytes = cpuCfg_.msgBytes;
-    row.console = cpuCfg_.console;
-    row.nonBlocking = cpuCfg_.nonBlocking;
-    row.minLevel = cpuCfg_.minLevel;
-    row.stats = firstDev.stats.cpuStats;
-    row.callsPerSecond = firstDev.callsPerSecond;
-    row.timestamp = timestamp;
-    row.gitHash = gitHash;
-    row.hostname = hostname;
-    row.platform = platform;
+    PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
+                               firstDev.stats.cpuStats, firstDev.callsPerSecond);
 
     row.gpuModel = firstDev.stats.deviceInfo.name;
     row.computeCapability = std::to_string(firstDev.stats.deviceInfo.computeCapability[0]) + "." +
                             std::to_string(firstDev.stats.deviceInfo.computeCapability[1]);
     row.kernelTimeUs = firstDev.kernelTimeUs;
-    row.speedupVsCpu = result.totalSpeedupVsCpu;
+    if (result.totalSpeedupVsCpu > 0.0) {
+      row.speedupVsCpu = result.totalSpeedupVsCpu;
+    }
     row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
 
     row.deviceId = -1;
