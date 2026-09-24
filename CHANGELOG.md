@@ -24,6 +24,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 02 (Nsight) measures the shared SAXPY example and asserts what it
+  teaches** -- `BenchDemo_Gpu_02_NsightProfiler` compared a strided read kernel
+  with a sequential one, only the strided kernel did an integer modulo per
+  thread, so the gap was not purely the access pattern, and its tests checked
+  `callsPerSecond > 1`. It measures the SAXPY example's two GPU versions
+  instead: `NsightProfiler.G0` and `NsightProfiler.G1` time one call of each end
+  to end; `KernelOneThreadPerBlock` and `Kernel256ThreadsPerBlock` time the bare
+  kernel in each version's launch shape with the GPU harness and fail when the
+  harness's occupancy estimate stops matching the shape; `LaunchShapeSpeedup`
+  fails when one thread per block stops being at least 30 times slower than
+  256. A host test of the example pins what each version allocates, copies and
+  launches per call, on any machine. The binary's hand-written `main()` is
+  `PERF_GPU_MAIN()`. Give a run a cycle count (`--cycles 20`): G0 and the
+  one-thread kernel take milliseconds per call, so the default 10,000 cycles
+  keep each busy for minutes. The demo's test names change, so CSVs of demo 02
+  captured before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
