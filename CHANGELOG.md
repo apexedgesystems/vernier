@@ -106,6 +106,29 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--gpu-warmup`, `--gpu-device`, `--gpu-memory`, `--min-speedup`,
   `--capture-um`) are exempt. Consumers that pass their own long options
   through `PERF_MAIN` will see one line per option.
+- **`bench compare` labels a test by the change in its reported median** --
+  a test is labelled `REGRESSION` when the candidate's median is more than
+  `--threshold` percent above the baseline's, `IMPROVEMENT` when it is more
+  than `--threshold` percent below it, and `neutral` otherwise, including at
+  exactly the threshold. Exactly means in the decimals the CSVs report: a
+  candidate median of 1.05 against a baseline of 1 is 5% and stays neutral
+  at `--threshold 5`, although binary floating point computes the change as
+  5.000000000000004%. The comparison reads two summary CSVs, which carry
+  no observations, so it runs no test for statistical significance: the
+  p-value the table and the Markdown table printed is gone, the
+  `p_value` field of the JSON output is `null`, and the label no longer
+  depends on it. A median 20% above its baseline whose reported outer
+  quantiles happened not to move was labelled `neutral` with `p 0.9941` and
+  passed `--fail-on-regression`; it is now a regression and fails that gate.
+  The table and the Markdown table carry each run's CV in place of the
+  p-value, as context for how spread out that run was; neither CV measures
+  the spread between the two runs. Noise-aware comparison from real
+  observations is future work, not part of this release.
+  **Action needed:** a consumer that reads the `--json` output takes the
+  results from the `results` array of the JSON document, which also carries
+  `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
+  bare array of results. A gate that was passing because a p-value suppressed
+  its labels will start failing on the changes it was always meant to catch.
 
 ### Fixed
 
@@ -381,6 +404,56 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
+- **`bench compare` fails instead of certifying a comparison it cannot make**
+  -- two runs with no test name in common printed `No common tests to
+  compare.` and exited 0, so a CI job that compared the wrong pair of files,
+  or a suite whose tests had all been renamed, passed its regression gate
+  without comparing anything. Such a comparison exits 1, with or without
+  `--fail-on-regression`, and names the tests each side ran alone. The same
+  holds for input a comparison cannot be built from: a `--threshold` that is
+  not a finite percentage of zero or more, a test name a CSV reports twice
+  (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
+  is missing from its row, empty, not a number (the loader read all three as
+  0) or not finite, a `wallMedian` of zero or less (a relative change against
+  a zero baseline was reported as a neutral `+0.0%`), a negative `wallCV`,
+  and a candidate median so many times its baseline that the percentage
+  change overflows (it printed as `+inf%` in the table and `null` in the
+  JSON output). Each exits 1 naming the file or run, the test, the column
+  and the value, and prints no comparison for a reader or a gate to mistake
+  for a pass. Only those two columns are read this strictly: CSVs from earlier
+  releases, and GPU CSVs whose CPU rows stop before the GPU columns, compare
+  as before.
+- **A comparison reports the tests only one of the two runs ran** -- tests
+  present in just one CSV were dropped from the table, the Markdown table and
+  the JSON output without a word, so a suite that lost a test still showed
+  every remaining test as fine. Both lists are printed under the table and
+  carried in the JSON document. Under `--fail-on-regression` a baseline test
+  the candidate does not run fails the gate, because nothing measured it; a
+  candidate-only test is reported as new and does not fail on its own. A
+  renamed test is both: one missing test and one new one, and the gate fails
+  until the baseline is updated on purpose.
+- **`bench summary` refuses a measurement it cannot show** -- the summary
+  read its CSV with defaults: a `wallMedian`, `wallCV` or `callsPerSecond`
+  that was missing, empty or not a number printed as 0, and a `nan` or `inf`
+  printed as `NaN` or `inf` in the table and `null` in the JSON, all with
+  exit 0, so a damaged capture read as zero time, zero variation or zero
+  throughput. Those three columns must hold a finite number in every row, and
+  the other columns the summary shows (`wallP10`, `wallP90`, `stable`,
+  `cvThreshold`, `cycles`, `repeats`) a finite number of their kind wherever
+  a row gives one. A column that a layout or a row leaves out, or an empty
+  field in one of those six, still shows its default, and zeros are values.
+  Anything else exits 1 with nothing printed, naming the file, line, test,
+  column and value, as text and as JSON. `bench run --analyze` applies the
+  same rule to the summary it prints after a run: it exits 1 without the
+  summary, and the run's own output, printed before the check, is unaffected.
+- **A row without a test name is refused** -- a row whose `test` field was
+  empty or only whitespace loaded as a test with that name, so two CSVs with
+  one such row each compared them as the same test and passed
+  `--fail-on-regression`, and `bench summary` listed an unnamed row. `bench
+  summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
+  row, naming the file and line. A name is otherwise kept exactly as
+  written: spaces around it, or a difference in case, make it a different
+  test.
 
 ## v1.0.3 - 2026-06-28
 
