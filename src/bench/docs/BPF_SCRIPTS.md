@@ -11,19 +11,34 @@ performance, not by default in CI.
 
 ## PID filtering
 
-Scripts contain the placeholder `{{PID}}`. The C++ `BpfRunner` replaces it with the
-current test process PID and writes a temporary script before execution. This confines
-tracing to the test process to reduce noise.
+Scripts contain the placeholder `{{PID}}`. The bpftrace backend (`--profile bpftrace`)
+replaces it with the current test process PID and writes a temporary script before
+execution. This confines tracing to the test process to reduce noise.
 
 ## Scripts
 
-- `write_latency.bt`: histogram of `write()` latency (us) for the target PID
-- `fsync_latency.bt`: histogram of `fsync()`/`fdatasync()` latency (us) for the PID
+The scripts are in `src/bench/bpf/`:
 
-Run manually (example):
+- `write_latency.bt`: histogram of `write()` latency (us) for the target PID
+- `fsync_latency.bt`: histogram of `fsync()` latency (us) for the target PID
+- `wakeup_latency.bt`: histogram of scheduler wakeup latency (us), from a thread
+  being woken to its getting a CPU, for wakeups of the target PID's main thread
+  and wakeups made by the target process
+- `cpu_migrations.bt`: CPU migrations of the target PID's main thread, counted by
+  destination CPU
+
+`write_latency.bt` and `fsync_latency.bt` use the `syscalls` tracepoints, which some
+vendor kernels leave out; `wakeup_latency.bt` and `cpu_migrations.bt` use only
+`sched` tracepoints.
+
+Run manually (example): replace `{{PID}}` with the PID to trace (1234 here), then run
+the copy. The histogram prints when bpftrace exits (Ctrl-C).
 
 ```bash
-sudo bpftrace -q vernier/bpf/write_latency.bt | cat
+sed 's/{{PID}}/1234/' src/bench/bpf/write_latency.bt > /tmp/write_latency.bt
+sudo bpftrace -q /tmp/write_latency.bt
 ```
 
-(Replace `{{PID}}` with a number first if running manually.)
+The bpftrace in the project's dev image (0.20.2) matches the PID as the host sees it:
+inside a container with its own PID namespace, the PID the container reports is a
+different number and nothing matches, so run such a container with `--pid=host`.

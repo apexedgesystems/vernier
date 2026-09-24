@@ -36,8 +36,9 @@
  *  - Runtime: ~5 seconds total (when profilers enabled)
  *  - Pass rate: 100% (or skip if profiler unavailable)
  *
- * @note Since Phase 2, profiler hooks are auto-attached via UB_PERF_GUARD.
- *       These tests explicitly test the underlying attachment mechanism.
+ * @note UB_PERF_GUARD attaches the profiler hooks itself, and HookAttachment
+ *       uses it. The *Integration tests construct a PerfCase without the
+ *       hooks, so --profile attaches no profiler to them.
  *
  * @see makePerfCaseWithProfiler
  * @see attachProfilerHooks

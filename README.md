@@ -319,7 +319,7 @@ vernier/
     bench/                    Benchmarking library (perf, GPU harness, profilers)
       inc/                    Public headers (Perf.hpp, PerfGpu.hpp, Nvtx.hpp, profilers)
       src/                    Profiler implementations + CUPTI collector
-      bpf/                    bpftrace scripts (write / fsync latency)
+      bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
       ptst/                   Performance tests (CPU + GPU)
       demo/                   16 CPU + 4 GPU walkthroughs with step-by-step docs
