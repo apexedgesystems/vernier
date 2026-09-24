@@ -14,11 +14,13 @@
 #include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
 #include <cctype>
+#include <cerrno>
 #include <csignal>
 #include <cstdio>
 #include <filesystem>
@@ -26,6 +28,7 @@
 #include <initializer_list>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -352,14 +355,34 @@ std::string scriptPathFor(const std::string& scriptsDir, const std::string& name
   return (std::filesystem::path(scriptsDir) / (name + ".bt")).string();
 }
 
-bool readFile(const std::string& path, std::string& text) {
-  std::ifstream in(path);
-  if (!in) {
-    return false;
+/** @brief Read the script at @p path into @p text; 0, or the errno of the failed open or read. */
+int readScript(const std::string& path, std::string& text) {
+  const int FD = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (FD < 0) {
+    return errno;
   }
-  text.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  return true;
+  text.clear();
+  char buf[4096];
+  while (true) {
+    const ssize_t N = ::read(FD, buf, sizeof(buf));
+    if (N < 0 && errno == EINTR) {
+      continue;
+    }
+    if (N < 0) {
+      const int ERR = errno;
+      ::close(FD);
+      return ERR;
+    }
+    if (N == 0) {
+      break;
+    }
+    text.append(buf, static_cast<std::size_t>(N));
+  }
+  ::close(FD);
+  return 0;
 }
+
+std::string errnoText(int err) { return std::system_category().message(err); }
 
 void replaceAll(std::string& text, const std::string& from, const std::string& to) {
   if (from.empty()) {
@@ -404,13 +427,15 @@ public:
 
   bool start(pid_t pid) {
     std::string src;
-    if (!readFile(scriptPath_, src)) {
-      std::fprintf(stderr,
-                   "[bpftrace] script not found: %s\n"
-                   "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
-                   "[bpftrace] `--bpf-scripts <dir>` (default: src/bench/bpf/),\n"
-                   "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n",
-                   scriptPath_.c_str());
+    if (const int ERR = readScript(scriptPath_, src); ERR != 0) {
+      std::fprintf(stderr, "[bpftrace] cannot read script '%s' at %s: %s\n", name_.c_str(),
+                   scriptPath_.c_str(), errnoText(ERR).c_str());
+      if (ERR == ENOENT) {
+        std::fprintf(stderr,
+                     "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
+                     "[bpftrace] `--bpf-scripts <dir>` (default: src/bench/bpf/),\n"
+                     "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n");
+      }
       return false;
     }
     replacePid(src, static_cast<long>(pid));
@@ -421,6 +446,12 @@ public:
     {
       std::ofstream out(TEMP_SCRIPT);
       out << src;
+      out.close();
+      if (!out) {
+        std::fprintf(stderr, "[bpftrace] cannot write the run's copy of script '%s' to %s\n",
+                     name_.c_str(), TEMP_SCRIPT.c_str());
+        return false;
+      }
     }
     const std::string STDOUT_PATH = (OUTDIR / (name_ + ".out." + plan_->format)).string();
     const std::string STDERR_PATH = (OUTDIR / (name_ + ".err.txt")).string();
@@ -504,6 +535,9 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
   if (auto failure = bpftrace_tool::resolveRoute(ctx, "PERF_BPF_SUDO", plan->route)) {
     return *failure;
   }
+  // Every selected script is read here, before anything runs: the probe and
+  // the run both start from its text.
+  std::vector<std::string> sources;
   for (const std::string& name : plan->scripts) {
     const std::string PATH = scriptPathFor(SCRIPTS_DIR, name);
     std::error_code ec;
@@ -513,7 +547,15 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
           "Pass --bpf with a script under --bpf-scripts <dir> (PERF_BPF_SCRIPTS, "
           "default src/bench/bpf/) or an absolute path without the .bt suffix.");
     }
+    std::string text;
+    if (const int ERR = readScript(PATH, text); ERR != 0) {
+      return readinessResult(
+          ReadinessCause::UNUSABLE,
+          "bpftrace script '" + name + "' at " + PATH + " cannot be read: " + errnoText(ERR),
+          "Give this user read access to " + PATH + ", or select a script it can read with --bpf.");
+    }
     plan->scriptPaths.push_back(PATH);
+    sources.push_back(std::move(text));
   }
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
@@ -524,15 +566,19 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
   const ProbeScratch SCRATCH(ctx);
   std::optional<ReadinessResult> caveat;
   for (std::size_t i = 0; i < plan->scripts.size(); ++i) {
-    std::string copy;
-    (void)readFile(plan->scriptPaths[i], copy);
+    std::string copy = sources[i];
     replacePid(copy, static_cast<long>(ctx.self()));
     copy += "\ninterval:s:5 { exit(); }\n";
     const std::string COPY_PATH = SCRATCH.write("probe" + std::to_string(i) + ".bt", copy);
     if (COPY_PATH.empty()) {
+      const std::string BASE = ctx.get("TMPDIR").value_or("");
+      const std::string WHERE =
+          SCRATCH.ok() ? SCRATCH.path()
+                       : "a new directory under " + (BASE.empty() ? std::string{"/tmp"} : BASE);
       return readinessResult(ReadinessCause::UNUSABLE,
-                             "cannot write a probe copy of '" + plan->scripts[i] + "'",
-                             "Check that TMPDIR (or /tmp) is writable.");
+                             "cannot write the probe copy of script '" + plan->scripts[i] +
+                                 "' in " + WHERE,
+                             "Point TMPDIR at a writable directory, or make /tmp writable.");
     }
     auto verdict = bpftrace_tool::probeAttach(plan->route, launchArgs(plan->format, COPY_PATH),
                                               "script '" + plan->scripts[i] + "'", START_GRACE_MS,

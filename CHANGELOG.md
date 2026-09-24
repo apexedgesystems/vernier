@@ -159,7 +159,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they resolve `bpftrace` (and on the sudo route `sudo` and `kill`) on `PATH`,
   run `bpftrace --version` as the current user, attach each selected script
   through the route for the launch's start grace and stop it with SIGINT
-  through the same route, and the run executes exactly those resolved paths. A
+  through the same route, and the run executes exactly those resolved paths.
+  Each selected script is read first: one this user cannot read is an error
+  that names the file and the cause (`unusable: bpftrace script '<name>' at
+  <path> cannot be read: Permission denied`), and nothing is launched. A
   sudoers grant must therefore allow `bpftrace` with the run's script
   arguments and `kill` with `-2`, `-15` and `-9`; a refused attach or stop
   signal is reported as `denied` with the command and sudo's own words.

@@ -19,10 +19,12 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include <cerrno>
 #include <csignal>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <string>
@@ -48,6 +50,7 @@ using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
+using vernier::bench::test::StderrCapture;
 
 namespace {
 
@@ -344,6 +347,61 @@ TEST_F(BpfCheckTest, BpftraceToolAndScriptProblems) {
       requestFor("bpftrace", {"probe_script"}), empty.context());
   EXPECT_EQ(MISSING.cause, ReadinessCause::MISSING);
   EXPECT_EQ(MISSING.report.message, "missing: bpftrace not found on PATH");
+}
+
+/** @test An unreadable selected script is rejected before anything runs, and a run leaves no
+ * folder. */
+TEST_F(BpfCheckTest, BpftraceUnreadableScriptLaunchesNothing) {
+  installSudoAndKill();
+  ASSERT_EQ(::chmod(script_.c_str(), 0), 0);
+  const struct Restore {
+    std::string path;
+    ~Restore() { (void)::chmod(path.c_str(), 0644); }
+  } RESTORE{script_};
+  if (::access(script_.c_str(), R_OK) == 0) {
+    GTEST_SKIP() << "this user can read a file with mode 000 (root)";
+  }
+  for (const std::map<std::string, std::string>& extra :
+       {std::map<std::string, std::string>{},
+        std::map<std::string, std::string>{{"BENCH_SUDO", "1"}}}) {
+    const ReadinessResult R = check("bpftrace", ctx(extra));
+    EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+    EXPECT_FALSE(R.collectionReady());
+    EXPECT_EQ(R.report.message, "unusable: bpftrace script 'probe_script' at " + script_ +
+                                    " cannot be read: Permission denied");
+    EXPECT_EQ(R.report.hint, "Give this user read access to " + script_ +
+                                 ", or select a script it can read with --bpf.");
+  }
+  // A run of the same request: a no-op profiler, no capture folder, and not
+  // one bpftrace (or sudo) invocation, not even --version.
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "bpftrace";
+  cfg.bpfScripts = {"probe_script"};
+  cfg.artifactRoot = dir_.path() + "/captures";
+  {
+    StderrCapture quiet;
+    auto profiler = ProfilerRegistry::instance().make("bpftrace", cfg, "Bpf.Unreadable", ctx());
+    ASSERT_NE(profiler, nullptr);
+    EXPECT_EQ(profiler->artifactDir(), "");
+    profiler->beforeMeasure();
+    profiler->afterMeasure(vernier::bench::Stats{});
+    EXPECT_NE(quiet.text().find("cannot be read: Permission denied"), std::string::npos);
+  }
+  EXPECT_FALSE(std::filesystem::exists(cfg.artifactRoot)) << "a rejected request left a folder";
+  EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+}
+
+/** @test A probe copy that cannot be written is reported as the probe copy, not as the script. */
+TEST_F(BpfCheckTest, BpftraceProbeCopyUnwritable) {
+  const std::string ABSENT = dir_.path() + "/absent";
+  const ReadinessResult R = check("bpftrace", ctx({{"TMPDIR", ABSENT}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(R.report.message, "unusable: cannot write the probe copy of script 'probe_script' in "
+                              "a new directory under " +
+                                  ABSENT);
+  EXPECT_EQ(R.report.hint, "Point TMPDIR at a writable directory, or make /tmp writable.");
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
 }
 
 /* ----------------------------- offcpu ----------------------------- */
