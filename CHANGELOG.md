@@ -40,6 +40,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   one-thread kernel take milliseconds per call, so the default 10,000 cycles
   keep each busy for minutes. The demo's test names change, so CSVs of demo 02
   captured before this release do not join with newer ones.
+- **The GPU harness's CUPTI collector stands down only for an Nsight session or
+  the explicit override** -- `--profile nsight` and `--profile ncu` turned the
+  collector off on their spelling alone, although neither tool can attach to a
+  running process, so an unwrapped run lost its `cupti*` columns and captured
+  nothing either; a wrap typed by hand without that spelling
+  (`nsys profile ./bench ...`) left the collector registered, and nsys then
+  recorded no kernels; `--profile nsys` did not count; and
+  `VERNIER_DISABLE_CUPTI=0` or `=false` still switched the collector off inside
+  `CuptiCollector`, with no message. The collector stands down when
+  `VERNIER_DISABLE_CUPTI` is set to anything but empty, `0` or `false`, or when
+  an nsys or ncu session owns the process: one that `bench run --profile
+  nsight|ncu` started, or one typed by hand, recognised from
+  `NSYS_PROFILING_SESSION_ID` (nsys 2025.3) or `NV_NSIGHT_INJECTION_PORT_BASE`
+  (ncu 2025.3). Those variables are what these tool versions export, not a
+  promised interface: with a version that does not export them, set
+  `VERNIER_DISABLE_CUPTI=1` when wrapping. `0` or `false` do not keep the
+  collector on inside a session. The collector applies the decision itself,
+  before it registers with CUPTI, so a direct user of `CuptiCollector` gets the
+  same rule; the `forceDisabled` argument still wins. An unwrapped `--profile
+  nsight` run keeps its CUPTI columns and still captures nothing from Nsight.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

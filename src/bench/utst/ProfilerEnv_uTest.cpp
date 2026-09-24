@@ -84,31 +84,56 @@ TEST(ProfilerEnv, NsightSessionToolRecognisesAHandTypedWrap) {
   EXPECT_EQ(nsightSessionTool(), "ncu");
 }
 
-/** @test No env, non-Nsight tool: CUPTI stays on. */
+/** @test Without a session or the override, CUPTI stays on. */
 TEST(ProfilerEnv, CuptiOnByDefault) {
-  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI"};
-  EXPECT_FALSE(cuptiMustYield(""));
-  EXPECT_FALSE(cuptiMustYield("massif"));
-  EXPECT_FALSE(cuptiMustYield("perf"));
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  EXPECT_FALSE(cuptiMustYield());
 }
 
-/** @test An active nsight/ncu profile tool forces the yield. */
-TEST(ProfilerEnv, CuptiYieldsToNsightProfileTool) {
-  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI"};
-  EXPECT_TRUE(cuptiMustYield("nsight"));
-  EXPECT_TRUE(cuptiMustYield("ncu"));
+/** @test A CUDA injection library alone is not an Nsight session. */
+TEST(ProfilerEnv, CuptiIgnoresAGenericInjection) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("CUDA_INJECTION64_PATH", "/opt/tool/libToolsInjection64.so", 1);
+  EXPECT_FALSE(cuptiMustYield());
 }
 
-/** @test A runner wrap with nsys/ncu forces the yield regardless of tool. */
+/** @test The runner's nsys or ncu wrap forces the yield, under each spelling. */
 TEST(ProfilerEnv, CuptiYieldsToExternalWrap) {
-  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI"};
-  ::setenv("VERNIER_EXTERNAL_WRAP", "nsight", 1);
-  EXPECT_TRUE(cuptiMustYield(""));
-  ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
-  EXPECT_TRUE(cuptiMustYield(""));
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  for (const char* tool : {"nsight", "nsys", "ncu"}) {
+    ::setenv("VERNIER_EXTERNAL_WRAP", tool, 1);
+    EXPECT_TRUE(cuptiMustYield()) << "VERNIER_EXTERNAL_WRAP=" << tool;
+  }
   // A non-Nsight wrap (e.g. massif) does not disturb CUPTI.
   ::setenv("VERNIER_EXTERNAL_WRAP", "massif", 1);
-  EXPECT_FALSE(cuptiMustYield(""));
+  EXPECT_FALSE(cuptiMustYield());
+}
+
+/** @test A session typed by hand forces the yield: nsys's and ncu's variables. */
+TEST(ProfilerEnv, CuptiYieldsToAHandTypedSession) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+  EXPECT_TRUE(cuptiMustYield());
+  ::unsetenv("NSYS_PROFILING_SESSION_ID");
+  ::setenv("NV_NSIGHT_INJECTION_PORT_BASE", "49152", 1);
+  EXPECT_TRUE(cuptiMustYield());
+}
+
+/** @test An explicit 0 or false does not keep CUPTI on inside a session. */
+TEST(ProfilerEnv, CuptiDisableFalseDoesNotOverrideASession) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("VERNIER_DISABLE_CUPTI", "false", 1);
+  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+  EXPECT_TRUE(cuptiMustYield());
+  ::unsetenv("NSYS_PROFILING_SESSION_ID");
+  ::setenv("VERNIER_DISABLE_CUPTI", "0", 1);
+  ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
+  EXPECT_TRUE(cuptiMustYield());
 }
 
 /** @test BENCH_SUDO truthy parsing (only meaningful for non-root runs). */
@@ -133,17 +158,20 @@ TEST(ProfilerEnv, ProcessAliveBasics) {
   EXPECT_TRUE(vernier::bench::profiler_env::processAlive(::getpid()));
 }
 
-/** @test VERNIER_DISABLE_CUPTI is an explicit override with truthy parsing. */
+/** @test VERNIER_DISABLE_CUPTI disables when set; empty, 0 and false do not. */
 TEST(ProfilerEnv, CuptiDisableEnvOverride) {
-  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI"};
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
   ::setenv("VERNIER_DISABLE_CUPTI", "1", 1);
-  EXPECT_TRUE(cuptiMustYield(""));
+  EXPECT_TRUE(cuptiMustYield());
+  ::setenv("VERNIER_DISABLE_CUPTI", "true", 1);
+  EXPECT_TRUE(cuptiMustYield());
   ::setenv("VERNIER_DISABLE_CUPTI", "0", 1);
-  EXPECT_FALSE(cuptiMustYield(""));
+  EXPECT_FALSE(cuptiMustYield());
   ::setenv("VERNIER_DISABLE_CUPTI", "false", 1);
-  EXPECT_FALSE(cuptiMustYield(""));
+  EXPECT_FALSE(cuptiMustYield());
   ::setenv("VERNIER_DISABLE_CUPTI", "", 1);
-  EXPECT_FALSE(cuptiMustYield(""));
+  EXPECT_FALSE(cuptiMustYield());
 }
 
 } // namespace

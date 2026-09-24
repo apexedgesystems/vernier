@@ -9,7 +9,7 @@
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
  * order tests run in, and repeated runs in one process, cannot change an
- * outcome.
+ * outcome. Tests that set the variables deciding CUPTI's yield restore them.
  */
 
 #include <gtest/gtest.h>
@@ -21,8 +21,10 @@
 #include <string>
 #include <vector>
 
+#include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 namespace ub = vernier::bench;
@@ -138,6 +140,21 @@ protected:
     });
     (void)ub::PerfRegistry::instance().take();
     return CPU.stats.median;
+  }
+
+  /**
+   * @brief The CUPTI launches recorded while measuring the kernel in a case of
+   *        its own whose config names @p profileTool (no profiler attached).
+   */
+  std::size_t cuptiLaunches(const std::string& suite, const std::string& profileTool,
+                            const SaxpyFixtureData& data) {
+    ub::PerfConfig cfg = cfg_;
+    cfg.profileTool = profileTool;
+    ub::PerfGpuCase perf{suite + ".Kernel", cfg};
+    perf.cudaWarmup(data.launch());
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+    static_cast<void>(ub::PerfRegistry::instance().take());
+    return RESULT.stats.cupti.kernelLaunches;
   }
 
   /** @brief What a GPU case without a baseline of its own reported. */
@@ -558,4 +575,123 @@ TEST_F(PerfGpuHarnessTest, GuardHooksStampTheRowWithTheBackend) {
   EXPECT_EQ(*ROW.profileTool, "gpu-hook-probe");
   ASSERT_TRUE(ROW.profileDir.has_value());
   EXPECT_EQ(*ROW.profileDir, "probe-dir/" + NAME);
+}
+
+/* ----------------------------- CUPTI Yield ----------------------------- */
+
+namespace {
+
+using vernier::bench::test::ScopedEnv;
+
+/** @brief Clears, for one test, every variable that decides CUPTI's yield. */
+struct YieldEnvCleared {
+  ScopedEnv disable{"VERNIER_DISABLE_CUPTI", nullptr};
+  ScopedEnv wrap{"VERNIER_EXTERNAL_WRAP", nullptr};
+  ScopedEnv nsysSession{"NSYS_PROFILING_SESSION_ID", nullptr};
+  ScopedEnv ncuSession{"NV_NSIGHT_INJECTION_PORT_BASE", nullptr};
+};
+
+/** @brief The stderr line the harness prints when the collector stood down. */
+constexpr const char* YIELD_LINE = "[gpu] in-process CUPTI collection disabled";
+
+} // namespace
+
+/**
+ * @test Without a session every --profile spelling of Nsight still collects
+ *       CUPTI records: a spelling starts no session
+ */
+TEST_F(PerfGpuHarnessTest, CuptiCollectsWithoutASessionWhateverTheSpelling) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  if (PLAIN == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  EXPECT_EQ(PLAIN, static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats);
+  for (const char* tool : {"nsight", "nsys", "ncu"}) {
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiSpelling"), tool, data), PLAIN)
+        << "--profile " << tool << " without a session";
+  }
+}
+
+/** @test Each kind of Nsight session stands the collector down, and says so */
+TEST_F(PerfGpuHarnessTest, CuptiStandsDownUnderASession) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const struct {
+    const char* name;
+    const char* value;
+  } SESSIONS[] = {{"VERNIER_EXTERNAL_WRAP", "nsight"},
+                  {"VERNIER_EXTERNAL_WRAP", "nsys"},
+                  {"VERNIER_EXTERNAL_WRAP", "ncu"},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521"},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152"}};
+  for (const auto& session : SESSIONS) {
+    const ScopedEnv SET(session.name, session.value);
+    std::string captured;
+    std::size_t launches = 0;
+    {
+      vernier::bench::test::StderrCapture capture;
+      launches = cuptiLaunches(uniqueSuite("GpuCuptiSession"), "", data);
+      captured = capture.text();
+    }
+    EXPECT_EQ(launches, 0U) << session.name << "=" << session.value;
+    EXPECT_NE(captured.find(YIELD_LINE), std::string::npos)
+        << session.name << "=" << session.value << ", stderr said:\n"
+        << captured;
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI set to 0, false or nothing keeps the collector on */
+TEST_F(PerfGpuHarnessTest, CuptiDisableZeroFalseOrEmptyKeepsCollecting) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  if (PLAIN == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  for (const char* value : {"0", "false", ""}) {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", value);
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiDisableOff"), "", data), PLAIN)
+        << "VERNIER_DISABLE_CUPTI='" << value << "'";
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI=false does not keep the collector on inside a session */
+TEST_F(PerfGpuHarnessTest, CuptiDisableFalseDoesNotOverrideASession) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", "false");
+  const ScopedEnv SESSION("NSYS_PROFILING_SESSION_ID", "1017521");
+  EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiFalseInSession"), "", data), 0U);
+}
+
+/**
+ * @test A collector built directly applies the same decision before it
+ *       registers, and an explicit forceDisabled wins over the environment
+ */
+TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
+  const YieldEnvCleared CLEARED;
+  if (!vernier::bench::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build has no CUPTI collector";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "0");
+    EXPECT_TRUE(vernier::bench::CuptiCollector(false).isAvailable()) << "0 must not disable";
+    EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable()) << "forceDisabled must win";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "1");
+    EXPECT_FALSE(vernier::bench::CuptiCollector(false).isAvailable());
+  }
+  {
+    const ScopedEnv SET("NSYS_PROFILING_SESSION_ID", "1017521");
+    EXPECT_FALSE(vernier::bench::CuptiCollector(false).isAvailable()) << "a session must win";
+  }
 }

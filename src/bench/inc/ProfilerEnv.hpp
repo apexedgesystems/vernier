@@ -241,26 +241,30 @@ inline std::string resolveArtifactDir(const std::string& profileTool,
 /* ----------------------------- cuptiMustYield ----------------------------- */
 
 /**
- * @brief True when in-process CUPTI collection must stay off for this run.
+ * @brief True when the in-process CUPTI collector must stay off for this run.
  *
- * CUPTI is single-client per process: if an external Nsight session
- * (nsys/ncu) owns the interface, an in-process subscriber wins the race
- * and the external tool records zero kernels. Yield when:
- *  1. VERNIER_DISABLE_CUPTI is set truthy (explicit operator override),
- *  2. the active --profile tool is nsight or ncu (an external session is
- *     the point of the run, attach-mode or wrapped), or
- *  3. the runner wrapped this process with nsys/ncu
- *     (VERNIER_EXTERNAL_WRAP, see externalWrapTool()).
+ * With the collector registered, an nsys session records no kernels (nsys
+ * 2025.3.2), and under ncu (2025.3.1) the collector records nothing while ncu
+ * profiles every launch. So the collector stands down when:
+ *  1. VERNIER_DISABLE_CUPTI is set to anything but empty, `0` or `false`
+ *     (explicit override), or
+ *  2. an nsys or ncu session owns this process (nsightSessionTool()): one that
+ *     `bench run` started, or one typed by hand, recognised from the variables
+ *     the tool exports to its target.
+ *
+ * Nothing else counts: `--profile nsight|nsys|ncu` alone starts no session,
+ * and `0` or `false` do not keep the collector on inside one. The session
+ * variables are what those tool versions export, not a promised interface;
+ * with a version that does not export them, set VERNIER_DISABLE_CUPTI=1 when
+ * wrapping. The collector and the GPU harness both decide with this function.
  */
-inline bool cuptiMustYield(const std::string& profileTool) {
+inline bool cuptiMustYield() {
   if (const char* v = std::getenv("VERNIER_DISABLE_CUPTI")) {
-    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0)
+    if (v[0] != '\0' && std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0) {
       return true;
+    }
   }
-  if (profileTool == "nsight" || profileTool == "ncu")
-    return true;
-  const std::string wrap = externalWrapTool();
-  return wrap == "nsight" || wrap == "ncu";
+  return !nsightSessionTool().empty();
 }
 
 /* ----------------------------- benchSudoActive ----------------------------- */

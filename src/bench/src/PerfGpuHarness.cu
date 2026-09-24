@@ -342,10 +342,9 @@ public:
     }
 
     // Start in-process kernel metrics; no-op when libcupti is unavailable.
-    // CUPTI is single-client per process: when an external Nsight session
-    // owns it (--profile nsight/ncu, a runner wrap, or VERNIER_DISABLE_CUPTI),
-    // yield so nsys/ncu records the kernels instead of this collector.
-    const bool cuptiEnabled = !profiler_env::cuptiMustYield(cpuCfg_.profileTool);
+    // Off when this case yielded to an nsys/ncu session or to the explicit
+    // override (cuptiYields_, decided before the collector registered).
+    const bool cuptiEnabled = !cuptiYields_;
     if (cuptiEnabled) {
       cupti_.start();
     } else {
@@ -965,12 +964,16 @@ private:
   bool nvmlInitialized_ = false;
 #endif
 
+  // Whether this case's CUPTI collection stands down (profiler_env::
+  // cuptiMustYield(): an nsys/ncu session, or the explicit override). Decided
+  // once, before the collector below is built, because registering the
+  // collector already keeps an nsys session from recording kernels; the
+  // collector, the measurement and its diagnostic all follow this value.
+  const bool cuptiYields_ = profiler_env::cuptiMustYield();
+
   // In-process kernel metric collector (no-op when libcupti is not linked
   // or when the CUDA toolkit is too old to expose CUpti_ActivityKernel9).
-  // Constructed with the yield decision: registration alone claims the
-  // single CUPTI client slot, so an external Nsight session needs the
-  // collector never to register (see CuptiCollector ctor).
-  CuptiCollector cupti_{profiler_env::cuptiMustYield(cpuCfg_.profileTool)};
+  CuptiCollector cupti_{cuptiYields_};
 
   friend class PerfGpuCase;
 };
