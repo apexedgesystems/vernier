@@ -358,23 +358,29 @@ your own against it:
 bench compare src/bench/demo/reference/pi4/03_gperf_profiler.csv run1.csv
 ```
 
-Captured output, from the `bench` CLI built from this tree (`bench 1.0.3`):
+Output for step 1's `run1.csv`, printed by the `bench` CLI built from the tree
+this page ships in (`bench 1.0.3`):
 
 ```
-Test                      Baseline     Candidate       Delta         %   p-value        Result
---------------------  ------------  ------------  ----------  --------  --------  ------------
-GperfProfiler.JoinV0     937.24500     970.27000   +33.02500     +3.5%    0.0002  neutral
-GperfProfiler.JoinV1      21.01740      20.91320    -0.10420     -0.5%    0.3447  neutral
+Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+--------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+GperfProfiler.JoinV0     937.24500     970.27000   +33.02500     +3.5%      0.0%      0.1%  neutral
+GperfProfiler.JoinV1      21.01740      20.91320    -0.10420     -0.5%      1.3%      1.3%  neutral
 
   2 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 The reference was captured by the same binary seconds before step 1. V0 came
 out 3.5% slower than the reference and V1 0.5% faster, and both rows are
-labelled neutral. Over the ten runs of step 1's command in this session, V0's
-median ranged from 923.1 to 997.7 us/call and V1's from 20.0 to 21.7 us/call,
-8.1% each, with nothing changed; [walkthrough 01](01_BASIC_WORKFLOW.md#step-3-compare-two-runs)
-explains what such labels do and do not say. What should hold is the ratio
+labelled neutral because both medians moved by less than the 5% threshold.
+`Base CV` and `Cand CV` are each run's spread across its own repeats. Over the
+ten runs of step 1's command in this session, V0's median ranged from 923.1 to
+997.7 us/call and V1's from 20.0 to 21.7 us/call, 8.1% each, with nothing
+changed, which is more than either run's CV says. What should hold is the ratio
 between the two rows, and the profile of each version.
 
 ## What Keeps This Page True
@@ -392,14 +398,15 @@ Two things run against this example, and both fail loudly:
   (its own code then holds 57.5% of V0's samples), and when both versions are
   forced inline (neither name appears).
 - The example's unit tests hold both versions to the same answers and are
-  registered with `ctest`, so ordinary CI runs them:
+  registered with `ctest` under the `demo` label, beside the other shared
+  examples' tests, so ordinary CI runs them:
 
   ```bash
   ctest --test-dir build -L demo
   ```
 
   ```
-  100% tests passed, 0 tests failed out of 8
+  100% tests passed, 0 tests failed out of 13
   ```
 
 This repository has no continuous-integration lane on the reference board, so
