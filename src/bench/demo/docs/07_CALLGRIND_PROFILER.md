@@ -411,32 +411,33 @@ and 5 do not.
 
 - `CallgrindProfiler.InstructionCounts`, in the demo binary, fails unless V0
   executes more than five times V1's instructions per call and a second
-  counting run gives the same totals. It is registered with `ctest`, because an
-  instruction count does not depend on what else the machine is doing, so every
-  build that runs `ctest` checks it (CI's configuration is a Debug x86 build in
-  the dev image, where the ratio is 6.9x). It skips where valgrind is not
-  installed or cannot read the binary.
-- The same `ctest` label runs the two tests that hold the callgrind backend to
-  its hint: run the way the hint says, the profile holds the measured calls and
-  none of the work before or after them, and under `bench run` it holds the
-  whole process. Where valgrind cannot read the probe's symbols, the profile
-  cannot show which functions ran, and both skip; `ctest -V` prints valgrind's
-  own reason.
+  counting run gives the same totals. It is registered with `ctest` as
+  `CallgrindDemoInstructionCountsTest`, under the `callgrind` and `demo`
+  labels, because an instruction count does not depend on what else the
+  machine is doing, so every build that runs `ctest` checks it (CI's
+  configuration is a Debug x86 build in the dev image, where the ratio is
+  6.9x). It skips where valgrind is not installed or gives up reading the
+  binary's debug information, and fails, with the run's output, when a
+  counting run does not reach its test.
+- The `callgrind` label also runs the two tests that hold the callgrind backend
+  to its hint: in `CallgrindWindowHintTest`, run the way the hint says, the
+  profile holds the measured calls and none of the work before or after them,
+  and in `CallgrindWindowRunnerTest`, under `bench run`, it holds the whole
+  process. Where valgrind cannot read the probe's symbols, the profile cannot
+  show which functions ran, and both skip; `ctest -V` prints valgrind's own
+  reason.
 
   ```bash
   ctest --test-dir build -L callgrind
   ```
 
-  ```
-  1/3 Test #135: CallgrindWindowHintTest ..............   Passed    1.83 sec
-  2/3 Test #136: CallgrindWindowRunnerTest ............   Passed    1.35 sec
-  3/3 Test #137: CallgrindDemoInstructionCountsTest ...   Passed    8.88 sec
+  Every test it selects passes. Two of them check the checks: they run copies
+  of the probe and of the demo that abort at startup under valgrind, and pass
+  only when the tests above report that as a failure.
 
-  100% tests passed, 0 tests failed out of 3
-  ```
-
-- The example's unit tests hold both versions to the same answers
-  (`ctest --test-dir build -L demo`).
+- The example's unit tests hold both versions to the same answers;
+  `ctest --test-dir build -L demo` runs them with
+  `CallgrindDemoInstructionCountsTest`.
 
 The timings of step 1 are not in `ctest`; they are re-run on the rig with the
 commands above before a release, and the reference CSV is re-captured when they

@@ -111,18 +111,20 @@ endif ()
 # ------------------------------------------------------------------------------
 # Demo binaries stay out of ctest, so that no timing runs beside a parallel
 # suite. Demo 07's check counts instructions under callgrind, which load does
-# not change, so ctest runs that one test; it skips where valgrind is missing
-# or gives up reading the binary's debug information. The second test runs
-# the same check in a copy of demo 07 that aborts under valgrind before its
-# tests start (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only
-# when the check fails on it rather than skipping.
+# not change, so ctest runs that one test, under the callgrind label and the
+# demo label that selects the walkthroughs' checks; it skips where valgrind is
+# missing or gives up reading the binary's debug information. The second test,
+# labelled callgrind only, runs the same check in a copy of demo 07 that aborts
+# under valgrind before its tests start
+# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the check
+# fails on it rather than skipping.
 # ------------------------------------------------------------------------------
 
 add_test(NAME CallgrindDemoInstructionCountsTest
          COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
 )
 set_tests_properties(
-  CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind" SKIP_REGULAR_EXPRESSION
+  CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
                                                 "\\[  SKIPPED \\]"
 )
 

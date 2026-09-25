@@ -25,10 +25,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   binary's debug information; `CountCalls` skips itself when it is not run
   that way.
   Instruction counts do not depend on machine load, so `InstructionCounts` is
-  registered with `ctest` (label `callgrind`) and an ordinary test run checks
-  what the walkthrough claims. The example library is compiled with `-g` in
-  every build type, which adds line tables and leaves the generated code as it
-  is, so a profiler can attribute its cost to source lines in an optimized
+  registered with `ctest` (labels `callgrind` and `demo`) and an ordinary test
+  run checks what the walkthrough claims. The example library is compiled with
+  `-g` in every build type, which adds line tables and leaves the generated code
+  as it is, so a profiler can attribute its cost to source lines in an optimized
   build. Demo 07's walkthrough, `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`,
   is rewritten from a Release run on the documented Raspberry Pi 4 rig: it reads
   callgrind's per-function and per-line counts, which repeat from run to run,
