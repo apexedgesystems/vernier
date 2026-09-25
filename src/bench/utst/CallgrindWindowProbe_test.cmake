@@ -14,13 +14,16 @@
 #         them. Expect all three phases: the backend must leave a recording of
 #         the whole process alone.
 #
-# Prints "SKIPPED: <reason>", the tests' skip expression, when valgrind is not
-# installed, cannot start the probe (a valgrind older than the compiler's
-# debug information gives up before the program runs), or runs it without
-# reading its symbols: the profile then names none of the probe's functions,
-# and valgrind's own warning about the probe's debug information is the
-# reason given. A profile that names none of them while valgrind reported no
-# such trouble fails, as does a profile of zero instructions.
+# Prints "SKIPPED: <reason>", the tests' skip expression, in three cases
+# only, each with valgrind's own words where it has them: valgrind is not
+# installed; valgrind gave up reading debug information before the probe ran
+# (a valgrind older than the compiler does); or valgrind ran the probe without
+# reading its symbols, so the profile names none of the probe's functions and
+# valgrind warned about the probe's debug information. Anything else that
+# keeps the probe's tests from starting under valgrind fails with the run's
+# output: a failed launch, a signal, an early exit, no output. So does a
+# profile that names none of the probe's functions without that warning, and
+# a profile of zero instructions.
 # ==============================================================================
 
 cmake_minimum_required(VERSION 3.24)
@@ -104,10 +107,42 @@ execute_process(
 )
 message(STATUS "exit status: ${_rc}\n${_out}")
 
+# GoogleTest's banner says the probe reached its tests under valgrind.
+# Without it, the one reason that skips is valgrind's own: its debug
+# information reader gave up on a file before the program ran. Any other way
+# of not getting there is the probe's or the wrap's failure.
 string(FIND "${_out}" "[==========]" _started)
 if (_started EQUAL -1)
-  message(STATUS "SKIPPED: valgrind could not start the probe")
-  return()
+  string(
+    REGEX MATCH
+          "Valgrind: debuginfo reader: ([^\n]*)\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
+          _gave_up "${_out}"
+  )
+  if (NOT _gave_up STREQUAL "")
+    set(_reason "${CMAKE_MATCH_1}")
+    execute_process(
+      COMMAND "${_valgrind}" --version
+      OUTPUT_VARIABLE _version
+      OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    message(STATUS "SKIPPED: ${_version} gave up reading debug information before the "
+                   "probe ran (${_reason})"
+    )
+    return()
+  endif ()
+  string(REGEX MATCH "Process terminating with default action of signal [0-9]+ \\([A-Z]+\\)"
+               _signal "${_out}"
+  )
+  if (NOT _signal STREQUAL "")
+    set(_how "${_signal}")
+  elseif (_out STREQUAL "")
+    set(_how "no output at all, exit status ${_rc}")
+  else ()
+    set(_how "exit status ${_rc}")
+  endif ()
+  message(FATAL_ERROR "CallgrindWindowProbe (${CASE}): the probe's tests did not start "
+                      "under valgrind (${_how}); the run's output is printed above"
+  )
 endif ()
 
 set(_problems "")

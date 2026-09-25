@@ -3,10 +3,11 @@
  * @brief The process plumbing of demo 07's instruction-count check
  *
  * CallgrindProfiler.InstructionCounts runs the demo binary under callgrind as
- * a child process and reads what each run left: its log and the program total
- * in its callgrind output. These are the helpers it does that with. The demo
- * file keeps what the check asserts, and the CountCalls fixture it counts, so
- * the example stays short enough to copy.
+ * a child process and reads what each run left: how it ended, its log (did
+ * its test start and pass, or did valgrind give up before it ran) and the
+ * program total in its callgrind output. These are the helpers it does that
+ * with. The demo file keeps what the check asserts and when it skips, and the
+ * CountCalls fixture it counts, so the example stays short enough to copy.
  *
  * Private to 07_CallgrindProfiler_Demo.cpp.
  */
@@ -19,12 +20,15 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 
 #include <filesystem>
 #include <fstream>
+#include <iterator>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -50,12 +54,20 @@ inline std::uint64_t programTotal(const fs::path& profile) {
   return 0;
 }
 
+/// How a child process ended.
+struct ChildExit {
+  enum class How { NotStarted, Exited, Signaled };
+  How how = How::NotStarted;
+  /// The exit status, the signal number, or the error that kept it from
+  /// being run or waited for.
+  int code = 0;
+};
+
 /// Runs @p args with @p extraVariable ("NAME=value") added to this process's
 /// environment, replacing any variable of that name, and with stdout and stderr
-/// in @p log. Returns the exit status, or -1 when the program could not be
-/// started or did not exit normally.
-inline int runLogged(const std::vector<std::string>& args, const std::string& extraVariable,
-                     const fs::path& log) {
+/// in @p log. Returns how the program ended.
+inline ChildExit runLogged(const std::vector<std::string>& args, const std::string& extraVariable,
+                           const fs::path& log) {
   std::vector<char*> argv;
   for (const std::string& arg : args) {
     argv.push_back(const_cast<char*>(arg.c_str()));
@@ -82,28 +94,94 @@ inline int runLogged(const std::vector<std::string>& args, const std::string& ex
   const int SPAWNED = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), envp.data());
   posix_spawn_file_actions_destroy(&actions);
   if (SPAWNED != 0) {
-    return -1;
+    return {ChildExit::How::NotStarted, SPAWNED};
   }
   int status = 0;
-  if (::waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
-    return -1;
+  pid_t waited = 0;
+  do {
+    waited = ::waitpid(pid, &status, 0);
+  } while (waited == -1 && errno == EINTR);
+  if (waited != pid) {
+    return {ChildExit::How::NotStarted, errno};
   }
-  return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) {
+    return {ChildExit::How::Signaled, WTERMSIG(status)};
+  }
+  return {ChildExit::How::Exited, WEXITSTATUS(status)};
 }
 
-/// The last lines of a log, for a failure message.
-inline std::string tail(const fs::path& log) {
-  std::ifstream in(log);
+/// True when the child ran and exited with status 0.
+inline bool exitedCleanly(const ChildExit& end) {
+  return end.how == ChildExit::How::Exited && end.code == 0;
+}
+
+/// How the child ended, in words, for a failure message.
+inline std::string describe(const ChildExit& end) {
+  switch (end.how) {
+  case ChildExit::How::NotStarted:
+    return std::string("could not be run: ") + std::strerror(end.code);
+  case ChildExit::How::Signaled:
+    return "was killed by signal " + std::to_string(end.code) + " (" + ::strsignal(end.code) + ")";
+  case ChildExit::How::Exited:
+    break;
+  }
+  return "exited with status " + std::to_string(end.code);
+}
+
+/// A whole file as text; empty when it cannot be read.
+inline std::string readText(const fs::path& file) {
+  std::ifstream in(file);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// The last @p count lines of a log, for a failure message.
+inline std::string lastLines(const std::string& text, std::size_t count = 12) {
   std::vector<std::string> lines;
+  std::istringstream in(text);
   std::string line;
   while (std::getline(in, line)) {
     lines.push_back(line);
   }
   std::string out;
-  for (std::size_t i = lines.size() > 8 ? lines.size() - 8 : 0; i < lines.size(); ++i) {
+  for (std::size_t i = lines.size() > count ? lines.size() - count : 0; i < lines.size(); ++i) {
     out += lines[i] + "\n";
   }
   return out;
+}
+
+/* ----------------------------- Reading a Run ----------------------------- */
+
+/// True when GoogleTest printed its opening banner: the program under valgrind
+/// reached its tests.
+inline bool testsStarted(const std::string& log) {
+  return log.find("[==========]") != std::string::npos;
+}
+
+/// True when the run's one selected test passed, as a counting run's does.
+inline bool oneTestPassed(const std::string& log) {
+  return log.find("[  PASSED  ] 1 test.") != std::string::npos;
+}
+
+/// valgrind's own reason when its debug-information reader gave up before the
+/// program ran, as a valgrind older than the compiler that wrote a file does
+/// ("Possibly corrupted debuginfo file."); empty for any other outcome.
+inline std::string debugInfoGiveUp(const std::string& log) {
+  const std::string READER = "Valgrind: debuginfo reader: ";
+  const std::size_t GAVE_UP = log.find("Valgrind: I can't recover.  Giving up.");
+  if (GAVE_UP == std::string::npos) {
+    return "";
+  }
+  // The reader's own message is the line just before the one that gives up.
+  const std::size_t AT = log.rfind(READER, GAVE_UP);
+  if (AT == std::string::npos) {
+    return "";
+  }
+  const std::size_t FROM = AT + READER.size();
+  const std::size_t LINE_END = log.find('\n', FROM);
+  if (LINE_END == std::string::npos || log.find('\n', LINE_END + 1) < GAVE_UP) {
+    return "";
+  }
+  return log.substr(FROM, LINE_END - FROM);
 }
 
 /// valgrind expands '%' in output file names; "%%" is a literal one.

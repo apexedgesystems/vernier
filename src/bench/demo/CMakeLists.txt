@@ -107,11 +107,15 @@ if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Checks Run by CTest (1)
+# Demo Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # Demo binaries stay out of ctest, so that no timing runs beside a parallel
 # suite. Demo 07's check counts instructions under callgrind, which load does
-# not change, so ctest runs that one test; it skips where valgrind is missing.
+# not change, so ctest runs that one test; it skips where valgrind is missing
+# or gives up reading the binary's debug information. The second test runs
+# the same check in a copy of demo 07 that aborts under valgrind before its
+# tests start (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only
+# when the check fails on it rather than skipping.
 # ------------------------------------------------------------------------------
 
 add_test(NAME CallgrindDemoInstructionCountsTest
@@ -120,4 +124,25 @@ add_test(NAME CallgrindDemoInstructionCountsTest
 set_tests_properties(
   CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind" SKIP_REGULAR_EXPRESSION
                                                 "\\[  SKIPPED \\]"
+)
+
+vernier_add_ptest(
+  TARGET
+  CallgrindDemoStartupFault
+  SOURCES
+  cpu/07_CallgrindProfiler_Demo.cpp
+  "${PROJECT_SOURCE_DIR}/src/bench/utst/StartupFaultUnderValgrind.cpp"
+  LINK
+  bench
+  demo_helpers
+  demo_example_join
+)
+add_test(NAME CallgrindDemoStartupFaultTest
+         COMMAND CallgrindDemoStartupFault --gtest_filter=CallgrindProfiler.InstructionCounts
+)
+set_tests_properties(
+  CallgrindDemoStartupFaultTest
+  PROPERTIES LABELS "callgrind" PASS_REGULAR_EXPRESSION "CountCalls did not start under callgrind"
+             SKIP_REGULAR_EXPRESSION
+             "valgrind is not installed;could not read this binary's debug information"
 )

@@ -40,8 +40,6 @@
 
 #include <array>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -157,8 +155,12 @@ PERF_TEST(CallgrindProfiler, CountCalls) {
  * calls, and with 10 calls again. A version's instructions per call are the
  * difference between its two program totals divided by the difference in
  * calls, so nothing depends on callgrind's call graph, which on Arm can credit
- * a function with calls it never received. Writes no CSV row. Skipped where
- * valgrind is not installed or cannot start this binary.
+ * a function with calls it never received. Writes no CSV row.
+ *
+ * Skipped where valgrind is not installed, or where it gives up reading this
+ * binary's debug information before the program runs, as a valgrind older
+ * than the compiler does, and says so. A counting run that does not reach its
+ * test for any other reason fails, with what the run printed.
  */
 PERF_TEST(CallgrindProfiler, InstructionCounts) {
   if (std::system("command -v valgrind >/dev/null 2>&1") != 0) {
@@ -192,20 +194,36 @@ PERF_TEST(CallgrindProfiler, InstructionCounts) {
     // without fallback-llsc, valgrind's alternative handling of load- and
     // store-exclusive instruction pairs (MIPS and ARM64 only), and the same
     // total with it. On x86 the hint changes nothing.
-    const int RC =
+    const check::ChildExit END =
         check::runLogged({"valgrind", "--tool=callgrind", "--sim-hints=fallback-llsc",
                           "--callgrind-out-file=" + check::escapePercent(PROFILE.string()), SELF,
                           "--gtest_filter=CallgrindProfiler.CountCalls", "--gtest_print_time=0"},
                          std::string(COUNT_CALLS_VARIABLE) + "=" + runs[i].version + " " +
                              std::to_string(runs[i].calls),
                          LOG);
+    const std::string LOG_TEXT = check::readText(LOG);
 
-    std::ifstream logText(LOG);
-    const std::string LOG_TEXT{std::istreambuf_iterator<char>(logText), {}};
-    if (LOG_TEXT.find("[==========]") == std::string::npos) {
-      GTEST_SKIP() << "valgrind could not start this binary:\n" << check::tail(LOG);
+    // Only valgrind's own reason skips: its debug-information reader gave up
+    // before the program ran. A crash, a signal, an early exit, a failed launch
+    // or no output at all is a failure of the run, reported with what the run
+    // printed (the log is short when the tests never started).
+    if (!check::testsStarted(LOG_TEXT)) {
+      const std::string GAVE_UP = check::debugInfoGiveUp(LOG_TEXT);
+      std::error_code ec;
+      fs::remove_all(DIR, ec);
+      if (!GAVE_UP.empty()) {
+        GTEST_SKIP() << "valgrind could not read this binary's debug information: " << GAVE_UP;
+      }
+      FAIL() << "CountCalls did not start under callgrind: valgrind " << check::describe(END)
+             << ". The run printed:\n"
+             << (LOG_TEXT.empty() ? std::string("(nothing)\n") : check::lastLines(LOG_TEXT, 40));
     }
-    ASSERT_EQ(RC, 0) << "the run under callgrind failed:\n" << check::tail(LOG);
+    ASSERT_TRUE(check::exitedCleanly(END))
+        << "the counting run under callgrind " << check::describe(END) << " (log " << LOG << "):\n"
+        << check::lastLines(LOG_TEXT);
+    ASSERT_TRUE(check::oneTestPassed(LOG_TEXT))
+        << "CountCalls did not run to its end under callgrind (log " << LOG << "):\n"
+        << check::lastLines(LOG_TEXT);
     runs[i].total = check::programTotal(PROFILE);
     ASSERT_GT(runs[i].total, 0u) << "no program total in " << PROFILE;
   }

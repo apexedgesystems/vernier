@@ -19,8 +19,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   between the two program totals by 10, so the count per call does not depend on
   callgrind's call graph, which on Arm can credit a function with calls it never
   received. It fails unless V0 executes more than five times V1's instructions
-  per call and a second run counts exactly the same, and it skips where valgrind
-  is not installed; `CountCalls` skips itself when it is not run that way.
+  per call and a second run counts exactly the same, and it fails, with the
+  run's output, when a counting run under callgrind does not reach its test.
+  It skips only where valgrind is not installed or gives up reading the
+  binary's debug information; `CountCalls` skips itself when it is not run
+  that way.
   Instruction counts do not depend on machine load, so `InstructionCounts` is
   registered with `ctest` (label `callgrind`) and an ordinary test run checks
   what the walkthrough claims. The example library is compiled with `-g` in

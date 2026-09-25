@@ -160,3 +160,46 @@ if (TARGET CallgrindWindowProbe)
     )
   endforeach ()
 endif ()
+
+# ------------------------------------------------------------------------------
+# Callgrind Window Probe, Startup Fault (1 test)
+# ------------------------------------------------------------------------------
+# The probe with StartupFaultUnderValgrind.cpp linked in: it runs plainly, and
+# under valgrind it aborts before its tests start. The hint test's driver must
+# fail on it and say how the run ended. The test passes on that failure
+# message and skips only where valgrind is missing or gives up reading debug
+# information; any other skip would mean the driver hides a real startup
+# fault as a valgrind limitation.
+# ------------------------------------------------------------------------------
+
+vernier_add_app(
+  NAME
+  CallgrindWindowProbeStartupFault
+  SRC
+  "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe.cpp"
+  "${CMAKE_CURRENT_LIST_DIR}/StartupFaultUnderValgrind.cpp"
+  LINK
+  bench
+  NO_INSTALL
+  NO_UPX
+)
+
+if (TARGET CallgrindWindowProbeStartupFault)
+  add_test(
+    NAME CallgrindWindowStartupFaultTest
+    COMMAND
+      "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbeStartupFault> -DCASE=hint
+      -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_startup_fault -P
+      "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
+  )
+  # CMake wraps a fatal error's text, so the words may be split across lines.
+  set_tests_properties(
+    CallgrindWindowStartupFaultTest
+    PROPERTIES LABELS
+               "benchmarking;callgrind"
+               PASS_REGULAR_EXPRESSION
+               "tests[ \n]+did[ \n]+not[ \n]+start[ \n]+under[ \n]+valgrind"
+               SKIP_REGULAR_EXPRESSION
+               "-- SKIPPED: valgrind is not installed;-- SKIPPED: [^\n]* gave up reading debug"
+  )
+endif ()
