@@ -162,26 +162,30 @@ inline bool oneTestPassed(const std::string& log) {
   return log.find("[  PASSED  ] 1 test.") != std::string::npos;
 }
 
-/// valgrind's own reason when its debug-information reader gave up before the
-/// program ran, as a valgrind older than the compiler that wrote a file does
-/// ("Possibly corrupted debuginfo file."); empty for any other outcome.
+/// valgrind's own two lines, as it printed them, when its debug-information
+/// reader gave up before the program ran, as a valgrind older than the
+/// compiler that wrote a file does: the reader's line ("Valgrind: debuginfo
+/// reader: Possibly corrupted debuginfo file.") and the next one, "Valgrind:
+/// I can't recover.  Giving up.  Sorry.". Empty for any other outcome. A skip
+/// quotes these lines, so what it rests on is valgrind's text, not the check's.
 inline std::string debugInfoGiveUp(const std::string& log) {
-  const std::string READER = "Valgrind: debuginfo reader: ";
   const std::size_t GAVE_UP = log.find("Valgrind: I can't recover.  Giving up.");
   if (GAVE_UP == std::string::npos) {
     return "";
   }
-  // The reader's own message is the line just before the one that gives up.
-  const std::size_t AT = log.rfind(READER, GAVE_UP);
-  if (AT == std::string::npos) {
+  // The line that gives up, and the reader's line just before it.
+  const std::size_t LINE_START = log.rfind('\n', GAVE_UP);
+  if (LINE_START == std::string::npos || LINE_START == 0) {
     return "";
   }
-  const std::size_t FROM = AT + READER.size();
-  const std::size_t LINE_END = log.find('\n', FROM);
-  if (LINE_END == std::string::npos || log.find('\n', LINE_END + 1) < GAVE_UP) {
+  const std::size_t READER_BREAK = log.rfind('\n', LINE_START - 1);
+  const std::size_t FROM = READER_BREAK == std::string::npos ? 0 : READER_BREAK + 1;
+  if (log.substr(FROM, LINE_START - FROM).find("Valgrind: debuginfo reader: ") ==
+      std::string::npos) {
     return "";
   }
-  return log.substr(FROM, LINE_END - FROM);
+  const std::size_t TO = log.find('\n', GAVE_UP);
+  return log.substr(FROM, (TO == std::string::npos ? log.size() : TO) - FROM);
 }
 
 /// valgrind expands '%' in output file names; "%%" is a literal one.

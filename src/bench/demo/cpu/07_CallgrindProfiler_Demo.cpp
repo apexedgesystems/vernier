@@ -212,7 +212,9 @@ PERF_TEST(CallgrindProfiler, InstructionCounts) {
       std::error_code ec;
       fs::remove_all(DIR, ec);
       if (!GAVE_UP.empty()) {
-        GTEST_SKIP() << "valgrind could not read this binary's debug information: " << GAVE_UP;
+        GTEST_SKIP() << "valgrind gave up reading this binary's debug information before "
+                        "the program ran. It printed:\n"
+                     << GAVE_UP;
       }
       FAIL() << "CountCalls did not start under callgrind: valgrind " << check::describe(END)
              << ". The run printed:\n"

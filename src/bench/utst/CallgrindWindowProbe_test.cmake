@@ -113,20 +113,23 @@ message(STATUS "exit status: ${_rc}\n${_out}")
 # of not getting there is the probe's or the wrap's failure.
 string(FIND "${_out}" "[==========]" _started)
 if (_started EQUAL -1)
+  # The skip quotes valgrind's two lines as it printed them, so what it rests on
+  # is valgrind's text, not this script's.
   string(
-    REGEX MATCH
-          "Valgrind: debuginfo reader: ([^\n]*)\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-          _gave_up "${_out}"
+    REGEX
+      MATCH
+      "[^\n]*Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\.[^\n]*"
+      _gave_up
+      "${_out}"
   )
   if (NOT _gave_up STREQUAL "")
-    set(_reason "${CMAKE_MATCH_1}")
     execute_process(
       COMMAND "${_valgrind}" --version
       OUTPUT_VARIABLE _version
       OUTPUT_STRIP_TRAILING_WHITESPACE
     )
     message(STATUS "SKIPPED: ${_version} gave up reading debug information before the "
-                   "probe ran (${_reason})"
+                   "probe ran. It printed:\n${_gave_up}"
     )
     return()
   endif ()

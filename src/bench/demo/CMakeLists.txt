@@ -145,9 +145,19 @@ vernier_add_ptest(
 add_test(NAME CallgrindDemoStartupFaultTest
          COMMAND CallgrindDemoStartupFault --gtest_filter=CallgrindProfiler.InstructionCounts
 )
+# It passes only when the check fails with its startup-failure message: that
+# message followed by GoogleTest's FAILED line for the check. It skips only on
+# evidence that is not the check's wording: "valgrind is not installed",
+# decided before anything runs, and valgrind's own two lines when it gives up
+# reading debug information, which the check's skip quotes as valgrind wrote
+# them.
 set_tests_properties(
   CallgrindDemoStartupFaultTest
-  PROPERTIES LABELS "callgrind" PASS_REGULAR_EXPRESSION "CountCalls did not start under callgrind"
-             SKIP_REGULAR_EXPRESSION
-             "valgrind is not installed;could not read this binary's debug information"
+  PROPERTIES
+    LABELS
+    "callgrind"
+    PASS_REGULAR_EXPRESSION
+    "CountCalls did not start under callgrind.*\\[  FAILED  \\] CallgrindProfiler\\.InstructionCounts"
+    SKIP_REGULAR_EXPRESSION
+    "valgrind is not installed;Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
 )

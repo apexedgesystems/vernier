@@ -166,10 +166,10 @@ endif ()
 # ------------------------------------------------------------------------------
 # The probe with StartupFaultUnderValgrind.cpp linked in: it runs plainly, and
 # under valgrind it aborts before its tests start. The hint test's driver must
-# fail on it and say how the run ended. The test passes on that failure
-# message and skips only where valgrind is missing or gives up reading debug
-# information; any other skip would mean the driver hides a real startup
-# fault as a valgrind limitation.
+# fail on it and say how the run ended. The test passes on that failure and
+# skips only where valgrind is missing or gives up reading debug information;
+# any other skip would mean the driver hides a real startup fault as a
+# valgrind limitation.
 # ------------------------------------------------------------------------------
 
 vernier_add_app(
@@ -192,14 +192,20 @@ if (TARGET CallgrindWindowProbeStartupFault)
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_startup_fault -P
       "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
   )
-  # CMake wraps a fatal error's text, so the words may be split across lines.
+  # It passes only on the fatal error CMake prints for the driver's startup
+  # failure (CMake wraps its text, so words may be split across lines): the same
+  # words printed any other way, or a skip, do not pass it. It skips only on
+  # evidence that is not the driver's wording: "valgrind is not installed",
+  # decided before anything runs, and valgrind's own two lines when it gives up
+  # reading debug information, which the driver prints as valgrind wrote them.
   set_tests_properties(
     CallgrindWindowStartupFaultTest
-    PROPERTIES LABELS
-               "benchmarking;callgrind"
-               PASS_REGULAR_EXPRESSION
-               "tests[ \n]+did[ \n]+not[ \n]+start[ \n]+under[ \n]+valgrind"
-               SKIP_REGULAR_EXPRESSION
-               "-- SKIPPED: valgrind is not installed;-- SKIPPED: [^\n]* gave up reading debug"
+    PROPERTIES
+      LABELS
+      "benchmarking;callgrind"
+      PASS_REGULAR_EXPRESSION
+      "CMake Error at [^\n]*\\(message\\):[ \n]+CallgrindWindowProbe[ \n]+\\(hint\\):[ \n]+the[ \n]+probe's[ \n]+tests[ \n]+did[ \n]+not[ \n]+start[ \n]+under[ \n]+valgrind"
+      SKIP_REGULAR_EXPRESSION
+      "-- SKIPPED: valgrind is not installed;Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
   )
 endif ()
