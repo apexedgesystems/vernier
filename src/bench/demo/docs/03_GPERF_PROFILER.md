@@ -308,16 +308,18 @@ in `memcpy` (71.4%), V1 about 7.3 us of its 20.938 us (34.9%).
 | ------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
 | V1 against V0            | 46x faster here; 43.6x to 49.6x over ten runs                                                  | tens of times faster in an optimized build; 30x to 33x on x86                         |
 | `joinV0` in V0's profile | 2.2% own, 97.8% on the stack; 2.0% to 9.0% and 96.5% to 100.0% in the ten runs' own profiles   | should match: 1% to 5% and 95% to 100% on x86                                         |
-| `joinV1` in V1's profile | 61.2% own, 97.1% on the stack; 53.0% to 65.0% and 94.5% to 98.5% in the ten runs' own profiles | a large own share: 58% to 65% on x86                                                  |
+| `joinV1` in V1's profile | 61.2% own, 97.1% on the stack; 53.0% to 65.0% and 94.5% to 98.5% in the ten runs' own profiles | a large own share: 56% to 82% on x86                                                  |
 | the rest of V0's samples | `memcpy` 71.4%, the allocator 24%                                                              | the same kinds of function; their names depend on the C library and its debug symbols |
 | sampling rate            | 100 per second of CPU time                                                                     | the same default                                                                      |
 | absolute times           | V0 970.3 and V1 20.9 us/call; 923.1 to 997.7 and 20.0 to 21.7 over ten runs                    | will differ                                                                           |
 
 The ten runs are step 1's command run ten times in one session, the reference
 capture among them; each carries its own profiles, from
-`GperfProfiler.ProfileAttribution`. The x86 figures are five runs of the same
-command on an x86 laptop (clang 21, gperftools 2.15, Release) that was busy
-with other work, so its timings are noisier than the rig's.
+`GperfProfiler.ProfileAttribution`. The x86 figures come from an x86 laptop
+(clang 21, gperftools 2.15, Release) that was busy with other work, so its
+timings are noisier than the rig's: the ratio from five runs of step 1's
+command, the profile shares from nine runs of the profile test, those five
+among them.
 
 ## If It Does Not Match
 
