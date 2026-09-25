@@ -97,12 +97,12 @@ void HeaptrackProfiler::beforeMeasure() {
                "[heaptrack] normally but no heap profile is collected. To collect:\n"
                "[heaptrack]   heaptrack -o %s/run.heaptrack \\\n"
                "[heaptrack]       <this-binary> --profile heaptrack [...]\n"
-               "[heaptrack] Then: heaptrack_print %s/run.heaptrack.zst | head -40\n\n",
+               "[heaptrack] Then: heaptrack_print %s/run.heaptrack.* | head -40\n\n",
                artifactDir_.c_str(), artifactDir_.c_str());
 }
 
 void HeaptrackProfiler::afterMeasure(const Stats& /*s*/) {
-  // heaptrack writes its .zst file at process exit; nothing to do per-measure.
+  // heaptrack writes its trace at process exit; nothing to do per-measure.
 }
 
 /* ----------------------------- Env check ----------------------------- */
@@ -111,6 +111,15 @@ EnvReport checkHeaptrackEnvironment() {
   if (!isHeaptrackOnPath()) {
     return EnvReport{EnvReport::Status::Error, "heaptrack binary not found on PATH",
                      "apt install heaptrack (and optionally heaptrack-gui)."};
+  }
+  // bench doctor runs this inside the benchmark binary (--profile-check), so
+  // the maps checked here are those of the process heaptrack would record.
+  if (isOperatorNewReplaced()) {
+    return EnvReport{
+        EnvReport::Status::Warning,
+        "heaptrack available, but libtcmalloc is loaded: C++ allocations will be missing",
+        "Use a build without tcmalloc (-DVERNIER_LINK_TCMALLOC=OFF, the default) and do not "
+        "preload it."};
   }
   return EnvReport{EnvReport::Status::Ok, "heaptrack available", ""};
 }

@@ -83,7 +83,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (2)
+# Demos Built on a Shared Example (3)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -91,6 +91,10 @@ endif ()
 
 target_link_libraries(
   BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
 
