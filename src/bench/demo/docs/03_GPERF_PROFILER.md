@@ -409,9 +409,10 @@ Two things run against this example, and both fail loudly:
   ctest --test-dir build -L demo
   ```
 
-  ```
-  100% tests passed, 0 tests failed out of 13
-  ```
+  Every test it runs should pass. The ones that hold `joinV0` and `joinV1` to
+  the same string are `JoinTest.KnownAnswer` and
+  `*/JoinSizesTest.VersionsAgree/*`, one CTest entry that runs the comparison at
+  every input size the example's tests use.
 
 This repository has no continuous-integration lane on the reference board, so
 nothing runs the demo itself automatically. Before a release it is run on the
