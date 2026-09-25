@@ -60,15 +60,6 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (1)
-# ------------------------------------------------------------------------------
-
-target_link_libraries(
-  BenchDemo_01_BasicWorkflow
-  PRIVATE demo_example_join
-)
-
-# ------------------------------------------------------------------------------
 # GPU Demo Sources
 # ------------------------------------------------------------------------------
 
@@ -89,4 +80,24 @@ if (TARGET bench_cuda)
       demo_helpers
     )
   endforeach ()
+endif ()
+
+# ------------------------------------------------------------------------------
+# Demos Built on a Shared Example (3)
+# ------------------------------------------------------------------------------
+# After both demo lists, so every demo target exists. The GPU demo and its
+# example are only built where the GPU demos are.
+# ------------------------------------------------------------------------------
+
+target_link_libraries(
+  BenchDemo_01_BasicWorkflow
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_15_HeaptrackProfiler
+  PRIVATE demo_example_join
+)
+
+if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
+  target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
 endif ()

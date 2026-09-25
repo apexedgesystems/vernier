@@ -360,6 +360,10 @@ PERF_CONTENTION(SharedCounter, Increment) {
 bench compare t1.csv t8.csv
 ```
 
+The comparison labels each test by the change in its median between the two
+thread counts, so a large `IMPROVEMENT` here is the scaling you were looking
+for rather than anything to fix.
+
 ### Memory Bandwidth Analysis
 
 Understand if your code is CPU-bound or memory-bound:
@@ -1049,6 +1053,12 @@ git checkout feature/optimization
 # Compare
 bench compare baseline.csv optimized.csv
 ```
+
+`bench compare` labels each test by how far its median moved, against a
+threshold of 5% unless `--threshold` says otherwise, and lists the tests only
+one of the two runs reported. The labels describe the difference between
+these two runs rather than establishing that the code got slower, so confirm
+a small change on a noisy test (a high CV in either run) by measuring again.
 
 ### 6. Use Profilers to Find Hotspots
 

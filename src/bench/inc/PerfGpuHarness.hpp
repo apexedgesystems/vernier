@@ -34,7 +34,7 @@ struct PerfGpuResult {
   double transferTimeUs{};
   double totalTimeUs{};
   double callsPerSecond{};
-  double speedupVsCpu{};
+  double speedupVsCpu{}; ///< CPU baseline / this result; 0 when there is no baseline to use
   std::string label;
   int deviceId{-1}; // device tracking
 };
@@ -130,6 +130,19 @@ public:
   PerfGpuCase(const PerfGpuCase&) = delete;
   PerfGpuCase& operator=(const PerfGpuCase&) = delete;
 
+  /**
+   * @brief Measure the CPU cost a GPU result is compared against.
+   *
+   * A GPU case is compared against the baseline its own case measured. A case
+   * that measures none is compared against its suite's baseline, but only
+   * while exactly one case of that suite has recorded one: once a second case
+   * records a baseline there is no single answer, and GPU cases without their
+   * own baseline report no speedup (an empty `speedupVsCpu` cell) and the
+   * suite is named once on stderr. Call this in the GPU case itself, or keep
+   * one baseline case per suite.
+   *
+   * @note NOT RT-safe (runs a measurement, records the result).
+   */
   PerfResult cpuBaseline(CpuFn fn, std::string label = "cpu_baseline");
   CudaKernelBuilder cudaKernel(KernelFn kernel, std::string label = "cuda_kernel");
 

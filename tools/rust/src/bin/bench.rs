@@ -5,7 +5,7 @@
 //!
 //! Usage:
 //!   bench summary <results.csv>                      # Pretty-print one CSV
-//!   bench compare <baseline.csv> <candidate.csv>     # Colored regression diff
+//!   bench compare <baseline.csv> <candidate.csv>     # Colored median-change diff
 //!   bench validate                                   # CPU environment readiness
 //!   bench gpu-env                                    # GPU environment readiness
 //!   bench gpu-lock lock [--freq MHz] [-- cmd...]     # Lock GPU clocks for benchmarking
@@ -14,6 +14,32 @@
 //!   bench gpu-monitor diff <before> <after>          # Diff two GPU snapshots
 //!   bench run <binary> [-- extra_args...]            # Execute benchmark binary
 //!   bench flamegraph <perf.data>                     # Generate SVG flamegraph
+//!
+//! The comparison contract:
+//!
+//! `bench compare` labels every test both runs report by the percentage
+//! change of its reported median against `--threshold` (default 5%). The two
+//! CV values travel with each row as context. The command is advisory and
+//! exits 0; `--fail-on-regression` is the gate and exits 1 when a test is
+//! labelled REGRESSION or the candidate does not run a baseline test.
+//! Candidate-only tests are reported as new and do not fail on their own.
+//! Unusable input exits 1 with the cause on stderr and no comparison on
+//! stdout, with or without the gate flag: an unusable `--threshold`, a
+//! `wallMedian` or `wallCV` that is missing, empty or not a finite number, a
+//! median of zero or less, a negative CV, a blank or duplicate test identity,
+//! no test in both runs, or a percentage change too large to represent. Test
+//! names are matched exactly as written.
+//!
+//! The summary contract:
+//!
+//! `bench summary`, and the summary `bench run --analyze` prints after a run,
+//! show every row's wallMedian, wallCV and callsPerSecond, and its wallP10,
+//! wallP90, stable, cvThreshold, cycles and repeats where the row gives them.
+//! A row whose test name is empty or only whitespace, a required value that
+//! is missing, or any shown value that is not a finite number of its kind
+//! exits 1 with the cause on stderr and no summary output; `bench summary`
+//! leaves stdout empty, while `run --analyze` preserves run output already
+//! emitted.
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -49,7 +75,7 @@ enum Command {
         json: bool,
     },
 
-    /// Compare two benchmark runs and detect regressions
+    /// Compare two benchmark runs by the change in each reported median
     Compare {
         /// Baseline results CSV
         baseline: PathBuf,
@@ -57,7 +83,7 @@ enum Command {
         /// Candidate results CSV
         candidate: PathBuf,
 
-        /// Regression threshold percentage
+        /// Median change, in percent, beyond which a test is labelled
         #[arg(long, default_value = "5.0")]
         threshold: f64,
 
@@ -69,7 +95,7 @@ enum Command {
         #[arg(long)]
         markdown: bool,
 
-        /// Exit with code 1 if any regression detected (CI mode)
+        /// Exit 1 on a labelled regression or a missing baseline test (CI gate)
         #[arg(long)]
         fail_on_regression: bool,
     },
@@ -305,10 +331,6 @@ fn main() -> ExitCode {
 
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(Error::Regression(n)) => {
-            eprintln!("Error: {n} regression(s) detected");
-            ExitCode::FAILURE
-        }
         Err(e) => {
             eprintln!("Error: {e}");
             ExitCode::FAILURE
@@ -320,7 +342,9 @@ fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
             let sort_col: SortColumn = sort.parse()?;
-            let rows = bench::load_csv(&csv)?;
+            // A value the summary could not show truthfully is refused before
+            // anything is printed.
+            let rows = bench::load_csv_strict(&csv, &bench::report::SUMMARY_COLUMNS)?;
 
             if json {
                 println!("{}", bench::report::summary_to_json(&rows));
@@ -337,24 +361,30 @@ fn run(args: Args) -> Result<(), Error> {
             markdown,
             fail_on_regression,
         } => {
-            let base_rows = bench::load_csv(&baseline)?;
-            let cand_rows = bench::load_csv(&candidate)?;
-            let results = bench::compare_runs(&base_rows, &cand_rows, threshold);
+            let columns = bench::compare::measured_columns();
+            let base_rows = bench::load_csv_strict(&baseline, &columns)?;
+            let cand_rows = bench::load_csv_strict(&candidate, &columns)?;
+            // Unusable input is reported instead of a comparison, so nothing
+            // reaches stdout that a gate could read as a pass.
+            let comparison = bench::compare_runs(&base_rows, &cand_rows, threshold)?;
 
             if json {
-                println!("{}", bench::to_json(&results));
+                println!("{}", bench::to_json(&comparison));
             } else if markdown {
-                print!("{}", bench::to_markdown(&results));
+                print!("{}", bench::to_markdown(&comparison));
             } else {
-                bench::print_comparison_table(&results);
+                bench::print_comparison_table(&comparison);
             }
 
-            if fail_on_regression && bench::has_regressions(&results) {
-                let count = results
-                    .iter()
-                    .filter(|r| r.classification == bench::Classification::Regression)
-                    .count();
-                return Err(Error::Regression(count));
+            if fail_on_regression {
+                let regressions = comparison.regression_count();
+                let missing = comparison.baseline_only.len();
+                if regressions > 0 || missing > 0 {
+                    return Err(Error::Gate {
+                        regressions,
+                        missing,
+                    });
+                }
             }
         }
 
@@ -411,9 +441,9 @@ fn run(args: Args) -> Result<(), Error> {
 
             if analyze {
                 if let Some(ref path) = csv_path {
+                    let rows = bench::load_csv_strict(path, &bench::report::SUMMARY_COLUMNS)?;
                     println!();
                     println!("--- Post-run analysis ---");
-                    let rows = bench::load_csv(path)?;
                     bench::print_summary_table(&rows, SortColumn::Name);
                 } else {
                     eprintln!("Warning: --analyze requires --csv to produce output");

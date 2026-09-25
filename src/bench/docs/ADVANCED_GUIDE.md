@@ -436,7 +436,11 @@ bench-plot plot results.csv --output plots/
 bench compare baseline.csv optimized.csv
 ```
 
-**Statistical analysis:**
+Each test both CSVs report is labelled by how far its median moved against
+the threshold (5% by default), and tests only one of the two ran are listed
+separately. The labels compare two runs; they are not a significance test.
+
+**Choose the threshold:**
 
 ```bash
 bench compare baseline.csv candidate.csv --threshold 5

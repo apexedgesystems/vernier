@@ -89,7 +89,7 @@ how to compare two runs.
 | 12  | Memcheck Profiler     | Leak / UAF detection               | Raw new[] (leaky)           | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
 | 13  | Off-CPU Profiler      | Where threads go to sleep          | std::mutex contention       | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
 | 14  | Helgrind Profiler     | Data-race / thread-error detection | Unguarded shared counter    | std::atomic counter        | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)     |
-| 15  | Heaptrack Profiler    | Ranked allocation-site profiling   | Unreserved vector push_back | Reserved + reused buffer   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md)   |
+| 15  | Heaptrack Profiler    | Who allocates, and how often       | join V0 (2 allocs per part) | join V1 (1 alloc per call) | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md)   |
 | 16  | jemalloc Profiler     | Sampled allocation hotspots        | Per-iter string churn       | Reserved + reused string   | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)     |
 
 The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
@@ -101,14 +101,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                    | Slow Path              | Fast Path               | Walkthrough                                               |
-| --- | ------------------ | -------------------------- | ---------------------- | ----------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU comparison      | CPU loop               | CUDA kernel             | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis | Strided global reads   | Sequential global reads | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding | Naive global transpose | Padded shared transpose | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels   | Deliberate OOB write   | Bounds-checked scale    | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
+| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
+
+Demo 01 measures the shared SAXPY example (see
+[Shared Examples](#shared-examples)); the other three carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -185,11 +188,20 @@ slow/fast workload pairs used across demos:
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
 and dependency chains), and designed to show measurable differences.
 
+### Shared Examples
+
 Code a walkthrough teaches from lives in its own directory beside these
 helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
 and unit tests that hold the example's versions to the same answers,
 registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
+
+| Example                               | Versions                                                                                                  | Used In      |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------ |
+| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 21 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10      |
+
+The saxpy example and its tests are built only where the GPU demos are.
 
 ---
 
@@ -255,9 +267,11 @@ A walkthrough meets this contract:
 - **A named rig and a Release build.** Commands were run as written and
   output blocks are pasted from that run, with the capture date and the
   Vernier version.
-- **A test that asserts its own effect.** The demo's performance test
-  fails if the slow and fast variants stop differing, so a walkthrough
-  cannot drift silently.
+- **A test that asserts its own effect.** A test fails if the slow and
+  fast variants stop differing in what the walkthrough shows: the demo's
+  own performance test, or the unit tests of the example it measures when
+  a check inside the demo would change what the demo shows. The
+  walkthrough names its test, and cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
 - **Something runs it.** A walkthrough is re-run on its rig before every

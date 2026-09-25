@@ -30,6 +30,7 @@ Complete guide to GPU/CUDA performance benchmarking. This guide assumes you're f
 
 ```cpp
 #include <gtest/gtest.h>
+#include "Perf.hpp"
 #include "PerfGpu.hpp"
 
 namespace ub = vernier::bench;
@@ -93,8 +94,16 @@ PERF_GPU_TEST(VectorAdd, Basic) {
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
 }
 
-PERF_MAIN()
+PERF_GPU_MAIN()
 ```
+
+`PERF_GPU_MAIN()` is the entry point of a GPU benchmark: it parses the GPU
+flags (`--gpu-device`, `--gpu-memory`, `--gpu-warmup`, `--min-speedup`,
+`--capture-um`) as well as the common ones, and marks the run as a GPU run so
+that the CSV carries the GPU columns whatever the tests are named.
+`PERF_MAIN()` does neither: the GPU flags are passed through unread, and the
+CSV gets its GPU columns only if a test name happens to contain `Gpu`, `GPU`
+or `CUDA`.
 
 ### Build and Run
 
@@ -288,7 +297,7 @@ PERF_GPU_BANDWIDTH(Suite, Name)      // Memory bandwidth test
 PERF_GPU_SCALING(Suite, Name)        // Multi-GPU scaling test
 
 PERF_GPU_GUARD(varName)           // Create scoped PerfGpuCase
-PERF_MAIN()                          // Main function with GPU support
+PERF_GPU_MAIN()                      // Main function with GPU flag parsing
 ```
 
 ### Basic Kernel Test
