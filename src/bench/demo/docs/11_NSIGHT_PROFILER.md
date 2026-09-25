@@ -519,6 +519,87 @@ queued it, instead of about 16 us, while the copies and the kernel take as long
 as ever. `G1` then reads about 0.9 ms a call instead of about 0.65 ms (see
 [What Should Reproduce](#what-should-reproduce)).
 
+## The Reports as CSV
+
+Vernier's `nsight-parse` is meant to turn these reports into one CSV. It is
+one of Vernier's Python tools, which a build puts in `build/bin/tools/py` when
+it finds Poetry and pip; this rig's build has no Poetry, so for this page the
+wheel built from the same tree was installed with `pip3 install --target` and
+put on `PATH`. In this release it does not read what `bench run` leaves
+reliably:
+
+- **Step 2's folder.** It runs `nsys stats` without `--force-export=true`, so
+  it writes no rows whenever `nsys` refuses the SQLite export beside the report
+  (see [If It Does Not Match](#if-it-does-not-match)). Run after each of eight
+  runs of Step 2's command, it wrote no rows four times:
+
+  ```bash
+  nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
+  ```
+
+  ```
+  [nsight-parse] nsys stats --report cuda_gpu_kern_sum failed for profile.nsys-rep
+  [nsight-parse] nsys stats --report cuda_api_sum failed for profile.nsys-rep
+  [nsight-parse] nsys stats --report cuda_gpu_mem_size_sum failed for profile.nsys-rep
+  [nsight-parse] nsys stats --report cuda_gpu_mem_time_sum failed for profile.nsys-rep
+  [nsight-parse] wrote 0 rows to nsys_summaries.csv
+  ```
+
+  and 13 rows the other four, one per row of the four summaries.
+
+- **Step 4's report.** It runs `ncu` without `--import`, so `ncu` takes the
+  report for a program to launch ("The target application is not an
+  executable binary", when that command is run by hand), and the parse writes
+  no rows:
+
+  ```bash
+  nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_summary.csv
+  ```
+
+  ```
+  [nsight-parse] ncu --csv failed for kernel_profile.ncu-rep
+  [nsight-parse] wrote 0 rows to ncu_summary.csv
+  ```
+
+Both tools print CSV themselves, so until `nsight-parse` reads these reports,
+ask them. The output below is from a second run of Steps 2 and 4 with the
+clocks as found, so its numbers differ a little from those steps:
+
+```bash
+nsys stats --force-export=true --format csv --report cuda_gpu_kern_sum bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
+```
+
+```
+Generating SQLite file bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.sqlite from bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
+Processing [bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.sqlite] with [/opt/nvidia/nsight-systems/2025.3.2/host-linux-armv8/reports/cuda_gpu_kern_sum.py]...
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+100.0,179106560,61,2936173.1,2889824.0,2864096,3829824,169012.8,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)"
+```
+
+The other summaries come the same way (`--report cuda_api_sum`, and so on).
+Nsight Compute prints one row per launch shape, section and metric, 88 rows
+after the header here:
+
+```bash
+ncu --import bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep --csv --print-summary per-kernel
+```
+
+```
+"Process ID","Process Name","Host Name","Kernel Name","Block Size","Grid Size","Device","CC","Invocations","Section Name","Metric Name","Metric Unit","Minimum","Maximum","Average"
+...
+"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(256, 1, 1)","(4096, 1, 1)","0","11.0","14","Occupancy","Theoretical Occupancy","%","100.00","100.00","100.00"
+"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(256, 1, 1)","(4096, 1, 1)","0","11.0","14","Occupancy","Achieved Occupancy","%","73.56","79.38","74.92"
+...
+"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(1, 1, 1)","(1048576, 1, 1)","0","11.0","14","Occupancy","Theoretical Occupancy","%","50.00","50.00","50.00"
+"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(1, 1, 1)","(1048576, 1, 1)","0","11.0","14","Occupancy","Achieved Occupancy","%","27.46","30.08","28.52"
+...
+```
+
+`nsight-parse`'s CSV, when it has rows, is not a benchmark CSV: the benchmark
+tools need `test`, `wallMedian`, `wallCV` and `callsPerSecond` columns.
+`bench summary` and `bench compare` refuse it (`missing required column
+'test'`), and `bench-plot` stops with `Missing required columns`.
+
 ## What Should Reproduce
 
 | Reading                                       | On this rig                                                                                                  | Elsewhere                                                                                                        |
@@ -594,8 +675,9 @@ blocks and 6.5 us in 256-thread ones; `G0` took 2.62 to 2.63 ms a call and
   compares timings that `ncu`'s replay distorts.
 
 - **`nsys stats` refuses the report.** After `bench run` has summarized a
-  report, `nsys stats` without `--force-export=true` stops at the SQLite export
-  left beside it:
+  report, `nsys stats` without `--force-export=true` can stop at the SQLite
+  export left beside it. After six runs of Step 2's command it stopped four
+  times:
 
   ```
   WARNING: Existing SQLite export found: bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.sqlite

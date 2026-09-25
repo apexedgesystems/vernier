@@ -530,6 +530,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **`nsight-parse` is documented as what it is** -- its help and the tools
+  README said its CSV fed `bench-plot` and `bench compare`, which refuse it:
+  it has one row per row of the `nsys stats` summaries and none of the
+  benchmark columns. Both now describe that format, and what the parser cannot
+  read in this release: a report that `bench run --profile nsight` summarized
+  can yield no rows, because the parser runs `nsys stats` without
+  `--force-export=true` and nsys sometimes refuses the SQLite export beside the
+  report; an `.ncu-rep` yields none, because the parser runs `ncu` without
+  `--import`. Each prints a warning and exits 0. Walkthrough 11 shows both and
+  reads the reports with `nsys stats --force-export=true --format csv` and
+  `ncu --import ... --csv` instead.
 
 ## v1.0.3 - 2026-06-28
 

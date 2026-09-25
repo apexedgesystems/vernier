@@ -1,30 +1,43 @@
 #!/usr/bin/env python3
 """
-nsight_parser.py -- Extract Nsight Systems / Nsight Compute reports into CSV.
+nsight_parser.py -- Read Nsight Systems / Nsight Compute reports into one CSV.
 
-Nsight ships its own renderers (`nsys stats`, `ncu --csv`), but their output
-is verbose and split across one report per metric family. This tool runs the
-canonical extractions and consolidates them into a single tidy CSV the rest
-of the vernier toolchain (bench-plot, bench compare) can consume.
+Runs `nsys stats` (the four CUDA summaries) and `ncu --csv --print-summary
+per-kernel` on each report and writes what they print as one CSV of its own.
+That CSV is not a benchmark CSV: bench summary, bench compare and bench-plot
+need test, wallMedian, wallCV and callsPerSecond columns and refuse it. Read
+it with a CSV tool.
 
-Supported inputs:
-    *.nsys-rep      Nsight Systems profile (timeline + kernel timing)
-    *.ncu-rep       Nsight Compute profile (kernel-level hardware metrics)
+Inputs:
+    *.nsys-rep      Nsight Systems report
+    *.ncu-rep       Nsight Compute report (not read in this release; below)
+    a directory     every report under it
 
 Usage:
-    nsight-parse parse run.nsys-rep --csv kernels.csv
-    nsight-parse parse run.ncu-rep  --csv compute.csv
-    nsight-parse parse <dir>/       --csv combined.csv   # all reps in a dir
+    nsight-parse parse run.nsys-rep --csv summaries.csv
+    nsight-parse parse <dir>/       --csv combined.csv
 
-Output schema (one row per kernel instance, columns vary by source):
-    source              "nsys" | "ncu"
-    report              the underlying nsys/ncu report name
-    kernel              demangled kernel name
-    instances           number of launches in this aggregate row (nsys)
-    time_total_ns       total kernel time across instances
-    time_avg_ns         per-instance average
-    time_pct            share of total GPU time
-    ... metric columns ...
+Output (nsys): one row per row of each summary -- per kernel name, per CUDA
+call name, per kind of copy -- not one per launch. Columns:
+    source              "nsys"
+    report              the summary (cuda_gpu_kern_sum, cuda_api_sum, ...)
+    kernel              its Name; empty for the copy summaries (Operation)
+    instances           Instances or Num Calls; empty for the copy summaries
+    time_total_ns       Total Time (ns)
+    time_avg_ns         Avg (ns)
+    time_pct            Time (%)
+    ...                 every other column the summaries print, under its own
+                        name, in alphabetical order
+
+Limits in this release (each failed command is a warning on stderr; the rows
+that were read are written, and the exit status is 0):
+    nsys stats runs without --force-export=true, so a report that
+    `bench run --profile nsight` summarized, with its SQLite export beside it,
+    can be refused ("older than input file") and yield no rows; a copy of the
+    report in a directory of its own parses.
+    ncu runs without --import, so it takes an .ncu-rep for a program to launch
+    and yields no rows. Meanwhile: ncu --import run.ncu-rep --csv
+    --print-summary per-kernel.
 """
 
 from __future__ import annotations
