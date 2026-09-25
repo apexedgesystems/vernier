@@ -80,8 +80,201 @@ fn summary_old_format_csv() {
     assert!(out.contains("Queue.Throughput"));
 }
 
+/// Summary JSON rows by test name.
+fn summary_json(csv: &str) -> serde_json::Map<String, serde_json::Value> {
+    let (code, out, err) = run(&["summary", csv, "--json"]);
+    assert_eq!(code, 0, "{csv}: {err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    parsed
+        .as_array()
+        .expect("an array of rows")
+        .iter()
+        .map(|row| (row["test"].as_str().expect("test").to_string(), row.clone()))
+        .collect()
+}
+
+/// @test A value summary cannot show truthfully fails it, as text and as JSON,
+/// naming the file, line, test, column and value, with nothing on stdout.
+#[test]
+fn summary_unreadable_measurement_is_an_error() {
+    let modes: [&[&str]; 2] = [&[], &["--json"]];
+    for (file, found) in [
+        (
+            "compare_median_malformed.csv",
+            "has wallMedian 'n/a', which is not a number",
+        ),
+        (
+            "compare_median_blank.csv",
+            "has no wallMedian value: the field is empty",
+        ),
+        (
+            "compare_median_absent.csv",
+            "has no wallMedian value: the row ends after 9 of 20 columns",
+        ),
+        (
+            "compare_cv_malformed.csv",
+            "has wallCV 'garbage', which is not a number",
+        ),
+        (
+            "compare_cv_blank.csv",
+            "has no wallCV value: the field is empty",
+        ),
+        (
+            "compare_cv_absent.csv",
+            "has no wallCV value: the row ends after 16 of 20 columns",
+        ),
+        (
+            "summary_throughput_malformed.csv",
+            "has callsPerSecond 'garbage', which is not a number",
+        ),
+        (
+            "summary_throughput_blank.csv",
+            "has no callsPerSecond value: the field is empty",
+        ),
+        (
+            "summary_throughput_absent.csv",
+            "has no callsPerSecond value: the row ends after 17 of 20 columns",
+        ),
+        (
+            "compare_non_finite.csv",
+            "has wallMedian 'nan', which is not a finite number",
+        ),
+        (
+            "summary_cv_infinite.csv",
+            "has wallCV 'inf', which is not a finite number",
+        ),
+        (
+            "summary_throughput_infinite.csv",
+            "has callsPerSecond '-inf', which is not a finite number",
+        ),
+        (
+            "summary_p10_malformed.csv",
+            "has wallP10 'garbage', which is not a number",
+        ),
+        (
+            "summary_p90_not_finite.csv",
+            "has wallP90 'NaN', which is not a finite number",
+        ),
+        (
+            "summary_cycles_malformed.csv",
+            "has cycles '1.5', which is not a whole number from 0 to 4294967295",
+        ),
+        (
+            "summary_stable_malformed.csv",
+            "has stable 'yes', which is not a whole number from 0 to 255",
+        ),
+    ] {
+        let csv = fixture(file);
+        let expected = format!("{csv}, line 3: test 'Queue.Latency' {found}");
+        for mode in modes {
+            let mut args = vec!["summary", csv.as_str()];
+            args.extend_from_slice(mode);
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?} printed a summary: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test Zeros are values, and optional columns a layout or a row leaves out
+/// take their defaults, as do the columns a GPU CSV's CPU rows stop before.
+#[test]
+fn summary_accepts_zeros_and_left_out_columns() {
+    let rows = summary_json(&fixture("compare_cv_zero.csv"));
+    assert_eq!(rows["Queue.Latency"]["wall_cv"], 0.0);
+
+    // A median, CV and throughput of 0: summary shows them though compare
+    // would refuse the median.
+    let zeros = fixture("summary_zeros.csv");
+    let rows = summary_json(&zeros);
+    for field in ["wall_median", "wall_p10", "wall_cv", "calls_per_second"] {
+        assert_eq!(rows["Queue.Latency"][field], 0.0, "{field}");
+    }
+    let (code, out, err) = run(&["summary", &zeros]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("3 tests"), "{out}");
+
+    // No cycles, repeats or cvThreshold column; an empty wallP10; a row that
+    // stops before stable.
+    let rows = summary_json(&fixture("summary_left_out.csv"));
+    let latency = &rows["Queue.Latency"];
+    assert_eq!(latency["wall_p10"], 0.0);
+    assert_eq!(latency["wall_p90"], 0.013);
+    assert_eq!(latency["stable"], true);
+    assert_eq!(latency["cycles"], 0);
+    assert_eq!(rows["Queue.Throughput"]["wall_p10"], 0.042);
+
+    let rows = summary_json(&fixture("summary_gpu_rows.csv"));
+    assert_eq!(rows["Saxpy.Cpu"]["wall_median"], 0.045);
+    assert_eq!(rows["Saxpy.Gpu"]["wall_median"], 0.015);
+
+    let rows = summary_json(&fixture("sample_bench_old_format.csv"));
+    assert_eq!(rows["Queue.Latency"]["stable"], true);
+    assert_eq!(rows.len(), 2);
+}
+
+/// A test name that is empty or only whitespace, and what the loader says.
+const BLANK_NAMES: [(&str, &str); 2] = [
+    ("compare_name_empty.csv", "the row has no test name"),
+    (
+        "compare_name_blank.csv",
+        "test name \"   \" is only whitespace",
+    ),
+];
+
+/// @test A row with an empty or whitespace-only test name fails summary, as
+/// text and as JSON, naming the file and line.
+#[test]
+fn summary_blank_test_name_is_an_error() {
+    let modes: [&[&str]; 2] = [&[], &["--json"]];
+    for (file, problem) in BLANK_NAMES {
+        let csv = fixture(file);
+        let expected = format!("{csv}, line 3: {problem}");
+        for mode in modes {
+            let mut args = vec!["summary", csv.as_str()];
+            args.extend_from_slice(mode);
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?} printed a summary: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test A test name with spaces around it is kept as written in summary.
+#[test]
+fn summary_keeps_a_padded_test_name() {
+    let rows = summary_json(&fixture("compare_name_padded.csv"));
+    assert!(rows.contains_key(" Queue.Latency "), "{rows:?}");
+    assert!(!rows.contains_key("Queue.Latency"), "{rows:?}");
+}
+
+/// @test A CSV without a test column is refused by summary and compare.
+#[test]
+fn missing_test_column_is_an_error() {
+    let csv = fixture("compare_no_test_column.csv");
+    let good = fixture("sample_bench.csv");
+    let (csv, good) = (csv.as_str(), good.as_str());
+    for args in [
+        vec!["summary", csv],
+        vec!["summary", csv, "--json"],
+        vec!["compare", good, csv],
+        vec!["compare", csv, good, "--json", "--fail-on-regression"],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(out.is_empty(), "{args:?}: {out}");
+        assert!(
+            err.contains(&format!("missing required column 'test' in {csv}")),
+            "{args:?}: {err}"
+        );
+    }
+}
+
 /* ----------------------------- Compare ----------------------------- */
 
+/// @test Two identical runs label every test neutral and exit 0.
 #[test]
 fn compare_identical_all_neutral() {
     let csv = fixture("sample_bench.csv");
@@ -89,51 +282,698 @@ fn compare_identical_all_neutral() {
     assert_eq!(code, 0);
     assert!(out.contains("neutral"), "identical files should be neutral");
     assert!(!out.contains("REGRESSION"));
+    assert!(!out.contains("IMPROVEMENT"));
 }
 
+/// @test A slower and a faster median are labelled against the threshold.
 #[test]
-fn compare_detects_regression() {
+fn compare_labels_both_directions() {
     let base = fixture("sample_bench.csv");
     let cand = fixture("sample_bench_regressed.csv");
     let (code, out, _) = run(&["compare", &base, &cand]);
     assert_eq!(
         code, 0,
-        "compare without --fail-on-regression always exits 0"
+        "a comparison that ran exits 0 without --fail-on-regression"
     );
-    // Queue.Latency doubled from 0.012 to 0.024 -- should show large delta
-    assert!(out.contains("Queue.Latency"));
+    // Queue.Latency 0.012 -> 0.024 (+100%), Lock.Contended 0.080 -> 0.070
+    // (-12.5%), Queue.Throughput 0.045 -> 0.046 (+2.2%, inside the 5%
+    // threshold).
+    assert!(out.contains("REGRESSION"), "Queue.Latency is +100%: {out}");
+    assert!(
+        out.contains("IMPROVEMENT"),
+        "Lock.Contended is -12.5%: {out}"
+    );
+    assert!(out.contains("1 regression(s)"), "{out}");
+    assert!(out.contains("1 improvement(s)"), "{out}");
+    assert!(out.contains("1 neutral"), "{out}");
 }
 
+/// @test The table shows both CV values and no p-value.
 #[test]
-fn compare_fail_on_regression_exits_nonzero() {
+fn compare_table_shows_cv_not_p_value() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("sample_bench_regressed.csv");
+    let (code, out, _) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 0);
+    assert!(out.contains("Base CV"), "CV context column missing: {out}");
+    assert!(out.contains("Cand CV"), "CV context column missing: {out}");
+    assert!(
+        !out.to_lowercase().contains("p-value"),
+        "the table still presents a p-value: {out}"
+    );
+    // Queue.Throughput baseline CV 0.0667 -> 6.7%.
+    assert!(out.contains("6.7%"), "CV values are not shown: {out}");
+}
+
+/// @test The output states the rule the labels come from.
+#[test]
+fn compare_states_the_labelling_rule() {
+    let csv = fixture("sample_bench.csv");
+    let (code, out, _) = run(&["compare", &csv, &csv, "--threshold", "3"]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("median change against the 3.0% threshold"),
+        "the labelling rule is not stated: {out}"
+    );
+}
+
+/// @test The gate exits 1 and names the flag when a test is a regression.
+#[test]
+fn compare_fail_on_regression_exits_one() {
     let base = fixture("sample_bench.csv");
     let cand = fixture("sample_bench_regressed.csv");
     let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
-    // Queue.Latency has 100% regression, should trigger failure
-    // (depends on p-value from synthesized samples -- may or may not trigger)
-    // At minimum, the command should run without crashing
-    assert!(
-        code == 0 || code == 1,
-        "should exit 0 or 1, got {code}: {err}"
+    assert_eq!(code, 1, "Queue.Latency is +100%: {err}");
+    assert!(err.contains("--fail-on-regression"), "{err}");
+    assert!(err.contains("1 regression(s)"), "{err}");
+    assert!(err.contains("0 baseline test(s) missing"), "{err}");
+}
+
+/// @test A change of exactly the threshold is neutral and passes the gate.
+#[test]
+fn compare_threshold_boundary_is_neutral() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("sample_bench_regressed.csv");
+    // Queue.Latency is exactly +100.0%.
+    let (code, out, err) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "100",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "+100.0% is not beyond a 100% threshold: {err}");
+    assert!(!out.contains("REGRESSION"), "{out}");
+
+    let (code, out, _) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "99.9",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 1, "+100.0% is beyond a 99.9% threshold");
+    assert!(out.contains("REGRESSION"), "{out}");
+}
+
+/// `text` without its ANSI colour sequences.
+fn strip_ansi(text: &str) -> String {
+    let mut plain = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            chars.by_ref().find(|&c| c == 'm');
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// Each test's label, as JSON, the table and the Markdown table print it.
+/// The three must agree.
+fn labels(base: &str, cand: &str, threshold: &str) -> Vec<(String, String)> {
+    let (code, out, err) = run(&["compare", base, cand, "--threshold", threshold, "--json"]);
+    assert_eq!(code, 0, "advisory comparison exits 0: {err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let json: Vec<(String, String)> = parsed["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|r| {
+            (
+                r["test"].as_str().expect("test").to_string(),
+                r["classification"].as_str().expect("label").to_string(),
+            )
+        })
+        .collect();
+
+    let (_, out, _) = run(&["compare", base, cand, "--threshold", threshold]);
+    let table = strip_ansi(&out);
+    let (_, markdown, _) = run(&[
+        "compare",
+        base,
+        cand,
+        "--threshold",
+        threshold,
+        "--markdown",
+    ]);
+    for (test, label) in &json {
+        let row = table
+            .lines()
+            .find(|line| line.split_whitespace().next() == Some(test.as_str()))
+            .expect("table row");
+        assert_eq!(
+            row.split_whitespace().last(),
+            Some(label.as_str()),
+            "{table}"
+        );
+        let row = markdown
+            .lines()
+            .find(|line| line.starts_with(&format!("| {test} |")))
+            .expect("Markdown row");
+        assert!(row.ends_with(&format!(" {label} |")), "{markdown}");
+    }
+    json
+}
+
+fn pairs(expected: &[(&str, &str)]) -> Vec<(String, String)> {
+    expected
+        .iter()
+        .map(|(test, label)| (test.to_string(), label.to_string()))
+        .collect()
+}
+
+/// @test A median change of exactly the threshold in the CSV's decimals is
+/// neutral; a change just past it is labelled, in every format and at the gate.
+#[test]
+fn compare_decimal_threshold_boundary() {
+    let base = fixture("compare_boundary_baseline.csv");
+    for (file, down, up, gate) in [
+        ("compare_boundary_at.csv", "neutral", "neutral", 0),
+        ("compare_boundary_inside.csv", "neutral", "neutral", 0),
+        (
+            "compare_boundary_outside.csv",
+            "IMPROVEMENT",
+            "REGRESSION",
+            1,
+        ),
+    ] {
+        let cand = fixture(file);
+        assert_eq!(
+            labels(&base, &cand, "5"),
+            pairs(&[("Edge.Down", down), ("Edge.Up", up)]),
+            "{file}"
+        );
+        let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+        assert_eq!(code, gate, "{file}: {err}");
+    }
+
+    // 1 -> 1.05 prints as +5.0% and is neutral beside it.
+    let (_, out, _) = run(&["compare", &base, &fixture("compare_boundary_at.csv")]);
+    let up: Vec<String> = strip_ansi(&out)
+        .lines()
+        .find(|line| line.starts_with("Edge.Up"))
+        .expect("Edge.Up row")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    assert_eq!(up[4..], ["+5.0%", "1.0%", "1.0%", "neutral"], "{out}");
+}
+
+/// @test A finite change near the largest double is labelled against a huge
+/// threshold, and stays neutral under a larger one.
+#[test]
+fn compare_huge_change_is_labelled() {
+    let base = fixture("compare_huge_baseline.csv");
+    let cand = fixture("compare_huge_candidate.csv");
+    // 1 -> 1e306 is +1e308%.
+    assert_eq!(
+        labels(&base, &cand, "8e307"),
+        pairs(&[("Scale.Huge", "REGRESSION")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "8e307",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 1, "{err}");
+
+    assert_eq!(
+        labels(&base, &cand, "1.5e308"),
+        pairs(&[("Scale.Huge", "neutral")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &cand,
+        "--threshold",
+        "1.5e308",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+}
+
+/// @test A zero threshold labels any change in a reported median and nothing else.
+#[test]
+fn compare_zero_threshold_labels_every_change() {
+    let base = fixture("compare_boundary_baseline.csv");
+    assert_eq!(
+        labels(&base, &base, "0"),
+        pairs(&[("Edge.Down", "neutral"), ("Edge.Up", "neutral")])
+    );
+    let (code, _, err) = run(&[
+        "compare",
+        &base,
+        &base,
+        "--threshold",
+        "0",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+
+    let tiny = fixture("compare_boundary_tiny.csv");
+    assert_eq!(
+        labels(&base, &tiny, "0"),
+        pairs(&[("Edge.Down", "IMPROVEMENT"), ("Edge.Up", "REGRESSION")])
+    );
+    let (code, _, _) = run(&[
+        "compare",
+        &base,
+        &tiny,
+        "--threshold",
+        "0",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 1, "a 0.0001% rise fails a zero-threshold gate");
+    assert_eq!(
+        labels(&base, &tiny, "5"),
+        pairs(&[("Edge.Down", "neutral"), ("Edge.Up", "neutral")])
     );
 }
 
+/// @test A median that rose while the outer quantiles held still is a regression.
 #[test]
-fn compare_json_output() {
-    let csv = fixture("sample_bench.csv");
-    let (code, out, _) = run(&["compare", &csv, &csv, "--json"]);
+fn compare_quantile_contradiction_is_a_regression() {
+    let base = fixture("compare_quantile_baseline.csv");
+    let cand = fixture("compare_quantile_candidate.csv");
+    let (code, out, _) = run(&["compare", &base, &cand]);
     assert_eq!(code, 0);
-    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert!(parsed.is_array());
+    assert!(out.contains("+20.0%"), "median 100 -> 120 is +20%: {out}");
+    assert!(
+        out.contains("REGRESSION"),
+        "a +20% median change is beyond the 5% threshold: {out}"
+    );
+    assert!(
+        !out.to_lowercase().contains("p-value"),
+        "unchanged outer quantiles must not buy a significance claim: {out}"
+    );
+
+    let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+    assert_eq!(code, 1, "the gate must fail on a +20% median: {err}");
 }
 
+/// @test Two runs with no test in common are an error, not a pass.
+#[test]
+fn compare_disjoint_inputs_are_an_error() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_disjoint.csv");
+    let (base, cand) = (base.as_str(), cand.as_str());
+    for args in [
+        vec!["compare", base, cand],
+        vec!["compare", base, cand, "--fail-on-regression"],
+        vec!["compare", base, cand, "--json"],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?} exited {code}: {err}");
+        assert!(
+            err.contains("no tests are present in both runs"),
+            "{args:?}: {err}"
+        );
+        assert!(err.contains("Queue.Latency"), "baseline names: {err}");
+        assert!(err.contains("Cache.Warm"), "candidate names: {err}");
+        assert!(
+            out.trim().is_empty(),
+            "{args:?} printed a comparison anyway: {out}"
+        );
+    }
+}
+
+/// @test A baseline median of zero is an input error, not a neutral 0%.
+#[test]
+fn compare_zero_baseline_median_is_an_error() {
+    let base = fixture("compare_zero_median.csv");
+    let cand = fixture("sample_bench.csv");
+    let (code, out, err) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("baseline wallMedian"), "{err}");
+    assert!(err.contains("Queue.Latency"), "{err}");
+    assert!(err.contains("undefined"), "{err}");
+    assert!(out.trim().is_empty(), "{out}");
+}
+
+/// @test A candidate median of zero is an invalid measurement.
+#[test]
+fn compare_zero_candidate_median_is_an_error() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_zero_median.csv");
+    let (code, _, err) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("candidate wallMedian"), "{err}");
+    assert!(err.contains("Queue.Latency"), "{err}");
+}
+
+/// @test The same test name twice in one file is an input error.
+#[test]
+fn compare_duplicate_identity_is_an_error() {
+    let dup = fixture("compare_duplicate_test.csv");
+    let ok = fixture("sample_bench.csv");
+
+    let (code, out, err) = run(&["compare", &dup, &ok]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("duplicate test identity"), "{err}");
+    assert!(err.contains("Queue.Latency"), "{err}");
+    assert!(err.contains("baseline"), "{err}");
+    assert!(out.trim().is_empty(), "{out}");
+
+    let (code, _, err) = run(&["compare", &ok, &dup]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("duplicate test identity"), "{err}");
+    assert!(err.contains("candidate"), "{err}");
+}
+
+/// @test A non-finite measurement is an input error.
+#[test]
+fn compare_non_finite_measurement_is_an_error() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_non_finite.csv");
+    let (code, out, err) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("not a finite number"), "{err}");
+    assert!(err.contains("Queue.Latency"), "{err}");
+    assert!(out.trim().is_empty(), "{out}");
+}
+
+/// The ways a comparison can be run: advisory or gated, in each output format.
+const COMPARE_MODES: [&[&str]; 6] = [
+    &[],
+    &["--fail-on-regression"],
+    &["--json"],
+    &["--json", "--fail-on-regression"],
+    &["--markdown"],
+    &["--markdown", "--fail-on-regression"],
+];
+
+/// @test A measured field the CSV does not hold as a number fails every mode, on either side.
+#[test]
+fn compare_unreadable_measurement_is_an_error() {
+    let good = fixture("sample_bench.csv");
+    for (file, found) in [
+        (
+            "compare_cv_malformed.csv",
+            "has wallCV 'garbage', which is not a number",
+        ),
+        (
+            "compare_cv_blank.csv",
+            "has no wallCV value: the field is empty",
+        ),
+        (
+            "compare_cv_absent.csv",
+            "has no wallCV value: the row ends after 16 of 20 columns",
+        ),
+        (
+            "compare_median_malformed.csv",
+            "has wallMedian 'n/a', which is not a number",
+        ),
+        (
+            "compare_median_blank.csv",
+            "has no wallMedian value: the field is empty",
+        ),
+        (
+            "compare_median_absent.csv",
+            "has no wallMedian value: the row ends after 9 of 20 columns",
+        ),
+    ] {
+        let bad = fixture(file);
+        let expected = format!("{bad}, line 3: test 'Queue.Latency' {found}");
+        for (base, cand) in [(&good, &bad), (&bad, &good)] {
+            for mode in COMPARE_MODES {
+                let mut args = vec!["compare", base.as_str(), cand.as_str()];
+                args.extend_from_slice(mode);
+                let (code, out, err) = run(&args);
+                assert_eq!(code, 1, "{args:?}: {err}");
+                assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+                assert!(err.contains(&expected), "{args:?}: {err}");
+            }
+        }
+    }
+}
+
+/// @test A rise too large to express as a percentage is refused in every mode.
+#[test]
+fn compare_unrepresentable_change_is_an_error() {
+    let small = fixture("compare_extreme_small.csv");
+    let large = fixture("compare_extreme_large.csv");
+    for mode in COMPARE_MODES {
+        let mut args = vec!["compare", small.as_str(), large.as_str()];
+        args.extend_from_slice(mode);
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+        assert!(
+            err.contains(
+                "wallMedian for test 'Scale.Extreme' goes from 1e-300 in the baseline \
+                 to 1e300 in the candidate: the percentage change is too large to represent"
+            ),
+            "{args:?}: {err}"
+        );
+    }
+
+    // The same pair the other way round is a fall of exactly 100%.
+    let (code, out, err) = run(&["compare", &large, &small, "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(parsed["results"][0]["delta_pct"], -100.0, "{out}");
+    assert_eq!(
+        parsed["results"][0]["classification"], "IMPROVEMENT",
+        "{out}"
+    );
+}
+
+/// @test A blank test name fails a comparison on either side or both, advisory
+/// or gated, in every format.
+#[test]
+fn compare_blank_test_name_is_an_error() {
+    let good = fixture("sample_bench.csv");
+    for (file, problem) in BLANK_NAMES {
+        let bad = fixture(file);
+        let expected = format!("{bad}, line 3: {problem}");
+        for (base, cand) in [(&good, &bad), (&bad, &good), (&bad, &bad)] {
+            for mode in COMPARE_MODES {
+                let mut args = vec!["compare", base.as_str(), cand.as_str()];
+                args.extend_from_slice(mode);
+                let (code, out, err) = run(&args);
+                assert_eq!(code, 1, "{args:?}: {err}");
+                assert!(out.is_empty(), "{args:?} printed a comparison: {out}");
+                assert!(err.contains(&expected), "{args:?}: {err}");
+            }
+        }
+    }
+}
+
+/// @test A padded test name is its own identity: it matches itself, and against
+/// the plain name it is one missing test and one new one.
+#[test]
+fn compare_keeps_a_padded_test_name() {
+    let padded = fixture("compare_name_padded.csv");
+    let plain = fixture("sample_bench.csv");
+
+    let (code, out, err) = run(&[
+        "compare",
+        &padded,
+        &padded,
+        "--json",
+        "--fail-on-regression",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    let names: Vec<&str> = parsed["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .map(|r| r["test"].as_str().expect("test"))
+        .collect();
+    assert!(names.contains(&" Queue.Latency "), "{out}");
+
+    let (code, out, _) = run(&["compare", &plain, &padded, "--json"]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+    assert_eq!(
+        parsed["baseline_only"],
+        serde_json::json!(["Queue.Latency"])
+    );
+    assert_eq!(
+        parsed["candidate_only"],
+        serde_json::json!([" Queue.Latency "])
+    );
+    let (code, _, err) = run(&["compare", &plain, &padded, "--fail-on-regression"]);
+    assert_eq!(
+        code, 1,
+        "the plain name is missing from the candidate: {err}"
+    );
+}
+
+/// @test A wallCV of 0 is a measured value, not a failed parse: the comparison runs.
+#[test]
+fn compare_zero_cv_is_a_value() {
+    let good = fixture("sample_bench.csv");
+    let zero = fixture("compare_cv_zero.csv");
+    for (base, cand, field) in [
+        (&good, &zero, "candidate_cv"),
+        (&zero, &good, "baseline_cv"),
+    ] {
+        let (code, out, err) = run(&["compare", base, cand, "--json", "--fail-on-regression"]);
+        assert_eq!(code, 0, "{err}");
+        let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let latency = parsed["results"]
+            .as_array()
+            .expect("results array")
+            .iter()
+            .find(|r| r["test"] == "Queue.Latency")
+            .expect("Queue.Latency is compared");
+        assert_eq!(latency[field], 0.0, "{out}");
+        assert_eq!(latency["classification"], "neutral", "{out}");
+    }
+
+    let (code, out, _) = run(&["compare", &good, &zero]);
+    assert_eq!(code, 0);
+    let row: Vec<&str> = out
+        .lines()
+        .find(|line| line.starts_with("Queue.Latency"))
+        .expect("Queue.Latency row")
+        .split_whitespace()
+        .collect();
+    assert_eq!(row[5..7], ["8.3%", "0.0%"], "Base CV, Cand CV: {out}");
+}
+
+/// @test A CSV without the stable and cvThreshold columns still compares.
+#[test]
+fn compare_older_csv_format_still_compares() {
+    let old = fixture("sample_bench_old_format.csv");
+    let new = fixture("sample_bench.csv");
+    let (code, out, err) = run(&["compare", &old, &new, "--fail-on-regression"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("2 neutral"), "{out}");
+}
+
+/// @test A baseline test the candidate does not run is reported and fails the gate.
+#[test]
+fn compare_missing_baseline_test_fails_the_gate() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_missing_test.csv");
+
+    let (code, out, _) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 0, "advisory comparison reports, it does not fail");
+    assert!(
+        out.contains("Missing from the candidate (1): Lock.Contended"),
+        "{out}"
+    );
+
+    let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+    assert_eq!(code, 1, "a missing baseline test fails the gate: {err}");
+    assert!(err.contains("0 regression(s)"), "{err}");
+    assert!(err.contains("1 baseline test(s) missing"), "{err}");
+}
+
+/// @test A candidate-only test is reported as new and does not fail the gate.
+#[test]
+fn compare_new_test_alone_passes_the_gate() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_added_test.csv");
+
+    let (code, out, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+    assert_eq!(code, 0, "a new test does not fail on its own: {err}");
+    assert!(
+        out.contains("New in the candidate (1): Queue.Drain"),
+        "a new test must not be certified silently: {out}"
+    );
+}
+
+/// @test A renamed test is reported as one missing plus one new.
+#[test]
+fn compare_rename_is_missing_plus_new() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_renamed_test.csv");
+
+    let (code, out, _) = run(&["compare", &base, &cand]);
+    assert_eq!(code, 0);
+    assert!(
+        out.contains("Missing from the candidate (1): Lock.Contended"),
+        "{out}"
+    );
+    assert!(
+        out.contains("New in the candidate (1): Lock.Uncontended"),
+        "{out}"
+    );
+
+    let (code, _, err) = run(&["compare", &base, &cand, "--fail-on-regression"]);
+    assert_eq!(
+        code, 1,
+        "the missing half of a rename fails the gate: {err}"
+    );
+}
+
+/// @test JSON carries the labels, an explicit null p-value and both unmatched lists.
+#[test]
+fn compare_json_output() {
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_renamed_test.csv");
+    let (code, out, _) = run(&["compare", &base, &cand, "--json"]);
+    assert_eq!(code, 0);
+    let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+
+    let results = parsed["results"].as_array().expect("results array");
+    assert_eq!(results.len(), 2, "two tests are in both runs: {out}");
+    assert_eq!(results[0]["test"], "Queue.Latency");
+    assert_eq!(results[0]["classification"], "neutral");
+    assert!(
+        results[0]["p_value"].is_null(),
+        "an unavailable p-value must be explicit: {out}"
+    );
+    assert_eq!(parsed["threshold_pct"], 5.0);
+    assert_eq!(
+        parsed["baseline_only"].as_array().expect("baseline_only"),
+        &vec![serde_json::json!("Lock.Contended")]
+    );
+    assert_eq!(
+        parsed["candidate_only"].as_array().expect("candidate_only"),
+        &vec![serde_json::json!("Lock.Uncontended")]
+    );
+}
+
+/// @test Markdown carries the CV columns, the unmatched lists and the rule.
 #[test]
 fn compare_markdown_output() {
-    let csv = fixture("sample_bench.csv");
-    let (code, out, _) = run(&["compare", &csv, &csv, "--markdown"]);
+    let base = fixture("sample_bench.csv");
+    let cand = fixture("compare_renamed_test.csv");
+    let (code, out, _) = run(&["compare", &base, &cand, "--markdown"]);
     assert_eq!(code, 0);
     assert!(out.contains("| Test |"));
     assert!(out.contains("|---"));
+    assert!(out.contains("| Base CV | Cand CV |"), "{out}");
+    assert!(
+        !out.to_lowercase().contains("p-value"),
+        "markdown still presents a p-value: {out}"
+    );
+    assert!(
+        out.contains("Missing from the candidate (1): Lock.Contended"),
+        "{out}"
+    );
+    assert!(
+        out.contains("New in the candidate (1): Lock.Uncontended"),
+        "{out}"
+    );
+    assert!(
+        out.contains("median change against the 5.0% threshold"),
+        "{out}"
+    );
+}
+
+/// @test A threshold that is not a usable percentage is an error.
+#[test]
+fn compare_invalid_threshold_is_an_error() {
+    let csv = fixture("sample_bench.csv");
+    for threshold in ["--threshold=-5", "--threshold=nan"] {
+        let (code, out, err) = run(&["compare", &csv, &csv, threshold]);
+        assert_eq!(code, 1, "{threshold}: {err}");
+        assert!(err.contains("--threshold"), "{threshold}: {err}");
+        assert!(out.trim().is_empty(), "{threshold}: {out}");
+    }
 }
 
 /* ----------------------------- Validate ----------------------------- */
@@ -381,6 +1221,66 @@ fn run_taskset_names_missing_program() {
         !err.contains("No such file or directory"),
         "raw OS error leaked: {err}"
     );
+}
+
+/* ----------------------------- Run: Analyze ----------------------------- */
+
+/// @test bench run --analyze refuses, before printing it, a summary bench summary
+/// refuses; the run's own output stays on stdout whether or not the summary follows.
+#[test]
+fn run_analyze_refuses_an_unreadable_measurement() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let written = dir.path().join("results.csv");
+    let written_arg = written.to_string_lossy().into_owned();
+    for (i, (source, code)) in [("sample_bench.csv", 0), ("compare_cv_malformed.csv", 1)]
+        .into_iter()
+        .enumerate()
+    {
+        // A stand-in benchmark that prints a line and copies a fixture to
+        // where --csv points.
+        let fake = dir.path().join(format!("fake_bench_{i}"));
+        let script = format!(
+            "#!/bin/sh\necho 'stand-in benchmark ran'\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --csv ]; then cp '{}' \"$2\"; fi\n  shift\ndone\n",
+            fixture(source)
+        );
+        std::fs::write(&fake, script).expect("write the stand-in");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let out = Command::new(bin())
+            .args([
+                "run",
+                &fake.to_string_lossy(),
+                "--csv",
+                &written_arg,
+                "--analyze",
+            ])
+            .current_dir(dir.path())
+            .output()
+            .expect("spawn bench");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{source}: {stderr}");
+        // The run's own output is not held back when the analysis is refused.
+        assert!(stdout.contains("Running: "), "{source}: {stdout}");
+        assert!(
+            stdout.contains("stand-in benchmark ran"),
+            "{source}: {stdout}"
+        );
+        if code == 0 {
+            assert!(stdout.contains("--- Post-run analysis ---"), "{stdout}");
+            assert!(stdout.contains("Queue.Latency"), "{stdout}");
+        } else {
+            assert!(!stdout.contains("Post-run analysis"), "{stdout}");
+            assert!(
+                stderr.contains(&format!(
+                    "{written_arg}, line 3: test 'Queue.Latency' has wallCV 'garbage', which is not a number"
+                )),
+                "{stderr}"
+            );
+        }
+    }
 }
 
 /* ----------------------------- Run: Wrap Folder ----------------------------- */

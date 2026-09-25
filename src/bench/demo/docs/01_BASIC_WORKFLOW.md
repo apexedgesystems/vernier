@@ -4,7 +4,9 @@
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-20, written for the Vernier 1.0.4 release; captured from
-the development tree at project version 1.0.3, whose CLI reported `bench 1.0.2`
+the development tree at project version 1.0.3, whose CLI reported `bench 1.0.2`.
+The two `bench compare` outputs were produced from the CSVs that session saved,
+by the CLI of a later development tree, which reports `bench 1.0.3`.
 
 ## Overview
 
@@ -188,23 +190,28 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench compare run1.csv run2.csv
 ```
 
-Captured output:
+Output, for the captured session's `run1.csv` and `run2.csv`:
 
 ```
-Test                      Baseline     Candidate       Delta         %   p-value        Result
---------------------  ------------  ------------  ----------  --------  --------  ------------
-BasicWorkflow.JoinV0     927.61100     940.56600   +12.95500     +1.4%    0.0002  neutral
-BasicWorkflow.JoinV1      21.04410      19.45060    -1.59350     -7.6%    0.0002  IMPROVEMENT
+Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+--------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+BasicWorkflow.JoinV0     927.61100     940.56600   +12.95500     +1.4%      0.1%      0.1%  neutral
+BasicWorkflow.JoinV1      21.04410      19.45060    -1.59350     -7.6%      0.7%      2.1%  IMPROVEMENT
 
   1 improvement(s)  1 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 Nothing changed between those two runs: same binary, same input, seconds
 apart. `bench compare` joins the two files on test name, subtracts the
-medians, and labels a row when the difference is beyond its threshold -- 5% by
-default, `--threshold` to change it. That is what the labels say, and all they
-say: `IMPROVEMENT` on the V1 row means "the median moved 7.6% in the faster
-direction", not "this code got faster".
+medians, and labels a row when its median moved by more than the threshold, as
+a percentage of the baseline's -- 5% by default, `--threshold` to change it.
+That is what the labels say, and all they say: `IMPROVEMENT` on the V1 row
+means "the median moved 7.6% in the faster direction", not "this code got
+faster".
 
 The movement is real and it is not this demo's doing: a fresh process
 measures a little differently. Across nine runs of this binary in one session
@@ -222,11 +229,14 @@ medians and the CV yourself. Three more things to know before leaning on them:
 - The threshold is a percentage, not a statement about the noise. A test that
   moves inside its own run-to-run spread is labelled if that spread is wider
   than the threshold.
-- The `p-value` column is computed from the summary columns in the CSV, not
-  from the individual repeats, which the CSV does not carry.
-- A test that appears in only one of the two files is left out of the table
-  without a word. Two CSVs with no test names in common print
-  `No common tests to compare.`
+- The labels are not a significance test: the CSVs carry each run's summary
+  statistics, not the individual repeats such a test would need. The `Base CV`
+  and `Cand CV` columns are each run's own spread, shown as context; neither
+  measures the run-to-run spread described above.
+- A test that appears in only one of the two files is named under the table,
+  as missing from the candidate or new in the candidate; a renamed test shows
+  up as both. Two CSVs with no test name in common are an error: the command
+  exits 1 and names the tests each side had.
 
 ## What Should Reproduce
 
@@ -266,15 +276,19 @@ of your own against it:
 bench compare src/bench/demo/reference/pi4/01_basic_workflow.csv run1.csv
 ```
 
-Captured output:
+Output, for the captured session's `run1.csv`:
 
 ```
-Test                      Baseline     Candidate       Delta         %   p-value        Result
---------------------  ------------  ------------  ----------  --------  --------  ------------
-BasicWorkflow.JoinV0    1014.54000     927.61100   -86.92900     -8.6%    0.0002  IMPROVEMENT
-BasicWorkflow.JoinV1      20.94160      21.04410    +0.10250     +0.5%    0.1859  neutral
+Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
+--------------------  ------------  ------------  ----------  --------  --------  --------  ------------
+BasicWorkflow.JoinV0    1014.54000     927.61100   -86.92900     -8.6%      0.2%      0.1%  IMPROVEMENT
+BasicWorkflow.JoinV1      20.94160      21.04410    +0.10250     +0.5%      2.2%      0.7%  neutral
 
   1 improvement(s)  1 neutral
+
+  Labels compare the median change against the 5.0% threshold.
+  They describe the difference between two runs, not a significance test;
+  the CV of each run is its own spread, not the spread between the runs.
 ```
 
 The reference was captured by this same binary on this same board, minutes
