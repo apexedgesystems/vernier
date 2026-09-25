@@ -266,7 +266,14 @@ jobs:
 - For a GPU benchmark, run the same job on a self-hosted runner that has the
   NVIDIA driver and the CUDA toolkit (for example `runs-on: [self-hosted, gpu]`,
   with a label you gave the runner), and set `BENCH_TARGET` to the GPU
-  benchmark.
+  benchmark. The gate compares each test's `wallMedian`, for GPU rows as for
+  CPU rows, not `kernelTimeUs`. A kernel-only test's `wallMedian` is its
+  kernel time, so the two move together. For a test that copies its data in
+  and out, `wallMedian` is the whole round trip: a slower kernel can be a
+  small part of its change, and the copies' own movement from run to run can
+  outweigh it. Walkthrough 10's
+  [GPU columns](../demo/docs/10_GPU_BASIC_WORKFLOW.md#what-the-gpu-harness-measures)
+  say what each one measures.
 
 ---
 
@@ -425,15 +432,18 @@ skips it.
 
 The gate compares two runs made one after the other, so what matters is that
 the machine's speed does not change between them. A self-hosted runner that runs
-one job at a time is the place for it; on shared hosted runners, raise the
-threshold instead.
+one job at a time is the place for it. On shared hosted runners, expect runs to
+move more, and choose the threshold from that movement.
 
 ### 2. Threshold Selection
 
 `BENCH_THRESHOLD` is passed to `bench compare --threshold` (percent, default 5).
-The CSVs' `wallCV` column is each test's spread over its repeats (standard
-deviation over mean; 0.05 is 5%): a test whose spread is close to the threshold
-can be reported as slower when nothing changed.
+Choose it on the machine that runs the gate, from runs of unchanged code:
+`BENCH_BASE=HEAD bash ci/bench-gate.sh` compares the checkout with itself, so
+every change it reports is noise. Run it a few times and set the threshold
+above the largest movement you see. The CSVs' `wallCV` column is the spread of
+one run's repeats (standard deviation over mean); it does not show how far a
+test moves from one run to the next, which is what the gate compares.
 
 ### 3. Shorter or Longer Runs
 
@@ -453,10 +463,12 @@ on GitHub Actions or change `expire_in` on GitLab.
 
 ### A Test Is Reported Slower Without a Change
 
-1. Compare its `wallCV` in `baseline.csv` and `candidate.csv` with the
-   threshold (see [Threshold Selection](#2-threshold-selection)).
+1. Measure how far it moves with no change: run
+   `BENCH_BASE=HEAD bash ci/bench-gate.sh` a few times (see
+   [Threshold Selection](#2-threshold-selection)).
 2. Give it more repeats: `BENCH_ARGS="--repeats 30"`.
-3. Run the gate on a dedicated machine, or raise `BENCH_THRESHOLD`.
+3. Run the gate on a dedicated machine, or raise `BENCH_THRESHOLD` above the
+   movement you measured.
 
 ### The Report Says "the baseline did not build"
 
