@@ -60,8 +60,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which replaces the counting. The demo's earlier tests asserted only that
   each variant ran more than once a second, which still held with both
   variants made identical. The join example gains `joinedSize()`, the length
-  of the string both versions return, computed without allocating; demo 11
-  checks each result against it, and its guard checks that it holds no heap.
+  of the string both versions return, computed without allocating (a unit
+  test counts no call to `operator new`); demos 11 and 15 check each result
+  against it, and demo 11's guard checks that it holds no heap.
   `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
   an ordinary test run includes it; the demo's timing tests are not
   registered. Its walkthrough,

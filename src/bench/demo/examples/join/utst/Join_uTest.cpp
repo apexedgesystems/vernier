@@ -201,6 +201,18 @@ TEST(JoinAllocationTest, V0AllocatesFarMoreOftenThanV1) {
       << " parts, joinV1 " << v1Calls << ": the heap-profiler demos have stopped demonstrating";
 }
 
+/** @test joinedSize allocates nothing: demo 15 checks each answer with it, and
+ *  heaptrack's counts of that test divide by the calls to its version alone */
+TEST(JoinAllocationTest, JoinedSizeAllocatesNothing) {
+  const auto parts = makeParts(PROFILED_PART_COUNT, 42);
+
+  std::size_t size = 0;
+  const std::size_t calls = countNewCalls([&] { size = joinedSize(parts); });
+
+  EXPECT_EQ(calls, 0u);
+  EXPECT_EQ(size, joinV1(parts, ',').size());
+}
+
 /* ----------------------------- makeParts Tests ----------------------------- */
 
 /** @test makeParts returns the requested number of parts */

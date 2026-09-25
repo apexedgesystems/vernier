@@ -101,7 +101,7 @@ PERF_THROUGHPUT(Heaptrack, JoinV0) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
@@ -110,12 +110,12 @@ PERF_THROUGHPUT(Heaptrack, JoinV0) {
 ```
 
 Two things about this test matter under heaptrack. It calls only its own
-version -- `joinedSize` checks the answer without calling either one -- so a
-recording of `Heaptrack.JoinV0` holds none of `joinV1`'s allocations, and the
-other way round. And it calls its version a known number of times: once for
-the check, once to warm up, then `--cycles` times per repeat. With
-`--cycles 100 --repeats 1` that is 102 calls, the number the counts below
-divide by.
+version -- the example's `joinedSize` checks the answer without calling either
+one, or allocating -- so a recording of `Heaptrack.JoinV0` holds none of
+`joinV1`'s allocations, and the other way round. And it calls its version a
+known number of times: once for the check, once to warm up, then `--cycles`
+times per repeat. With `--cycles 100 --repeats 1` that is 102 calls, the number
+the counts below divide by.
 
 ## Step 1: Measure
 
