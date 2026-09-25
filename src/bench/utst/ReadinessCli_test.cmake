@@ -573,18 +573,40 @@ elseif (CASE STREQUAL "OffcpuCurrentUserRun")
   endif ()
   expect_owned_and_gone("run")
 
-elseif (CASE STREQUAL "OffcpuRunAllowedOldProbeRefused")
-  # A grant that refuses any program carrying a self-exit interval allows
-  # only the run's own command, which is what the check runs: the doctor is
-  # ok and the run writes its stacks.
+elseif (CASE STREQUAL "OffcpuRunAllowedProbeRefused")
+  # A grant that refuses any program carrying a self-exit interval refuses
+  # the check's probe and allows the run's own command: the doctor warns
+  # (unverified), and the run starts, stops and writes its stacks.
   bpf_fakes()
   list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=interval:)
   selected_row(row --profile offcpu)
-  expect_eq("${row_STATUS}" "ok" "selected status")
+  expect_eq("${row_STATUS}" "warn" "selected status")
+  expect_has(
+    "${row_MESSAGE}"
+    "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -e <the off-CPU script with a 5 s self-exit> "
+    "selected message"
+  )
   run(run --profile offcpu ${_quick})
   expect_eq("${run_RC}" "0" "run exit status")
   count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
   expect_eq("${_written}" "2" "stacks written, once per case")
+  expect_owned_and_gone("run")
+
+elseif (CASE STREQUAL "OffcpuRefusedStopLeavesNoTracer")
+  # Every stop signal refused and the target's exit never seen: the probe's
+  # self-exit ends it, and neither the doctor nor the run leaves a tracer.
+  bpf_fakes()
+  list(APPEND _env BENCH_SUDO=1 "FAKE_SUDO_DENY=kill -" FAKE_BPFTRACE_MODE=ignore-target)
+  selected_row(row --profile offcpu)
+  expect_eq("${row_STATUS}" "fail" "selected status")
+  expect_has(
+    "${row_MESSAGE}" "denied: cleanup: sudo -n refused ${WORK_DIR}/bin/kill -2 " "selected message"
+  )
+  expect_not("${row_MESSAGE}" "still runs" "selected message")
+  expect_owned_and_gone("doctor")
+  run(run --profile offcpu ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_has("${run_ERR}" "[FAIL] Profiler 'offcpu': denied: cleanup: " "run notice")
   expect_owned_and_gone("run")
 
 elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")

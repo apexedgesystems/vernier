@@ -182,23 +182,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they resolve `bpftrace` (and on the sudo route `sudo` and `kill`) on `PATH`,
   run `bpftrace --version` as the current user, run a probe through the route
   for the launch's start grace and stop it with SIGINT through the same
-  route, and the run executes exactly those resolved paths. offcpu's probe is
-  the launch's own command, the same script and arguments, tracing a process
-  the check starts in place of the benchmark. bpftrace's probe runs a copy of
-  each selected script with a 5 s self-exit from a private directory, since
-  the run's copy goes in a capture folder that does not exist yet. Each
+  route, and the run executes exactly those resolved paths. Each probe is the
+  launch's script with a 5 s self-exit added: bpftrace's run as copies from a
+  private directory, since the run's copy goes in a capture folder that does
+  not exist yet, and offcpu's inline, on the checking process. A probe whose
+  stop is refused ends by that self-exit, and the check waits for it and
+  reaps it before it returns, so no readiness tracer outlives the check. Each
   selected script is read first: one this user cannot read is an error that
   names the file and the cause (`unusable: bpftrace script '<name>' at <path>
   cannot be read: Permission denied`), and nothing is launched. A ready row
   says what its probe showed and ends with what only the run shows (`not
-  checked: the run's capture`, and on the sudo route SIGTERM and SIGKILL
-  through sudo and, for bpftrace, the grant for the run's own command). A
-  sudoers grant must allow `bpftrace` with the run's script arguments and
-  `kill` with `-2`, `-15` and `-9`. sudo refusing a probe, or a stop signal,
-  is `denied` with the command as it was attempted and sudo's own words, and
-  so is sudo failing whatever the arguments; a grant's refusal of bpftrace's
-  probe copy is `unverified` instead, naming that command and the run's, and
-  the run's start then shows whether the grant allows the run's command.
+  checked: the run's capture`, and on the sudo route the grant for the run's
+  own command and SIGTERM and SIGKILL through sudo). A sudoers grant must
+  allow `bpftrace` with the run's script arguments and `kill` with `-2`,
+  `-15` and `-9`. A refused stop signal is `denied` with the command as it
+  was attempted and sudo's own words, and so is sudo failing whatever the
+  arguments. A grant's refusal of a probe, a command the run never runs, is
+  `unverified` instead, naming that command and the run's; the run's start
+  then shows whether the grant allows the run's command, and the run reports
+  a refusal of it as `denied`.
   offcpu no longer refuses a non-root run before trying: it attaches as the
   current user and reports what bpftrace says. A run reports a tracer that
   exits during its start grace, each stop signal it could not deliver, and a

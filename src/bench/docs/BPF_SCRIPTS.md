@@ -21,8 +21,9 @@ performance, not by default in CI.
   run's own copy lives in its capture folder, so the check cannot try the run's
   exact command: with `BENCH_SUDO=1`, a grant that refuses the check's copy is
   reported as `unverified` rather than denied, and the run's start shows
-  whether the grant allows the run's command. A ready check lists what it did
-  not check.
+  whether the grant allows the run's command. A copy that cannot be stopped
+  (the grant refuses `kill`) ends by its self-exit, and the check waits for it
+  rather than leave it running. A ready check lists what it did not check.
 
 ## PID filtering
 

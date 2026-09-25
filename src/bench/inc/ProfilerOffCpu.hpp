@@ -16,12 +16,13 @@
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
- * sudo. The readiness check (checkOffCpuRequest) runs the launch's own
- * command, the same script and arguments, through that route for the start
- * grace, with the pid of a process it started in place of the benchmark's,
- * and stops it with SIGINT; so, the pid aside, sudo answers the probe as it
- * answers the run. The profiler launches and stops with exactly the tools
- * and route it verified (OffCpuPlan).
+ * sudo. The readiness check (checkOffCpuRequest) runs the launch's script
+ * with a 5 s self-exit added through that route for the start grace and
+ * stops it with SIGINT; a probe whose stop is refused ends by that self-exit,
+ * and the check waits for it and reaps it. The added interval makes the
+ * probe a command the run never runs, so a grant's refusal of it is
+ * unverified and the run's start decides. The profiler launches and stops
+ * with exactly the tools and route it verified (OffCpuPlan).
  *
  * Output: `<testName>.offcpu/offcpu.txt` (the bpftrace map dump) and
  * `offcpu.err.txt` (bpftrace's messages).

@@ -39,7 +39,8 @@ set(_readiness_cli_cases
     BpfRunStopsThroughRoute
     BpfRunReportsRefusedStop
     OffcpuCurrentUserRun
-    OffcpuRunAllowedOldProbeRefused
+    OffcpuRunAllowedProbeRefused
+    OffcpuRefusedStopLeavesNoTracer
     OffcpuNoStacksClaimWhenKilled
     PerfLaunchesTheResolvedPath
     PerfBrokenNeverLaunched

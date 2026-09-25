@@ -10,9 +10,11 @@
  *    resolves and reads every selected script, runs `bpftrace --version` as
  *    the current user, and runs a probe copy of each script (with a 5 s
  *    self-exit added) through the route for the start grace, stopping it
- *    with SIGINT. The run's own command reads a copy in its capture folder,
- *    which does not exist yet, so on the sudo route a grant refusal of the
- *    probe copy is unverified rather than denied: the run's start decides.
+ *    with SIGINT; a copy whose stop is refused ends by its self-exit, and the
+ *    check waits for it and reaps it. The run's own command reads a copy in
+ *    its capture folder, which does not exist yet, so on the sudo route a
+ *    grant refusal of the probe copy is unverified rather than denied: the
+ *    run's start decides.
  *    The profiler launches and stops with exactly the tools and route that
  *    check verified (BpftracePlan).
  *  - In beforeMeasure(), starts one bpftrace process per selected script
@@ -29,7 +31,6 @@
  *  - Linux-only. Safe no-op on other platforms (compile-time guard).
  */
 
-#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -88,23 +89,28 @@ struct AttachProbe {
   std::string what;                  ///< How reports name it: "script 'x'", "the off-CPU script".
   std::string commandLine;           ///< The bpftrace command line as reports show it.
   /**
-   * Empty when the probe runs the run's own arguments (its target pid
-   * aside), so that sudo's answer to it holds for the run. Otherwise how the
-   * run's command reads: a grant refusal of the probe is then unverified.
+   * Empty when the probe runs the run's own command, so that sudo's answer
+   * to it holds for the run. Otherwise how the run's command reads: a grant
+   * refusal of the probe is then unverified.
    */
   std::string runCommand;
-  int graceMs = 1000;              ///< The start grace, the run's own.
-  std::function<void()> afterStop; ///< Called once the stop is over (ends a probe's target).
+  int graceMs = 1000; ///< The start grace, the run's own.
+  int selfExitMs = 0; ///< When the probe's own script ends it after its start; 0: never.
 };
+
+/** @brief How long past its self-exit a probe whose stop failed is waited for. */
+inline constexpr int PROBE_SELF_EXIT_SLACK_MS = 10000;
 
 /**
  * @brief Run a probe through the route and stop it with the run's first stop signal.
  *
  * Runs route.command() + probe.toolArgs as an owned helper, waits the
  * grace, and stops it with SIGINT through the route (then SIGTERM and
- * SIGKILL if needed). afterStop then runs, and the helper, if it still
- * runs, gets up to 2 s to end by itself (a script that exits with its
- * target ends when the target does).
+ * SIGKILL if needed). A probe the stop could not end (every signal refused
+ * or ignored) ends by its own self-exit: the call waits for that, up to the
+ * grace plus selfExitMs plus PROBE_SELF_EXIT_SLACK_MS after the start, and
+ * reaps it, so the probe does not outlive the call. Only a probe that
+ * outlives even that bound is left, and reported.
  * @return nullopt when it stayed running for the grace and stopped on
  *         SIGINT; otherwise the Error (refused, unsupported, denied,
  *         unusable), or the Warning (it ignored SIGINT, or sudo refused a

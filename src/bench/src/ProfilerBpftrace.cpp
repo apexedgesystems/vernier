@@ -248,6 +248,7 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
 
   OwnedHelper helper(
       route.stopPolicy(2000, 1000, 1000, std::make_shared<const ReadinessContext>(ctx)));
+  const auto STARTED_AT = std::chrono::steady_clock::now();
   const HelperStart START = helper.start(
       argv, "", scratchDir.empty() ? "" : scratchDir + "/attach.err", probe.graceMs, &ctx);
   if (!START.started) {
@@ -260,17 +261,20 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   }
   const HelperStopResult STOP = helper.stop();
   std::string lingering;
-  if (probe.afterStop) {
-    // A tracer whose stop failed ends by itself once its target is gone.
-    probe.afterStop();
-    const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  if (STOP.stillAlive && probe.selfExitMs > 0) {
+    // The stop could not end it; its own self-exit will. Wait for that,
+    // bounded, and reap it, so the probe does not outlive the check.
+    const auto UNTIL = STARTED_AT + std::chrono::milliseconds(probe.graceMs + probe.selfExitMs +
+                                                              PROBE_SELF_EXIT_SLACK_MS);
     while (helper.running() && std::chrono::steady_clock::now() < UNTIL) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
-    if (helper.running()) {
-      lingering = "; the probe tracer " + std::to_string(helper.pid()) +
-                  " outlived its target and still runs";
-    }
+  }
+  if (STOP.stillAlive && helper.running()) {
+    lingering = "; the probe tracer " + std::to_string(helper.pid()) + " still runs" +
+                (probe.selfExitMs > 0
+                     ? " past its " + std::to_string(probe.selfExitMs / 1000) + " s self-exit"
+                     : std::string{});
   }
   for (const StopDelivery& delivery : STOP.deliveries) {
     if (delivery.delivered) {
@@ -292,7 +296,7 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   if (STOP.stillAlive) {
     return readinessResult(ReadinessCause::UNUSABLE,
                            "the probe tracer " + std::to_string(helper.pid()) +
-                               " did not stop on SIGINT, SIGTERM or SIGKILL",
+                               " did not stop on SIGINT, SIGTERM or SIGKILL" + lingering,
                            "Stop it by hand, then check the bpftrace build.");
   }
   if (STOP.wasRunning && STOP.stoppedBy != SIGINT && STOP.stoppedBy != 0) {
@@ -615,6 +619,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     probe.commandLine = commandLineOf(plan->route.bpftrace, probe.toolArgs);
     probe.runCommand = RUN_COMMAND;
     probe.graceMs = START_GRACE_MS;
+    probe.selfExitMs = PROBE_SELF_EXIT_S * 1000;
     auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
     if (verdict && verdict->report.status == EnvReport::Status::Error) {
       return *verdict;

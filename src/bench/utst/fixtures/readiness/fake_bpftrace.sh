@@ -5,17 +5,20 @@
 # invocation is an attach (`-q [-f json] <script>` or `-e <program> [pid]`),
 # which FAKE_BPFTRACE_MODE selects:
 #   ok           run until signalled; a program with an interval:s:N or
-#                interval:ms:N probe ends by itself then, and a program that
-#                exits on sched_process_exit ends when its target pid does
-#                (at most 30 s otherwise)
+#                interval:ms:N probe (a readiness probe's self-exit) ends by
+#                itself then; one without that exits on sched_process_exit
+#                ends when its target pid does (at most 30 s otherwise)
 #   ignore-int   like ok, but ignore SIGINT
 #   ignore-target
 #                like ok, but a program never ends with its target (a pid
 #                bpftrace does not see, as across a pid namespace)
+#   slow-attach  like ok, but take FAKE_ATTACH_S seconds (default 3) to
+#                attach before an interval starts counting
+#   ignore-exit  like ok, but a program never ends by itself (30 s at most):
+#                a tracer that ignores its own exit()
 #   ignore-int-run
 #                like ok for a readiness probe; ignore SIGINT for a run's
-#                launch: a script without an interval probe, or a program
-#                whose target is the process that started it
+#                launch: a program without an interval probe
 #   eperm        exit 1 at once with bpftrace's message for a non-root user
 #   unsupported  exit 1 at once with bpftrace's message for a missing tracepoint
 #   broken       exit 1 at once with a message of no known kind
@@ -88,15 +91,14 @@ if [ -n "$seconds" ]; then
 elif [ -n "$millis" ]; then
   limit=$(printf '%d.%03d' $((millis / 1000)) $((millis % 1000)))
 fi
-
-# A run's launch, as opposed to a readiness probe: a script without the
-# probe copy's self-exit, or a program traced on the process that started it
-# (a probe traces a process of its own instead).
-run_launch=no
-if [ "$inline" = no ] && [ -z "$seconds" ] && [ -z "$millis" ]; then
-  run_launch=yes
+if [ "$mode" = "ignore-exit" ]; then
+  limit=30
 fi
-if [ "$inline" = yes ] && [ "$target" = "$PPID" ]; then
+
+# A run's launch, as opposed to a readiness probe: a program without the
+# probe's self-exit.
+run_launch=no
+if [ -z "$seconds" ] && [ -z "$millis" ]; then
   run_launch=yes
 fi
 if [ "$mode" = "ignore-int" ]; then
@@ -105,9 +107,13 @@ fi
 if [ "$mode" = "ignore-int-run" ] && [ "$run_launch" = yes ]; then
   trap '' INT
 fi
+if [ "$mode" = "slow-attach" ]; then
+  sleep "${FAKE_ATTACH_S:-3}"
+fi
 
-# bpftrace's exit() on the target's sched_process_exit: end with the target.
-if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+# bpftrace's exit() on the target's sched_process_exit: a launch ends with
+# its target. A probe's self-exit ends it first, whatever its target does.
+if [ "$run_launch" = yes ] && [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
   printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
   exec tail -s 0.1 -f /dev/null --pid="$target"
 fi

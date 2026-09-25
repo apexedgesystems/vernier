@@ -5,21 +5,12 @@
 
 #include "src/bench/inc/ProfilerOffCpu.hpp"
 
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
-#ifdef __linux__
-#include <sys/syscall.h>
-#endif
-
-#include <cerrno>
-#include <csignal>
 #include <cstdio>
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -74,71 +65,18 @@ std::string commandLine(const BpftraceRoute& route, long pid) {
 }
 
 #ifdef __linux__
+/** @brief How many seconds a readiness probe runs before its script ends it. */
+constexpr int PROBE_SELF_EXIT_S = 5;
+
 /**
- * @brief Close every descriptor above 2, in a forked child (async-signal-safe).
- *
- * close_range(2) where the kernel has it; otherwise the first 1024.
+ * @brief The readiness probe's script: the launch's, plus an interval probe
+ * that ends it by itself. A tracer whose stop is refused so ends within the
+ * bound whatever it traces; the check waits for that and reaps it.
  */
-void closeInheritedDescriptors() {
-#ifdef SYS_close_range
-  if (::syscall(SYS_close_range, 3U, ~0U, 0U) == 0) {
-    return;
-  }
-#endif
-  for (int fd = 3; fd < 1024; ++fd) {
-    (void)::close(fd);
-  }
+std::string probeScript() {
+  return std::string{OFFCPU_SCRIPT} + "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) +
+         " { exit(); }\n";
 }
-
-/**
- * @brief A process that only waits, for the readiness probe to trace in
- * place of this one.
- *
- * The script exits when its target exits, so ending the target also ends a
- * probe tracer whose stop was refused. The child holds no descriptor of this
- * process beyond 0 to 2 (a pipe another probe waits on stays unheld) and has
- * its own process group, out of reach of the terminal's signals.
- */
-class ProbeTarget {
-public:
-  ProbeTarget() {
-    pid_ = ::fork();
-    if (pid_ == 0) {
-      (void)::setpgid(0, 0);
-      closeInheritedDescriptors();
-      for (;;) {
-        (void)::pause();
-      }
-    }
-    if (pid_ < 0) {
-      error_ = errno;
-    }
-  }
-
-  ~ProbeTarget() { end(); }
-
-  ProbeTarget(const ProbeTarget&) = delete;
-  ProbeTarget& operator=(const ProbeTarget&) = delete;
-
-  [[nodiscard]] pid_t pid() const noexcept { return pid_; }
-  [[nodiscard]] int error() const noexcept { return error_; }
-
-  /** @brief Kill and reap the target; safe to call more than once. */
-  void end() noexcept {
-    if (pid_ <= 0) {
-      return;
-    }
-    (void)::kill(pid_, SIGKILL);
-    int status = 0;
-    while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {
-    }
-    pid_ = -1;
-  }
-
-private:
-  pid_t pid_ = -1;
-  int error_ = 0;
-};
 #endif
 
 std::shared_ptr<const OffCpuPlan> readyPlan(const ReadinessResult& result) {
@@ -170,39 +108,40 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
   }
-  // The run's own command, through the route, for the run's start grace: the
-  // same script and arguments, with a probe process's pid in place of the
-  // benchmark's. Ending that process after the stop ends a tracer whose
-  // stop was refused, since the script exits with its target.
-  ProbeTarget target;
-  if (target.pid() < 0) {
-    return readinessResult(ReadinessCause::UNUSABLE,
-                           "cannot start a process for the off-CPU probe to trace: " +
-                               std::system_category().message(target.error()),
-                           "Check this user's process limit (ulimit -u).");
-  }
+  // The launch's script, with a self-exit added, through the route for the
+  // run's start grace, on this process; stopped with the run's first stop
+  // signal. The added interval makes it a command the run never runs, so a
+  // grant's refusal of it is unverified, and it bounds a tracer whose stop is
+  // refused: the check waits for that end and reaps it.
   const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
+  const std::string SELF = std::to_string(static_cast<long>(ctx.self()));
+  const std::string RUN_COMMAND = plan->route.bpftrace + " -e <the off-CPU script> <benchmark pid>";
   const ProbeScratch SCRATCH(ctx);
   bpftrace_tool::AttachProbe probe;
-  probe.toolArgs = launchArgs(static_cast<long>(target.pid()));
+  probe.toolArgs = {"-e", probeScript(), SELF};
   probe.what = WHAT;
-  probe.commandLine = commandLine(plan->route, static_cast<long>(target.pid()));
+  probe.commandLine = plan->route.bpftrace + " -e <the off-CPU script with a " +
+                      std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " + SELF;
+  probe.runCommand = RUN_COMMAND;
   probe.graceMs = START_GRACE_MS;
-  probe.afterStop = [&target] { target.end(); };
+  probe.selfExitMs = PROBE_SELF_EXIT_S * 1000;
   auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
   if (verdict && verdict->report.status == EnvReport::Status::Error) {
     return *verdict;
   }
   std::string message =
-      std::string{WHAT} + ", with the run's arguments on a probe process, stayed running for the " +
-      std::to_string(START_GRACE_MS) + " ms start grace " + plan->route.describe() +
-      " and stopped on SIGINT" + (SUDO ? " through sudo -n kill" : "") + " (probe with " +
-      plan->route.bpftrace + ")";
+      std::string{WHAT} + ", with a " + std::to_string(PROBE_SELF_EXIT_S) +
+      " s self-exit added, stayed running for the " + std::to_string(START_GRACE_MS) +
+      " ms start grace " + plan->route.describe() + " and stopped on SIGINT" +
+      (SUDO ? " through sudo -n kill" : "") + " (probe with " + plan->route.bpftrace + ")";
   if (plan->route.privilege.route == PrivilegeRoute::ALREADY_ROOT && plan->route.privilege.optIn) {
     message += "; running as root; BENCH_SUDO not needed";
   }
-  message += std::string{"; not checked: "} +
-             (SUDO ? "SIGTERM and SIGKILL through sudo, and " : "") + "the run's capture";
+  message += "; not checked: " +
+             (SUDO ? "the grant for the run's own command (" + RUN_COMMAND +
+                         "), SIGTERM and SIGKILL through sudo, and "
+                   : std::string{}) +
+             "the run's capture";
   ReadinessResult result;
   if (verdict) {
     result = *verdict;
