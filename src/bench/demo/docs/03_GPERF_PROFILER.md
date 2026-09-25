@@ -42,14 +42,16 @@ calibration are not in the profile. The profile is written to
 (`--profile-output-dir DIR` moves the root), and
 `google-pprof --text <binary> <profile>` reads it.
 
-**Needs:** gperftools' development package when Vernier is built, and
-`google-pprof` to read the profile. The rig's
-[one-time setup](../../docs/rigs/RIG_PI4.md#2-one-time-setup) installs both,
-and `bench doctor` lists the `gperf` backend as `gperftools linked: cpu` when
-it is compiled in. The names this page shows for the C library's internal
-functions come from the library's debug symbols (`libc6-dbg`), which are
-installed on this rig but are not in that setup's package list; see
-[If It Does Not Match](#if-it-does-not-match).
+**Needs:** gperftools' development package when Vernier is built,
+`google-pprof` to read the profile, and debug symbols matching the installed C
+library (`libc6-dbg` on Debian), which give the library's internal functions
+the names this page shows. The rig's
+[one-time setup](../../docs/rigs/RIG_PI4.md#2-one-time-setup) installs all
+three, and `bench doctor` lists the `gperf` backend as
+`gperftools linked: cpu` when it is compiled in. Without the debug symbols, a
+report names each of the library's internal functions after the nearest name
+the library exports; [If It Does Not Match](#if-it-does-not-match) shows what
+that looks like.
 
 ## The Example
 
