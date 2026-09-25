@@ -24,6 +24,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 03 profiles the shared join example and checks what the profile
+  says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
+  `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
+  test, `GperfProfiler.ProfileAttribution`, profiles each version for two
+  seconds of CPU time through the gperf backend, reads the profiles with
+  `google-pprof --text`, and fails when either function is on the stack of
+  fewer than 80% of its version's samples, when `joinV0`'s own code holds more
+  than a quarter of V0's samples (V0's time belongs to the copying and
+  allocating it calls), or when `joinV1`'s own code holds less than a quarter
+  of V1's. It skips, saying why, when the gperf backend or `google-pprof` is
+  unavailable, and under `--profile`. The demo profiled a bubble sort that a
+  Release build inlined into the test's lambda, so every sample landed in
+  `std::_Function_handler::_M_invoke` and the sort was never named, and its
+  only checks were `callsPerSecond` floors. `joinV0` and `joinV1` are declared
+  `[[gnu::noinline]]`, so a build that can see their definitions cannot fold
+  them into their callers; GCC may still specialize them when it sees every
+  caller, and a profile then names the copy
+  `vernier::bench::demo::joinV0 [clone .constprop.0]`, which the test counts as
+  the function. Its walkthrough, `src/bench/demo/docs/03_GPERF_PROFILER.md`, is
+  rewritten from a Release run on the documented Raspberry Pi 4 rig: the
+  `google-pprof` report of each version read row by row, the sampling rate the
+  profiles record (100 samples per second of CPU time), and what the report
+  shows without the C library's debug symbols; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/03_gperf_profiler.csv`. Demo 03's test names
+  change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
+  from earlier releases do not join with newer ones, and `bubbleSort` and
+  `fastSort` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
