@@ -2,13 +2,14 @@
 #define VERNIER_DEMO_EXAMPLES_SAXPY_FAKE_CUDA_RUNTIME_H
 /**
  * @file cuda_runtime.h
- * @brief A tracked stand-in for the CUDA runtime calls SaxpyGpu.cpp makes.
+ * @brief A tracked stand-in for the CUDA runtime calls the SAXPY host code makes.
  *
- * Only for the SAXPY ownership test: it lets the real SaxpyGpu.cpp be built
- * and run on a machine without CUDA. Every acquisition (device memory, pinned
- * memory, a stream) is host memory recorded in a live set and removed on
- * release, and any one acquisition, copy or launch check can be made to fail.
- * Nothing here models what the GPU computes.
+ * Only for host tests: it lets the real SaxpyGpu.cpp, and demo 02's guard
+ * timing (gpu/02_NsightProfiler_Timing.cpp), be built and run on a machine
+ * without CUDA. Every acquisition (device memory, pinned memory, a stream, an
+ * event) is host memory recorded in a live set and removed on release, and any
+ * one acquisition, copy or launch check can be made to fail. Nothing here
+ * models what the GPU computes; an event pair reports a set elapsed time.
  */
 
 #include <cstddef>
@@ -20,6 +21,7 @@
 
 using cudaError_t = int;
 using cudaStream_t = void*;
+using cudaEvent_t = void*;
 
 enum cudaMemcpyKind { cudaMemcpyHostToDevice = 1, cudaMemcpyDeviceToHost = 2 };
 
@@ -38,7 +40,12 @@ struct State {
   int copies = 0;                   ///< Copies attempted so far
   int failCopy = 0;                 ///< Fail the copy with this number (0: none)
   bool failNextLaunchCheck = false; ///< cudaGetLastError reports an error once
-  std::set<void*> live;             ///< Acquired and not yet released
+  int eventRecords = 0;             ///< cudaEventRecord calls so far
+  float elapsedMs = 1.0F;           ///< What cudaEventElapsedTime reports
+  /// Called with the acquisition count after each acquisition completes
+  /// (null: none); a test can act at that exact point.
+  void (*afterAcquisition)(int) = nullptr;
+  std::set<void*> live; ///< Acquired and not yet released
 };
 
 /** @brief The one fake runtime state of the process. */
@@ -63,6 +70,9 @@ inline cudaError_t acquire(void** out, std::size_t bytes) {
   }
   *out = std::malloc(bytes != 0 ? bytes : 1);
   s.live.insert(*out);
+  if (s.afterAcquisition != nullptr) {
+    s.afterAcquisition(s.acquisitions);
+  }
   return cudaSuccess;
 }
 
@@ -116,6 +126,17 @@ inline cudaError_t cudaGetLastError() {
   return cudaSuccess;
 }
 inline cudaError_t cudaStreamSynchronize(cudaStream_t) { return cudaSuccess; }
+inline cudaError_t cudaEventCreate(cudaEvent_t* event) { return fake_cuda::acquire(event, 1); }
+inline cudaError_t cudaEventDestroy(cudaEvent_t event) { return fake_cuda::release(event); }
+inline cudaError_t cudaEventRecord(cudaEvent_t, cudaStream_t = nullptr) {
+  ++fake_cuda::state().eventRecords;
+  return cudaSuccess;
+}
+inline cudaError_t cudaEventSynchronize(cudaEvent_t) { return cudaSuccess; }
+inline cudaError_t cudaEventElapsedTime(float* ms, cudaEvent_t, cudaEvent_t) {
+  *ms = fake_cuda::state().elapsedMs;
+  return cudaSuccess;
+}
 inline const char* cudaGetErrorString(cudaError_t) { return "injected failure"; }
 
 #endif // VERNIER_DEMO_EXAMPLES_SAXPY_FAKE_CUDA_RUNTIME_H

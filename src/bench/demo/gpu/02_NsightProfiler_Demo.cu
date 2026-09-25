@@ -57,6 +57,7 @@
 #include <vector>
 
 #include "src/bench/demo/examples/saxpy/inc/Saxpy.hpp"
+#include "src/bench/demo/gpu/02_NsightProfiler_Timing.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
 
@@ -160,48 +161,6 @@ private:
 dim3 gridFor(int threadsPerBlock) {
   return dim3(static_cast<unsigned>((N + static_cast<std::size_t>(threadsPerBlock) - 1) /
                                     static_cast<std::size_t>(threadsPerBlock)));
-}
-
-/**
- * @brief Median device microseconds per launch of the bare kernel with
- * @p threadsPerBlock threads per block, from CUDA events around batches of
- * GUARD_CALLS launches; negative when a CUDA call fails.
- */
-double medianKernelUs(const DeviceVectors& device, int threadsPerBlock) {
-  cudaStream_t stream = nullptr;
-  cudaEvent_t start = nullptr;
-  cudaEvent_t stop = nullptr;
-  double median = -1.0;
-  if (cudaStreamCreate(&stream) == cudaSuccess && cudaEventCreate(&start) == cudaSuccess &&
-      cudaEventCreate(&stop) == cudaSuccess) {
-    std::vector<double> perLaunch;
-    perLaunch.reserve(GUARD_SAMPLES);
-    ubd::launchSaxpy(A, device.x(), device.y(), N, threadsPerBlock, stream); // untimed
-    for (int sample = 0; sample < GUARD_SAMPLES; ++sample) {
-      cudaEventRecord(start, stream);
-      for (int launch = 0; launch < GUARD_CALLS; ++launch) {
-        ubd::launchSaxpy(A, device.x(), device.y(), N, threadsPerBlock, stream);
-      }
-      cudaEventRecord(stop, stream);
-      cudaEventSynchronize(stop);
-      float ms = 0.0F;
-      cudaEventElapsedTime(&ms, start, stop);
-      perLaunch.push_back(static_cast<double>(ms) * 1000.0 / GUARD_CALLS);
-    }
-    if (cudaGetLastError() == cudaSuccess) {
-      median = ub::summarize(perLaunch).median;
-    }
-  }
-  if (stop != nullptr) {
-    cudaEventDestroy(stop);
-  }
-  if (start != nullptr) {
-    cudaEventDestroy(start);
-  }
-  if (stream != nullptr) {
-    cudaStreamDestroy(stream);
-  }
-  return median;
 }
 
 /** @brief The bare kernel in one launch shape, measured by the GPU harness. */
@@ -322,8 +281,10 @@ PERF_TEST(NsightProfiler, LaunchShapeSpeedup) {
   ASSERT_TRUE(device.ok()) << "device allocation failed";
   ASSERT_TRUE(device.fill()) << "device fill failed";
 
-  const double ONE_US = medianKernelUs(device, ONE_THREAD);
-  const double WIDE_US = medianKernelUs(device, WIDE_BLOCK);
+  const double ONE_US =
+      ubd::medianLaunchUs(A, device.x(), device.y(), N, ONE_THREAD, GUARD_CALLS, GUARD_SAMPLES);
+  const double WIDE_US =
+      ubd::medianLaunchUs(A, device.x(), device.y(), N, WIDE_BLOCK, GUARD_CALLS, GUARD_SAMPLES);
   ASSERT_GT(ONE_US, 0.0) << "timing the one-thread-per-block kernel failed";
   ASSERT_GT(WIDE_US, 0.0) << "timing the 256-thread kernel failed";
 
