@@ -576,17 +576,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
-- **`nsight-parse` is documented as what it is** -- its help and the tools
-  README said its CSV fed `bench-plot` and `bench compare`, which refuse it:
-  it has one row per row of the `nsys stats` summaries and none of the
-  benchmark columns. Both now describe that format, and what the parser cannot
-  read in this release: a report that `bench run --profile nsight` summarized
-  can yield no rows, because the parser runs `nsys stats` without
-  `--force-export=true` and nsys sometimes refuses the SQLite export beside the
-  report; an `.ncu-rep` yields none, because the parser runs `ncu` without
-  `--import`. Each prints a warning and exits 0. Walkthrough 11 shows both and
-  reads the reports with `nsys stats --force-export=true --format csv` and
-  `ncu --import ... --csv` instead.
+- **`nsight-parse` reads the reports `bench run` leaves, and fails when it
+  cannot** -- it ran `ncu` on an `.ncu-rep` without `--import`, so ncu took the
+  report for a program to launch and no Nsight Compute report ever yielded a
+  row; it ran `nsys stats` on the report itself, which nsys refuses in some runs
+  when the SQLite export `bench run --profile nsight` made sits beside it
+  ("older than input file"), so such a report yielded none either; and each of
+  those failures printed a warning, wrote an empty or partial CSV and exited 0.
+  It now exports each Nsight Systems report once, to a private temporary file,
+  reads the four summaries from that export, imports each Nsight Compute report
+  with `ncu --import`, and exits 1 when any requested input was not read (a
+  tool failed or is missing, an input is not a report, a directory holds none),
+  with an error line naming it, still writing the rows it did read. A summary
+  with no data is a warning. Its help and the tools README describe the CSV it
+  writes, its own format and not a benchmark CSV: `bench summary`,
+  `bench compare` and `bench-plot` refuse it. A script that relied on exit 0
+  after a failed read now sees 1.
 
 ## v1.0.3 - 2026-06-28
 

@@ -426,58 +426,62 @@ bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
 ## 3b. nsight-parse (Python)
 
-Reads Nsight reports through `nsys stats` and `ncu` and writes what they print
-as one CSV of its own. It is not a benchmark CSV: `bench summary`,
-`bench compare` and `bench-plot` need `test`, `wallMedian`, `wallCV` and
-`callsPerSecond` columns and refuse it (`missing required column 'test'`,
-`Missing required columns`). Read it with a CSV tool.
+Reads Nsight reports and writes what the tools print as one CSV of its own. It
+is not a benchmark CSV: `bench summary`, `bench compare` and `bench-plot` need
+`test`, `wallMedian`, `wallCV` and `callsPerSecond` columns and refuse it
+(`missing required column 'test'`, `Missing required columns`). Read it with a
+CSV tool.
 
 ```bash
 nsight-parse parse run.nsys-rep --csv summaries.csv   # one report
-nsight-parse parse bench-out/ --csv combined.csv      # every .nsys-rep / .ncu-rep under a directory
+nsight-parse parse bench-out/ --csv combined.csv      # every .nsys-rep and .ncu-rep under a directory
 ```
 
-**What it writes.** For an `.nsys-rep`, one row per row of the four summaries
-`nsys stats` prints (`cuda_gpu_kern_sum`, `cuda_api_sum`,
-`cuda_gpu_mem_size_sum`, `cuda_gpu_mem_time_sum`): one per kernel name, one
-per CUDA call name, one per kind of copy, not one per launch. The columns are
-`source` (`nsys`), `report` (the summary), `kernel` (its `Name`; empty for the
-copy summaries, which name the row in `Operation`), `instances` (`Instances`
-or `Num Calls`; empty for the copy summaries, which count in `Count`),
-`time_total_ns`, `time_avg_ns`, `time_pct`, then every other column the
-summaries print, under their own names (`Med (ns)`, `Min (ns)`, `Max (ns)`,
-`StdDev (ns)`, `Count`, `Total (MB)` and so on), in alphabetical order. From
-walkthrough 11's Nsight Systems step, 13 rows:
+**How it reads a report.**
+
+- `.nsys-rep`: `nsys export --type sqlite` once, to a private temporary file,
+  then `nsys stats --report <summary> --format csv` on that export for
+  `cuda_gpu_kern_sum`, `cuda_api_sum`, `cuda_gpu_mem_size_sum` and
+  `cuda_gpu_mem_time_sum`. An export that `bench run --profile nsight` left
+  beside the report is neither used nor changed; a plain `nsys stats` on such a
+  report can refuse it ("Existing SQLite export found ... older than input
+  file").
+- `.ncu-rep`: `ncu --import <report> --csv --print-summary per-kernel`.
+
+**What it writes.** For an `.nsys-rep`, one row per row of the four summaries:
+one per kernel name, one per CUDA call name, one per kind of copy, not one per
+launch. The columns are `source` (`nsys`), `report` (the summary), `kernel` (its
+`Name`; empty for the copy summaries, which name the row in `Operation`),
+`instances` (`Instances` or `Num Calls`; empty for the copy summaries, which
+count in `Count`), `time_total_ns`, `time_avg_ns`, `time_pct`, then every other
+column the summaries print, under their own names (`Med (ns)`, `Min (ns)`,
+`Max (ns)`, `StdDev (ns)`, `Count`, `Total (MB)` and so on), in alphabetical
+order. From walkthrough 11's Nsight Systems step, 13 rows:
 
 ```
 source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,Avg (MB),Count,Max (MB),Max (ns),Med (MB),Med (ns),Min (MB),Min (ns),Operation,StdDev (MB),StdDev (ns),Total (MB)
 nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,178481856,2925932.1,100.0,,,,3774688,,2890848.0,,2852032,,,149253.5,
 nsys,cuda_api_sum,cudaMemcpy,183,199253613,1088817.6,58.5,,,,3841722,,131481.0,,46630,,,1397635.5,
 ...
-nsys,cuda_gpu_mem_time_sum,,,2408928,19745.3,74.4,,122,,42528,,19168.0,,18496,[CUDA memcpy Host-to-Device],,3108.3,
 ```
 
-**What it cannot read in this release.** Both cases print a warning per
-failed command on stderr, write the rows it did get (none, here) and exit 0:
+For an `.ncu-rep`, one row per launch shape, section and metric (88 for
+walkthrough 11's two kernel shapes): `source` (`ncu`), `report` (`per_kernel`),
+`kernel`, then ncu's own columns in snake case (`block_size`, `grid_size`,
+`invocations`, `section_name`, `metric_name`, `metric_unit`, `minimum`,
+`maximum`, `average` and the process columns).
 
-- A report that `bench run --profile nsight` summarized. The runner leaves an
-  SQLite export beside the report, and `nsight-parse` calls `nsys stats`
-  without `--force-export=true`, which `nsys` refuses in some runs ("Existing
-  SQLite export found ... older than input file"): each summary then fails
-  (`nsys stats --report cuda_gpu_kern_sum failed for profile.nsys-rep`) and the
-  CSV is empty. On the Jetson AGX Thor rig (nsys 2025.3.2) that happened after
-  four of eight runs of walkthrough 11's Nsight Systems step. A copy of the
-  report in a directory of its own parses.
-- Any `.ncu-rep`. `nsight-parse` calls `ncu` without `--import`, so `ncu`
-  takes the report for a program to launch ("The target application is not
-  an executable binary"): `ncu --csv failed for kernel_profile.ncu-rep`, no
-  rows (ncu 2025.3.1).
+**Exit status.** 0 when every requested report was read; 1 when any was not:
+a tool failed or is missing, an input is not a report, or a directory holds
+none. Each failure is an error line on stderr, and the rows of the reports that
+were read are written all the same. A summary with no data, such as the kernel
+summary of a report with no kernel, is a warning. A directory with one good
+report and a truncated copy of an ncu report, on the Jetson AGX Thor rig (nsys
+2025.3.2, ncu 2025.3.1), exits 1 after:
 
-Until then, the tools print CSV themselves:
-
-```bash
-nsys stats --force-export=true --format csv --report cuda_gpu_kern_sum run.nsys-rep
-ncu --import run.ncu-rep --csv --print-summary per-kernel   # one row per launch shape, section and metric
+```
+[nsight-parse] error: ncu --import failed for mixed/damaged.ncu-rep: exit status 1: ==ERROR== An unexpected incompatibility with this Nsight Compute version occurred. Try opening the file with the same tool version it was created with.
+[nsight-parse] wrote 13 rows to mixed.csv
 ```
 
 ---

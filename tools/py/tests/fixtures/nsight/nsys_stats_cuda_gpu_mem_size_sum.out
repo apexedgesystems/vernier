@@ -1,0 +1,5 @@
+Processing [/tmp/nsight_fixture/export/profile.sqlite] with [/opt/nvidia/nsight-systems/2025.3.2/host-linux-armv8/reports/cuda_gpu_mem_size_sum.py]...
+Total (MB),Count,Avg (MB),Med (MB),Min (MB),Max (MB),StdDev (MB),Operation
+511.705,122,4.194,4.194,4.194,4.194,0.000,[CUDA memcpy Host-to-Device]
+255.853,61,4.194,4.194,4.194,4.194,0.000,[CUDA memcpy Device-to-Host]
+

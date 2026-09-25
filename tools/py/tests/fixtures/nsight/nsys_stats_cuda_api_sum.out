@@ -1,0 +1,11 @@
+Processing [/tmp/nsight_fixture/export/profile.sqlite] with [/opt/nvidia/nsight-systems/2025.3.2/host-linux-armv8/reports/cuda_api_sum.py]...
+Time (%),Total Time (ns),Num Calls,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+58.5,199253613,183,1088817.6,131481.0,46630,3841722,1397635.5,cudaMemcpy
+35.1,119530146,122,979755.3,173907.5,96352,93628054,8458093.5,cudaMalloc
+6.1,20710938,122,169761.8,137699.0,66370,450287,85941.1,cudaFree
+0.3,1037676,61,17011.1,12750.0,8963,90426,12614.7,cudaLaunchKernel
+0.0,48703,1,48703.0,48703.0,48703,48703,0.0,cuLibraryLoadData
+0.0,42200,61,691.8,453.0,250,1435,447.7,cuKernelGetName
+0.0,1111,1,1111.0,1111.0,1111,1111,0.0,cuModuleGetLoadingMode
+0.0,509,1,509.0,509.0,509,509,0.0,cuLibraryGetKernel
+

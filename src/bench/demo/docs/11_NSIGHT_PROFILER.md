@@ -523,84 +523,61 @@ as ever. `G1` then reads about 0.9 ms a call instead of about 0.65 ms (see
 
 ## The Reports as CSV
 
-Vernier's `nsight-parse` is meant to turn these reports into one CSV. It is
-one of Vernier's Python tools, which a build puts in `build/bin/tools/py` when
-it finds Poetry and pip; this rig's build has no Poetry, so for this page the
-wheel built from the same tree was installed with `pip3 install --target` and
-put on `PATH`. In this release it does not read what `bench run` leaves
-reliably:
-
-- **Step 2's folder.** It runs `nsys stats` without `--force-export=true`, so
-  it writes no rows whenever `nsys` refuses the SQLite export beside the report
-  (see [If It Does Not Match](#if-it-does-not-match)). Run after each of eight
-  runs of Step 2's command, it wrote no rows four times:
-
-  ```bash
-  nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
-  ```
-
-  ```
-  [nsight-parse] nsys stats --report cuda_gpu_kern_sum failed for profile.nsys-rep
-  [nsight-parse] nsys stats --report cuda_api_sum failed for profile.nsys-rep
-  [nsight-parse] nsys stats --report cuda_gpu_mem_size_sum failed for profile.nsys-rep
-  [nsight-parse] nsys stats --report cuda_gpu_mem_time_sum failed for profile.nsys-rep
-  [nsight-parse] wrote 0 rows to nsys_summaries.csv
-  ```
-
-  and 13 rows the other four, one per row of the four summaries.
-
-- **Step 4's report.** It runs `ncu` without `--import`, so `ncu` takes the
-  report for a program to launch ("The target application is not an
-  executable binary", when that command is run by hand), and the parse writes
-  no rows:
-
-  ```bash
-  nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_summary.csv
-  ```
-
-  ```
-  [nsight-parse] ncu --csv failed for kernel_profile.ncu-rep
-  [nsight-parse] wrote 0 rows to ncu_summary.csv
-  ```
-
-Both tools print CSV themselves, so until `nsight-parse` reads these reports,
-ask them. The output below is from a second run of Steps 2 and 4 with the
-clocks as found, so its numbers differ a little from those steps:
+Vernier's `nsight-parse` turns these reports into one CSV. It exports an
+Nsight Systems report once, to a private temporary file, and reads the four
+summaries from that export with `nsys stats --format csv`; it imports an
+Nsight Compute report with `ncu --import ... --csv --print-summary
+per-kernel`. It is one of Vernier's Python tools, which a build puts in
+`build/bin/tools/py` only when it finds Poetry and pip. This rig's build has no
+Poetry (see the [rig document](../../docs/rigs/RIG_THOR_AGX.md#2-one-time-setup)),
+so for this page the wheel built from the same tree was installed with
+`pip3 install --target` and put on `PATH`. The reports are from a second run of
+Steps 2 and 4 with the clocks as found, read where `bench run` left them, the
+SQLite export beside the Nsight Systems report included:
 
 ```bash
-nsys stats --force-export=true --format csv --report cuda_gpu_kern_sum bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
+nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
+nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_metrics.csv
 ```
 
 ```
-Generating SQLite file bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.sqlite from bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
-Processing [bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.sqlite] with [/opt/nvidia/nsight-systems/2025.3.2/host-linux-armv8/reports/cuda_gpu_kern_sum.py]...
-Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
-100.0,179106560,61,2936173.1,2889824.0,2864096,3829824,169012.8,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)"
+[nsight-parse] wrote 13 rows to nsys_summaries.csv
+[nsight-parse] wrote 88 rows to ncu_metrics.csv
 ```
 
-The other summaries come the same way (`--report cuda_api_sum`, and so on).
-Nsight Compute prints one row per launch shape, section and metric, 88 rows
-after the header here:
-
-```bash
-ncu --import bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep --csv --print-summary per-kernel
-```
+`nsys_summaries.csv` has one row per row of the four summaries (per kernel
+name, per CUDA call, per kind of copy), not one per launch; after its first
+seven columns come the summaries' own:
 
 ```
-"Process ID","Process Name","Host Name","Kernel Name","Block Size","Grid Size","Device","CC","Invocations","Section Name","Metric Name","Metric Unit","Minimum","Maximum","Average"
-...
-"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(256, 1, 1)","(4096, 1, 1)","0","11.0","14","Occupancy","Theoretical Occupancy","%","100.00","100.00","100.00"
-"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(256, 1, 1)","(4096, 1, 1)","0","11.0","14","Occupancy","Achieved Occupancy","%","73.56","79.38","74.92"
-...
-"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(1, 1, 1)","(1048576, 1, 1)","0","11.0","14","Occupancy","Theoretical Occupancy","%","50.00","50.00","50.00"
-"109199","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(1, 1, 1)","(1048576, 1, 1)","0","11.0","14","Occupancy","Achieved Occupancy","%","27.46","30.08","28.52"
+source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,Avg (MB),Count,Max (MB),Max (ns),Med (MB),Med (ns),Min (MB),Min (ns),Operation,StdDev (MB),StdDev (ns),Total (MB)
+nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,178481856,2925932.1,100.0,,,,3774688,,2890848.0,,2852032,,,149253.5,
+nsys,cuda_api_sum,cudaMemcpy,183,199253613,1088817.6,58.5,,,,3841722,,131481.0,,46630,,,1397635.5,
+nsys,cuda_api_sum,cudaMalloc,122,119530146,979755.3,35.1,,,,93628054,,173907.5,,96352,,,8458093.5,
 ...
 ```
 
-`nsight-parse`'s CSV, when it has rows, is not a benchmark CSV: the benchmark
-tools need `test`, `wallMedian`, `wallCV` and `callsPerSecond` columns.
-`bench summary` and `bench compare` refuse it (`missing required column
-'test'`), and `bench-plot` stops with `Missing required columns`.
+`ncu_metrics.csv` has one row per launch shape, section and metric, 88 here;
+the occupancy rows of the two shapes:
+
+```
+source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,average,block_size,cc,device,grid_size,host_name,invocations,maximum,metric_name,metric_unit,minimum,process_id,process_name,section_name
+...
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,100.00,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,100.00,Theoretical Occupancy,%,100.00,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,76.34,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,82.08,Achieved Occupancy,%,73.92,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+...
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,50.00,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,50.00,Theoretical Occupancy,%,50.00,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,28.88,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,30.09,Achieved Occupancy,%,25.95,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+...
+```
+
+When a report cannot be read, `nsight-parse` names it on stderr, still writes
+the rows it did read, and exits 1 (see the
+[tools README](../../../../tools/README.md#3b-nsight-parse-python)). Its CSV is
+not a benchmark CSV: the benchmark tools need `test`, `wallMedian`, `wallCV`
+and `callsPerSecond` columns. `bench summary` and `bench compare` refuse it
+(`missing required column 'test'`), and `bench-plot` stops with
+`Missing required columns`.
 
 ## What Should Reproduce
 
