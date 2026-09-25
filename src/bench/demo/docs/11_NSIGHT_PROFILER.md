@@ -612,10 +612,11 @@ them.
 
 The RTX 5000 Ada figures come from three runs of the demo with Step 1's
 settings (`--cycles 20 --repeats 10`) in the project's `dev-cuda` container,
-with the clocks as found and the laptop busy with other work, so that only the
-GPU-side figures are exact: the kernel took 622 us per launch in one-thread
-blocks and 6.5 us in 256-thread ones; `G0` took 2.62 to 2.63 ms a call and
-`G1` 2.32 to 2.34 ms.
+with the clocks as found and the laptop running other work. They are what
+those runs measured: the kernel took 622 us per launch in one-thread blocks and
+6.5 us in 256-thread ones, timed with CUDA events on the device, which run
+conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
+2.34 ms end to end.
 
 ## If It Does Not Match
 

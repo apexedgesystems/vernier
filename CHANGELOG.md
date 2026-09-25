@@ -576,6 +576,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **The Jetson AGX Thor rig procedure leaves GPU persistence mode as it found
+  it** -- `jetson_clocks` turns GPU persistence mode on and its `--restore`
+  leaves it on, so a board that was Disabled stayed Enabled after following
+  `RIG_THOR_AGX.md`'s measurement procedure. The procedure records the mode
+  before locking the clocks and turns it back off afterwards only if it was
+  off, reporting a failure as it does for the clocks. The rig document also
+  describes two bands of end-to-end time this board shows with the clocks
+  locked, and notes that its build makes no Python tools (no Poetry on the
+  board).
 - **`nsight-parse` reads the reports `bench run` leaves, and fails when it
   cannot** -- it ran `ncu` on an `.ncu-rep` without `--import`, so ncu took the
   report for a program to launch and no Nsight Compute report ever yielded a

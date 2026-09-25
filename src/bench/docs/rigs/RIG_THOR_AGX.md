@@ -55,6 +55,17 @@ administrators on Jetson, so `--profile ncu` runs under `sudo`.
 
 **Rust toolchain.** Needed once to build the `bench` CLI (`cargo` on PATH).
 
+**Python tools.** This board has no Poetry, so its build (tools on) makes the
+Rust `bench` CLI but not `bench-plot` or `nsight-parse`: the build makes the
+Python tools only when it finds Poetry and pip. `nsys` and `ncu` read their
+own reports without them. Walkthrough 11 checked `nsight-parse` on this board
+with a wheel of the same tree built on another machine
+(`poetry build --format wheel` in `tools/py`), installed with
+`pip3 install --no-deps --target <dir>`, `<dir>/bin` put on `PATH` and `<dir>`
+on `PYTHONPATH`. That gives `nsight-parse`, which needs only Python's standard
+library (`bench-plot` would need its dependencies too); it is optional and not
+part of this rig's build.
+
 ## 3. Build
 
 Release, native on the board, with the GPU architecture stated: left
@@ -96,16 +107,23 @@ On this rig the build takes about 35 seconds and the unit tests pass
 
 Lock the clocks for the measurement and restore them afterwards, in the
 same script. The clocks are locked only after their state has been saved,
-and a failed restore is reported and fails the script:
+and a failed restore is reported and fails the script. `jetson_clocks` also
+turns GPU persistence mode on, and `--restore` leaves it on, so the script
+records the mode first and turns it back off afterwards only if it was off:
 
 ```bash
 set -euo pipefail
 STATE=/tmp/jetson_clocks.state
+PERSISTENCE=$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader | head -1)
 sudo rm -f "$STATE"                       # --store prompts if the file exists
 sudo jetson_clocks --store "$STATE"       # no snapshot, no lock: set -e stops here
 restore_clocks() {
   sudo jetson_clocks --restore "$STATE" ||
     { echo "clock restore FAILED: run 'sudo jetson_clocks --restore $STATE'" >&2; exit 1; }
+  if [ "$PERSISTENCE" = "Disabled" ]; then
+    sudo nvidia-smi -pm 0 > /dev/null ||
+      { echo "persistence mode restore FAILED: run 'sudo nvidia-smi -pm 0'" >&2; exit 1; }
+  fi
 }
 trap restore_clocks EXIT
 sudo jetson_clocks
@@ -128,6 +146,18 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
   host-to-device copy is a memory-to-memory copy (about 75 GB/s here), not
   a PCIe transfer. Walkthrough numbers that involve transfers are smaller
   on this rig than on a discrete GPU, and each walkthrough says which ones.
+- **Two bands for work that waits on the GPU.** With the clocks locked, the
+  end-to-end time of work that alternates host copies with short GPU work
+  moves between two bands from run to run, while kernel-only rows hold still:
+  walkthrough 11's `G1` (SAXPY through pinned buffers) read about 635 us or
+  about 880 us a call. On an Nsight Systems timeline of the slow band the GPU
+  starts each call's first copy about 217 us after the host queued it, against
+  about 16 us, and the copies and the kernel take as long as ever: an observed
+  delay from submission to the first GPU operation. That an idle or power state
+  of the GPU causes it is an inference, not a measured state; no clock this
+  procedure locks changed between the bands. Walkthroughs report every run and
+  keep their reference selection rule; they do not retry a run until it is
+  fast, and do not warm the GPU up to hide the slow band.
 - **jemalloc.** The distribution's jemalloc is built without profiling;
   the doctor reports it, and the jemalloc walkthrough does not use this rig.
 - **Energy.** RAPL is Intel-only and is not available here.
