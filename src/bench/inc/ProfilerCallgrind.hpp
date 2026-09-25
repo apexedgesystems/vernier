@@ -49,10 +49,13 @@ namespace bench {
 /**
  * @brief Valgrind Callgrind profiler implementation.
  *
- * Uses callgrind_control to toggle instrumentation around the measured window.
- * The parent process must be running under valgrind --tool=callgrind for this
- * to have any effect. If not running under valgrind, instrumentation toggles
- * are no-ops and measurement proceeds normally.
+ * Under a manual wrap started with --instr-atstart=no, switches instrumentation
+ * on before each measured window and off after it with callgrind_control, so
+ * the profile valgrind writes at exit holds the measured calls and the
+ * harness's own work between the two hooks, and not the rest of the process.
+ * Under the wrap `bench run --profile callgrind` uses, the recording covers the
+ * whole process and is left alone. Not under valgrind, nothing is switched and
+ * measurement proceeds normally.
  *
  * Recommended invocation:
  *   valgrind --tool=callgrind --instr-atstart=no ./MyTest --profile callgrind
@@ -75,9 +78,9 @@ private:
   std::string testName_;
   std::string artifactDir_;
   bool runningUnderValgrind_{false};
-  // True only if callgrind_control can actually toggle instrumentation.
-  // Inside a Docker PID namespace the control program cannot reach the
-  // valgrind process, so we keep recording for the whole run instead.
+  // True when this backend switches instrumentation around the measured
+  // window: under valgrind, with callgrind_control on PATH, and not under
+  // bench run's wrap, whose recording covers the whole process.
   bool canToggle_{false};
 };
 

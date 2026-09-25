@@ -9,6 +9,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 07 counts the instructions of the shared join example** --
+  `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
+  its walkthrough quoted instruction counts and a 5000x ratio that workload
+  cannot produce. It measures `joinV0` and `joinV1` from
+  `src/bench/demo/examples/join`, one test and one CSV row each. A third test,
+  `CallgrindProfiler.InstructionCounts`, runs a fourth, `CountCalls`, under
+  callgrind with 10 and with 20 calls of each version and divides the difference
+  between the two program totals by 10, so the count per call does not depend on
+  callgrind's call graph, which on the Pi rig credited `joinV0` with calls never
+  received. It fails unless V0 executes more than five times V1's instructions
+  per call and a second run counts exactly the same, and it fails, with the
+  run's output, when a counting run under callgrind does not reach its test.
+  It skips only where valgrind is not installed or gives up reading the
+  binary's debug information; `CountCalls` skips itself when it is not run
+  that way.
+  Instruction counts do not depend on machine load, so `InstructionCounts` is
+  registered with `ctest` (labels `callgrind` and `demo`) and an ordinary test
+  run checks what the walkthrough claims. The example library is compiled with
+  `-g` in every build type, which adds line tables and leaves the generated code
+  as it is, so a profiler can attribute its cost to source lines in an optimized
+  build. Demo 07's walkthrough, `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`,
+  is rewritten from a Release run on the documented Raspberry Pi 4 rig: it reads
+  callgrind's per-function and per-line counts, which repeat from run to run,
+  and not its call graph, which is wrong for this program on that Arm board. The
+  run's timing CSV is committed at
+  `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test names
+  change, so CSVs captured from it before this release do not join with newer
+  ones, and `linearSearch` and `binarySearch` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
@@ -154,6 +182,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The callgrind backend's wrap hint records the measured window** -- run
+  outside valgrind, `--profile callgrind` prints a `valgrind --tool=callgrind
+  --instr-atstart=no ...` command to use instead, and a run started with it
+  recorded nothing (`Collected : 0`), in a container or out of one. The backend
+  switched instrumentation on for the measured window with
+  `callgrind_control --pid=<pid>`, an option that tool does not have (it takes
+  the process id as a trailing argument, and exits 0 after rejecting an
+  option), and in a container it did not try at all while printing that the
+  whole process would be recorded. It switches instrumentation on before each
+  measured window and off after it, in a container too, so the profile holds
+  the measured calls and the harness's own work around them (timing, printing
+  and recording the result), and none of the test's work before or after the
+  window. `bench run --profile callgrind` records the whole process as before:
+  the backend does not switch a recording the runner started. With no
+  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
+  says the profile covers the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it

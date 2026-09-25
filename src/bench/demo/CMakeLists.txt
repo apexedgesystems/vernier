@@ -83,7 +83,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (3)
+# Demos Built on a Shared Example (4)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -94,6 +94,10 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
@@ -101,3 +105,59 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Demo Checks Run by CTest (2)
+# ------------------------------------------------------------------------------
+# Demo binaries stay out of ctest, so that no timing runs beside a parallel
+# suite. Demo 07's check counts instructions under callgrind, which load does
+# not change, so ctest runs that one test, under the callgrind label and the
+# demo label that selects the walkthroughs' checks; it skips where valgrind is
+# missing or gives up reading the binary's debug information. The second test,
+# labelled callgrind only, runs the same check in a copy of demo 07 that aborts
+# under valgrind before its tests start
+# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the check
+# fails on it rather than skipping.
+# ------------------------------------------------------------------------------
+
+add_test(NAME CallgrindDemoInstructionCountsTest
+         COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
+)
+# The skip expression names this test: its failure messages quote the counting
+# runs' output, whose own GoogleTest lines must not turn a failure into a skip.
+set_tests_properties(
+  CallgrindDemoInstructionCountsTest
+  PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] CallgrindProfiler\\.InstructionCounts"
+)
+
+vernier_add_ptest(
+  TARGET
+  CallgrindDemoStartupFault
+  SOURCES
+  cpu/07_CallgrindProfiler_Demo.cpp
+  "${PROJECT_SOURCE_DIR}/src/bench/utst/StartupFaultUnderValgrind.cpp"
+  LINK
+  bench
+  demo_helpers
+  demo_example_join
+)
+add_test(NAME CallgrindDemoStartupFaultTest
+         COMMAND CallgrindDemoStartupFault --gtest_filter=CallgrindProfiler.InstructionCounts
+)
+# It passes only when the check fails with its startup-failure message: that
+# message followed by GoogleTest's FAILED line for the check. It skips only on
+# evidence that is not the check's wording: "valgrind is not installed",
+# decided before anything runs, and valgrind's own two lines when it gives up
+# reading debug information, which the check's skip quotes as valgrind wrote
+# them.
+set_tests_properties(
+  CallgrindDemoStartupFaultTest
+  PROPERTIES
+    LABELS
+    "callgrind"
+    PASS_REGULAR_EXPRESSION
+    "CountCalls did not start under callgrind.*\\[  FAILED  \\] CallgrindProfiler\\.InstructionCounts"
+    SKIP_REGULAR_EXPRESSION
+    "valgrind is not installed;Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
+)
