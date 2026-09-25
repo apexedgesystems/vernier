@@ -83,8 +83,10 @@ side, so remove the directory when switching between them.
 - 15 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
   and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
 - Per-backend environment doctor (`--profile-check`) with actionable hints
-- SIGALRM watchdog on each measured loop under `--profile`, so a loop that hangs
-  while profiled fails loudly (exit status 2) instead of hanging the run
+- SIGALRM watchdog on the `measured()` and `throughputLoop()` loops under
+  `--profile`, so such a loop that hangs while profiled fails loudly (exit
+  status 2) instead of hanging the run; `contentionRun()` and GPU measurements
+  are not covered
 - CUDA GPU benchmarking with multi-GPU and Unified Memory support, plus
   in-process CUPTI kernel metrics (register / smem / launch counts) without
   spawning ncu
