@@ -502,6 +502,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   replay` adds its metric list). Under a session, one that `bench run` started
   or one typed by hand (recognised from `NSYS_PROFILING_SESSION_ID` and
   `NV_NSIGHT_INJECTION_PORT_BASE`), it names the tool that owns the capture.
+  Each folder and argument the printed command carries is quoted as one shell
+  word, so a folder or a `--profile-args` value with a space or a quote in it
+  reaches the tool as one argument.
   The four `nsys stats` summaries (`cuda_gpu_kern_sum.txt` and the others) are
   written by `bench run --profile nsight`; after a wrap typed by hand, run
   `nsys stats` on the report.

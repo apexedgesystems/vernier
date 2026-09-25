@@ -12,12 +12,39 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "src/bench/inc/Nvtx.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 namespace vernier {
 namespace bench {
+
+namespace {
+
+/**
+ * @brief @p word as one POSIX shell word: unchanged when every character is
+ * safe, otherwise in single quotes with each quote written as '\''.
+ */
+std::string shellQuote(const std::string& word) {
+  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "0123456789_@%+=:,./-";
+  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
+    return word;
+  }
+  std::string quoted = "'";
+  for (const char C : word) {
+    if (C == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += C;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+} // namespace
 
 NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
@@ -82,34 +109,39 @@ void NsightProfiler::popRange() noexcept {
 
 void NsightProfiler::printWrapCommand() const {
   // The flags this run was given, so the printed command selects the same mode.
-  std::string flags = "--profile " + cfg_.profileTool;
+  // Every value that comes from the run is quoted as one shell word, so a
+  // folder or an argument with a space or a quote in it stays one argument.
+  std::string flags = "--profile " + shellQuote(cfg_.profileTool);
   if (!cfg_.profileArgs.empty()) {
-    flags += " --profile-args '" + cfg_.profileArgs + "'";
+    flags += " --profile-args " + shellQuote(cfg_.profileArgs);
   }
 
   if (mode_ == NsightMode::Systems) {
+    const std::string OUTPUT = shellQuote(artifactDir_ + "/profile");
     std::fprintf(stderr,
                  "\n[nsight] No nsys session: nsys cannot attach to a running process, so this\n"
                  "[nsight] run is not captured. Start the binary under nsys:\n"
-                 "[nsight]   nsys profile -o %s/profile -t cuda,nvtx --force-overwrite true \\\n"
+                 "[nsight]   nsys profile -o %s -t cuda,nvtx --force-overwrite true \\\n"
                  "[nsight]       <this-binary> %s [...]\n"
                  "[nsight] or let bench run start it, which also writes the summary reports:\n"
                  "[nsight]   bench run <this-binary> --profile nsight -- [...]\n\n",
-                 artifactDir_.c_str(), flags.c_str());
+                 OUTPUT.c_str(), flags.c_str());
     return;
   }
 
   // ncu replays every kernel launch many times, so the command keeps the
   // launch count small; a full-length run takes hours.
   const bool REPLAY = (mode_ == NsightMode::ComputeReplay);
-  const std::string METRICS = REPLAY ? " --metrics " + replayMetrics_.toNcuMetricString() : "";
+  const std::string METRICS =
+      REPLAY ? " --metrics " + shellQuote(replayMetrics_.toNcuMetricString()) : "";
+  const std::string OUTPUT =
+      shellQuote(artifactDir_ + (REPLAY ? "/kernel_replay" : "/kernel_profile"));
   std::fprintf(stderr,
                "\n[nsight] No ncu session: ncu cannot attach to a running process, so this\n"
                "[nsight] run is not captured. Start the binary under ncu, with few launches:\n"
-               "[nsight]   ncu%s -o %s/%s -f --target-processes all \\\n"
+               "[nsight]   ncu%s -o %s -f --target-processes all \\\n"
                "[nsight]       <this-binary> %s --cycles 3 --repeats 1 [...]\n",
-               METRICS.c_str(), artifactDir_.c_str(), REPLAY ? "kernel_replay" : "kernel_profile",
-               flags.c_str());
+               METRICS.c_str(), OUTPUT.c_str(), flags.c_str());
   if (!REPLAY) {
     std::fprintf(stderr,
                  "[nsight] or: bench run <this-binary> --profile ncu --cycles 3 --repeats 1 "

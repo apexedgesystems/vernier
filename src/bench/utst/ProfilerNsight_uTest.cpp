@@ -6,6 +6,10 @@
  * Notes:
  *  - Fake nsys and ncu executables, first on PATH, record every invocation;
  *    the backend must never run them. The real tools are not needed.
+ *  - The quoting tests run the printed command through /bin/sh, placeholders
+ *    filled in, and compare the arguments the fake received with the ones
+ *    the run was given: a folder or an argument with a space or a quote must
+ *    arrive as one argument.
  *  - Each test sets or clears the variables it depends on and restores them.
  *  - The backend makes no CUDA call, so no device is needed; it lives in the
  *    CUDA library, so the test exists only where that library is built.
@@ -26,7 +30,10 @@
 #include <fstream>
 #include <iterator>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 using vernier::bench::NsightProfiler;
 using vernier::bench::PerfConfig;
@@ -39,7 +46,11 @@ namespace {
 
 /* ----------------------------- Helpers ----------------------------- */
 
-/** @brief A private directory with fake nsys and ncu that log their arguments. */
+/**
+ * @brief A private directory with fake nsys and ncu that log their arguments:
+ * every invocation joined on one line, and the last one's arguments one per
+ * line in <dir>/<tool>.argv.
+ */
 class FakeNsightTools {
 public:
   /** @param name Makes the directory this test's own: one per test name and process. */
@@ -56,7 +67,9 @@ public:
     }
     for (const char* tool : {"nsys", "ncu"}) {
       const std::string TOOL_PATH = dir_ + "/" + tool;
-      std::ofstream(TOOL_PATH) << "#!/bin/sh\necho \"" << tool << " $*\" >> '" << log_ << "'\n";
+      std::ofstream(TOOL_PATH) << "#!/bin/sh\necho \"" << tool << " $*\" >> '" << log_ << "'\n"
+                               << "for a in \"$@\"; do printf '%s\\n' \"$a\"; done > '" << dir_
+                               << "/" << tool << ".argv'\n";
       ::chmod(TOOL_PATH.c_str(), 0755);
     }
   }
@@ -78,10 +91,58 @@ public:
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
 
+  /** @brief The arguments of @p tool's last invocation, as it received them. */
+  [[nodiscard]] std::vector<std::string> argv(const std::string& tool) const {
+    std::vector<std::string> args;
+    std::ifstream in(dir_ + "/" + tool + ".argv");
+    for (std::string line; std::getline(in, line);) {
+      args.push_back(line);
+    }
+    return args;
+  }
+
 private:
   std::string dir_;
   std::string log_;
 };
+
+/// What the quoting tests put in place of the printed placeholders.
+constexpr const char* BINARY = "./bench-binary";
+constexpr const char* REST = "--gtest_filter=Suite.Case";
+
+/**
+ * @brief Run the command the backend printed for @p tool through /bin/sh: its
+ * two lines from the tool name on, `<this-binary>` and `[...]` filled in,
+ * written as a script in @p dir. @return /bin/sh's exit status.
+ */
+int runPrintedCommand(const std::string& err, const std::string& tool, const std::string& dir) {
+  std::istringstream lines(err);
+  std::string script;
+  for (std::string line; std::getline(lines, line);) {
+    const std::string PREFIX = "[nsight]   " + tool + " ";
+    if (line.rfind(PREFIX, 0) != 0) {
+      continue;
+    }
+    std::string next;
+    std::getline(lines, next);
+    script = line.substr(line.find(tool)) + "\n" + next.substr(next.find_first_not_of(' ', 8));
+    break;
+  }
+  if (script.empty()) {
+    return -1;
+  }
+  for (const auto& [placeholder, value] :
+       {std::pair<std::string, std::string>{"<this-binary>", BINARY},
+        std::pair<std::string, std::string>{"[...]", REST}}) {
+    const std::size_t AT = script.find(placeholder);
+    if (AT != std::string::npos) {
+      script.replace(AT, placeholder.size(), value);
+    }
+  }
+  const std::string SCRIPT_PATH = dir + "/printed.sh";
+  std::ofstream(SCRIPT_PATH) << script << "\n";
+  return std::system(("/bin/sh '" + SCRIPT_PATH + "'").c_str());
+}
 
 } // namespace
 
@@ -185,7 +246,7 @@ TEST_F(NsightProfilerTest, ComputeModeThroughTheNsightName) {
 
   EXPECT_EQ(tools_->invocations(), "") << "the backend started a tool";
   EXPECT_NE(ERR.find("ncu -o " + folder("nsight") + "/kernel_profile"), std::string::npos) << ERR;
-  EXPECT_NE(ERR.find("<this-binary> --profile nsight --profile-args 'compute' --cycles 3"),
+  EXPECT_NE(ERR.find("<this-binary> --profile nsight --profile-args compute --cycles 3"),
             std::string::npos)
       << ERR;
 }
@@ -230,4 +291,81 @@ TEST_F(NsightProfilerTest, HandTypedNcuWrapKeepsItPassive) {
   EXPECT_EQ(tools_->invocations(), "") << "the backend started a tool";
   EXPECT_NE(ERR.find("this process runs under ncu"), std::string::npos) << ERR;
   EXPECT_EQ(ERR.find("ncu -o"), std::string::npos) << ERR;
+}
+
+/* ----------------------------- Quoting Tests ----------------------------- */
+
+/** @test The printed nsys command keeps a folder and args with spaces and quotes whole */
+TEST_F(NsightProfilerTest, SystemsWrapKeepsArgumentBoundaries) {
+  cfg_.artifactRoot = tools_->dir() + "/GPU's captures";
+  const std::string ERR = runBackend("nsight", "trace it's");
+  ASSERT_EQ(tools_->invocations(), "") << "the backend started a tool";
+
+  ASSERT_EQ(runPrintedCommand(ERR, "nsys", tools_->dir()), 0) << ERR;
+  const std::vector<std::string> EXPECTED = {"profile",
+                                             "-o",
+                                             folder("nsight") + "/profile",
+                                             "-t",
+                                             "cuda,nvtx",
+                                             "--force-overwrite",
+                                             "true",
+                                             BINARY,
+                                             "--profile",
+                                             "nsight",
+                                             "--profile-args",
+                                             "trace it's",
+                                             REST};
+  EXPECT_EQ(tools_->argv("nsys"), EXPECTED) << ERR;
+}
+
+/** @test The printed ncu command keeps a folder with spaces and quotes, and the args, whole */
+TEST_F(NsightProfilerTest, ComputeWrapKeepsArgumentBoundaries) {
+  cfg_.artifactRoot = tools_->dir() + "/captures with spaces";
+  const std::string ERR = runBackend("nsight", "compute GPU's");
+  ASSERT_EQ(tools_->invocations(), "") << "the backend started a tool";
+
+  ASSERT_EQ(runPrintedCommand(ERR, "ncu", tools_->dir()), 0) << ERR;
+  const std::vector<std::string> EXPECTED = {"-o",
+                                             folder("nsight") + "/kernel_profile",
+                                             "-f",
+                                             "--target-processes",
+                                             "all",
+                                             BINARY,
+                                             "--profile",
+                                             "nsight",
+                                             "--profile-args",
+                                             "compute GPU's",
+                                             "--cycles",
+                                             "3",
+                                             "--repeats",
+                                             "1",
+                                             REST};
+  EXPECT_EQ(tools_->argv("ncu"), EXPECTED) << ERR;
+}
+
+/** @test The printed replay command keeps the metric list, the folder and the args whole */
+TEST_F(NsightProfilerTest, ReplayWrapKeepsArgumentBoundaries) {
+  cfg_.artifactRoot = tools_->dir() + "/GPU's captures";
+  const std::string ERR = runBackend("ncu", "replay it's");
+  ASSERT_EQ(tools_->invocations(), "") << "the backend started a tool";
+
+  ASSERT_EQ(runPrintedCommand(ERR, "ncu", tools_->dir()), 0) << ERR;
+  const std::vector<std::string> EXPECTED = {"--metrics",
+                                             ReplayMetrics{}.toNcuMetricString(),
+                                             "-o",
+                                             folder("ncu") + "/kernel_replay",
+                                             "-f",
+                                             "--target-processes",
+                                             "all",
+                                             BINARY,
+                                             "--profile",
+                                             "ncu",
+                                             "--profile-args",
+                                             "replay it's",
+                                             "--cycles",
+                                             "3",
+                                             "--repeats",
+                                             "1",
+                                             REST};
+  EXPECT_EQ(tools_->argv("ncu"), EXPECTED) << ERR;
 }
