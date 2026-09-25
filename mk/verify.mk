@@ -14,6 +14,12 @@
 # registry cache and pulls the lean build tier every run. A stale local
 # dev image fails configure on the baked /opt/vernier-deps tier
 # (observed), so the prelude mirrors CI's image steps before any lane.
+#
+# The Python lane runs with POETRY_VIRTUALENVS_IN_PROJECT=false, as ci.yml's
+# python job does. A host tools build can leave tools/py/.venv in the checkout
+# (Poetry with in-project environments); without the setting, the image's
+# Poetry adopts that environment, finds its host interpreter missing, and
+# deletes and recreates it with the image's Python, which the host cannot run.
 # ==============================================================================
 
 # The exact compose invocation ci.yml uses.
@@ -35,7 +41,7 @@ verify:
 	$(call log,verify,Rust lane [ci-build])
 	@$(_CI_COMPOSE) run --rm -T ci-build make test-rust
 	$(call log,verify,Python lane [ci-build])
-	@$(_CI_COMPOSE) run --rm -T ci-build make test-py
+	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 	$(call log,verify,All CI lanes green locally)
 
 # ------------------------------------------------------------------------------

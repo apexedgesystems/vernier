@@ -308,8 +308,11 @@ jobs:
           $COMPOSE build build-base
           $COMPOSE build build-cpu
 
+      # The same invocation as make verify's Python lane (mk/verify.mk): with
+      # POETRY_VIRTUALENVS_IN_PROJECT=false the container's Poetry keeps its
+      # own environment and never adopts a tools/py/.venv in the checkout.
       - name: Run Python tests
-        run: $COMPOSE run --rm -T ci-build make test-py
+        run: $COMPOSE run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 
   # ----------------------------------------------------------------------------
   # Image graph check -- prove the platform leaves still build.

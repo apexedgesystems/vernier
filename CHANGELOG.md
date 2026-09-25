@@ -245,6 +245,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.
   `make docker-disk-usage` succeeds when no vernier image exists.
+- **`make verify`'s Python lane leaves a host-built `tools/py/.venv` in
+  place** -- the lane mounts the checkout into the `ci-build` image, whose
+  Poetry adopted an existing in-project environment, found its interpreter
+  missing (a host Python the image does not have) and deleted and recreated
+  it with the image's Python, which the host cannot run. The lane and the
+  matching CI step now run with `POETRY_VIRTUALENVS_IN_PROJECT=false`, so the
+  container keeps its own environment. `make test-py` on the host is
+  unchanged.
 - **`make format` and `make format-check` skip a Python virtual environment
   anywhere in the tree** -- the lane's file search and pre-commit's exclude
   list skipped a `.venv` only at the top of the checkout. A host build whose
