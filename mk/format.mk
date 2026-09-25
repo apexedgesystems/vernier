@@ -16,10 +16,15 @@ FORMAT_MK_GUARD := 1
 # Directories to scan (override: make format PC_SCOPE="src tools")
 PC_SCOPE ?= .
 
-# Find command with pruning for build/cache directories
+# Find command with pruning for build/cache directories. A Python virtual
+# environment is pruned at any depth (tools/py/.venv, from a Poetry build that
+# keeps environments in the project) and under any PC_SCOPE: its files are
+# installed packages, which the fixers would rewrite in place. The same rule
+# is .pre-commit-config.yaml's exclude, for runs that bypass this search.
 PRECOMMIT_FIND := find $(PC_SCOPE) \
   \( -path ./build -o -path './cmake-build*' -o -path ./dist -o -path ./out \
-     -o -path ./node_modules -o -path ./.git -o -path ./.hg -o -path ./.venv \
+     -o -path ./node_modules -o -path ./.git -o -path ./.hg \
+     -o -type d -name .venv \
      -o -path ./.mypy_cache -o -path ./.pytest_cache -o -path ./.ruff_cache \
      -o -path ./.cache \) -prune -o \
   -type f -not -name 'compile_commands.json' -print0

@@ -245,6 +245,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.
   `make docker-disk-usage` succeeds when no vernier image exists.
+- **`make format` and `make format-check` skip a Python virtual environment
+  anywhere in the tree** -- the lane's file search and pre-commit's exclude
+  list skipped a `.venv` only at the top of the checkout. A host build whose
+  Poetry keeps environments in the project (`virtualenvs.in-project`) creates
+  `tools/py/.venv`, and the lane then ran its hooks on that environment:
+  `make format-check` and `make verify` failed until the directory was
+  deleted, and black and isort rewrote the environment's Python files in
+  place while reporting "Passed" (pre-commit detects changes through git,
+  which ignores the environment). A `.venv` is now skipped at any depth, also
+  in a scan narrowed with `PC_SCOPE`.
 - **A release cannot publish with an asset missing** -- the v1.0.3 release
   carries six assets and no Python wheel: the wheel was built under the Python
   tools' own version, the upload list named it by the project version, and an
