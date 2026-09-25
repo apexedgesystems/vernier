@@ -83,7 +83,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (3)
+# Demos Built on a Shared Example (5)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -94,7 +94,15 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_03_GperfProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_11_MassifProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
 

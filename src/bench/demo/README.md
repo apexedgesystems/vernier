@@ -77,7 +77,7 @@ how to compare two runs.
 | --- | --------------------- | ---------------------------------- | --------------------------- | -------------------------- | ----------------------------------------------------------- |
 | 01  | Basic Workflow        | Measure-export-analyze cycle       | join V0 (copy per part)     | join V1 (reserve, append)  | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
 | 02  | perf Profiler         | Hardware counter profiling         | Stride-512 array walk       | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
-| 03  | gperftools Profiler   | Function-level flamegraphs         | Bubble sort O(n^2)          | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
+| 03  | gperftools Profiler   | Which function has the time        | join V0 (copy per part)     | join V1 (reserve, append)  | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
 | 04  | Cache-Friendly Layout | AoS vs SoA data transformation     | 128B struct (81% waste)     | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
 | 05  | Branch Optimization   | Branch prediction and avoidance    | Branchy + random data       | Branchless + multiply      | [05_BRANCH_OPTIMIZATION.md](docs/05_BRANCH_OPTIMIZATION.md) |
 | 06  | Thread Scaling        | Lock contention analysis           | Mutex-protected counter     | Atomic relaxed counter     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)           |
@@ -89,7 +89,7 @@ how to compare two runs.
 | 12  | Memcheck Profiler     | Leak / UAF detection               | Raw new[] (leaky)           | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
 | 13  | Off-CPU Profiler      | Where threads go to sleep          | std::mutex contention       | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
 | 14  | Helgrind Profiler     | Data-race / thread-error detection | Unguarded shared counter    | std::atomic counter        | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)     |
-| 15  | Heaptrack Profiler    | Ranked allocation-site profiling   | Unreserved vector push_back | Reserved + reused buffer   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md)   |
+| 15  | Heaptrack Profiler    | Who allocates, and how often       | join V0 (2 allocs per part) | join V1 (1 alloc per call) | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md)   |
 | 16  | jemalloc Profiler     | Sampled allocation hotspots        | Per-iter string churn       | Reserved + reused string   | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)     |
 
 The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
@@ -179,7 +179,6 @@ slow/fast workload pairs used across demos:
 | Cache       | Stride-512 walk     | Sequential walk        | Demo 02 |
 | Cache       | AoS position sum    | SoA position sum       | Demo 04 |
 | Branch      | Branchy conditional | Branchless multiply    | Demo 05 |
-| Sort        | Bubble sort O(n^2)  | std::sort O(n log n)   | Demo 03 |
 | Search      | Linear search O(n)  | Binary search O(log n) | Demo 07 |
 | Contention  | Mutex increment     | Atomic increment       | Demo 06 |
 | Dot product | Naive (dependency)  | std::inner_product     | Demo 08 |
@@ -196,10 +195,10 @@ and unit tests that hold the example's versions to the same answers,
 registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
 
-| Example                               | Versions                                                                                                  | Used In      |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------ |
-| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 11 |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10      |
+| Example                               | Versions                                                                                                  | Used In              |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | -------------------- |
+| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 03, 14, 21 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10              |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
@@ -267,9 +266,11 @@ A walkthrough meets this contract:
 - **A named rig and a Release build.** Commands were run as written and
   output blocks are pasted from that run, with the capture date and the
   Vernier version.
-- **A test that asserts its own effect.** The demo's performance test
-  fails if the slow and fast variants stop differing, so a walkthrough
-  cannot drift silently.
+- **A test that asserts its own effect.** A test fails if the slow and
+  fast variants stop differing in what the walkthrough shows: the demo's
+  own performance test, or the unit tests of the example it measures when
+  a check inside the demo would change what the demo shows. The
+  walkthrough names its test, and cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
 - **Something runs it.** A walkthrough is re-run on its rig before every

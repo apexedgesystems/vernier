@@ -182,24 +182,6 @@ inline std::int64_t conditionalSumBranchless(const double* data, std::size_t len
   return sum;
 }
 
-/* ----------------------------- Sort Workloads ----------------------------- */
-
-/** @brief Slow: Bubble sort O(n^2). */
-inline void bubbleSort(double* data, std::size_t len) {
-  for (std::size_t i = 0; i < len; ++i) {
-    for (std::size_t j = 0; j + 1 < len - i; ++j) {
-      if (data[j] > data[j + 1]) {
-        const double tmp = data[j];
-        data[j] = data[j + 1];
-        data[j + 1] = tmp;
-      }
-    }
-  }
-}
-
-/** @brief Fast: std::sort O(n log n). */
-inline void fastSort(double* data, std::size_t len) { std::sort(data, data + len); }
-
 /* ----------------------------- Search Workloads ----------------------------- */
 
 /** @brief Slow: Linear search O(n). */
