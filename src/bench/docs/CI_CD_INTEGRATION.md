@@ -32,11 +32,13 @@ pull request or merge request
   +--> check out with full history (the base commit must be in the clone)
   |
   +--> ci/bench-gate.sh
+  |      reset:   this run's files in bench-report/ ("did not finish")
   |      build:   this checkout, with vernier's tools, and the base
-  |               commit in a separate worktree
+  |               commit in a separate worktree (a failed build fails)
   |      run:     the benchmark of each build, one after the other
   |                                     --> baseline.csv, candidate.csv
-  |      report:  bench compare         --> report.md, report.json
+  |      report:  bench compare         --> report.md (result first),
+  |                                         report.json
   |      status:  bench compare --fail-on-regression (1 on a regression)
   |
   +--> keep bench-report/ (job summary, artifacts), pass or fail
@@ -70,60 +72,106 @@ done; a baseline CSV saved by an earlier job may come from another machine.
 # Build and run a benchmark at the base commit and at this checkout, compare
 # the two runs, and exit 1 when bench compare reports a regression.
 #
-#   BENCH_BASE       commit to compare against (required)
+#   BENCH_BASE       commit to compare against (required unless bootstrapping)
 #   BENCH_TARGET     benchmark executable (default: MyComponent_PTEST)
 #   BENCH_THRESHOLD  regression threshold in percent (default: 5)
 #   BENCH_ARGS       extra benchmark arguments for both runs, e.g. "--quick"
 #   BENCH_OUT        report directory (default: bench-report)
+#   BENCH_BOOTSTRAP  1 for the change that adds the benchmark: run only the
+#                    candidate, compare nothing, and pass
 set -euo pipefail
 
-: "${BENCH_BASE:?set BENCH_BASE to the commit to compare against}"
-base_rev=$(git rev-parse --verify --quiet "${BENCH_BASE}^{commit}") || {
-  echo "BENCH_BASE=$BENCH_BASE is not a commit in this clone" >&2
-  exit 2
-}
 target=${BENCH_TARGET:-MyComponent_PTEST}
 threshold=${BENCH_THRESHOLD:-5}
 read -r -a args <<<"${BENCH_ARGS:-}"
 mkdir -p "${BENCH_OUT:-bench-report}"
 out=$(cd "${BENCH_OUT:-bench-report}" && pwd)
 
+# This run's report only: remove what an earlier run wrote, and nothing else
+rm -f "$out"/{report.md,report.json,candidate.csv,baseline.csv,baseline-build.log}
+echo "## Benchmark gate: did not finish" >"$out/report.md"
+stage="setup" work="" reported=""
+finish() {
+  local status=$?
+  if [ -n "$work" ]; then
+    git worktree remove --force "$work/src" >/dev/null 2>&1 || true
+    rm -rf "$work"
+  fi
+  if [ -z "$reported" ] && [ "$status" -ne 0 ]; then
+    printf '## Benchmark gate: failed in %s (exit %d)\n\n%s\n' "$stage" "$status" \
+      "Nothing was compared; the job log has the error." >"$out/report.md"
+  elif [ -z "$reported" ]; then # a signal (the job's timeout, a cancel) ended the run
+    echo "## Benchmark gate: did not finish (stopped in $stage)" >"$out/report.md"
+  fi
+}
+trap finish EXIT
+
+if [ "${BENCH_BOOTSTRAP:-}" != 1 ]; then
+  stage="checking BENCH_BASE"
+  base_rev=$(git rev-parse --verify --quiet "${BENCH_BASE:-}^{commit}") || {
+    echo "BENCH_BASE='${BENCH_BASE:-}' is not a commit in this clone" >&2
+    exit 2
+  }
+fi
+
 # Candidate build: this checkout, with vernier's CLI tools for the comparison
+stage="the candidate build"
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DVERNIER_BUILD_TOOLS=ON
 cmake --build build --parallel "$(nproc)"
 bench=build/bin/tools/rust/bench
 
-# Baseline build: the base commit in a worktree outside the checkout
-work=$(mktemp -d)
-trap 'git worktree remove --force "$work/src" >/dev/null 2>&1 || true; rm -rf "$work"' EXIT
-git worktree add --quiet --detach "$work/src" "$base_rev"
-if ! {
-  cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release &&
-    cmake --build "$work/build" --parallel "$(nproc)" --target "$target"
-} >"$out/baseline-build.log" 2>&1; then
+if [ "${BENCH_BOOTSTRAP:-}" = 1 ]; then
+  stage="the candidate run"
   "build/$target" "${args[@]}" --csv "$out/candidate.csv"
-  {
-    echo "## Benchmark gate: no baseline"
-    echo
-    echo "$target did not build at $base_rev (see baseline-build.log),"
-    echo "so nothing was compared; candidate.csv holds this change's results."
-  } | tee "$out/report.md"
+  printf '## Benchmark gate: no comparison (BENCH_BOOTSTRAP=1)\n\n%s\n' \
+    "Only the candidate ran, as asked; candidate.csv holds its results." >"$out/report.md"
+  reported=1
+  cat "$out/report.md"
   exit 0
 fi
 
+# Baseline build: the base commit in a worktree outside the checkout
+stage="the baseline build"
+work=$(mktemp -d)
+git worktree add --quiet --detach "$work/src" "$base_rev"
+built=0
+{
+  cmake -S "$work/src" -B "$work/build" -DCMAKE_BUILD_TYPE=Release &&
+    cmake --build "$work/build" --parallel "$(nproc)" --target "$target"
+} >"$out/baseline-build.log" 2>&1 || built=$?
+if [ "$built" -ne 0 ]; then
+  stage="the candidate run"
+  "build/$target" "${args[@]}" --csv "$out/candidate.csv"
+  printf '## Benchmark gate: failed, the baseline did not build (exit %d)\n\n%s\n' "$built" \
+    "$target did not build at $base_rev (see baseline-build.log), so nothing was compared.
+If this change adds the benchmark, run its gate with BENCH_BOOTSTRAP=1." >"$out/report.md"
+  reported=1
+  cat "$out/report.md"
+  exit "$built"
+fi
+
 # Both runs after both builds, one after the other
+stage="the baseline run"
 "$work/build/$target" "${args[@]}" --csv "$out/baseline.csv"
+stage="the candidate run"
 "build/$target" "${args[@]}" --csv "$out/candidate.csv"
 
-# Reports first; the gate's status is bench compare's
+# The report first; the gate's status is bench compare's
+stage="the comparison"
 status=0
-"$bench" compare "$out/baseline.csv" "$out/candidate.csv" \
-  --threshold "$threshold" --markdown --fail-on-regression \
-  >"$out/report.md" || status=$?
-"$bench" compare "$out/baseline.csv" "$out/candidate.csv" \
-  --threshold "$threshold" --json >"$out/report.json" || true
+table=$("$bench" compare "$out/baseline.csv" "$out/candidate.csv" \
+  --threshold "$threshold" --markdown --fail-on-regression 2>&1) || status=$?
+"$bench" compare "$out/baseline.csv" "$out/candidate.csv" --threshold "$threshold" \
+  --json >"$out/report.json" 2>/dev/null || rm -f "$out/report.json"
+verdict=passed
+[ "$status" -eq 0 ] || verdict="failed (bench compare exit $status)"
+printf '## Benchmark gate: %s\n\nBaseline %s, threshold %s%%.\n\n%s\n' \
+  "$verdict" "$base_rev" "$threshold" "$table" >"$out/report.md"
+reported=1
 cat "$out/report.md"
-exit "$status"
+if [ "$status" -ne 0 ]; then
+  exit "$status"
+fi
 ```
 
 Run it from the repository's top directory. Locally, against your main branch:
@@ -132,22 +180,35 @@ Run it from the repository's top directory. Locally, against your main branch:
 BENCH_BASE=origin/main bash ci/bench-gate.sh
 ```
 
-**What it leaves in `bench-report/`:** `candidate.csv`, `baseline.csv`,
-`report.md` (the `bench compare --markdown` table), `report.json` and
-`baseline-build.log`; without a baseline, only `candidate.csv`, `report.md`
-and `baseline-build.log`. Which tests are compared, and how a test that is in
-only one of the two files is treated, is `bench compare`'s behavior; see
-`compare` in [tools/README.md](../../../tools/README.md).
+**Its report.** The script owns five files in `BENCH_OUT`: `report.md`,
+`report.json`, `candidate.csv`, `baseline.csv` and `baseline-build.log`. It
+deletes them when it starts and leaves anything else in the directory alone,
+so nothing an earlier run wrote can pass for this run's result. The first line
+of `report.md` says how this run ended: passed, failed (and in which step), no
+comparison, or "did not finish" when a signal such as the job's timeout
+stopped it. After a comparison, `report.md` holds the
+`bench compare --markdown` table and `report.json` its JSON. Which tests are
+compared, and how a test that is in only one of the two files is treated, is
+`bench compare`'s behavior; see `compare` in
+[tools/README.md](../../../tools/README.md).
 
-**Exit status:** 0 when `bench compare --fail-on-regression` succeeds, 1 when it
-fails (a regression makes it fail), 2 when `BENCH_BASE` is not a commit in the
-clone, and the failing command's status when the candidate's build or a
-benchmark run fails.
+**Exit status:** 0 when the runs were compared and
+`bench compare --fail-on-regression` passed, or when `BENCH_BOOTSTRAP=1` asked
+for no comparison. Otherwise it is nonzero, and `report.md` says why: 1 when
+`bench compare` fails (a regression, among the reasons its README lists), 2
+when `BENCH_BASE` is not set or not a commit in the clone, and the failing
+command's own status when a build or a benchmark run fails, the baseline's
+included. A run that a signal stops ends nonzero as well.
 
-**No baseline:** when the benchmark does not build at the base commit, for
-example because the change adds it, the script writes a `report.md` that says
-nothing was compared, and exits 0. Its `baseline-build.log` shows why the build
-failed.
+**A baseline that does not build** fails the gate. The candidate still runs,
+so `candidate.csv` shows its results, and `baseline-build.log` has the
+baseline's build output. A missing dependency, a failed download and a
+benchmark the base commit does not have yet all look the same to the script,
+so it passes none of them on its own. For the change that adds the benchmark,
+set `BENCH_BOOTSTRAP=1`: the script builds and runs only the candidate, writes
+a `report.md` that says nothing was compared, and exits 0. It compares nothing
+while it is set, so set it for that change's run only, not in the workflow for
+good.
 
 ---
 
@@ -397,11 +458,20 @@ on GitHub Actions or change `expire_in` on GitLab.
 2. Give it more repeats: `BENCH_ARGS="--repeats 30"`.
 3. Run the gate on a dedicated machine, or raise `BENCH_THRESHOLD`.
 
-### The Report Says "no baseline"
+### The Report Says "the baseline did not build"
 
-The benchmark did not build at the base commit. When the change adds or
-renames the benchmark, this is expected. Otherwise `baseline-build.log` in the
-report shows the error.
+The benchmark did not configure or build at the base commit, and the gate
+failed. `baseline-build.log` in the report shows why. A missing dependency or
+a failed download needs fixing, and the gate rerun. When the change adds or
+renames the benchmark, the base commit cannot have it: run that change's gate
+with `BENCH_BOOTSTRAP=1` (see [The Gate Script](#the-gate-script)).
+
+### The Report Says "did not finish"
+
+A signal stopped the script before it could write a result, for example the
+job's timeout or a cancel; the report names the step it was in, unless the
+signal was one that allows no cleanup (`SIGKILL`). Nothing in `bench-report/`
+comes from an earlier run.
 
 ### "BENCH_BASE=... is not a commit in this clone"
 
