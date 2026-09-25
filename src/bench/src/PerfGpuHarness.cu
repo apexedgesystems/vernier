@@ -968,7 +968,9 @@ private:
   // cuptiMustYield(): an nsys/ncu session, or the explicit override). Decided
   // once, before the collector below is built, because registering the
   // collector already keeps an nsys session from recording kernels; the
-  // collector, the measurement and its diagnostic all follow this value.
+  // collector, the measurement and its diagnostic all follow this value. An
+  // invalid VERNIER_DISABLE_CUPTI throws here, a configuration error, before
+  // the collector registers and before the constructor touches the device.
   const bool cuptiYields_ = profiler_env::cuptiMustYield();
 
   // In-process kernel metric collector (no-op when libcupti is not linked

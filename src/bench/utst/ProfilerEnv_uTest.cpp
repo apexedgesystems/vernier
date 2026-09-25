@@ -12,9 +12,11 @@
 #include <gtest/gtest.h>
 
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+using vernier::bench::profiler_env::cuptiDecision;
 using vernier::bench::profiler_env::cuptiMustYield;
 using vernier::bench::profiler_env::externalWrapTool;
 using vernier::bench::profiler_env::nsightSessionTool;
@@ -123,17 +125,19 @@ TEST(ProfilerEnv, CuptiYieldsToAHandTypedSession) {
   EXPECT_TRUE(cuptiMustYield());
 }
 
-/** @test An explicit 0 or false does not keep CUPTI on inside a session. */
+/** @test No false spelling keeps CUPTI on inside a session, hand-typed or the runner's. */
 TEST(ProfilerEnv, CuptiDisableFalseDoesNotOverrideASession) {
   EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
                  "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
-  ::setenv("VERNIER_DISABLE_CUPTI", "false", 1);
-  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
-  EXPECT_TRUE(cuptiMustYield());
-  ::unsetenv("NSYS_PROFILING_SESSION_ID");
-  ::setenv("VERNIER_DISABLE_CUPTI", "0", 1);
-  ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
-  EXPECT_TRUE(cuptiMustYield());
+  for (const char* value : {"0", "false", "FALSE", "no", "No", "off", "OFF", ""}) {
+    ::setenv("VERNIER_DISABLE_CUPTI", value, 1);
+    ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+    EXPECT_TRUE(cuptiMustYield()) << "nsys session, VERNIER_DISABLE_CUPTI='" << value << "'";
+    ::unsetenv("NSYS_PROFILING_SESSION_ID");
+    ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
+    EXPECT_TRUE(cuptiMustYield()) << "runner's ncu wrap, VERNIER_DISABLE_CUPTI='" << value << "'";
+    ::unsetenv("VERNIER_EXTERNAL_WRAP");
+  }
 }
 
 /** @test BENCH_SUDO truthy parsing (only meaningful for non-root runs). */
@@ -158,20 +162,57 @@ TEST(ProfilerEnv, ProcessAliveBasics) {
   EXPECT_TRUE(vernier::bench::profiler_env::processAlive(::getpid()));
 }
 
-/** @test VERNIER_DISABLE_CUPTI disables when set; empty, 0 and false do not. */
-TEST(ProfilerEnv, CuptiDisableEnvOverride) {
+/** @test Every true spelling of VERNIER_DISABLE_CUPTI, in any case, disables CUPTI. */
+TEST(ProfilerEnv, CuptiDisableAcceptsEveryTrueSpelling) {
   EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
                  "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
-  ::setenv("VERNIER_DISABLE_CUPTI", "1", 1);
-  EXPECT_TRUE(cuptiMustYield());
-  ::setenv("VERNIER_DISABLE_CUPTI", "true", 1);
-  EXPECT_TRUE(cuptiMustYield());
-  ::setenv("VERNIER_DISABLE_CUPTI", "0", 1);
-  EXPECT_FALSE(cuptiMustYield());
-  ::setenv("VERNIER_DISABLE_CUPTI", "false", 1);
-  EXPECT_FALSE(cuptiMustYield());
-  ::setenv("VERNIER_DISABLE_CUPTI", "", 1);
-  EXPECT_FALSE(cuptiMustYield());
+  for (const char* value : {"1", "true", "TRUE", "True", "yes", "YES", "Yes", "on", "ON", "On"}) {
+    ::setenv("VERNIER_DISABLE_CUPTI", value, 1);
+    EXPECT_TRUE(cuptiDecision().error.empty()) << value;
+    EXPECT_TRUE(cuptiMustYield()) << "VERNIER_DISABLE_CUPTI='" << value << "'";
+  }
+}
+
+/** @test Every false spelling, in any case, and the empty value leave CUPTI on. */
+TEST(ProfilerEnv, CuptiDisableAcceptsEveryFalseSpelling) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  for (const char* value :
+       {"0", "false", "FALSE", "False", "no", "NO", "No", "off", "OFF", "Off", ""}) {
+    ::setenv("VERNIER_DISABLE_CUPTI", value, 1);
+    EXPECT_TRUE(cuptiDecision().error.empty()) << value;
+    EXPECT_FALSE(cuptiMustYield()) << "VERNIER_DISABLE_CUPTI='" << value << "'";
+  }
+}
+
+/** @test Any other value is a configuration error naming the value and the accepted ones. */
+TEST(ProfilerEnv, CuptiDisableRejectsAnyOtherValue) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  for (const std::string VALUE : {"2", "-1", "maybe", "disable", "truee", "y", "n", " 1", "1 "}) {
+    ::setenv("VERNIER_DISABLE_CUPTI", VALUE.c_str(), 1);
+    const vernier::bench::profiler_env::CuptiDecision DECISION = cuptiDecision();
+    EXPECT_EQ(DECISION.error, "VERNIER_DISABLE_CUPTI='" + VALUE + "' is not a boolean");
+    EXPECT_NE(DECISION.remedy.find("1, true, yes or on"), std::string::npos) << DECISION.remedy;
+    EXPECT_NE(DECISION.remedy.find("0, false, no, off or an empty value"), std::string::npos)
+        << DECISION.remedy;
+    try {
+      (void)cuptiMustYield();
+      ADD_FAILURE() << "VERNIER_DISABLE_CUPTI='" << VALUE << "' was accepted";
+    } catch (const std::invalid_argument& e) {
+      EXPECT_EQ(std::string(e.what()), "configuration: " + DECISION.error + ". " + DECISION.remedy);
+    }
+  }
+}
+
+/** @test An invalid value is an error inside a session too: never a silent yield. */
+TEST(ProfilerEnv, CuptiDisableInvalidInsideASessionIsStillAnError) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+  ::setenv("VERNIER_DISABLE_CUPTI", "maybe", 1);
+  EXPECT_FALSE(cuptiDecision().error.empty());
+  EXPECT_THROW((void)cuptiMustYield(), std::invalid_argument);
 }
 
 } // namespace

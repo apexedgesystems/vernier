@@ -56,17 +56,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recorded no kernels; `--profile nsys` did not count; and
   `VERNIER_DISABLE_CUPTI=0` or `=false` still switched the collector off inside
   `CuptiCollector`, with no message. The collector stands down when
-  `VERNIER_DISABLE_CUPTI` is set to anything but empty, `0` or `false`, or when
+  `VERNIER_DISABLE_CUPTI` is `1`, `true`, `yes` or `on`, in any case, or when
   an nsys or ncu session owns the process: one that `bench run --profile
   nsight|ncu` started, or one typed by hand, recognised from
   `NSYS_PROFILING_SESSION_ID` (nsys 2025.3) or `NV_NSIGHT_INJECTION_PORT_BASE`
   (ncu 2025.3). Those variables are what these tool versions export, not a
   promised interface: with a version that does not export them, set
-  `VERNIER_DISABLE_CUPTI=1` when wrapping. `0` or `false` do not keep the
-  collector on inside a session. The collector applies the decision itself,
-  before it registers with CUPTI, so a direct user of `CuptiCollector` gets the
-  same rule; the `forceDisabled` argument still wins. An unwrapped `--profile
-  nsight` run keeps its CUPTI columns and still captures nothing from Nsight.
+  `VERNIER_DISABLE_CUPTI=1` when wrapping. `0`, `false`, `no`, `off` or an
+  empty value leave the collector on and never keep it on inside a session. Any
+  other value is a configuration error: building a GPU case, or a
+  `CuptiCollector` directly, throws `std::invalid_argument` naming the value and
+  the accepted ones, before anything registers with CUPTI, instead of turning
+  the collector off. The collector applies the decision itself, before it
+  registers with CUPTI, so a direct user of `CuptiCollector` gets the same rule;
+  the `forceDisabled` argument still wins. An unwrapped `--profile nsight` run
+  keeps its CUPTI columns and still captures nothing from Nsight.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures

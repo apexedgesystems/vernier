@@ -115,16 +115,19 @@ struct CuptiCollector::Impl {
 };
 
 CuptiCollector::CuptiCollector(bool forceDisabled) {
+  // Decide before acquiring or registering anything: registering the
+  // callbacks, before any cuptiActivityEnable, is already enough to keep an
+  // nsys session from recording kernels (observed with nsys 2025.3.2), so a
+  // later check in start() would come too late. The decision is
+  // profiler_env::cuptiMustYield() (the explicit override or an nsys/ncu
+  // session), the one the GPU harness passes in as forceDisabled, so a direct
+  // caller gets the same rule; an explicit forceDisabled request wins over it.
+  // An invalid VERNIER_DISABLE_CUPTI throws here, a configuration error,
+  // before any CUPTI call. Leaving available_ false keeps start()/stop()/stats()
+  // as safe no-ops.
+  const bool YIELD = forceDisabled || profiler_env::cuptiMustYield();
   impl_ = new Impl();
-  // Stand down before registering anything: registering the callbacks, before
-  // any cuptiActivityEnable, is already enough to keep an nsys session from
-  // recording kernels (observed with nsys 2025.3.2), so a later check in
-  // start() would come too late. The decision is profiler_env::cuptiMustYield()
-  // (the explicit override or an nsys/ncu session), the one the GPU harness
-  // passes in as forceDisabled, so a direct caller gets the same rule; an
-  // explicit forceDisabled request wins over it. Leaving available_ false
-  // keeps start()/stop()/stats() as safe no-ops.
-  if (forceDisabled || profiler_env::cuptiMustYield())
+  if (YIELD)
     return;
   if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) == CUPTI_SUCCESS) {
     aggregator().records.reserve(RECORD_RESERVE);

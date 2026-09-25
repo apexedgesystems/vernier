@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -645,7 +646,7 @@ TEST_F(PerfGpuHarnessTest, CuptiStandsDownUnderASession) {
   }
 }
 
-/** @test VERNIER_DISABLE_CUPTI set to 0, false or nothing keeps the collector on */
+/** @test VERNIER_DISABLE_CUPTI set to a false spelling, in any case, or to nothing keeps it on */
 TEST_F(PerfGpuHarnessTest, CuptiDisableZeroFalseOrEmptyKeepsCollecting) {
   const YieldEnvCleared CLEARED;
   SaxpyFixtureData data;
@@ -653,7 +654,7 @@ TEST_F(PerfGpuHarnessTest, CuptiDisableZeroFalseOrEmptyKeepsCollecting) {
   if (PLAIN == 0) {
     GTEST_SKIP() << "this build collects no CUPTI records";
   }
-  for (const char* value : {"0", "false", ""}) {
+  for (const char* value : {"0", "false", "False", "no", "OFF", ""}) {
     const ScopedEnv SET("VERNIER_DISABLE_CUPTI", value);
     EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiDisableOff"), "", data), PLAIN)
         << "VERNIER_DISABLE_CUPTI='" << value << "'";
@@ -667,9 +668,59 @@ TEST_F(PerfGpuHarnessTest, CuptiDisableFalseDoesNotOverrideASession) {
   if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
     GTEST_SKIP() << "this build collects no CUPTI records";
   }
-  const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", "false");
   const ScopedEnv SESSION("NSYS_PROFILING_SESSION_ID", "1017521");
-  EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiFalseInSession"), "", data), 0U);
+  for (const char* value : {"false", "no", "OFF"}) {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", value);
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiFalseInSession"), "", data), 0U)
+        << "VERNIER_DISABLE_CUPTI='" << value << "' in a session";
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI set to a true spelling, in any case, stands it down, and says so */
+TEST_F(PerfGpuHarnessTest, CuptiDisableTrueSpellingsStandItDown) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  for (const char* value : {"1", "TRUE", "yes", "On"}) {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", value);
+    std::string captured;
+    std::size_t launches = 0;
+    {
+      vernier::bench::test::StderrCapture capture;
+      launches = cuptiLaunches(uniqueSuite("GpuCuptiDisableOn"), "", data);
+      captured = capture.text();
+    }
+    EXPECT_EQ(launches, 0U) << "VERNIER_DISABLE_CUPTI='" << value << "'";
+    EXPECT_NE(captured.find(YIELD_LINE), std::string::npos) << value << ", stderr said:\n"
+                                                            << captured;
+  }
+}
+
+/**
+ * @test Any other VERNIER_DISABLE_CUPTI value stops the GPU case before it
+ *       registers with CUPTI or touches the device: a configuration error that
+ *       names the value and the accepted ones; a later case collects as usual
+ */
+TEST_F(PerfGpuHarnessTest, InvalidCuptiSettingIsAConfigurationError) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", "maybe");
+    try {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuCuptiInvalid") + ".Kernel", cfg_};
+      FAIL() << "the case was built with VERNIER_DISABLE_CUPTI='maybe'";
+    } catch (const std::invalid_argument& e) {
+      const std::string WHAT = e.what();
+      EXPECT_EQ(WHAT.rfind("configuration: VERNIER_DISABLE_CUPTI='maybe' is not a boolean.", 0), 0U)
+          << WHAT;
+      EXPECT_NE(WHAT.find("1, true, yes or on"), std::string::npos) << WHAT;
+    }
+  }
+  EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiAfterInvalid"), "", data), PLAIN)
+      << "a valid case after the rejected one collects as before";
 }
 
 /**
@@ -693,5 +744,12 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
   {
     const ScopedEnv SET("NSYS_PROFILING_SESSION_ID", "1017521");
     EXPECT_FALSE(vernier::bench::CuptiCollector(false).isAvailable()) << "a session must win";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "maybe");
+    EXPECT_THROW(vernier::bench::CuptiCollector(false), std::invalid_argument)
+        << "an invalid value must be rejected";
+    EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable())
+        << "forceDisabled must win without reading the value";
   }
 }

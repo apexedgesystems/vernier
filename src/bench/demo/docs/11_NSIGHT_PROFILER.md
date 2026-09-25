@@ -67,9 +67,11 @@ those versions put in the program's environment. It says so on stderr, and the
 ```
 
 A tool version that does not set those variables is not recognized: set
-`VERNIER_DISABLE_CUPTI=1` for that run. A `--profile` value alone does not
-turn the collector off, and `VERNIER_DISABLE_CUPTI=0` or `false` does not turn
-it back on inside a session.
+`VERNIER_DISABLE_CUPTI=1` for that run. The variable takes 1, true, yes or on
+to turn the collector off, and 0, false, no, off or an empty value to leave it
+on, in any case; no value keeps it on inside a session, and any other value
+stops the GPU tests with a configuration error that lists these. A `--profile`
+value alone does not turn the collector off.
 
 **Needs:** the CUDA toolkit on `PATH`, with `nsys` and `ncu`, and a GPU build:
 see the rig's [setup](../../docs/rigs/RIG_THOR_AGX.md#2-one-time-setup) and

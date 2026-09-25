@@ -10,10 +10,12 @@
  * only one that touches the filesystem.
  */
 
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -238,33 +240,96 @@ inline std::string resolveArtifactDir(const std::string& profileTool,
   return dir;
 }
 
-/* ----------------------------- cuptiMustYield ----------------------------- */
+/* ----------------------------- cuptiDecision ----------------------------- */
+
+namespace detail {
+
+/** @brief A boolean setting as read by the common grammar. */
+enum class SettingBool { ABSENT, FALSE_VALUE, TRUE_VALUE, INVALID };
 
 /**
- * @brief True when the in-process CUPTI collector must stay off for this run.
+ * @brief Read a boolean setting, in any case: unset is ABSENT; "1", "true",
+ * "yes", "on" are TRUE_VALUE; "0", "false", "no", "off" and the empty value are
+ * FALSE_VALUE; anything else is INVALID.
+ *
+ * This is the grammar of the readiness registry's parseEnvBool(); once both
+ * are on one branch, that function replaces this one.
+ */
+inline SettingBool parseSettingBool(const char* raw) {
+  if (raw == nullptr) {
+    return SettingBool::ABSENT;
+  }
+  std::string value(raw);
+  for (char& c : value) {
+    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  if (value.empty() || value == "0" || value == "false" || value == "no" || value == "off") {
+    return SettingBool::FALSE_VALUE;
+  }
+  if (value == "1" || value == "true" || value == "yes" || value == "on") {
+    return SettingBool::TRUE_VALUE;
+  }
+  return SettingBool::INVALID;
+}
+
+} // namespace detail
+
+/** @brief What the in-process CUPTI collector does in this process, and why. */
+struct CuptiDecision {
+  bool yields = false; ///< Stand down: an Nsight session owns the process, or the override asks
+  std::string error;   ///< Not empty when VERNIER_DISABLE_CUPTI is not a boolean
+  std::string remedy;  ///< How to fix @ref error; empty when there is none
+};
+
+/**
+ * @brief Whether the in-process CUPTI collector stays off for this run.
  *
  * With the collector registered, an nsys session records no kernels (nsys
  * 2025.3.2), and under ncu (2025.3.1) the collector records nothing while ncu
  * profiles every launch. So the collector stands down when:
- *  1. VERNIER_DISABLE_CUPTI is set to anything but empty, `0` or `false`
- *     (explicit override), or
+ *  1. VERNIER_DISABLE_CUPTI is 1, true, yes or on, in any case (the explicit
+ *     override), or
  *  2. an nsys or ncu session owns this process (nsightSessionTool()): one that
  *     `bench run` started, or one typed by hand, recognised from the variables
  *     the tool exports to its target.
  *
- * Nothing else counts: `--profile nsight|nsys|ncu` alone starts no session,
- * and `0` or `false` do not keep the collector on inside one. The session
- * variables are what those tool versions export, not a promised interface;
- * with a version that does not export them, set VERNIER_DISABLE_CUPTI=1 when
- * wrapping. The collector and the GPU harness both decide with this function.
+ * VERNIER_DISABLE_CUPTI set to 0, false, no, off or empty, in any case, does
+ * not disable the collector, and never keeps it on inside a session; unset is
+ * no override. Any other value is a configuration error: @ref CuptiDecision::error
+ * names it and @ref CuptiDecision::remedy lists the accepted values, and the
+ * caller must not register with CUPTI. `--profile nsight|nsys|ncu` alone starts
+ * no session. The session variables are what those tool versions export, not a
+ * promised interface; with a version that does not export them, set
+ * VERNIER_DISABLE_CUPTI=1 when wrapping. The collector, the GPU harness and a
+ * readiness check all decide with this function, so they agree.
+ */
+inline CuptiDecision cuptiDecision() {
+  CuptiDecision decision;
+  const char* raw = std::getenv("VERNIER_DISABLE_CUPTI");
+  const detail::SettingBool SETTING = detail::parseSettingBool(raw);
+  if (SETTING == detail::SettingBool::INVALID) {
+    decision.error = std::string("VERNIER_DISABLE_CUPTI='") + raw + "' is not a boolean";
+    decision.remedy = "Use 1, true, yes or on to turn the in-process CUPTI collector off; 0, "
+                      "false, no, off or an empty value to leave it on (it stands down inside "
+                      "an Nsight session either way).";
+    return decision;
+  }
+  decision.yields = SETTING == detail::SettingBool::TRUE_VALUE || !nsightSessionTool().empty();
+  return decision;
+}
+
+/**
+ * @brief True when the in-process CUPTI collector must stay off for this run
+ * (cuptiDecision()).
+ * @throws std::invalid_argument "configuration: <error> <remedy>" when
+ *         VERNIER_DISABLE_CUPTI is not a boolean.
  */
 inline bool cuptiMustYield() {
-  if (const char* v = std::getenv("VERNIER_DISABLE_CUPTI")) {
-    if (v[0] != '\0' && std::strcmp(v, "0") != 0 && std::strcmp(v, "false") != 0) {
-      return true;
-    }
+  const CuptiDecision DECISION = cuptiDecision();
+  if (!DECISION.error.empty()) {
+    throw std::invalid_argument("configuration: " + DECISION.error + ". " + DECISION.remedy);
   }
-  return !nsightSessionTool().empty();
+  return DECISION.yields;
 }
 
 /* ----------------------------- benchSudoActive ----------------------------- */

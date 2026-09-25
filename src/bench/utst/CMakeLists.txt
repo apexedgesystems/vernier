@@ -44,6 +44,25 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
+# Host Test on a Stand-in CUPTI (1)
+# ------------------------------------------------------------------------------
+# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
+# every configuration, CPU-only included, checks that the collector applies the
+# CUPTI decision before it registers: a setting that stands it down, or one that
+# is rejected, registers nothing.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET TestBenchCuptiDecision SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp" LABELS benchmarking
+)
+target_include_directories(
+  TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------------------------
 # GPU Unit Tests (2 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a

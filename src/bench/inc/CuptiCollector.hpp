@@ -65,6 +65,9 @@ public:
    * nsys/ncu session): with the collector registered an nsys session records
    * no kernels, so the decision gates construction, not start(). The GPU
    * harness passes that same decision here.
+   * @throws std::invalid_argument when @p forceDisabled is false and
+   *         VERNIER_DISABLE_CUPTI is not a boolean (a configuration error),
+   *         before any CUPTI call.
    */
   explicit CuptiCollector(bool forceDisabled = false);
   ~CuptiCollector();
