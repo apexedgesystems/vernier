@@ -67,6 +67,28 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before it registers with CUPTI, so a direct user of `CuptiCollector` gets the
   same rule; the `forceDisabled` argument still wins. An unwrapped `--profile
   nsight` run keeps its CUPTI columns and still captures nothing from Nsight.
+- **Demo 15 (heaptrack) measures the shared `join` example** --
+  `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
+  without `reserve` against a reserved vector cleared and reused. It measures
+  `joinV0` and `joinV1` instead, one version per test (`Heaptrack.JoinV0`,
+  `Heaptrack.JoinV1`), and each test calls only its own version, so a heaptrack
+  trace of one test holds none of the other version's allocations. The
+  example's unit tests count the calls to `operator new` each version makes and
+  fail unless `joinV1` makes one per call at every size tested and `joinV0`, at
+  1,000 parts, makes at least 500 times as many; it makes about two per part.
+  Its walkthrough, `src/bench/demo/docs/21_HEAPTRACK_PROFILER.md`, is rewritten
+  from a Release run on the documented Raspberry Pi 4 rig: it records each
+  version through `bench run --profile heaptrack`, reads the report with
+  `heaptrack_print` (1,995 allocations per call against 1), names the recording
+  with a glob because heaptrack writes `run.zst` or `run.gz` depending on the
+  installation, and shows what a build with tcmalloc does to the counts. That
+  run's CSV is committed at
+  `src/bench/demo/reference/pi4/21_heaptrack_profiler.csv`. The demos README's
+  contract lets a walkthrough's check live in the unit tests of the example it
+  measures when a check inside the demo would change what the demo shows, as
+  here: a counting `operator new` in the demo would let heaptrack see its C++
+  allocations even with tcmalloc loaded. The demo's test names change, so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -212,6 +234,23 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   runs the benchmark under it. ...` and a non-zero exit, and points at
   `bench doctor`. `bench profile-all` reports the same line for that profiler
   and continues with the next.
+- **`bench doctor` warns when heaptrack cannot see C++ allocations** -- in a
+  process with tcmalloc loaded (a build configured with
+  `-DVERNIER_LINK_TCMALLOC=ON`, or tcmalloc preloaded), tcmalloc's own
+  `operator new` serves every C++ allocation without calling the `malloc`
+  family heaptrack records, so a heaptrack trace of that process holds almost
+  none of them. `bench doctor <binary>`, which checks the benchmark's own
+  process, reported heaptrack `[OK]` there, and `bench doctor --require
+  heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
+  libtcmalloc is loaded: C++ allocations will be missing`, followed by the
+  build option that removes tcmalloc, and `--require heaptrack` fails, as it
+  does for any warning. The default build does not link tcmalloc and reports
+  `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
+  outside heaptrack names the trace `run.heaptrack.*` instead of
+  `run.heaptrack.zst`: heaptrack writes `.zst` when it was built with zstd
+  support and the `zstd` program is installed, and `.gz` otherwise. The
+  backend's header says heaptrack's cost grows with the allocation rate, where
+  it gave a flat 1.5x; walkthrough 21 shows it measured.
 - **The Python tools wheel follows its inputs** -- the rule that builds the
   wheel declared no dependencies, so in an existing build directory the wheel
   and the `lib/python` tree it installs kept what the first build produced:
