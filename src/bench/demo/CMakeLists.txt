@@ -123,9 +123,12 @@ endif ()
 add_test(NAME CallgrindDemoInstructionCountsTest
          COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
 )
+# The skip expression names this test: its failure messages quote the counting
+# runs' output, whose own GoogleTest lines must not turn a failure into a skip.
 set_tests_properties(
-  CallgrindDemoInstructionCountsTest PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
-                                                "\\[  SKIPPED \\]"
+  CallgrindDemoInstructionCountsTest
+  PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] CallgrindProfiler\\.InstructionCounts"
 )
 
 vernier_add_ptest(
