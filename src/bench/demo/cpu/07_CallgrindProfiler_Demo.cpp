@@ -31,16 +31,12 @@
 
 #include <gtest/gtest.h>
 
-#include <fcntl.h>
-#include <spawn.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 
 #include <array>
 #include <filesystem>
@@ -51,9 +47,11 @@
 #include <vector>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/demo/cpu/07_CallgrindProfiler_Check.hpp"
 #include "src/bench/demo/examples/join/inc/Join.hpp"
 
 namespace demo = vernier::bench::demo;
+namespace check = vernier::bench::demo::callgrind_check;
 namespace fs = std::filesystem;
 
 /* ----------------------------- Constants ----------------------------- */
@@ -94,87 +92,6 @@ std::size_t joinedSize(const std::vector<std::string>& parts) {
     total += part.size() + 1;
   }
   return total;
-}
-
-/// The instructions a callgrind output file counted for the whole program (its
-/// "totals:" line), or 0 when the file has none.
-std::uint64_t programTotal(const fs::path& profile) {
-  std::ifstream in(profile);
-  std::string line;
-  while (std::getline(in, line)) {
-    if (line.rfind("totals:", 0) == 0) {
-      return std::stoull(line.substr(7));
-    }
-  }
-  return 0;
-}
-
-/// Runs @p args with @p extraVariable ("NAME=value") added to this process's
-/// environment, replacing any variable of that name, and with stdout and stderr
-/// in @p log. Returns the exit status, or -1 when the program could not be
-/// started or did not exit normally.
-int runLogged(const std::vector<std::string>& args, const std::string& extraVariable,
-              const fs::path& log) {
-  std::vector<char*> argv;
-  for (const std::string& arg : args) {
-    argv.push_back(const_cast<char*>(arg.c_str()));
-  }
-  argv.push_back(nullptr);
-
-  const std::string NAME = extraVariable.substr(0, extraVariable.find('=') + 1);
-  std::vector<char*> envp;
-  for (char** entry = environ; *entry != nullptr; ++entry) {
-    if (std::strncmp(*entry, NAME.c_str(), NAME.size()) != 0) {
-      envp.push_back(*entry);
-    }
-  }
-  envp.push_back(const_cast<char*>(extraVariable.c_str()));
-  envp.push_back(nullptr);
-
-  posix_spawn_file_actions_t actions;
-  posix_spawn_file_actions_init(&actions);
-  posix_spawn_file_actions_addopen(&actions, STDOUT_FILENO, log.c_str(),
-                                   O_WRONLY | O_CREAT | O_TRUNC, 0644);
-  posix_spawn_file_actions_adddup2(&actions, STDOUT_FILENO, STDERR_FILENO);
-
-  pid_t pid = 0;
-  const int SPAWNED = posix_spawnp(&pid, argv[0], &actions, nullptr, argv.data(), envp.data());
-  posix_spawn_file_actions_destroy(&actions);
-  if (SPAWNED != 0) {
-    return -1;
-  }
-  int status = 0;
-  if (::waitpid(pid, &status, 0) != pid || !WIFEXITED(status)) {
-    return -1;
-  }
-  return WEXITSTATUS(status);
-}
-
-/// The last lines of a log, for a failure message.
-std::string tail(const fs::path& log) {
-  std::ifstream in(log);
-  std::vector<std::string> lines;
-  std::string line;
-  while (std::getline(in, line)) {
-    lines.push_back(line);
-  }
-  std::string out;
-  for (std::size_t i = lines.size() > 8 ? lines.size() - 8 : 0; i < lines.size(); ++i) {
-    out += lines[i] + "\n";
-  }
-  return out;
-}
-
-/// valgrind expands '%' in output file names; "%%" is a literal one.
-std::string escapePercent(const std::string& path) {
-  std::string out;
-  for (const char CH : path) {
-    out += CH;
-    if (CH == '%') {
-      out += '%';
-    }
-  }
-  return out;
 }
 
 } // namespace
@@ -276,20 +193,20 @@ PERF_TEST(CallgrindProfiler, InstructionCounts) {
     // store-exclusive instruction pairs (MIPS and ARM64 only), and the same
     // total with it. On x86 the hint changes nothing.
     const int RC =
-        runLogged({"valgrind", "--tool=callgrind", "--sim-hints=fallback-llsc",
-                   "--callgrind-out-file=" + escapePercent(PROFILE.string()), SELF,
-                   "--gtest_filter=CallgrindProfiler.CountCalls", "--gtest_print_time=0"},
-                  std::string(COUNT_CALLS_VARIABLE) + "=" + runs[i].version + " " +
-                      std::to_string(runs[i].calls),
-                  LOG);
+        check::runLogged({"valgrind", "--tool=callgrind", "--sim-hints=fallback-llsc",
+                          "--callgrind-out-file=" + check::escapePercent(PROFILE.string()), SELF,
+                          "--gtest_filter=CallgrindProfiler.CountCalls", "--gtest_print_time=0"},
+                         std::string(COUNT_CALLS_VARIABLE) + "=" + runs[i].version + " " +
+                             std::to_string(runs[i].calls),
+                         LOG);
 
     std::ifstream logText(LOG);
     const std::string LOG_TEXT{std::istreambuf_iterator<char>(logText), {}};
     if (LOG_TEXT.find("[==========]") == std::string::npos) {
-      GTEST_SKIP() << "valgrind could not start this binary:\n" << tail(LOG);
+      GTEST_SKIP() << "valgrind could not start this binary:\n" << check::tail(LOG);
     }
-    ASSERT_EQ(RC, 0) << "the run under callgrind failed:\n" << tail(LOG);
-    runs[i].total = programTotal(PROFILE);
+    ASSERT_EQ(RC, 0) << "the run under callgrind failed:\n" << check::tail(LOG);
+    runs[i].total = check::programTotal(PROFILE);
     ASSERT_GT(runs[i].total, 0u) << "no program total in " << PROFILE;
   }
 
