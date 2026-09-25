@@ -17,6 +17,7 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/ProfilerHeaptrack.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
@@ -31,9 +32,11 @@
 #include <memory>
 #include <string>
 
+using vernier::bench::EnvReport;
 using vernier::bench::HeaptrackProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::Profiler;
+using vernier::bench::ProfilerRegistry;
 using vernier::bench::test::StderrCapture;
 
 namespace {
@@ -118,6 +121,24 @@ TEST_F(TcmallocOptInTest, HeaptrackWarnsOnlyWhenTcmallocMapped) {
 
   const bool warned = err.find("libtcmalloc") != std::string::npos;
   EXPECT_EQ(warned, tcmallocMapped()) << err;
+}
+
+/** @test Doctor reports heaptrack as a warning naming tcmalloc exactly when tcmalloc is mapped */
+TEST_F(TcmallocOptInTest, HeaptrackDoctorWarnsOnlyWhenTcmallocMapped) {
+  // The check bench doctor prints: it runs in this process, as it does in a
+  // benchmark started with --profile-check.
+  const EnvReport report = ProfilerRegistry::instance().runCheck("heaptrack");
+  if (report.status == EnvReport::Status::Error) {
+    GTEST_SKIP() << "heaptrack cannot run here, so the allocator is not checked: "
+                 << report.message;
+  }
+
+  const bool warned = report.status == EnvReport::Status::Warning;
+  EXPECT_EQ(warned, tcmallocMapped()) << report.message;
+  if (warned) {
+    EXPECT_NE(report.message.find("libtcmalloc"), std::string::npos) << report.message;
+    EXPECT_NE(report.hint.find("VERNIER_LINK_TCMALLOC"), std::string::npos) << report.hint;
+  }
 }
 
 /** @brief Same fixture, named so GoogleTest schedules the death test first. */
