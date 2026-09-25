@@ -360,8 +360,9 @@ of none of `memcpy`, the allocator or the join functions.
   instructions for its ten measured calls.
 - **Functions named `???` and no source lines.** The binary has no line tables:
   it was stripped, or the example was built without its `-g`.
-- **A line in step 3 reports more than 100%.** That is callgrind's call graph on
-  an Arm board; read self counts, as step 3 explains.
+- **A line in step 3 reports more than 100%.** That is callgrind's call graph
+  as it came out for this program on this rig; read self counts, as step 3
+  explains.
 - **The counts differ from this page.** Expected on another compiler, C library
   or CPU; only the ratio carries over. On this rig and build, a difference of
   tens of instructions in a program total comes from formatting measured times,

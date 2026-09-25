@@ -154,8 +154,8 @@ PERF_TEST(CallgrindProfiler, CountCalls) {
  * Runs CountCalls under callgrind six times: each version with 10 and with 20
  * calls, and with 10 calls again. A version's instructions per call are the
  * difference between its two program totals divided by the difference in
- * calls, so nothing depends on callgrind's call graph, which on Arm can credit
- * a function with calls it never received. Writes no CSV row.
+ * calls, so nothing depends on callgrind's call graph, which on the Arm rig
+ * credited joinV0 with calls it never received. Writes no CSV row.
  *
  * Skipped where valgrind is not installed, or where it gives up reading this
  * binary's debug information before the program runs, as a valgrind older
