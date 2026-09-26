@@ -13,7 +13,7 @@
  *     far more than the sorted input and than the branchless version
  *  3. The two checks count through the kernel's perf interface on their own
  *     calls (helpers/HardwareCounter.hpp), write no CSV row, and skip where
- *     the counter cannot be opened, and under --profile
+ *     the counter cannot be opened or did not run, and under --profile
  *
  * Usage:
  *   @code{.sh}
@@ -181,17 +181,23 @@ PERF_TEST(PerfProfiler, JoinInstructions) {
   ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR), demo::joinV1(PARTS, SEPARATOR));
 
   volatile std::size_t sink = 0;
-  const double V0 =
+  const demo::Reading V0 =
       instructions.perCall(COUNTED_CALLS, [&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
-  const double V1 =
+  const demo::Reading V1 =
       instructions.perCall(COUNTED_CALLS, [&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  // Any code retires instructions: a zero is a counter that did not count.
+  const std::string NOT_COUNTED = V0.whyNotCounted(true) + V1.whyNotCounted(true);
+  if (!NOT_COUNTED.empty()) {
+    GTEST_SKIP() << "could not count instructions here: " << NOT_COUNTED;
+  }
 
-  std::printf("[PerfProfiler.JoinInstructions]  V0 %.0f instructions/call  V1 %.0f "
-              "instructions/call  %.1fx\n",
-              V0, V1, V0 / V1);
+  std::printf("[PerfProfiler.JoinInstructions]  V0 %.0f instructions/call%s  V1 %.0f "
+              "instructions/call%s  %.1fx\n",
+              V0.value, demo::scalingNote(V0).c_str(), V1.value, demo::scalingNote(V1).c_str(),
+              V0.value / V1.value);
 
-  EXPECT_GE(V0, MIN_INSTRUCTION_RATIO * V1)
-      << "joinV0 retired " << V0 << " instructions per call and joinV1 " << V1
+  EXPECT_GE(V0.value, MIN_INSTRUCTION_RATIO * V1.value)
+      << "joinV0 retired " << V0.value << " instructions per call and joinV1 " << V1.value
       << ": V0 no longer does " << MIN_INSTRUCTION_RATIO
       << " times V1's work, and the demo has stopped demonstrating";
 }
@@ -223,27 +229,39 @@ PERF_TEST(PerfProfiler, FilterBranchMisses) {
             demo::filterBranchless(RANDOM, THRESHOLD, out));
 
   volatile std::size_t sink = 0;
-  const double BRANCHY_RANDOM =
+  const demo::Reading BRANCHY_RANDOM =
       misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchy(RANDOM, THRESHOLD, out); });
-  const double BRANCHY_SORTED =
+  const demo::Reading BRANCHY_SORTED =
       misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchy(SORTED, THRESHOLD, out); });
-  const double BRANCHLESS =
+  const demo::Reading BRANCHLESS =
       misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchless(RANDOM, THRESHOLD, out); });
+  // A branch on random input mispredicts: a zero there is a counter that did
+  // not count. The other two cases may count as few as they like.
+  const std::string NOT_COUNTED = BRANCHY_RANDOM.whyNotCounted(true) +
+                                  BRANCHY_SORTED.whyNotCounted(false) +
+                                  BRANCHLESS.whyNotCounted(false);
+  if (!NOT_COUNTED.empty()) {
+    GTEST_SKIP() << "could not count branch-misses here: " << NOT_COUNTED;
+  }
 
-  std::printf("[PerfProfiler.FilterBranchMisses]  branchy random %.0f  branchy sorted %.0f  "
-              "branchless %.0f  branch-misses/call\n",
-              BRANCHY_RANDOM, BRANCHY_SORTED, BRANCHLESS);
+  std::printf("[PerfProfiler.FilterBranchMisses]  branchy random %.0f%s  branchy sorted %.0f%s  "
+              "branchless %.0f%s  branch-misses/call\n",
+              BRANCHY_RANDOM.value, demo::scalingNote(BRANCHY_RANDOM).c_str(), BRANCHY_SORTED.value,
+              demo::scalingNote(BRANCHY_SORTED).c_str(), BRANCHLESS.value,
+              demo::scalingNote(BRANCHLESS).c_str());
 
-  const double PER_VALUE = BRANCHY_RANDOM / static_cast<double>(VALUE_COUNT);
+  const double PER_VALUE = BRANCHY_RANDOM.value / static_cast<double>(VALUE_COUNT);
   EXPECT_GE(PER_VALUE, MIN_MISPREDICTS_PER_VALUE)
       << "filterBranchy mispredicted " << PER_VALUE
       << " branches per value on random input: its test of each value is no longer a branch";
-  EXPECT_GE(BRANCHY_RANDOM, MIN_MISPREDICT_RATIO * BRANCHY_SORTED)
-      << "filterBranchy mispredicted " << BRANCHY_RANDOM << " branches per call on random input "
-      << "and " << BRANCHY_SORTED << " on sorted input: the order of the data no longer matters";
-  EXPECT_GE(BRANCHY_RANDOM, MIN_MISPREDICT_RATIO * BRANCHLESS)
-      << "filterBranchy mispredicted " << BRANCHY_RANDOM << " branches per call and "
-      << "filterBranchless " << BRANCHLESS << ": the branchless version no longer removes them";
+  EXPECT_GE(BRANCHY_RANDOM.value, MIN_MISPREDICT_RATIO * BRANCHY_SORTED.value)
+      << "filterBranchy mispredicted " << BRANCHY_RANDOM.value
+      << " branches per call on random input and " << BRANCHY_SORTED.value
+      << " on sorted input: the order of the data no longer matters";
+  EXPECT_GE(BRANCHY_RANDOM.value, MIN_MISPREDICT_RATIO * BRANCHLESS.value)
+      << "filterBranchy mispredicted " << BRANCHY_RANDOM.value << " branches per call and "
+      << "filterBranchless " << BRANCHLESS.value
+      << ": the branchless version no longer removes them";
 }
 
 PERF_MAIN()

@@ -22,6 +22,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <string>
 #include <vector>
 
 using vernier::bench::demo::filterBranchless;
@@ -30,6 +31,8 @@ using vernier::bench::demo::HardwareCounter;
 using vernier::bench::demo::HardwareEvent;
 using vernier::bench::demo::makeSortedValues;
 using vernier::bench::demo::makeValues;
+using vernier::bench::demo::Reading;
+using vernier::bench::demo::scalingNote;
 
 /* ----------------------------- File Helpers ----------------------------- */
 
@@ -185,16 +188,22 @@ TEST(FilterBranchTest, ConditionalStoreKeepsItsBranch) {
   std::vector<double> out(BRANCH_TEST_SIZE);
   volatile std::size_t sink = 0;
 
-  const double randomMisses =
+  const Reading random_ =
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(random, 0.5, out); });
-  const double sortedMisses =
+  const Reading sorted_ =
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(sorted, 0.5, out); });
-  const double perValue = randomMisses / static_cast<double>(BRANCH_TEST_SIZE);
+  // A branch on random input mispredicts; a zero is a counter that did not count.
+  const std::string notCounted = random_.whyNotCounted(true) + sorted_.whyNotCounted(false);
+  if (!notCounted.empty()) {
+    GTEST_SKIP() << "could not count branch-misses here: " << notCounted;
+  }
+  const double perValue = random_.value / static_cast<double>(BRANCH_TEST_SIZE);
 
   EXPECT_GE(perValue, MIN_MISPREDICTS_PER_VALUE)
-      << "filterBranchy mispredicted " << perValue << " branches per value on random input: "
-      << "its test of each value is no longer a branch";
-  EXPECT_GE(randomMisses, MIN_MISPREDICT_RATIO * sortedMisses)
-      << "filterBranchy mispredicted " << randomMisses << " branches per call on random input "
-      << "and " << sortedMisses << " on sorted input: its branch no longer depends on the data";
+      << "filterBranchy mispredicted " << perValue << " branches per value on random input"
+      << scalingNote(random_) << ": its test of each value is no longer a branch";
+  EXPECT_GE(random_.value, MIN_MISPREDICT_RATIO * sorted_.value)
+      << "filterBranchy mispredicted " << random_.value << " branches per call on random input"
+      << scalingNote(random_) << " and " << sorted_.value << " on sorted input"
+      << scalingNote(sorted_) << ": its branch no longer depends on the data";
 }
