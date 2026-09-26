@@ -1,6 +1,9 @@
 # Docker Setup Guide
 
-Run benchmarks in containers with reproducible, validated environments. Perfect for CI/CD and ensuring consistent results across different machines.
+Build and run benchmarks in containers: in the project's own development images,
+or in an image of your own project. A container shares the host's kernel, so a
+profiler that reads kernel counters needs the setup described under
+[Profiling in Containers](#profiling-in-containers).
 
 ---
 
@@ -20,32 +23,37 @@ Run benchmarks in containers with reproducible, validated environments. Perfect 
 
 ## Overview
 
-### Why Use Docker?
+### Two Ways to Use Containers
 
-**Reproducible** - Same environment everywhere (local, CI, production)
-**Isolated** - No dependency conflicts with host system
-**Portable** - Works on any machine with Docker installed
-**CI-ready** - Easy integration with GitHub Actions, GitLab CI, Jenkins
-**Validated** - `bench validate` ensures everything works
+- **The project's development images** build and run this repository's own tree:
+  `make docker-dev` and `make docker-dev-cuda` build them, and the README's Quick
+  Start uses them through `docker compose` (`make compose-release`).
+- **An image of your own project** builds your benchmarks together with
+  vernier, as in the recipes below. They assume a project whose
+  `CMakeLists.txt` fetches vernier's sources (for example with `FetchContent`)
+  and defines `MyComponent_PTEST` at its top level, linking `vernier::bench`, so
+  the executable lands in `build/`. The README's
+  [Install as Library](../../../README.md#install-as-library) describes the
+  targets.
 
 ### What You'll Need
 
 **Host system:**
 
 ```bash
-# Docker Engine 20.10+
 docker --version
 
-# For GPU: NVIDIA Container Toolkit
-nvidia-docker --version # or 'docker run --gpus all'
+# GPU images need the NVIDIA Container Toolkit; this lists the GPUs a container sees
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi -L
 ```
 
-**Container requirements:**
+**Image contents:**
 
-- Base: Ubuntu 22.04 or later
-- Build tools: cmake, g++, python3
-- Framework deps: libgtest-dev
-- GPU optional: CUDA Toolkit 11.0+
+- Base: Ubuntu 24.04. Its CMake (3.28) meets vernier's minimum of 3.24; Ubuntu
+  22.04's (3.22) does not
+- A C++20 compiler (`build-essential`), `cmake`, and `git` with
+  `ca-certificates`, for the sources CMake fetches (vernier, GoogleTest)
+- GPU: a CUDA 12 or newer development image
 
 ---
 
@@ -54,27 +62,23 @@ nvidia-docker --version # or 'docker run --gpus all'
 ### CPU Benchmarks
 
 ```bash
-# Build image
-docker build -t mybench:latest -f Dockerfile .
+# Build the image (Dockerfile below)
+docker build -t mybench:latest .
 
-# Run benchmarks
-docker run --rm mybench:latest \
-./build/bin/ptests/MyComponent_PTEST --csv results.csv
-
-# Save results to host
-docker run --rm -v $(pwd)/results:/results mybench:latest \
-./build/bin/ptests/MyComponent_PTEST --csv /results/results.csv
+# Run, keeping the CSV on the host
+mkdir -p results
+docker run --rm -v "$PWD/results:/results" mybench:latest \
+  ./build/MyComponent_PTEST --csv /results/results.csv
 ```
 
 ### GPU Benchmarks
 
 ```bash
-# Build GPU image
+# Build the GPU image (Dockerfile.gpu below)
 docker build -t mybench-gpu:latest -f Dockerfile.gpu .
 
 # Run with GPU access
-docker run --rm --gpus all mybench-gpu:latest \
-./build/bin/ptests/MyKernel_GPU_PTEST --csv results.csv
+docker run --rm --gpus all mybench-gpu:latest
 ```
 
 ---
@@ -86,96 +90,71 @@ docker run --rm --gpus all mybench-gpu:latest \
 **Dockerfile:**
 
 ```dockerfile
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
-# Avoid interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-build-essential \
-cmake \
-git \
-python3 \
-python3-pip \
-libgtest-dev \
-&& rm -rf /var/lib/apt/lists/*
-
-# Install Python packages for analysis
-RUN pip3 install --no-cache-dir pandas matplotlib seaborn scipy
+# Compiler, CMake, and git for the sources CMake fetches
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy source code
 WORKDIR /workspace
 COPY . .
 
 # Build benchmarks
-RUN cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && \
-cmake --build build --parallel $(nproc)
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --parallel "$(nproc)"
 
 # Default command
-CMD ["./build/bin/ptests/MyComponent_PTEST", "--csv", "results.csv"]
+CMD ["./build/MyComponent_PTEST", "--csv", "results.csv"]
 ```
 
 ### Multi-Stage Build (Smaller Images)
+
+The runtime stage keeps only the executable and the shared libraries it loads
+from `build/lib`, at the same paths, and leaves the compiler and sources behind.
 
 **Dockerfile.multistage:**
 
 ```dockerfile
 # ============ Stage 1: Build ============
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-build-essential \
-cmake \
-git \
-libgtest-dev \
-&& rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /src
+WORKDIR /workspace
 COPY . .
 
-# Build benchmarks
-RUN cmake -B build -S . -DCMAKE_BUILD_TYPE=Release && \
-cmake --build build --parallel $(nproc) && \
-strip build/bin/ptests/* # Reduce binary size
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --parallel "$(nproc)"
 
 # ============ Stage 2: Runtime ============
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
-ENV DEBIAN_FRONTEND=noninteractive
+# The executable finds its libraries by the build tree's paths
+WORKDIR /workspace
+COPY --from=builder /workspace/build/MyComponent_PTEST ./build/
+COPY --from=builder /workspace/build/lib ./build/lib
 
-# Install only runtime dependencies
-RUN apt-get update && apt-get install -y \
-python3 \
-python3-pip \
-libstdc++6 \
-&& rm -rf /var/lib/apt/lists/*
-
-# Install Python analysis tools
-RUN pip3 install --no-cache-dir pandas matplotlib seaborn scipy
-
-# Copy only built binaries and tools
-WORKDIR /benchmarks
-COPY --from=builder /src/build/bin/ptests ./ptests
-COPY --from=builder /src/tools ./tools
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s \
-CMD test -f ./ptests/MyComponent_PTEST || exit 1
-
-CMD ["./ptests/MyComponent_PTEST", "--csv", "results.csv"]
+CMD ["./build/MyComponent_PTEST", "--csv", "results.csv"]
 ```
 
 **Build and use:**
 
 ```bash
-# Build (~2GB vs ~4GB for single-stage)
 docker build -t mybench:slim -f Dockerfile.multistage .
-
-# Run
 docker run --rm mybench:slim
 ```
 
@@ -185,68 +164,45 @@ docker run --rm mybench:slim
 
 ### GPU Dockerfile
 
-**Dockerfile.gpu:**
+**Dockerfile.gpu** (a project that also builds `MyKernel_GPU_PTEST`, linking
+`vernier::bench_cuda` and `vernier::bench`):
 
 ```dockerfile
-FROM nvidia/cuda:12.0-devel-ubuntu22.04
+FROM nvidia/cuda:13.1.1-devel-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install dependencies
-RUN apt-get update && apt-get install -y \
-build-essential \
-cmake \
-git \
-python3 \
-python3-pip \
-libgtest-dev \
-&& rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    git \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install Python packages
-RUN pip3 install --no-cache-dir pandas matplotlib seaborn scipy
-
-# Copy source
 WORKDIR /workspace
 COPY . .
 
-# Build with CUDA support
-RUN cmake -B build -S . \
--DCMAKE_BUILD_TYPE=Release \
--DCMAKE_CUDA_ARCHITECTURES="75;80;89" && \
-cmake --build build --parallel $(nproc)
+# Build for the compute capabilities you run on (7.5, 8.0, 8.9 here)
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CUDA_ARCHITECTURES="75;80;89" && \
+    cmake --build build --parallel "$(nproc)"
 
-CMD ["./build/bin/ptests/MyKernel_GPU_PTEST", "--csv", "results.csv"]
+CMD ["./build/MyKernel_GPU_PTEST", "--csv", "results.csv"]
 ```
 
 ### Running GPU Containers
 
 ```bash
-# Build
-docker build -t mybench-gpu:latest -f Dockerfile.gpu .
-
 # Run with GPU access
 docker run --rm --gpus all mybench-gpu:latest
 
-# Run specific GPU
-docker run --rm --gpus '"device=1"' mybench-gpu:latest \
-./ptests/MyKernel_GPU_PTEST --gpu-device 1
+# Run on one GPU
+docker run --rm --gpus '"device=0"' mybench-gpu:latest
 
 # Run with results saved to host
-docker run --rm --gpus all \
--v $(pwd)/results:/results \
-mybench-gpu:latest \
-./ptests/MyKernel_GPU_PTEST --csv /results/gpu_results.csv
-```
-
-### Multi-GPU Support
-
-```bash
-# All GPUs
-docker run --rm --gpus all mybench-gpu:latest
-
-# Specific GPUs
-docker run --rm --gpus '"device=0,1"' mybench-gpu:latest \
-./ptests/MyKernel_GPU_PTEST
+mkdir -p results
+docker run --rm --gpus all -v "$PWD/results:/results" mybench-gpu:latest \
+  ./build/MyKernel_GPU_PTEST --csv /results/gpu_results.csv
 
 # Check GPU access
 docker run --rm --gpus all mybench-gpu:latest nvidia-smi
@@ -258,29 +214,20 @@ docker run --rm --gpus all mybench-gpu:latest nvidia-smi
 
 ### Built-in Environment Checks
 
-The `bench` tool checks that your container has everything needed for
-profiling. Build the tools with `make tools-rust` and source the build
-`.env` to put `bench` on PATH, then run `bench validate`:
+`bench validate` reports the profiling tools and settings the container has.
+In the project's dev containers, `bench` comes from the build's `.env`; in the
+profiling image built below it is on `PATH` already:
 
 **Running validation:**
 
 ```bash
-# Inside container
-make tools-rust
-source build/native-linux-debug/.env
+# In a project dev container, after make release
+source build/native-linux-release/.env
 bench validate
 
-# From host
-docker run --rm --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
--v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-mybench:latest \
-bash -c "make tools-rust && source build/native-linux-debug/.env && bench validate"
+# From the host, in the profiling image (see Complete Profiling Example)
+docker run --rm --privileged mybench-prof:latest bench validate
 ```
-
-The two perf mounts in the `docker run` example are not enough on every host;
-see [Perf Profiling](#perf-profiling) for how an image gets a perf for the
-host's kernel.
 
 For GPU containers, add `bench gpu-env` to check GPU environment readiness
 (CUDA, Nsight Systems, Nsight Compute). For a deeper per-backend check tied
@@ -415,178 +362,149 @@ the launcher still reports no perf for the kernel.
 
 ```dockerfile
 # Install FlameGraph tools
-RUN git clone https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph && \
-chmod +x /opt/FlameGraph/*.pl
+RUN git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
 
-# Add to PATH
-ENV PATH="/opt/FlameGraph:${PATH}"
+# Tell bench flamegraph where they are
 ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 ```
 
-**Use in container:**
+**Use in container** (the profiling image below has perf, FlameGraph and
+`bench`; perf's counters need a privileged container running as root, or the
+access described under [Perf Profiling](#perf-profiling)):
 
 ```bash
-docker run --rm --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
--v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
-mybench:latest \
-bash -c "
-./ptests/MyComponent_PTEST --profile perf --artifact-root artifacts/
-bench flamegraph artifacts/MyComponent.Test.perf/perf.data \
---output flamegraph.svg
-"
+mkdir -p results
+docker run --rm --privileged -v "$PWD/results:/results" mybench-prof:latest bash -c '
+  ./build/MyComponent_PTEST --profile perf --profile-args "record -g" \
+      --target-time 250ms --artifact-root /results &&
+  bench flamegraph /results/MyComponent.Throughput.perf/perf.data \
+      --output /results/flamegraph.svg'
 ```
 
 ### RAPL Energy Profiling
 
 **Requirements:**
 
-- `--privileged` flag or `--cap-add=SYS_RAWIO`
-- `/dev/cpu` mount
+- An Intel CPU, with the `msr` module loaded on the host (`sudo modprobe msr`)
+- `--privileged` with the `/dev/cpu` mount, or `CAP_SYS_RAWIO` with the MSR
+  device the backend reads, `/dev/cpu/0/msr`
 
 ```bash
 docker run --rm --privileged \
--v /dev/cpu:/dev/cpu \
-mybench:latest \
-./ptests/MyComponent_PTEST --profile rapl
+  -v /dev/cpu:/dev/cpu \
+  mybench:latest \
+  ./build/MyComponent_PTEST --profile rapl
 ```
 
-**Alternative (more secure):**
+**Alternative (more secure):** a mount alone is not enough without
+`--privileged`, because the container may not open the device; pass it with
+`--device` instead:
 
 ```bash
-# Only SYS_RAWIO capability
+# Only SYS_RAWIO capability and CPU 0's MSR device
 docker run --rm \
---cap-add=SYS_RAWIO \
--v /dev/cpu:/dev/cpu \
-mybench:latest \
-./ptests/MyComponent_PTEST --profile rapl
+  --cap-add=SYS_RAWIO \
+  --device=/dev/cpu/0/msr \
+  mybench:latest \
+  ./build/MyComponent_PTEST --profile rapl
 ```
 
 ### Complete Profiling Example
 
-**Dockerfile with all profiling tools:**
+**Dockerfile.prof** builds on the benchmark image (`mybench:latest`): perf for
+the host's kernel, FlameGraph, and vernier's `bench` CLI, which needs a Rust
+toolchain newer than Ubuntu 24.04's `cargo` (1.75 cannot read the CLI's
+`Cargo.lock`), so it comes from rustup:
 
 ```dockerfile
-FROM ubuntu:22.04
+FROM mybench:latest
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG HOST_KERNEL
 
-# Install profiling tools
-RUN apt-get update && apt-get install -y \
-build-essential cmake git \
-python3 python3-pip \
-libgtest-dev \
-linux-tools-generic \
-&& rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    linux-tools-common \
+    "linux-tools-${HOST_KERNEL}" \
+    && rm -rf /var/lib/apt/lists/*
 
-# Python packages
-RUN pip3 install --no-cache-dir pandas matplotlib seaborn scipy
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --profile minimal
+ENV PATH="/root/.cargo/bin:${PATH}"
 
-# FlameGraph tools
-RUN git clone https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph && \
-chmod +x /opt/FlameGraph/*.pl
-
-ENV PATH="/opt/FlameGraph:${PATH}"
+RUN git clone --depth 1 https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
 ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 
-# Copy source and build
-WORKDIR /workspace
-COPY . .
-RUN cmake -B build -S . && cmake --build build -j$(nproc)
-
-# Welcome message
-RUN echo 'echo " Benchmarking Container"' >> /etc/bash.bashrc && \
-echo 'echo " Tools: perf, FlameGraph, Python analysis"' >> /etc/bash.bashrc && \
-echo 'echo " Run: bench validate to verify setup"' >> /etc/bash.bashrc
+# Reconfigure with the CLI tools; bench lands in build/bin/tools/rust.
+# Dropping the Rust build tree afterwards keeps the image smaller.
+RUN cmake -S . -B build -DVERNIER_BUILD_TOOLS=ON && \
+    cmake --build build --parallel "$(nproc)" && \
+    rm -rf build/vernier-rust-target
+ENV PATH="/workspace/build/bin/tools/rust:${PATH}"
 ```
 
-**Run with full profiling:**
+**Build and run:**
 
 ```bash
-docker run --rm -it --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
--v /usr/lib/linux-tools:/usr/lib/linux-tools:ro \
--v /dev/cpu:/dev/cpu \
--v $(pwd)/results:/results \
-mybench:latest bash
+docker build -t mybench-prof:latest --build-arg HOST_KERNEL="$(uname -r)" \
+  -f Dockerfile.prof .
 
-# Inside container:
-source build/native-linux-debug/.env
-bench validate # Verify everything works
-./ptests/MyComponent_PTEST --profile perf --artifact-root /results/
-bench flamegraph /results/MyComponent.Test.perf/perf.data \
---output /results/flamegraph.svg
+docker run --rm --privileged mybench-prof:latest bash -c '
+  perf --version && bench --version &&
+  ./build/MyComponent_PTEST --profile perf --gtest_filter="*Throughput" &&
+  cat MyComponent.Throughput.perf/stat.txt'
 ```
 
 ---
 
 ## CI Integration
 
+The [CI/CD Integration Guide](CI_CD_INTEGRATION.md) gates pull requests on a
+regression with one script. To run the benchmarks in the image of
+[CPU Benchmarks](#cpu-benchmarks) on each pull request and keep the CSV:
+
 ### GitHub Actions with Docker
+
+**.github/workflows/docker-benchmarks.yml:**
 
 ```yaml
 name: Docker Benchmarks
 
-on: [pull_request]
+on:
+  pull_request:
+
+permissions:
+  contents: read
 
 jobs:
-benchmark:
-runs-on: ubuntu-latest
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
-steps:
-- name: Checkout
-uses: actions/checkout@v4
+      - name: Build the image
+        run: docker build -t mybench:latest .
 
-- name: Build Docker image
-run: docker build -t mybench:latest .
+      - name: Run the benchmarks
+        run: |
+          mkdir -p results
+          docker run --rm -v "$PWD/results:/results" mybench:latest \
+            ./build/MyComponent_PTEST --csv /results/results.csv
 
-- name: Validate container
-run: |
-docker run --rm --privileged \
--v /usr/bin/perf:/usr/bin/perf:ro \
-mybench:latest \
-bash -c "source build/native-linux-debug/.env && bench validate"
-
-- name: Run benchmarks
-run: |
-docker run --rm \
--v $(pwd)/results:/results \
-mybench:latest \
-./ptests/MyComponent_PTEST --csv /results/results.csv
-
-- name: Upload results
-uses: actions/upload-artifact@v4
-with:
-name: benchmark-results
-path: results/
+      - name: Upload the results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: benchmark-results
+          path: results/
 ```
 
-### GitLab CI with Docker
+### GitLab CI
 
-```yaml
-benchmark:
-image: docker:latest
-services:
-- docker:dind
-
-script:
-# Build image
-- docker build -t mybench:$CI_COMMIT_SHA .
-
-# Validate
-- docker run --rm mybench:$CI_COMMIT_SHA
-bash -c "source build/native-linux-debug/.env && bench validate"
-
-# Run benchmarks
-- docker run --rm
--v $(pwd)/results:/results
-mybench:$CI_COMMIT_SHA
-./ptests/MyComponent_PTEST --csv /results/results.csv
-
-artifacts:
-paths:
-- results/
-```
+A GitLab job runs in the Docker image its `image:` keyword names; the CI
+guide's [GitLab CI](CI_CD_INTEGRATION.md#gitlab-ci) job runs in
+`ubuntu:24.04`. Building an image of your own inside a job takes one of the
+setups on GitLab's "Use Docker to build Docker images" page, such as
+Docker-in-Docker or Docker socket binding, which this guide does not cover.
 
 ---
 
@@ -597,14 +515,15 @@ paths:
 Keeps runtime images small:
 
 ```dockerfile
-# Builder stage: ~4GB
-FROM ubuntu:22.04 AS builder
-RUN apt-get install build-essential cmake ...
+# Builder stage: compiler, sources, build tree
+FROM ubuntu:24.04 AS builder
+RUN apt-get update && apt-get install -y build-essential cmake ...
 RUN cmake --build build
 
-# Runtime stage: ~1GB
-FROM ubuntu:22.04
-COPY --from=builder /src/build/bin ./bin
+# Runtime stage: the executable and the libraries it loads
+FROM ubuntu:24.04
+COPY --from=builder /workspace/build/MyComponent_PTEST /workspace/build/
+COPY --from=builder /workspace/build/lib /workspace/build/lib
 ```
 
 ### 2. Cache Dependencies
@@ -614,7 +533,7 @@ Speed up builds with layer caching:
 ```dockerfile
 # Install dependencies first (cached layer)
 RUN apt-get update && apt-get install -y \
-build-essential cmake ...
+    build-essential cmake ...
 
 # Then copy source (changes frequently)
 COPY . .
@@ -638,39 +557,45 @@ RUN . build/native-linux-debug/.env && bench validate || exit 1
 FROM ubuntu:latest
 
 # Good: specific version
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # Good: specific CUDA version
-FROM nvidia/cuda:12.0-devel-ubuntu22.04
+FROM nvidia/cuda:13.1.1-devel-ubuntu24.04
 ```
 
 ### 5. Non-Root User
 
-Run benchmarks as non-root:
+Run benchmarks as non-root (`ubuntu:24.04` already has a user `ubuntu` with uid
+1000, so let `useradd` pick the uid):
 
 ```dockerfile
 # Create user
-RUN useradd -m -u 1000 benchmark && \
-chown -R benchmark:benchmark /workspace
+RUN useradd -m benchmark && \
+    chown -R benchmark:benchmark /workspace
 
 USER benchmark
 
 # Benchmarks run as 'benchmark' user
-CMD ["./ptests/MyComponent_PTEST"]
+CMD ["./build/MyComponent_PTEST"]
 ```
 
 ### 6. Volume Mounts for Results
 
 ```bash
 # Mount results directory
+mkdir -p results
 docker run --rm \
--v $(pwd)/results:/results \
-mybench:latest \
-./ptests/MyComponent_PTEST --csv /results/results.csv
+  -v "$PWD/results:/results" \
+  mybench:latest \
+  ./build/MyComponent_PTEST --csv /results/results.csv
 
 # Results persist on host after container exits
 ls results/results.csv
 ```
+
+The container runs as root unless its image sets a user, so what it writes into a
+mount belongs to root on the host; add `--user "$(id -u):$(id -g)"` to write as
+yourself.
 
 ---
 
@@ -732,21 +657,19 @@ docker run --rm --privileged \
 **Solutions:**
 
 ```bash
-# 1. Install NVIDIA Container Toolkit on host
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/nvidia-docker/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/nvidia-docker/$distribution/nvidia-docker.list | \
-sudo tee /etc/apt/sources.list.d/nvidia-docker.list
-sudo apt-get update && sudo apt-get install -y nvidia-docker2
-sudo systemctl restart docker
+# 1. Install the NVIDIA Container Toolkit on the host, configure Docker for it
+#    and restart Docker, as NVIDIA's installation guide shows
 
 # 2. Use --gpus flag
 docker run --rm --gpus all mybench-gpu:latest nvidia-smi
 
-# 3. Check GPU access
-nvidia-smi # On host first
-docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi # Test image
+# 3. Check GPU access: on the host first, then in a plain image
+nvidia-smi
+docker run --rm --gpus all ubuntu:24.04 nvidia-smi
 ```
+
+The installation guide is
+<https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html>.
 
 ### Container Builds Slowly
 
@@ -756,17 +679,17 @@ docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi # Test image
 
 ```dockerfile
 # 1. Use multi-stage build
-FROM ubuntu:22.04 AS builder
+FROM ubuntu:24.04 AS builder
 # ... build ...
-FROM ubuntu:22.04
-COPY --from=builder /src/build ./build
+FROM ubuntu:24.04
+COPY --from=builder /workspace/build/MyComponent_PTEST /workspace/build/
+COPY --from=builder /workspace/build/lib /workspace/build/lib
 
-# 2. Order layers by change frequency
-RUN apt-get install ... # Changes rarely
-COPY requirements.txt . # Changes occasionally
-RUN pip install -r ... # Changes occasionally
-COPY . . # Changes frequently
-RUN cmake --build build # Changes frequently
+# 2. Order layers by change frequency: packages change rarely, sources often
+RUN apt-get update && apt-get install -y --no-install-recommends ...
+COPY . .
+RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && \
+    cmake --build build --parallel "$(nproc)"
 
 # 3. Use BuildKit
 # In docker build command:
@@ -782,133 +705,22 @@ DOCKER_BUILDKIT=1 docker build ...
 ```bash
 # 1. Pin CPUs
 docker run --rm \
---cpuset-cpus="2-9" \
-mybench:latest
+  --cpuset-cpus="2-9" \
+  mybench:latest
 
-# 2. Limit CPU shares (prevent throttling)
+# 2. Weight the container above others (default 1024) when CPUs are contended
 docker run --rm \
---cpu-shares=2048 \
-mybench:latest
+  --cpu-shares=2048 \
+  mybench:latest
 
 # 3. Set memory limits
 docker run --rm \
---memory=4g \
---memory-swap=4g \
-mybench:latest
+  --memory=4g \
+  --memory-swap=4g \
+  mybench:latest
 
 # 4. Use dedicated/self-hosted runners in CI
 # Avoid shared runners for benchmarking
-```
-
----
-
-## Example: Production Docker Setup
-
-**Complete production-ready setup:**
-
-**Dockerfile.production:**
-
-```dockerfile
-# ============ Stage 1: Build ============
-FROM ubuntu:22.04 AS builder
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-build-essential \
-cmake \
-git \
-libgtest-dev \
-&& rm -rf /var/lib/apt/lists/*
-
-# Build benchmarks
-WORKDIR /src
-COPY . .
-RUN cmake -B build -S . \
--DCMAKE_BUILD_TYPE=Release \
--DBUILD_TESTING=OFF && \
-cmake --build build --parallel $(nproc) && \
-strip build/bin/ptests/*
-
-# Build the bench tool (provides validate, gpu-env, doctor)
-RUN make tools-rust
-
-# ============ Stage 2: Runtime ============
-FROM ubuntu:22.04
-
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-python3 \
-python3-pip \
-libstdc++6 \
-&& rm -rf /var/lib/apt/lists/*
-
-# Python analysis tools
-RUN pip3 install --no-cache-dir pandas matplotlib seaborn scipy plotly
-
-# FlameGraph tools
-RUN git clone --depth 1 \
-https://github.com/brendangregg/FlameGraph.git \
-/opt/FlameGraph && \
-chmod +x /opt/FlameGraph/*.pl
-
-ENV PATH="/opt/FlameGraph:${PATH}"
-ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
-
-# Create non-root user
-RUN useradd -m -u 1000 benchmark && \
-mkdir -p /results && \
-chown -R benchmark:benchmark /results
-
-# Copy built binaries
-WORKDIR /benchmarks
-COPY --from=builder --chown=benchmark:benchmark \
-/src/build/bin/ptests ./ptests
-COPY --from=builder --chown=benchmark:benchmark \
-/src/tools ./tools
-COPY --from=builder --chown=benchmark:benchmark \
-/src/build/native-linux-debug ./build/native-linux-debug
-
-# Validate during build
-RUN . build/native-linux-debug/.env && bench validate || \
-(echo "ERROR: Validation failed" && exit 1)
-
-# Switch to non-root
-USER benchmark
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=5s \
-CMD test -f ./ptests/MyComponent_PTEST || exit 1
-
-# Welcome message
-ENV PS1=' benchmark@docker:\w\$ '
-
-# Default: run validation
-CMD ["bash", "-c", "source build/native-linux-debug/.env && bench validate"]
-```
-
-**Build and run:**
-
-```bash
-# Build production image
-docker build -t mybench:prod -f Dockerfile.production .
-
-# Run validation
-docker run --rm mybench:prod
-
-# Run benchmarks with results
-docker run --rm \
---cpuset-cpus="2-9" \
---memory=4g \
--v $(pwd)/results:/results \
-mybench:prod \
-./ptests/MyComponent_PTEST --csv /results/results.csv
-
-# Interactive shell
-docker run --rm -it mybench:prod bash
 ```
 
 ---

@@ -189,9 +189,9 @@ struct PerfConfig {
   std::string profileArgs;             // Verbatim pass-through to the tool
   std::vector<std::string> bpfScripts; // Script names/paths: "fsync_latency", "write_latency"
   std::string artifactRoot;            // Profiler artifact directory
-  int profileFrequency = 10000;        // Sampling Hz for CPU profilers
+  int profileFrequency = 10000;        // Rate asked of gperf; set too late to take effect (see ProfilerGperf)
   bool profileAnalyze = false;         // Auto-run analysis after profiling
-  int profileTestTimeoutSecs = 0;      // Per-test watchdog seconds under --profile
+  int profileTestTimeoutSecs = 0;      // Watchdog seconds per measured()/throughputLoop() loop under --profile (0 means 300); contentionRun() and GPU runs are not covered
 
   bool quickMode = false;              // Apply reduced cycles/repeats
 
@@ -522,23 +522,32 @@ public:
 
 ### ProfilerPerf
 
-Linux `perf` integration for CPU profiling.
+Linux `perf` integration for CPU profiling. The backend attaches perf to the
+benchmark process for the measured phase only; `--profile-args` picks the mode:
 
-**Features:**
-
-- Hardware performance counters
-- Call graph sampling
-- Cache miss analysis
-- Branch prediction analysis
+| `--profile-args`     | Runs                                                                                          | Writes, in `<Test>.perf/`      |
+| -------------------- | --------------------------------------------------------------------------------------------- | ------------------------------ |
+| none, or other flags | `perf stat` on cpu-cycles, instructions, branches, branch-misses and cache-misses, plus flags | `stat.txt`                     |
+| `record [flags]`     | `perf record [flags]`                                                                         | `perf.data`, `record.err.txt`  |
+| `mem`                | `perf mem record`                                                                             | `perf.mem.data`, `mem.err.txt` |
+| `c2c`                | `perf c2c record`                                                                             | `perf.c2c.data`, `c2c.err.txt` |
 
 **Usage:**
 
 ```bash
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
-# Generates: MyComponent.Throughput.perf/perf.data
+# Writes: MyComponent.Throughput.perf/stat.txt
+
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --gtest_filter="*Throughput"
+# Writes: MyComponent.Throughput.perf/perf.data
 ```
 
-**Analysis:**
+perf needs time to attach before it samples, and the backend gives it 200 ms; a
+measured phase of a few milliseconds can leave `perf.data` without samples,
+which `--target-time` (or more `--cycles`) avoids.
+
+**Analysis** (of a `record` run):
 
 ```bash
 perf report -i MyComponent.Throughput.perf/perf.data
@@ -570,6 +579,28 @@ Google Performance Tools integration.
 google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof
 google-pprof --pdf ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof > profile.pdf
 ```
+
+**Sampling rate:** gperftools samples 100 times a second by default, and the
+`CPUPROFILE_FREQUENCY` environment variable sets another rate
+([gperftools CPU profiler](https://gperftools.github.io/gperftools/cpuprofile.html)).
+`--profile-frequency` (default 10000) does not change the rate in 1.0.4. The
+backend does use it: just before `ProfilerStart()` it sets
+`CPUPROFILE_FREQUENCY` to the flag's value. That is too late for the
+profiler's initialization: with gperftools 2.16 on the
+[Pi 4 rig](rigs/RIG_PI4.md) and 2.15 on x86_64, a run with
+`--profile-frequency 1000` records the default period, 10000 us. Set the
+variable before the process starts instead:
+
+```bash
+# Period 4000 us: about 250 samples a second
+CPUPROFILE_FREQUENCY=250 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput" --target-time 200ms
+```
+
+The rate taken can still differ from the rate asked for. Asked for 10000 a
+second, gperftools recorded a period of 250 us (4000 a second), and it counted
+about 249 samples a second on the Pi, whose kernel ticks 250 times a second,
+and about 1000 on the x86_64 machine, whose kernel ticks 1000 times; on the Pi
+a request for 1000 also gave about 249.
 
 ### ProfilerBpftrace
 
@@ -750,12 +781,12 @@ time; no `--profile` flag required.
 | `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof                                                                                               |
 | `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                                                                                                                 |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
-| `--profile-test-timeout` | int    | 300     | Per-test watchdog seconds under `--profile` (0 disables)                                                                                                                                                                                    |
+| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 means 300. `contentionRun()` and GPU measurements are not covered                                                                           |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |
 | `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
 | `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |
 | `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                   |
-| `--profile-frequency N`  | int    | 10000   | Sampling Hz for CPU profilers                                                                                                                                                                                                               |
+| `--profile-frequency N`  | int    | 10000   | Rate asked of gperf, the only backend that reads it; set too late to take effect, see [ProfilerGperf](#profilergperf)                                                                                                                       |
 | `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                                                                                                                           |
 | `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                                                                                                               |
 

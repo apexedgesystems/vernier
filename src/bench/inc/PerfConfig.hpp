@@ -40,7 +40,7 @@ struct PerfConfig {
   std::string profileArgs;             ///< Verbatim pass-through to the tool
   std::vector<std::string> bpfScripts; ///< Curated script names: "offcpu", "syslat", "bio"
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
-  int profileFrequency = 10000;        ///< Sampling frequency for CPU profilers (Hz)
+  int profileFrequency = 10000;        ///< Rate asked of gperf (Hz); set too late to take effect
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
 
   // Per-test watchdog: aborts a measured() loop when total wall time exceeds
@@ -139,7 +139,7 @@ inline bool isUnclaimedOption(std::string_view arg) {
  *   --threads N        --msg-bytes N      --console
  *   --nonblocking      --min-level STR    --csv PATH
  *   --profile TOOL     --profile-args STR --bpf LIST(,...) --artifact-root PATH
- *   --profile-frequency N  (sampling Hz for CPU profilers, default 10000)
+ *   --profile-frequency N  (rate asked of gperf, default 10000; set too late to take effect)
  *   --profile-analyze      (auto-run analysis after profiling)
  *   --quick            (applies lighter defaults for fast iteration)
  *

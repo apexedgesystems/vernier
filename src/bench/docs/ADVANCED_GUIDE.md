@@ -119,8 +119,7 @@ bandwidth = (1 MB read + 1 MB write) / time = 2000 MB/s
 
 ```cpp
 PERF_TEST(Codec, Encode) {
-  PERF_GUARD(perf);
-  ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
+  PERF_GUARD(perf);  // Also attaches the profiler selected by --profile
 
   const size_t INPUT_SIZE = 1024;   // 1KB input
   const size_t OUTPUT_SIZE = 2048;  // 2KB output (with framing overhead)
@@ -196,20 +195,15 @@ auto result = perf.throughputLoop([&] {
 
 ## Parameterized Tests
 
-### WARNING: CRITICAL: PERF_TEST_P Does Not Exist
+### PERF_TEST_P
 
-**There is no `PERF_TEST_P` macro!** For parameterized tests, use standard GoogleTest `TEST_P`.
-
-**This will NOT compile:**
-
-```cpp
-PERF_TEST_P(MyTest, Case) {  // ERROR: PERF_TEST_P doesn't exist!
-  const int size = GetParam();
-  // ...
-}
-```
-
-**Correct approach:**
+`PERF_TEST_P(Fixture, Name)` is an alias of GoogleTest's `TEST_P`, as
+`PERF_TEST_F` is of `TEST_F` (`PerfTestMacros.hpp`), so either spelling works.
+A parameterized test needs what `TEST_P` needs: a fixture derived from
+`::testing::TestWithParam<T>` and an `INSTANTIATE_TEST_SUITE_P` for its values.
+`PERF_GUARD` works inside it when every value runs with the global
+configuration. To give each value a configuration of its own, build the
+`PerfCase` yourself and attach the profiler hooks to it:
 
 ```cpp
 class MyTest : public ::testing::TestWithParam<int> {
@@ -219,7 +213,7 @@ protected:
   }
 };
 
-TEST_P(MyTest, Case) {  // Use standard GoogleTest TEST_P
+PERF_TEST_P(MyTest, Case) {  // Same as TEST_P(MyTest, Case)
   const int size = GetParam();
 
   ub::PerfConfig cfg = getCfg();
@@ -232,7 +226,7 @@ TEST_P(MyTest, Case) {  // Use standard GoogleTest TEST_P
                            ->current_test_info()->name();
 
   ub::PerfCase perf{testName, cfg};
-  ub::attachProfilerHooks(perf, cfg);
+  ub::attachProfilerHooks(perf, cfg);  // A PerfCase you build needs this
 
   // Test implementation...
 }
@@ -244,14 +238,16 @@ INSTANTIATE_TEST_SUITE_P(
 );
 ```
 
+GoogleTest names these cases `Params/MyTest.Case/0`, `Params/MyTest.Case/1`
+and `Params/MyTest.Case/2`, and `testName` above has the same form.
+
 ### Standard Pattern with PERF_GUARD
 
 For simple tests without parameters:
 
 ```cpp
 PERF_TEST(MyComponent, Basic) {
-  PERF_GUARD(perf);  // Gets "MyComponent.Basic" automatically
-  ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
+  PERF_GUARD(perf);  // Names the case "MyComponent.Basic" and attaches the profiler
 
   // Test code...
 }
@@ -323,7 +319,7 @@ protected:
   }
 };
 
-TEST_P(PayloadTest, Encode) {  // Use TEST_P, not PERF_TEST_P
+TEST_P(PayloadTest, Encode) {  // PERF_TEST_P(PayloadTest, Encode) is the same
   const int payloadSize = GetParam();
 
   // Custom config with parameter
@@ -350,15 +346,19 @@ INSTANTIATE_TEST_SUITE_P(
 );
 ```
 
-**CSV output:**
+**CSV output** (`test` and `msgBytes` columns, when the implementation measures
+once per case):
 
 ```
-test,msgBytes,wallMedian,callsPerSecond
-PayloadTest/PayloadSizes.Encode/64,64,0.123,8130000
-PayloadTest/PayloadSizes.Encode/256,256,0.456,2192000
-PayloadTest/PayloadSizes.Encode/1024,1024,1.234,810000
-PayloadTest/PayloadSizes.Encode/4096,4096,4.567,219000
+test,msgBytes
+PayloadSizes/PayloadTest.Encode/0,64
+PayloadSizes/PayloadTest.Encode/1,256
+PayloadSizes/PayloadTest.Encode/2,1024
+PayloadSizes/PayloadTest.Encode/3,4096
 ```
+
+GoogleTest puts the `INSTANTIATE_TEST_SUITE_P` prefix first and numbers the
+values in order, so the value itself is in the `msgBytes` column, not the name.
 
 ### Key Points
 
@@ -366,7 +366,8 @@ PayloadTest/PayloadSizes.Encode/4096,4096,4.567,219000
 2. **Use manual constructor** for parameter sweeps
 3. **Always set `cfg.msgBytes`** to actual payload size
 4. **Include parameter in test name** for CSV clarity
-5. **Call `attachProfilerHooks`** with your custom config
+5. **Call `attachProfilerHooks`** with your custom config on a `PerfCase` you
+   construct; `PERF_GUARD` attaches the hooks itself
 
 ---
 
@@ -462,43 +463,43 @@ void attachProfilerHooks(PerfCase& perf, const PerfConfig& cfg);
 ```
 
 **Purpose:**
-Enables command-line profilers for this test case. Must be called to activate `--profile` flag.
+Attaches the profiler that `cfg.profileTool` names (the `--profile` flag) to a
+`PerfCase` you construct yourself, so that `--profile` covers its measured
+phase. `PERF_GUARD` calls it for you, so a test that uses `PERF_GUARD` needs no
+call of its own.
 
 **When to call:**
 
-- Right after `PERF_GUARD(perf)` in every test
-- Right after manual `PerfCase` constructor for parameterized tests
+- Right after constructing a `PerfCase` with a configuration of your own, as in
+  the parameterized and sweep patterns above
 
 **What it does:**
 
-1. Checks if user passed `--profile` flag
-2. Creates appropriate profiler backend (perf, gperf, etc.)
-3. Attaches before/after hooks to PerfCase
-4. Enables automatic data collection
-5. Adds profiler columns to CSV output
+1. Creates the backend that `cfg.profileTool` names (a no-op when no
+   `--profile` was given)
+2. Starts it before the measured phase and stops it after, through the
+   PerfCase's before/after measure hooks
+3. Records the tool and its artifact folder for the CSV's `profileTool` and
+   `profileDir` columns
 
-**What happens if omitted:**
-
-- Test runs normally
-- `--profile` flag is silently ignored for this test
-- No profiler data collected
-- Missing profiler columns in CSV
+**What happens if omitted** (on a `PerfCase` you construct): the test runs, but
+`--profile` attaches no profiler to it, so it collects nothing and no artifact
+folder is created for it.
 
 **Example:**
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  PERF_GUARD(perf);
-  ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());  // Required!
+  ub::PerfConfig cfg = ub::detail::getPerfConfig();
+  cfg.msgBytes = 256;
+
+  ub::PerfCase perf{"MyComponent.Throughput", cfg};
+  ub::attachProfilerHooks(perf, cfg);  // Without it, --profile skips this case
 
   // If user runs: ./test --profile perf
-  // This test will collect perf data
-
-  // Without attachProfilerHooks(), --profile is silently ignored
+  // this case's measured phase is profiled
 }
 ```
-
-**Best practice:** Always call it - zero overhead if `--profile` not used.
 
 ### Available Profilers
 
@@ -564,18 +565,19 @@ the doctor never installs anything.
 # Enable perf (requires root, one-time setup)
 sudo sysctl -w kernel.perf_event_paranoid=-1
 
-# Run test with perf profiling
-./MyComponent_PTEST --profile perf --csv results.csv
+# Run test with perf profiling, recording call stacks for a report
+./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
+    --csv results.csv
 
 # Analyze results
 perf report -i MyComponent.Throughput.perf/perf.data
 perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
 
-**Artifacts:** perf writes its capture to `perf-<Test>-<timestamp>.data`; the
-`profileTool` and `profileDir` CSV columns record that a profile was taken and
-where it landed. Counter detail lives in the perf report, not in extra CSV
-columns.
+**Artifacts:** each profiled test gets a `<Test>.perf/` folder: `stat.txt` from
+the default `perf stat`, or `perf.data` from `--profile-args "record ..."`. The
+`profileTool` and `profileDir` CSV columns record the tool and that folder.
+Counter detail lives in those files, not in extra CSV columns.
 
 ### Using RAPL
 
@@ -792,7 +794,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
---profile-frequency N  # Sampling Hz for CPU profilers (default: 10000)
+--profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
 --profile-analyze      # Auto-run analysis after profiling
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 ```
@@ -1110,7 +1112,8 @@ ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 ### CPU Benchmarking
 
-1. **Always call `attachProfilerHooks()`** after `PERF_GUARD` or `PerfCase` constructor
+1. **Use `PERF_GUARD`**, or call `attachProfilerHooks()` on a `PerfCase` you
+   construct, so that `--profile` reaches the test
 2. **Use `MemoryProfile`** for memory-bound code analysis
 3. **Set `cfg.msgBytes`** to actual payload size in parameterized tests
 4. **Use `--quick`** during development, full config for production
@@ -1128,7 +1131,8 @@ ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
 
 11. **Call `PERF_MAIN()`** to handle all boilerplate
 12. **Check CSV schema** to understand available metrics
-13. **Use TEST_P for parameterized tests** - PERF_TEST_P doesn't exist!
+13. **Use `PERF_TEST_P` or `TEST_P` for parameterized tests** - they are the
+    same macro
 
 ---
 
