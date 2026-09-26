@@ -139,49 +139,6 @@ inline double sumPositionsSoA(const ParticleSoA& particles, std::size_t count) {
   return sum;
 }
 
-/** @brief Slow: Stride-512 array walk (constant cache misses). */
-inline std::uint64_t stridedArrayWalk(const std::uint8_t* data, std::size_t len,
-                                      std::size_t stride) {
-  std::uint64_t sum = 0;
-  for (std::size_t i = 0; i < len; i += stride) {
-    sum += data[i];
-  }
-  return sum;
-}
-
-/** @brief Fast: Sequential array walk (hardware prefetching). */
-inline std::uint64_t sequentialArrayWalk(const std::uint8_t* data, std::size_t len) {
-  std::uint64_t sum = 0;
-  for (std::size_t i = 0; i < len; ++i) {
-    sum += data[i];
-  }
-  return sum;
-}
-
-/* ----------------------------- Branch Workloads ----------------------------- */
-
-/** @brief Slow: Conditional sum with unpredictable branches (50% miss rate). */
-inline std::int64_t conditionalSumBranchy(const double* data, std::size_t len, double threshold) {
-  std::int64_t sum = 0;
-  for (std::size_t i = 0; i < len; ++i) {
-    if (data[i] > threshold) {
-      sum += static_cast<std::int64_t>(data[i] * 1000.0);
-    }
-  }
-  return sum;
-}
-
-/** @brief Fast: Branchless conditional sum using multiply-by-predicate. */
-inline std::int64_t conditionalSumBranchless(const double* data, std::size_t len,
-                                             double threshold) {
-  std::int64_t sum = 0;
-  for (std::size_t i = 0; i < len; ++i) {
-    const auto val = static_cast<std::int64_t>(data[i] * 1000.0);
-    sum += val * static_cast<std::int64_t>(data[i] > threshold);
-  }
-  return sum;
-}
-
 /* ----------------------------- Search Workloads ----------------------------- */
 
 /** @brief Slow: Linear search O(n). */
