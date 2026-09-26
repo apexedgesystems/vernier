@@ -212,8 +212,12 @@ jobs:
       - name: ccache stats (pre-build)
         run: docker compose run --rm -T dev ccache -z
 
+      # POETRY_VIRTUALENVS_IN_PROJECT=false, as in make verify's C++ lane
+      # (mk/verify.mk): the debug preset builds the Python tools with Poetry,
+      # which then keeps its own environment and never adopts a tools/py/.venv
+      # in the checkout.
       - name: Build (debug, CPU only)
-        run: docker compose run --rm -T dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
+        run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
 
       - name: ccache stats (post-build)
         run: docker compose run --rm -T dev ccache -s
@@ -224,8 +228,9 @@ jobs:
           test -f build/native-linux-debug/bin/tools/py/bench-plot
           test -f build/native-linux-debug/bin/tools/py/nsight-parse
 
+      # The same setting: make testp builds through its debug prerequisite.
       - name: Run C++ tests
-        run: docker compose run --rm -T dev make testp
+        run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 
   # ----------------------------------------------------------------------------
   # Rust tests -- cargo test on the lean build tier (release parity)
