@@ -93,8 +93,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and reports nothing for `joinV1`; it skips where valgrind is missing or
   gives up reading the binary, saying so in valgrind's words. The wrong join's
   source is compiled with debug information, so memcheck's report names its
-  lines. Demo 12's test names change, so CSVs captured from it before this
-  release do not join with newer ones.
+  lines. Its walkthrough, `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is
+  rewritten from a Release run on the documented Raspberry Pi 4 rig: the wrong
+  join under `bench run --profile memcheck`, memcheck's report read line by
+  line (the write and the read one byte past a 7,490-byte block, at the lines
+  of the wrong join), the correct version's clean report, where the log lands
+  under `bench run` and under a run by hand, and valgrind run directly with
+  `--error-exitcode=1` as a job would; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The page quoted a
+  leak size no run produced. Demo 12's test names change, so CSVs captured
+  from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
