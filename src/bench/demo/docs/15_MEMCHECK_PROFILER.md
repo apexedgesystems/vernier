@@ -480,8 +480,11 @@ which is 0 in both cases here.
 
 The seven runs are step 1's command run seven times in one session on this
 rig, the reference capture and this page's run among them. That range
-describes those runs; it is not a bound a run has to meet. The memcheck
-lines are the readings to carry elsewhere.
+describes those runs; it is not a bound a run has to meet. An eighth run of
+the same command, taken an hour later to qualify the board at the final
+revision of this page's code, read 963.5 and 20.2 us per call, 47.6 times:
+`joinV1` below the range and the ratio above it, with nothing changed. The
+memcheck lines are the readings to carry elsewhere.
 
 ## If It Does Not Match
 
@@ -604,9 +607,11 @@ label compares two runs' medians; it is not a significance test, and
 nothing about the spread between runs. Over the session's seven runs of
 step 1, `joinV0`'s median ranged from 924.6 to 983.2 us, 6.3%, and
 `joinV1`'s from 20.4 to 21.4 us, 4.8%, with nothing changed, so a run of
-unchanged code can land on either side of the threshold. Read the medians
-and the CVs, and compare the ratio. The CSV holds times only; what memcheck
-found is checked by the demo's own test, below.
+unchanged code can land on either side of the threshold: the eighth run
+above came out 5.5% faster than the reference on `joinV1` and was labelled
+`IMPROVEMENT`. Read the medians and the CVs, and compare the ratio. The CSV
+holds times only; what memcheck found is checked by the demo's own test,
+below.
 
 ## What Keeps This Page True
 
