@@ -106,10 +106,13 @@ On this rig the build takes about 35 seconds and the unit tests pass
 ## 4. Running a Measurement
 
 Lock the clocks for the measurement and restore them afterwards, in the
-same script. The clocks are locked only after their state has been saved,
-and a failed restore is reported and fails the script. `jetson_clocks` also
-turns GPU persistence mode on, and `--restore` leaves it on, so the script
-records the mode first and turns it back off afterwards only if it was off:
+same script. The clocks are locked only after their state has been saved.
+`jetson_clocks` also turns GPU persistence mode on, and `--restore` leaves it
+on, so the script records the mode first and turns it back off afterwards only
+if it was off. Each restoration is attempted even when the other fails, each
+failure is reported, and the saved state file stays for a restore by hand. The
+script exits with the measurement's own status when the measurement failed,
+and otherwise fails if any restoration did:
 
 ```bash
 set -euo pipefail
@@ -117,15 +120,22 @@ STATE=/tmp/jetson_clocks.state
 PERSISTENCE=$(nvidia-smi --query-gpu=persistence_mode --format=csv,noheader | head -1)
 sudo rm -f "$STATE"                       # --store prompts if the file exists
 sudo jetson_clocks --store "$STATE"       # no snapshot, no lock: set -e stops here
-restore_clocks() {
-  sudo jetson_clocks --restore "$STATE" ||
-    { echo "clock restore FAILED: run 'sudo jetson_clocks --restore $STATE'" >&2; exit 1; }
-  if [ "$PERSISTENCE" = "Disabled" ]; then
-    sudo nvidia-smi -pm 0 > /dev/null ||
-      { echo "persistence mode restore FAILED: run 'sudo nvidia-smi -pm 0'" >&2; exit 1; }
+restore() {
+  local status=$? failed=0                # status: how the script was ending
+  if ! sudo jetson_clocks --restore "$STATE"; then
+    echo "clock restore FAILED: run 'sudo jetson_clocks --restore $STATE'" >&2
+    failed=1
   fi
+  if [ "$PERSISTENCE" = "Disabled" ] && ! sudo nvidia-smi -pm 0 > /dev/null; then
+    echo "persistence mode restore FAILED: run 'sudo nvidia-smi -pm 0'" >&2
+    failed=1
+  fi
+  if [ "$status" -ne 0 ]; then
+    exit "$status"                        # the measurement's failure comes first
+  fi
+  exit "$failed"
 }
-trap restore_clocks EXIT
+trap restore EXIT
 sudo jetson_clocks
 
 taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv

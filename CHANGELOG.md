@@ -608,7 +608,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   leaves it on, so a board that was Disabled stayed Enabled after following
   `RIG_THOR_AGX.md`'s measurement procedure. The procedure records the mode
   before locking the clocks and turns it back off afterwards only if it was
-  off, reporting a failure as it does for the clocks. The rig document also
+  off. It attempts each restoration even when the other fails, reports each
+  failure, keeps the saved clock state for a restore by hand, and exits with
+  the measurement's own status when that failed, otherwise nonzero if any
+  restoration did. The rig document also
   describes two bands of end-to-end time this board shows with the clocks
   locked, and notes that its build makes no Python tools (no Poetry on the
   board).
