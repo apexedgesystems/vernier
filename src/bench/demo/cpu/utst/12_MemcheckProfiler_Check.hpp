@@ -10,10 +10,10 @@
  * memcheck's log: whether valgrind could read the binary's symbols, the error
  * summary and, from the error list valgrind prints with --show-error-list=yes,
  * each reported error with its count, its address and its stacks. These are
- * the helpers it does that with. The demo file keeps what the check asserts
- * and when it skips, so the example stays short enough to copy.
+ * the helpers it does that with; 12_MemcheckProfiler_uTest.cpp keeps what the
+ * check asserts and when it skips.
  *
- * Private to 12_MemcheckProfiler_Demo.cpp.
+ * Test support for 12_MemcheckProfiler_uTest.cpp; not part of the demo.
  */
 
 #include <fcntl.h>

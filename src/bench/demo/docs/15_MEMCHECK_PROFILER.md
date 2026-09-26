@@ -154,14 +154,16 @@ PERF_TEST(Memcheck, JoinOffByOne) {
 }
 ```
 
-It calls the wrong join three times (`OFF_BY_ONE_CALLS`) and checks each
-answer against `joinV1`'s, which passes. Its first line is the demo helper
+It calls the wrong join three times (`OFF_BY_ONE_CALLS`, beside the number
+of words and the seed in
+[`12_MemcheckProfiler_Workload.hpp`](../cpu/12_MemcheckProfiler_Workload.hpp))
+and checks each answer against `joinV1`'s, which passes. Its first line is
+the demo helper
 [`SkipUnlessUnderValgrind.hpp`](../helpers/SkipUnlessUnderValgrind.hpp): a
 case that makes a memory error on purpose must not run in an ordinary test
 run, so unless the process is under valgrind the case skips itself and says
-how to run it. A fourth test, `Memcheck.FindsTheOffByOne`, is the demo's
-own check of what this page shows: it runs the binary under memcheck on
-`Memcheck.JoinOffByOne` and on `Memcheck.JoinV1` and reads the two logs
+how to run it. That is all the demo holds. What this page shows is checked
+apart from it, by a test program that runs the demo binary under memcheck
 ([What Keeps This Page True](#what-keeps-this-page-true)).
 
 ## Step 1: Measure
@@ -216,11 +218,7 @@ Memcheck.JoinV1        20.953    2.0%       47.7K  OK
 `joinV0` takes 983.2 us per call and `joinV1` 21.0 us, 47 times less, with
 CVs of 0.1% and 2.0%: walkthrough 01's measurement under this demo's names.
 `Memcheck.JoinOffByOne` reports `SKIPPED` with the helper's message, because
-the run is not under valgrind. `Memcheck.FindsTheOffByOne` ran the binary
-under memcheck twice, on the wrong join and on `joinV1`, and printed what the
-two logs said: six errors from two contexts, the write three times, no bytes
-after a block of 7,490 bytes; nothing for `joinV1`. That took 3.7 s. The CSV
-holds the two timing rows.
+the run is not under valgrind. The CSV holds the two timing rows.
 
 ## Step 2: Run the Wrong Join Under Memcheck
 
@@ -632,23 +630,25 @@ below.
 
 Three things check what this page shows, and all fail loudly:
 
-- `Memcheck.FindsTheOffByOne`, in the demo binary, runs the binary under
-  memcheck as `bench run --profile memcheck` wraps it, plus valgrind's error
-  list and an exit code for errors, on `Memcheck.JoinOffByOne` and on
-  `Memcheck.JoinV1`, and reads the two logs. It fails unless memcheck reports
-  the write once per call, `0 bytes after a block` the size of the joined
-  string, naming `joinOffByOne` in the write's stack and in the block's,
-  with valgrind exiting with the code it was given; and unless `joinV1`'s
-  log counts no error and valgrind exits 0. It skips only in a build with a
-  sanitizer (which valgrind does not run as an ordinary binary), where
-  valgrind is not installed, under `--profile` (it runs memcheck itself),
-  where valgrind gives up reading the binary, and where valgrind cannot read
-  the binary's symbols, once everything but the names has passed; those two
-  skips quote valgrind's own lines. A wrong join made right fails it, whether
-  or not valgrind can read the symbols: with room for the terminator,
-  memcheck reports nothing, and the test says the wrong join has stopped
-  being wrong. It is registered with `ctest` under the `demo` and `memcheck`
-  labels.
+- `Memcheck.FindsTheOffByOne`, a test program of its own beside the demo
+  ([`12_MemcheckProfiler_uTest.cpp`](../cpu/utst/12_MemcheckProfiler_uTest.cpp),
+  built as `TestDemoMemcheck`), runs the demo binary under memcheck as
+  `bench run --profile memcheck` wraps it, plus valgrind's error list and an
+  exit code for errors, on `Memcheck.JoinOffByOne` and on `Memcheck.JoinV1`,
+  and reads the two logs. It fails unless memcheck reports the write once
+  per call, `0 bytes after a block` the size of the joined string, naming
+  `joinOffByOne` in the write's stack and in the block's, with valgrind
+  exiting with the code it was given; and unless `joinV1`'s log counts no
+  error and valgrind exits 0. It skips only in a build with a sanitizer
+  (which valgrind does not run as an ordinary binary), where valgrind is not
+  installed, where valgrind gives up reading the demo binary, and where
+  valgrind cannot read the demo binary's symbols, once everything but the
+  names has passed; those two skips quote valgrind's own lines. A wrong join
+  made right fails it, whether or not valgrind can read the symbols: with
+  room for the terminator, memcheck reports nothing, and the test says the
+  wrong join has stopped being wrong. It is registered with `ctest` under
+  the `demo` and `memcheck` labels; `ctest --test-dir build -L memcheck` runs
+  it alone.
 - The helper's own tests,
   `SkipUnlessUnderValgrindTest.PlainRunSkipsTheProbe` and
   `SkipUnlessUnderValgrindTest.ValgrindRunRunsTheProbe`, run their binary as

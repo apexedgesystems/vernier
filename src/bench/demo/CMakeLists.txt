@@ -145,22 +145,35 @@ set_tests_properties(
 # ------------------------------------------------------------------------------
 # Demo Effect Checks Run by CTest (1)
 # ------------------------------------------------------------------------------
-# Demos are ptests: built, not registered with CTest. A check that runs its
-# demo under a tool and reads the tool's report, not a timing, is registered
-# on its own, the way gtest_add_tests names and runs a test, under the demo
-# label and the tool's, so ordinary test runs include it and never the demo's
-# timing cases. The skip expression names the check: its failure messages
-# quote the child runs' output, whose own GoogleTest lines must not turn a
-# failure into a skip.
+# A check that runs its demo under a tool and reads the tool's report, not a
+# timing, is a test program of its own beside the demo, so the demo's source
+# holds only what it teaches. It runs the demo binary, whose path it is given,
+# under the demo label and the tool's, so ordinary test runs include it and
+# never the demo's timing cases. The skip expression names the check: its
+# failure messages quote the child runs' output, whose own GoogleTest lines
+# must not turn a failure into a skip.
 # ------------------------------------------------------------------------------
 
-add_test(NAME Memcheck.FindsTheOffByOne COMMAND BenchDemo_12_MemcheckProfiler
-                                                --gtest_filter=Memcheck.FindsTheOffByOne
+vernier_add_gtest(
+  TARGET
+  TestDemoMemcheck
+  SOURCES
+  cpu/utst/12_MemcheckProfiler_uTest.cpp
+  LINK
+  bench
+  demo_helpers
+  demo_example_join
+  LABELS
+  demo
+  memcheck
 )
+target_compile_definitions(
+  TestDemoMemcheck PRIVATE VERNIER_DEMO_12_BINARY="$<TARGET_FILE:BenchDemo_12_MemcheckProfiler>"
+)
+add_dependencies(TestDemoMemcheck BenchDemo_12_MemcheckProfiler)
 set_tests_properties(
-  Memcheck.FindsTheOffByOne
-  PROPERTIES LABELS "demo;memcheck" WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-             SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
+  Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
+                                       "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
 )
 
 # ------------------------------------------------------------------------------
