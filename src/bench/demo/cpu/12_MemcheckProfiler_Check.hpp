@@ -7,11 +7,11 @@
  * Memcheck.FindsTheOffByOne runs the demo binary under memcheck as a child and
  * reads what each run left: how valgrind ended, what the program printed (did
  * its test start and pass, or did valgrind give up before it ran) and
- * memcheck's log: the error summary and, from the error list valgrind prints
- * with --show-error-list=yes, each reported error with its count, its address
- * and its stacks. These are the helpers it does that with. The demo file keeps
- * what the check asserts and when it skips, so the example stays short enough
- * to copy.
+ * memcheck's log: whether valgrind could read the binary's symbols, the error
+ * summary and, from the error list valgrind prints with --show-error-list=yes,
+ * each reported error with its count, its address and its stacks. These are
+ * the helpers it does that with. The demo file keeps what the check asserts
+ * and when it skips, so the example stays short enough to copy.
  *
  * Private to 12_MemcheckProfiler_Demo.cpp.
  */
@@ -241,6 +241,43 @@ inline std::string debugInfoGiveUp(const std::string& text) {
   }
   const std::size_t TO = text.find('\n', GAVE_UP);
   return text.substr(FROM, (TO == std::string::npos ? text.size() : TO) - FROM);
+}
+
+/// True when @p text ends with @p suffix.
+inline bool endsWith(const std::string& text, const std::string& suffix) {
+  return text.size() >= suffix.size() &&
+         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+/// valgrind's own lines, as its log has them, when it could not read
+/// @p binary's symbols: "When reading debug info from <binary>:" and, on the
+/// next line, the reason, "Can't make sense of <section> section mapping",
+/// with the warning line valgrind prints above them. valgrind 3.18.1 printed
+/// them before the program ran for a GCC 11.4 build linked by mold 1.0.3, and
+/// then named no function of that binary in its report. Empty for any other
+/// outcome, and for the same lines about another file. A skip quotes these
+/// lines, so what it rests on is valgrind's text, not the check's.
+inline std::string symbolsUnreadable(const std::string& log, const std::string& binary) {
+  std::vector<std::string> lines;
+  std::istringstream in(log);
+  std::string line;
+  while (std::getline(in, line)) {
+    lines.push_back(line);
+  }
+  const std::string FILE_LINE = "When reading debug info from " + binary + ":";
+  for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+    const std::string& REASON = lines[i + 1];
+    if (!endsWith(lines[i], FILE_LINE) ||
+        REASON.find("Can't make sense of ") == std::string::npos ||
+        !endsWith(REASON, " section mapping")) {
+      continue;
+    }
+    const bool WARNED =
+        i > 0 &&
+        lines[i - 1].find("WARNING: Serious error when reading debug info") != std::string::npos;
+    return (WARNED ? lines[i - 1] + "\n" : std::string()) + lines[i] + "\n" + REASON;
+  }
+  return "";
 }
 
 /* ----------------------------- Reading memcheck's Log ----------------------------- */

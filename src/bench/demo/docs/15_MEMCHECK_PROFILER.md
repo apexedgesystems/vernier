@@ -533,6 +533,21 @@ memcheck lines are the readings to carry elsewhere.
   printed for a clang 21 Debug build on an x86-64 laptop. Use a newer
   valgrind, or a build the installed one can read.
 
+- **Memcheck's report names no function of the binary, only `???`, and
+  `Memcheck.FindsTheOffByOne` reports `SKIPPED`, quoting valgrind.** valgrind
+  could not read the binary's symbols and said so before the program ran:
+  for a GCC 11.4 Release build linked by mold 1.0.3 on an x86-64 laptop,
+  valgrind 3.18.1 printed `Can't make sense of .rodata section mapping` about
+  the binary. Memcheck still found the write and the read, 6 errors from 2
+  contexts, 0 bytes after a block of size 7,490, with `???` for every frame
+  in the binary. The check still asserts the count, the offset, the block
+  size and `joinV1`'s clean run, and skips only once they pass, quoting
+  valgrind's lines. The build used mold because the project links with it
+  when it finds it (`VERNIER_USE_FAST_LINKER`, on by default); configured
+  with `-DVERNIER_USE_FAST_LINKER=OFF`, the same build was linked by GNU ld,
+  the compiler's default, and the same valgrind named `joinOffByOne` at lines
+  32, 25 and 36.
+
 - **`joinV1`'s log reports one error that names no line of the program:**
   `Syscall param write(buf) points to uninitialised byte(s)`, in `libunwind`
   under `libprofiler`, from `_dl_init`. That is gperftools' profiler library
@@ -626,12 +641,14 @@ Three things check what this page shows, and all fail loudly:
   with valgrind exiting with the code it was given; and unless `joinV1`'s
   log counts no error and valgrind exits 0. It skips only in a build with a
   sanitizer (which valgrind does not run as an ordinary binary), where
-  valgrind is not installed, under `--profile` (it runs memcheck itself), and
-  where valgrind gives up reading the binary, in valgrind's own words. A
-  wrong join made
-  right fails it: with room for the terminator, memcheck reports nothing,
-  and the test says the wrong join has stopped being wrong. It is registered
-  with `ctest` under the `demo` and `memcheck` labels.
+  valgrind is not installed, under `--profile` (it runs memcheck itself),
+  where valgrind gives up reading the binary, and where valgrind cannot read
+  the binary's symbols, once everything but the names has passed; those two
+  skips quote valgrind's own lines. A wrong join made right fails it, whether
+  or not valgrind can read the symbols: with room for the terminator,
+  memcheck reports nothing, and the test says the wrong join has stopped
+  being wrong. It is registered with `ctest` under the `demo` and `memcheck`
+  labels.
 - The helper's own tests,
   `SkipUnlessUnderValgrindTest.PlainRunSkipsTheProbe` and
   `SkipUnlessUnderValgrindTest.ValgrindRunRunsTheProbe`, run their binary as

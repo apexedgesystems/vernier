@@ -137,11 +137,14 @@ PERF_TEST(Memcheck, JoinOffByOne) {
  *
  * Skipped in a build with a sanitizer (which valgrind does not run as an
  * ordinary binary), without valgrind, under --profile (it runs memcheck
- * itself), and
- * where valgrind gives up reading this binary's debug information before the
- * program runs, as a valgrind older than the compiler does, saying so in
- * valgrind's words. A run that does not reach its test for any other reason
- * fails, with what the run printed.
+ * itself), where valgrind gives up reading this binary's debug information
+ * before the program runs, as a valgrind older than the compiler does, and
+ * where valgrind runs the binary but cannot read its symbols, so that its
+ * report names no function of it; that skip comes last, once everything but
+ * the names has passed. The last two quote valgrind's own lines. A run that
+ * does not reach its test for any other reason fails, with what the run
+ * printed, and so does a report that does not name joinOffByOne from a binary
+ * whose symbols valgrind read.
  */
 PERF_TEST(Memcheck, FindsTheOffByOne) {
   if constexpr (demo::BUILT_WITH_A_SANITIZER) {
@@ -202,6 +205,10 @@ PERF_TEST(Memcheck, FindsTheOffByOne) {
                                << " contexts): the wrong join has stopped being wrong (log "
                                << DIR / "off_by_one" / "memcheck.log" << ")";
   EXPECT_EQ(WRITE_COUNT, OFF_BY_ONE_CALLS) << "one invalid write per call was expected";
+  // Where valgrind could not read this binary's symbols, its log says so and
+  // its report names no function of the binary: the names are not looked
+  // for, and the test skips at its end on valgrind's lines.
+  const std::string SYMBOLS_UNREADABLE = check::symbolsUnreadable(WRONG.log, SELF);
   for (const check::ReportedError* write : WRITES) {
     EXPECT_EQ(check::bytesAfterBlock(*write), 0)
         << "the write is not right after the end of a heap block:\n"
@@ -210,9 +217,11 @@ PERF_TEST(Memcheck, FindsTheOffByOne) {
         << "the block memcheck describes is not the joined string's buffer:\n"
         << write->text;
     // The write's own stack and the block's allocation stack.
-    EXPECT_GE(check::framesNaming(*write, OFF_BY_ONE_FUNCTION), 2)
-        << "the report does not name " << OFF_BY_ONE_FUNCTION << " in both stacks:\n"
-        << write->text;
+    if (SYMBOLS_UNREADABLE.empty()) {
+      EXPECT_GE(check::framesNaming(*write, OFF_BY_ONE_FUNCTION), 2)
+          << "the report does not name " << OFF_BY_ONE_FUNCTION << " in both stacks:\n"
+          << write->text;
+    }
   }
   EXPECT_GE(WRONG_SUMMARY.errors, OFF_BY_ONE_CALLS);
   EXPECT_TRUE(check::exitedWith(WRONG.end, MEMCHECK_ERROR_EXIT))
@@ -236,11 +245,18 @@ PERF_TEST(Memcheck, FindsTheOffByOne) {
   EXPECT_TRUE(check::exitedWith(CLEAN.end, 0))
       << "valgrind " << check::describe(CLEAN.end) << " for a run without errors";
 
-  if (!HasFailure()) {
-    std::error_code ec;
-    fs::remove_all(DIR, ec);
-  } else {
+  if (HasFailure()) {
     std::printf("memcheck output kept in %s\n", DIR.c_str());
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+  if (!SYMBOLS_UNREADABLE.empty()) {
+    GTEST_SKIP() << "memcheck reported the write as expected, and nothing for JoinV1, but "
+                    "valgrind could not read this binary's symbols, so its report names no "
+                    "function of it and "
+                 << OFF_BY_ONE_FUNCTION << " was not looked for. It printed:\n"
+                 << SYMBOLS_UNREADABLE;
   }
 }
 
