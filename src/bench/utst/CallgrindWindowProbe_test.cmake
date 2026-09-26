@@ -23,7 +23,8 @@
 # keeps the probe's tests from starting under valgrind fails with the run's
 # output: a failed launch, a signal, an early exit, no output. So does a
 # profile that names none of the probe's functions without that warning, and
-# a profile of zero instructions.
+# a profile without a valid instruction total: its "totals:" line missing,
+# zero, or anything but a whole number.
 # ==============================================================================
 
 cmake_minimum_required(VERSION 3.24)
@@ -157,8 +158,18 @@ if (NOT EXISTS "${_profile}")
 endif ()
 
 file(READ "${_profile}" _data)
-string(REGEX MATCH "\ntotals: ([0-9]+)" _totals "${_data}")
-set(_totals "${CMAKE_MATCH_1}")
+
+# The profile's instruction total, its "totals:" line, must be a positive whole
+# number: a profile that counted nothing, or that holds no count this script
+# can read, fails whatever function names it holds.
+set(_totals "")
+string(REGEX MATCH "\ntotals: ([^\n]*)" _totals_line "${_data}")
+if (NOT _totals_line STREQUAL "")
+  set(_totals "${CMAKE_MATCH_1}")
+endif ()
+if (NOT _totals MATCHES "^[0-9]+$" OR _totals EQUAL 0)
+  string(APPEND _problems " the profile holds no valid instruction total (totals: '${_totals}');")
+endif ()
 
 # Whether the profile names any function of the probe: its three phases and
 # the test body GoogleTest generates. Where valgrind could not read the

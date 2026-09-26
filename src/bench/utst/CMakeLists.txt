@@ -162,6 +162,25 @@ if (TARGET CallgrindWindowProbe)
 endif ()
 
 # ------------------------------------------------------------------------------
+# Callgrind Window Probe, Instruction Total (1 test)
+# ------------------------------------------------------------------------------
+# The window tests' driver against a stand-in valgrind that writes a profile
+# with every phase named and a chosen "totals:" line: the driver must pass a
+# positive total and fail a zero, a missing and a malformed one. Needs neither
+# valgrind nor the probe.
+# ------------------------------------------------------------------------------
+
+add_test(
+  NAME CallgrindWindowTotalsTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DDRIVER=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake
+    -DFAKE=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowTotals_fake_valgrind.sh
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_totals -P
+    "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowTotals_test.cmake"
+)
+set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;callgrind")
+
+# ------------------------------------------------------------------------------
 # Callgrind Window Probe, Startup Fault (1 test)
 # ------------------------------------------------------------------------------
 # The probe with StartupFaultUnderValgrind.cpp linked in: it runs plainly, and
