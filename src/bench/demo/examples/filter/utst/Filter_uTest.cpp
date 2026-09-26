@@ -29,6 +29,7 @@ using vernier::bench::demo::filterBranchless;
 using vernier::bench::demo::filterBranchy;
 using vernier::bench::demo::HardwareCounter;
 using vernier::bench::demo::HardwareEvent;
+using vernier::bench::demo::joinReasons;
 using vernier::bench::demo::makeSortedValues;
 using vernier::bench::demo::makeValues;
 using vernier::bench::demo::Reading;
@@ -193,7 +194,8 @@ TEST(FilterBranchTest, ConditionalStoreKeepsItsBranch) {
   const Reading sorted_ =
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(sorted, 0.5, out); });
   // A branch on random input mispredicts; a zero is a counter that did not count.
-  const std::string notCounted = random_.whyNotCounted(true) + sorted_.whyNotCounted(false);
+  const std::string notCounted =
+      joinReasons({random_.whyNotCounted(true), sorted_.whyNotCounted(false)});
   if (!notCounted.empty()) {
     GTEST_SKIP() << "could not count branch-misses here: " << notCounted;
   }

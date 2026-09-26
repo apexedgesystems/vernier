@@ -186,7 +186,8 @@ PERF_TEST(PerfProfiler, JoinInstructions) {
   const demo::Reading V1 =
       instructions.perCall(COUNTED_CALLS, [&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
   // Any code retires instructions: a zero is a counter that did not count.
-  const std::string NOT_COUNTED = V0.whyNotCounted(true) + V1.whyNotCounted(true);
+  const std::string NOT_COUNTED =
+      demo::joinReasons({V0.whyNotCounted(true), V1.whyNotCounted(true)});
   if (!NOT_COUNTED.empty()) {
     GTEST_SKIP() << "could not count instructions here: " << NOT_COUNTED;
   }
@@ -237,9 +238,9 @@ PERF_TEST(PerfProfiler, FilterBranchMisses) {
       misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchless(RANDOM, THRESHOLD, out); });
   // A branch on random input mispredicts: a zero there is a counter that did
   // not count. The other two cases may count as few as they like.
-  const std::string NOT_COUNTED = BRANCHY_RANDOM.whyNotCounted(true) +
-                                  BRANCHY_SORTED.whyNotCounted(false) +
-                                  BRANCHLESS.whyNotCounted(false);
+  const std::string NOT_COUNTED =
+      demo::joinReasons({BRANCHY_RANDOM.whyNotCounted(true), BRANCHY_SORTED.whyNotCounted(false),
+                         BRANCHLESS.whyNotCounted(false)});
   if (!NOT_COUNTED.empty()) {
     GTEST_SKIP() << "could not count branch-misses here: " << NOT_COUNTED;
   }

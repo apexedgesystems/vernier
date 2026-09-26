@@ -34,6 +34,7 @@
 #include <cstdint>
 
 #include <array>
+#include <initializer_list>
 #include <string>
 #include <utility>
 
@@ -115,6 +116,19 @@ struct Reading {
     return {};
   }
 };
+
+/// The reasons in @p reasons that are not empty, joined with "; ": one
+/// string for a test that skips on any of several readings.
+inline std::string joinReasons(std::initializer_list<std::string> reasons) {
+  std::string joined;
+  for (const std::string& reason : reasons) {
+    if (reason.empty()) {
+      continue;
+    }
+    joined += (joined.empty() ? "" : "; ") + reason;
+  }
+  return joined;
+}
 
 /// " (counted N% of the time)" when @p reading was scaled, else empty, for
 /// a printed figure.

@@ -119,8 +119,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a tenth of a branch per value, and at least ten times as often as the sorted
   case and as the branchless case). Both are registered with `ctest` under the
   `demo` label and skip, reported as skipped, where the counter cannot be
-  opened: `kernel.perf_event_paranoid` above 2, a container's default seccomp
-  profile, a processor without the event. The old demo walked 8 KB with a
+  opened (`kernel.perf_event_paranoid` above 2, a container's default seccomp
+  profile, a processor without the event) or was not on the PMU for the
+  counted calls (a hybrid processor counts an event on one kind of core only;
+  a PMU with more events open than counters takes turns): a reading carries
+  the share of the thread's time its counter ran, as `perf stat` reads it,
+  and a count taken part of the time is scaled and says so. The old demo walked 8 KB with a
   stride against 4 MB sequentially, so its "slow" case ran 17 times faster on
   the rig, and its page promised events the backend never collects. Its
   walkthrough, `src/bench/demo/docs/02_PERF_PROFILER.md`, is rewritten from a

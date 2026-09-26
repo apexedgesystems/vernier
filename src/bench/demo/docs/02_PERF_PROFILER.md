@@ -614,8 +614,14 @@ Three things run against these examples, and all fail loudly:
 
   Every test it runs should pass. Where the counter cannot be opened (a
   container's default seccomp profile, `perf_event_paranoid` above 2, a
-  processor without the event) the three counting tests skip, and CTest
-  reports them as skipped, not passed.
+  processor without the event), or where it was not on the PMU for the
+  calls it should have counted (a hybrid processor counts an event on one
+  kind of core only, so an unpinned run that lands on the other kind reads
+  nothing; a PMU with more events open than counters takes turns), the
+  three counting tests skip and say why, and CTest reports them as skipped,
+  not passed. Each reading carries the share of the thread's time its
+  counter was running, as `perf stat` does, and a count taken part of the
+  time is scaled and printed with that share.
 
 This repository has no continuous-integration lane on the reference board, so
 nothing runs the demo itself automatically. Before a release it is run on the
