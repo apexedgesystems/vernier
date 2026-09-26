@@ -79,21 +79,6 @@ static constexpr int COUNT_CALLS_HIGH = 20;
 /// cover build and platform differences.
 static constexpr double MIN_INSTRUCTION_RATIO = 5.0;
 
-/* ----------------------------- File Helpers ----------------------------- */
-
-namespace {
-
-/// Bytes a joined string holds: every part plus one separator each.
-std::size_t joinedSize(const std::vector<std::string>& parts) {
-  std::size_t total = 0;
-  for (const std::string& part : parts) {
-    total += part.size() + 1;
-  }
-  return total;
-}
-
-} // namespace
-
 /* ----------------------------- Tests ----------------------------- */
 
 /** @test Throughput of the one-liner: out = out + part + separator. */
@@ -101,7 +86,7 @@ PERF_THROUGHPUT(CallgrindProfiler, JoinV0) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
@@ -113,7 +98,7 @@ PERF_THROUGHPUT(CallgrindProfiler, JoinV1) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
