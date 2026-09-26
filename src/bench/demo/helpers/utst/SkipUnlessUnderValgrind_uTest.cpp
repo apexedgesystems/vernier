@@ -7,7 +7,8 @@
  *  - The helper decides from the process it runs in, so the tests run this
  *    binary as a child on a probe case that uses the helper, once plainly and
  *    once under valgrind, and read what GoogleTest printed for the probe.
- *  - The valgrind run skips where valgrind is not installed, and where
+ *  - The valgrind run skips in a build with a sanitizer (which valgrind does
+ *    not run as an ordinary binary), where valgrind is not installed, and where
  *    valgrind gives up reading this binary before the program runs (a
  *    valgrind older than the compiler that built it), quoting valgrind's own
  *    lines; any other way of not reaching the probe fails.
@@ -34,7 +35,9 @@
 
 #include <gtest/gtest.h>
 
+using vernier::bench::demo::BUILT_WITH_A_SANITIZER;
 using vernier::bench::demo::reasonToSkipUnlessUnderValgrind;
+using vernier::bench::demo::SANITIZER_UNDER_VALGRIND_REASON;
 using vernier::bench::demo::SKIP_UNLESS_UNDER_VALGRIND_REASON;
 using vernier::bench::profiler_env::isOnPath;
 
@@ -184,6 +187,9 @@ TEST(SkipUnlessUnderValgrindTest, PlainRunSkipsTheProbe) {
 
 /** @test Under valgrind the probe runs and passes */
 TEST(SkipUnlessUnderValgrindTest, ValgrindRunRunsTheProbe) {
+  if constexpr (BUILT_WITH_A_SANITIZER) {
+    GTEST_SKIP() << SANITIZER_UNDER_VALGRIND_REASON;
+  }
   if (!isOnPath("valgrind")) {
     GTEST_SKIP() << "valgrind is not installed; this test runs the probe under it";
   }

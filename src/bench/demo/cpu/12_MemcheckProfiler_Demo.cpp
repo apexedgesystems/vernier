@@ -151,13 +151,18 @@ PERF_TEST(Memcheck, JoinOffByOne) {
  * memory probe of gperftools' profiler library that is not the program's (the
  * check header says which). Writes no CSV row.
  *
- * Skipped without valgrind, under --profile (it runs memcheck itself), and
+ * Skipped in a build with a sanitizer (which valgrind does not run as an
+ * ordinary binary), without valgrind, under --profile (it runs memcheck
+ * itself), and
  * where valgrind gives up reading this binary's debug information before the
  * program runs, as a valgrind older than the compiler does, saying so in
  * valgrind's words. A run that does not reach its test for any other reason
  * fails, with what the run printed.
  */
 PERF_TEST(Memcheck, FindsTheOffByOne) {
+  if constexpr (demo::BUILT_WITH_A_SANITIZER) {
+    GTEST_SKIP() << demo::SANITIZER_UNDER_VALGRIND_REASON;
+  }
   if (!ub::detail::getPerfConfig().profileTool.empty()) {
     GTEST_SKIP() << "runs memcheck itself; run it without --profile";
   }

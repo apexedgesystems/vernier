@@ -25,6 +25,33 @@ namespace demo {
 
 /* ----------------------------- Constants ----------------------------- */
 
+/// True when this binary was built with an address, thread or memory
+/// sanitizer. valgrind does not run such a binary as it runs an ordinary one:
+/// with the address sanitizer's runtime linked in, valgrind's own libraries
+/// are not mapped into the process (seen with valgrind 3.22 and clang 21), so
+/// memcheck sees no allocation and this helper sees no valgrind, and an older
+/// valgrind gives up reading the binary before it runs. A test that starts
+/// valgrind on this binary skips on it and says so.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+inline constexpr bool BUILT_WITH_A_SANITIZER = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(memory_sanitizer)
+inline constexpr bool BUILT_WITH_A_SANITIZER = true;
+#else
+inline constexpr bool BUILT_WITH_A_SANITIZER = false;
+#endif
+#else
+inline constexpr bool BUILT_WITH_A_SANITIZER = false;
+#endif
+
+/// The skip message a test prints when it would start valgrind on a binary
+/// built with a sanitizer.
+inline constexpr const char* SANITIZER_UNDER_VALGRIND_REASON =
+    "this binary is built with a sanitizer, and valgrind does not run such a binary as it runs "
+    "an ordinary one (its libraries are not mapped into the process, so memcheck sees nothing); "
+    "use a build without a sanitizer";
+
 /// The skip message a case prints when the process is not under valgrind.
 inline constexpr const char* SKIP_UNLESS_UNDER_VALGRIND_REASON =
     "this case makes a memory error for valgrind to find, so it runs only under valgrind: run "
