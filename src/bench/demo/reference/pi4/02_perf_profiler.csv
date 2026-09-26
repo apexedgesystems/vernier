@@ -1,0 +1,6 @@
+test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
+PerfProfiler.JoinV0,48,10,1,1,64,0,0,INFO,1020.11,1019.14,1021.11,1022.51,1022.65,1019.04,1022.67,1020.26,1.03862,0.001018,980.282,1,0.1,2026-09-26T17:33:48Z,unknown,raspberrypi,aarch64
+PerfProfiler.JoinV1,2377,10,1,1,64,0,0,INFO,20.9836,20.208,21.362,21.391,21.3939,20.1792,21.3942,20.8355,0.512315,0.0245886,47656.3,1,0.1,2026-09-26T17:33:48Z,unknown,raspberrypi,aarch64
+PerfProfiler.FilterBranchyRandom,56,10,1,1,64,0,0,INFO,881.688,880.764,884.009,884.949,885.043,880.732,885.054,882.027,1.34471,0.00152457,1134.19,1,0.1,2026-09-26T17:33:49Z,unknown,raspberrypi,aarch64
+PerfProfiler.FilterBranchySorted,199,10,1,1,64,0,0,INFO,244.967,244.626,246.124,246.229,246.24,244.156,246.241,245.231,0.65888,0.00268678,4082.18,1,0.1,2026-09-26T17:33:49Z,unknown,raspberrypi,aarch64
+PerfProfiler.FilterBranchless,253,10,1,1,64,0,0,INFO,158.755,158.185,162.506,163.402,163.492,158.174,163.502,159.775,1.86985,0.011703,6299.02,1,0.1,2026-09-26T17:33:49Z,unknown,raspberrypi,aarch64

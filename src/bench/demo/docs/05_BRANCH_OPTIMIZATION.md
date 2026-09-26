@@ -1,101 +1,39 @@
 # Demo 05: Branch Prediction and Branchless Programming
 
-## Overview
+The branch example lives in [walkthrough 02](02_PERF_PROFILER.md) now, as the
+second example of the perf page:
+[The Second Example: a Filter](02_PERF_PROFILER.md#the-second-example-a-filter).
+There is no `BenchDemo_05_BranchOptimization` binary; the filter is measured
+by `BenchDemo_02_PerfProfiler`, and its counters were captured on the
+[Raspberry Pi 4 rig](../../docs/rigs/RIG_PI4.md).
 
-Demonstrates how unpredictable branches cause pipeline stalls and how
-branchless coding eliminates the penalty. A three-way comparison shows
-the branch predictor in action.
+## Why One Example, and Why a Filter
 
-## Prerequisites
+A branch example has to keep its branch through an optimizing build. A sum
+of the values above a threshold does not: a compiler may turn a conditional
+addition into a conditional select, and the branchy and branchless sums are
+then the same machine code, timing the same on every input. A store made
+only when the value passes cannot be turned into a select, because a
+compiler may not invent a store the source does not make; so the example is
+a filter, and its branchless twin stores every value and advances the output
+cursor by the comparison instead. Walkthrough 02 measures and profiles it
+with the hardware counters that show the difference, and one demo owns it: a
+second demo on the same example would be a copy of that one.
 
-```bash
-make compose-debug
-make tools-rust
-```
+## What This Page Owed, and Where It Is Now
 
-## Step 1: Run All Three Variants
-
-```bash
-docker compose run --rm -T dev bash -c '
-  cd build/native-linux-debug
-  ./bin/ptests/BenchDemo_05_BranchOptimization --quick --csv /tmp/branch_demo.csv
-  ./bin/tools/rust/bench summary /tmp/branch_demo.csv --sort median
-'
-```
-
-Expected output (sorted fastest to slowest):
-
-```
-BranchOptimization.BranchlessRandomData   ~45 us/call   ~22K calls/s
-BranchOptimization.BranchySortedData      ~50 us/call   ~20K calls/s
-BranchOptimization.BranchyRandomData      ~90 us/call   ~11K calls/s
-```
-
-## Step 2: Profile Branch Misses
-
-```bash
-docker compose run --rm -T dev bash -c '
-  cd build/native-linux-debug
-
-  # Profile branchy + random (worst case)
-  ./bin/ptests/BenchDemo_05_BranchOptimization --profile perf \
-    --gtest_filter="*BranchyRandomData*" --cycles 1000
-
-  # Profile branchless + random (best case)
-  ./bin/ptests/BenchDemo_05_BranchOptimization --profile perf \
-    --gtest_filter="*BranchlessRandomData*" --cycles 1000
-'
-```
-
-Expected perf counters:
-
-```
-Branchy + Random:
-  branch-misses:  ~50,000,000  (50% mispredict rate)
-
-Branchless + Random:
-  branch-misses:     ~100,000  (near zero)
-```
-
-## Step 3: Diagnose
-
-### Why random data is slow with branches
-
-The conditional `if (val > 0.5)` is taken for ~50% of random values in
-unpredictable order. The CPU's branch predictor cannot learn the pattern,
-resulting in ~50% misprediction rate. Each mispredict costs 15-20 cycles
-of pipeline flush and refill.
-
-### Why sorted data helps branchy code
-
-With sorted data, all values below 0.5 come first (branch not taken),
-then all values above 0.5 (branch taken). The predictor sees one
-transition point and achieves near-100% accuracy after warming up.
-
-### Why branchless always wins
-
-The branchless version `val * (val > threshold)` converts the branch
-into a multiply-by-zero-or-one. No branch instruction means no
-misprediction, regardless of data order.
-
-## Step 4: Compare
-
-| Variant             | Median | Branch Misses | Notes                      |
-| ------------------- | ------ | ------------- | -------------------------- |
-| Branchy + Random    | ~90 us | ~50M          | Worst case: 50% mispredict |
-| Branchy + Sorted    | ~50 us | ~1K           | Predictor learns pattern   |
-| Branchless + Random | ~45 us | ~100K         | No branches to mispredict  |
-
-## Key Takeaways
-
-- Unpredictable branches in hot loops cause 2-3x slowdowns
-- Sorting data helps if the branch depends on sorted values
-- Branchless coding (`val * predicate`) eliminates the penalty entirely
-- Use `perf` with `branch-misses` counter to identify the problem
-- Branchless matters most in: hot inner loops, random data, 50/50 conditions
-- For rare branches (<5% or >95% taken), the predictor handles it well
+| Obligation                                                                                 | Where it is met                                                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| One filter implementation, with and without a branch                                       | [`examples/filter`](../examples/filter/inc/Filter.hpp): `filterBranchy` and `filterBranchless`, and the inputs `makeValues` and `makeSortedValues`                                                                                         |
+| Correctness: every version keeps the same values, in the same order                        | the example's unit tests, [`Filter_uTest.cpp`](../examples/filter/utst/Filter_uTest.cpp), registered with `ctest` under the `demo` label                                                                                                   |
+| The optimized-code check: the branch survives an optimizing build                          | `FilterBranchTest.ConditionalStoreKeepsItsBranch` in the same tests: on random input the branchy filter must mispredict at least a tenth of a branch per value, and at least ten times as often as on sorted input                         |
+| The demonstration: random input mispredicts, sorted input and the branchless filter do not | `PerfProfiler.FilterBranchMisses` in [`02_PerfProfiler_Demo.cpp`](../cpu/02_PerfProfiler_Demo.cpp), also under the `demo` label, and [steps 5 to 7](02_PERF_PROFILER.md#step-5-count-the-branchy-filter-on-random-input) of walkthrough 02 |
+| Hardware-counter evidence from the reference rig                                           | walkthrough 02's captured `stat.txt` reports and its [What Should Reproduce](02_PERF_PROFILER.md#what-should-reproduce) table                                                                                                              |
+| The lesson: when a branch costs, and what sorting or a branchless form does about it       | walkthrough 02, from [The Second Example: a Filter](02_PERF_PROFILER.md#the-second-example-a-filter) on                                                                                                                                    |
 
 ## See Also
 
-- `docs/CPU_GUIDE.md` -- Branch prediction section
-- Demo 02 (perf) -- Hardware counter profiling
+- [Walkthrough 02: perf](02_PERF_PROFILER.md) -- hardware counters on the
+  join and the filter examples
+- [CPU guide](../../docs/CPU_GUIDE.md) -- the framework's CPU benchmarking
+  reference
