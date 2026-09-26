@@ -77,22 +77,6 @@ static constexpr int MEMCHECK_ERROR_EXIT = 99;
 /// The name memcheck's report must carry in its stacks.
 static constexpr const char* OFF_BY_ONE_FUNCTION = "joinOffByOne";
 
-/* ----------------------------- File Helpers ----------------------------- */
-
-namespace {
-
-/// Bytes a joined string holds: every part plus one separator each. Computed
-/// without calling any version, so checking an answer allocates nothing.
-std::size_t joinedSize(const std::vector<std::string>& parts) {
-  std::size_t total = 0;
-  for (const std::string& part : parts) {
-    total += part.size() + 1;
-  }
-  return total;
-}
-
-} // namespace
-
 /* ----------------------------- Tests ----------------------------- */
 
 /** @test Throughput of the one-liner: two temporaries and a full copy per part. */
@@ -100,7 +84,7 @@ PERF_THROUGHPUT(Memcheck, JoinV0) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
@@ -112,7 +96,7 @@ PERF_THROUGHPUT(Memcheck, JoinV1) {
   PERF_GUARD(perf);
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), joinedSize(PARTS));
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
   perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
@@ -180,7 +164,7 @@ PERF_TEST(Memcheck, FindsTheOffByOne) {
   const fs::path DIR = dirTemplate;
 
   const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  const long JOINED = static_cast<long>(joinedSize(PARTS));
+  const long JOINED = static_cast<long>(demo::joinedSize(PARTS));
 
   // The wrong join under memcheck.
   const check::MemcheckRun WRONG = check::runUnderMemcheck(SELF, "Memcheck.JoinOffByOne", {},
