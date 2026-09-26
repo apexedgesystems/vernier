@@ -82,7 +82,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (5)
+# Demos Built on a Shared Example (6)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -101,6 +101,10 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_11_MassifProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
@@ -110,15 +114,23 @@ if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Guards Run by CTest (2)
+# Demo Effect Guards Run by CTest (3)
 # ------------------------------------------------------------------------------
 # Demos are ptests: built, not registered with CTest. A guard that checks what
-# its demo demonstrates by counting, not by timing, is registered on its own,
-# the way gtest_add_tests names and runs a test, under the demo label, so
-# ordinary test runs include it and never the demo's timing cases. A guard
-# that cannot count on the machine it runs on skips, says why, and is reported
-# by CTest as skipped, not passed.
+# its demo demonstrates by counting (bytes held, hardware events), not by
+# timing, is registered on its own, the way gtest_add_tests names and runs a
+# test, under the demo label, so ordinary test runs include it and never the
+# demo's timing cases. The perf guards count only where the kernel lets them,
+# skip with the reason elsewhere, and carry gtest's skip expression so CTest
+# reports such a run as skipped, not passed.
 # ------------------------------------------------------------------------------
+
+add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
+                                          --gtest_filter=Massif.JoinPeakHeap
+)
+set_tests_properties(
+  Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
 
 foreach (GUARD PerfProfiler.JoinInstructions PerfProfiler.FilterBranchMisses)
   add_test(NAME ${GUARD} COMMAND BenchDemo_02_PerfProfiler --gtest_filter=${GUARD})

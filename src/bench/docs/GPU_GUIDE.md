@@ -108,24 +108,25 @@ or `CUDA`.
 ### Build and Run
 
 ```bash
-# Build (CUDA automatically detected)
-cmake -B build -S . && cmake --build build
+# Build (CUDA automatically detected), in your project as for a CPU benchmark
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
 
 # Run
-./build/native-linux-debug/bin/ptests/VectorAdd_GPU_PTEST --csv results.csv
+./build/VectorAdd_GPU_PTEST --csv results.csv
 
 # Quick mode during development
-./VectorAdd_GPU_PTEST --quick
+./build/VectorAdd_GPU_PTEST --quick
 
 # With Nsight Systems timeline profiling
-./VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+./build/VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
 
 # With Nsight Compute kernel analysis (add --profile-args replay for
 # replay-mode metrics)
-./VectorAdd_GPU_PTEST --profile ncu --gtest_filter="*Basic"
+./build/VectorAdd_GPU_PTEST --profile ncu --gtest_filter="*Basic"
 
 # Specific GPU device
-./VectorAdd_GPU_PTEST --gpu-device 1 --csv results.csv
+./build/VectorAdd_GPU_PTEST --gpu-device 1 --csv results.csv
 ```
 
 ---
