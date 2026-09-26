@@ -105,3 +105,28 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Demo Helper Tests
+# ------------------------------------------------------------------------------
+# The helpers the demos share, under the demo label with the examples' tests.
+# The probe case skips itself in an ordinary run, which is the helper working,
+# so CTest reports it as skipped rather than passed.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoHelpers
+  SOURCES
+  helpers/utst/SkipUnlessUnderValgrind_uTest.cpp
+  LINK
+  bench
+  demo_helpers
+  LABELS
+  demo
+)
+set_tests_properties(
+  SkipUnlessUnderValgrindProbe.RunsOnlyUnderValgrind
+  PROPERTIES SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] SkipUnlessUnderValgrindProbe\\.RunsOnlyUnderValgrind"
+)
