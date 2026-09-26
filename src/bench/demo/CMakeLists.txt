@@ -83,7 +83,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (4)
+# Demos Built on a Shared Example (5)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -98,6 +98,10 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_11_MassifProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
@@ -105,3 +109,19 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Demo Effect Guards Run by CTest (1)
+# ------------------------------------------------------------------------------
+# Demos are ptests: built, not registered with CTest. A guard that checks what
+# its demo demonstrates by counting bytes, not by timing, is registered on its
+# own, the way gtest_add_tests names and runs a test, under the demo label, so
+# ordinary test runs include it and never the demo's timing cases.
+# ------------------------------------------------------------------------------
+
+add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
+                                          --gtest_filter=Massif.JoinPeakHeap
+)
+set_tests_properties(
+  Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)

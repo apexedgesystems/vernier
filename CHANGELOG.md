@@ -51,6 +51,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
   from earlier releases do not join with newer ones, and `bubbleSort` and
   `fastSort` leave `helpers/DemoWorkloads.hpp`.
+- **Demo 11 measures the join example's peak heap** --
+  `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
+  example instead of allocating an 8 MB buffer per call. `Massif.JoinV0` and
+  `Massif.JoinV1` publish one CSV row each, and `Massif.JoinPeakHeap` counts
+  the bytes one call of each version holds at its peak and fails unless V0
+  holds more than three times what V1 holds. It skips itself under valgrind,
+  which replaces the counting. The demo's earlier tests asserted only that
+  each variant ran more than once a second, which still held with both
+  variants made identical. The join example gains `joinedSize()`, the length
+  of the string both versions return, computed without allocating (a unit
+  test counts no call to `operator new`); demos 11 and 15 check each result
+  against it, and demo 11's guard checks that it holds no heap.
+  `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
+  an ordinary test run includes it; the demo's timing tests are not
+  registered. Its walkthrough,
+  `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
+  on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
+  default instruction axis two of V1's three calls draw as one block), the
+  peak and the call sites that hold it, and where the output lands (the file
+  `--massif-out-file` names; run by hand with `--profile massif`, the binary
+  also creates a `<Suite.Case>.massif/` folder per test, empty unless
+  `--massif-out-file` points into it). That run's CSV is committed at
+  `src/bench/demo/reference/pi4/14_massif_profiler.csv`. Demo 11's test names
+  change (`Massif.SmallChurn` and `Massif.PooledReuse` are gone), so CSVs
+  captured from it before this release do not join with newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
@@ -287,6 +312,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.
   `make docker-disk-usage` succeeds when no vernier image exists.
+- **`make verify` leaves a host-built `tools/py/.venv` in place** -- its C++
+  and Python lanes mount the checkout into images whose Poetry adopted an
+  existing in-project environment, found its interpreter missing (a host
+  Python the images do not have) and deleted and recreated it with the
+  image's Python, which the host cannot run. The C++ lane reaches Poetry
+  through the debug build of the Python tools, which `make testp` also runs
+  through its `debug` prerequisite. Both lanes' container commands, and the
+  matching CI steps, now run with `POETRY_VIRTUALENVS_IN_PROJECT=false`, so
+  the containers keep their own environments. `make test-py` on the host is
+  unchanged.
+- **`make format` and `make format-check` skip a Python virtual environment
+  anywhere in the tree** -- the lane's file search and pre-commit's exclude
+  list skipped a `.venv` only at the top of the checkout. A host build whose
+  Poetry keeps environments in the project (`virtualenvs.in-project`) creates
+  `tools/py/.venv`, and the lane then ran its hooks on that environment:
+  `make format-check` and `make verify` failed until the directory was
+  deleted, and black and isort rewrote the environment's Python files in
+  place while reporting "Passed" (pre-commit detects changes through git,
+  which ignores the environment). A `.venv` is now skipped at any depth, also
+  in a scan narrowed with `PC_SCOPE`.
 - **A release cannot publish with an asset missing** -- the v1.0.3 release
   carries six assets and no Python wheel: the wheel was built under the Python
   tools' own version, the upload list named it by the project version, and an

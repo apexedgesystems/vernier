@@ -27,6 +27,7 @@
 #include <string>
 #include <vector>
 
+using vernier::bench::demo::joinedSize;
 using vernier::bench::demo::joinV0;
 using vernier::bench::demo::joinV1;
 using vernier::bench::demo::makeParts;
@@ -134,7 +135,26 @@ TEST_P(JoinSizesTest, JoinedLengthCoversEveryPart) {
   EXPECT_EQ(joinV1(parts_, ',').size(), expected);
 }
 
+/** @test joinedSize is the length every version returns at every input size */
+TEST_P(JoinSizesTest, JoinedSizeIsEveryVersionsLength) {
+  EXPECT_EQ(joinedSize(parts_), joinV0(parts_, ',').size());
+  EXPECT_EQ(joinedSize(parts_), joinV1(parts_, ',').size());
+}
+
 INSTANTIATE_TEST_SUITE_P(Counts, JoinSizesTest, ::testing::Values(0, 1, 10, 100, 1000, 10000));
+
+/* ----------------------------- joinedSize Tests ----------------------------- */
+
+/** @test joinedSize counts every part and one separator after each */
+TEST(JoinedSizeTest, CountsEveryPartAndOneSeparatorEach) {
+  const std::vector<std::string> none;
+  const std::vector<std::string> words = {"alpha", "beta", "gamma"};
+  const std::vector<std::string> empties = {"", ""};
+
+  EXPECT_EQ(joinedSize(none), 0u);
+  EXPECT_EQ(joinedSize(words), std::string("alpha,beta,gamma,").size());
+  EXPECT_EQ(joinedSize(empties), std::string("--").size());
+}
 
 /* ----------------------------- Allocation Tests ----------------------------- */
 
@@ -179,6 +199,18 @@ TEST(JoinAllocationTest, V0AllocatesFarMoreOftenThanV1) {
   EXPECT_GE(v0Calls, MIN_ALLOCATION_RATIO * v1Calls)
       << "joinV0 made " << v0Calls << " allocations for " << PROFILED_PART_COUNT
       << " parts, joinV1 " << v1Calls << ": the heap-profiler demos have stopped demonstrating";
+}
+
+/** @test joinedSize allocates nothing: demo 15 checks each answer with it, and
+ *  heaptrack's counts of that test divide by the calls to its version alone */
+TEST(JoinAllocationTest, JoinedSizeAllocatesNothing) {
+  const auto parts = makeParts(PROFILED_PART_COUNT, 42);
+
+  std::size_t size = 0;
+  const std::size_t calls = countNewCalls([&] { size = joinedSize(parts); });
+
+  EXPECT_EQ(calls, 0u);
+  EXPECT_EQ(size, joinV1(parts, ',').size());
 }
 
 /* ----------------------------- makeParts Tests ----------------------------- */
