@@ -60,6 +60,18 @@ foreach (DEMO ${CPU_DEMOS})
 endforeach ()
 
 # ------------------------------------------------------------------------------
+# Demo 12's Private Sources
+# ------------------------------------------------------------------------------
+# The deliberately wrong join memcheck finds is a source of its own, compiled
+# with debug information whatever the build type, so memcheck's report names
+# the lines of the write and of the allocation. Nothing else in the build
+# changes.
+# ------------------------------------------------------------------------------
+
+target_sources(BenchDemo_12_MemcheckProfiler PRIVATE cpu/12_MemcheckProfiler_OffByOne.cpp)
+set_source_files_properties(cpu/12_MemcheckProfiler_OffByOne.cpp PROPERTIES COMPILE_OPTIONS "-g")
+
+# ------------------------------------------------------------------------------
 # GPU Demo Sources
 # ------------------------------------------------------------------------------
 
@@ -83,7 +95,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (4)
+# Demos Built on a Shared Example (5)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -98,6 +110,10 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_12_MemcheckProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_15_HeaptrackProfiler
   PRIVATE demo_example_join
 )
@@ -105,6 +121,27 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Demo Effect Checks Run by CTest (1)
+# ------------------------------------------------------------------------------
+# Demos are ptests: built, not registered with CTest. A check that runs its
+# demo under a tool and reads the tool's report, not a timing, is registered
+# on its own, the way gtest_add_tests names and runs a test, under the demo
+# label and the tool's, so ordinary test runs include it and never the demo's
+# timing cases. The skip expression names the check: its failure messages
+# quote the child runs' output, whose own GoogleTest lines must not turn a
+# failure into a skip.
+# ------------------------------------------------------------------------------
+
+add_test(NAME Memcheck.FindsTheOffByOne COMMAND BenchDemo_12_MemcheckProfiler
+                                                --gtest_filter=Memcheck.FindsTheOffByOne
+)
+set_tests_properties(
+  Memcheck.FindsTheOffByOne
+  PROPERTIES LABELS "demo;memcheck" WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+             SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
+)
 
 # ------------------------------------------------------------------------------
 # Demo Helper Tests
