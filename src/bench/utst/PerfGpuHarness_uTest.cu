@@ -7,19 +7,25 @@
  * PerfRegistry. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
- * involved (the per-suite CPU baseline), so the order tests run in, and
- * repeated runs in one process, cannot change an outcome.
+ * involved (the per-suite CPU baseline, the probe backend's call log), so the
+ * order tests run in, and repeated runs in one process, cannot change an
+ * outcome. Tests that set the variables deciding CUPTI's yield restore them.
  */
 
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <cstddef>
+#include <map>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 namespace ub = vernier::bench;
@@ -135,6 +141,21 @@ protected:
     });
     (void)ub::PerfRegistry::instance().take();
     return CPU.stats.median;
+  }
+
+  /**
+   * @brief The CUPTI launches recorded while measuring the kernel in a case of
+   *        its own whose config names @p profileTool (no profiler attached).
+   */
+  std::size_t cuptiLaunches(const std::string& suite, const std::string& profileTool,
+                            const SaxpyFixtureData& data) {
+    ub::PerfConfig cfg = cfg_;
+    cfg.profileTool = profileTool;
+    ub::PerfGpuCase perf{suite + ".Kernel", cfg};
+    perf.cudaWarmup(data.launch());
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+    static_cast<void>(ub::PerfRegistry::instance().take());
+    return RESULT.stats.cupti.kernelLaunches;
   }
 
   /** @brief What a GPU case without a baseline of its own reported. */
@@ -402,4 +423,333 @@ TEST_F(PerfGpuHarnessTest, RowCarriesTheStabilityVerdict) {
   EXPECT_DOUBLE_EQ(ROW.cvThreshold, THRESHOLD);
   EXPECT_EQ(ROW.stable, RESULT.stats.cpuStats.cv < THRESHOLD);
   EXPECT_DOUBLE_EQ(ROW.stats.cv, RESULT.stats.cpuStats.cv);
+}
+
+/* ----------------------------- Profiler Hooks ----------------------------- */
+
+namespace {
+
+/** @brief What one case's hooks saw. */
+struct HookLog {
+  std::string calls;          ///< 'b' per before hook, 'a' per after hook, in call order
+  double afterMedianUs = 0.0; ///< The median the last after hook received
+};
+
+/** @brief Hooks that log into @p log and stamp the row, as the GPU guard's hooks do. */
+void installLoggingHooks(ub::PerfGpuCase& pc, HookLog& log) {
+  pc.setBeforeMeasureHook([&log](const ub::PerfGpuCase&) { log.calls += 'b'; });
+  pc.setAfterMeasureHook([&log](const ub::PerfGpuCase&, const ub::GpuStats& s) {
+    log.calls += 'a';
+    log.afterMedianUs = s.cpuStats.median;
+    ub::PerfRegistry::instance().updateProfileMeta("hook-log", "hook-log-dir");
+  });
+}
+
+/** @brief Hook calls the probe backend saw, per test name. */
+std::map<std::string, std::string>& probeCalls() {
+  static std::map<std::string, std::string> calls;
+  return calls;
+}
+
+/** @brief A backend that records its hook calls: the registry path the GPU guard takes. */
+class GpuHookProbe final : public ub::Profiler {
+public:
+  explicit GpuHookProbe(std::string testName) : testName_(std::move(testName)) {}
+  std::string toolName() const noexcept override { return "gpu-hook-probe"; }
+  std::string artifactDir() const noexcept override { return "probe-dir/" + testName_; }
+  void beforeMeasure() override { probeCalls()[testName_] += 'b'; }
+  void afterMeasure(const ub::Stats& /*s*/) override { probeCalls()[testName_] += 'a'; }
+
+private:
+  std::string testName_;
+};
+
+std::unique_ptr<ub::Profiler> makeGpuHookProbe(const ub::PerfConfig& /*cfg*/,
+                                               const std::string& testName) {
+  return std::make_unique<GpuHookProbe>(testName);
+}
+
+ub::EnvReport checkGpuHookProbe() {
+  return ub::EnvReport{ub::EnvReport::Status::Ok, "test backend", ""};
+}
+
+} // namespace
+
+VERNIER_REGISTER_PROFILER_BACKEND("gpu-hook-probe", makeGpuHookProbe, checkGpuHookProbe,
+                                  "Registered by the GPU harness unit tests only.")
+
+/**
+ * @test A kernel measurement runs the before hook, then the after hook once its
+ *       row is published, with the measured stats
+ */
+TEST_F(PerfGpuHarnessTest, HooksBracketAKernelMeasurement) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksKernel") + ".Kernel", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  perf.cudaWarmup(data.launch());
+
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, RESULT.totalTimeUs);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the published row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/** @test A kernel builder that is never measured fires no hook */
+TEST_F(PerfGpuHarnessTest, UnmeasuredBuilderFiresNoHook) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksUnmeasured") + ".Kernel", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  {
+    const ub::CudaKernelBuilder BUILDER = perf.cudaKernel(data.launch(), "saxpy");
+    static_cast<void>(BUILDER);
+  }
+
+  EXPECT_EQ(log.calls, "");
+}
+
+/** @test A CPU baseline is measured inside the hooks, and its row is stamped */
+TEST_F(PerfGpuHarnessTest, HooksBracketABaseline) {
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksBaseline") + ".CpuBaseline", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+
+  const ub::PerfResult CPU = perf.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, CPU.stats.median);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the baseline row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/**
+ * @test A multi-GPU measurement is bracketed too, and its after hook gets the
+ *       times of the device whose row is published
+ */
+TEST_F(PerfGpuHarnessTest, HooksBracketAMultiGpuMeasurement) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuHooksMulti") + ".MultiGpu", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure();
+
+  ASSERT_EQ(RESULT.perDevice.size(), 1U);
+  EXPECT_EQ(log.calls, "ba");
+  EXPECT_DOUBLE_EQ(log.afterMedianUs, RESULT.perDevice[0].stats.cpuStats.median);
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the published row";
+  EXPECT_EQ(*ROW.profileTool, "hook-log");
+}
+
+/**
+ * @test Through the GPU guard's attach path, the selected backend brackets the
+ *       window and the published row names the backend and its folder
+ */
+TEST_F(PerfGpuHarnessTest, GuardHooksStampTheRowWithTheBackend) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuHooksGuard") + ".Kernel";
+  cfg_.profileTool = "gpu-hook-probe";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  ub::attachGpuProfilerHooks(perf, cfg_);
+  perf.cudaWarmup(data.launch());
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+
+  EXPECT_EQ(probeCalls()[NAME], "ba");
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(ROW.profileTool.has_value()) << "the backend's after hook did not stamp the row";
+  EXPECT_EQ(*ROW.profileTool, "gpu-hook-probe");
+  ASSERT_TRUE(ROW.profileDir.has_value());
+  EXPECT_EQ(*ROW.profileDir, "probe-dir/" + NAME);
+}
+
+/* ----------------------------- CUPTI Yield ----------------------------- */
+
+namespace {
+
+using vernier::bench::test::ScopedEnv;
+
+/** @brief Clears, for one test, every variable that decides CUPTI's yield. */
+struct YieldEnvCleared {
+  ScopedEnv disable{"VERNIER_DISABLE_CUPTI", nullptr};
+  ScopedEnv wrap{"VERNIER_EXTERNAL_WRAP", nullptr};
+  ScopedEnv nsysSession{"NSYS_PROFILING_SESSION_ID", nullptr};
+  ScopedEnv ncuSession{"NV_NSIGHT_INJECTION_PORT_BASE", nullptr};
+};
+
+/** @brief The stderr line the harness prints when the collector stood down. */
+constexpr const char* YIELD_LINE = "[gpu] in-process CUPTI collection disabled";
+
+} // namespace
+
+/**
+ * @test Without a session every --profile spelling of Nsight still collects
+ *       CUPTI records: a spelling starts no session
+ */
+TEST_F(PerfGpuHarnessTest, CuptiCollectsWithoutASessionWhateverTheSpelling) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  if (PLAIN == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  EXPECT_EQ(PLAIN, static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats);
+  for (const char* tool : {"nsight", "nsys", "ncu"}) {
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiSpelling"), tool, data), PLAIN)
+        << "--profile " << tool << " without a session";
+  }
+}
+
+/** @test Each kind of Nsight session stands the collector down, and says so */
+TEST_F(PerfGpuHarnessTest, CuptiStandsDownUnderASession) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const struct {
+    const char* name;
+    const char* value;
+  } SESSIONS[] = {{"VERNIER_EXTERNAL_WRAP", "nsight"},
+                  {"VERNIER_EXTERNAL_WRAP", "nsys"},
+                  {"VERNIER_EXTERNAL_WRAP", "ncu"},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521"},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152"}};
+  for (const auto& session : SESSIONS) {
+    const ScopedEnv SET(session.name, session.value);
+    std::string captured;
+    std::size_t launches = 0;
+    {
+      vernier::bench::test::StderrCapture capture;
+      launches = cuptiLaunches(uniqueSuite("GpuCuptiSession"), "", data);
+      captured = capture.text();
+    }
+    EXPECT_EQ(launches, 0U) << session.name << "=" << session.value;
+    EXPECT_NE(captured.find(YIELD_LINE), std::string::npos)
+        << session.name << "=" << session.value << ", stderr said:\n"
+        << captured;
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI set to a false spelling, in any case, or to nothing keeps it on */
+TEST_F(PerfGpuHarnessTest, CuptiDisableZeroFalseOrEmptyKeepsCollecting) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  if (PLAIN == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  for (const char* value : {"0", "false", "False", "no", "OFF", ""}) {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", value);
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiDisableOff"), "", data), PLAIN)
+        << "VERNIER_DISABLE_CUPTI='" << value << "'";
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI=false does not keep the collector on inside a session */
+TEST_F(PerfGpuHarnessTest, CuptiDisableFalseDoesNotOverrideASession) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const ScopedEnv SESSION("NSYS_PROFILING_SESSION_ID", "1017521");
+  for (const char* value : {"false", "no", "OFF"}) {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", value);
+    EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiFalseInSession"), "", data), 0U)
+        << "VERNIER_DISABLE_CUPTI='" << value << "' in a session";
+  }
+}
+
+/** @test VERNIER_DISABLE_CUPTI set to a true spelling, in any case, stands it down, and says so */
+TEST_F(PerfGpuHarnessTest, CuptiDisableTrueSpellingsStandItDown) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  if (cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data) == 0) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  for (const char* value : {"1", "TRUE", "yes", "On"}) {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", value);
+    std::string captured;
+    std::size_t launches = 0;
+    {
+      vernier::bench::test::StderrCapture capture;
+      launches = cuptiLaunches(uniqueSuite("GpuCuptiDisableOn"), "", data);
+      captured = capture.text();
+    }
+    EXPECT_EQ(launches, 0U) << "VERNIER_DISABLE_CUPTI='" << value << "'";
+    EXPECT_NE(captured.find(YIELD_LINE), std::string::npos) << value << ", stderr said:\n"
+                                                            << captured;
+  }
+}
+
+/**
+ * @test Any other VERNIER_DISABLE_CUPTI value stops the GPU case before it
+ *       registers with CUPTI or touches the device: a configuration error that
+ *       names the value and the accepted ones; a later case collects as usual
+ */
+TEST_F(PerfGpuHarnessTest, InvalidCuptiSettingIsAConfigurationError) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const std::size_t PLAIN = cuptiLaunches(uniqueSuite("GpuCuptiPlain"), "", data);
+  {
+    const ScopedEnv DISABLE("VERNIER_DISABLE_CUPTI", "maybe");
+    try {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuCuptiInvalid") + ".Kernel", cfg_};
+      FAIL() << "the case was built with VERNIER_DISABLE_CUPTI='maybe'";
+    } catch (const std::invalid_argument& e) {
+      const std::string WHAT = e.what();
+      EXPECT_EQ(WHAT.rfind("configuration: VERNIER_DISABLE_CUPTI='maybe' is not a boolean.", 0), 0U)
+          << WHAT;
+      EXPECT_NE(WHAT.find("1, true, yes or on"), std::string::npos) << WHAT;
+    }
+  }
+  EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiAfterInvalid"), "", data), PLAIN)
+      << "a valid case after the rejected one collects as before";
+}
+
+/**
+ * @test A collector built directly applies the same decision before it
+ *       registers, and an explicit forceDisabled wins over the environment
+ */
+TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
+  const YieldEnvCleared CLEARED;
+  if (!vernier::bench::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build has no CUPTI collector";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "0");
+    EXPECT_TRUE(vernier::bench::CuptiCollector(false).isAvailable()) << "0 must not disable";
+    EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable()) << "forceDisabled must win";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "1");
+    EXPECT_FALSE(vernier::bench::CuptiCollector(false).isAvailable());
+  }
+  {
+    const ScopedEnv SET("NSYS_PROFILING_SESSION_ID", "1017521");
+    EXPECT_FALSE(vernier::bench::CuptiCollector(false).isAvailable()) << "a session must win";
+  }
+  {
+    const ScopedEnv SET("VERNIER_DISABLE_CUPTI", "maybe");
+    EXPECT_THROW(vernier::bench::CuptiCollector(false), std::invalid_argument)
+        << "an invalid value must be rejected";
+    EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable())
+        << "forceDisabled must win without reading the value";
+  }
 }

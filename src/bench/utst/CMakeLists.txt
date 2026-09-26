@@ -44,11 +44,32 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (1 file)
+# Host Test on a Stand-in CUPTI (1)
 # ------------------------------------------------------------------------------
-# What the GPU harness measures and publishes. They run a kernel, so they need
-# both the CUDA toolkit (to build) and a device (to run; they skip without
-# one) and exist only where libbench_cuda does.
+# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
+# every configuration, CPU-only included, checks that the collector applies the
+# CUPTI decision before it registers: a setting that stands it down, or one that
+# is rejected, registers nothing.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET TestBenchCuptiDecision SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp" LABELS benchmarking
+)
+target_include_directories(
+  TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------------------------
+# GPU Unit Tests (2 files)
+# ------------------------------------------------------------------------------
+# TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
+# kernel, so they need the CUDA toolkit (to build) and a device (to run; they
+# skip without one). TestBenchNsight: the Nsight backend, which lives in
+# libbench_cuda but makes no CUDA call, so it needs the toolkit and no device.
+# Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -64,6 +85,18 @@ if (TARGET bench_cuda)
     benchmarking
     gpu
     TIMING_ALL
+  )
+  vernier_add_gtest(
+    TARGET
+    TestBenchNsight
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsight_uTest.cpp"
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    benchmarking
+    gpu
   )
 endif ()
 

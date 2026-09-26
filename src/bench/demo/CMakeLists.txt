@@ -83,9 +83,9 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (4)
+# Demos Built on a Shared Example (5)
 # ------------------------------------------------------------------------------
-# After both demo lists, so every demo target exists. The GPU demo and its
+# After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
 # ------------------------------------------------------------------------------
 
@@ -104,4 +104,30 @@ target_link_libraries(
 
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
+  target_link_libraries(BenchDemo_Gpu_02_NsightProfiler PRIVATE demo_example_saxpy)
+  # Demo 02's guard timing, in a source of its own so the host test below builds it.
+  target_sources(BenchDemo_Gpu_02_NsightProfiler PRIVATE gpu/02_NsightProfiler_Timing.cpp)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Host Test on the Stand-in Runtime (1)
+# ------------------------------------------------------------------------------
+# Demo 02's guard timing built against the tracked stand-in for the CUDA
+# runtime (examples/saxpy/utst/fake_cuda), so every configuration, CPU-only
+# included, checks that it releases its stream and events on every path,
+# exceptions included: TestDemoNsightProfilerTiming.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoNsightProfilerTiming
+  SOURCES
+  gpu/utst/02_NsightProfiler_Timing_uTest.cpp
+  gpu/02_NsightProfiler_Timing.cpp
+  LABELS
+  demo
+)
+target_include_directories(
+  TestDemoNsightProfilerTiming BEFORE
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/examples/saxpy/utst/fake_cuda" "${PROJECT_SOURCE_DIR}"
+)

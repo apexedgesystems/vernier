@@ -59,11 +59,15 @@ struct CuptiKernelStats {
 class CuptiCollector {
 public:
   /**
-   * @param forceDisabled Skip CUPTI registration entirely. The harness
-   * passes profiler_env::cuptiMustYield(...) here: registration alone
-   * (before any cuptiActivityEnable) already claims the process's single
-   * CUPTI client slot and starves an external nsys/ncu session, so the
-   * yield decision must gate construction, not just start().
+   * @param forceDisabled Skip CUPTI registration entirely. Without it the
+   * collector still stands down, before registering, whenever
+   * profiler_env::cuptiMustYield() says so (the explicit override, or an
+   * nsys/ncu session): with the collector registered an nsys session records
+   * no kernels, so the decision gates construction, not start(). The GPU
+   * harness passes that same decision here.
+   * @throws std::invalid_argument when @p forceDisabled is false and
+   *         VERNIER_DISABLE_CUPTI is not a boolean (a configuration error),
+   *         before any CUPTI call.
    */
   explicit CuptiCollector(bool forceDisabled = false);
   ~CuptiCollector();

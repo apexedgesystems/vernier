@@ -15,6 +15,7 @@
 # Tests:
 #   TestDemoExamples        - every example's answers (saxpy's on a device)
 #   TestDemoSaxpyOwnership  - saxpy's resource release, on any machine
+#   TestDemoSaxpyDriving    - what each saxpy version does per call, on any machine
 # ==============================================================================
 
 include(vernier/All)
@@ -33,6 +34,9 @@ set(UNIT_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/Join_uTest.cpp")
 set(CUDA_UNIT_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/Saxpy_uTest.cu")
 set(OWNERSHIP_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/SaxpyOwnership_uTest.cpp"
                            "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/src/SaxpyGpu.cpp"
+)
+set(DRIVING_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/SaxpyDriving_uTest.cpp"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/src/SaxpyGpu.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -72,11 +76,13 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# Host Ownership Test
+# Host Tests on the Stand-in Runtime (2)
 # ------------------------------------------------------------------------------
 # The real SaxpyGpu.cpp built against a tracked stand-in for the CUDA runtime
 # (saxpy/utst/fake_cuda), so every configuration, CPU-only included, checks
-# that each failure path releases what the GPU versions had acquired. It is a
+# it: TestDemoSaxpyOwnership, that each failure path releases what the GPU
+# versions had acquired; TestDemoSaxpyDriving, what each version acquires,
+# copies and launches per call, the facts a profiler reads off them. Each is a
 # binary of its own: it defines the same functions as the real saxpy library.
 # ------------------------------------------------------------------------------
 
@@ -84,4 +90,10 @@ vernier_add_gtest(TARGET TestDemoSaxpyOwnership SOURCES ${OWNERSHIP_TEST_SOURCES
 target_include_directories(
   TestDemoSaxpyOwnership BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/fake_cuda"
                                         "${PROJECT_SOURCE_DIR}"
+)
+
+vernier_add_gtest(TARGET TestDemoSaxpyDriving SOURCES ${DRIVING_TEST_SOURCES} LABELS demo)
+target_include_directories(
+  TestDemoSaxpyDriving BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/fake_cuda"
+                                      "${PROJECT_SOURCE_DIR}"
 )

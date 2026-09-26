@@ -24,6 +24,53 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 02 (Nsight) measures the shared SAXPY example and asserts what it
+  teaches** -- `BenchDemo_Gpu_02_NsightProfiler` compared a strided read kernel
+  with a sequential one, only the strided kernel did an integer modulo per
+  thread, so the gap was not purely the access pattern, and its tests checked
+  `callsPerSecond > 1`. It measures the SAXPY example's two GPU versions
+  instead: `NsightProfiler.G0` and `NsightProfiler.G1` time one call of each end
+  to end; `KernelOneThreadPerBlock` and `Kernel256ThreadsPerBlock` time the bare
+  kernel in each version's launch shape with the GPU harness and fail when the
+  harness's occupancy estimate stops matching the shape; `LaunchShapeSpeedup`
+  fails when one thread per block stops being at least 30 times slower than
+  256. A host test of the example pins what each version allocates, copies and
+  launches per call, on any machine. The binary's hand-written `main()` is
+  `PERF_GPU_MAIN()`. Give a run a cycle count (`--cycles 20`): G0 and the
+  one-thread kernel take milliseconds per call, so the default 10,000 cycles
+  keep each busy for minutes. Its walkthrough,
+  `src/bench/demo/docs/11_NSIGHT_PROFILER.md`, is rewritten from a Release run
+  on the documented Jetson AGX Thor rig: the demo, Nsight Systems on G0 and G1
+  through `bench run`, and Nsight Compute on the two launch shapes, with that
+  run's output, what reproduces elsewhere, and where each tool's files land;
+  the run's CSV is committed at
+  `src/bench/demo/reference/thor/11_nsight_profiler.csv`. The demo's test names
+  change, so CSVs of demo 02 captured before this release do not join with
+  newer ones.
+- **The GPU harness's CUPTI collector stands down only for an Nsight session or
+  the explicit override** -- `--profile nsight` and `--profile ncu` turned the
+  collector off on their spelling alone, although neither tool can attach to a
+  running process, so an unwrapped run lost its `cupti*` columns and captured
+  nothing either; a wrap typed by hand without that spelling
+  (`nsys profile ./bench ...`) left the collector registered, and nsys then
+  recorded no kernels; `--profile nsys` did not count; and
+  `VERNIER_DISABLE_CUPTI=0` or `=false` still switched the collector off inside
+  `CuptiCollector`, with no message. The collector stands down when
+  `VERNIER_DISABLE_CUPTI` is `1`, `true`, `yes` or `on`, in any case, or when
+  an nsys or ncu session owns the process: one that `bench run --profile
+  nsight|ncu` started, or one typed by hand, recognised from
+  `NSYS_PROFILING_SESSION_ID` (nsys 2025.3) or `NV_NSIGHT_INJECTION_PORT_BASE`
+  (ncu 2025.3). Those variables are what these tool versions export, not a
+  promised interface: with a version that does not export them, set
+  `VERNIER_DISABLE_CUPTI=1` when wrapping. `0`, `false`, `no`, `off` or an
+  empty value leave the collector on and never keep it on inside a session. Any
+  other value is a configuration error: building a GPU case, or a
+  `CuptiCollector` directly, throws `std::invalid_argument` naming the value and
+  the accepted ones, before anything registers with CUPTI, instead of turning
+  the collector off. The collector applies the decision itself, before it
+  registers with CUPTI, so a direct user of `CuptiCollector` gets the same rule;
+  the `forceDisabled` argument still wins. An unwrapped `--profile nsight` run
+  keeps its CUPTI columns and still captures nothing from Nsight.
 - **Demo 03 profiles the shared join example and checks what the profile
   says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
   `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
@@ -470,6 +517,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
+- **`--profile nsight` and `--profile ncu` print the command that captures the
+  run instead of trying to attach** -- nsys and ncu record a process only when
+  they start it, yet the Nsight backend started `nsys profile ... -p <pid>` and
+  `ncu ... -p <pid>` from inside the benchmark (`-p` is nsys's NVTX-capture
+  option and ncu's port), which failed into `nsys.err.txt` or `ncu.out.txt`
+  in the test's folder while the run exited 0 with nothing captured; it did so
+  even when nsys or ncu had started the process already. In a container it
+  printed a hint instead, whose Compute-mode command named `ncu profile`, a
+  subcommand ncu does not have. The backend starts no process. Without an
+  Nsight session it prints, once per test, the command that captures the run in
+  its mode: `nsys profile ... <this-binary> --profile nsight [...]` with the
+  `bench run` form, or an `ncu` command with `--cycles 3 --repeats 1`, since ncu
+  replays every kernel launch and a full-length run takes hours (`--profile-args
+  replay` adds its metric list). Under a session, one that `bench run` started
+  or one typed by hand (recognised from `NSYS_PROFILING_SESSION_ID` and
+  `NV_NSIGHT_INJECTION_PORT_BASE`), it names the tool that owns the capture.
+  Each folder and argument the printed command carries is quoted as one shell
+  word, so a folder or a `--profile-args` value with a space or a quote in it
+  reaches the tool as one argument.
+  The four `nsys stats` summaries (`cuda_gpu_kern_sum.txt` and the others) are
+  written by `bench run --profile nsight`; after a wrap typed by hand, run
+  `nsys stats` on the report.
+- **A GPU test's profiler window closes when its measurement ends** -- the
+  after-measure hook the GPU guard installs was stored and never called, so a
+  GPU test's NVTX range was never closed (in an nsys capture of the GPU demo
+  the first test's range held the next test's kernels too, and both ended a
+  second after the last kernel, when the capture did), the selected profiler
+  was never told the window had ended, and GPU rows had empty `profileTool`
+  and `profileDir` cells under `--profile`; a `cpuBaseline()` ran outside the
+  hooks altogether. Every measurement a `PerfGpuCase` makes (`cpuBaseline()`,
+  `cudaKernel(...).measure()`, `cudaKernelMultiGpu(...).measure()`) runs the
+  before hook when it starts, ahead of anything timed, and the after hook once
+  its row is published, so the range spans that measurement and every row, the
+  baseline's included, names the profiler and its folder. Creating a kernel
+  builder fires no hook any more; a builder that is never measured fires
+  neither. The timed window is unchanged.
 - **`bench compare` fails instead of certifying a comparison it cannot make**
   -- two runs with no test name in common printed `No common tests to
   compare.` and exited 0, so a CI job that compared the wrong pair of files,
@@ -520,6 +603,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **The Jetson AGX Thor rig procedure leaves GPU persistence mode as it found
+  it** -- `jetson_clocks` turns GPU persistence mode on and its `--restore`
+  leaves it on, so a board that was Disabled stayed Enabled after following
+  `RIG_THOR_AGX.md`'s measurement procedure. The procedure records the mode
+  before locking the clocks and turns it back off afterwards only if it was
+  off. It attempts each restoration even when the other fails, reports each
+  failure, keeps the saved clock state for a restore by hand, and exits with
+  the measurement's own status when that failed, otherwise nonzero if any
+  restoration did. The rig document also
+  describes two bands of end-to-end time this board shows with the clocks
+  locked, and notes that its build makes no Python tools (no Poetry on the
+  board).
+- **`nsight-parse` reads the reports `bench run` leaves, and fails when it
+  cannot** -- it ran `ncu` on an `.ncu-rep` without `--import`, so ncu took the
+  report for a program to launch and no Nsight Compute report ever yielded a
+  row; it ran `nsys stats` on the report itself, which nsys refuses in some runs
+  when the SQLite export `bench run --profile nsight` made sits beside it
+  ("older than input file"), so such a report yielded none either; and each of
+  those failures printed a warning, wrote an empty or partial CSV and exited 0.
+  It now exports each Nsight Systems report once, to a private temporary file,
+  reads the four summaries from that export, imports each Nsight Compute report
+  with `ncu --import`, and exits 1 when any requested input was not read (a
+  tool failed or is missing, an input is not a report, a directory holds none),
+  with an error line naming it, still writing the rows it did read. A summary
+  with no data is a warning. Its help and the tools README describe the CSV it
+  writes, its own format and not a benchmark CSV: `bench summary`,
+  `bench compare` and `bench-plot` refuse it. A script that relied on exit 0
+  after a failed read now sees 1.
 
 ## v1.0.3 - 2026-06-28
 

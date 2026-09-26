@@ -1,10 +1,13 @@
-"""Tests for nsight_parser.py: CSV slicing + entry-point smoke tests."""
+"""Tests for nsight_parser.py: CSV slicing, the reports it reads, and the failures it reports."""
 
 from __future__ import annotations
 
 import csv
+import os
+import subprocess
 from pathlib import Path
 
+import pytest
 from vernier_tools.benchmarking import nsight_parser
 
 # =============================== CSV Header Detection ========================
@@ -78,25 +81,279 @@ def test_write_csv_empty_rows_still_creates_file(tmp_path: Path) -> None:
     assert out.read_text() == ""
 
 
-# =============================== Parse Paths =================================
+# =============================== Fake Tools ==================================
+
+FIXTURES = Path(__file__).parent / "fixtures" / "nsight"
+
+# nsys and ncu stand-ins that replay what the real tools printed on the
+# reference rig (fixtures/nsight/README.md) and log every call. nsys refuses
+# `stats` on a report that has the runner's export beside it, as the real one
+# did, and fails an export of a report named "broken"; ncu fails without
+# --import, and on a report named "damaged".
+FAKE_NSYS = r"""#!/bin/sh
+echo "nsys $*" >> "$NSIGHT_FAKE_LOG"
+cmd=$1
+shift
+if [ "$cmd" = export ]; then
+  out=""
+  rep=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -o) out=$2; shift 2 ;;
+      --type|--force-overwrite) shift 2 ;;
+      *) rep=$1; shift ;;
+    esac
+  done
+  case "$rep" in *broken*) echo "fake nsys: cannot read $rep" >&2; exit 1 ;; esac
+  : > "$out"
+  exit 0
+fi
+if [ "$cmd" = stats ]; then
+  report=""
+  input=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --report) report=$2; shift 2 ;;
+      --format) shift 2 ;;
+      --force-export=*) shift ;;
+      *) input=$1; shift ;;
+    esac
+  done
+  case "$input" in
+    *.nsys-rep)
+      if [ -f "${input%.nsys-rep}.sqlite" ]; then
+        cat "$NSIGHT_FIXTURES/nsys_stats_beside_runner_export.err" >&2
+        exit 1
+      fi ;;
+  esac
+  case "$input:$report" in
+    *no_kernels*:cuda_gpu_kern_sum) cat "$NSIGHT_FIXTURES/nsys_stats_no_kernels.out"; exit 0 ;;
+  esac
+  cat "$NSIGHT_FIXTURES/nsys_stats_$report.out"
+  exit 0
+fi
+exit 2
+"""
+
+FAKE_NCU = r"""#!/bin/sh
+echo "ncu $*" >> "$NSIGHT_FAKE_LOG"
+rep=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --import) rep=$2; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -z "$rep" ]; then
+  cat "$NSIGHT_FIXTURES/ncu_without_import.out"
+  exit 1
+fi
+case "$rep" in *damaged*) cat "$NSIGHT_FIXTURES/ncu_import_damaged.out"; exit 1 ;; esac
+cat "$NSIGHT_FIXTURES/ncu_import_per_kernel.out"
+exit 0
+"""
 
 
-def test_parse_paths_no_inputs_warns(tmp_path: Path) -> None:
-    """parse_paths returns an empty result and a warning when no inputs match."""
-    result = nsight_parser.parse_paths([tmp_path])
+@pytest.fixture
+def fake_tools(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Put the fake nsys and ncu first on PATH; return the call log."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, script in (("nsys", FAKE_NSYS), ("ncu", FAKE_NCU)):
+        tool = bin_dir / name
+        tool.write_text(script)
+        tool.chmod(0o755)
+    log = tmp_path / "calls.log"
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("NSIGHT_FAKE_LOG", str(log))
+    monkeypatch.setenv("NSIGHT_FIXTURES", str(FIXTURES))
+    return log
+
+
+def _report(directory: Path, name: str) -> Path:
+    """An (empty) report file: the fakes never read its contents."""
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_bytes(b"")
+    return path
+
+
+def _calls(log: Path) -> list[str]:
+    return log.read_text().splitlines() if log.exists() else []
+
+
+# =============================== Nsight Systems ==============================
+
+
+def test_nsys_report_yields_every_summary_row(tmp_path: Path, fake_tools: Path) -> None:
+    """One export to a private file, then the four summaries, 13 rows in all."""
+    rep = _report(tmp_path / "run", "profile.nsys-rep")
+
+    result = nsight_parser.parse_paths([rep])
+
+    assert result.errors == []
+    assert result.warnings == []
+    assert len(result.rows) == 13
+    kernel = [r for r in result.rows if r["report"] == "cuda_gpu_kern_sum"]
+    assert len(kernel) == 1
+    assert kernel[0]["kernel"].startswith("vernier::bench::demo::<unnamed>::saxpyKernel")
+    assert kernel[0]["instances"] == "61"
+    assert kernel[0]["time_total_ns"] == "178481856"
+    api = {r["kernel"]: r for r in result.rows if r["report"] == "cuda_api_sum"}
+    assert api["cudaMalloc"]["instances"] == "122"
+    assert api["cudaFree"]["instances"] == "122"
+    sizes = [r for r in result.rows if r["report"] == "cuda_gpu_mem_size_sum"]
+    assert [r["Operation"] for r in sizes] == [
+        "[CUDA memcpy Host-to-Device]",
+        "[CUDA memcpy Device-to-Host]",
+    ]
+    assert [r["Count"] for r in sizes] == ["122", "61"]
+    assert len([r for r in result.rows if r["report"] == "cuda_gpu_mem_time_sum"]) == 2
+
+    calls = _calls(fake_tools)
+    assert len(calls) == 5
+    export = calls[0].split()
+    assert export[:7] == ["nsys", "export", "--type", "sqlite", "--force-overwrite", "true", "-o"]
+    assert export[-1] == str(rep)
+    private_export = Path(export[7])
+    assert private_export.parent != rep.parent, "the export must not go beside the report"
+    for call, report in zip(calls[1:], nsight_parser.NSYS_REPORTS):
+        assert call == f"nsys stats --report {report} --format csv {private_export}"
+
+
+def test_nsys_report_beside_the_runners_export_parses(tmp_path: Path, fake_tools: Path) -> None:
+    """The layout bench run leaves: the export beside the report is neither used nor touched."""
+    rep = _report(tmp_path / "bench-out" / "Bin.nsight", "profile.nsys-rep")
+    runner_export = rep.with_suffix(".sqlite")
+    runner_export.write_text("the runner's export")
+    # The stand-in refuses the report itself here, as nsys 2025.3.2 did.
+    refused = subprocess.run(
+        ["nsys", "stats", "--report", "cuda_gpu_kern_sum", "--format", "csv", str(rep)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert refused.returncode == 1
+    assert "older than input file" in refused.stderr
+
+    result = nsight_parser.parse_paths([rep.parent])
+
+    assert result.errors == []
+    assert len(result.rows) == 13
+    assert runner_export.read_text() == "the runner's export"
+
+
+def test_summary_without_data_is_a_warning(tmp_path: Path, fake_tools: Path) -> None:
+    """A report with no kernel: that summary has no rows, which is no failure."""
+    rep = _report(tmp_path, "no_kernels.nsys-rep")
+
+    result = nsight_parser.parse_paths([rep])
+
+    assert result.errors == []
+    assert len(result.warnings) == 1
+    assert "cuda_gpu_kern_sum has no rows" in result.warnings[0]
+    assert "does not contain CUDA kernel data" in result.warnings[0]
+    assert len(result.rows) == 12
+
+
+# =============================== Nsight Compute ==============================
+
+
+def test_ncu_report_is_imported(tmp_path: Path, fake_tools: Path) -> None:
+    """ncu reads the saved report through --import: one row per shape, section and metric."""
+    rep = _report(tmp_path / "Bin.ncu", "kernel_profile.ncu-rep")
+
+    result = nsight_parser.parse_paths([rep])
+
+    assert result.errors == []
+    assert len(result.rows) == 88
+    first = result.rows[0]
+    assert first["source"] == "ncu"
+    assert first["kernel"].startswith("unnamed>::saxpyKernel")
+    assert first["block_size"] == "(256, 1, 1)"
+    assert first["metric_name"] == "SM Frequency"
+    occupancy = [
+        (r["block_size"], r["minimum"], r["maximum"])
+        for r in result.rows
+        if r["metric_name"] == "Theoretical Occupancy"
+    ]
+    assert occupancy == [("(256, 1, 1)", "100.00", "100.00"), ("(1, 1, 1)", "50.00", "50.00")]
+    assert _calls(fake_tools) == [f"ncu --import {rep} --csv --print-summary per-kernel"]
+
+
+# =============================== Failures ====================================
+
+
+def test_tool_failure_is_an_error(tmp_path: Path, fake_tools: Path) -> None:
+    """A failed command is an error with the tool's message, and the exit status says so."""
+    rep = _report(tmp_path, "broken.nsys-rep")
+    out = tmp_path / "out.csv"
+
+    result = nsight_parser.parse_paths([rep])
+    rc = nsight_parser.main(["parse", str(rep), "--csv", str(out)])
+
     assert result.rows == []
-    assert any("no .nsys-rep" in w for w in result.warnings)
-
-
-# =============================== Main CLI ====================================
-
-
-def test_main_parse_empty_dir(tmp_path: Path) -> None:
-    """main() returns 0 on a clean parse over an empty directory."""
-    out = tmp_path / "x.csv"
-    rc = nsight_parser.main(["parse", str(tmp_path), "--csv", str(out)])
-    assert rc == 0
+    assert len(result.errors) == 1
+    assert "nsys export failed" in result.errors[0]
+    assert "fake nsys: cannot read" in result.errors[0]
+    assert rc == 1
     assert out.exists()
+
+
+def test_missing_tool_is_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ncu on PATH the request fails; it does not come back empty and successful."""
+    empty = tmp_path / "empty-bin"
+    empty.mkdir()
+    monkeypatch.setenv("PATH", str(empty))
+    rep = _report(tmp_path, "kernel_profile.ncu-rep")
+
+    rc = nsight_parser.main(["parse", str(rep), "--csv", str(tmp_path / "out.csv")])
+    result = nsight_parser.parse_paths([rep])
+
+    assert rc == 1
+    assert result.errors == [f"ncu --import failed for {rep}: ncu not found on PATH"]
+
+
+def test_mixed_directory_keeps_good_rows_and_fails(
+    tmp_path: Path, fake_tools: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One report read, one refused: the rows are written and the run still fails."""
+    folder = tmp_path / "mixed"
+    _report(folder, "good.nsys-rep")
+    bad = _report(folder, "damaged.ncu-rep")
+    out = tmp_path / "mixed.csv"
+
+    rc = nsight_parser.main(["parse", str(folder), "--csv", str(out)])
+
+    assert rc == 1
+    with out.open() as f:
+        assert len(list(csv.DictReader(f))) == 13
+    err = capsys.readouterr().err
+    assert f"error: ncu --import failed for {bad}" in err
+    assert "An unexpected incompatibility with this Nsight Compute version occurred" in err
+
+
+def test_no_reports_is_an_error(tmp_path: Path) -> None:
+    """A directory with no report is a failed request, and says where it looked."""
+    out = tmp_path / "x.csv"
+
+    result = nsight_parser.parse_paths([tmp_path])
+    rc = nsight_parser.main(["parse", str(tmp_path), "--csv", str(out)])
+
+    assert result.rows == []
+    assert result.errors == [f"no .nsys-rep or .ncu-rep file under {tmp_path}"]
+    assert rc == 1
+    assert out.exists()
+
+
+def test_not_a_report_is_an_error(tmp_path: Path) -> None:
+    """An input that is neither a report nor a directory is an error, not skipped."""
+    text = tmp_path / "notes.txt"
+    text.write_text("not a report")
+
+    result = nsight_parser.parse_paths([text])
+
+    assert result.errors == [f"not an .nsys-rep, an .ncu-rep or a directory: {text}"]
 
 
 # =============================== Key Normalization ===========================

@@ -101,17 +101,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                   | Walkthrough                                               |
+| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block   | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demo 01 measures the shared SAXPY example (see
-[Shared Examples](#shared-examples)); the other three carry their own kernels.
+Demos 01 and 02 measure the shared SAXPY example (see
+[Shared Examples](#shared-examples)); the other two carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -198,7 +198,7 @@ first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
 | Example                               | Versions                                                                                                  | Used In          |
 | ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------- |
 | [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 03, 21 |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10          |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demos 10, 11     |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
