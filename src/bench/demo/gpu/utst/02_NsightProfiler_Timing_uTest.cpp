@@ -5,10 +5,10 @@
  * Built against the tracked fake runtime in examples/saxpy/utst/fake_cuda
  * instead of CUDA, so it runs on any machine: it compiles the real
  * 02_NsightProfiler_Timing.cpp, makes one step fail (an acquisition, the launch
- * check, or the host allocation of the sample buffer, by an operator new this
- * binary replaces), and checks that nothing acquired before the failure is
- * still held afterwards. The launch does nothing; the fake's event pair reports
- * a set elapsed time.
+ * check, or the host allocation of the sample buffer, by the scalar operator new
+ * family this binary replaces), and checks that nothing acquired before the
+ * failure is still held afterwards. The launch does nothing; the fake's event
+ * pair reports a set elapsed time.
  */
 
 #include "src/bench/demo/gpu/02_NsightProfiler_Timing.hpp"
@@ -26,7 +26,7 @@ namespace ubd = vernier::bench::demo;
 
 namespace {
 
-/// The next operator new throws std::bad_alloc, once.
+/// The next throwing operator new throws std::bad_alloc, once.
 bool g_failNextNew = false;
 
 /** @brief Arms the allocation fault once the third acquisition (the stop event) is held. */
@@ -38,18 +38,50 @@ void failNextNewAfterThird(int acquisitions) {
 
 } // namespace
 
+// Memory from one form of operator new may be released by any delete of its
+// family, so the whole scalar family is replaced together, on malloc and free:
+// throwing and nothrow new, plain, sized and nothrow delete (GoogleTest itself
+// allocates through nothrow new and frees through sized delete). Nothing then
+// crosses between these and a runtime's own forms, a sanitizer's included.
+// Array and aligned forms pair only within their own families and stay the
+// runtime's. The allocation keeps the standard behaviour: retry through the
+// new-handler while one is installed, then std::bad_alloc, or a null pointer
+// from the nothrow form.
 void* operator new(std::size_t size) {
   if (g_failNextNew) {
     g_failNextNew = false;
     throw std::bad_alloc();
   }
-  if (void* p = std::malloc(size != 0 ? size : 1)) {
-    return p;
+  const std::size_t BYTES = size != 0 ? size : 1;
+  for (;;) {
+    if (void* p = std::malloc(BYTES)) {
+      return p;
+    }
+    const std::new_handler HANDLER = std::get_new_handler();
+    if (HANDLER == nullptr) {
+      throw std::bad_alloc();
+    }
+    HANDLER();
   }
-  throw std::bad_alloc();
 }
-void operator delete(void* p) noexcept { std::free(p); }
-void operator delete(void* p, std::size_t /*size*/) noexcept { std::free(p); }
+
+void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// Out of line: inlined into a caller, free() would meet a pointer the compiler
+// knows came from operator new, and it warns about the pair.
+[[gnu::noinline]] void operator delete(void* p) noexcept { std::free(p); }
+
+[[gnu::noinline]] void operator delete(void* p, std::size_t /*size*/) noexcept { std::free(p); }
+
+[[gnu::noinline]] void operator delete(void* p, const std::nothrow_t& /*tag*/) noexcept {
+  std::free(p);
+}
 
 /* ----------------------------- Launch stand-in ----------------------------- */
 
