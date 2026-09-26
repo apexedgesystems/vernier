@@ -1,0 +1,1415 @@
+/**
+ * @file ProfilerReadinessChecks_uTest.cpp
+ * @brief Unit tests for the backends' own readiness checks.
+ *
+ * Each test asks the registry for one backend's decision about one request in
+ * an explicit context whose PATH holds only fake tools (ReadinessFixtures.hpp),
+ * and reads what the fakes were asked to do from their log. Nothing here
+ * changes the process environment or needs privileges.
+ */
+
+#include "src/bench/inc/ProfilerBpftrace.hpp"
+#include "src/bench/inc/ProfilerGperf.hpp"
+#include "src/bench/inc/ProfilerOffCpu.hpp"
+#include "src/bench/inc/ProfilerPerf.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
+
+#include <gtest/gtest.h>
+
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <filesystem>
+#include <fstream>
+#include <future>
+#include <map>
+#include <memory>
+#include <regex>
+#include <sstream>
+#include <string>
+#include <vector>
+
+using vernier::bench::BpftracePlan;
+using vernier::bench::BpftraceProfiler;
+using vernier::bench::decideGperfAnalysis;
+using vernier::bench::EnvReport;
+using vernier::bench::GperfAnalysis;
+using vernier::bench::GperfModes;
+using vernier::bench::GperfPlan;
+using vernier::bench::OffCpuPlan;
+using vernier::bench::OffCpuProfiler;
+using vernier::bench::parseGperfModes;
+using vernier::bench::parsePerfMode;
+using vernier::bench::PerfMode;
+using vernier::bench::PerfPlan;
+using vernier::bench::PrivilegeRoute;
+using vernier::bench::ProfilerRegistry;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessContext;
+using vernier::bench::ReadinessRequest;
+using vernier::bench::ReadinessResult;
+using vernier::bench::ReadinessScope;
+using vernier::bench::test::FakeToolDir;
+using vernier::bench::test::ScopedEnv;
+using vernier::bench::test::StderrCapture;
+
+namespace {
+
+/** @brief A request for @p backend with @p scripts, as the doctor's selected row asks it. */
+ReadinessRequest requestFor(const std::string& backend, std::vector<std::string> scripts = {}) {
+  ReadinessRequest request;
+  request.backend = backend;
+  request.bpfScripts = std::move(scripts);
+  request.scope = ReadinessScope::PREFLIGHT;
+  return request;
+}
+
+/** @brief Pids of the fake bpftrace processes the log recorded. */
+std::vector<pid_t> tracerPids(const FakeToolDir& dir) {
+  std::vector<pid_t> pids;
+  for (const std::string& line : dir.logLines("bpftrace ")) {
+    const auto AT = line.rfind(" pid=");
+    if (AT != std::string::npos && line.find("--version") == std::string::npos) {
+      pids.push_back(static_cast<pid_t>(std::stol(line.substr(AT + 5))));
+    }
+  }
+  return pids;
+}
+
+/** @brief True when no process @p pid exists any more. */
+bool gone(pid_t pid) {
+  errno = 0;
+  return ::kill(pid, 0) != 0 && errno == ESRCH;
+}
+
+/** @brief One logged `-e <program> <target>` invocation. */
+struct InlineCall {
+  std::string program;
+  pid_t target = -1;
+  pid_t pid = -1; ///< The fake's pid, where the log line records it.
+};
+
+/**
+ * @brief The `<prefix> -e <program> <target>[ pid=<n>]` invocations the log
+ * holds, in order. The program spans lines; the line that closes the entry
+ * holds only the target and the pid.
+ */
+std::vector<InlineCall> inlineCalls(const FakeToolDir& dir, const std::string& prefix) {
+  std::vector<InlineCall> calls;
+  std::istringstream in(dir.log());
+  const std::string START = prefix + " -e ";
+  std::string line;
+  bool open = false;
+  InlineCall call;
+  while (std::getline(in, line)) {
+    if (!open) {
+      if (line.rfind(START, 0) == 0) {
+        open = true;
+        call = InlineCall{};
+        call.program = line.substr(START.size());
+      }
+      continue;
+    }
+    if (line.size() > 1 && line[0] == ' ' && std::isdigit(static_cast<unsigned char>(line[1]))) {
+      call.target = static_cast<pid_t>(std::stol(line.substr(1)));
+      const auto AT = line.find(" pid=");
+      call.pid = AT == std::string::npos ? -1 : static_cast<pid_t>(std::stol(line.substr(AT + 5)));
+      calls.push_back(call);
+      open = false;
+    } else {
+      call.program += "\n" + line;
+    }
+  }
+  return calls;
+}
+
+/** @brief True when process @p pid is a child of this process (so this test may signal it). */
+bool childOfThisProcess(pid_t pid) {
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string text;
+  if (!std::getline(stat, text)) {
+    return false;
+  }
+  const std::size_t COMM_END = text.rfind(')');
+  if (COMM_END == std::string::npos) {
+    return false;
+  }
+  std::istringstream fields(text.substr(COMM_END + 1));
+  char state = 0;
+  long parent = 0;
+  fields >> state >> parent;
+  return parent == static_cast<long>(::getpid());
+}
+
+/**
+ * @brief Kill a fake tracer that failed a test by outliving its check, when
+ * it is this process's child, so a failing run leaves nothing behind.
+ */
+void endIfLeft(pid_t pid) {
+  if (!gone(pid) && childOfThisProcess(pid)) {
+    (void)::kill(pid, SIGKILL);
+  }
+}
+
+/** @brief The last word of the first log line starting with @p prefix ("" if none). */
+std::string lastWordOf(const FakeToolDir& dir, const std::string& prefix) {
+  const std::vector<std::string> LINES = dir.logLines(prefix);
+  if (LINES.empty()) {
+    return {};
+  }
+  return LINES.front().substr(LINES.front().rfind(' ') + 1);
+}
+
+/** @brief Fake tools and a scripts directory holding one sched-tracepoint script. */
+class BpfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    bpftrace_ = dir_.install("fake_bpftrace.sh", "bpftrace");
+    dir_.makeDirectory("scripts");
+    script_ = dir_.writeFile("scripts/probe_script.bt",
+                             "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n");
+  }
+
+  void installSudoAndKill() {
+    sudo_ = dir_.install("fake_sudo.sh", "sudo");
+    kill_ = dir_.install("fake_kill.sh", "kill");
+  }
+
+  /** @brief The context: fakes on PATH, the scripts directory, and @p extra. */
+  ReadinessContext ctx(std::map<std::string, std::string> extra = {},
+                       uid_t euid = ::geteuid()) const {
+    extra["PERF_BPF_SCRIPTS"] = dir_.path() + "/scripts";
+    return dir_.context(std::move(extra), euid);
+  }
+
+  ReadinessResult check(const std::string& backend, const ReadinessContext& context) const {
+    return ProfilerRegistry::instance().checkRequest(
+        requestFor(backend, backend == "bpftrace" ? std::vector<std::string>{"probe_script"}
+                                                  : std::vector<std::string>{}),
+        context);
+  }
+
+  /** @brief A decision made under a watchdog, observed as it returned. */
+  struct Watched {
+    bool returned = false;
+    ReadinessResult result;
+    std::chrono::milliseconds elapsed{0};
+  };
+
+  /**
+   * @brief check() on another thread, bounded by @p limit. A check that does
+   * not return in time is reported, and the fake tracers it started (this
+   * process's children, logged with their pid) are killed so that it can.
+   */
+  Watched checkWatched(const std::string& backend, const ReadinessContext& context,
+                       std::chrono::seconds limit) const {
+    auto future = std::async(std::launch::async, [&] {
+      Watched out;
+      const auto START = std::chrono::steady_clock::now();
+      out.result = check(backend, context);
+      out.elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - START);
+      return out;
+    });
+    const bool RETURNED = future.wait_for(limit) == std::future_status::ready;
+    if (!RETURNED) {
+      const std::string LOG = dir_.log();
+      const std::regex PID(" pid=([0-9]+)");
+      for (std::sregex_iterator it(LOG.begin(), LOG.end(), PID), end; it != end; ++it) {
+        const pid_t TRACER = static_cast<pid_t>(std::stol((*it)[1]));
+        if (childOfThisProcess(TRACER)) {
+          (void)::kill(TRACER, SIGKILL);
+        }
+      }
+    }
+    Watched out = future.get();
+    out.returned = RETURNED;
+    return out;
+  }
+
+  /** @brief Where planned runs write their capture folders. */
+  std::string captures() const { return dir_.path() + "/captures"; }
+
+  /**
+   * @brief Run one case of @p backend from @p decision's plan, with @p env set
+   * in the live environment the launch inherits; returns what it printed.
+   */
+  std::string runPlanned(const std::string& backend, const ReadinessResult& decision,
+                         const std::string& testName,
+                         const std::map<std::string, std::string>& env = {}) const {
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = backend;
+    cfg.artifactRoot = captures();
+    if (backend == "bpftrace") {
+      cfg.bpfScripts = {"probe_script"};
+    }
+    std::vector<std::unique_ptr<ScopedEnv>> scoped;
+    scoped.push_back(std::make_unique<ScopedEnv>("FAKE_LOG", dir_.logPath()));
+    for (const auto& [KEY, VALUE] : env) {
+      scoped.push_back(std::make_unique<ScopedEnv>(KEY.c_str(), VALUE));
+    }
+    StderrCapture err;
+    if (backend == "bpftrace") {
+      BpftraceProfiler profiler(cfg, testName,
+                                std::dynamic_pointer_cast<const BpftracePlan>(decision.plan));
+      profiler.beforeMeasure();
+      profiler.afterMeasure(vernier::bench::Stats{});
+    } else {
+      OffCpuProfiler profiler(cfg, testName,
+                              std::dynamic_pointer_cast<const OffCpuPlan>(decision.plan));
+      profiler.beforeMeasure();
+      profiler.afterMeasure(vernier::bench::Stats{});
+    }
+    return err.text();
+  }
+
+  FakeToolDir dir_;
+  std::string bpftrace_;
+  std::string script_;
+  std::string sudo_;
+  std::string kill_;
+};
+
+} // namespace
+
+/* ----------------------------- bpftrace ----------------------------- */
+
+/** @test Without an opt-in the attach runs as the current user and sudo is never called. */
+TEST_F(BpfCheckTest, BpftraceCurrentUserAttaches) {
+  installSudoAndKill(); // present, and still unused
+  const ReadinessResult R = check("bpftrace", ctx());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "probe_script: a probe copy with a 5 s self-exit stayed running for "
+                              "the 1000 ms start grace as the current user and stopped on SIGINT "
+                              "(probe with " +
+                                  bpftrace_ + "); not checked: the run's capture");
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("kill").empty()) << dir_.log();
+  EXPECT_EQ(dir_.logLines("bpftrace --version").size(), 1U) << dir_.log();
+  EXPECT_EQ(dir_.logLines("bpftrace -q ").size(), 1U) << dir_.log();
+}
+
+/** @test A current user bpftrace refuses is denied, with the ways to get access. */
+TEST_F(BpfCheckTest, BpftraceCurrentUserDenied) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message,
+            "denied: script 'probe_script' could not attach as the current user: ERROR: bpftrace "
+            "currently only supports running as the root user.");
+  EXPECT_EQ(R.report.hint, "Set BENCH_SUDO=1 with a scoped sudoers grant for " + bpftrace_ +
+                               " and " + kill_ +
+                               ", run with CAP_BPF and CAP_PERFMON, or run as root.");
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << "no opt-in, no sudo\n" << dir_.log();
+}
+
+/** @test The sudo route runs the resolved tools, and the plan carries them. */
+TEST_F(BpfCheckTest, BpftraceSudoRouteUsesResolvedTools) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message,
+            "probe_script: a probe copy with a 5 s self-exit stayed running for the 1000 ms "
+            "start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n "
+            "kill (probe with " +
+                bpftrace_ + "); not checked: the grant for the run's own command (" + bpftrace_ +
+                " -q <capture folder>/probe_script.tmp.bt), SIGTERM and SIGKILL through sudo, "
+                "and the run's capture");
+  const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->route.privilege.route, PrivilegeRoute::SCOPED_SUDO);
+  EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
+  EXPECT_EQ(PLAN->route.sudo, sudo_);
+  EXPECT_EQ(PLAN->route.kill, kill_);
+  ASSERT_EQ(PLAN->scriptPaths.size(), 1U);
+  EXPECT_EQ(PLAN->scriptPaths.front(), script_);
+  // The attach and the stop go through sudo; the version check never does.
+  const std::vector<std::string> SUDO = dir_.logLines("sudo ");
+  ASSERT_EQ(SUDO.size(), 2U) << dir_.log();
+  EXPECT_EQ(SUDO[0].rfind("sudo -n -- " + bpftrace_ + " -q ", 0), 0U) << SUDO[0];
+  EXPECT_EQ(SUDO[1].rfind("sudo -n -- " + kill_ + " -2 ", 0), 0U) << SUDO[1];
+  EXPECT_EQ(dir_.log().find("sudo -n -- " + bpftrace_ + " --version"), std::string::npos);
+}
+
+/**
+ * @test A grant that refuses the probe copy leaves the run's own command
+ * unverified, not denied: the report names the command sudo refused, as
+ * attempted, and the run's command, which only the run can try.
+ */
+TEST_F(BpfCheckTest, BpftraceGrantRefusalOfTheProbeCopyIsUnverified) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "-q"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(R.collectionReady());
+  const std::string COPY = lastWordOf(dir_, "sudo -n -- " + bpftrace_ + " -q ");
+  ASSERT_NE(COPY.find("/vernier_probe_"), std::string::npos) << dir_.log();
+  EXPECT_EQ(R.report.message, "unverified: sudo -n refused the probe command " + bpftrace_ +
+                                  " -q " + COPY +
+                                  ": sudo: a password is required; the run "
+                                  "executes " +
+                                  bpftrace_ +
+                                  " -q <capture folder>/probe_script.tmp.bt instead, which "
+                                  "only the run can try");
+  EXPECT_EQ(R.report.message.find(script_), std::string::npos)
+      << "the script's own path is not the command sudo refused";
+  EXPECT_EQ(R.report.hint.rfind("The grant must allow " + bpftrace_ +
+                                    " with the run's script arguments and " + kill_ +
+                                    " with -2, -15 and -9",
+                                0),
+            0U)
+      << R.report.hint;
+}
+
+/** @test The unverified row is runnable, so it keeps the settings notice an Error row drops. */
+TEST_F(BpfCheckTest, BpftraceUnverifiedRowKeepsTheNotice) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"PERF_BPF_SUDO", "1"}, {"FAKE_SUDO_DENY", "-q"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(R.report.message.ends_with(
+      "only the run can try; PERF_BPF_SUDO is deprecated; set BENCH_SUDO instead. "
+      "PERF_BPF_SUDO=1 selects: the probe tool runs with sudo -n."))
+      << R.report.message;
+}
+
+/**
+ * @test A grant for the run's command that refuses the probe copy (the
+ * reviewer's inverse grant): the request stays runnable and the run starts
+ * and stops its tracer through sudo.
+ */
+TEST_F(BpfCheckTest, BpftraceRunAllowedProbeRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "/probe0.bt"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  ASSERT_TRUE(R.collectionReady());
+  const std::string ERR = runPlanned("bpftrace", R, "Bpf.Allowed", POLICY);
+  EXPECT_EQ(ERR.find("[bpftrace]"), std::string::npos) << ERR;
+  const std::string RUN_COPY = captures() + "/Bpf.Allowed.bpf/probe_script.tmp.bt";
+  EXPECT_EQ(dir_.logLines("sudo -n -- " + bpftrace_ + " -q " + RUN_COPY).size(), 1U) << dir_.log();
+  const std::vector<std::string> RUN = dir_.logLines("bpftrace -q " + RUN_COPY + " pid=");
+  ASSERT_EQ(RUN.size(), 1U) << dir_.log();
+  const std::string TRACER = RUN.front().substr(RUN.front().rfind('=') + 1);
+  EXPECT_EQ(dir_.logLines("sudo -n -- " + kill_ + " -2 " + TRACER).size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(static_cast<pid_t>(std::stol(TRACER))));
+}
+
+/**
+ * @test A grant that allows the probe copy but refuses the run's command:
+ * the check does not claim the run's grant, and the run reports the refusal
+ * of the command it attempted.
+ */
+TEST_F(BpfCheckTest, BpftraceProbeAllowedRunRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", ".tmp.bt"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("not checked: the grant for the run's own command"),
+            std::string::npos)
+      << R.report.message;
+  const std::string ERR = runPlanned("bpftrace", R, "Bpf.Refused", POLICY);
+  const std::string RUN_COPY = captures() + "/Bpf.Refused.bpf/probe_script.tmp.bt";
+  EXPECT_NE(ERR.find("[bpftrace] the tracer exited during its start grace: denied: sudo -n "
+                     "refused " +
+                     bpftrace_ + " -q " + RUN_COPY + ": sudo: a password is required"),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("[bpftrace] The grant must allow " + bpftrace_), std::string::npos) << ERR;
+  EXPECT_TRUE(dir_.logLines("bpftrace -q " + RUN_COPY).empty()) << "the run's tracer never ran";
+}
+
+/** @test sudo failing whatever the arguments is denied, with a remedy other than a grant. */
+TEST_F(BpfCheckTest, BpftraceSudoItselfFailingIsDenied) {
+  installSudoAndKill();
+  const std::string NNP = "sudo: The \"no new privileges\" flag is set, which prevents sudo from "
+                          "running as root.";
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_FAIL", NNP}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  const std::string COPY = lastWordOf(dir_, "sudo -n -- " + bpftrace_ + " -q ");
+  EXPECT_EQ(R.report.message,
+            "denied: sudo -n failed for " + bpftrace_ + " -q " + COPY + ": " + NNP);
+  EXPECT_EQ(R.report.hint, "sudo cannot run commands as root here, whatever the grant; unset "
+                           "BENCH_SUDO and run with CAP_BPF and CAP_PERFMON, or run as root.");
+}
+
+/** @test bpftrace refused although sudo ran it as root is denied, with the root remedy. */
+TEST_F(BpfCheckTest, BpftraceRefusedAsRootIsDenied) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message,
+            "denied: script 'probe_script' could not attach through sudo -n (BENCH_SUDO=1): "
+            "ERROR: bpftrace currently only supports running as the root user.");
+  EXPECT_EQ(R.report.hint.rfind("bpftrace was refused although it ran as root", 0), 0U)
+      << R.report.hint;
+}
+
+/** @test A refused SIGINT is a denied cleanup, and the probe tracer does not survive. */
+TEST_F(BpfCheckTest, BpftraceStopSignalRefused) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -2"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0), 0U)
+      << R.report.message;
+  EXPECT_NE(R.report.hint.find("-2, -15 and -9"), std::string::npos);
+  const std::vector<pid_t> TRACERS = tracerPids(dir_);
+  ASSERT_EQ(TRACERS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(TRACERS.front())) << "the probe tracer outlived the check";
+}
+
+/**
+ * @test Every stop signal refused: denied (the run's stop would be refused
+ * alike), and the copy's self-exit ends the probe within its bound; the
+ * check returns only after that, with no tracer alive.
+ */
+TEST_F(BpfCheckTest, BpftraceRefusedStopEndsBySelfExit) {
+  installSudoAndKill();
+  const Watched W =
+      checkWatched("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -"}}),
+                   std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(W.result.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0),
+            0U)
+      << W.result.report.message;
+  EXPECT_EQ(W.result.report.message.find("still runs"), std::string::npos)
+      << W.result.report.message;
+  const std::vector<pid_t> TRACERS = tracerPids(dir_);
+  ASSERT_EQ(TRACERS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(TRACERS.front())) << "the probe tracer outlived the check";
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(1000 + 5000 + 10000));
+  endIfLeft(TRACERS.front());
+}
+
+/**
+ * @test A tracer that neither stops (every signal refused) nor honours its own
+ * self-exit: the check still returns at its bound, 1 s grace + 5 s self-exit
+ * + 10 s after the start, and says the tracer still runs.
+ */
+TEST_F(BpfCheckTest, BpftraceTracerIgnoringItsSelfExitIsBounded) {
+  installSudoAndKill();
+  const Watched W = checkWatched("bpftrace",
+                                 ctx({{"BENCH_SUDO", "1"},
+                                      {"FAKE_SUDO_DENY", "kill -"},
+                                      {"FAKE_BPFTRACE_MODE", "ignore-exit"}}),
+                                 std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  const std::vector<pid_t> TRACERS = tracerPids(dir_);
+  ASSERT_EQ(TRACERS.size(), 1U) << dir_.log();
+  EXPECT_EQ(W.result.cause, ReadinessCause::DENIED);
+  EXPECT_TRUE(W.result.report.message.ends_with("; the probe tracer " +
+                                                std::to_string(TRACERS.front()) +
+                                                " still runs past its 5 s self-exit"))
+      << W.result.report.message;
+  EXPECT_GE(W.elapsed, std::chrono::milliseconds(1000 + 5000 + 10000 - 500));
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(1000 + 5000 + 10000 + 3000));
+  endIfLeft(TRACERS.front());
+}
+
+/** @test Grants for signals the stop never needed are not demanded. */
+TEST_F(BpfCheckTest, BpftraceUnusedSignalGrantsNotNeeded) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -15|kill -9"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+}
+
+/** @test Refusing invocations the check never makes does not reject the selected operation. */
+TEST_F(BpfCheckTest, BpftraceUnrelatedInvocationsRefused) {
+  installSudoAndKill();
+  const ReadinessResult R = check(
+      "bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "--version|kill -0|sudo -l|-l "}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  for (const std::string& line : dir_.logLines("sudo ")) {
+    EXPECT_EQ(line.find("--version"), std::string::npos) << line;
+    EXPECT_EQ(line.find("kill -0"), std::string::npos) << line;
+  }
+}
+
+/** @test A tracer that ignores SIGINT is a caveat: the run's output may be incomplete. */
+TEST_F(BpfCheckTest, BpftraceIgnoredInterruptIsCaveat) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"FAKE_BPFTRACE_MODE", "ignore-int"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(R.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(R.report.message, "the probe tracer ignored SIGINT and stopped on SIGTERM; the run's "
+                              "output may be incomplete");
+  EXPECT_TRUE(R.collectionReady());
+}
+
+/** @test The sudo route needs sudo and kill on PATH. */
+TEST_F(BpfCheckTest, BpftraceSudoRouteNeedsItsHelpers) {
+  const ReadinessResult NO_SUDO = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  EXPECT_EQ(NO_SUDO.cause, ReadinessCause::MISSING_HELPER);
+  EXPECT_EQ(NO_SUDO.report.message.rfind("missing helper: sudo is not on PATH; BENCH_SUDO=1 runs "
+                                         "bpftrace through sudo -n",
+                                         0),
+            0U)
+      << NO_SUDO.report.message;
+  dir_.install("fake_sudo.sh", "sudo");
+  const ReadinessResult NO_KILL = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
+  EXPECT_EQ(NO_KILL.cause, ReadinessCause::MISSING_HELPER);
+  EXPECT_EQ(NO_KILL.report.message.rfind("missing helper: kill is not on PATH", 0), 0U)
+      << NO_KILL.report.message;
+  EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << "nothing runs before the route is complete";
+}
+
+/** @test An invalid setting is a configuration error and launches nothing. */
+TEST_F(BpfCheckTest, BpftraceInvalidSettingLaunchesNothing) {
+  installSudoAndKill();
+  for (const auto& [KEY, VALUE] : std::map<std::string, std::string>{
+           {"BENCH_SUDO", "maybe"}, {"PERF_BPF_SUDO", "sometimes"}}) {
+    const ReadinessResult R = check("bpftrace", ctx({{KEY, VALUE}}));
+    EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION);
+    EXPECT_EQ(R.report.message, "configuration: " + KEY + "='" + VALUE + "' is not a boolean");
+    EXPECT_EQ(R.report.hint, "Use 1, true, yes or on to run the probe tool with sudo -n; 0, false, "
+                             "no, off or an empty value to run it as the current user.");
+  }
+  EXPECT_EQ(dir_.log(), "") << "a configuration error must launch nothing";
+}
+
+/** @test The deprecated alias still selects the route, with a warning saying so. */
+TEST_F(BpfCheckTest, BpftraceLegacyAliasWarns) {
+  installSudoAndKill();
+  const ReadinessResult ON = check("bpftrace", ctx({{"PERF_BPF_SUDO", "1"}}));
+  EXPECT_EQ(ON.report.status, EnvReport::Status::Warning);
+  EXPECT_NE(ON.report.message.find("through sudo -n (PERF_BPF_SUDO=1 (deprecated alias))"),
+            std::string::npos)
+      << ON.report.message;
+  EXPECT_NE(ON.report.message.find("PERF_BPF_SUDO is deprecated; set BENCH_SUDO instead. "
+                                   "PERF_BPF_SUDO=1 selects: the probe tool runs with sudo -n."),
+            std::string::npos)
+      << ON.report.message;
+  EXPECT_FALSE(dir_.logLines("sudo ").empty());
+}
+
+/** @test Conflicting settings name the winner; equal ones are silent. */
+TEST_F(BpfCheckTest, BpftraceConflictNamesWinner) {
+  installSudoAndKill();
+  const ReadinessResult CONFLICT =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"PERF_BPF_SUDO", "0"}}));
+  EXPECT_EQ(CONFLICT.report.status, EnvReport::Status::Warning);
+  EXPECT_NE(CONFLICT.report.message.find(
+                "BENCH_SUDO=1 and PERF_BPF_SUDO=0 disagree; BENCH_SUDO wins (the probe tool runs "
+                "with sudo -n). PERF_BPF_SUDO is deprecated: remove it."),
+            std::string::npos)
+      << CONFLICT.report.message;
+  const ReadinessResult EQUAL =
+      check("bpftrace", ctx({{"BENCH_SUDO", "1"}, {"PERF_BPF_SUDO", "yes"}}));
+  EXPECT_EQ(EQUAL.report.status, EnvReport::Status::Ok) << EQUAL.report.message;
+}
+
+/** @test Root never calls sudo, and an opt-in is noted as unneeded. */
+TEST_F(BpfCheckTest, BpftraceRootNeverCallsSudo) {
+  installSudoAndKill();
+  const ReadinessResult R = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}, 0));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find(" as root and stopped on SIGINT (probe with " + bpftrace_ +
+                                  "); running as root; BENCH_SUDO not needed; not checked: the "
+                                  "run's capture"),
+            std::string::npos)
+      << R.report.message;
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+}
+
+/** @test bpftrace's own attach errors keep their cause. */
+TEST_F(BpfCheckTest, BpftraceAttachErrorsKeepTheirCause) {
+  const ReadinessResult UNSUPPORTED =
+      check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  EXPECT_EQ(UNSUPPORTED.cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(UNSUPPORTED.report.message, "unsupported: script 'probe_script': stdin:1:1-36: ERROR: "
+                                        "tracepoint not found: syscalls:sys_enter_write");
+  const ReadinessResult BROKEN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "broken"}}));
+  EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(BROKEN.report.message, "unusable: script 'probe_script' did not stay attached: fake "
+                                   "bpftrace: the program could not be loaded");
+}
+
+/** @test A missing, non-executable or broken bpftrace, or a missing script, is an error. */
+TEST_F(BpfCheckTest, BpftraceToolAndScriptProblems) {
+  const ReadinessResult BROKEN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "version-fails"}}));
+  EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(
+      BROKEN.report.message.rfind("unusable: " + bpftrace_ + " --version: exit status 127: ", 0),
+      0U)
+      << BROKEN.report.message;
+
+  const ReadinessResult NO_SCRIPT =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"absent_script"}), ctx());
+  EXPECT_EQ(NO_SCRIPT.cause, ReadinessCause::MISSING);
+  EXPECT_EQ(NO_SCRIPT.report.message, "missing: bpftrace script 'absent_script' not found at " +
+                                          dir_.path() + "/scripts/absent_script.bt");
+
+  dir_.install("fake_bpftrace.sh", "bpftrace", 0644);
+  const ReadinessResult PLAIN = check("bpftrace", ctx());
+  EXPECT_EQ(PLAIN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(PLAIN.report.message, "unusable: " + bpftrace_ + " is not an executable file");
+
+  FakeToolDir empty;
+  const ReadinessResult MISSING = ProfilerRegistry::instance().checkRequest(
+      requestFor("bpftrace", {"probe_script"}), empty.context());
+  EXPECT_EQ(MISSING.cause, ReadinessCause::MISSING);
+  EXPECT_EQ(MISSING.report.message, "missing: bpftrace not found on PATH");
+}
+
+/** @test An unreadable selected script is rejected before anything runs, and a run leaves no
+ * folder. */
+TEST_F(BpfCheckTest, BpftraceUnreadableScriptLaunchesNothing) {
+  installSudoAndKill();
+  ASSERT_EQ(::chmod(script_.c_str(), 0), 0);
+  const struct Restore {
+    std::string path;
+    ~Restore() { (void)::chmod(path.c_str(), 0644); }
+  } RESTORE{script_};
+  if (::access(script_.c_str(), R_OK) == 0) {
+    GTEST_SKIP() << "this user can read a file with mode 000 (root)";
+  }
+  for (const std::map<std::string, std::string>& extra :
+       {std::map<std::string, std::string>{},
+        std::map<std::string, std::string>{{"BENCH_SUDO", "1"}}}) {
+    const ReadinessResult R = check("bpftrace", ctx(extra));
+    EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+    EXPECT_FALSE(R.collectionReady());
+    EXPECT_EQ(R.report.message, "unusable: bpftrace script 'probe_script' at " + script_ +
+                                    " cannot be read: Permission denied");
+    EXPECT_EQ(R.report.hint, "Give this user read access to " + script_ +
+                                 ", or select a script it can read with --bpf.");
+  }
+  // A run of the same request: a no-op profiler, no capture folder, and not
+  // one bpftrace (or sudo) invocation, not even --version.
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "bpftrace";
+  cfg.bpfScripts = {"probe_script"};
+  cfg.artifactRoot = dir_.path() + "/captures";
+  {
+    StderrCapture quiet;
+    auto profiler = ProfilerRegistry::instance().make("bpftrace", cfg, "Bpf.Unreadable", ctx());
+    ASSERT_NE(profiler, nullptr);
+    EXPECT_EQ(profiler->artifactDir(), "");
+    profiler->beforeMeasure();
+    profiler->afterMeasure(vernier::bench::Stats{});
+    EXPECT_NE(quiet.text().find("cannot be read: Permission denied"), std::string::npos);
+  }
+  EXPECT_FALSE(std::filesystem::exists(cfg.artifactRoot)) << "a rejected request left a folder";
+  EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << dir_.log();
+}
+
+/** @test A probe copy that cannot be written is reported as the probe copy, not as the script. */
+TEST_F(BpfCheckTest, BpftraceProbeCopyUnwritable) {
+  const std::string ABSENT = dir_.path() + "/absent";
+  const ReadinessResult R = check("bpftrace", ctx({{"TMPDIR", ABSENT}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(R.report.message, "unusable: cannot write the probe copy of script 'probe_script' in "
+                              "a new directory under " +
+                                  ABSENT);
+  EXPECT_EQ(R.report.hint, "Point TMPDIR at a writable directory, or make /tmp writable.");
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+}
+
+/* ----------------------------- offcpu ----------------------------- */
+
+/**
+ * @test offcpu runs as the current user by default: the launch's script with
+ * a self-exit added, on this process; no tracer outlives the check.
+ */
+TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
+  installSudoAndKill();
+  const ReadinessResult R = check("offcpu", ctx({{"PERF_BPF_SUDO", "1"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "the off-CPU script, with a 5 s self-exit added, stayed running for "
+                              "the 1500 ms start grace as the current user and stopped on SIGINT "
+                              "(probe with " +
+                                  bpftrace_ + "); not checked: the run's capture");
+  EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_NE(CALLS.front().program.find("\ninterval:s:5 { exit(); }"), std::string::npos)
+      << CALLS.front().program;
+  EXPECT_EQ(CALLS.front().target, ::getpid());
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  const auto PLAN = std::dynamic_pointer_cast<const OffCpuPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
+}
+
+/**
+ * @test offcpu with BENCH_SUDO goes through sudo. sudo refusing the probe, a
+ * command the run never runs, is unverified and names both commands; the
+ * request stays runnable.
+ */
+TEST_F(BpfCheckTest, OffCpuSudoRoute) {
+  installSudoAndKill();
+  const ReadinessResult OK = check("offcpu", ctx({{"BENCH_SUDO", "yes"}}));
+  EXPECT_EQ(OK.report.status, EnvReport::Status::Ok) << OK.report.message;
+  EXPECT_EQ(OK.report.message,
+            "the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start "
+            "grace through sudo -n (BENCH_SUDO=yes) and stopped on SIGINT through sudo -n kill "
+            "(probe with " +
+                bpftrace_ + "); not checked: the grant for the run's own command (" + bpftrace_ +
+                " -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and "
+                "the run's capture");
+  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_).size(), 1U) << dir_.log();
+  const ReadinessResult REFUSED =
+      check("offcpu", ctx({{"BENCH_SUDO", "yes"}, {"FAKE_SUDO_DENY", "-e"}}));
+  EXPECT_EQ(REFUSED.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(REFUSED.collectionReady());
+  EXPECT_EQ(REFUSED.report.message,
+            "unverified: sudo -n refused the probe command " + bpftrace_ +
+                " -e <the off-CPU script with a 5 s self-exit> " + std::to_string(::getpid()) +
+                ": sudo: a password is required; the run executes " + bpftrace_ +
+                " -e <the off-CPU script> <benchmark pid> instead, which only the run can try");
+}
+
+/**
+ * @test The probe is the launch's own script with the self-exit appended,
+ * through the same route and on the same process; the run's has no interval.
+ */
+TEST_F(BpfCheckTest, OffCpuProbeIsTheRunsScriptWithASelfExit) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Same", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] stacks written to " + captures() + "/OffCpu.Same.offcpu/offcpu.txt"),
+            std::string::npos)
+      << ERR;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
+  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
+  EXPECT_EQ(CALLS[0].program, CALLS[1].program + "\ninterval:s:5 { exit(); }");
+  EXPECT_EQ(CALLS[1].program.find("interval"), std::string::npos) << CALLS[1].program;
+  EXPECT_EQ(CALLS[0].target, ::getpid());
+  EXPECT_EQ(CALLS[1].target, ::getpid());
+}
+
+/**
+ * @test The reviewer's inverse grant: a policy refusing any program that
+ * carries a self-exit (the probe) and allowing the run's command. The request
+ * stays runnable (unverified), and the run starts, stops and captures.
+ */
+TEST_F(BpfCheckTest, OffCpuRunAllowedProbeRefused) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "interval:"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  ASSERT_TRUE(R.collectionReady());
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Allowed", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] stacks written to "), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find("could not"), std::string::npos) << ERR;
+}
+
+/**
+ * @test A grant that allows the probe but refuses the run's command: the
+ * check is ready, says the run's grant was not checked, and the run reports
+ * the refusal of the command it attempted and writes no stacks.
+ */
+TEST_F(BpfCheckTest, OffCpuProbeAllowedRunRefused) {
+  installSudoAndKill();
+  const std::string SELF = std::to_string(::getpid());
+  // The run's script ends "exit();\n}\n" before its pid; the probe's ends with
+  // its interval, so only the run's command ends like this.
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "exit();\n}\n " + SELF + "$"}};
+  const ReadinessResult R = check("offcpu", ctx(POLICY));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_NE(R.report.message.find("not checked: the grant for the run's own command"),
+            std::string::npos)
+      << R.report.message;
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Refused", POLICY);
+  EXPECT_NE(ERR.find("[offcpu] the tracer exited during its start grace: denied: sudo -n "
+                     "refused " +
+                     bpftrace_ + " -e <the off-CPU script> " + SELF +
+                     ": sudo: a password is required"),
+            std::string::npos)
+      << ERR;
+  EXPECT_EQ(ERR.find("stacks written"), std::string::npos) << ERR;
+}
+
+/**
+ * @test Every stop signal refused: denied (the run's stop would be refused
+ * alike), and the self-exit ends the probe within its bound; the check
+ * returns only after that, with no tracer alive.
+ */
+TEST_F(BpfCheckTest, OffCpuRefusedStopEndsBySelfExit) {
+  installSudoAndKill();
+  const Watched W = checkWatched("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -"}}),
+                                 std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(W.result.report.message.rfind("denied: cleanup: sudo -n refused " + kill_ + " -2 ", 0),
+            0U)
+      << W.result.report.message;
+  EXPECT_EQ(W.result.report.message.find("still runs"), std::string::npos)
+      << W.result.report.message;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(1500 + 5000 + 10000));
+  endIfLeft(CALLS.front().pid);
+}
+
+/**
+ * @test The reviewer's case: the target's exit is never seen (as across a pid
+ * namespace) and every stop signal is refused. The self-exit does not depend
+ * on the target, so the probe still ends within its bound and the check
+ * returns with no tracer alive.
+ */
+TEST_F(BpfCheckTest, OffCpuUnseenTargetExitStillEnds) {
+  installSudoAndKill();
+  const Watched W = checkWatched("offcpu",
+                                 ctx({{"BENCH_SUDO", "1"},
+                                      {"FAKE_SUDO_DENY", "kill -"},
+                                      {"FAKE_BPFTRACE_MODE", "ignore-target"}}),
+                                 std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(W.result.report.message.find("still runs"), std::string::npos)
+      << W.result.report.message;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(1500 + 5000 + 10000));
+  endIfLeft(CALLS.front().pid);
+}
+
+/**
+ * @test Slow attachment and refused stops: the self-exit counts from the
+ * attach, 3 s after the start here, and the check still waits it out.
+ */
+TEST_F(BpfCheckTest, OffCpuSlowAttachWithRefusedStopEnds) {
+  installSudoAndKill();
+  const Watched W = checkWatched("offcpu",
+                                 ctx({{"BENCH_SUDO", "1"},
+                                      {"FAKE_SUDO_DENY", "kill -"},
+                                      {"FAKE_BPFTRACE_MODE", "slow-attach"},
+                                      {"FAKE_ATTACH_S", "3"}}),
+                                 std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(W.result.report.message.find("still runs"), std::string::npos)
+      << W.result.report.message;
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  EXPECT_GE(W.elapsed, std::chrono::milliseconds(3000 + 5000 - 500))
+      << "ended before its self-exit";
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(1500 + 5000 + 10000));
+  endIfLeft(CALLS.front().pid);
+}
+
+/** @test sudo failing whatever the arguments is denied for offcpu too. */
+TEST_F(BpfCheckTest, OffCpuSudoItselfFailingIsDenied) {
+  installSudoAndKill();
+  const std::string NNP = "sudo: The \"no new privileges\" flag is set, which prevents sudo from "
+                          "running as root.";
+  const ReadinessResult R = check("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_FAIL", NNP}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message, "denied: sudo -n failed for " + bpftrace_ +
+                                  " -e <the off-CPU script with a 5 s self-exit> " +
+                                  std::to_string(::getpid()) + ": " + NNP);
+}
+
+/** @test offcpu denied as the current user says how to get access. */
+TEST_F(BpfCheckTest, OffCpuCurrentUserDenied) {
+  installSudoAndKill();
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message.rfind("denied: the off-CPU script could not attach as the current "
+                                   "user: ERROR:",
+                                   0),
+            0U)
+      << R.report.message;
+  EXPECT_EQ(R.report.hint.rfind("Set BENCH_SUDO=1 with a scoped sudoers grant", 0), 0U);
+}
+
+/* ----------------------------- perf ----------------------------- */
+
+namespace {
+
+/** @brief A fake perf on PATH, asked about one request. */
+class PerfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    perf_ = dir_.install("fake_perf.sh", "perf");
+  }
+
+  ReadinessResult check(std::map<std::string, std::string> env, const std::string& args = "",
+                        uid_t euid = 0) const {
+    ReadinessRequest request;
+    request.backend = "perf";
+    request.profileArgs = args;
+    request.scope = ReadinessScope::PREFLIGHT;
+    return ProfilerRegistry::instance().checkRequest(request, dir_.context(std::move(env), euid));
+  }
+
+  FakeToolDir dir_;
+  std::string perf_;
+};
+
+} // namespace
+
+/** @test One parser decides the mode for the check and the launch. */
+TEST(PerfModeTest, ParsesTheSelectedMode) {
+  EXPECT_EQ(parsePerfMode(""), PerfMode::STAT);
+  EXPECT_EQ(parsePerfMode("-a --per-thread"), PerfMode::STAT);
+  EXPECT_EQ(parsePerfMode("record -g"), PerfMode::RECORD);
+  EXPECT_EQ(parsePerfMode("  record"), PerfMode::RECORD);
+  EXPECT_EQ(parsePerfMode("mem"), PerfMode::MEM);
+  EXPECT_EQ(parsePerfMode("c2c"), PerfMode::C2C);
+}
+
+/** @test Counting access is probed with the resolved perf, which the plan keeps. */
+TEST_F(PerfCheckTest, CountsWithTheResolvedTool) {
+  const ReadinessResult R = check({});
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "perf stat counted cpu-cycles,instructions,branches,branch-misses,"
+                              "cache-misses on this process (probe with " +
+                                  perf_ + ")");
+  const auto PLAN = std::dynamic_pointer_cast<const PerfPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->perf, perf_);
+  EXPECT_EQ(PLAN->mode, PerfMode::STAT);
+  EXPECT_EQ(dir_.logLines("perf " + perf_ +
+                          " stat -x, -e cpu-cycles,instructions,branches,"
+                          "branch-misses,cache-misses -p " +
+                          std::to_string(::getpid()) + " --timeout 100")
+                .size(),
+            1U)
+      << dir_.log();
+}
+
+/** @test A perf whose --version fails is unusable, and is never asked to count. */
+TEST_F(PerfCheckTest, BrokenPerfIsNeverRun) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "broken"}});
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(R.report.message.rfind("unusable: " + perf_ +
+                                       " --version: exit status 2: WARNING: "
+                                       "perf not found for kernel 6.8.0-138",
+                                   0),
+            0U)
+      << R.report.message;
+  EXPECT_NE(R.report.hint.find("linux-tools-$(uname -r)"), std::string::npos);
+  EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
+}
+
+/** @test Refused counter access is denied, with the remedies and no elevation. */
+TEST_F(PerfCheckTest, DeniedAccessNamesTheRemedy) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "denied"}}, "", 1000);
+  EXPECT_EQ(R.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(R.report.message, "denied: perf stat cannot open the counters as this user: Access to "
+                              "performance monitoring and observability operations is limited.");
+  EXPECT_EQ(R.report.hint, "Grant CAP_PERFMON to the benchmark, lower kernel.perf_event_paranoid "
+                           "(sudo sysctl -w kernel.perf_event_paranoid=2), or run as root; vernier "
+                           "does not elevate perf.");
+}
+
+/** @test An event the PMU lacks is a caveat, not a failure. */
+TEST_F(PerfCheckTest, UnsupportedEventIsCaveat) {
+  const ReadinessResult R = check({{"FAKE_PERF_MODE", "unsupported"}});
+  EXPECT_EQ(R.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(R.report.message, "perf stat counts this process, but cache-misses <not supported> "
+                              "here; those columns stay empty");
+}
+
+/** @test Modes beyond stat get the access probe and stay unverified past it. */
+TEST_F(PerfCheckTest, OtherModesUnverifiedBeyondAccess) {
+  const ReadinessResult RECORD = check({}, "record -g");
+  EXPECT_EQ(RECORD.report.status, EnvReport::Status::Warning);
+  EXPECT_EQ(RECORD.report.message,
+            "unverified: perf stat counts this process; perf record itself is not probed before "
+            "the run");
+  const auto PLAN = std::dynamic_pointer_cast<const PerfPlan>(RECORD.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->mode, PerfMode::RECORD);
+  const ReadinessResult DENIED = check({{"FAKE_PERF_MODE", "denied"}}, "c2c", 1000);
+  EXPECT_EQ(DENIED.cause, ReadinessCause::DENIED) << "known unavailability is not unverified";
+}
+
+/** @test A missing or non-executable perf is an error. */
+TEST_F(PerfCheckTest, MissingOrNotExecutable) {
+  dir_.install("fake_perf.sh", "perf", 0644);
+  const ReadinessResult PLAIN = check({});
+  EXPECT_EQ(PLAIN.report.message, "unusable: " + perf_ + " is not an executable file");
+  FakeToolDir empty;
+  ReadinessRequest request;
+  request.backend = "perf";
+  const ReadinessResult MISSING =
+      ProfilerRegistry::instance().checkRequest(request, empty.context());
+  EXPECT_EQ(MISSING.report.message, "missing: perf not found on PATH");
+}
+
+/** @test The launch runs the perf the plan names, not whatever PATH finds then. */
+TEST_F(PerfCheckTest, LaunchRunsThePlannedPath) {
+  FakeToolDir other; // the live PATH: no perf at all
+  ASSERT_TRUE(other.ok());
+  auto plan = std::make_shared<PerfPlan>();
+  plan->perf = perf_;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "perf";
+  cfg.artifactRoot = other.path();
+  {
+    ScopedEnv path("PATH", other.path());
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    vernier::bench::PerfStatProfiler profiler(cfg, "Perf.Launch", plan);
+    profiler.beforeMeasure();
+    profiler.afterMeasure(vernier::bench::Stats{});
+  }
+  EXPECT_EQ(dir_.logLines("perf " + perf_ +
+                          " stat -e cpu-cycles,instructions,branches,"
+                          "branch-misses,cache-misses -p " +
+                          std::to_string(::getpid()))
+                .size(),
+            1U)
+      << dir_.log();
+}
+
+/**
+ * @test A perf and an artifact root whose paths hold shell punctuation run as
+ * checked: the launch executes the checked perf and writes where it says.
+ */
+TEST_F(PerfCheckTest, LaunchKeepsPunctuationInPaths) {
+  const std::string BIN_NAME = "tool's bin $HOME \"q\" `true`";
+  const std::string BIN = dir_.makeDirectory(BIN_NAME);
+  const std::string PERF = dir_.install("fake_perf.sh", BIN_NAME + "/perf");
+  ReadinessRequest request;
+  request.backend = "perf";
+  request.scope = ReadinessScope::PREFLIGHT;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+      request, ReadinessContext(0, ::getpid(), {{"PATH", BIN}, {"FAKE_LOG", dir_.logPath()}}));
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const auto CHECKED = std::dynamic_pointer_cast<const PerfPlan>(R.plan);
+  ASSERT_NE(CHECKED, nullptr);
+  ASSERT_EQ(CHECKED->perf, PERF);
+
+  const std::string ROOT = dir_.makeDirectory("art's $PWD \"x\" `id`");
+  const std::string PID = std::to_string(::getpid());
+  for (const std::string& args : {std::string{}, std::string{"record -g"}}) {
+    auto plan = std::make_shared<PerfPlan>(*CHECKED);
+    plan->mode = parsePerfMode(args);
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = "perf";
+    cfg.profileArgs = args;
+    cfg.artifactRoot = ROOT;
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    StderrCapture err;
+    vernier::bench::PerfStatProfiler profiler(cfg, args.empty() ? "Perf.Stat" : "Perf.Record",
+                                              plan);
+    profiler.beforeMeasure();
+    profiler.afterMeasure(vernier::bench::Stats{});
+    const std::string TEXT = err.text();
+    EXPECT_EQ(TEXT.find("Syntax error"), std::string::npos) << TEXT;
+    EXPECT_EQ(TEXT.find("not found"), std::string::npos) << TEXT;
+  }
+  EXPECT_EQ(dir_.logLines("perf " + PERF +
+                          " stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses "
+                          "-p " +
+                          PID + " pid=")
+                .size(),
+            1U)
+      << dir_.log();
+  EXPECT_EQ(dir_.logLines("perf " + PERF + " record -g -p " + PID + " -o " + ROOT +
+                          "/Perf.Record.perf/perf.data pid=")
+                .size(),
+            1U)
+      << dir_.log();
+  EXPECT_TRUE(std::filesystem::exists(ROOT + "/Perf.Stat.perf/stat.txt"))
+      << "the stat redirect did not reach the artifact folder";
+  EXPECT_TRUE(std::filesystem::exists(ROOT + "/Perf.Record.perf/record.err.txt"));
+}
+
+/* ----------------------------- gperf ----------------------------- */
+
+namespace {
+
+/** @brief Analyzer fakes on PATH, asked about one gperf request. */
+class GperfCheckTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    if (UB_HAS_GPERF_CPU == 0) {
+      GTEST_SKIP() << "gperftools CPU profiling is not compiled in";
+    }
+  }
+
+  /** @brief What the row says the build supports. */
+  static std::string built() {
+    return UB_HAS_GPERF_HEAP != 0 ? " (built: cpu, heap)" : " (built: cpu)";
+  }
+
+  ReadinessResult check(bool analyze, const std::string& args = "") const {
+    ReadinessRequest request;
+    request.backend = "gperf";
+    request.profileArgs = args;
+    request.analyze = analyze;
+    request.scope = ReadinessScope::PREFLIGHT;
+    return ProfilerRegistry::instance().checkRequest(request, dir_.context());
+  }
+
+  FakeToolDir dir_;
+};
+
+} // namespace
+
+/** @test One parser decides the modes for the check and the profiler. */
+TEST(GperfModeTest, ParsesTheSelectedModes) {
+  EXPECT_TRUE(parseGperfModes("").cpu);
+  EXPECT_FALSE(parseGperfModes("").heap);
+  EXPECT_FALSE(parseGperfModes("heap").cpu);
+  EXPECT_TRUE(parseGperfModes("heap").heap);
+  EXPECT_TRUE(parseGperfModes("both").cpu && parseGperfModes("both").heap);
+  EXPECT_TRUE(parseGperfModes("cpu,heap").cpu && parseGperfModes("cpu,heap").heap);
+}
+
+/** @test Without --profile-analyze a missing analyzer is only information. */
+TEST_F(GperfCheckTest, AnalysisOffNeedsNoAnalyzer) {
+  const ReadinessResult R = check(false);
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.report.message, "gperftools profiles cpu" + built() +
+                                  "; no analyzer on PATH (only --profile-analyze needs one)");
+}
+
+/** @test The same environment with --profile-analyze is an analysis error that still collects. */
+TEST_F(GperfCheckTest, AnalysisOnWithoutAnalyzerIsAnalysisError) {
+  const ReadinessResult R = check(true);
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_TRUE(R.collectionReady()) << "the capture still runs";
+  EXPECT_EQ(R.report.message, "analysis: missing: --profile-analyze needs google-pprof or pprof, "
+                              "and neither is on PATH; the cpu capture still runs and cpu.prof "
+                              "is kept");
+  EXPECT_EQ(R.report.hint, "Install an analyzer (google-pprof from gperftools, or Go's pprof), or "
+                           "drop --profile-analyze.");
+  const auto PLAN = std::dynamic_pointer_cast<const GperfPlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_TRUE(PLAN->analyzer.empty());
+}
+
+/** @test The analyzer is the first of google-pprof and pprof found, whichever exists. */
+TEST_F(GperfCheckTest, EitherAnalyzerSpellingIsFound) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  const ReadinessResult ONLY_PPROF = check(true);
+  EXPECT_EQ(ONLY_PPROF.report.status, EnvReport::Status::Ok) << ONLY_PPROF.report.message;
+  EXPECT_EQ(ONLY_PPROF.report.message,
+            "gperftools profiles cpu" + built() + "; --profile-analyze runs " + PPROF);
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(ONLY_PPROF.plan)->analyzer, PPROF);
+
+  const std::string GOOGLE = dir_.install("fake_pprof.sh", "google-pprof");
+  const ReadinessResult BOTH = check(true);
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(BOTH.plan)->analyzer, GOOGLE)
+      << "google-pprof is tried first";
+
+  FakeToolDir onlyGoogle;
+  const std::string ALONE = onlyGoogle.install("fake_pprof.sh", "google-pprof");
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.analyze = true;
+  const ReadinessResult GOOGLE_ONLY =
+      ProfilerRegistry::instance().checkRequest(request, onlyGoogle.context());
+  EXPECT_EQ(std::dynamic_pointer_cast<const GperfPlan>(GOOGLE_ONLY.plan)->analyzer, ALONE);
+}
+
+/** @test A heap request without heap support is a collection error naming the option. */
+TEST_F(GperfCheckTest, HeapWithoutSupportIsCollectionError) {
+  if (UB_HAS_GPERF_HEAP != 0) {
+    GTEST_SKIP() << "heap profiling is compiled in";
+  }
+  for (const char* ARGS : {"heap", "both"}) {
+    const ReadinessResult R = check(false, ARGS);
+    EXPECT_EQ(R.report.status, EnvReport::Status::Error) << ARGS;
+    EXPECT_FALSE(R.collectionReady()) << ARGS;
+    EXPECT_EQ(R.report.message.rfind("unsupported: heap profiling is not compiled in", 0), 0U);
+    EXPECT_NE(R.report.hint.find("-DVERNIER_LINK_TCMALLOC=ON"), std::string::npos);
+  }
+}
+
+/** @test A failing analyzer is reported with its status, and cpu.prof is kept. */
+TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  auto plan = std::make_shared<GperfPlan>();
+  plan->modes.cpu = true;
+  plan->analyze = true;
+  plan->analyzer = PPROF;
+  plan->analysisReady = true; // its --help worked; reading this profile fails
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "gperf";
+  cfg.profileAnalyze = true;
+  cfg.artifactRoot = dir_.path();
+  std::string err;
+  {
+    ScopedEnv mode("FAKE_PPROF_MODE", "fail-on-profile");
+    ScopedEnv log("FAKE_LOG", dir_.logPath());
+    vernier::bench::GperfProfiler profiler(cfg, "Gperf.Fails", plan);
+    vernier::bench::test::StderrCapture capture;
+    profiler.beforeMeasure();
+    volatile double sink = 0;
+    for (int i = 0; i < 2000000; ++i) {
+      sink = sink + i * 0.5;
+    }
+    profiler.afterMeasure(vernier::bench::Stats{});
+    err = capture.text();
+  }
+  const std::string CPU_PROF = dir_.path() + "/Gperf.Fails.gperf/cpu.prof";
+  EXPECT_NE(
+      err.find("[gperf] " + PPROF +
+               " failed: exit status 1: fake pprof: cannot read profile; raw profile kept at " +
+               CPU_PROF),
+      std::string::npos)
+      << err;
+  std::error_code ec;
+  EXPECT_TRUE(std::filesystem::exists(CPU_PROF, ec)) << "the raw capture is never removed";
+  EXPECT_EQ(dir_.logLines("pprof " + PPROF + " --text --cum --lines ").size(), 1U) << dir_.log();
+  EXPECT_TRUE(dir_.logLines("pprof " + PPROF + " --text --lines ").empty())
+      << "the second view is skipped after a failure";
+}
+
+/** @test An analyzer that prints no report is said to, instead of leaving empty headers. */
+TEST_F(GperfCheckTest, EmptyReportIsSaidSo) {
+  const std::string PPROF = dir_.install("fake_pprof.sh", "pprof");
+  auto plan = std::make_shared<GperfPlan>();
+  plan->modes.cpu = true;
+  plan->analyze = true;
+  plan->analyzer = PPROF;
+  plan->analysisReady = true;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "gperf";
+  cfg.profileAnalyze = true;
+  cfg.artifactRoot = dir_.path();
+  ScopedEnv mode("FAKE_PPROF_MODE", "empty");
+  vernier::bench::GperfProfiler profiler(cfg, "Gperf.Empty", plan);
+  profiler.beforeMeasure();
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(vernier::bench::Stats{});
+  const std::string OUT = testing::internal::GetCapturedStdout();
+  EXPECT_NE(OUT.find("(the analyzer printed no report; a very short run may hold no samples)"),
+            std::string::npos)
+      << OUT;
+}
+
+/** @test Through the registry, a broken analyzer makes the promised analysis an Error, alone. */
+TEST_F(GperfCheckTest, BrokenAnalyzerRequestIsAnalysisError) {
+  const std::string GOOGLE = dir_.install("fake_pprof.sh", "google-pprof");
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.scope = ReadinessScope::PREFLIGHT;
+  const ReadinessContext CTX = dir_.context({{"FAKE_PPROF_MODE", "fail"}});
+  request.analyze = true;
+  const ReadinessResult ON = ProfilerRegistry::instance().checkRequest(request, CTX);
+  EXPECT_EQ(ON.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(ON.collectionReady());
+  const auto PLAN = std::dynamic_pointer_cast<const GperfPlan>(ON.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_FALSE(PLAN->analysisReady);
+  EXPECT_EQ(PLAN->analysisSkipped, GOOGLE + " does not run");
+  request.analyze = false;
+  const ReadinessResult OFF = ProfilerRegistry::instance().checkRequest(request, CTX);
+  EXPECT_EQ(OFF.report.status, EnvReport::Status::Ok) << OFF.report.message;
+}
+
+/* ----------------------------- gperf analysis (every build) ----------------------------- */
+
+namespace {
+
+const GperfModes CPU{true, false};
+
+/** @brief The analysis decision in @p dir's context with @p extra settings. */
+GperfAnalysis analysisIn(const FakeToolDir& dir, bool analyze,
+                         std::map<std::string, std::string> extra = {}) {
+  return decideGperfAnalysis(CPU, analyze, dir.context(std::move(extra)));
+}
+
+} // namespace
+
+/**
+ * @test A promised analysis without an analyzer is an analysis-stage Error; without the promise
+ * the same environment is fine
+ *
+ * Needs no gperftools, so the rule is pinned on every build, not only where
+ * the gperf backend can run.
+ */
+TEST(GperfAnalysisTest, PromisedAnalysisWithoutAnalyzerIsAnalysisError) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const GperfAnalysis ON = analysisIn(dir, true);
+  ASSERT_TRUE(ON.error.has_value()) << "a promised analysis with no analyzer must not be ready";
+  EXPECT_EQ(ON.error->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.error->cause, ReadinessCause::MISSING);
+  EXPECT_TRUE(ON.error->collectionReady()) << "the capture still runs";
+  EXPECT_EQ(ON.error->report.message,
+            "analysis: missing: --profile-analyze needs google-pprof or pprof, and neither is on "
+            "PATH; the cpu capture still runs and cpu.prof is kept");
+  EXPECT_TRUE(ON.analyzer.empty());
+
+  const GperfAnalysis OFF = analysisIn(dir, false);
+  EXPECT_FALSE(OFF.error.has_value()) << "without the promise a missing analyzer is only noted";
+}
+
+/** @test An analyzer that does not run makes a promised analysis an Error; it is not run otherwise.
+ */
+TEST(GperfAnalysisTest, BrokenAnalyzerIsAnalysisError) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  const GperfAnalysis ON = analysisIn(dir, true, {{"FAKE_PPROF_MODE", "fail"}});
+  ASSERT_TRUE(ON.error.has_value()) << "a broken analyzer must not be ready";
+  EXPECT_EQ(ON.error->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ON.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(ON.error->cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(ON.error->collectionReady());
+  EXPECT_EQ(ON.error->report.message,
+            "analysis: unusable: --profile-analyze would run " + PPROF +
+                ", which does not run: --help exit status 1: fake pprof: cannot read profile; the "
+                "cpu capture still runs and cpu.prof is kept");
+  EXPECT_EQ(ON.analyzer, PPROF);
+
+  const std::size_t RUNS = dir.logLines("pprof ").size();
+  const GperfAnalysis OFF = analysisIn(dir, false, {{"FAKE_PPROF_MODE", "fail"}});
+  EXPECT_FALSE(OFF.error.has_value());
+  EXPECT_EQ(OFF.analyzer, PPROF) << "the analyzer is still named";
+  EXPECT_EQ(dir.logLines("pprof ").size(), RUNS) << "without the promise it is not run";
+}
+
+/** @test Either spelling is found, google-pprof first, and only the selected one is probed. */
+TEST(GperfAnalysisTest, EitherSpellingOnlyTheSelectedRuns) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  const GperfAnalysis ONLY_PPROF = analysisIn(dir, true);
+  EXPECT_FALSE(ONLY_PPROF.error.has_value());
+  EXPECT_EQ(ONLY_PPROF.analyzer, PPROF);
+  EXPECT_EQ(dir.logLines("pprof " + PPROF + " --help").size(), 1U) << dir.log();
+
+  const std::string GOOGLE = dir.install("fake_pprof.sh", "google-pprof");
+  const GperfAnalysis BOTH = analysisIn(dir, true);
+  EXPECT_FALSE(BOTH.error.has_value());
+  EXPECT_EQ(BOTH.analyzer, GOOGLE);
+  EXPECT_EQ(dir.logLines("pprof " + GOOGLE + " --help").size(), 1U) << dir.log();
+  EXPECT_EQ(dir.logLines("pprof " + PPROF + " --help").size(), 1U) << "pprof was probed again";
+}
+
+/** @test A request without a CPU capture has nothing to analyze and needs no analyzer. */
+TEST(GperfAnalysisTest, NoCpuCaptureNeedsNoAnalyzer) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const GperfAnalysis HEAP = decideGperfAnalysis(GperfModes{false, true}, true, dir.context());
+  EXPECT_FALSE(HEAP.error.has_value());
+}

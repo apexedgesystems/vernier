@@ -111,8 +111,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  prints how to enable heap mode and skips it, and `bench doctor` reports the
-  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  (or `both`) is a readiness error that names this option: the run prints it
+  once and proceeds unprofiled, the doctor's selected row for that request
+  fails with it, and the gperf row reports `built: cpu` rather than `built:
+  cpu, heap`. With it, the heaptrack backend
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
@@ -178,6 +180,123 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
+- **A run reports the doctor's decision for its own request** -- the doctor
+  rows and the construction of a profiler ask the registry one question
+  (`ProfilerRegistry::checkRequest`) for the request that `--profile`,
+  `--profile-args`, `--bpf` and `--profile-analyze` state, in one snapshot of
+  the environment. The first guarded case of a run decides it and every later
+  case reuses the decision, and a report prints once: a failure prints the
+  doctor's cause and remedy (`[FAIL] Profiler 'massif': valgrind binary not
+  found on PATH`, then the fix) where the run printed the registration hint,
+  and the case runs unprofiled as before; a warning prints and the case is
+  profiled; an analysis the run cannot perform prints and the capture still
+  runs. A backend's zero-argument check vouches only for its default mode:
+  with `--profile-args`, its OK becomes `unverified: <name> checks its
+  default mode only; '<args>' was not checked`; a backend registered without
+  a check reports `unverified: no environment check is registered for
+  <name>` where it reported `OK no check defined`; and under the wrap of
+  `bench run` the check is not run (`unverified: collection is owned by the
+  <name> wrap; completion is checked at exit`). Backends register a check of
+  whole requests with `VERNIER_REGISTER_READINESS_BACKEND`
+  (`ProfilerReadiness.hpp`); `ProfilerRegistry::resetReadiness()` forgets the
+  kept decisions. A check's probe is bounded, and when it ends, whether it
+  exits, fails or times out, everything it started in its process group is
+  stopped before the check returns, so nothing a check starts runs on into
+  the measurement. Exit statuses are unchanged.
+- **The doctor says what its rows check, and checks one request on demand**
+  -- `--profile-check` prints `=== Profiler Backend Doctor (default mode of
+  each backend) ===` and a closing note: each row checks one backend's
+  default mode for this user and environment, a run checks its own request
+  when its profiler is created (only cases built with the profiler guard
+  create one), and `--require` accepts only `[OK]`. With `--profile <name>`
+  (and `--profile-args`, `--bpf`, `--profile-analyze`) it adds a `Selected
+  request` row that carries exactly the report a run of that request prints.
+  `--profile-check-json` gains `"backendScope": "default-mode"` and, with a
+  request, `"selected": {"name", "profileArgs", "status", "message",
+  "hint"}`; every existing key and row is unchanged. Both check flags act
+  after all flags are parsed, so their position on the command line no
+  longer matters. A script that matched the old header line needs the new
+  one.
+- **bpftrace and offcpu elevate only on request; `BENCH_SUDO` is the one
+  opt-in** -- `bpftrace` ran its scripts through `sudo -n` unless
+  `PERF_BPF_SUDO` was `0` or `false`, with no opt-in at all, and its doctor row
+  read `BENCH_SUDO` while its run read `PERF_BPF_SUDO`. Both backends run
+  bpftrace as the current user by default (root never uses sudo) and through
+  `sudo -n` only when `BENCH_SUDO` is `1`, `true`, `yes` or `on`.
+  `PERF_BPF_SUDO` remains for the `bpftrace` backend through 1.0.4 as a
+  deprecated alias that warns; `BENCH_SUDO` wins a conflict and the warning
+  says so; an invalid value of either is a configuration error that launches
+  nothing. **Action needed:** a setup that relied on the implicit sudo sets
+  `BENCH_SUDO=1`. The doctor, its selected row and the run make one decision:
+  they resolve `bpftrace` (and on the sudo route `sudo` and `kill`) on `PATH`,
+  run `bpftrace --version` as the current user, run a probe through the route
+  for the launch's start grace and stop it with SIGINT through the same
+  route, and the run executes exactly those resolved paths. Each probe is the
+  launch's script with a 5 s self-exit added: bpftrace's run as copies from a
+  private directory, since the run's copy goes in a capture folder that does
+  not exist yet, and offcpu's inline, on the checking process. A probe whose
+  stop is refused ends by that self-exit, and the check waits for it and
+  reaps it before it returns, so no readiness tracer outlives the check. Each
+  selected script is read first: one this user cannot read is an error that
+  names the file and the cause (`unusable: bpftrace script '<name>' at <path>
+  cannot be read: Permission denied`), and nothing is launched. A ready row
+  says what its probe showed and ends with what only the run shows (`not
+  checked: the run's capture`, and on the sudo route the grant for the run's
+  own command and SIGTERM and SIGKILL through sudo). A sudoers grant must
+  allow `bpftrace` with the run's script arguments and `kill` with `-2`,
+  `-15` and `-9`. A refused stop signal is `denied` with the command as it
+  was attempted and sudo's own words, and so is sudo failing whatever the
+  arguments. A grant's refusal of a probe, a command the run never runs, is
+  `unverified` instead, naming that command and the run's; the run's start
+  then shows whether the grant allows the run's command, and the run reports
+  a refusal of it as `denied`.
+  offcpu no longer refuses a non-root run before trying: it attaches as the
+  current user and reports what bpftrace says. A run reports a tracer that
+  exits during its start grace, each stop signal it could not deliver, and a
+  tracer still running after the stop; offcpu prints `stacks written` only
+  when its tracer ended on SIGINT or SIGTERM, and writes bpftrace's messages
+  to `offcpu.err.txt`. Nothing needs `timeout(1)` any more. The public helpers
+  `benchSudoActive()`, `sudoBpftraceUsable()`, `bpftraceAttachViable()` and
+  `sudoKill()` stay and use the same policy and tools: `BENCH_SUDO=yes` or
+  `on` enables, `no` or `off` disables, and any other value is not an opt-in.
+- **perf's doctor row and run follow its real counter access** -- the row
+  read `kernel.perf_event_paranoid` and failed at 3 or more even where perf
+  counts (as root in a privileged container), and a perf whose `--version`
+  failed was reported as a warning and then launched anyway. The check
+  resolves `perf` on `PATH`, requires `perf --version` to succeed, and counts
+  this process for 100 ms with `perf stat -e
+  cpu-cycles,instructions,branches,branch-misses,cache-misses -p <pid>` as the
+  current user: refused access is `denied` with the remedies (vernier never
+  elevates perf), an event the CPU lacks is a caveat whose column stays empty,
+  and `record`, `mem` and `c2c` are reported `unverified` beyond that access.
+  The run launches the absolute path the check ran, started by `/bin/sh`
+  rather than an `sh` looked up on `PATH`, with that path and the capture
+  paths quoted so that any character in them, an apostrophe included,
+  reaches perf unchanged; a perf that fails its check is never launched.
+- **gperf checks the requested mode and runs the analyzer it found** -- the
+  gperf row said `gperftools linked` whatever was asked, and
+  `--profile-analyze` looked for `google-pprof` or `pprof` but always ran
+  `google-pprof`, through `sh` and `head`, ignoring its exit status: with only
+  `pprof` installed it printed empty analysis headers. The check parses the
+  mode with the profiler's own parser, and a mode the build lacks is a
+  readiness error. With `--profile-analyze` the analyzer is the first of
+  `google-pprof` and `pprof` on `PATH`, and it must answer `--help`; with
+  neither, or with one that does not run, the request is an analysis error
+  (`analysis: missing: ...` or `analysis: unusable: ...`, `[FAIL]` in the
+  doctor's selected row and `"status": "fail"` in its JSON) printed once by
+  the run, while the capture still runs and `cpu.prof` is kept; without
+  `--profile-analyze` the analyzer is only named in the row and never run.
+  The analysis runs the analyzer the check found, directly and bounded,
+  prints the first lines of each view without the analyzer's own messages,
+  and reports an analyzer that fails on the profile with its status, its
+  error output and where the raw profile is kept.
+- **A profiler built for a request that cannot run leaves no folder** -- a
+  `PerfStatProfiler`, `GperfProfiler`, `BpftraceProfiler` or `OffCpuProfiler`
+  constructed directly (without the registry) decides its request the way the
+  registry does, and when the request cannot run it prints why and creates no
+  per-test artifact folder, like the no-op the registry returns for it. Code
+  that constructs these profilers directly and expected their folder whatever
+  the environment gets no folder where the tool is unusable.
 
 ### Fixed
 
