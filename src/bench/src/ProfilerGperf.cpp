@@ -96,9 +96,9 @@ GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
 
 void GperfProfiler::beforeMeasure() {
 #if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
-  // Set sampling frequency before starting the profiler.
-  // gperftools reads CPUPROFILE_FREQUENCY at ProfilerStart() time.
-  // Default (100 Hz) is too coarse for sub-millisecond operations.
+  // Pass --profile-frequency to gperftools as CPUPROFILE_FREQUENCY. Measured with gperftools
+  // 2.15 and 2.16, this write is too late for the profiler's initialization and does not change
+  // the rate; the variable takes effect when set before the process starts (API_REFERENCE.md).
   if (wantCpu_ && cfg_.profileFrequency > 0) {
     std::string freq = std::to_string(cfg_.profileFrequency);
     ::setenv("CPUPROFILE_FREQUENCY", freq.c_str(), /*overwrite=*/1);

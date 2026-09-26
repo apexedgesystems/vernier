@@ -77,7 +77,7 @@ how to compare two runs.
 | --- | --------------------- | ---------------------------------- | --------------------------- | -------------------------- | ----------------------------------------------------------- |
 | 01  | Basic Workflow        | Measure-export-analyze cycle       | join V0 (copy per part)     | join V1 (reserve, append)  | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)           |
 | 02  | perf Profiler         | Hardware counter profiling         | Stride-512 array walk       | Sequential array walk      | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)             |
-| 03  | gperftools Profiler   | Function-level flamegraphs         | Bubble sort O(n^2)          | std::sort O(n log n)       | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
+| 03  | gperftools Profiler   | Which function has the time        | join V0 (copy per part)     | join V1 (reserve, append)  | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)           |
 | 04  | Cache-Friendly Layout | AoS vs SoA data transformation     | 128B struct (81% waste)     | Separate arrays (100% use) | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)           |
 | 05  | Branch Optimization   | Branch prediction and avoidance    | Branchy + random data       | Branchless + multiply      | [05_BRANCH_OPTIMIZATION.md](docs/05_BRANCH_OPTIMIZATION.md) |
 | 06  | Thread Scaling        | Lock contention analysis           | Mutex-protected counter     | Atomic relaxed counter     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)           |
@@ -85,7 +85,7 @@ how to compare two runs.
 | 08  | RAPL Profiler         | Energy/power measurement           | Naive dot product           | Vectorized inner product   | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)             |
 | 09  | bpftrace Profiler     | Syscall overhead tracing           | One write() per byte        | Single batched write()     | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)     |
 | 10  | NVTX Annotation       | Timeline labeling for Nsight       | Single opaque region        | Per-phase named ranges     | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)         |
-| 11  | Massif Profiler       | Heap usage timeline                | new[] each iteration        | Pooled buffer reuse        | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
+| 11  | Massif Profiler       | Peak heap, and who owns it         | join V0 (old and new live)  | join V1 (one buffer)       | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)         |
 | 12  | Memcheck Profiler     | Leak / UAF detection               | Raw new[] (leaky)           | unique_ptr (clean)         | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)     |
 | 13  | Off-CPU Profiler      | Where threads go to sleep          | std::mutex contention       | std::atomic counter        | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)         |
 | 14  | Helgrind Profiler     | Data-race / thread-error detection | Unguarded shared counter    | std::atomic counter        | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)     |
@@ -174,15 +174,14 @@ docker compose run --rm -T dev bash -c '
 [helpers/DemoWorkloads.hpp](helpers/DemoWorkloads.hpp) provides reusable
 slow/fast workload pairs used across demos:
 
-| Category    | Slow                | Fast                 | Used In |
-| ----------- | ------------------- | -------------------- | ------- |
-| Cache       | Stride-512 walk     | Sequential walk      | Demo 02 |
-| Cache       | AoS position sum    | SoA position sum     | Demo 04 |
-| Branch      | Branchy conditional | Branchless multiply  | Demo 05 |
-| Sort        | Bubble sort O(n^2)  | std::sort O(n log n) | Demo 03 |
-| Contention  | Mutex increment     | Atomic increment     | Demo 06 |
-| Dot product | Naive (dependency)  | std::inner_product   | Demo 08 |
-| I/O         | Per-byte write()    | Batched write()      | Demo 09 |
+| Category    | Slow                | Fast                | Used In |
+| ----------- | ------------------- | ------------------- | ------- |
+| Cache       | Stride-512 walk     | Sequential walk     | Demo 02 |
+| Cache       | AoS position sum    | SoA position sum    | Demo 04 |
+| Branch      | Branchy conditional | Branchless multiply | Demo 05 |
+| Contention  | Mutex increment     | Atomic increment    | Demo 06 |
+| Dot product | Naive (dependency)  | std::inner_product  | Demo 08 |
+| I/O         | Per-byte write()    | Batched write()     | Demo 09 |
 
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
 and dependency chains), and designed to show measurable differences.
@@ -196,10 +195,10 @@ registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), and the table below names
 the demos that use each example.
 
-| Example                               | Versions                                                                                                  | Used In          |
-| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------- |
-| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 07, 21 |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10          |
+| Example                               | Versions                                                                                                  | Used In                  |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------ |
+| [join](examples/join/inc/Join.hpp)    | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place | Demos 01, 03, 07, 14, 21 |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp) | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads              | Demo 10                  |
 
 The saxpy example and its tests are built only where the GPU demos are.
 

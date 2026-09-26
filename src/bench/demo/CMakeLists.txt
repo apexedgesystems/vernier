@@ -83,7 +83,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (4)
+# Demos Built on a Shared Example (6)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -94,7 +94,15 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_03_GperfProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_11_MassifProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -107,18 +115,28 @@ if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Checks Run by CTest (2)
+# Demo Effect Guards Run by CTest (3)
 # ------------------------------------------------------------------------------
-# Demo binaries stay out of ctest, so that no timing runs beside a parallel
-# suite. Demo 07's check counts instructions under callgrind, which load does
-# not change, so ctest runs that one test, under the callgrind label and the
-# demo label that selects the walkthroughs' checks; it skips where valgrind is
-# missing or gives up reading the binary's debug information. The second test,
-# labelled callgrind only, runs the same check in a copy of demo 07 that aborts
-# under valgrind before its tests start
-# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the check
+# Demos are ptests: built, not registered with CTest. A guard that checks what
+# its demo demonstrates by counting bytes, not by timing, is registered on its
+# own, the way gtest_add_tests names and runs a test, under the demo label, so
+# ordinary test runs include it and never the demo's timing cases.
+#
+# Demo 07's guard counts instructions under callgrind, which load does not
+# change either. It also carries the callgrind label, and skips where valgrind
+# is missing or gives up reading the binary's debug information. The third
+# test, labelled callgrind only, runs the same guard in a copy of demo 07 that
+# aborts under valgrind before its tests start
+# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the guard
 # fails on it rather than skipping.
 # ------------------------------------------------------------------------------
+
+add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
+                                          --gtest_filter=Massif.JoinPeakHeap
+)
+set_tests_properties(
+  Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+)
 
 add_test(NAME CallgrindDemoInstructionCountsTest
          COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
