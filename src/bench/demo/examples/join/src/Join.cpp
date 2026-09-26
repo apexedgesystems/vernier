@@ -42,6 +42,14 @@ std::string joinV1(const std::vector<std::string>& parts, char sep) {
   return out;
 }
 
+std::size_t joinedSize(const std::vector<std::string>& parts) noexcept {
+  std::size_t total = 0;
+  for (const std::string& part : parts) {
+    total += part.size() + 1;
+  }
+  return total;
+}
+
 std::vector<std::string> makeParts(std::size_t count, unsigned seed) {
   std::mt19937 rng(seed);
   std::uniform_int_distribution<int> length(MIN_PART_LENGTH, MAX_PART_LENGTH);
