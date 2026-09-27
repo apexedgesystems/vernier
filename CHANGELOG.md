@@ -118,6 +118,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into demo 02 as the filter example, and its standalone executable,
   `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
   so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
+- **Demo 12 (memcheck) measures the shared `join` example and carries a bug
+  for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
+  and `joinV1`, one version per test, instead of a workload written for the
+  demo, and a third case calls a deliberately wrong join that writes one byte
+  past its buffer. That case runs only under valgrind and skips itself
+  anywhere else; a check registered with `ctest` under the `memcheck` label
+  fails if memcheck stops reporting the write. Its walkthrough,
+  `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig, replacing a leak size no run
+  produced; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
