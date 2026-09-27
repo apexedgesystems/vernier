@@ -1,117 +1,137 @@
 /**
  * @file 02_PerfProfiler_Demo.cpp
- * @brief Demo 02: Linux perf profiler for cache miss detection
+ * @brief Demo 02: perf hardware counters -- what the processor did, at full speed
  *
- * Demonstrates using the perf profiler to identify cache-hostile access
- * patterns, then fixing them with sequential access.
+ * Measures two shared examples, one version per test, so each can be run
+ * under --profile perf on its own:
+ *  1. JoinV0 and JoinV1 measure the join example: V0 does far more work
+ *  2. FilterBranchyRandom, FilterBranchySorted and FilterBranchless measure
+ *     the filter example: the same work, with and without a branch the
+ *     processor has to guess
  *
- * Slow: stride-512 array walk (skips 8 cache lines per access)
- * Fast: sequential array walk (hardware prefetcher keeps up)
+ * What the counters show about each is checked by the examples' unit tests,
+ * not here: see the walkthrough's "What Keeps This Page True".
  *
  * Usage:
  *   @code{.sh}
- *   # Baseline without profiling
- *   ./BenchDemo_02_PerfProfiler --csv baseline.csv
+ *   # Measure
+ *   ./BenchDemo_02_PerfProfiler --target-time 50ms --repeats 10 --csv run.csv
  *
- *   # Profile the slow path
- *   ./BenchDemo_02_PerfProfiler --profile perf --gtest_filter="*StridedAccess*"
+ *   # Count one version's events over a known number of calls: writes
+ *   # PerfProfiler.JoinV0.perf/stat.txt
+ *   bench run ./BenchDemo_02_PerfProfiler --profile perf -- \
+ *     --gtest_filter=PerfProfiler.JoinV0 --cycles 100 --repeats 10
  *
- *   # Profile the fast path
- *   ./BenchDemo_02_PerfProfiler --profile perf --gtest_filter="*SequentialAccess*"
- *
- *   # Compare
- *   bench summary baseline.csv
+ *   # Read it
+ *   cat PerfProfiler.JoinV0.perf/stat.txt
  *   @endcode
  *
- * @see docs/02_PERF_PROFILER.md for step-by-step walkthrough
+ * @see docs/02_PERF_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
-#include <cstdint>
-#include <cstdlib>
+
+#include <cstddef>
+
+#include <string>
 #include <vector>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
+#include "src/bench/demo/examples/filter/inc/Filter.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
 
 /* ----------------------------- Constants ----------------------------- */
 
-// 4 MB array: large enough to exceed L2 cache (typically 256 KB - 1 MB)
-static constexpr std::size_t ARRAY_SIZE = 4 * 1024 * 1024;
-static constexpr std::size_t STRIDE = 512; // Skip 8 cache lines per access
+/// Parts per join, the same input as demo 01.
+static constexpr std::size_t PART_COUNT = 1000;
+
+/// Fixed seed: every run joins the same words.
+static constexpr unsigned PART_SEED = 42;
+
+static constexpr char SEPARATOR = ',';
+
+/// Values per filter call: 800 KB of input, long enough that a call's fixed
+/// cost is nothing next to its per-value work.
+static constexpr std::size_t VALUE_COUNT = 100000;
+
+/// Fixed seed: every run filters the same values.
+static constexpr unsigned VALUE_SEED = 42;
+
+/// Half the values are above it, so on random input the branch is taken
+/// half the time in no order a predictor can learn.
+static constexpr double THRESHOLD = 0.5;
 
 /* ----------------------------- Tests ----------------------------- */
 
-/**
- * @test Slow: stride-512 access pattern causes constant cache misses.
- *
- * Every access skips 512 bytes (8 cache lines). The hardware prefetcher
- * cannot predict the pattern, resulting in high L1-dcache-load-misses.
- * This is the kind of access pattern perf will flag immediately.
- */
-PERF_THROUGHPUT(PerfProfiler, StridedAccess) {
-  UB_PERF_GUARD(perf);
+/** @test Throughput of the one-liner: out = out + part + separator. */
+PERF_THROUGHPUT(PerfProfiler, JoinV0) {
+  PERF_GUARD(perf);
 
-  std::vector<std::uint8_t> data(ARRAY_SIZE);
-  // Fill with non-zero data to prevent zero-page optimization
-  for (std::size_t i = 0; i < ARRAY_SIZE; ++i) {
-    data[i] = static_cast<std::uint8_t>(i & 0xFF);
-  }
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR), demo::joinV1(PARTS, SEPARATOR));
 
-  perf.warmup([&] {
-    volatile auto result = demo::stridedArrayWalk(data.data(), data.size(), STRIDE);
-    (void)result;
-  });
-
-  ub::MemoryProfile memProfile{
-      .bytesRead = ARRAY_SIZE / STRIDE, .bytesWritten = 0, .bytesAllocated = 0};
-
-  volatile std::uint64_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] { sink = sink + demo::stridedArrayWalk(data.data(), data.size(), STRIDE); },
-      "strided_512", memProfile);
-
-  EXPECT_GT(result.callsPerSecond, 10.0);
-
-  (void)sink;
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); }, "join_v0");
 }
 
-/**
- * @test Fast: sequential access pattern with hardware prefetching.
- *
- * Sequential access is the ideal case for the hardware prefetcher.
- * L1-dcache-load-misses will be dramatically lower than the strided version.
- * perf will show near-zero cache miss rate.
- */
-PERF_THROUGHPUT(PerfProfiler, SequentialAccess) {
-  UB_PERF_GUARD(perf);
+/** @test Throughput of the reserving version: measure once, append in place. */
+PERF_THROUGHPUT(PerfProfiler, JoinV1) {
+  PERF_GUARD(perf);
 
-  std::vector<std::uint8_t> data(ARRAY_SIZE);
-  for (std::size_t i = 0; i < ARRAY_SIZE; ++i) {
-    data[i] = static_cast<std::uint8_t>(i & 0xFF);
-  }
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR), demo::joinV0(PARTS, SEPARATOR));
 
-  perf.warmup([&] {
-    volatile auto result = demo::sequentialArrayWalk(data.data(), data.size());
-    (void)result;
-  });
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); }, "join_v1");
+}
 
-  ub::MemoryProfile memProfile{.bytesRead = ARRAY_SIZE, .bytesWritten = 0, .bytesAllocated = 0};
+/** @test Throughput of the branchy filter on random-order values: an unlearnable branch. */
+PERF_THROUGHPUT(PerfProfiler, FilterBranchyRandom) {
+  PERF_GUARD(perf);
 
-  volatile std::uint64_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] { sink = sink + demo::sequentialArrayWalk(data.data(), data.size()); }, "sequential",
-      memProfile);
+  const auto VALUES = demo::makeValues(VALUE_COUNT, VALUE_SEED);
+  std::vector<double> out(VALUE_COUNT);
+  ASSERT_EQ(demo::filterBranchy(VALUES, THRESHOLD, out),
+            demo::filterBranchless(VALUES, THRESHOLD, out));
 
-  EXPECT_GT(result.callsPerSecond, 10.0);
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::filterBranchy(VALUES, THRESHOLD, out); });
+  perf.throughputLoop([&] { sink = demo::filterBranchy(VALUES, THRESHOLD, out); },
+                      "filter_branchy_random");
+}
 
-  // Sequential should be faster due to prefetching
-  EXPECT_LT(result.stats.cv, 0.30);
+/** @test Throughput of the same filter on the same values ascending: the branch turns once. */
+PERF_THROUGHPUT(PerfProfiler, FilterBranchySorted) {
+  PERF_GUARD(perf);
 
-  (void)sink;
+  const auto VALUES = demo::makeSortedValues(VALUE_COUNT, VALUE_SEED);
+  std::vector<double> out(VALUE_COUNT);
+  ASSERT_EQ(demo::filterBranchy(VALUES, THRESHOLD, out),
+            demo::filterBranchless(VALUES, THRESHOLD, out));
+
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::filterBranchy(VALUES, THRESHOLD, out); });
+  perf.throughputLoop([&] { sink = demo::filterBranchy(VALUES, THRESHOLD, out); },
+                      "filter_branchy_sorted");
+}
+
+/** @test Throughput of the branchless filter on values in random order: nothing to predict. */
+PERF_THROUGHPUT(PerfProfiler, FilterBranchless) {
+  PERF_GUARD(perf);
+
+  const auto VALUES = demo::makeValues(VALUE_COUNT, VALUE_SEED);
+  std::vector<double> out(VALUE_COUNT);
+  ASSERT_EQ(demo::filterBranchless(VALUES, THRESHOLD, out),
+            demo::filterBranchy(VALUES, THRESHOLD, out));
+
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::filterBranchless(VALUES, THRESHOLD, out); });
+  perf.throughputLoop([&] { sink = demo::filterBranchless(VALUES, THRESHOLD, out); },
+                      "filter_branchless");
 }
 
 PERF_MAIN()
