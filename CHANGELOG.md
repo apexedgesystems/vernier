@@ -98,54 +98,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
-- **Demo 02 (perf) measures the shared `join` example and a new `filter`
-  example, whose unit tests check what the counters say** -- `BenchDemo_02_PerfProfiler`
-  measures `joinV0` and `joinV1` (`PerfProfiler.JoinV0`, `PerfProfiler.JoinV1`)
-  and a filter that keeps the values above a threshold, three ways: with a
-  branch per value on values in random order (`PerfProfiler.FilterBranchyRandom`),
-  the same on the same values in ascending order (`PerfProfiler.FilterBranchySorted`),
-  and without a branch (`PerfProfiler.FilterBranchless`); one CSV row each,
-  and nothing else: the demo measures, and the examples' unit tests check what
-  the counters show, counting hardware events on their own calls through the
-  kernel's perf interface. The filter is a new shared example,
-  `src/bench/demo/examples/filter/`, whose unit tests hold both versions to the
-  same answers; `FilterBranchTest.ConditionalStoreKeepsItsBranch` fails when
-  the branchy version's test of each value stops being a branch in an
-  optimized build (its store is conditional, and it kept its branch in the GCC
-  and clang builds the walkthrough reports on, where the conditional sum the
-  old demo 05 measured was if-converted by one compiler and its three cases
-  then timed the same), and
-  `FilterBranchTest.BranchlessFormRemovesTheMisses` when the branchless version
-  stops removing the mispredictions. The join example's unit tests gain
-  `JoinInstructionTest.V0RetiresFarMoreThanV1` (V0 must retire at least ten
-  times the instructions V1 retires per call; 33.0 to 35.1 times on the rig).
-  The three are registered with `ctest` under the `demo` label and skip,
-  reported as skipped, where the counter cannot be opened
-  (`kernel.perf_event_paranoid` above 2, a container's default seccomp profile,
-  a processor without the event) or was not on the PMU for the counted calls (a
-  hybrid processor counts an event on one kind of core only; a PMU with more
-  events open than counters takes turns): a reading carries the share of the
-  thread's time its counter ran, as `perf stat` reads it, and a count taken
-  part of the time is scaled and says so. The old demo walked 8 KB with a
-  stride against 4 MB sequentially, so its "slow" case ran 17 times faster on
-  the rig, and its page promised events the backend never collects. Its
-  walkthrough, `src/bench/demo/docs/02_PERF_PROFILER.md`, is rewritten from a
-  Release run on the documented Raspberry Pi 4 rig: what `--profile perf` runs
-  (`perf stat` counting cpu-cycles, instructions, branches, branch-misses and
-  cache-misses over the measured repeats, written to
-  `<Suite.Case>.perf/stat.txt`), each report read line by line and divided by
-  the run's stated call count, `<not supported>` where the processor has no
-  such event, how `--profile-args` adds an event or switches to `perf record`,
-  and that a `perf.data` is finished a moment after the benchmark exits, with
-  the check of `record.err.txt` to run before reading it; that run's CSV is
-  committed at `src/bench/demo/reference/pi4/02_perf_profiler.csv`.
-  `BenchDemo_05_BranchOptimization` is gone with its workload, and
-  `docs/05_BRANCH_OPTIMIZATION.md` says where the filter is now;
-  `stridedArrayWalk`, `sequentialArrayWalk`, `conditionalSumBranchy` and
-  `conditionalSumBranchless` leave `helpers/DemoWorkloads.hpp`. Demo 02's test
-  names change (`StridedAccess` and `SequentialAccess` are gone), so its CSVs
-  from earlier releases do not join with newer ones, and demo 05's CSVs have
-  no successor.
+- **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
+  `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
+  `filter` example, with a Raspberry Pi walkthrough
+  (`src/bench/demo/docs/02_PERF_PROFILER.md`) and a reference capture
+  (`src/bench/demo/reference/pi4/02_perf_profiler.csv`). Demo 05 is folded
+  into demo 02 as the filter example, and its standalone executable,
+  `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
+  so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
