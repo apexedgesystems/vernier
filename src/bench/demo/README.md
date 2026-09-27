@@ -80,7 +80,7 @@ how to compare two runs.
 | 03  | gperftools Profiler   | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
 | 04  | Cache-Friendly Layout | AoS vs SoA data transformation                 | 128B struct (81% waste)                                     | Separate arrays (100% use)                   | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)         |
 | 06  | Thread Scaling        | Lock contention analysis                       | Mutex-protected counter                                     | Atomic relaxed counter                       | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
-| 07  | Callgrind Profiler    | Deterministic instruction count                | Linear search O(n)                                          | Binary search O(log n)                       | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
+| 07  | Callgrind Profiler    | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
 | 08  | RAPL Profiler         | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
 | 09  | bpftrace Profiler     | Syscall overhead tracing                       | One write() per byte                                        | Single batched write()                       | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
 | 10  | NVTX Annotation       | Timeline labeling for Nsight                   | Single opaque region                                        | Per-phase named ranges                       | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
@@ -173,13 +173,12 @@ docker compose run --rm -T dev bash -c '
 [helpers/DemoWorkloads.hpp](helpers/DemoWorkloads.hpp) provides reusable
 slow/fast workload pairs used across demos:
 
-| Category    | Slow               | Fast                   | Used In |
-| ----------- | ------------------ | ---------------------- | ------- |
-| Cache       | AoS position sum   | SoA position sum       | Demo 04 |
-| Search      | Linear search O(n) | Binary search O(log n) | Demo 07 |
-| Contention  | Mutex increment    | Atomic increment       | Demo 06 |
-| Dot product | Naive (dependency) | std::inner_product     | Demo 08 |
-| I/O         | Per-byte write()   | Batched write()        | Demo 09 |
+| Category    | Slow               | Fast               | Used In |
+| ----------- | ------------------ | ------------------ | ------- |
+| Cache       | AoS position sum   | SoA position sum   | Demo 04 |
+| Contention  | Mutex increment    | Atomic increment   | Demo 06 |
+| Dot product | Naive (dependency) | std::inner_product | Demo 08 |
+| I/O         | Per-byte write()   | Batched write()    | Demo 09 |
 
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
 and dependency chains), and designed to show measurable differences.
@@ -190,13 +189,14 @@ Code a walkthrough teaches from lives in its own directory beside these
 helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
 and unit tests that hold the example's versions to the same answers,
 registered under the `demo` label (`ctest --test-dir build -L demo`). The
-first is [examples/join](examples/join/inc/Join.hpp), measured by demo 01.
+first is [examples/join](examples/join/inc/Join.hpp), and the table below names
+the demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                      |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 12, 14, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                      |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demo 10                      |
+| Example                                  | Versions                                                                                                                                           | Used In                          |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 07, 12, 14, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                          |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demo 10                          |
 
 The saxpy example and its tests are built only where the GPU demos are.
 

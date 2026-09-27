@@ -21,6 +21,10 @@
 #                             filter's branch misses
 #   TestDemoSaxpyOwnership  - saxpy's resource release, on any machine
 #
+# Check programs, which the demo build registers with CTest:
+#   JoinInstructionCounts              - join's instruction counts, callgrind
+#   JoinInstructionCountsStartupFault  - the same, aborting under valgrind
+#
 # Test support:
 #   utst/HardwareCounter.hpp - one hardware event counted around a call, for
 #                              the tests that read the counters; no demo
@@ -54,6 +58,12 @@ set(OWNERSHIP_TEST_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/SaxpyOwnershi
 
 add_library(demo_example_join STATIC ${CPP_SOURCES_JOIN})
 target_include_directories(demo_example_join PUBLIC "${PROJECT_SOURCE_DIR}")
+# Line tables in every build type, so a profiler can name the example's source
+# lines in an optimized build; -g adds debug sections and changes no code.
+target_compile_options(
+  demo_example_join
+  PRIVATE -g
+)
 
 add_library(demo_example_filter STATIC ${CPP_SOURCES_FILTER})
 target_include_directories(demo_example_filter PUBLIC "${PROJECT_SOURCE_DIR}")
@@ -101,3 +111,50 @@ target_include_directories(
   TestDemoSaxpyOwnership BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/fake_cuda"
                                         "${PROJECT_SOURCE_DIR}"
 )
+
+# ------------------------------------------------------------------------------
+# Join Instruction-Count Check (2 programs)
+# ------------------------------------------------------------------------------
+# JoinInstructionCounts runs itself under callgrind as a counting worker and
+# holds joinV0 to several times joinV1's instructions per call, the claim
+# walkthrough 07 makes. The second program adds StartupFaultUnderValgrind.cpp,
+# so its counting worker aborts under valgrind before its tests start. Test
+# support, never installed: ../CMakeLists.txt registers both with the other
+# demo guards. Both are compiled with the build's sanitizer setting, on which
+# the check skips: a sanitizer's instrumentation would be counted too.
+# ------------------------------------------------------------------------------
+
+set(JOIN_COUNT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinInstructionCounts.cpp")
+
+vernier_add_app(
+  NAME
+  JoinInstructionCounts
+  SRC
+  ${JOIN_COUNT_SOURCES}
+  LINK
+  demo_example_join
+  GTest::gtest_main
+  NO_INSTALL
+  NO_UPX
+)
+
+vernier_add_app(
+  NAME
+  JoinInstructionCountsStartupFault
+  SRC
+  ${JOIN_COUNT_SOURCES}
+  "${PROJECT_SOURCE_DIR}/src/bench/utst/StartupFaultUnderValgrind.cpp"
+  LINK
+  demo_example_join
+  GTest::gtest_main
+  NO_INSTALL
+  NO_UPX
+)
+
+if (SANITIZER MATCHES "^(asan|tsan|ubsan)$" AND NOT CMAKE_CROSSCOMPILING)
+  foreach (_check JoinInstructionCounts JoinInstructionCountsStartupFault)
+    if (TARGET ${_check})
+      target_compile_definitions(${_check} PRIVATE JOIN_COUNTS_SANITIZER="${SANITIZER}")
+    endif ()
+  endforeach ()
+endif ()

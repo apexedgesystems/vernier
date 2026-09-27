@@ -1,0 +1,3 @@
+test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
+CallgrindProfiler.JoinV0,49,10,1,1,64,0,0,INFO,991.694,991.239,992.396,993.289,993.378,991.184,993.388,991.857,0.607739,0.000612728,1008.38,1,0.1,2026-09-26T23:54:35Z,unknown,pi4,aarch64
+CallgrindProfiler.JoinV1,2496,10,1,1,64,0,0,INFO,20.1348,19.9693,20.9825,21.0026,21.0046,19.9631,21.0048,20.3615,0.436732,0.0214489,49665.2,1,0.1,2026-09-26T23:54:35Z,unknown,pi4,aarch64
