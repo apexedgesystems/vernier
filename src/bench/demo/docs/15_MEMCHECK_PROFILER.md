@@ -3,7 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), plus a deliberately wrong join private to the demo
-**Captured:** 2026-09-26 (UTC), written for the Vernier 1.0.4 release; captured
+**Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
 `bench 1.0.3`; valgrind 3.24.0
 
@@ -178,45 +178,41 @@ Captured output, with the checkout's path in the skip line shortened to
 `...`:
 
 ```
-[==========] Running 4 tests from 1 test suite.
+[==========] Running 3 tests from 1 test suite.
 [----------] Global test environment set-up.
-[----------] 4 tests from Memcheck
+[----------] 3 tests from Memcheck
 [ RUN      ] Memcheck.JoinV0
-[target-time] 50.000 ms -> cycles=49 (calibrated 1009.0000 us/call, batch of 1)
-[Memcheck.JoinV0]  983.184 us/call  CV=0.1%  ~1.0K calls/s  (p10=982.345 p90=984.622 sd=1.027)
-[       OK ] Memcheck.JoinV0 (489 ms)
+[target-time] 50.000 ms -> cycles=54 (calibrated 920.0000 us/call, batch of 2)
+[Memcheck.JoinV0]  921.213 us/call  CV=0.2%  ~1.1K calls/s  (p10=920.676 p90=926.059 sd=2.305)
+[       OK ] Memcheck.JoinV0 (506 ms)
 [ RUN      ] Memcheck.JoinV1
-[target-time] 50.000 ms -> cycles=2480 (calibrated 20.1562 us/call, batch of 64)
-[Memcheck.JoinV1]  20.953 us/call  CV=2.0%  ~47.7K calls/s  (p10=20.035 p90=21.081 sd=0.424)
-[       OK ] Memcheck.JoinV1 (517 ms)
+[target-time] 50.000 ms -> cycles=2459 (calibrated 20.3281 us/call, batch of 64)
+[Memcheck.JoinV1]  20.821 us/call  CV=2.5%  ~48.0K calls/s  (p10=19.919 p90=21.052 sd=0.520)
+[       OK ] Memcheck.JoinV1 (508 ms)
 [ RUN      ] Memcheck.JoinOffByOne
-.../src/bench/demo/cpu/12_MemcheckProfiler_Demo.cpp:131: Skipped
+.../src/bench/demo/cpu/12_MemcheckProfiler_Demo.cpp:86: Skipped
 this case makes a memory error for valgrind to find, so it runs only under valgrind: run this binary under `valgrind --tool=memcheck`, or through `bench run --profile memcheck`
 
 [  SKIPPED ] Memcheck.JoinOffByOne (0 ms)
-[ RUN      ] Memcheck.FindsTheOffByOne
-[Memcheck.FindsTheOffByOne]  JoinOffByOne: 6 errors from 2 contexts; invalid write of size 1: 3 times in 1 contexts, 0 bytes after a block of size 7490
-[Memcheck.FindsTheOffByOne]  JoinV1: 0 errors from 0 contexts
-[       OK ] Memcheck.FindsTheOffByOne (3710 ms)
-[----------] 4 tests from Memcheck (4717 ms total)
+[----------] 3 tests from Memcheck (1015 ms total)
 
 [----------] Global test environment tear-down
-[==========] 4 tests from 1 test suite ran. (4717 ms total)
-[  PASSED  ] 3 tests.
+[==========] 3 tests from 1 test suite ran. (1015 ms total)
+[  PASSED  ] 2 tests.
 [  SKIPPED ] 1 test, listed below:
 [  SKIPPED ] Memcheck.JoinOffByOne
 
 =================================================================
 Test              Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------
-Memcheck.JoinV0       983.184    0.1%        1.0K  OK
-Memcheck.JoinV1        20.953    2.0%       47.7K  OK
+Memcheck.JoinV0       921.213    0.2%        1.1K  OK
+Memcheck.JoinV1        20.821    2.5%       48.0K  OK
 -----------------------------------------------------------------
 2 tests | 2 stable | 0 unstable
 ```
 
-`joinV0` takes 983.2 us per call and `joinV1` 21.0 us, 47 times less, with
-CVs of 0.1% and 2.0%: walkthrough 01's measurement under this demo's names.
+`joinV0` takes 921.2 us per call and `joinV1` 20.8 us, 44 times less, with
+CVs of 0.2% and 2.5%: walkthrough 01's measurement under this demo's names.
 `Memcheck.JoinOffByOne` reports `SKIPPED` with the helper's message, because
 the run is not under valgrind. The CSV holds the two timing rows.
 
@@ -236,11 +232,11 @@ Note: Google Test filter = Memcheck.JoinOffByOne
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinOffByOne
-[       OK ] Memcheck.JoinOffByOne (55 ms)
-[----------] 1 test from Memcheck (64 ms total)
+[       OK ] Memcheck.JoinOffByOne (56 ms)
+[----------] 1 test from Memcheck (65 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (142 ms total)
+[==========] 1 test from 1 test suite ran. (141 ms total)
 [  PASSED  ] 1 test.
 ```
 
@@ -268,51 +264,51 @@ and marked `...`, the vector's template arguments are shortened to
 `std::vector<...>`, and the binary's directory to `...`:
 
 ```
-==97793== Memcheck, a memory error detector
-==97793== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
-==97793== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==97793== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
-==97793== Parent PID: 97792
-==97793==
-==97793== Invalid write of size 1
-==97793==    at 0x124684: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)
-==97793==    by 0x1116FF: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==124554== Memcheck, a memory error detector
+==124554== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
+==124554== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==124554== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
+==124554== Parent PID: 124553
+==124554==
+==124554== Invalid write of size 1
+==124554==    at 0x11C424: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)
+==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==97793==  Address 0x4f23db2 is 0 bytes after a block of size 7,490 alloc'd
-==97793==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
-==97793==    by 0x12464B: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
-==97793==    by 0x1116FF: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==124554==  Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd
+==124554==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
+==124554==    by 0x11C3EB: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
+==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==97793==
-==97793== Invalid read of size 1
-==97793==    at 0x488E764: strlen (vg_replace_strmem.c:505)
-==97793==    by 0x124693: length (char_traits.h:391)
-==97793==    by 0x124693: basic_string<> (basic_string.h:653)
-==97793==    by 0x124693: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:36)
-==97793==    by 0x1116FF: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==124554==
+==124554== Invalid read of size 1
+==124554==    at 0x488E764: strlen (vg_replace_strmem.c:505)
+==124554==    by 0x11C433: length (char_traits.h:391)
+==124554==    by 0x11C433: basic_string<> (basic_string.h:653)
+==124554==    by 0x11C433: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:36)
+==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==97793==  Address 0x4f23db2 is 0 bytes after a block of size 7,490 alloc'd
-==97793==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
-==97793==    by 0x12464B: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
-==97793==    by 0x1116FF: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==124554==  Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd
+==124554==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
+==124554==    by 0x11C3EB: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
+==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==97793==
-==97793==
-==97793== HEAP SUMMARY:
-==97793==     in use at exit: 72 bytes in 1 blocks
-==97793==   total heap usage: 265 allocs, 264 frees, 210,224 bytes allocated
-==97793==
-==97793== LEAK SUMMARY:
-==97793==    definitely lost: 0 bytes in 0 blocks
-==97793==    indirectly lost: 0 bytes in 0 blocks
-==97793==      possibly lost: 0 bytes in 0 blocks
-==97793==    still reachable: 72 bytes in 1 blocks
-==97793==         suppressed: 0 bytes in 0 blocks
-==97793== Reachable blocks (those to which a pointer was found) are not shown.
-==97793== To see them, rerun with: --leak-check=full --show-leak-kinds=all
-==97793==
-==97793== For lists of detected and suppressed errors, rerun with: -s
-==97793== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 0 from 0)
+==124554==
+==124554==
+==124554== HEAP SUMMARY:
+==124554==     in use at exit: 72 bytes in 1 blocks
+==124554==   total heap usage: 260 allocs, 259 frees, 209,812 bytes allocated
+==124554==
+==124554== LEAK SUMMARY:
+==124554==    definitely lost: 0 bytes in 0 blocks
+==124554==    indirectly lost: 0 bytes in 0 blocks
+==124554==      possibly lost: 0 bytes in 0 blocks
+==124554==    still reachable: 72 bytes in 1 blocks
+==124554==         suppressed: 0 bytes in 0 blocks
+==124554== Reachable blocks (those to which a pointer was found) are not shown.
+==124554== To see them, rerun with: --leak-check=full --show-leak-kinds=all
+==124554==
+==124554== For lists of detected and suppressed errors, rerun with: -s
+==124554== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 0 from 0)
 ```
 
 Every line begins with the process id. Two errors are reported, each with
@@ -323,7 +319,7 @@ the stack that made it and the stack that allocated the block it touched:
 | `Invalid write of size 1`                                           | a one-byte store to memory the program may not touch                                                                                                  |
 | `at ... joinOffByOne(...) (12_MemcheckProfiler_OffByOne.cpp:32)`    | the store, and its source line: `*at = '\0';`                                                                                                         |
 | `by ... Memcheck_JoinOffByOne_Test::TestBody()`                     | who called it; the frames cut below it are GoogleTest's                                                                                               |
-| `Address 0x4f23db2 is 0 bytes after a block of size 7,490 alloc'd`  | where the byte is: right after a heap block of 7,490 bytes, the joined string's length                                                                |
+| `Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd`  | where the byte is: right after a heap block of 7,490 bytes, the joined string's length                                                                |
 | `at ... operator new[](unsigned long) (vg_replace_malloc.c:729)`    | the block came from `new[]`, memcheck's own                                                                                                           |
 | `by ... joinOffByOne(...) (12_MemcheckProfiler_OffByOne.cpp:25)`    | and the line that asked for it: `char* buf = new char[total];`                                                                                        |
 | `Invalid read of size 1`, `at ... strlen (vg_replace_strmem.c:505)` | the second error: `strlen`, memcheck's replacement of the C library's, read the same byte back for `std::string out(buf);` on line 36                 |
@@ -344,7 +340,7 @@ What not to conclude:
   `All heap blocks were freed -- no leaks are possible` and prints no
   `LEAK SUMMARY` at all. What every run prints is the `ERROR SUMMARY` line:
   read that one.
-- **That the addresses mean anything.** `0x124684`, `0x4f23db2` and the rest
+- **That the addresses mean anything.** `0x11C424`, `0x4f23ab2` and the rest
   belong to this build and this run.
 - **That the line numbers travel.** They are this revision's
   `12_MemcheckProfiler_OffByOne.cpp`; a build of an edited file names other
@@ -367,47 +363,47 @@ Note: Google Test filter = Memcheck.JoinV1
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinV1
-[Memcheck.JoinV1]  2401.000 us/call  CV=0.0%  ~416 calls/s  (p10=2401.000 p90=2401.000 sd=0.000)
+[Memcheck.JoinV1]  2385.000 us/call  CV=0.0%  ~419 calls/s  (p10=2385.000 p90=2385.000 sd=0.000)
 [       OK ] Memcheck.JoinV1 (260 ms)
 [----------] 1 test from Memcheck (269 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (346 ms total)
+[==========] 1 test from 1 test suite ran. (345 ms total)
 [  PASSED  ] 1 test.
 ```
 
 and of the log:
 
 ```
-==97797== Memcheck, a memory error detector
-==97797== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
-==97797== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==97797== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
-==97797== Parent PID: 97796
-==97797==
-==97797==
-==97797== HEAP SUMMARY:
-==97797==     in use at exit: 72 bytes in 1 blocks
-==97797==   total heap usage: 277 allocs, 276 frees, 190,039 bytes allocated
-==97797==
-==97797== LEAK SUMMARY:
-==97797==    definitely lost: 0 bytes in 0 blocks
-==97797==    indirectly lost: 0 bytes in 0 blocks
-==97797==      possibly lost: 0 bytes in 0 blocks
-==97797==    still reachable: 72 bytes in 1 blocks
-==97797==         suppressed: 0 bytes in 0 blocks
-==97797== Reachable blocks (those to which a pointer was found) are not shown.
-==97797== To see them, rerun with: --leak-check=full --show-leak-kinds=all
-==97797==
-==97797== For lists of detected and suppressed errors, rerun with: -s
-==97797== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+==124558== Memcheck, a memory error detector
+==124558== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
+==124558== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==124558== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
+==124558== Parent PID: 124557
+==124558==
+==124558==
+==124558== HEAP SUMMARY:
+==124558==     in use at exit: 72 bytes in 1 blocks
+==124558==   total heap usage: 272 allocs, 271 frees, 189,627 bytes allocated
+==124558==
+==124558== LEAK SUMMARY:
+==124558==    definitely lost: 0 bytes in 0 blocks
+==124558==    indirectly lost: 0 bytes in 0 blocks
+==124558==      possibly lost: 0 bytes in 0 blocks
+==124558==    still reachable: 72 bytes in 1 blocks
+==124558==         suppressed: 0 bytes in 0 blocks
+==124558== Reachable blocks (those to which a pointer was found) are not shown.
+==124558== To see them, rerun with: --leak-check=full --show-leak-kinds=all
+==124558==
+==124558== For lists of detected and suppressed errors, rerun with: -s
+==124558== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
 ```
 
 `ERROR SUMMARY: 0 errors from 0 contexts`: memcheck watched three calls of
 `joinV1` (the check of the answer, the warmup, one measured call) and found
 nothing to report. The 72 reachable bytes are the profiler library's, as
 above. The result line is one call under memcheck, 2.4 ms against step 1's
-21.0 us; it says what memcheck costs, not how fast `joinV1` is.
+20.8 us; it says what memcheck costs, not how fast `joinV1` is.
 
 ## Failing a Job on a Memory Error
 
@@ -427,11 +423,11 @@ Note: Google Test filter = Memcheck.JoinOffByOne
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinOffByOne
-[       OK ] Memcheck.JoinOffByOne (56 ms)
-[----------] 1 test from Memcheck (65 ms total)
+[       OK ] Memcheck.JoinOffByOne (55 ms)
+[----------] 1 test from Memcheck (64 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (143 ms total)
+[==========] 1 test from 1 test suite ran. (140 ms total)
 [  PASSED  ] 1 test.
 exit 1
 ```
@@ -451,12 +447,12 @@ Note: Google Test filter = Memcheck.JoinV1
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinV1
-[Memcheck.JoinV1]  2400.000 us/call  CV=0.0%  ~417 calls/s  (p10=2400.000 p90=2400.000 sd=0.000)
-[       OK ] Memcheck.JoinV1 (224 ms)
-[----------] 1 test from Memcheck (233 ms total)
+[Memcheck.JoinV1]  2678.000 us/call  CV=0.0%  ~373 calls/s  (p10=2678.000 p90=2678.000 sd=0.000)
+[       OK ] Memcheck.JoinV1 (235 ms)
+[----------] 1 test from Memcheck (245 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (310 ms total)
+[==========] 1 test from 1 test suite ran. (321 ms total)
 [  PASSED  ] 1 test.
 exit 0
 ```
@@ -472,17 +468,15 @@ which is 0 in both cases here.
 | the read                 | `Invalid read of size 1` in `strlen`, once per call, at the same address                                             | the same wherever memcheck replaces the C library's `strlen`, as it did on x86-64; a `strlen` it does not replace may read more bytes at once  |
 | errors and contexts      | 6 errors from 2 contexts                                                                                             | 6 errors; 6 contexts where the compiler unrolled the case's loop (clang 21 on x86-64 did), because each call is then its own call site         |
 | what `joinV1` reports    | 0 errors from 0 contexts, in every run for this page and in five more taken for it                                   | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                           |
-| `joinV0` / `joinV1` time | 47x here; 43.5x to 46.9x over the session's seven runs of step 1                                                     | tens of times in an optimized build                                                                                                            |
+| `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over the session's twelve runs of step 1                                                    | tens of times in an optimized build                                                                                                            |
 | memcheck's cost          | one call of `joinV1` 115 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                              |
-| absolute times           | 983.2 and 21.0 us/call in step 1; 924.6 to 983.2 and 20.4 to 21.4 over seven runs                                    | will differ                                                                                                                                    |
+| absolute times           | 921.2 and 20.8 us/call in step 1; 915.8 to 1013.0 and 19.8 to 21.1 over twelve runs                                  | will differ                                                                                                                                    |
 
-The seven runs are step 1's command run seven times in one session on this
-rig, the reference capture and this page's run among them. That range
-describes those runs; it is not a bound a run has to meet. An eighth run of
-the same command, taken an hour later to qualify the board at the final
-revision of this page's code, read 963.5 and 20.2 us per call, 47.6 times:
-`joinV1` below the range and the ratio above it, with nothing changed. The
-memcheck lines are the readings to carry elsewhere.
+The twelve runs are step 1's command run twelve times in one session on
+this rig, the reference capture and this page's run among them. That range
+describes those runs; it is not a bound a run has to meet, and another run
+of the same command can land outside it. The memcheck lines are the readings
+to carry elsewhere.
 
 ## If It Does Not Match
 
@@ -496,7 +490,7 @@ memcheck lines are the readings to carry elsewhere.
   [----------] Global test environment set-up.
   [----------] 1 test from Memcheck
   [ RUN      ] Memcheck.JoinOffByOne
-  .../src/bench/demo/cpu/12_MemcheckProfiler_Demo.cpp:131: Skipped
+  .../src/bench/demo/cpu/12_MemcheckProfiler_Demo.cpp:86: Skipped
   this case makes a memory error for valgrind to find, so it runs only under valgrind: run this binary under `valgrind --tool=memcheck`, or through `bench run --profile memcheck`
 
   [  SKIPPED ] Memcheck.JoinOffByOne (0 ms)
@@ -603,30 +597,31 @@ this page ships in (`bench 1.0.3`):
 
 Test                 Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 ---------------  ------------  ------------  ----------  --------  --------  --------  ------------
-Memcheck.JoinV0     935.71700     983.18400   +47.46700     +5.1%      0.1%      0.1%  REGRESSION
-Memcheck.JoinV1      21.40070      20.95300    -0.44770     -2.1%      1.8%      2.0%  neutral
+Memcheck.JoinV0     959.29600     921.21300   -38.08300     -4.0%      0.1%      0.2%  neutral
+Memcheck.JoinV1      20.88860      20.82130    -0.06730     -0.3%      1.8%      2.5%  neutral
 
-  1 regression(s)  1 neutral
+  2 neutral
 
   Labels compare the median change against the 5.0% threshold.
   They describe the difference between two runs, not a significance test;
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by the same binary on this board 28 seconds
-before step 1's run, and nothing changed between them. `joinV0` still came
-out 5.1% slower than the reference, past the 5% threshold the labels are
-drawn at, so its row says `REGRESSION`. As the note under the table says, a
-label compares two runs' medians; it is not a significance test, and
-`Base CV` and `Cand CV` are each run's own spread, 0.1% here, which says
-nothing about the spread between runs. Over the session's seven runs of
-step 1, `joinV0`'s median ranged from 924.6 to 983.2 us, 6.3%, and
-`joinV1`'s from 20.4 to 21.4 us, 4.8%, with nothing changed, so a run of
-unchanged code can land on either side of the threshold: the eighth run
-above came out 5.5% faster than the reference on `joinV1` and was labelled
-`IMPROVEMENT`. Read the medians and the CVs, and compare the ratio. The CSV
-holds times only; what memcheck found is checked by the demo's own test,
-below.
+The reference was captured by the same binary on this board immediately
+before step 1's run (the two CSVs' timestamps are one second apart), and
+nothing changed between them: `joinV0` came out -4.0% against it and
+`joinV1` came out -0.3% against it, both inside the 5% threshold the labels
+are drawn at, so both rows say `neutral`. That is this pair of runs, not a
+property of the code. As the note under the table says, a label compares two
+runs' medians; it is not a significance test, and `Base CV` and `Cand CV`
+are each run's own spread, which says nothing about the spread between runs:
+0.1% and 0.2% for `joinV0` here. Over the session's twelve runs of step 1,
+`joinV0`'s median ranged from 915.8 to 1013.0 us, 10.6%, and `joinV1`'s from
+19.8 to 21.1 us, 6.7%, with nothing changed, so a run of unchanged code can
+land on either side of the threshold; `joinV0`'s median is the noisiest
+measurement on this page. Read the medians and the CVs, and compare the
+ratio. The CSV holds times only; what memcheck found is checked by
+`Memcheck.FindsTheOffByOne`, below.
 
 ## What Keeps This Page True
 

@@ -1,3 +1,3 @@
 test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
-Memcheck.JoinV0,53,10,1,1,64,0,0,INFO,935.717,935.326,937.208,938.736,938.889,935.038,938.906,936.143,1.0961,0.00117087,1068.7,1,0.1,2026-09-26T17:29:34Z,unknown,pi4,aarch64
-Memcheck.JoinV1,2448,10,1,1,64,0,0,INFO,21.4007,20.4981,21.482,21.4982,21.4998,20.4624,21.5,21.2248,0.378956,0.0178544,46727.4,1,0.1,2026-09-26T17:29:35Z,unknown,pi4,aarch64
+Memcheck.JoinV0,49,10,1,1,64,0,0,INFO,959.296,958.802,960.796,961.457,961.523,958.673,961.531,959.629,0.868045,0.000904564,1042.43,1,0.1,2026-09-27T01:54:29Z,unknown,pi4,aarch64
+Memcheck.JoinV1,2505,10,1,1,64,0,0,INFO,20.8886,20.1796,20.9054,20.9122,20.9129,19.8483,20.913,20.6691,0.365731,0.0176946,47873,1,0.1,2026-09-27T01:54:29Z,unknown,pi4,aarch64
