@@ -100,7 +100,9 @@ CallgrindProfiler.JoinV1        18.949    1.6%       52.8K  OK
 V0 takes 1017.2 us per call and V1 18.9 us, 54 times less, against
 repeat-to-repeat spreads (`CV`) of 0.1% and 1.6%. Across seven runs of this
 command in one session on this rig, V0's median ranged from 921.7 to 1017.2 us
-and V1's from 18.9 to 20.9 us, and the ratio from 44.4x to 53.7x.
+and V1's from 18.9 to 20.9 us, and the ratio from 44.4x to 53.7x. That range
+describes those runs; it is not a bound a run has to meet, and another run can
+land outside it.
 
 ## Step 2: Count the Instructions
 
@@ -389,10 +391,21 @@ up to 830 instructions (0.04%) with the length of the directory it ran from.
   or CPU; only the ratio carries over. On this rig and build, a difference of a
   few hundred instructions in a program total comes from formatting measured
   times, and a few tens of it from atomic operations, as in step 5.
-- **valgrind stops with `Possibly corrupted debuginfo file`.** The valgrind is
-  older than the compiler's debug information (seen with valgrind 3.18 and a
-  binary built by clang 21 with `-g` throughout). Step 4's check skips in that
-  case; a newer valgrind reads it.
+- **valgrind stops with `Possibly corrupted debuginfo file`, or on an
+  assertion in `m_debuginfo`.** valgrind cannot read the program's debug
+  information: seen with valgrind 3.18 and a binary built by clang 21 with `-g`
+  throughout, or by GCC 11.4 for Debug (the assertion where mold linked it).
+  Step 4's check and the window tests skip in that case, quoting valgrind;
+  valgrind 3.22 reads clang 21's builds.
+- **Step 4's check skips in a sanitizer build.** A build configured with
+  `-DSANITIZER=asan`, `tsan` or `ubsan` instruments the program, and the check
+  would count the instrumentation too, so it skips and says what was seen when
+  such a build was counted: with the address sanitizer the counting worker ran
+  outside valgrind or valgrind could not read it; with the thread sanitizer two
+  identical counting runs counted different totals; with the
+  undefined-behaviour sanitizer V0 came to 4.9 times V1's instructions per
+  call. Of the sanitizer builds, the window tests skip only the address
+  sanitizer's.
 
 ## Check Against the Reference
 
@@ -439,17 +452,18 @@ not.
   labels, because an instruction count does not depend on what else the
   machine is doing, so every build that runs `ctest` checks it (CI's
   configuration is a Debug x86 build in the dev image, where the ratio is
-  6.9x). It skips where valgrind is not installed or gives up reading the
-  program's debug information, and fails, with the run's output, when a
-  counting run does not reach its worker.
+  6.9x). It skips where valgrind is not installed, where valgrind stops
+  reading the program's debug information, and in a sanitizer build (see
+  [If It Does Not Match](#if-it-does-not-match)), and fails, with the run's
+  output, when a counting run does not reach its worker.
 - The `callgrind` label also runs the two tests that hold the callgrind backend
   to its hint: in `CallgrindWindowHintTest`, run the way the hint says, the
   profile holds the measured calls and none of the work before or after them,
   and in `CallgrindWindowRunnerTest`, wrapped the way `bench run` wraps a
   benchmark (the test sets up that wrap itself; it does not run the CLI), it
-  holds the whole process. Where valgrind cannot read the probe's symbols, the
-  profile cannot show which functions ran, and both skip; `ctest -V` prints
-  valgrind's own reason.
+  holds the whole process. Where valgrind cannot read the probe or its
+  symbols, and in an address-sanitizer build, both skip; `ctest -V` prints the
+  reason, in valgrind's own words where it has them.
 
   ```bash
   ctest --test-dir build -L callgrind
@@ -457,8 +471,8 @@ not.
 
   Every test it selects passes. Three of them check the checks: two run copies
   of the probe and of step 4's check that abort at startup under valgrind, and
-  pass only when the tests above report that as a failure; the third runs the
-  window tests' driver against a stand-in valgrind, and passes only when the
+  pass only when the tests above report that abort as a failure; the third runs
+  the window tests' driver against a stand-in valgrind, and passes only when the
   driver accepts a positive instruction total and fails a zero, a missing and a
   malformed one.
 

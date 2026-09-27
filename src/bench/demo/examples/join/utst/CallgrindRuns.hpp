@@ -162,30 +162,44 @@ inline bool oneTestPassed(const std::string& log) {
   return log.find("[  PASSED  ] 1 test.") != std::string::npos;
 }
 
-/// valgrind's own two lines, as it printed them, when its debug-information
-/// reader gave up before the program ran, as a valgrind older than the
-/// compiler that wrote a file does: the reader's line ("Valgrind: debuginfo
-/// reader: Possibly corrupted debuginfo file.") and the next one, "Valgrind:
-/// I can't recover.  Giving up.  Sorry.". Empty for any other outcome. A skip
-/// quotes these lines, so what it rests on is valgrind's text, not the check's.
+/// valgrind's own words, as it printed them, when it could not read a
+/// program's debug information and stopped before the program ran. Two forms
+/// have been seen. Its reader gives up, as a valgrind older than the compiler
+/// that wrote a file does: the reader's line ("Valgrind: debuginfo reader:
+/// Possibly corrupted debuginfo file.") and the next one, "Valgrind: I can't
+/// recover.  Giving up.  Sorry.". Or an assertion fails inside that reader, as
+/// in valgrind 3.18.1 on programs that GCC 11.4 built for Debug and mold
+/// linked: "valgrind: m_debuginfo/readelf.c:2478
+/// (vgModuleLocal_read_elf_debug_info): Assertion '...' failed.". Empty for any
+/// other outcome. A skip quotes these lines, so what it rests on is valgrind's
+/// text, not the check's.
 inline std::string debugInfoGiveUp(const std::string& log) {
   const std::size_t GAVE_UP = log.find("Valgrind: I can't recover.  Giving up.");
-  if (GAVE_UP == std::string::npos) {
-    return "";
+  if (GAVE_UP != std::string::npos) {
+    // The line that gives up, and the reader's line just before it.
+    const std::size_t LINE_START = log.rfind('\n', GAVE_UP);
+    if (LINE_START != std::string::npos && LINE_START != 0) {
+      const std::size_t READER_BREAK = log.rfind('\n', LINE_START - 1);
+      const std::size_t FROM = READER_BREAK == std::string::npos ? 0 : READER_BREAK + 1;
+      if (log.substr(FROM, LINE_START - FROM).find("Valgrind: debuginfo reader: ") !=
+          std::string::npos) {
+        const std::size_t TO = log.find('\n', GAVE_UP);
+        return log.substr(FROM, (TO == std::string::npos ? log.size() : TO) - FROM);
+      }
+    }
   }
-  // The line that gives up, and the reader's line just before it.
-  const std::size_t LINE_START = log.rfind('\n', GAVE_UP);
-  if (LINE_START == std::string::npos || LINE_START == 0) {
-    return "";
+  // valgrind's assertion line, which starts a line of its own.
+  const std::size_t ASSERTED = log.find("valgrind: m_debuginfo/");
+  if (ASSERTED != std::string::npos && (ASSERTED == 0 || log[ASSERTED - 1] == '\n')) {
+    const std::size_t TO = log.find('\n', ASSERTED);
+    const std::string LINE =
+        log.substr(ASSERTED, (TO == std::string::npos ? log.size() : TO) - ASSERTED);
+    if (LINE.find(": Assertion '") != std::string::npos &&
+        LINE.find("' failed.") != std::string::npos) {
+      return LINE;
+    }
   }
-  const std::size_t READER_BREAK = log.rfind('\n', LINE_START - 1);
-  const std::size_t FROM = READER_BREAK == std::string::npos ? 0 : READER_BREAK + 1;
-  if (log.substr(FROM, LINE_START - FROM).find("Valgrind: debuginfo reader: ") ==
-      std::string::npos) {
-    return "";
-  }
-  const std::size_t TO = log.find('\n', GAVE_UP);
-  return log.substr(FROM, (TO == std::string::npos ? log.size() : TO) - FROM);
+  return "";
 }
 
 /// valgrind expands '%' in output file names; "%%" is a literal one.

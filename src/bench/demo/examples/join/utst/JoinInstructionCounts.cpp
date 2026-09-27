@@ -15,6 +15,11 @@
  *   @code{.sh}
  *   ./JoinInstructionCounts      # skips where valgrind is not installed
  *   @endcode
+ *
+ * The build compiles its sanitizer setting in (JOIN_COUNTS_SANITIZER, from
+ * -DSANITIZER=asan|tsan|ubsan): a sanitizer's instrumentation would be counted
+ * with the join code, so a sanitizer build skips the check, saying what was
+ * seen when one was counted.
  */
 
 #include <gtest/gtest.h>
@@ -30,6 +35,7 @@
 #include <filesystem>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -65,6 +71,40 @@ constexpr int COUNT_CALLS_HIGH = 20;
 /// reference rig. Instruction counts carry no noise, so the margin only has to
 /// cover build and platform differences.
 constexpr double MIN_INSTRUCTION_RATIO = 5.0;
+
+/// The sanitizer this program is built with, as the build set it: "asan",
+/// "tsan", "ubsan", or empty. Decided at compile time, so the check skips
+/// before it starts anything.
+#ifdef JOIN_COUNTS_SANITIZER
+constexpr std::string_view BUILD_SANITIZER = JOIN_COUNTS_SANITIZER;
+#else
+constexpr std::string_view BUILD_SANITIZER = "";
+#endif
+
+/// Why a build with @p sanitizer cannot be counted, as seen when builds of this
+/// program with it were run under callgrind: the address sanitizer's by clang
+/// 21 (valgrind 3.18.1 and 3.22) and GCC 11.4 (valgrind 3.18.1), the thread
+/// and undefined-behaviour sanitizers' by clang 21 under valgrind 3.22. Used
+/// only in a sanitizer build.
+[[maybe_unused]] constexpr std::string_view sanitizerSkipReason(std::string_view sanitizer) {
+  if (sanitizer == "asan") {
+    return "this program is built with the address sanitizer (SANITIZER=asan): its counting "
+           "worker ran outside valgrind and left no profile (clang), or valgrind stopped "
+           "reading it (GCC), so there is nothing to count";
+  }
+  if (sanitizer == "tsan") {
+    return "this program is built with the thread sanitizer (SANITIZER=tsan): its runtime "
+           "made two identical counting runs count different totals, so the second-run "
+           "check cannot hold";
+  }
+  if (sanitizer == "ubsan") {
+    return "this program is built with the undefined-behaviour sanitizer (SANITIZER=ubsan): "
+           "its checks are counted with the join code, and V0 came to 4.9 times V1's "
+           "instructions per call, under the 5x this check asserts for the code built "
+           "without them";
+  }
+  return "this program is built with a sanitizer this check does not know";
+}
 
 } // namespace
 
@@ -108,12 +148,16 @@ TEST(JoinInstructionCounts, Worker) {
  * difference in calls, so nothing depends on callgrind's call graph, which
  * on the Arm rig credited joinV0 with calls it never received.
  *
- * Skipped where valgrind is not installed, or where it gives up reading this
- * program's debug information before the program runs, as a valgrind older
- * than the compiler does, and says so. A counting run that does not reach
- * the worker for any other reason fails, with what the run printed.
+ * Skipped, saying why, in a build with a sanitizer (sanitizerSkipReason()),
+ * where valgrind is not installed, or where valgrind stops reading this
+ * program's debug information before the program runs (debugInfoGiveUp()).
+ * A counting run that does not reach the worker for any other reason fails,
+ * with what the run printed.
  */
 TEST(JoinInstructionCounts, UnderCallgrind) {
+  if constexpr (!BUILD_SANITIZER.empty()) {
+    GTEST_SKIP() << sanitizerSkipReason(BUILD_SANITIZER);
+  }
   if (std::system("command -v valgrind >/dev/null 2>&1") != 0) {
     GTEST_SKIP() << "valgrind is not installed; this test counts instructions under callgrind";
   }

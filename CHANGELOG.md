@@ -22,9 +22,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   received. It fails unless V0 executes more than five times V1's instructions
   per call and a second run counts exactly the same, and it fails, with the
   run's output, when a counting run under callgrind does not reach its worker.
-  It skips only where valgrind is not installed or gives up reading the
-  program's debug information. Instruction counts do not depend on machine load,
-  so the check is registered with `ctest` as
+  It skips only where valgrind is not installed, where valgrind stops reading
+  the program's debug information, and in a build with a sanitizer
+  (`-DSANITIZER`), whose instrumentation it would count. Instruction counts do
+  not depend on machine load, so the check is registered with `ctest` as
   `CallgrindDemoInstructionCountsTest` (labels `callgrind` and `demo`) and an
   ordinary test run checks what the walkthrough claims. The example library is
   compiled with `-g` in every build type, which adds line tables and leaves the

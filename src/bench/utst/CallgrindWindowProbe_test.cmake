@@ -3,7 +3,11 @@
 # and checks which of its phases the profile holds
 #
 # Run with: cmake -DPROBE=<exe> -DCASE=hint|runner -DWORK_DIR=<dir>
+#                 [-DPROBE_SANITIZER=asan|tsan|ubsan]
 #                 -P CallgrindWindowProbe_test.cmake
+#
+# PROBE_SANITIZER is the build's sanitizer setting (-DSANITIZER), with which
+# the probe was compiled.
 #
 # hint:   run the probe without valgrind, then under the valgrind command the
 #         callgrind backend printed, and expect the profile to hold the
@@ -14,12 +18,15 @@
 #         them. Expect all three phases: the backend must leave a recording of
 #         the whole process alone.
 #
-# Prints "SKIPPED: <reason>", the tests' skip expression, in three cases
-# only, each with valgrind's own words where it has them: valgrind is not
-# installed; valgrind gave up reading debug information before the probe ran
-# (a valgrind older than the compiler does); or valgrind ran the probe without
-# reading its symbols, so the profile names none of the probe's functions and
-# valgrind warned about the probe's debug information. Anything else that
+# Prints "SKIPPED: <reason>", the tests' skip expression, in four cases only,
+# each with valgrind's own words where it has them: the probe is built with the
+# address sanitizer, which valgrind does not run as these tests need; valgrind
+# is not installed; valgrind stopped reading debug information before the
+# probe ran (a valgrind older than the compiler gives up; valgrind 3.18.1
+# fails an assertion on a probe that GCC 11.4 built for Debug and mold
+# linked); or valgrind ran the probe without reading its symbols, so the
+# profile names none of the probe's functions and valgrind warned about the
+# probe's debug information. Anything else that
 # keeps the probe's tests from starting under valgrind fails with the run's
 # output: a failed launch, a signal, an early exit, no output. So does a
 # profile that names none of the probe's functions without that warning, and
@@ -38,6 +45,19 @@ set(_probe_args
     --repeats
     1
 )
+
+# The address sanitizer's build of the probe, run under callgrind: clang 21's
+# ran to its end outside valgrind and left no profile (valgrind 3.18.1 and
+# 3.22), and GCC 11.4's stopped valgrind reading it (3.18.1). There is no
+# window to check. Built with the thread or the undefined-behaviour sanitizer,
+# the probe passes both cases under valgrind 3.22 (clang 21), so those builds
+# run them.
+if (PROBE_SANITIZER STREQUAL "asan")
+  message(STATUS "SKIPPED: the probe is built with the address sanitizer (SANITIZER=asan), "
+                 "which ran it outside valgrind (clang) or stopped valgrind reading it (GCC)"
+  )
+  return()
+endif ()
 
 find_program(_valgrind valgrind)
 if (NOT _valgrind)
@@ -110,12 +130,13 @@ message(STATUS "exit status: ${_rc}\n${_out}")
 
 # GoogleTest's banner says the probe reached its tests under valgrind.
 # Without it, the one reason that skips is valgrind's own: its debug
-# information reader gave up on a file before the program ran. Any other way
-# of not getting there is the probe's or the wrap's failure.
+# information reader gave up on a file, or failed an assertion, before the
+# program ran. Any other way of not getting there is the probe's or the wrap's
+# failure.
 string(FIND "${_out}" "[==========]" _started)
 if (_started EQUAL -1)
-  # The skip quotes valgrind's two lines as it printed them, so what it rests on
-  # is valgrind's text, not this script's.
+  # The skip quotes valgrind's lines as it printed them, so what it rests on is
+  # valgrind's text, not this script's.
   string(
     REGEX
       MATCH
@@ -123,13 +144,20 @@ if (_started EQUAL -1)
       _gave_up
       "${_out}"
   )
+  if (_gave_up STREQUAL "")
+    # The other way valgrind stops: an assertion failing in its debug
+    # information reader, printed as a line of its own.
+    string(REGEX MATCH "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\." _gave_up
+                 "${_out}"
+    )
+  endif ()
   if (NOT _gave_up STREQUAL "")
     execute_process(
       COMMAND "${_valgrind}" --version
       OUTPUT_VARIABLE _version
       OUTPUT_STRIP_TRAILING_WHITESPACE
     )
-    message(STATUS "SKIPPED: ${_version} gave up reading debug information before the "
+    message(STATUS "SKIPPED: ${_version} stopped reading debug information before the "
                    "probe ran. It printed:\n${_gave_up}"
     )
     return()
