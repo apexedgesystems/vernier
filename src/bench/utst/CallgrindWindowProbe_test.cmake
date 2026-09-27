@@ -20,18 +20,16 @@
 #
 # Prints "SKIPPED: <reason>", the tests' skip expression, in four cases only,
 # each with valgrind's own words where it has them: the probe is built with the
-# address sanitizer, which valgrind does not run as these tests need; valgrind
-# is not installed; valgrind stopped reading debug information before the
-# probe ran (a valgrind older than the compiler gives up; valgrind 3.18.1
-# fails an assertion on a probe that GCC 11.4 built for Debug and mold
-# linked); or valgrind ran the probe without reading its symbols, so the
-# profile names none of the probe's functions and valgrind warned about the
-# probe's debug information. Anything else that
-# keeps the probe's tests from starting under valgrind fails with the run's
-# output: a failed launch, a signal, an early exit, no output. So does a
-# profile that names none of the probe's functions without that warning, and
-# a profile without a valid instruction total: its "totals:" line missing,
-# zero, or anything but a whole number.
+# address sanitizer (PROBE_SANITIZER=asan); valgrind is not installed;
+# valgrind stopped reading debug information before the probe ran (its reader
+# gave up, or failed an assertion); or valgrind ran the probe without reading
+# its symbols, so the profile names none of the probe's functions and valgrind
+# warned about the probe's debug information. Anything else that keeps the
+# probe's tests from starting under valgrind fails with the run's output: a
+# failed launch, a signal, an early exit, no output. So does a profile that
+# names none of the probe's functions without that warning, and a profile
+# without a valid instruction total: its "totals:" line missing, zero, or
+# anything but a whole number.
 # ==============================================================================
 
 cmake_minimum_required(VERSION 3.24)
@@ -46,12 +44,9 @@ set(_probe_args
     1
 )
 
-# The address sanitizer's build of the probe, run under callgrind: clang 21's
-# ran to its end outside valgrind and left no profile (valgrind 3.18.1 and
-# 3.22), and GCC 11.4's stopped valgrind reading it (3.18.1). There is no
-# window to check. Built with the thread or the undefined-behaviour sanitizer,
-# the probe passes both cases under valgrind 3.22 (clang 21), so those builds
-# run them.
+# A probe built with the address sanitizer has no window to check: under
+# callgrind it ran outside valgrind, or valgrind could not read it. Builds with
+# the thread or the undefined-behaviour sanitizer run both cases.
 if (PROBE_SANITIZER STREQUAL "asan")
   message(STATUS "SKIPPED: the probe is built with the address sanitizer (SANITIZER=asan), "
                  "which ran it outside valgrind (clang) or stopped valgrind reading it (GCC)"

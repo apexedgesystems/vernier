@@ -81,11 +81,8 @@ constexpr std::string_view BUILD_SANITIZER = JOIN_COUNTS_SANITIZER;
 constexpr std::string_view BUILD_SANITIZER = "";
 #endif
 
-/// Why a build with @p sanitizer cannot be counted, as seen when builds of this
-/// program with it were run under callgrind: the address sanitizer's by clang
-/// 21 (valgrind 3.18.1 and 3.22) and GCC 11.4 (valgrind 3.18.1), the thread
-/// and undefined-behaviour sanitizers' by clang 21 under valgrind 3.22. Used
-/// only in a sanitizer build.
+/// Why a build with @p sanitizer cannot be counted: what was seen when such a
+/// build of this program ran under callgrind. Used only in a sanitizer build.
 [[maybe_unused]] constexpr std::string_view sanitizerSkipReason(std::string_view sanitizer) {
   if (sanitizer == "asan") {
     return "this program is built with the address sanitizer (SANITIZER=asan): its counting "
