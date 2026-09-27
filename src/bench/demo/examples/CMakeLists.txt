@@ -15,6 +15,10 @@
 # Tests:
 #   TestDemoExamples        - every example's answers (saxpy's on a device)
 #   TestDemoSaxpyOwnership  - saxpy's resource release, on any machine
+#
+# Check programs, which the demo build registers with CTest:
+#   JoinInstructionCounts              - join's instruction counts, callgrind
+#   JoinInstructionCountsStartupFault  - the same, aborting under valgrind
 # ==============================================================================
 
 include(vernier/All)
@@ -90,4 +94,42 @@ vernier_add_gtest(TARGET TestDemoSaxpyOwnership SOURCES ${OWNERSHIP_TEST_SOURCES
 target_include_directories(
   TestDemoSaxpyOwnership BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/saxpy/utst/fake_cuda"
                                         "${PROJECT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------------------------
+# Join Instruction-Count Check (2 programs)
+# ------------------------------------------------------------------------------
+# JoinInstructionCounts runs itself under callgrind as a counting worker and
+# holds joinV0 to several times joinV1's instructions per call, the claim
+# walkthrough 07 makes. The second program adds StartupFaultUnderValgrind.cpp,
+# so its counting worker aborts under valgrind before its tests start. Test
+# support, never installed: ../CMakeLists.txt registers both with the other
+# demo guards.
+# ------------------------------------------------------------------------------
+
+set(JOIN_COUNT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinInstructionCounts.cpp")
+
+vernier_add_app(
+  NAME
+  JoinInstructionCounts
+  SRC
+  ${JOIN_COUNT_SOURCES}
+  LINK
+  demo_example_join
+  GTest::gtest_main
+  NO_INSTALL
+  NO_UPX
+)
+
+vernier_add_app(
+  NAME
+  JoinInstructionCountsStartupFault
+  SRC
+  ${JOIN_COUNT_SOURCES}
+  "${PROJECT_SOURCE_DIR}/src/bench/utst/StartupFaultUnderValgrind.cpp"
+  LINK
+  demo_example_join
+  GTest::gtest_main
+  NO_INSTALL
+  NO_UPX
 )

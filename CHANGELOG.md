@@ -13,30 +13,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts and a 5000x ratio that workload
   cannot produce. It measures `joinV0` and `joinV1` from
-  `src/bench/demo/examples/join`, one test and one CSV row each. A third test,
-  `CallgrindProfiler.InstructionCounts`, runs a fourth, `CountCalls`, under
-  callgrind with 10 and with 20 calls of each version and divides the difference
+  `src/bench/demo/examples/join`, one test and one CSV row each, and nothing
+  else. The check behind its walkthrough is a program of the join example's
+  tests, `JoinInstructionCounts`: it runs itself under callgrind as a counting
+  worker with 10 and with 20 calls of each version and divides the difference
   between the two program totals by 10, so the count per call does not depend on
   callgrind's call graph, which on the Pi rig credited `joinV0` with calls never
   received. It fails unless V0 executes more than five times V1's instructions
   per call and a second run counts exactly the same, and it fails, with the
-  run's output, when a counting run under callgrind does not reach its test.
+  run's output, when a counting run under callgrind does not reach its worker.
   It skips only where valgrind is not installed or gives up reading the
-  binary's debug information; `CountCalls` skips itself when it is not run
-  that way.
-  Instruction counts do not depend on machine load, so `InstructionCounts` is
-  registered with `ctest` (labels `callgrind` and `demo`) and an ordinary test
-  run checks what the walkthrough claims. The example library is compiled with
-  `-g` in every build type, which adds line tables and leaves the generated code
-  as it is, so a profiler can attribute its cost to source lines in an optimized
-  build. Demo 07's walkthrough, `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`,
-  is rewritten from a Release run on the documented Raspberry Pi 4 rig: it reads
-  callgrind's per-function and per-line counts, which repeat from run to run,
-  and not its call graph, which is wrong for this program on that Arm board. The
-  run's timing CSV is committed at
-  `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test names
-  change, so CSVs captured from it before this release do not join with newer
-  ones, and `linearSearch` and `binarySearch` leave `helpers/DemoWorkloads.hpp`.
+  program's debug information. Instruction counts do not depend on machine load,
+  so the check is registered with `ctest` as
+  `CallgrindDemoInstructionCountsTest` (labels `callgrind` and `demo`) and an
+  ordinary test run checks what the walkthrough claims. The example library is
+  compiled with `-g` in every build type, which adds line tables and leaves the
+  generated code as it is, so a profiler can attribute its cost to source lines
+  in an optimized build. Demo 07's walkthrough,
+  `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig: it reads callgrind's per-function
+  and per-line counts, which repeat from run to run, and not its call graph,
+  which is wrong for this program on that Arm board. The run's timing CSV is
+  committed at `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo
+  07's test names change, so CSVs captured from it before this release do not
+  join with newer ones, and `linearSearch` and `binarySearch` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in

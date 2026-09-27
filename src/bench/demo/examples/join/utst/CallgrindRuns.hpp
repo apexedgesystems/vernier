@@ -1,19 +1,19 @@
 /**
- * @file 07_CallgrindProfiler_Check.hpp
- * @brief The process plumbing of demo 07's instruction-count check
+ * @file CallgrindRuns.hpp
+ * @brief The process plumbing of JoinInstructionCounts: running a program
+ * under callgrind as a child and reading what the run left
  *
- * CallgrindProfiler.InstructionCounts runs the demo binary under callgrind as
- * a child process and reads what each run left: how it ended, its log (did
- * its test start and pass, or did valgrind give up before it ran) and the
- * program total in its callgrind output. These are the helpers it does that
- * with. The demo file keeps what the check asserts and when it skips, and the
- * CountCalls fixture it counts, so the example stays short enough to copy.
+ * JoinInstructionCounts runs itself under callgrind as a counting worker and
+ * reads what each run left: how it ended, its log (did its test start and
+ * pass, or did valgrind give up before it ran) and the program total in its
+ * callgrind output. These are the helpers it does that with; the check keeps
+ * what it asserts and when it skips.
  *
- * Private to 07_CallgrindProfiler_Demo.cpp.
+ * Test support, private to JoinInstructionCounts.cpp.
  */
 
-#ifndef VERNIER_DEMO_07_CALLGRIND_CHECK_HPP
-#define VERNIER_DEMO_07_CALLGRIND_CHECK_HPP
+#ifndef VERNIER_DEMO_JOIN_CALLGRIND_RUNS_HPP
+#define VERNIER_DEMO_JOIN_CALLGRIND_RUNS_HPP
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -205,4 +205,4 @@ inline std::string escapePercent(const std::string& path) {
 } // namespace bench
 } // namespace vernier
 
-#endif // VERNIER_DEMO_07_CALLGRIND_CHECK_HPP
+#endif // VERNIER_DEMO_JOIN_CALLGRIND_RUNS_HPP

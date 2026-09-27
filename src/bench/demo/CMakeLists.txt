@@ -123,12 +123,15 @@ endif ()
 # ordinary test runs include it and never the demo's timing cases.
 #
 # Demo 07's guard counts instructions under callgrind, which load does not
-# change either. It also carries the callgrind label, and skips where valgrind
-# is missing or gives up reading the binary's debug information. The third
-# test, labelled callgrind only, runs the same guard in a copy of demo 07 that
-# aborts under valgrind before its tests start
-# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the guard
-# fails on it rather than skipping.
+# change either. It is a program of the join example's tests,
+# JoinInstructionCounts (examples/CMakeLists.txt), so demo 07's source holds
+# only what it teaches. It also carries the callgrind label, and skips where
+# valgrind is missing or gives up reading the program's debug information.
+# The third test, labelled callgrind only, runs the same check in
+# JoinInstructionCountsStartupFault, whose counting worker aborts under
+# valgrind before its tests start
+# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the
+# check fails on it rather than skipping.
 # ------------------------------------------------------------------------------
 
 add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
@@ -138,44 +141,39 @@ set_tests_properties(
   Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 )
 
-add_test(NAME CallgrindDemoInstructionCountsTest
-         COMMAND BenchDemo_07_CallgrindProfiler --gtest_filter=CallgrindProfiler.InstructionCounts
-)
-# The skip expression names this test: its failure messages quote the counting
-# runs' output, whose own GoogleTest lines must not turn a failure into a skip.
-set_tests_properties(
-  CallgrindDemoInstructionCountsTest
-  PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
-             "\\[  SKIPPED \\] CallgrindProfiler\\.InstructionCounts"
-)
+if (TARGET JoinInstructionCounts)
+  add_test(NAME CallgrindDemoInstructionCountsTest
+           COMMAND JoinInstructionCounts --gtest_filter=JoinInstructionCounts.UnderCallgrind
+  )
+  # The skip expression names this test: its failure messages quote the
+  # counting runs' output, whose own GoogleTest lines must not turn a failure
+  # into a skip.
+  set_tests_properties(
+    CallgrindDemoInstructionCountsTest
+    PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
+               "\\[  SKIPPED \\] JoinInstructionCounts\\.UnderCallgrind"
+  )
+endif ()
 
-vernier_add_ptest(
-  TARGET
-  CallgrindDemoStartupFault
-  SOURCES
-  cpu/07_CallgrindProfiler_Demo.cpp
-  "${PROJECT_SOURCE_DIR}/src/bench/utst/StartupFaultUnderValgrind.cpp"
-  LINK
-  bench
-  demo_helpers
-  demo_example_join
-)
-add_test(NAME CallgrindDemoStartupFaultTest
-         COMMAND CallgrindDemoStartupFault --gtest_filter=CallgrindProfiler.InstructionCounts
-)
-# It passes only when the check fails with its startup-failure message: that
-# message followed by GoogleTest's FAILED line for the check. It skips only on
-# evidence that is not the check's wording: "valgrind is not installed",
-# decided before anything runs, and valgrind's own two lines when it gives up
-# reading debug information, which the check's skip quotes as valgrind wrote
-# them.
-set_tests_properties(
-  CallgrindDemoStartupFaultTest
-  PROPERTIES
-    LABELS
-    "callgrind"
-    PASS_REGULAR_EXPRESSION
-    "CountCalls did not start under callgrind.*\\[  FAILED  \\] CallgrindProfiler\\.InstructionCounts"
-    SKIP_REGULAR_EXPRESSION
-    "valgrind is not installed;Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-)
+if (TARGET JoinInstructionCountsStartupFault)
+  add_test(NAME CallgrindDemoStartupFaultTest
+           COMMAND JoinInstructionCountsStartupFault
+                   --gtest_filter=JoinInstructionCounts.UnderCallgrind
+  )
+  # It passes only when the check fails with its startup-failure message: that
+  # message followed by GoogleTest's FAILED line for the check. It skips only on
+  # evidence that is not the check's wording: "valgrind is not installed",
+  # decided before anything runs, and valgrind's own two lines when it gives up
+  # reading debug information, which the check's skip quotes as valgrind wrote
+  # them.
+  set_tests_properties(
+    CallgrindDemoStartupFaultTest
+    PROPERTIES
+      LABELS
+      "callgrind"
+      PASS_REGULAR_EXPRESSION
+      "counting worker did not start under callgrind.*\\[  FAILED  \\] JoinInstructionCounts\\.UnderCallgrind"
+      SKIP_REGULAR_EXPRESSION
+      "valgrind is not installed;Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
+  )
+endif ()

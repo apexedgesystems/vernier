@@ -3,12 +3,13 @@
  * @brief Test fixture: a program that aborts during static initialization when
  * it runs under valgrind, and works normally otherwise.
  *
- * Linked into a copy of CallgrindWindowProbe and a copy of demo 07, it gives
- * their callgrind checks a program that dies before its tests start, the way a
- * real startup fault would, while the same program run plainly still does its
- * part (the window test's first, unwrapped run; demo 07's own process, which
- * starts the counting runs). The checks must report that death as a failure,
- * not skip it as a limitation of valgrind.
+ * Linked into a copy of CallgrindWindowProbe and a copy of
+ * JoinInstructionCounts (demo 07's check), it gives their callgrind checks a
+ * program that dies before its tests start, the way a real startup fault
+ * would, while the same program run plainly still does its part (the window
+ * test's first, unwrapped run; the check's own process, which starts the
+ * counting runs). The checks must report that death as a failure, not skip it
+ * as a limitation of valgrind.
  */
 
 #include <cstdio>
