@@ -8,8 +8,11 @@
  *  - Whether filterBranchy() still branches on the data, and whether
  *    filterBranchless() removes what that branch costs, is what the
  *    hardware-counter walkthrough teaches, so both are tested too, through a
- *    hardware counter (utst/HardwareCounter.hpp). Where it cannot count, the
- *    tests skip and say why.
+ *    hardware counter (utst/HardwareCounter.hpp). Where the counter cannot
+ *    count (it did not open, or was not on the PMU for the counted calls),
+ *    the tests skip and say why. Only the counter's own state makes them
+ *    skip: a count of zero from a counter that ran is a result, and fails
+ *    them.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
@@ -196,9 +199,10 @@ TEST(FilterBranchTest, ConditionalStoreKeepsItsBranch) {
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(random, 0.5, out); });
   const Reading sorted_ =
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(sorted, 0.5, out); });
-  // A branch on random input mispredicts; a zero is a counter that did not count.
+  // Whether the branch still mispredicts is what this test checks, so a zero
+  // from a counter that ran is a result for the assertions, not a reason to skip.
   const std::string notCounted =
-      joinReasons({random_.whyNotCounted(true), sorted_.whyNotCounted(false)});
+      joinReasons({random_.whyNotCounted(false), sorted_.whyNotCounted(false)});
   if (!notCounted.empty()) {
     GTEST_SKIP() << "could not count branch-misses here: " << notCounted;
   }
@@ -232,10 +236,10 @@ TEST(FilterBranchTest, BranchlessFormRemovesTheMisses) {
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(random, 0.5, out); });
   const Reading branchless =
       misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchless(random, 0.5, out); });
-  // A branch on random input mispredicts; a zero there is a counter that did
-  // not count. The branchless filter may count as few as it likes.
+  // As above: only the counter's own state refuses a reading. The branchless
+  // filter may count as few mispredictions as it likes, zero included.
   const std::string notCounted =
-      joinReasons({branchy.whyNotCounted(true), branchless.whyNotCounted(false)});
+      joinReasons({branchy.whyNotCounted(false), branchless.whyNotCounted(false)});
   if (!notCounted.empty()) {
     GTEST_SKIP() << "could not count branch-misses here: " << notCounted;
   }
@@ -245,6 +249,11 @@ TEST(FilterBranchTest, BranchlessFormRemovesTheMisses) {
       "branch-misses/call\n",
       branchy.value, scalingNote(branchy).c_str(), branchless.value,
       scalingNote(branchless).c_str());
+  const double branchyPerValue = branchy.value / static_cast<double>(BRANCH_TEST_SIZE);
+  ASSERT_GE(branchyPerValue, MIN_MISPREDICTS_PER_VALUE)
+      << "filterBranchy mispredicted " << branchyPerValue << " branches per value on random input"
+      << scalingNote(branchy) << ": there are no mispredictions for the branchless version to "
+      << "remove, and the comparison below would mean nothing";
   EXPECT_GE(branchy.value, MIN_MISPREDICT_RATIO * branchless.value)
       << "filterBranchy mispredicted " << branchy.value << " branches per call on random input"
       << scalingNote(branchy) << " and filterBranchless " << branchless.value

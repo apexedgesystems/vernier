@@ -624,9 +624,12 @@ the event), or where it was not on the PMU for the calls it should have
 counted (a hybrid processor counts an event on one kind of core only, so an
 unpinned run that lands on the other kind reads nothing; a PMU with more
 events open than counters takes turns), the three counting tests skip and
-say why, and CTest reports them as skipped, not passed. Each reading carries
-the share of the thread's time its counter was running, as `perf stat` does,
-and a count taken part of the time is scaled and printed with that share.
+say why, and CTest reports them as skipped, not passed. Only the counter's
+own state makes them skip: a counter that ran and counted no mispredictions
+on random input fails the two filter tests, as a lost branch should. Each
+reading carries the share of the thread's time its counter was running, as
+`perf stat` does, and a count taken part of the time is scaled and printed
+with that share.
 
 The demo's timing tests are not registered: what they measure belongs to the
 machine they run on. This repository has no continuous-integration lane on

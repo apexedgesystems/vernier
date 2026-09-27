@@ -99,10 +99,12 @@ struct Reading {
 
   /**
    * @brief Why this reading cannot be used, or an empty string when it can.
-   * @param zeroIsImpossible True when the work counted cannot count zero (any
-   *        code retires instructions; a loop with a data-dependent branch on
-   *        random input mispredicts), so a zero is a counter that did not
-   *        count, whatever its times say.
+   * @param zeroIsImpossible True only when a zero is impossible whatever the
+   *        code under test does (any code retires instructions), so a zero can
+   *        only be a counter that did not count. Never true for a count whose
+   *        size is what the test checks, such as the mispredictions of a branch
+   *        an optimizer may have removed: there a zero from a counter that ran
+   *        is a result, for the test's assertions to judge.
    */
   [[nodiscard]] std::string whyNotCounted(bool zeroIsImpossible) const {
     if (!counted()) {
