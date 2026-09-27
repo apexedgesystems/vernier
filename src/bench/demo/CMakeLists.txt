@@ -114,15 +114,12 @@ if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Guards Run by CTest (3)
+# Demo Effect Guards Run by CTest (1)
 # ------------------------------------------------------------------------------
 # Demos are ptests: built, not registered with CTest. A guard that checks what
-# its demo demonstrates by counting (bytes held, hardware events), not by
-# timing, is registered on its own, the way gtest_add_tests names and runs a
-# test, under the demo label, so ordinary test runs include it and never the
-# demo's timing cases. The perf guards count only where the kernel lets them,
-# skip with the reason elsewhere, and carry gtest's skip expression so CTest
-# reports such a run as skipped, not passed.
+# its demo demonstrates by counting bytes, not by timing, is registered on its
+# own, the way gtest_add_tests names and runs a test, under the demo label, so
+# ordinary test runs include it and never the demo's timing cases.
 # ------------------------------------------------------------------------------
 
 add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
@@ -131,11 +128,3 @@ add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
 set_tests_properties(
   Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
 )
-
-foreach (GUARD PerfProfiler.JoinInstructions PerfProfiler.FilterBranchMisses)
-  add_test(NAME ${GUARD} COMMAND BenchDemo_02_PerfProfiler --gtest_filter=${GUARD})
-  set_tests_properties(
-    ${GUARD} PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-                        SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\]"
-  )
-endforeach ()

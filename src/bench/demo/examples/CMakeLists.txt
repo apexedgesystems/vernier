@@ -15,8 +15,16 @@
 #                          one CUDA kernel; built only with the GPU demos
 #
 # Tests:
-#   TestDemoExamples        - every example's answers (saxpy's on a device)
+#   TestDemoExamples        - every example's answers (saxpy's on a device),
+#                             and what the CPU walkthroughs read from them:
+#                             the join's allocations and instructions, the
+#                             filter's branch misses
 #   TestDemoSaxpyOwnership  - saxpy's resource release, on any machine
+#
+# Test support:
+#   utst/HardwareCounter.hpp - one hardware event counted around a call, for
+#                              the tests that read the counters; no demo
+#                              includes it
 # ==============================================================================
 
 include(vernier/All)

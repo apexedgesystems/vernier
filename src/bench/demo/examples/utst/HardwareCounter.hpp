@@ -2,16 +2,17 @@
 #define VERNIER_DEMO_HARDWARECOUNTER_HPP
 /**
  * @file HardwareCounter.hpp
- * @brief One hardware event counted on the calling thread, through the
- *        kernel's perf interface, for the demos' effect checks.
+ * @brief Test helper: one hardware event counted on the calling thread,
+ *        through the kernel's perf interface, for the examples' tests.
  *
- * A check that a demo still demonstrates what its walkthrough shows needs the
- * counts the walkthrough reads, on exactly the calls it makes: instructions
- * per call of one version against another, branch misses on random input
- * against sorted. perf stat reports those for a whole process from outside;
- * this counter reads the same hardware event from inside, around one
- * callable, with no perf binary involved. It counts user-space work only, as
- * an unprivileged perf stat does.
+ * A test that an example still shows what its walkthrough reads from the
+ * counters needs those counts on exactly the calls the test makes:
+ * instructions per call of one version against another, branch misses on
+ * random input against sorted. perf stat reports them for a whole process
+ * from outside; this counter reads the same hardware event from inside,
+ * around one callable, with no perf binary involved. It counts user-space
+ * work only, as an unprivileged perf stat does. It is test support, linked
+ * into no demo: a demo reads the counters through --profile perf.
  *
  * Linux only. Opening the counter can fail: the kernel refuses an unprivileged
  * process above kernel.perf_event_paranoid 2, a container's default seccomp
@@ -53,6 +54,7 @@
 namespace vernier {
 namespace bench {
 namespace demo {
+namespace test {
 
 /* ----------------------------- HardwareEvent ----------------------------- */
 
@@ -293,6 +295,7 @@ inline HardwareCounter::~HardwareCounter() = default;
 
 #endif
 
+} // namespace test
 } // namespace demo
 } // namespace bench
 } // namespace vernier

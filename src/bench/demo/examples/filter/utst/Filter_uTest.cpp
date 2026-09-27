@@ -5,20 +5,22 @@
  * Notes:
  *  - Every version must keep the same values in the same order for the same
  *    arguments; that is what lets a walkthrough compare their counters.
- *  - Whether filterBranchy() still branches on the data is what the
- *    hardware-counter walkthrough teaches, so it is tested too, through a
- *    counter the kernel exposes for this thread. Where the counter cannot be
- *    opened the test skips and says why.
+ *  - Whether filterBranchy() still branches on the data, and whether
+ *    filterBranchless() removes what that branch costs, is what the
+ *    hardware-counter walkthrough teaches, so both are tested too, through a
+ *    hardware counter (utst/HardwareCounter.hpp). Where it cannot count, the
+ *    tests skip and say why.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
 #include "src/bench/demo/examples/filter/inc/Filter.hpp"
 
-#include "src/bench/demo/helpers/HardwareCounter.hpp"
+#include "src/bench/demo/examples/utst/HardwareCounter.hpp"
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdio>
 
 #include <algorithm>
 #include <iterator>
@@ -27,13 +29,13 @@
 
 using vernier::bench::demo::filterBranchless;
 using vernier::bench::demo::filterBranchy;
-using vernier::bench::demo::HardwareCounter;
-using vernier::bench::demo::HardwareEvent;
-using vernier::bench::demo::joinReasons;
 using vernier::bench::demo::makeSortedValues;
 using vernier::bench::demo::makeValues;
-using vernier::bench::demo::Reading;
-using vernier::bench::demo::scalingNote;
+using vernier::bench::demo::test::HardwareCounter;
+using vernier::bench::demo::test::HardwareEvent;
+using vernier::bench::demo::test::joinReasons;
+using vernier::bench::demo::test::Reading;
+using vernier::bench::demo::test::scalingNote;
 
 /* ----------------------------- File Helpers ----------------------------- */
 
@@ -173,8 +175,9 @@ constexpr int BRANCH_TEST_CALLS = 10;
 constexpr double MIN_MISPREDICTS_PER_VALUE = 0.1;
 
 /// On sorted input the same branch turns once per call, so its mispredictions
-/// are a handful; the random input must mispredict at least this many times
-/// as often. On the reference rig the ratio is in the thousands.
+/// are a handful, and filterBranchless has no branch on the data at all; the
+/// branchy filter on random input must mispredict at least this many times as
+/// often as either. On the reference rig both ratios are in the thousands.
 constexpr double MIN_MISPREDICT_RATIO = 10.0;
 
 /** @test filterBranchy's test of each value stays a branch the processor has to predict */
@@ -201,6 +204,10 @@ TEST(FilterBranchTest, ConditionalStoreKeepsItsBranch) {
   }
   const double perValue = random_.value / static_cast<double>(BRANCH_TEST_SIZE);
 
+  std::printf("[FilterBranchTest.ConditionalStoreKeepsItsBranch]  random %.0f%s  sorted %.0f%s  "
+              "branch-misses/call\n",
+              random_.value, scalingNote(random_).c_str(), sorted_.value,
+              scalingNote(sorted_).c_str());
   EXPECT_GE(perValue, MIN_MISPREDICTS_PER_VALUE)
       << "filterBranchy mispredicted " << perValue << " branches per value on random input"
       << scalingNote(random_) << ": its test of each value is no longer a branch";
@@ -208,4 +215,38 @@ TEST(FilterBranchTest, ConditionalStoreKeepsItsBranch) {
       << "filterBranchy mispredicted " << random_.value << " branches per call on random input"
       << scalingNote(random_) << " and " << sorted_.value << " on sorted input"
       << scalingNote(sorted_) << ": its branch no longer depends on the data";
+}
+
+/** @test filterBranchless removes the mispredictions filterBranchy makes on random input */
+TEST(FilterBranchTest, BranchlessFormRemovesTheMisses) {
+  HardwareCounter misses(HardwareEvent::BRANCH_MISSES);
+  if (!misses.isOpen()) {
+    GTEST_SKIP() << "cannot count branch-misses here: " << misses.failure();
+  }
+
+  const std::vector<double> random = makeValues(BRANCH_TEST_SIZE, 42);
+  std::vector<double> out(BRANCH_TEST_SIZE);
+  volatile std::size_t sink = 0;
+
+  const Reading branchy =
+      misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchy(random, 0.5, out); });
+  const Reading branchless =
+      misses.perCall(BRANCH_TEST_CALLS, [&] { sink = filterBranchless(random, 0.5, out); });
+  // A branch on random input mispredicts; a zero there is a counter that did
+  // not count. The branchless filter may count as few as it likes.
+  const std::string notCounted =
+      joinReasons({branchy.whyNotCounted(true), branchless.whyNotCounted(false)});
+  if (!notCounted.empty()) {
+    GTEST_SKIP() << "could not count branch-misses here: " << notCounted;
+  }
+
+  std::printf(
+      "[FilterBranchTest.BranchlessFormRemovesTheMisses]  branchy %.0f%s  branchless %.0f%s  "
+      "branch-misses/call\n",
+      branchy.value, scalingNote(branchy).c_str(), branchless.value,
+      scalingNote(branchless).c_str());
+  EXPECT_GE(branchy.value, MIN_MISPREDICT_RATIO * branchless.value)
+      << "filterBranchy mispredicted " << branchy.value << " branches per call on random input"
+      << scalingNote(branchy) << " and filterBranchless " << branchless.value
+      << scalingNote(branchless) << ": the branchless version no longer removes them";
 }

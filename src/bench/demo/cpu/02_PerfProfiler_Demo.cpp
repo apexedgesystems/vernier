@@ -3,17 +3,14 @@
  * @brief Demo 02: perf hardware counters -- what the processor did, at full speed
  *
  * Measures two shared examples, one version per test, so each can be run
- * under --profile perf on its own, and checks what the counters say:
- *  1. JoinV0 and JoinV1 measure the join example; JoinInstructions counts
- *     the instructions each version retires per call and fails when V0 stops
- *     retiring many times more than V1
+ * under --profile perf on its own:
+ *  1. JoinV0 and JoinV1 measure the join example: V0 does far more work
  *  2. FilterBranchyRandom, FilterBranchySorted and FilterBranchless measure
- *     the filter example; FilterBranchMisses counts the branch misses per
- *     call of each case and fails when the random input stops mispredicting
- *     far more than the sorted input and than the branchless version
- *  3. The two checks count through the kernel's perf interface on their own
- *     calls (helpers/HardwareCounter.hpp), write no CSV row, and skip where
- *     the counter cannot be opened or did not run, and under --profile
+ *     the filter example: the same work, with and without a branch the
+ *     processor has to guess
+ *
+ * What the counters show about each is checked by the examples' unit tests,
+ * not here: see the walkthrough's "What Keeps This Page True".
  *
  * Usage:
  *   @code{.sh}
@@ -35,7 +32,6 @@
 #include <gtest/gtest.h>
 
 #include <cstddef>
-#include <cstdio>
 
 #include <string>
 #include <vector>
@@ -43,9 +39,7 @@
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/demo/examples/filter/inc/Filter.hpp"
 #include "src/bench/demo/examples/join/inc/Join.hpp"
-#include "src/bench/demo/helpers/HardwareCounter.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
 
 /* ----------------------------- Constants ----------------------------- */
@@ -68,25 +62,6 @@ static constexpr unsigned VALUE_SEED = 42;
 /// Half the values are above it, so on random input the branch is taken
 /// half the time in no order a predictor can learn.
 static constexpr double THRESHOLD = 0.5;
-
-/// Calls counted per version or case in the checks.
-static constexpr int COUNTED_CALLS = 10;
-
-/// joinV0 must retire at least this many times the instructions joinV1
-/// retires per call. On the reference rig the ratio is about 33; joinV0
-/// building like joinV1 gives 1.
-static constexpr double MIN_INSTRUCTION_RATIO = 10.0;
-
-/// filterBranchy on random input must mispredict at least this many
-/// branches per value: a branch taken half the time in no learnable order
-/// mispredicts about half the time, and a loop whose test became a
-/// conditional select mispredicts almost nothing.
-static constexpr double MIN_MISPREDICTS_PER_VALUE = 0.1;
-
-/// And at least this many times as many per call as the same function on
-/// sorted input, and as filterBranchless on the same random input. On the
-/// reference rig both ratios are in the thousands.
-static constexpr double MIN_MISPREDICT_RATIO = 10.0;
 
 /* ----------------------------- Tests ----------------------------- */
 
@@ -157,112 +132,6 @@ PERF_THROUGHPUT(PerfProfiler, FilterBranchless) {
   perf.warmup([&] { sink = demo::filterBranchless(VALUES, THRESHOLD, out); });
   perf.throughputLoop([&] { sink = demo::filterBranchless(VALUES, THRESHOLD, out); },
                       "filter_branchless");
-}
-
-/**
- * @test joinV0 retires many times the instructions joinV1 retires, per call.
- *
- * Counts the instructions each version retires over COUNTED_CALLS calls,
- * through the same kernel interface perf stat reads, and fails when V0's
- * count per call is no longer MIN_INSTRUCTION_RATIO times V1's: the copying
- * and allocating that V0's one-liner asks for is the work the counters show.
- * Writes no CSV row.
- */
-PERF_TEST(PerfProfiler, JoinInstructions) {
-  if (!ub::detail::getPerfConfig().profileTool.empty()) {
-    GTEST_SKIP() << "counts on its own; run it without --profile";
-  }
-  demo::HardwareCounter instructions(demo::HardwareEvent::INSTRUCTIONS);
-  if (!instructions.isOpen()) {
-    GTEST_SKIP() << "cannot count instructions here: " << instructions.failure();
-  }
-
-  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
-  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR), demo::joinV1(PARTS, SEPARATOR));
-
-  volatile std::size_t sink = 0;
-  const demo::Reading V0 =
-      instructions.perCall(COUNTED_CALLS, [&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
-  const demo::Reading V1 =
-      instructions.perCall(COUNTED_CALLS, [&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
-  // Any code retires instructions: a zero is a counter that did not count.
-  const std::string NOT_COUNTED =
-      demo::joinReasons({V0.whyNotCounted(true), V1.whyNotCounted(true)});
-  if (!NOT_COUNTED.empty()) {
-    GTEST_SKIP() << "could not count instructions here: " << NOT_COUNTED;
-  }
-
-  std::printf("[PerfProfiler.JoinInstructions]  V0 %.0f instructions/call%s  V1 %.0f "
-              "instructions/call%s  %.1fx\n",
-              V0.value, demo::scalingNote(V0).c_str(), V1.value, demo::scalingNote(V1).c_str(),
-              V0.value / V1.value);
-
-  EXPECT_GE(V0.value, MIN_INSTRUCTION_RATIO * V1.value)
-      << "joinV0 retired " << V0.value << " instructions per call and joinV1 " << V1.value
-      << ": V0 no longer does " << MIN_INSTRUCTION_RATIO
-      << " times V1's work, and the demo has stopped demonstrating";
-}
-
-/**
- * @test The branchy filter mispredicts on random input, and neither the same
- *       filter on sorted input nor the branchless filter does.
- *
- * Counts the branch misses per call of the three cases, through the same
- * kernel interface perf stat reads. Fails when the random case mispredicts
- * fewer than MIN_MISPREDICTS_PER_VALUE per value (the branch is gone: a
- * conditional select in its place) or fewer than MIN_MISPREDICT_RATIO times
- * the sorted case or the branchless case (the contrast the walkthrough shows
- * is gone). Writes no CSV row.
- */
-PERF_TEST(PerfProfiler, FilterBranchMisses) {
-  if (!ub::detail::getPerfConfig().profileTool.empty()) {
-    GTEST_SKIP() << "counts on its own; run it without --profile";
-  }
-  demo::HardwareCounter misses(demo::HardwareEvent::BRANCH_MISSES);
-  if (!misses.isOpen()) {
-    GTEST_SKIP() << "cannot count branch-misses here: " << misses.failure();
-  }
-
-  const auto RANDOM = demo::makeValues(VALUE_COUNT, VALUE_SEED);
-  const auto SORTED = demo::makeSortedValues(VALUE_COUNT, VALUE_SEED);
-  std::vector<double> out(VALUE_COUNT);
-  ASSERT_EQ(demo::filterBranchy(RANDOM, THRESHOLD, out),
-            demo::filterBranchless(RANDOM, THRESHOLD, out));
-
-  volatile std::size_t sink = 0;
-  const demo::Reading BRANCHY_RANDOM =
-      misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchy(RANDOM, THRESHOLD, out); });
-  const demo::Reading BRANCHY_SORTED =
-      misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchy(SORTED, THRESHOLD, out); });
-  const demo::Reading BRANCHLESS =
-      misses.perCall(COUNTED_CALLS, [&] { sink = demo::filterBranchless(RANDOM, THRESHOLD, out); });
-  // A branch on random input mispredicts: a zero there is a counter that did
-  // not count. The other two cases may count as few as they like.
-  const std::string NOT_COUNTED =
-      demo::joinReasons({BRANCHY_RANDOM.whyNotCounted(true), BRANCHY_SORTED.whyNotCounted(false),
-                         BRANCHLESS.whyNotCounted(false)});
-  if (!NOT_COUNTED.empty()) {
-    GTEST_SKIP() << "could not count branch-misses here: " << NOT_COUNTED;
-  }
-
-  std::printf("[PerfProfiler.FilterBranchMisses]  branchy random %.0f%s  branchy sorted %.0f%s  "
-              "branchless %.0f%s  branch-misses/call\n",
-              BRANCHY_RANDOM.value, demo::scalingNote(BRANCHY_RANDOM).c_str(), BRANCHY_SORTED.value,
-              demo::scalingNote(BRANCHY_SORTED).c_str(), BRANCHLESS.value,
-              demo::scalingNote(BRANCHLESS).c_str());
-
-  const double PER_VALUE = BRANCHY_RANDOM.value / static_cast<double>(VALUE_COUNT);
-  EXPECT_GE(PER_VALUE, MIN_MISPREDICTS_PER_VALUE)
-      << "filterBranchy mispredicted " << PER_VALUE
-      << " branches per value on random input: its test of each value is no longer a branch";
-  EXPECT_GE(BRANCHY_RANDOM.value, MIN_MISPREDICT_RATIO * BRANCHY_SORTED.value)
-      << "filterBranchy mispredicted " << BRANCHY_RANDOM.value
-      << " branches per call on random input and " << BRANCHY_SORTED.value
-      << " on sorted input: the order of the data no longer matters";
-  EXPECT_GE(BRANCHY_RANDOM.value, MIN_MISPREDICT_RATIO * BRANCHLESS.value)
-      << "filterBranchy mispredicted " << BRANCHY_RANDOM.value << " branches per call and "
-      << "filterBranchless " << BRANCHLESS.value
-      << ": the branchless version no longer removes them";
 }
 
 PERF_MAIN()

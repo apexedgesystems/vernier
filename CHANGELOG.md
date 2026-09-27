@@ -99,32 +99,33 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
 - **Demo 02 (perf) measures the shared `join` example and a new `filter`
-  example, and checks what the counters say** -- `BenchDemo_02_PerfProfiler`
+  example, whose unit tests check what the counters say** -- `BenchDemo_02_PerfProfiler`
   measures `joinV0` and `joinV1` (`PerfProfiler.JoinV0`, `PerfProfiler.JoinV1`)
   and a filter that keeps the values above a threshold, three ways: with a
   branch per value on values in random order (`PerfProfiler.FilterBranchyRandom`),
   the same on the same values in ascending order (`PerfProfiler.FilterBranchySorted`),
-  and without a branch (`PerfProfiler.FilterBranchless`); one CSV row each. The
-  filter is a new shared example, `src/bench/demo/examples/filter/`, whose unit
-  tests hold both versions to the same answers and check that the branchy
-  version's test of each value is still a branch in an optimized build: it
-  stores conditionally, which a compiler cannot turn into a conditional
-  select, where the conditional sum the old demo 05 measured was if-converted
-  by one compiler and its three cases then timed the same. Two more tests in
-  the demo count hardware events on their own calls through the kernel's perf
-  interface (`helpers/HardwareCounter.hpp`) and fail when the demo stops
-  demonstrating: `PerfProfiler.JoinInstructions` (V0 must retire at least ten
-  times the instructions V1 retires per call; about 33 times on the rig) and
-  `PerfProfiler.FilterBranchMisses` (the random case must mispredict at least
-  a tenth of a branch per value, and at least ten times as often as the sorted
-  case and as the branchless case). Both are registered with `ctest` under the
-  `demo` label and skip, reported as skipped, where the counter cannot be
-  opened (`kernel.perf_event_paranoid` above 2, a container's default seccomp
-  profile, a processor without the event) or was not on the PMU for the
-  counted calls (a hybrid processor counts an event on one kind of core only;
-  a PMU with more events open than counters takes turns): a reading carries
-  the share of the thread's time its counter ran, as `perf stat` reads it,
-  and a count taken part of the time is scaled and says so. The old demo walked 8 KB with a
+  and without a branch (`PerfProfiler.FilterBranchless`); one CSV row each,
+  and nothing else: the demo measures, and the examples' unit tests check what
+  the counters show, counting hardware events on their own calls through the
+  kernel's perf interface. The filter is a new shared example,
+  `src/bench/demo/examples/filter/`, whose unit tests hold both versions to the
+  same answers; `FilterBranchTest.ConditionalStoreKeepsItsBranch` fails when
+  the branchy version's test of each value stops being a branch in an
+  optimized build (it stores conditionally, which a compiler cannot turn into
+  a conditional select, where the conditional sum the old demo 05 measured was
+  if-converted by one compiler and its three cases then timed the same), and
+  `FilterBranchTest.BranchlessFormRemovesTheMisses` when the branchless version
+  stops removing the mispredictions. The join example's unit tests gain
+  `JoinInstructionTest.V0RetiresFarMoreThanV1` (V0 must retire at least ten
+  times the instructions V1 retires per call; 33.0 to 35.1 times on the rig).
+  The three are registered with `ctest` under the `demo` label and skip,
+  reported as skipped, where the counter cannot be opened
+  (`kernel.perf_event_paranoid` above 2, a container's default seccomp profile,
+  a processor without the event) or was not on the PMU for the counted calls (a
+  hybrid processor counts an event on one kind of core only; a PMU with more
+  events open than counters takes turns): a reading carries the share of the
+  thread's time its counter ran, as `perf stat` reads it, and a count taken
+  part of the time is scaled and says so. The old demo walked 8 KB with a
   stride against 4 MB sequentially, so its "slow" case ran 17 times faster on
   the rig, and its page promised events the backend never collects. Its
   walkthrough, `src/bench/demo/docs/02_PERF_PROFILER.md`, is rewritten from a
