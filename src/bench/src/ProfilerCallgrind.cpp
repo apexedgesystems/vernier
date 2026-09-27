@@ -2,8 +2,11 @@
  * @file ProfilerCallgrind.cpp
  * @brief Implementation of Valgrind Callgrind profiler backend.
  *
- * Uses callgrind_control to toggle instrumentation around the measured window.
- * When not running under valgrind, the toggle commands are harmless no-ops.
+ * Under a manual `valgrind --tool=callgrind --instr-atstart=no` wrap, switches
+ * instrumentation on for each measured window and off after it with
+ * callgrind_control. A recording made by bench run's wrap covers the whole
+ * process and is left alone. Not under valgrind, the backend prints how to
+ * wrap and the measurement runs normally.
  */
 
 #include "src/bench/inc/ProfilerCallgrind.hpp"
@@ -35,10 +38,23 @@ bool isCallgrindControlAvailable() {
   return (std::system("command -v callgrind_control >/dev/null 2>&1") == 0);
 }
 
-bool isRunningUnderValgrind() {
-  // Use the shared detection that does NOT depend on callgrind_control
-  // (which can't reach the valgrind process inside a Docker PID namespace).
-  return profiler_env::isRunningUnderValgrind();
+bool isRunningUnderValgrind() { return profiler_env::isRunningUnderValgrind(); }
+
+/// True when bench run wrapped this process with callgrind: that recording
+/// covers the whole process, and switching instrumentation off after a
+/// measured window would cut it short.
+bool isWrappedByRunner(const PerfConfig& cfg) {
+  return !cfg.profileTool.empty() && profiler_env::externalWrapTool() == cfg.profileTool;
+}
+
+/// Switch callgrind's instrumentation for this process on or off.
+/// callgrind_control takes the process id as a trailing argument, not as an
+/// option. It exits 0 whether or not the command reached the process, so its
+/// status is not read.
+void switchInstrumentation(const char* state) {
+  const std::string CMD = std::string{"callgrind_control -i "} + state + " " +
+                          std::to_string(::getpid()) + " >/dev/null 2>&1";
+  [[maybe_unused]] const int RC = std::system(CMD.c_str());
 }
 #endif
 
@@ -53,21 +69,27 @@ CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "callgrind");
 
   runningUnderValgrind_ = isRunningUnderValgrind();
-  canToggle_ =
-      runningUnderValgrind_ && isCallgrindControlAvailable() && !profiler_env::isInContainer();
+  const bool HAS_CONTROL = isCallgrindControlAvailable();
+  canToggle_ = runningUnderValgrind_ && HAS_CONTROL && !isWrappedByRunner(cfg_);
 
   if (!runningUnderValgrind_) {
+    // Without callgrind_control the window cannot be switched on, so the hint
+    // leaves instrumentation on from the start and records the whole process.
     std::fprintf(stderr,
                  "\n[callgrind] not running under valgrind; instrumentation skipped.\n"
                  "[callgrind] To collect a profile, wrap externally:\n"
-                 "[callgrind]   valgrind --tool=callgrind --instr-atstart=no \\\n"
+                 "[callgrind]   valgrind --tool=callgrind%s \\\n"
                  "[callgrind]     --callgrind-out-file=%s/callgrind.out \\\n"
-                 "[callgrind]     <this-binary> --profile callgrind [...]\n\n",
-                 artifactDir_.c_str());
-  } else if (!canToggle_) {
-    std::fprintf(stderr, "\n[callgrind] running under valgrind; callgrind_control cannot reach\n"
-                         "[callgrind] this PID (likely Docker PID namespace). Recording will run\n"
-                         "[callgrind] for the whole process; output written at exit.\n\n");
+                 "[callgrind]     <this-binary> --profile callgrind [...]\n%s\n",
+                 HAS_CONTROL ? " --instr-atstart=no" : "", artifactDir_.c_str(),
+                 HAS_CONTROL ? ""
+                             : "[callgrind] callgrind_control is not on PATH, so the profile "
+                               "covers the whole process.\n");
+  } else if (!HAS_CONTROL && !isWrappedByRunner(cfg_)) {
+    std::fprintf(stderr,
+                 "\n[callgrind] running under valgrind, but callgrind_control is not on PATH:\n"
+                 "[callgrind] instrumentation cannot be switched on for the measured window,\n"
+                 "[callgrind] so a run started with --instr-atstart=no records nothing.\n\n");
   }
 #else
   (void)cfg_;
@@ -77,17 +99,9 @@ CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName
 
 void CallgrindProfiler::beforeMeasure() {
 #ifdef __linux__
-  if (!canToggle_) {
-    return; // Either not under valgrind, or in a PID namespace -- skip toggling.
+  if (canToggle_) {
+    switchInstrumentation("on");
   }
-
-  // Zero counters and enable instrumentation for the measured window
-  std::string pid = std::to_string(::getpid());
-  std::string cmd = "callgrind_control --pid=" + pid + " -z >/dev/null 2>&1";
-  [[maybe_unused]] int rc = std::system(cmd.c_str());
-
-  cmd = "callgrind_control --pid=" + pid + " -i on >/dev/null 2>&1";
-  rc = std::system(cmd.c_str());
 #endif
 }
 
@@ -96,32 +110,28 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
   if (!runningUnderValgrind_) {
     return; // Not wrapped at all -- nothing to do.
   }
-
-  // dumpPath is always defined so the post-section can reference it; the
-  // file only exists when canToggle_ is true.
-  const std::string dumpPath = artifactDir_ + "/callgrind.out";
   if (canToggle_) {
-    // Disable instrumentation and dump results
-    std::string pid = std::to_string(::getpid());
-    std::string cmd = "callgrind_control --pid=" + pid + " -i off >/dev/null 2>&1";
-    [[maybe_unused]] int rc = std::system(cmd.c_str());
-
-    cmd = "callgrind_control --pid=" + pid + " -d '" + dumpPath + "' >/dev/null 2>&1";
-    rc = std::system(cmd.c_str());
+    switchInstrumentation("off");
   }
-  // If we can't toggle (Docker), valgrind writes callgrind.out.<pid> in the
-  // CWD on process exit; the user has to point callgrind_annotate at that.
+
+  // Valgrind writes the profile when the process exits, to the file its
+  // --callgrind-out-file names: callgrind.out in artifactDir_ under bench
+  // run's wrap and under the hint's. Any other manual wrap names its own.
+  const std::string outFile = artifactDir_ + "/callgrind.out";
+  const bool KNOWN_FILE = canToggle_ || isWrappedByRunner(cfg_);
 
   std::printf("\n=== Callgrind Profile ===\n");
   std::printf("Output: %s%s\n", artifactDir_.c_str(),
-              canToggle_ ? "" : " (or callgrind.out.<pid> in CWD if not toggled)");
+              KNOWN_FILE ? ""
+                         : " (or where --callgrind-out-file points; by default "
+                           "callgrind.out.<pid> in the working directory)");
 
   if (cfg_.profileAnalyze) {
     runAnnotateAnalysis();
-  } else if (canToggle_) {
+  } else if (KNOWN_FILE) {
     std::printf("   Run with --profile-analyze for automatic annotation\n");
-    std::printf("   Or manually: callgrind_annotate %s\n", dumpPath.c_str());
-    std::printf("   Or: kcachegrind %s\n", dumpPath.c_str());
+    std::printf("   Or manually: callgrind_annotate %s\n", outFile.c_str());
+    std::printf("   Or: kcachegrind %s\n", outFile.c_str());
   }
   std::printf("\n");
 #endif

@@ -13,23 +13,37 @@
  *    calls: under heaptrack, a count taken through a call stack it has not
  *    met before reads several calls high. The counter and a heap profiler
  *    each disturb the other, which is why this guard is not in the demo.
+ *  - How many instructions each version retires is what the perf
+ *    walkthrough reads, so that is tested too, through a hardware counter
+ *    (utst/HardwareCounter.hpp); where it cannot count, the test skips and
+ *    says why. Its counts include this binary's counting operator new, a few
+ *    instructions per allocation.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
 #include "src/bench/demo/examples/join/inc/Join.hpp"
 
+#include "src/bench/demo/examples/utst/HardwareCounter.hpp"
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 
 #include <new>
 #include <string>
 #include <vector>
 
+using vernier::bench::demo::joinedSize;
 using vernier::bench::demo::joinV0;
 using vernier::bench::demo::joinV1;
 using vernier::bench::demo::makeParts;
+using vernier::bench::demo::test::HardwareCounter;
+using vernier::bench::demo::test::HardwareEvent;
+using vernier::bench::demo::test::joinReasons;
+using vernier::bench::demo::test::Reading;
+using vernier::bench::demo::test::scalingNote;
 
 /* ----------------------------- Allocation Counting ----------------------------- */
 
@@ -134,7 +148,26 @@ TEST_P(JoinSizesTest, JoinedLengthCoversEveryPart) {
   EXPECT_EQ(joinV1(parts_, ',').size(), expected);
 }
 
+/** @test joinedSize is the length every version returns at every input size */
+TEST_P(JoinSizesTest, JoinedSizeIsEveryVersionsLength) {
+  EXPECT_EQ(joinedSize(parts_), joinV0(parts_, ',').size());
+  EXPECT_EQ(joinedSize(parts_), joinV1(parts_, ',').size());
+}
+
 INSTANTIATE_TEST_SUITE_P(Counts, JoinSizesTest, ::testing::Values(0, 1, 10, 100, 1000, 10000));
+
+/* ----------------------------- joinedSize Tests ----------------------------- */
+
+/** @test joinedSize counts every part and one separator after each */
+TEST(JoinedSizeTest, CountsEveryPartAndOneSeparatorEach) {
+  const std::vector<std::string> none;
+  const std::vector<std::string> words = {"alpha", "beta", "gamma"};
+  const std::vector<std::string> empties = {"", ""};
+
+  EXPECT_EQ(joinedSize(none), 0u);
+  EXPECT_EQ(joinedSize(words), std::string("alpha,beta,gamma,").size());
+  EXPECT_EQ(joinedSize(empties), std::string("--").size());
+}
 
 /* ----------------------------- Allocation Tests ----------------------------- */
 
@@ -179,6 +212,60 @@ TEST(JoinAllocationTest, V0AllocatesFarMoreOftenThanV1) {
   EXPECT_GE(v0Calls, MIN_ALLOCATION_RATIO * v1Calls)
       << "joinV0 made " << v0Calls << " allocations for " << PROFILED_PART_COUNT
       << " parts, joinV1 " << v1Calls << ": the heap-profiler demos have stopped demonstrating";
+}
+
+/** @test joinedSize allocates nothing: demo 15 checks each answer with it, and
+ *  heaptrack's counts of that test divide by the calls to its version alone */
+TEST(JoinAllocationTest, JoinedSizeAllocatesNothing) {
+  const auto parts = makeParts(PROFILED_PART_COUNT, 42);
+
+  std::size_t size = 0;
+  const std::size_t calls = countNewCalls([&] { size = joinedSize(parts); });
+
+  EXPECT_EQ(calls, 0u);
+  EXPECT_EQ(size, joinV1(parts, ',').size());
+}
+
+/* ----------------------------- Instruction Tests ----------------------------- */
+
+/// Calls counted per version.
+constexpr int INSTRUCTION_TEST_CALLS = 10;
+
+/// At PROFILED_PART_COUNT parts, joinV0 must retire at least this many times
+/// the instructions joinV1 retires per call: the copying and allocating its
+/// one-liner asks for is the work the counters show. The ratio is about 33 on
+/// the reference rig; joinV0 building like joinV1 gives 1.
+constexpr double MIN_INSTRUCTION_RATIO = 10.0;
+
+/** @test joinV0 retires at least MIN_INSTRUCTION_RATIO times the instructions joinV1 retires */
+TEST(JoinInstructionTest, V0RetiresFarMoreThanV1) {
+  HardwareCounter instructions(HardwareEvent::INSTRUCTIONS);
+  if (!instructions.isOpen()) {
+    GTEST_SKIP() << "cannot count instructions here: " << instructions.failure();
+  }
+
+  const auto parts = makeParts(PROFILED_PART_COUNT, 42);
+  ASSERT_EQ(joinV0(parts, ','), joinV1(parts, ','));
+
+  volatile std::size_t sink = 0;
+  const Reading v0 =
+      instructions.perCall(INSTRUCTION_TEST_CALLS, [&] { sink = joinV0(parts, ',').size(); });
+  const Reading v1 =
+      instructions.perCall(INSTRUCTION_TEST_CALLS, [&] { sink = joinV1(parts, ',').size(); });
+  // Any code retires instructions: a zero is a counter that did not count.
+  const std::string notCounted = joinReasons({v0.whyNotCounted(true), v1.whyNotCounted(true)});
+  if (!notCounted.empty()) {
+    GTEST_SKIP() << "could not count instructions here: " << notCounted;
+  }
+
+  std::printf("[JoinInstructionTest.V0RetiresFarMoreThanV1]  V0 %.0f instructions/call%s  "
+              "V1 %.0f instructions/call%s  %.1fx\n",
+              v0.value, scalingNote(v0).c_str(), v1.value, scalingNote(v1).c_str(),
+              v0.value / v1.value);
+  EXPECT_GE(v0.value, MIN_INSTRUCTION_RATIO * v1.value)
+      << "joinV0 retired " << v0.value << " instructions per call and joinV1 " << v1.value
+      << ": V0 no longer does " << MIN_INSTRUCTION_RATIO
+      << " times V1's work, and the perf walkthrough has stopped demonstrating";
 }
 
 /* ----------------------------- makeParts Tests ----------------------------- */

@@ -25,7 +25,12 @@
 | CPU       | 4x Cortex-A72, aarch64, 1800 MHz max; 32 KiB L1d per core, 1 MiB shared L2, no L3 |
 | OS        | Debian GNU/Linux 13 (trixie), Linux 6.18 (64-bit)                                 |
 | Compiler  | g++ 14.2.0, cmake 3.31.6                                                          |
-| Profilers | valgrind 3.24.0, heaptrack 1.5.0, bpftrace 0.23.2, perf 6.18, gperftools 2.0      |
+| Profilers | valgrind 3.24.0, heaptrack 1.5.0, bpftrace 0.23.2, perf 6.18, gperftools 2.16     |
+
+The gperftools version is the installed packages' (`google-perftools` and
+`libgoogle-perftools-dev`, 2.16-1). `google-pprof --version` prints
+`pprof (part of gperftools 2.0)`: the script carries that number as a
+constant of its own (`$PPROF_VERSION`), so it is not the package's version.
 
 ## 2. One-Time Setup
 
@@ -33,8 +38,16 @@
 
 ```bash
 sudo apt install build-essential cmake ninja-build git \
-  valgrind heaptrack bpftrace linux-perf google-perftools libgoogle-perftools-dev
+  valgrind heaptrack bpftrace linux-perf google-perftools libgoogle-perftools-dev \
+  libc6-dbg
 ```
+
+**C library symbols.** `libc6-dbg` holds the names of the C library's
+internal functions, which `google-pprof` reads to name the samples taken
+inside the library. Without it, a sample there takes the nearest name the
+library exports: the gperftools walkthrough's report then shows its top row,
+`memcpy`, as
+[`__xpg_strerror_r`](../../demo/docs/03_GPERF_PROFILER.md#if-it-does-not-match).
 
 **Rust toolchain.** Needed once to build the `bench` CLI. Install with
 `rustup` and make sure `cargo` is on PATH.
