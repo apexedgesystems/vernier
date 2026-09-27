@@ -12,8 +12,10 @@ performance, not by default in CI.
   `CAP_PERFMON`. `BENCH_SUDO=1` runs it, and the `kill` that stops it, through
   `sudo -n`; the sudoers grant must allow `bpftrace` with the run's script
   arguments and `kill` with `-2`, `-15` and `-9`. `PERF_BPF_SUDO` is a
-  deprecated alias honoured by the `bpftrace` backend only: `BENCH_SUDO` wins
-  when both are set, and an invalid value of either is a configuration error.
+  deprecated alias honoured by the `bpftrace` backend only: a valid
+  `BENCH_SUDO` wins when both are set, and an invalid alias is then ignored
+  with a warning; an invalid `BENCH_SUDO`, or an invalid alias on its own, is
+  a configuration error.
 - `--profile-check --profile bpftrace --bpf <scripts>` runs a copy of each
   selected script, with a 5 s self-exit added, through that route for a second
   and stops it, and reports what failed; a run makes the same decision before
