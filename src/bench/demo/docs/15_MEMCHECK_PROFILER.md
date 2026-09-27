@@ -612,10 +612,14 @@ before step 1's run (the two CSVs' timestamps are one second apart), and
 nothing changed between them: `joinV0` came out -4.0% against it and
 `joinV1` came out -0.3% against it, both inside the 5% threshold the labels
 are drawn at, so both rows say `neutral`. That is this pair of runs, not a
-property of the code. As the note under the table says, a label compares two
-runs' medians; it is not a significance test, and `Base CV` and `Cand CV`
-are each run's own spread, which says nothing about the spread between runs:
-0.1% and 0.2% for `joinV0` here. Over the session's twelve runs of step 1,
+property of the code. The CSVs' `hostname` column records the name visible
+to the process that captured each: this reference was captured in a UTS
+namespace named `pi4` on the same rig, so it records `pi4`, while the rig's
+ordinary captures, step 1's `run.csv` among them, record `raspberrypi`. As
+the note under the table says, a label compares two runs' medians; it is
+not a significance test, and `Base CV` and `Cand CV` are each run's own
+spread, which says nothing about the spread between runs: 0.1% and 0.2% for
+`joinV0` here. Over the session's twelve runs of step 1,
 `joinV0`'s median ranged from 915.8 to 1013.0 us, 10.6%, and `joinV1`'s from
 19.8 to 21.1 us, 6.7%, with nothing changed, so a run of unchanged code can
 land on either side of the threshold; `joinV0`'s median is the noisiest
