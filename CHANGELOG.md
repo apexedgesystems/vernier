@@ -99,40 +99,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
 - **Demo 12 (memcheck) measures the shared `join` example and carries a bug
-  for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measured a
-  workload written for the demo, with a deliberate leak whose size its
-  walkthrough invented. It measures `joinV0` and `joinV1` instead, one version
-  per test (`Memcheck.JoinV0`, `Memcheck.JoinV1`), and a third case,
-  `Memcheck.JoinOffByOne`, calls a deliberately wrong join private to the demo:
-  it builds the result in a raw buffer sized for the characters alone, writes
-  the terminator one byte past the end and reads it back, and returns the
-  right string, so no check of the answer can tell. The case runs only under
-  valgrind: the new demo helper `helpers/SkipUnlessUnderValgrind.hpp` skips
-  it anywhere else with a message that says how to run it, and the helper's
-  tests (`TestDemoHelpers`, under the `demo` label) run their binary as a
-  child plainly and under valgrind. The demo holds nothing else: its check,
-  `Memcheck.FindsTheOffByOne`, is a test program of its own
-  (`TestDemoMemcheck`), registered with `ctest` under the `demo` and
-  `memcheck` labels, which runs the demo under memcheck as `bench run
-  --profile memcheck` wraps it and fails unless memcheck reports the write
-  once per call, right after a block the size of the joined string, in
-  `joinOffByOne`, and reports nothing for `joinV1`; it skips in a build with
-  the address or the thread sanitizer, where valgrind is missing, where
-  valgrind gives up reading the binary, and, once everything but the names
-  has passed, where valgrind cannot read the binary's symbols (valgrind
-  3.18.1 on a GCC 11.4 build linked by mold 1.0.3), the last two saying so
-  in valgrind's words. The wrong join's source is compiled with debug
-  information, so memcheck's report names its lines. Its walkthrough,
-  `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is
-  rewritten from a Release run on the documented Raspberry Pi 4 rig: the wrong
-  join under `bench run --profile memcheck`, memcheck's report read line by
-  line (the write and the read one byte past a 7,490-byte block, at the lines
-  of the wrong join), the correct version's clean report, where the log lands
-  under `bench run` and under a run by hand, and valgrind run directly with
-  `--error-exitcode=1` as a job would; that run's CSV is committed at
-  `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The page quoted a
-  leak size no run produced. Demo 12's test names change, so CSVs captured
-  from it before this release do not join with newer ones.
+  for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
+  and `joinV1`, one version per test, instead of a workload written for the
+  demo, and a third case calls a deliberately wrong join that writes one byte
+  past its buffer. That case runs only under valgrind and skips itself
+  anywhere else; a check registered with `ctest` under the `memcheck` label
+  fails if memcheck stops reporting the write. Its walkthrough,
+  `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig, replacing a leak size no run
+  produced; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

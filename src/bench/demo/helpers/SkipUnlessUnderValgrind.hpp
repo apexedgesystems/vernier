@@ -25,15 +25,10 @@ namespace demo {
 
 /* ----------------------------- Constants ----------------------------- */
 
-/// True when this binary was built with the address or the thread sanitizer,
-/// whose builds valgrind cannot check. Under valgrind 3.22 (clang 21) an
-/// address-sanitizer build ran with none of valgrind's libraries mapped into
-/// it, so memcheck saw no allocation and this helper no valgrind, and a
-/// thread-sanitizer build never reached main; under valgrind 3.18.1 no
-/// address-sanitizer build it was given reached main (GCC 11). Builds with
-/// the undefined-behaviour sanitizer ran under valgrind as ordinary ones and
-/// are not included. Only a test that starts valgrind on this binary skips on
-/// it.
+/// True in a build with the address or the thread sanitizer. Those runtimes
+/// do not run under valgrind as an ordinary program does, so a test that
+/// starts valgrind on this binary skips there. An undefined-behaviour
+/// sanitizer build runs as an ordinary one and is not included.
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 inline constexpr bool BUILT_WITH_ASAN_OR_TSAN = true;
 #elif defined(__has_feature)
