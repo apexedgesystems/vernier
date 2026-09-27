@@ -33,7 +33,6 @@ set(CPU_DEMOS
     02_PerfProfiler
     03_GperfProfiler
     04_CacheFriendly
-    05_BranchOptimization
     06_ThreadScaling
     07_CallgrindProfiler
     08_RaplProfiler
@@ -95,7 +94,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (6)
+# Demos Built on a Shared Example (7)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -104,6 +103,10 @@ endif ()
 target_link_libraries(
   BenchDemo_01_BasicWorkflow
   PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_02_PerfProfiler
+  PRIVATE demo_example_join demo_example_filter
 )
 target_link_libraries(
   BenchDemo_03_GperfProfiler

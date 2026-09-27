@@ -98,6 +98,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
+  `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
+  `filter` example, with a Raspberry Pi walkthrough
+  (`src/bench/demo/docs/02_PERF_PROFILER.md`) and a reference capture
+  (`src/bench/demo/reference/pi4/02_perf_profiler.csv`). Demo 05 is folded
+  into demo 02 as the filter example, and its standalone executable,
+  `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
+  so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
 - **Demo 12 (memcheck) measures the shared `join` example and carries a bug
   for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
   and `joinV1`, one version per test, instead of a workload written for the
