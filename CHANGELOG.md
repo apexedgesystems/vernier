@@ -9,6 +9,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 07 counts the instructions of the shared join example** --
+  `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
+  its walkthrough quoted instruction counts that workload cannot produce. It
+  measures `joinV0` and `joinV1` from `src/bench/demo/examples/join`, one test
+  and one CSV row each, and a test run by `ctest` holds V0 to several times
+  V1's instructions per call. Its walkthrough,
+  `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig, whose timing CSV is committed at
+  `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones, and `linearSearch` and `binarySearch` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
@@ -61,8 +73,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   each variant ran more than once a second, which still held with both
   variants made identical. The join example gains `joinedSize()`, the length
   of the string both versions return, computed without allocating (a unit
-  test counts no call to `operator new`); demos 11 and 15 check each result
-  against it, and demo 11's guard checks that it holds no heap.
+  test counts no call to `operator new`); demos 07, 11 and 15 check each
+  result against it, and demo 11's guard checks that it holds no heap.
   `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
   an ordinary test run includes it; the demo's timing tests are not
   registered. Its walkthrough,
@@ -214,6 +226,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The callgrind backend's wrap hint records the measured window** -- the
+  `valgrind --tool=callgrind --instr-atstart=no ...` command that
+  `--profile callgrind` prints outside valgrind recorded nothing
+  (`Collected : 0`). The backend now switches instrumentation on for each
+  measured window and off after it, in a container too, so the profile holds
+  the measured window and none of the test's work around it.
+  `bench run --profile callgrind` still records the whole process. Without
+  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
+  says the profile covers the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it

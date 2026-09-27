@@ -139,24 +139,6 @@ inline double sumPositionsSoA(const ParticleSoA& particles, std::size_t count) {
   return sum;
 }
 
-/* ----------------------------- Search Workloads ----------------------------- */
-
-/** @brief Slow: Linear search O(n). */
-inline std::size_t linearSearch(const double* sortedData, std::size_t len, double target) {
-  for (std::size_t i = 0; i < len; ++i) {
-    if (sortedData[i] >= target) {
-      return i;
-    }
-  }
-  return len;
-}
-
-/** @brief Fast: Binary search O(log n). */
-inline std::size_t binarySearch(const double* sortedData, std::size_t len, double target) {
-  const double* it = std::lower_bound(sortedData, sortedData + len, target);
-  return static_cast<std::size_t>(it - sortedData);
-}
-
 /* ----------------------------- Contention Workloads ----------------------------- */
 
 /** @brief Slow: Mutex-protected counter increment. */
