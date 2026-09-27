@@ -3,7 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) and [`filter`](../examples/filter/inc/Filter.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-26 (UTC), written for the Vernier 1.0.4 release; captured from
+**Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured from
 the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`;
 perf 6.18.39
 
@@ -37,7 +37,7 @@ processors. This rig's Cortex-A72 has no event for perf's generic
 `branches`, so that line reads `<not supported>` on every report below, and
 its `cache-misses` reports the same count as its `L1-dcache-load-misses`
 (the run in [Adding an Event](#adding-an-event) shows both), so it is the
-level-1 data cache's misses here. On the x86 laptop this branch also ran on,
+level-1 data cache's misses here. On the x86 laptop this tree was also run on,
 `branches` counts, and `cache-misses` is a different, far rarer event. Read
 the events per machine, and compare counts between runs on the same machine.
 
@@ -76,9 +76,10 @@ The demo, [`cpu/02_PerfProfiler_Demo.cpp`](../cpu/02_PerfProfiler_Demo.cpp),
 runs each version over the same 1,000 words in a test of its own,
 `PerfProfiler.JoinV0` and `PerfProfiler.JoinV1`, one CSV row each; those are
 the tests `--profile perf` wraps in steps 2 and 4. Three more tests measure
-the filter of [the second example](#the-second-example-a-filter), and two
-tests count the events themselves and fail if the counts stop saying what
-this page says: see [What Keeps This Page True](#what-keeps-this-page-true).
+the filter of [the second example](#the-second-example-a-filter). That is the
+whole demo: it measures, and perf reads the counters. The tests that check
+the counters still say what this page says belong to the examples' own unit
+tests: see [What Keeps This Page True](#what-keeps-this-page-true).
 
 ## Step 1: Measure
 
@@ -91,63 +92,53 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_02_PerfProfiler \
 Captured output:
 
 ```
-[==========] Running 7 tests from 1 test suite.
+[==========] Running 5 tests from 1 test suite.
 [----------] Global test environment set-up.
-[----------] 7 tests from PerfProfiler
+[----------] 5 tests from PerfProfiler
 [ RUN      ] PerfProfiler.JoinV0
-[target-time] 50.000 ms -> cycles=48 (calibrated 1039.0000 us/call, batch of 1)
-[PerfProfiler.JoinV0]  1001.740 us/call  CV=0.1%  ~998 calls/s  (p10=1000.798 p90=1003.163 sd=1.251)
-[       OK ] PerfProfiler.JoinV0 (488 ms)
+[target-time] 50.000 ms -> cycles=52 (calibrated 948.0000 us/call, batch of 2)
+[PerfProfiler.JoinV0]  959.577 us/call  CV=0.1%  ~1.0K calls/s  (p10=959.325 p90=960.410 sd=1.075)
+[       OK ] PerfProfiler.JoinV0 (508 ms)
 [ RUN      ] PerfProfiler.JoinV1
-[target-time] 50.000 ms -> cycles=2463 (calibrated 20.2969 us/call, batch of 64)
-[PerfProfiler.JoinV1]  21.342 us/call  CV=3.8%  ~46.9K calls/s  (p10=20.251 p90=22.242 sd=0.818)
-[       OK ] PerfProfiler.JoinV1 (529 ms)
+[target-time] 50.000 ms -> cycles=2476 (calibrated 20.1875 us/call, batch of 64)
+[PerfProfiler.JoinV1]  21.933 us/call  CV=0.8%  ~45.6K calls/s  (p10=21.530 p90=21.963 sd=0.175)
+[       OK ] PerfProfiler.JoinV1 (544 ms)
 [ RUN      ] PerfProfiler.FilterBranchyRandom
-[target-time] 50.000 ms -> cycles=56 (calibrated 889.0000 us/call, batch of 2)
-[PerfProfiler.FilterBranchyRandom]  882.661 us/call  CV=0.1%  ~1.1K calls/s  (p10=882.195 p90=883.788 sd=0.662)
+[target-time] 50.000 ms -> cycles=56 (calibrated 881.0000 us/call, batch of 2)
+[PerfProfiler.FilterBranchyRandom]  882.768 us/call  CV=0.1%  ~1.1K calls/s  (p10=881.759 p90=883.671 sd=0.990)
 [       OK ] PerfProfiler.FilterBranchyRandom (502 ms)
 [ RUN      ] PerfProfiler.FilterBranchySorted
-[target-time] 50.000 ms -> cycles=204 (calibrated 244.0000 us/call, batch of 8)
-[PerfProfiler.FilterBranchySorted]  242.145 us/call  CV=0.6%  ~4.1K calls/s  (p10=241.650 p90=243.366 sd=1.478)
-[       OK ] PerfProfiler.FilterBranchySorted (515 ms)
+[target-time] 50.000 ms -> cycles=200 (calibrated 249.6250 us/call, batch of 8)
+[PerfProfiler.FilterBranchySorted]  243.050 us/call  CV=0.4%  ~4.1K calls/s  (p10=241.875 p90=243.922 sd=0.933)
+[       OK ] PerfProfiler.FilterBranchySorted (506 ms)
 [ RUN      ] PerfProfiler.FilterBranchless
-[target-time] 50.000 ms -> cycles=316 (calibrated 158.1250 us/call, batch of 8)
-[PerfProfiler.FilterBranchless]  158.351 us/call  CV=0.4%  ~6.3K calls/s  (p10=157.898 p90=159.022 sd=0.556)
-[       OK ] PerfProfiler.FilterBranchless (508 ms)
-[ RUN      ] PerfProfiler.JoinInstructions
-[PerfProfiler.JoinInstructions]  V0 2150574 instructions/call  V1 63616 instructions/call  33.8x
-[       OK ] PerfProfiler.JoinInstructions (17 ms)
-[ RUN      ] PerfProfiler.FilterBranchMisses
-[PerfProfiler.FilterBranchMisses]  branchy random 50010  branchy sorted 3  branchless 1  branch-misses/call
-[       OK ] PerfProfiler.FilterBranchMisses (34 ms)
-[----------] 7 tests from PerfProfiler (2597 ms total)
+[target-time] 50.000 ms -> cycles=317 (calibrated 157.6250 us/call, batch of 8)
+[PerfProfiler.FilterBranchless]  153.891 us/call  CV=0.8%  ~6.5K calls/s  (p10=153.542 p90=155.049 sd=1.161)
+[       OK ] PerfProfiler.FilterBranchless (496 ms)
+[----------] 5 tests from PerfProfiler (2559 ms total)
 
 [----------] Global test environment tear-down
-[==========] 7 tests from 1 test suite ran. (2597 ms total)
-[  PASSED  ] 7 tests.
+[==========] 5 tests from 1 test suite ran. (2559 ms total)
+[  PASSED  ] 5 tests.
 
 ==================================================================================
 Test                               Median (us)     CV%     Calls/s  Status
 ----------------------------------------------------------------------------------
-PerfProfiler.JoinV0                   1001.740    0.1%         998  OK
-PerfProfiler.JoinV1                     21.342    3.8%       46.9K  OK
-PerfProfiler.FilterBranchyRandom       882.661    0.1%        1.1K  OK
-PerfProfiler.FilterBranchySorted       242.145    0.6%        4.1K  OK
-PerfProfiler.FilterBranchless          158.351    0.4%        6.3K  OK
+PerfProfiler.JoinV0                    959.577    0.1%        1.0K  OK
+PerfProfiler.JoinV1                     21.933    0.8%       45.6K  OK
+PerfProfiler.FilterBranchyRandom       882.768    0.1%        1.1K  OK
+PerfProfiler.FilterBranchySorted       243.050    0.4%        4.1K  OK
+PerfProfiler.FilterBranchless          153.891    0.8%        6.5K  OK
 ----------------------------------------------------------------------------------
 5 tests | 5 stable | 0 unstable
 ```
 
-`joinV0` takes 1,001.7 us per call and `joinV1` 21.3 us, 47 times less. The
-three filter rows are one function twice and its branchless twin once: 882.7 us
-per call on values in random order, 242.1 us on the same values in ascending
-order, 158.4 us with no branch on the data. Each median is steady within its
-run (CV 0.1% to 3.8%). The two lines without a time are the demo's counter
-checks: over ten calls each, `joinV0` retired 2,150,574 instructions per call
-and `joinV1` 63,616, 33.8 times fewer; the branchy filter mispredicted 50,010
-branches per call on random input and 3 on sorted input, and the branchless
-filter 1. The next steps take those readings one test at a time, through
-`perf stat`, and read them.
+`joinV0` takes 959.6 us per call and `joinV1` 21.9 us, 44 times less. The
+three filter rows are one function twice and its branchless twin once: 882.8 us
+per call on values in random order, 243.1 us on the same values in ascending
+order, 153.9 us with no branch on the data. Each median is steady within its
+run (CV 0.1% to 0.8%). The next steps count what the processor did in each
+test, one test at a time, through `perf stat`, and read the counts.
 
 ## Step 2: Profile the Slow Version
 
@@ -165,19 +156,20 @@ Note: Google Test filter = PerfProfiler.JoinV0
 [----------] Global test environment set-up.
 [----------] 1 test from PerfProfiler
 [ RUN      ] PerfProfiler.JoinV0
-[PerfProfiler.JoinV0]  998.165 us/call  CV=0.1%  ~1.0K calls/s  (p10=997.523 p90=999.099 sd=1.065)
-[       OK ] PerfProfiler.JoinV0 (2214 ms)
-[----------] 1 test from PerfProfiler (2214 ms total)
+[PerfProfiler.JoinV0]  945.195 us/call  CV=0.1%  ~1.1K calls/s  (p10=944.686 p90=945.777 sd=0.507)
+[       OK ] PerfProfiler.JoinV0 (2160 ms)
+[----------] 1 test from PerfProfiler (2160 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (2215 ms total)
+[==========] 1 test from 1 test suite ran. (2160 ms total)
 [  PASSED  ] 1 test.
 ```
 
 `bench run` starts the binary pinned to core 3 with `--profile perf`, as its
 `Running:` line shows. Just before the measured repeats the backend starts
 `perf stat` on the benchmark's own process, and just after them it stops it;
-nothing else changes, and the timing, 998.2 us per call, is step 1's.
+nothing else changes, and the timing, 945.2 us per call, is within the
+spread of step 1's runs.
 `--cycles 100 --repeats 10` makes the measured window exactly 1,000 calls, the
 number every count in the next step is divided by. perf's report is
 `PerfProfiler.JoinV0.perf/stat.txt`, under the directory `bench run` ran from.
@@ -191,40 +183,41 @@ cat PerfProfiler.JoinV0.perf/stat.txt
 Captured output:
 
 ```
- Performance counter stats for process id '99835':
+ Performance counter stats for process id '115164':
 
-     1,796,101,901      cpu-cycles:u
-     2,129,197,013      instructions:u                   #    1.19  insn per cycle
+     1,700,528,786      cpu-cycles:u
+     2,129,196,778      instructions:u                   #    1.25  insn per cycle
    <not supported>      branches:u
-         8,439,901      branch-misses:u
-        19,703,861      cache-misses:u
+         6,631,451      branch-misses:u
+        16,642,608      cache-misses:u
 
-       1.170691455 seconds time elapsed
+       1.093726453 seconds time elapsed
 ```
 
 Each line is one event: its total over the window, and perf's name for it
 with `:u` for user space. Divided by the 1,000 calls:
 
-- `cpu-cycles`: 1,796,101,901, so 1,796,102 cycles per call. At this rig's
-  1.8 GHz that is 997.8 us; the counter and the clock agree, and the core
+- `cpu-cycles`: 1,700,528,786, so 1,700,529 cycles per call. At this rig's
+  1.8 GHz that is 944.7 us; the counter and the clock agree, and the core
   ran at full speed for the whole window.
-- `instructions`: 2,129,197,013, so 2,129,197 instructions per call, 1.19 of
+- `instructions`: 2,129,196,778, so 2,129,197 instructions per call, 1.25 of
   them retired per cycle (the `insn per cycle` figure perf adds). This is
   V0's problem in one number: joining 1,000 words takes two million
   instructions, because `out + part + sep` copies everything joined so far
   once per part and builds two temporary strings to do it.
 - `branches`: `<not supported>`. This processor has no event perf can map
   that name to, so the column is empty here; it counts on an x86 processor.
-- `branch-misses`: 8,439,901, so 8,440 per call: one mispredicted branch
-  for every 250 instructions.
-- `cache-misses`: 19,703,861, so 19,704 per call. On this rig the event
+- `branch-misses`: 6,631,451, so 6,631 per call: one mispredicted branch
+  for every 321 instructions.
+- `cache-misses`: 16,642,608, so 16,643 per call. On this rig the event
   reports the same count as `L1-dcache-load-misses` (see
   [Adding an Event](#adding-an-event)), so read it as the level-1 data
   cache's misses here: V0 streams its growing result through the cache once
   per part.
 
-The `time elapsed` line is perf's own clock, 1.17 s: the 1,000 calls of about
-1 ms, plus the 200 ms the backend gives perf to attach before the loop.
+The `time elapsed` line is perf's own clock, 1.09 s: the 1,000 calls of about
+0.95 ms, plus most of the 200 ms the backend gives perf to attach before the
+loop.
 
 ## Step 4: Confirm the Fix
 
@@ -237,33 +230,31 @@ cat PerfProfiler.JoinV1.perf/stat.txt
 Captured output of the second command:
 
 ```
- Performance counter stats for process id '99843':
+ Performance counter stats for process id '115172':
 
-     1,769,722,061      cpu-cycles:u
-     3,182,248,287      instructions:u                   #    1.80  insn per cycle
+     1,751,316,001      cpu-cycles:u
+     3,182,198,527      instructions:u                   #    1.82  insn per cycle
    <not supported>      branches:u
-        16,116,574      branch-misses:u
-         8,064,963      cache-misses:u
+        16,157,909      branch-misses:u
+         9,684,373      cache-misses:u
 
-       1.136171592 seconds time elapsed
+       1.129955419 seconds time elapsed
 ```
 
 This window is 50,000 calls (`--cycles 5000 --repeats 10`), so the per-call
-figures are the totals divided by 50,000: 35,394 cycles (19.7 us at 1.8 GHz;
-the run itself measured 19.7 us per call), 63,645 instructions, 322 branch
-misses, 161 cache misses, and 1.80 instructions per cycle.
+figures are the totals divided by 50,000: 35,026 cycles (19.5 us at 1.8 GHz;
+the run itself measured 19.6 us per call), 63,644 instructions, 323 branch
+misses, 194 cache misses, and 1.82 instructions per cycle.
 
-Per call, V1 retires 33.5 times fewer instructions than V0 (63,645 against
-2,129,197) and spends 50.7 times fewer cycles (35,394 against 1,796,102). The
+Per call, V1 retires 33.5 times fewer instructions than V0 (63,644 against
+2,129,197) and spends 48.6 times fewer cycles (35,026 against 1,700,529). The
 cycles ratio is the timing ratio; the instructions ratio says what most of
 that time was: work, two million instructions of copying and allocating that
-V1 does not ask for. The cache misses fall further still, 122 times, because
+V1 does not ask for. The cache misses fall further still, 86 times, because
 V1 writes each part once into a buffer reserved at the final size instead of
-copying the result so far. V1 also gets more done per cycle, 1.80 against
-1.19; that remaining gap is the memory system's, not the instruction
-count's. The demo's own check reads the same relation on ten calls through
-the same kernel interface: 2,150,574 against 63,616 instructions per call,
-33.8 times.
+copying the result so far. V1 also gets more done per cycle, 1.82 against
+1.25; that remaining gap is the memory system's, not the instruction
+count's.
 
 ## The Second Example: a Filter
 
@@ -326,19 +317,19 @@ cat PerfProfiler.FilterBranchyRandom.perf/stat.txt
 Captured output of the second command:
 
 ```
- Performance counter stats for process id '99852':
+ Performance counter stats for process id '115180':
 
-     1,586,848,004      cpu-cycles:u
-       750,850,433      instructions:u                   #    0.47  insn per cycle
+     1,588,661,544      cpu-cycles:u
+       750,849,761      instructions:u                   #    0.47  insn per cycle
    <not supported>      branches:u
-        50,128,904      branch-misses:u
-           664,055      cache-misses:u
+        50,095,324      branch-misses:u
+           663,131      cache-misses:u
 
-       1.035762420 seconds time elapsed
+       1.032246674 seconds time elapsed
 ```
 
-Per call, over the 1,000 calls: 1,586,848 cycles (881.6 us at 1.8 GHz; the
-run measured 883.1 us), 750,850 instructions, 50,129 branch misses, 664 cache
+Per call, over the 1,000 calls: 1,588,662 cycles (882.6 us at 1.8 GHz; the
+run measured 883.8 us), 750,850 instructions, 50,095 branch misses, 663 cache
 misses, and 0.47 instructions per cycle. Per value: 7.5 instructions, 15.9
 cycles, and 0.50 mispredictions. The branch is guessed wrong for one value in
 two, as a coin toss deserves, and the core retires less than half an
@@ -355,23 +346,23 @@ cat PerfProfiler.FilterBranchySorted.perf/stat.txt
 Captured output of the second command:
 
 ```
- Performance counter stats for process id '99860':
+ Performance counter stats for process id '115188':
 
-       443,523,711      cpu-cycles:u
-       750,849,455      instructions:u                   #    1.69  insn per cycle
+       440,905,132      cpu-cycles:u
+       750,849,358      instructions:u                   #    1.70  insn per cycle
    <not supported>      branches:u
-            12,997      branch-misses:u
-           637,128      cache-misses:u
+            13,163      branch-misses:u
+           636,025      cache-misses:u
 
-       0.398783228 seconds time elapsed
+       0.405215426 seconds time elapsed
 ```
 
 The same code on the same values in a different order: 750,849 instructions
 per call against 750,850, one instruction apart, and 13 branch misses per
-call in place of 50,129. The cycles fall from 1,586,848 to 443,524 per call,
-3.58 times, and the instructions per cycle rise from 0.47 to 1.69. Nothing
-else moved: 637 cache misses per call against 664. Divide the difference:
-1,143,324 cycles per call over 50,116 fewer mispredictions is 22.8 cycles for
+call in place of 50,095. The cycles fall from 1,588,662 to 440,905 per call,
+3.60 times, and the instructions per cycle rise from 0.47 to 1.70. Nothing
+else moved: 636 cache misses per call against 663. Divide the difference:
+1,147,756 cycles per call over 50,082 fewer mispredictions is 22.9 cycles for
 each one, the price of a wrong guess on this core, whose pipeline is flushed
 and refilled from the right path. The whole gap between the two runs is in
 the `branch-misses` line.
@@ -387,33 +378,31 @@ cat PerfProfiler.FilterBranchless.perf/stat.txt
 Captured output of the second command:
 
 ```
- Performance counter stats for process id '99868':
+ Performance counter stats for process id '115196':
 
-       288,326,152      cpu-cycles:u
-       600,583,131      instructions:u                   #    2.08  insn per cycle
+       281,458,881      cpu-cycles:u
+       600,582,636      instructions:u                   #    2.13  insn per cycle
    <not supported>      branches:u
-            12,097      branch-misses:u
-           925,502      cache-misses:u
+            11,964      branch-misses:u
+           900,322      cache-misses:u
 
-       0.324278189 seconds time elapsed
+       0.316425860 seconds time elapsed
 ```
 
 No branch on the data, and no order to care about: 12 branch misses per
 call on the random input, as few as the sorted case had. It retires fewer
 instructions too, 600,583 per call, 6.0 per value against 7.5, because the
 loop has no test-and-jump and no separate path for a kept value, and it
-retires more of them per cycle, 2.08, because nothing waits on a guess. The
-result is 288,326 cycles per call (160.2 us at 1.8 GHz; the run measured
-159.1 us): 5.5 times faster than the branchy filter on random input, and on
-this rig 1.5 times faster than the branchy filter on sorted input as well.
-Its cache misses are the highest of the three, 926 per call, because it
+retires more of them per cycle, 2.13, because nothing waits on a guess. The
+result is 281,459 cycles per call (156.4 us at 1.8 GHz; the run measured
+155.9 us): 5.6 times faster than the branchy filter on random input, and on
+this rig 1.6 times faster than the branchy filter on sorted input as well.
+Its cache misses are the highest of the three, 900 per call, because it
 writes every value and so doubles the output traffic. That is the trade: an
 unconditional store per value for no misprediction, ever. Which of the
 sorted and the branchless cases is faster depends on the processor; on an
-x86 laptop this branch's own runs measured the sorted case faster (see
-[What Should Reproduce](#what-should-reproduce)). The demo's check reads the
-same three counts on ten calls each: 50,010, 3 and 1 branch misses per call
-in step 1's run.
+x86 laptop runs of this tree measured the sorted case faster (see
+[What Should Reproduce](#what-should-reproduce)).
 
 ## Record Mode
 
@@ -423,7 +412,7 @@ instead of `perf stat`, writing `perf.data` and perf's own messages,
 `record.err.txt`, into the same folder; the guides' `--target-time 250ms`
 sizes the run so that perf has time to attach and sample (see the
 [CPU guide](../../docs/CPU_GUIDE.md#cpu-profiling-with-perf)). On this rig,
-250 ms per repeat gave 9,912 samples:
+250 ms per repeat gave 9,835 samples:
 
 ```bash
 bench run ./build/bin/ptests/BenchDemo_02_PerfProfiler --taskset 3 --profile perf \
@@ -436,16 +425,16 @@ within the first, to the two frames that matter; the rows below them are the
 chain of callers out to `_start`:
 
 ```
-    64.57%  BenchDemo_02_Pe  libc.so.6                  [.] __memcpy_generic
+    64.97%  BenchDemo_02_Pe  libc.so.6                  [.] __memcpy_generic
             |
             ---__memcpy_generic
                vernier::bench::demo::joinV0(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&, char)
                ...
-    13.63%  BenchDemo_02_Pe  libc.so.6                  [.] _int_malloc
+    12.80%  BenchDemo_02_Pe  libc.so.6                  [.] _int_malloc
 ...
 ```
 
-The report puts 64.6% of the samples in the C library's `memcpy` and 13.6%
+The report puts 65.0% of the samples in the C library's `memcpy` and 12.8%
 in the allocator's `_int_malloc`, both under `joinV0`: the reading
 [walkthrough 03](03_GPERF_PROFILER.md) gets from gperftools, from perf.
 
@@ -473,49 +462,51 @@ cat PerfProfiler.JoinV0.perf/stat.txt
 Captured output of the second command:
 
 ```
- Performance counter stats for process id '100084':
+ Performance counter stats for process id '115248':
 
-     1,788,932,858      cpu-cycles:u
-     2,129,195,813      instructions:u                   #    1.19  insn per cycle
+     1,705,579,008      cpu-cycles:u
+     2,129,196,564      instructions:u                   #    1.25  insn per cycle
    <not supported>      branches:u
-         8,373,639      branch-misses:u
-        22,470,747      cache-misses:u
-        22,470,747      L1-dcache-load-misses:u
+         6,583,317      branch-misses:u
+        16,232,627      cache-misses:u
+        16,232,627      L1-dcache-load-misses:u
 
-       1.146819608 seconds time elapsed
+       1.096468732 seconds time elapsed
 ```
 
 The sixth line counts the level-1 data cache's load misses, and on this rig it
-equals `cache-misses` to the count, 22,470,747: that is what perf's generic
+equals `cache-misses` to the count, 16,232,627: that is what perf's generic
 event is on this processor. `perf list` shows the events perf knows on a
 machine. Run without `bench run`, the binary takes
 `--profile-args "-e L1-dcache-load-misses"` with a space.
 
 ## What Should Reproduce
 
-| Reading                                       | On this rig                                                                                                                                                              | Elsewhere                                                                                                                  |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
-| V1 against V0                                 | 47x faster here; 45.6x to 50.1x over ten runs                                                                                                                            | tens of times faster in an optimized build; 36x on the x86 laptop                                                          |
-| instructions per call, V0 against V1          | 33.5x in the reports (2,129,197 against 63,645); 33.8x in the demo's check, the same to the instruction in all ten runs                                                  | should match within a few times: 20.5x on the x86 laptop (the demo's check, 1,373,778 against 67,096)                      |
-| filter, random against sorted input           | 3.65x slower here; 3.56x to 3.65x over ten runs; 3.58x in cycles                                                                                                         | slower on random input everywhere, by the core's own misprediction penalty: 9.4x on the x86 laptop (499.8 against 53.4 us) |
-| filter, random against branchless             | 5.6x slower here; 5.49x to 5.88x over ten runs                                                                                                                           | slower everywhere; 6.3x on the x86 laptop (499.8 against 79.9 us)                                                          |
-| filter, sorted against branchless             | branchless 1.5x faster here; 1.51x to 1.61x over ten runs                                                                                                                | either way: the sorted case was 1.5x faster on the x86 laptop (53.4 against 79.9 us)                                       |
-| branch misses per value, random input         | 0.50                                                                                                                                                                     | about 0.5 on any processor, 0.48 on the x86 laptop: a coin toss cannot be predicted                                        |
-| branch misses per call, sorted and branchless | 13 and 12 in the reports; 3 to 4 and 1 to 2 in the demo's check over ten runs                                                                                            | a handful: 3 and 2 on the x86 laptop                                                                                       |
-| instructions, random against sorted input     | equal to within one per call                                                                                                                                             | equal: the same code runs                                                                                                  |
-| `branches`                                    | `<not supported>`                                                                                                                                                        | counts on x86: 299,495 per call of V0 on the laptop                                                                        |
-| `cache-misses`                                | the level-1 data cache's misses, 19,704 per call of V0                                                                                                                   | a different event elsewhere: 66 per call of V0 on the x86 laptop                                                           |
-| absolute times                                | V0 1,001.7 and V1 21.3 us per call, 962.9 to 1,031.6 and 20.2 to 21.5 over ten runs; filter 882.7, 242.1 and 158.4 us, 881.0 to 882.9, 241.5 to 248.0 and 150.0 to 160.6 | will differ                                                                                                                |
+| Reading                                       | On this rig                                                                                                                                                               | Elsewhere                                                                                                                  |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| V1 against V0                                 | 44x faster here; 43.8x to 49.4x over twelve runs                                                                                                                          | tens of times faster in an optimized build; 30x on the x86 laptop                                                          |
+| instructions per call, V0 against V1          | 33.5x in the reports (2,129,197 against 63,644)                                                                                                                           | should match within a few times: about 20x on the x86 laptop (19.8x to 20.6x in the join's unit test)                      |
+| filter, random against sorted input           | 3.63x slower here; 3.60x to 3.69x over twelve runs; 3.60x in cycles                                                                                                       | slower on random input everywhere, by the core's own misprediction penalty: 9.5x on the x86 laptop (325.2 against 34.2 us) |
+| filter, random against branchless             | 5.7x slower here; 5.27x to 5.85x over twelve runs                                                                                                                         | slower everywhere; 6.8x on the x86 laptop (325.2 against 47.6 us)                                                          |
+| filter, sorted against branchless             | branchless 1.6x faster here; 1.44x to 1.61x over twelve runs                                                                                                              | either way: the sorted case was 1.4x faster on the x86 laptop (34.2 against 47.6 us)                                       |
+| branch misses per value, random input         | 0.50                                                                                                                                                                      | about 0.5 on any processor, 0.45 on the x86 laptop: a coin toss cannot be predicted                                        |
+| branch misses per call, sorted and branchless | 13 and 12 in the reports                                                                                                                                                  | a handful: 2 to 5 and 1 to 2 in the filter's unit tests on the x86 laptop                                                  |
+| instructions, random against sorted input     | equal to within one per call                                                                                                                                              | equal: the same code runs                                                                                                  |
+| `branches`                                    | `<not supported>`                                                                                                                                                         | counts on x86: 299,453 per call of V0 on the laptop                                                                        |
+| `cache-misses`                                | the level-1 data cache's misses, 16,643 per call of V0                                                                                                                    | a different event elsewhere: 76 per call of V0 on the x86 laptop                                                           |
+| absolute times                                | V0 959.6 and V1 21.9 us per call, 926.9 to 1,002.6 and 20.2 to 21.9 over twelve runs; filter 882.8, 243.1 and 153.9 us, 880.9 to 884.1, 239.8 to 245.6 and 151.0 to 167.3 | will differ                                                                                                                |
 
-The ten runs are step 1's command run ten times in one session, the
-reference capture just before them. They describe those runs, not a bound a
-run has to meet: the noisiest readings, V0's median and the branchless
-filter's, moved 7% across the ten with nothing changed, more than any run's
-own CV says. The x86 figures come from this branch's own runs on a laptop
-with a hybrid x86 processor (performance and efficiency cores): GCC 11 and
-Release for the timings, clang 21 as root in the development container for
-the counter checks and the `perf stat` reports. The laptop was busy with
-other work, so its timings are noisier than the rig's.
+The twelve runs are step 1's command in one session on this rig: one a minute
+before the reference capture, the reference capture, and ten more, the first
+of them step 1's. They describe those runs, not a bound a run has to meet: the
+noisiest readings, the branchless filter's median and both joins', moved 8% to
+11% across the twelve with nothing changed, more than any run's own CV says,
+and another run can land outside them. The x86 figures come from runs of this
+tree on a laptop with a hybrid x86 processor (performance and efficiency
+cores): GCC 11 and Release for the timings, clang 21 as root in the
+development container for the unit tests' counts and the `perf stat` reports.
+Other work was running on the laptop, so its timings are noisier than the
+rig's.
 
 ## If It Does Not Match
 
@@ -529,8 +520,8 @@ other work, so its timings are noisier than the rig's.
   `[WARN] perf       perf_event_paranoid=2 (kernel profiling blocked; userspace counters still work)`,
   a warning because kernel-side events are off limits at 2, which this page
   never needs. Lower the setting (`sudo sysctl -w kernel.perf_event_paranoid=2`),
-  grant `CAP_PERFMON` to the binary, or run as root. The demo's counter
-  checks skip with the same reason, and say so.
+  grant `CAP_PERFMON` to the binary, or run as root. The examples' counting
+  tests skip with the same reason, and say so.
 - **`<not supported>` on other lines.** A processor without the event, or a
   virtual machine without a performance monitoring unit. The count stays
   empty and the run is otherwise unaffected; `perf list` says which events
@@ -562,11 +553,11 @@ this page ships in (`bench 1.0.3`):
 ```
 Test                                  Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 --------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-PerfProfiler.FilterBranchless        158.75500     158.35100    -0.40400     -0.3%      1.2%      0.4%  neutral
-PerfProfiler.FilterBranchyRandom     881.68800     882.66100    +0.97300     +0.1%      0.2%      0.1%  neutral
-PerfProfiler.FilterBranchySorted     244.96700     242.14500    -2.82200     -1.2%      0.3%      0.6%  neutral
-PerfProfiler.JoinV0                 1020.11000    1001.74000   -18.37000     -1.8%      0.1%      0.1%  neutral
-PerfProfiler.JoinV1                   20.98360      21.34230    +0.35870     +1.7%      2.5%      3.8%  neutral
+PerfProfiler.FilterBranchless        151.04200     153.89100    +2.84900     +1.9%      1.1%      0.8%  neutral
+PerfProfiler.FilterBranchyRandom     883.80000     882.76800    -1.03200     -0.1%      0.1%      0.1%  neutral
+PerfProfiler.FilterBranchySorted     239.75600     243.05000    +3.29400     +1.4%      0.4%      0.4%  neutral
+PerfProfiler.JoinV0                  926.87500     959.57700   +32.70200     +3.5%      0.1%      0.1%  neutral
+PerfProfiler.JoinV1                   20.93900      21.93260    +0.99360     +4.7%      0.9%      0.8%  neutral
 
   5 neutral
 
@@ -576,57 +567,74 @@ PerfProfiler.JoinV1                   20.98360      21.34230    +0.35870     +1.
 ```
 
 The reference was captured by the same binary seconds before step 1. Every
-row moved by less than 2% and is labelled neutral against the 5% threshold.
-`Base CV` and `Cand CV` are each run's spread across its own repeats. Over
-the ten runs of step 1's command in this session, V0's median ranged from
-962.9 to 1,031.6 us per call and V1's from 20.2 to 21.5, about 7% each, with
-nothing changed, while the filter's random case stayed within 0.2%. What
-should hold is each ratio, and each report's counts per call. The
+row is labelled neutral against the 5% threshold; the joins moved most, V1 by
+4.7% and V0 by 3.5%. `Base CV` and `Cand CV` are each run's spread across its
+own repeats. Over the twelve runs of step 1's command in this session, V0's
+median ranged from 926.9 to 1,002.6 us per call and V1's from 20.2 to 21.9,
+8% and 9%, with nothing changed, while the filter's random case stayed within
+0.4%. What should hold is each ratio, and each report's counts per call. The
 `hostname` column holds the board's hostname as the capture recorded it.
 
 ## What Keeps This Page True
 
-Three things run against these examples, and all fail loudly:
+The demo only measures. What this page reads from the counters is checked by
+the examples' own unit tests, in the examples' test binary, so that the demo
+stays the program you would write; each of them fails loudly:
 
-- `PerfProfiler.JoinInstructions`, in the demo binary, counts the
-  instructions each join version retires over ten calls through the kernel's
-  perf interface, the interface `perf stat` reads, and fails unless V0
-  retires at least ten times V1's. On this rig it reads 33.8; with `joinV1`
-  given `joinV0`'s body it reads 1.0 and fails.
-- `PerfProfiler.FilterBranchMisses` counts the branch misses per call of
-  the three filter cases the same way, and fails unless the random case
-  mispredicts at least a tenth of a branch per value and at least ten times
-  as often as the sorted case and as the branchless case. On this rig it
-  reads 50,010, 3 and 1. With `filterBranchy` given `filterBranchless`'s body
-  it reads 1, 2 and 1 and fails; with `filterBranchless` given a branch it
-  reads 50,085, 3 and 50,069 and fails.
-- The example's unit tests hold both filter versions to the same answers as
-  the standard library's `copy_if` at every size, and
-  `FilterBranchTest.ConditionalStoreKeepsItsBranch` counts the branchy
-  filter's mispredictions on random and on sorted input and fails when the
-  branch is gone: it is what keeps the conditional store from being
-  simplified into a select. All of these are registered with `ctest` under
-  the `demo` label, beside the join example's tests:
+- `JoinInstructionTest.V0RetiresFarMoreThanV1` counts the instructions each
+  join version retires per call over ten calls at the demo's 1,000 words,
+  through the kernel's perf interface that `perf stat` reads, and fails
+  unless V0 retires at least ten times V1's. On this rig it read 33.0 to 35.1
+  in the runs kept for this page (its binary counts allocations with an
+  `operator new` of its own, so its counts differ a little from the
+  reports'); with `joinV1` given `joinV0`'s body it reads 1.0 and fails, and
+  so do the join's allocation tests.
+- `FilterBranchTest.ConditionalStoreKeepsItsBranch` counts the branchy
+  filter's mispredictions per call on random and on sorted input and fails
+  unless the random input mispredicts at least a tenth of a branch per value
+  and at least ten times as often as the sorted input: it is what keeps the
+  conditional store from being simplified into a select. On this rig it read
+  50,100 to 50,194 against 3.
+- `FilterBranchTest.BranchlessFormRemovesTheMisses` counts the branchy and
+  the branchless filter on the same random input and fails unless the
+  branchy one mispredicts at least ten times as often: 50,042 to 50,147
+  against 1 to 2 on this rig. With `filterBranchy` given `filterBranchless`'s
+  body both filter tests fail (1 against 1, and 2 against 1); with
+  `filterBranchless` given a branch the second fails (50,164 against 50,057).
+- The examples' other unit tests hold both filter versions to the same
+  answers as the standard library's `copy_if` at every size.
 
-  ```bash
-  ctest --test-dir build -L demo
-  ```
+All of them are registered with `ctest` under the `demo` label, beside the
+join example's other tests, so an ordinary test run includes them:
 
-  Every test it runs should pass. Where the counter cannot be opened (a
-  container's default seccomp profile, `perf_event_paranoid` above 2, a
-  processor without the event), or where it was not on the PMU for the
-  calls it should have counted (a hybrid processor counts an event on one
-  kind of core only, so an unpinned run that lands on the other kind reads
-  nothing; a PMU with more events open than counters takes turns), the
-  three counting tests skip and say why, and CTest reports them as skipped,
-  not passed. Each reading carries the share of the thread's time its
-  counter was running, as `perf stat` does, and a count taken part of the
-  time is scaled and printed with that share.
+```bash
+ctest --test-dir build -L demo
+```
 
-This repository has no continuous-integration lane on the reference board, so
-nothing runs the demo itself automatically. Before a release it is run on the
-rig by hand, with the command in step 1, and the reference CSV is re-captured
-when the numbers move.
+To run only the three counting tests, pin them to one core, so that a hybrid
+processor keeps them on the kind of core whose counter they read:
+
+```bash
+taskset -c 3 ./build/bin/tests/TestDemoExamples --gtest_filter='JoinInstructionTest.*:FilterBranchTest.*'
+```
+
+Every test should pass. Where the counter cannot be opened (a container's
+default seccomp profile, `perf_event_paranoid` above 2, a processor without
+the event), or where it was not on the PMU for the calls it should have
+counted (a hybrid processor counts an event on one kind of core only, so an
+unpinned run that lands on the other kind reads nothing; a PMU with more
+events open than counters takes turns), the three counting tests skip and
+say why, and CTest reports them as skipped, not passed. Each reading carries
+the share of the thread's time its counter was running, as `perf stat` does,
+and a count taken part of the time is scaled and printed with that share.
+
+The demo's timing tests are not registered: what they measure belongs to the
+machine they run on. This repository has no continuous-integration lane on
+the reference board, and a hosted test run is not this page's evidence:
+where its machine cannot count, it reports the three counting tests skipped.
+Before a release the page's commands and the counting tests are run on the
+rig by hand, and the page and its reference CSV are re-captured when what
+they show changes.
 
 ## See Also
 
