@@ -635,20 +635,24 @@ Three things check what this page shows, and all fail loudly:
   built as `TestDemoMemcheck`), runs the demo binary under memcheck as
   `bench run --profile memcheck` wraps it, plus valgrind's error list and an
   exit code for errors, on `Memcheck.JoinOffByOne` and on `Memcheck.JoinV1`,
-  and reads the two logs. It fails unless memcheck reports the write once
-  per call, `0 bytes after a block` the size of the joined string, naming
-  `joinOffByOne` in the write's stack and in the block's, with valgrind
-  exiting with the code it was given; and unless `joinV1`'s log counts no
-  error and valgrind exits 0. It skips only in a build with a sanitizer
-  (which valgrind does not run as an ordinary binary), where valgrind is not
-  installed, where valgrind gives up reading the demo binary, and where
-  valgrind cannot read the demo binary's symbols, once everything but the
-  names has passed; those two skips quote valgrind's own lines. A wrong join
-  made right fails it, whether or not valgrind can read the symbols: with
-  room for the terminator, memcheck reports nothing, and the test says the
-  wrong join has stopped being wrong. It is registered with `ctest` under
-  the `demo` and `memcheck` labels; `ctest --test-dir build -L memcheck` runs
-  it alone.
+  and reads the two logs. It fails unless each case it selects runs to its
+  end, memcheck reports the write once per call, `0 bytes after a block` the
+  size of the joined string, naming `joinOffByOne` in the write's stack and
+  in the block's, with valgrind exiting with the code it was given; and
+  unless `joinV1`'s log counts no error and valgrind exits 0. It skips only
+  in a build with a sanitizer (which valgrind does not run as an ordinary
+  binary), where valgrind is not installed, where valgrind gives up reading
+  the demo binary, and where valgrind cannot read the demo binary's symbols,
+  once everything but the names has passed; those two skips quote valgrind's
+  own lines, and the last needs the report to agree, with the write's own
+  frame in the demo binary and unnamed. A wrong join made right fails it,
+  whether or not valgrind can read the symbols: with room for the
+  terminator, memcheck reports nothing, and the test says the wrong join has
+  stopped being wrong. Beside it, `MemcheckLogTest` holds the log reading
+  those skips rest on to its cases (a warning about a library, another of
+  valgrind's reasons, a frame valgrind named, a run that crashed). All of
+  them are registered with `ctest` under the `demo` and `memcheck` labels;
+  `ctest --test-dir build -L memcheck` runs them alone.
 - The helper's own tests,
   `SkipUnlessUnderValgrindTest.PlainRunSkipsTheProbe` and
   `SkipUnlessUnderValgrindTest.ValgrindRunRunsTheProbe`, run their binary as

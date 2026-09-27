@@ -218,6 +218,21 @@ inline bool oneTestPassed(const std::string& output) {
   return output.find("[  PASSED  ] 1 test.") != std::string::npos;
 }
 
+/// True when GoogleTest reported the test @p name as passed ("[       OK ] "
+/// and the name, then the end of the line or its time): the run selected
+/// that test, and it ran to its end.
+inline bool testPassed(const std::string& output, const std::string& name) {
+  const std::string LINE = "[       OK ] " + name;
+  for (std::size_t at = output.find(LINE); at != std::string::npos;
+       at = output.find(LINE, at + 1)) {
+    const std::size_t END = at + LINE.size();
+    if (END == output.size() || output[END] == '\n' || output[END] == ' ') {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// valgrind's own two lines, as it printed them, when its debug-information
 /// reader gave up before the program ran, as a valgrind older than the
 /// compiler that wrote a file does: the reader's line ("Valgrind: debuginfo
@@ -415,6 +430,24 @@ inline long bytesAfterBlock(const ReportedError& error) { return numberAfter(err
 /// when the entry describes no block.
 inline long blockSize(const ReportedError& error) {
   return numberAfter(error.text, "bytes after a block of size ");
+}
+
+/// The first frame of the error's own stack, the line after its kind; empty
+/// when the entry has none.
+inline std::string ownFrame(const ReportedError& error) {
+  const std::size_t FROM = error.text.find('\n');
+  if (FROM == std::string::npos) {
+    return "";
+  }
+  const std::size_t TO = error.text.find('\n', FROM + 1);
+  return error.text.substr(FROM + 1, (TO == std::string::npos ? error.text.size() : TO) - FROM - 1);
+}
+
+/// True when the error's own frame is in @p binary and unnamed, as valgrind
+/// prints a frame of a file whose symbols it could not read ("at 0x...: ???
+/// (in <binary>)"). A frame valgrind named is false, whatever the name.
+inline bool ownFrameUnnamedIn(const ReportedError& error, const std::string& binary) {
+  return ownFrame(error).find(": ??? (in " + binary + ")") != std::string::npos;
 }
 
 /// How many lines of the entry name @p function: the frames of its stacks.
