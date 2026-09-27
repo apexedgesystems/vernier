@@ -11,10 +11,12 @@
  * value and stores it only when it passes, so the processor has to predict
  * the outcome of every test; filterBranchless() stores every value and
  * advances the output cursor by the outcome instead. The store in
- * filterBranchy() is conditional, and a compiler may not invent a store the
- * source does not make, so its branch survives optimization. A conditional
- * sum would not: an optimizer turns it into a conditional select, and the
- * two versions become the same machine code.
+ * filterBranchy() is conditional, and a compiler may not add a store the
+ * source does not make, which leaves it fewer ways to remove the branch than
+ * a conditional sum gives it: an optimizer can turn a conditional sum into a
+ * conditional select, and the two versions become the same machine code.
+ * The branch survived optimization in every build the walkthrough reports
+ * on; the unit tests fail in a build where it does not.
  *
  * Both versions are noinline, as the join example's are: a profile of an
  * optimized build attributes its samples to the function the instructions

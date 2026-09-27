@@ -23,37 +23,45 @@ random input it retires the same instructions as on sorted input and takes
 ## What is perf?
 
 perf is the Linux kernel's profiler. Its `perf stat` mode asks the
-processor's performance monitoring unit to count events (cycles retired,
-instructions retired, branches mispredicted, cache lines missed) while a
-program runs, and prints the totals when it stops. Nothing is sampled and
-nothing is slowed down: the counters run beside the program at full speed,
-and a run under `perf stat` takes as long as one without it. What it cannot
-do is say where in the program the events happened; that is `perf record`,
-below, and the sampling profiler of [walkthrough 03](03_GPERF_PROFILER.md).
+processor's performance monitoring unit to count events (cycles, instructions
+retired, branches mispredicted, cache lines missed) while a program runs, and
+prints the totals when it stops. Nothing is sampled: the processor keeps the
+counts beside the program, so counting's overhead is generally low, though
+not zero. What it cannot do is say where in the program the events happened;
+that is `perf record`, below, and the sampling profiler of
+[walkthrough 03](03_GPERF_PROFILER.md).
 
-The counts are exact for the events they count, and the events are the
-processor's: which ones exist, and what each one means, differ between
-processors. This rig's Cortex-A72 has no event for perf's generic
-`branches`, so that line reads `<not supported>` on every report below, and
-its `cache-misses` reports the same count as its `L1-dcache-load-misses`
-(the run in [Adding an Event](#adding-an-event) shows both), so it is the
-level-1 data cache's misses here. On the x86 laptop this tree was also run on,
-`branches` counts, and `cache-misses` is a different, far rarer event. Read
-the events per machine, and compare counts between runs on the same machine.
+A count is the processor's own tally of an event, and what it tallies depends
+on the processor and on scheduling. Which events exist, and what each one
+means, differ between processors. This rig's Cortex-A72 has no event for
+perf's generic `branches`, so that line reads `<not supported>` on every
+report below, and its `cache-misses` reports the same count as its
+`L1-dcache-load-misses` (the run in [Adding an Event](#adding-an-event) shows
+both), so it is the level-1 data cache's misses here. On the x86 laptop this
+tree was also run on, `branches` counts, and `cache-misses` is a different,
+far rarer event. And a processor has a fixed number of counters: when more
+events are open than it has, perf takes turns among them and scales each count
+up from the share of the time it was counted, printing that share at the end
+of its line, and such a count is an estimate. None of the lines on this rig
+carries a share. Read the events per machine, and compare counts between runs
+on the same machine.
 
 **In Vernier:** `--profile perf` starts `perf stat -e
 cpu-cycles,instructions,branches,branch-misses,cache-misses -p <pid>` on the
 benchmark's own process just before a test's measured repeats and stops it
-after them, so warmup and the `--target-time` calibration are not counted.
-perf's report is written to `<Suite.Case>.perf/stat.txt` under the working
-directory (`--profile-output-dir DIR` moves the root), and that is the only
-file stat mode writes. The totals are for the whole measured window, so a
-per-call figure is a total divided by the number of measured calls,
-`--cycles` times `--repeats`; the steps below pass both explicitly so the
-division is in plain sight. Two flags change what runs: `--profile-args
-"record -g"` runs `perf record` instead and writes `perf.data` (see
-[Record Mode](#record-mode)), and any other `--profile-args` text is
-appended to the `perf stat` command (see [Adding an Event](#adding-an-event)).
+after them, so warmup and the `--target-time` calibration are not counted. It
+waits 200 ms after starting perf, for perf to attach, and a second after
+signalling it to stop: the per-call timings cover the measured calls alone,
+and a profiled test takes that much longer than its calls. perf's report is
+written to `<Suite.Case>.perf/stat.txt` under the working directory
+(`--profile-output-dir DIR` moves the root), and that is the only file stat
+mode writes. The totals are for the whole measured window, so a per-call
+figure is a total divided by the number of measured calls, `--cycles` times
+`--repeats`; the steps below pass both explicitly so the division is in plain
+sight. Two flags change what runs: `--profile-args "record -g"` runs `perf
+record` instead and writes `perf.data` (see [Record Mode](#record-mode)), and
+any other `--profile-args` text is appended to the `perf stat` command (see
+[Adding an Event](#adding-an-event)).
 
 **Needs:** perf installed (`linux-perf` on Debian, in the rig's
 [one-time setup](../../docs/rigs/RIG_PI4.md#2-one-time-setup)), and permission
@@ -167,9 +175,11 @@ Note: Google Test filter = PerfProfiler.JoinV0
 
 `bench run` starts the binary pinned to core 3 with `--profile perf`, as its
 `Running:` line shows. Just before the measured repeats the backend starts
-`perf stat` on the benchmark's own process, and just after them it stops it;
-nothing else changes, and the timing, 945.2 us per call, is within the
-spread of step 1's runs.
+`perf stat` on the benchmark's own process, and just after them it stops it.
+The timing covers the measured calls alone: 945.2 us per call, within the
+spread of step 1's runs. The test took 2,160 ms for about 945 ms of calls; the
+rest is the backend's 200 ms wait for perf to attach, its one-second wait for
+perf to stop, and the test's setup and warmup.
 `--cycles 100 --repeats 10` makes the measured window exactly 1,000 calls, the
 number every count in the next step is divided by. perf's report is
 `PerfProfiler.JoinV0.perf/stat.txt`, under the directory `bench run` ran from.
@@ -297,12 +307,17 @@ half and true for the second, and the branch turns once per call.
 one, and advances the cursor by the test's result: there is nothing to
 predict.
 
-The store in `filterBranchy` is conditional on purpose. A compiler may not
-invent a store the source does not make, so it has to keep the branch. A
-conditional sum has no such protection: an optimizer that turns it into a
-conditional select makes the two versions the same machine code, and the
-three cases below time the same. The demo measures the three cases over the
-same 100,000 values in `PerfProfiler.FilterBranchyRandom`,
+The store in `filterBranchy` is conditional on purpose. A compiler may not add
+a store the source does not make, which leaves it fewer ways to remove the
+branch than a conditional sum gives it: an optimizer can turn a conditional
+sum into a conditional select, and then the two versions are the same machine
+code and the three cases below time the same. In every build this page reports
+on, `filterBranchy` kept its branch: GCC 14 on this rig, where steps 5 to 7
+count its mispredictions; clang 21 on the x86 laptop, where the example's unit
+tests count them; and GCC 11 on the laptop, whose machine code for it has the
+branch. A build that loses the branch fails those unit tests (see [What Keeps
+This Page True](#what-keeps-this-page-true)). The demo measures the three
+cases over the same 100,000 values in `PerfProfiler.FilterBranchyRandom`,
 `PerfProfiler.FilterBranchySorted` and `PerfProfiler.FilterBranchless`, and
 the next three steps count each one over 1,000 calls.
 
@@ -493,7 +508,7 @@ machine. Run without `bench run`, the binary takes
 | branch misses per call, sorted and branchless | 13 and 12 in the reports                                                                                                                                                  | a handful: 2 to 5 and 1 to 2 in the filter's unit tests on the x86 laptop                                                  |
 | instructions, random against sorted input     | equal to within one per call                                                                                                                                              | equal: the same code runs                                                                                                  |
 | `branches`                                    | `<not supported>`                                                                                                                                                         | counts on x86: 299,453 per call of V0 on the laptop                                                                        |
-| `cache-misses`                                | the level-1 data cache's misses, 16,643 per call of V0                                                                                                                    | a different event elsewhere: 76 per call of V0 on the x86 laptop                                                           |
+| `cache-misses`                                | the level-1 data cache's misses; per call of V0, 16,643 in step 3's run and 16,233 and 20,513 in the two runs behind [Adding an Event](#adding-an-event)                  | a different event elsewhere: 76 per call of V0 on the x86 laptop                                                           |
 | absolute times                                | V0 959.6 and V1 21.9 us per call, 926.9 to 1,002.6 and 20.2 to 21.9 over twelve runs; filter 882.8, 243.1 and 153.9 us, 880.9 to 884.1, 239.8 to 245.6 and 151.0 to 167.3 | will differ                                                                                                                |
 
 The twelve runs are step 1's command in one session on this rig: one a minute
@@ -572,8 +587,13 @@ row is labelled neutral against the 5% threshold; the joins moved most, V1 by
 own repeats. Over the twelve runs of step 1's command in this session, V0's
 median ranged from 926.9 to 1,002.6 us per call and V1's from 20.2 to 21.9,
 8% and 9%, with nothing changed, while the filter's random case stayed within
-0.4%. What should hold is each ratio, and each report's counts per call. The
-`hostname` column holds the board's hostname as the capture recorded it.
+0.4%. What should hold on this rig is the relationships the steps read: V0
+retiring about 33 times V1's instructions per call; the branchy filter
+retiring the same instructions on both inputs while mispredicting about once
+every two values on random input and a handful of times per call on sorted
+input; the branchless filter mispredicting as rarely as the sorted case. The
+times and the cache-miss counts move from run to run. The `hostname` column
+holds the board's hostname as the capture recorded it.
 
 ## What Keeps This Page True
 

@@ -111,9 +111,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/examples/filter/`, whose unit tests hold both versions to the
   same answers; `FilterBranchTest.ConditionalStoreKeepsItsBranch` fails when
   the branchy version's test of each value stops being a branch in an
-  optimized build (it stores conditionally, which a compiler cannot turn into
-  a conditional select, where the conditional sum the old demo 05 measured was
-  if-converted by one compiler and its three cases then timed the same), and
+  optimized build (its store is conditional, and it kept its branch in the GCC
+  and clang builds the walkthrough reports on, where the conditional sum the
+  old demo 05 measured was if-converted by one compiler and its three cases
+  then timed the same), and
   `FilterBranchTest.BranchlessFormRemovesTheMisses` when the branchless version
   stops removing the mispredictions. The join example's unit tests gain
   `JoinInstructionTest.V0RetiresFarMoreThanV1` (V0 must retire at least ten
