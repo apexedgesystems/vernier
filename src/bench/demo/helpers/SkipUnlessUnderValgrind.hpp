@@ -25,32 +25,32 @@ namespace demo {
 
 /* ----------------------------- Constants ----------------------------- */
 
-/// True when this binary was built with an address, thread or memory
-/// sanitizer. valgrind does not run such a binary as it runs an ordinary one:
-/// with the address sanitizer's runtime linked in, valgrind's own libraries
-/// are not mapped into the process (seen with valgrind 3.22 and clang 21), so
-/// memcheck sees no allocation and this helper sees no valgrind, and an older
-/// valgrind gives up reading the binary before it runs. A test that starts
-/// valgrind on this binary skips on it and says so.
+/// True when this binary was built with the address or the thread sanitizer,
+/// whose builds valgrind cannot check. Under valgrind 3.22 (clang 21) an
+/// address-sanitizer build ran with none of valgrind's libraries mapped into
+/// it, so memcheck saw no allocation and this helper no valgrind, and a
+/// thread-sanitizer build never reached main; under valgrind 3.18.1 no
+/// address-sanitizer build it was given reached main (GCC 11). Builds with
+/// the undefined-behaviour sanitizer ran under valgrind as ordinary ones and
+/// are not included. Only a test that starts valgrind on this binary skips on
+/// it.
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
-inline constexpr bool BUILT_WITH_A_SANITIZER = true;
+inline constexpr bool BUILT_WITH_ASAN_OR_TSAN = true;
 #elif defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
-    __has_feature(memory_sanitizer)
-inline constexpr bool BUILT_WITH_A_SANITIZER = true;
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+inline constexpr bool BUILT_WITH_ASAN_OR_TSAN = true;
 #else
-inline constexpr bool BUILT_WITH_A_SANITIZER = false;
+inline constexpr bool BUILT_WITH_ASAN_OR_TSAN = false;
 #endif
 #else
-inline constexpr bool BUILT_WITH_A_SANITIZER = false;
+inline constexpr bool BUILT_WITH_ASAN_OR_TSAN = false;
 #endif
 
 /// The skip message a test prints when it would start valgrind on a binary
-/// built with a sanitizer.
+/// built with the address or the thread sanitizer.
 inline constexpr const char* SANITIZER_UNDER_VALGRIND_REASON =
-    "this binary is built with a sanitizer, and valgrind does not run such a binary as it runs "
-    "an ordinary one (its libraries are not mapped into the process, so memcheck sees nothing); "
-    "use a build without a sanitizer";
+    "this binary is built with the address or the thread sanitizer, whose builds valgrind "
+    "cannot check; run this test in a build without either";
 
 /// The skip message a case prints when the process is not under valgrind.
 inline constexpr const char* SKIP_UNLESS_UNDER_VALGRIND_REASON =

@@ -575,16 +575,18 @@ memcheck lines are the readings to carry elsewhere.
   writes, three reads.
 
 - **`Memcheck.FindsTheOffByOne` and the helper's valgrind test report
-  `SKIPPED` in a sanitizer build.** valgrind does not run a binary built
-  with a sanitizer as it runs an ordinary one. With clang 21's address
-  sanitizer and valgrind 3.22, in this project's container, the binary ran
-  but valgrind's libraries were not mapped into it (`LD_PRELOAD` empty, no
-  `vgpreload` line in its maps), so memcheck saw none of its allocations and
-  the helper saw no valgrind: the wrong join's case skipped and the check
-  would fail for the wrong reason. valgrind 3.18.1 gave up reading such a
-  binary before it ran. Both tests know at compile time that the build has a
-  sanitizer and skip with
-  `this binary is built with a sanitizer, and valgrind does not run such a binary as it runs an ordinary one (its libraries are not mapped into the process, so memcheck sees nothing); use a build without a sanitizer`.
+  `SKIPPED` in a build with the address or the thread sanitizer.** valgrind
+  cannot check either. With clang 21's address sanitizer and valgrind 3.22,
+  in this project's container, the binary ran but valgrind's libraries were
+  not mapped into it (`LD_PRELOAD` empty, no `vgpreload` line in its maps),
+  so memcheck saw none of its allocations and the helper saw no valgrind:
+  the wrong join's case skipped and the check would fail for the wrong
+  reason. valgrind 3.18.1 gave up reading such a binary before it ran. A
+  thread-sanitizer build never reached `main` under valgrind 3.22. Both
+  tests know at compile time which sanitizer the build has and skip with
+  `this binary is built with the address or the thread sanitizer, whose builds valgrind cannot check; run this test in a build without either`.
+  A build with the undefined-behaviour sanitizer is not among them: it ran
+  under valgrind as an ordinary build, and the tests do not skip there.
 
 ## Check Against the Reference
 
@@ -640,8 +642,8 @@ Three things check what this page shows, and all fail loudly:
   size of the joined string, naming `joinOffByOne` in the write's stack and
   in the block's, with valgrind exiting with the code it was given; and
   unless `joinV1`'s log counts no error and valgrind exits 0. It skips only
-  in a build with a sanitizer (which valgrind does not run as an ordinary
-  binary), where valgrind is not installed, where valgrind gives up reading
+  in a build with the address or the thread sanitizer (which valgrind cannot
+  check), where valgrind is not installed, where valgrind gives up reading
   the demo binary, and where valgrind cannot read the demo binary's symbols,
   once everything but the names has passed; those two skips quote valgrind's
   own lines, and the last needs the report to agree, with the write's own

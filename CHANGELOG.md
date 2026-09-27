@@ -117,12 +117,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   --profile memcheck` wraps it and fails unless memcheck reports the write
   once per call, right after a block the size of the joined string, in
   `joinOffByOne`, and reports nothing for `joinV1`; it skips in a build with
-  a sanitizer, where valgrind is missing, where valgrind gives up reading the
-  binary, and, once everything but the names has passed, where valgrind
-  cannot read the binary's symbols (valgrind 3.18.1 on a GCC 11.4 build
-  linked by mold 1.0.3), the last two saying so in valgrind's words. The
-  wrong join's source is compiled with debug information, so memcheck's
-  report names its lines. Its walkthrough,
+  the address or the thread sanitizer, where valgrind is missing, where
+  valgrind gives up reading the binary, and, once everything but the names
+  has passed, where valgrind cannot read the binary's symbols (valgrind
+  3.18.1 on a GCC 11.4 build linked by mold 1.0.3), the last two saying so
+  in valgrind's words. The wrong join's source is compiled with debug
+  information, so memcheck's report names its lines. Its walkthrough,
   `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is
   rewritten from a Release run on the documented Raspberry Pi 4 rig: the wrong
   join under `bench run --profile memcheck`, memcheck's report read line by

@@ -80,8 +80,8 @@ constexpr const char* OFF_BY_ONE_FUNCTION = "joinOffByOne";
  * gperftools' profiler library that is not the program's (the check header
  * says which).
  *
- * Skipped in a build with a sanitizer (which valgrind does not run as an
- * ordinary binary), without valgrind, where valgrind gives up reading the demo
+ * Skipped in a build with the address or the thread sanitizer (which valgrind
+ * cannot check), without valgrind, where valgrind gives up reading the demo
  * binary's debug information before the program runs, as a valgrind older than
  * the compiler does, and where valgrind cannot read the demo binary's symbols:
  * valgrind says so for that binary, and the write's own frame, in the binary,
@@ -92,7 +92,7 @@ constexpr const char* OFF_BY_ONE_FUNCTION = "joinOffByOne";
  * frames valgrind named but not as joinOffByOne.
  */
 TEST(Memcheck, FindsTheOffByOne) {
-  if constexpr (demo::BUILT_WITH_A_SANITIZER) {
+  if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
     GTEST_SKIP() << demo::SANITIZER_UNDER_VALGRIND_REASON;
   }
   if (!vernier::bench::profiler_env::isOnPath("valgrind")) {

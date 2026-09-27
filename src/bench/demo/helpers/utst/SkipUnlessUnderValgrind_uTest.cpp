@@ -7,11 +7,11 @@
  *  - The helper decides from the process it runs in, so the tests run this
  *    binary as a child on a probe case that uses the helper, once plainly and
  *    once under valgrind, and read what GoogleTest printed for the probe.
- *  - The valgrind run skips in a build with a sanitizer (which valgrind does
- *    not run as an ordinary binary), where valgrind is not installed, and where
- *    valgrind gives up reading this binary before the program runs (a
- *    valgrind older than the compiler that built it), quoting valgrind's own
- *    lines; any other way of not reaching the probe fails.
+ *  - The valgrind run skips in a build with the address or the thread
+ *    sanitizer (which valgrind cannot check), where valgrind is not installed,
+ *    and where valgrind gives up reading this binary before the program runs
+ *    (a valgrind older than the compiler that built it), quoting valgrind's
+ *    own lines; any other way of not reaching the probe fails.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
@@ -35,7 +35,7 @@
 
 #include <gtest/gtest.h>
 
-using vernier::bench::demo::BUILT_WITH_A_SANITIZER;
+using vernier::bench::demo::BUILT_WITH_ASAN_OR_TSAN;
 using vernier::bench::demo::reasonToSkipUnlessUnderValgrind;
 using vernier::bench::demo::SANITIZER_UNDER_VALGRIND_REASON;
 using vernier::bench::demo::SKIP_UNLESS_UNDER_VALGRIND_REASON;
@@ -187,7 +187,7 @@ TEST(SkipUnlessUnderValgrindTest, PlainRunSkipsTheProbe) {
 
 /** @test Under valgrind the probe runs and passes */
 TEST(SkipUnlessUnderValgrindTest, ValgrindRunRunsTheProbe) {
-  if constexpr (BUILT_WITH_A_SANITIZER) {
+  if constexpr (BUILT_WITH_ASAN_OR_TSAN) {
     GTEST_SKIP() << SANITIZER_UNDER_VALGRIND_REASON;
   }
   if (!isOnPath("valgrind")) {
