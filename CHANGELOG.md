@@ -136,8 +136,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `<Suite.Case>.perf/stat.txt`), each report read line by line and divided by
   the run's stated call count, `<not supported>` where the processor has no
   such event, how `--profile-args` adds an event or switches to `perf record`,
-  and that a `perf.data` is finished a moment after the benchmark exits; that
-  run's CSV is committed at `src/bench/demo/reference/pi4/02_perf_profiler.csv`.
+  and that a `perf.data` is finished a moment after the benchmark exits, with
+  the check of `record.err.txt` to run before reading it; that run's CSV is
+  committed at `src/bench/demo/reference/pi4/02_perf_profiler.csv`.
   `BenchDemo_05_BranchOptimization` is gone with its workload, and
   `docs/05_BRANCH_OPTIMIZATION.md` says where the filter is now;
   `stridedArrayWalk`, `sequentialArrayWalk`, `conditionalSumBranchy` and

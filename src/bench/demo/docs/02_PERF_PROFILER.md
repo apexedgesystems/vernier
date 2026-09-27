@@ -426,40 +426,68 @@ x86 laptop runs of this tree measured the sorted case faster (see
 instead of `perf stat`, writing `perf.data` and perf's own messages,
 `record.err.txt`, into the same folder; the guides' `--target-time 250ms`
 sizes the run so that perf has time to attach and sample (see the
-[CPU guide](../../docs/CPU_GUIDE.md#cpu-profiling-with-perf)). On this rig,
-250 ms per repeat gave 9,835 samples:
+[CPU guide](../../docs/CPU_GUIDE.md#cpu-profiling-with-perf)). Capture:
 
 ```bash
 bench run ./build/bin/ptests/BenchDemo_02_PerfProfiler --taskset 3 --profile perf \
   --profile-args "record -g" --target-time 250ms -- --gtest_filter=PerfProfiler.JoinV0
+```
+
+The benchmark does not wait for `perf record` to finish writing: it stops
+perf when the measured repeats end, prints its result and exits, and perf
+goes on writing `perf.data` for a moment. perf's last line in
+`record.err.txt` says when the file is complete, so check for it before
+reading the file:
+
+```bash
+grep "Captured and wrote" PerfProfiler.JoinV0.perf/record.err.txt
+```
+
+While perf is still writing, the check prints nothing and exits with status
+1; run straight after `bench run` on this rig, it did. Run it again until it
+prints perf's closing line; repeated every tenth of a second here, it printed
+it 0.76 s after `bench run` returned:
+
+```
+[ perf record: Captured and wrote 1.914 MB ./PerfProfiler.JoinV0.perf/perf.data (10150 samples) ]
+```
+
+Then read the report:
+
+```bash
 perf report -i PerfProfiler.JoinV0.perf/perf.data --stdio --no-children
 ```
 
-Captured output of the second command, cut to the first two functions and,
-within the first, to the two frames that matter; the rows below them are the
-chain of callers out to `_start`:
+Captured output, cut to the first two functions and, within the first, to
+the two frames that matter; the rows below them are the chain of callers out
+to `_start`:
 
 ```
-    64.97%  BenchDemo_02_Pe  libc.so.6                  [.] __memcpy_generic
+    66.15%  BenchDemo_02_Pe  libc.so.6                  [.] __memcpy_generic
             |
             ---__memcpy_generic
                vernier::bench::demo::joinV0(std::vector<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> >, std::allocator<std::__cxx11::basic_string<char, std::char_traits<char>, std::allocator<char> > > > const&, char)
                ...
-    12.80%  BenchDemo_02_Pe  libc.so.6                  [.] _int_malloc
+    12.47%  BenchDemo_02_Pe  libc.so.6                  [.] _int_malloc
 ...
 ```
 
-The report puts 65.0% of the samples in the C library's `memcpy` and 12.8%
+The report puts 66.2% of the samples in the C library's `memcpy` and 12.5%
 in the allocator's `_int_malloc`, both under `joinV0`: the reading
 [walkthrough 03](03_GPERF_PROFILER.md) gets from gperftools, from perf.
 
-One thing to know: the benchmark does not wait for `perf record` to finish
-writing. It stops perf when the measured repeats end, then prints its result
-and exits, and with call stacks to write perf finished about 0.7 s after that
-on this rig. `record.err.txt` gets perf's `Captured and wrote` line when the
-file is complete; read `perf.data` once that line is there, or `perf report`
-says the file's data size is 0 and asks whether perf record was terminated
-properly.
+The check, not a fixed wait, is what says the file is complete. In a second
+run on this rig, `perf report` run straight after `bench run`, with perf still
+writing, printed
+
+```
+WARNING: The PerfProfiler.JoinV0.perf/perf.data file's data size field is 0 which is unexpected.
+Was the 'perf record' command properly terminated?
+Error:
+failed to process sample
+```
+
+and exited with status 0, so its own status does not tell you either.
 
 ## Adding an Event
 
