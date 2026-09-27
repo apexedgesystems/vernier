@@ -1,101 +1,95 @@
 /**
  * @file 12_MemcheckProfiler_Demo.cpp
- * @brief Demo 12: Valgrind Memcheck for memory error / leak detection.
+ * @brief Demo 12: memcheck -- a memory error a timer cannot see
  *
- * Memcheck is most useful as a *correctness gate* run alongside benchmarks
- * after an optimization pass -- it catches leaks, use-after-free, and reads
- * of uninitialized memory introduced by the pass. Clean code reports
- * "definitely lost: 0 bytes" and the benchmark proceeds normally.
- *
- * Two tests:
- *  - CleanWorkload      heap workload with proper RAII; memcheck reports 0 leaks
- *  - WithDeliberateLeak intentionally leaks one buffer per iteration
+ * Measures the two versions of the shared join example and carries a third,
+ * deliberately wrong join for memcheck to find:
+ *  1. JoinV0 and JoinV1 each measure one version, one CSV row each
+ *  2. JoinOffByOne calls the wrong join, which returns the right string and
+ *     writes one byte past its buffer; it runs only under valgrind and skips
+ *     itself anywhere else
  *
  * Usage:
  *   @code{.sh}
- *   # Clean run (expect: definitely lost: 0 bytes):
- *   valgrind --tool=memcheck --leak-check=full \
- *       --log-file=Memcheck.CleanWorkload.memcheck/log.txt \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_12_MemcheckProfiler \
- *       --profile memcheck --cycles 1 --gtest_filter='Memcheck.CleanWorkload'
+ *   # Measure
+ *   ./BenchDemo_12_MemcheckProfiler --target-time 50ms --repeats 10 --csv run.csv
  *
- *   # Leaky run (expect: nonzero "definitely lost" with stack trace):
- *   valgrind --tool=memcheck --leak-check=full \
- *       --log-file=Memcheck.WithDeliberateLeak.memcheck/log.txt \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_12_MemcheckProfiler \
- *       --profile memcheck --cycles 1 --gtest_filter='Memcheck.WithDeliberateLeak'
+ *   # Find the bug: memcheck's log lands in
+ *   # bench-out/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log
+ *   bench run ./BenchDemo_12_MemcheckProfiler --profile memcheck -- \
+ *     --gtest_filter=Memcheck.JoinOffByOne
+ *
+ *   # Read it
+ *   cat bench-out/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log
  *   @endcode
  *
- * Memcheck slows execution ~20x; use --cycles 1 (or 2) for usable runtimes.
+ * What memcheck reports for this binary is checked apart from it, by
+ * utst/12_MemcheckProfiler_uTest.cpp.
+ *
+ * @see docs/15_MEMCHECK_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
 
-#include <cstdint>
-#include <memory>
-#include <vector>
+#include <cstddef>
+#include <string>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
+#include "src/bench/demo/cpu/12_MemcheckProfiler_OffByOne.hpp"
+#include "src/bench/demo/cpu/12_MemcheckProfiler_Workload.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
+#include "src/bench/demo/helpers/SkipUnlessUnderValgrind.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
+namespace wrong = vernier::bench::demo::memcheck_demo;
 
-static constexpr std::size_t WORK = 100'000;
+using vernier::bench::demo::memcheck_demo::OFF_BY_ONE_CALLS;
+using vernier::bench::demo::memcheck_demo::PART_COUNT;
+using vernier::bench::demo::memcheck_demo::PART_SEED;
+using vernier::bench::demo::memcheck_demo::SEPARATOR;
 
-/** @test Clean workload: RAII unique_ptr; memcheck reports zero leaks. */
-PERF_THROUGHPUT(Memcheck, CleanWorkload) {
-  UB_PERF_GUARD(perf);
+/* ----------------------------- Tests ----------------------------- */
 
-  perf.warmup([&] {
-    auto buf = std::make_unique<double[]>(WORK);
-    (void)buf;
-  });
+/** @test Throughput of the one-liner: two temporaries and a full copy per part. */
+PERF_THROUGHPUT(Memcheck, JoinV0) {
+  PERF_GUARD(perf);
 
-  volatile double sink = 0.0;
-  auto result = perf.throughputLoop(
-      [&] {
-        auto buf = std::make_unique<double[]>(WORK);
-        for (std::size_t i = 0; i < WORK; ++i)
-          buf[i] = static_cast<double>(i);
-        sink = sink + buf[WORK - 1];
-      },
-      "clean_workload");
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); }, "join_v0");
+}
+
+/** @test Throughput of the reserving version: one allocation per call. */
+PERF_THROUGHPUT(Memcheck, JoinV1) {
+  PERF_GUARD(perf);
+
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
+
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); }, "join_v1");
 }
 
 /**
- * @test Deliberate leak: a raw new[] without a delete[]. Memcheck flags
- *       this as "definitely lost" with the source-line backtrace.
+ * @test The wrong join returns the right string OFF_BY_ONE_CALLS times, and
+ *       writes past its buffer every time. Runs only under valgrind.
  *
- * Do not copy; this is here so memcheck has something to find. The test
- * still asserts a callsPerSecond > 1 so the benchmark completes; leaks do
- * not crash the program, they just accumulate.
+ * Measures nothing: under valgrind a timing means nothing, and a fixed number
+ * of calls is what memcheck's error count divides by. Anywhere else the case
+ * skips itself and says how to run it.
  */
-PERF_THROUGHPUT(Memcheck, WithDeliberateLeak) {
-  UB_PERF_GUARD(perf);
+PERF_TEST(Memcheck, JoinOffByOne) {
+  DEMO_SKIP_UNLESS_UNDER_VALGRIND();
 
-  // Tiny iteration count -- memcheck is slow and we don't want to actually
-  // OOM the run, just produce one leaky cycle.
-  perf.warmup([&] { /* nothing */ });
-
-  volatile double sink = 0.0;
-  auto result = perf.throughputLoop(
-      [&] {
-        // Intentional: allocate but never free. Memcheck will report
-        // "definitely lost: N bytes in M blocks" where M scales with calls.
-        double* leaked = new double[WORK];
-        for (std::size_t i = 0; i < WORK; ++i)
-          leaked[i] = static_cast<double>(i);
-        sink = sink + leaked[WORK - 1];
-        // leaked NOT deleted -- on purpose.
-      },
-      "with_deliberate_leak");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  const std::string EXPECTED = demo::joinV1(PARTS, SEPARATOR);
+  for (long call = 0; call < OFF_BY_ONE_CALLS; ++call) {
+    EXPECT_EQ(wrong::joinOffByOne(PARTS, SEPARATOR), EXPECTED) << "call " << call;
+  }
 }
 
 PERF_MAIN()
