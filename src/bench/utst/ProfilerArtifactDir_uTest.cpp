@@ -3,8 +3,9 @@
  * @brief Unit tests for where profiler backends put their artifacts.
  *
  * Notes:
- *  - Backends are constructed directly, so the tests do not depend on which
- *    profiling tools are installed.
+ *  - Backends are constructed directly, or given a decision that lets them
+ *    run, or registered as a fixture whose request always runs, so the tests
+ *    do not depend on which profiling tools are installed.
  *  - Every test works in its own temporary directory and restores the wrap
  *    environment variables it sets.
  */
@@ -20,7 +21,12 @@
 #include "src/bench/inc/ProfilerJemalloc.hpp"
 #include "src/bench/inc/ProfilerMassif.hpp"
 #include "src/bench/inc/ProfilerMemcheck.hpp"
+#include "src/bench/inc/ProfilerBpftrace.hpp"
+#include "src/bench/inc/ProfilerGperf.hpp"
+#include "src/bench/inc/ProfilerOffCpu.hpp"
 #include "src/bench/inc/ProfilerPerf.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
@@ -42,9 +48,11 @@
 namespace fs = std::filesystem;
 
 using vernier::bench::PerfConfig;
+using vernier::bench::PerfPlan;
 using vernier::bench::PerfRegistry;
 using vernier::bench::PerfRow;
 using vernier::bench::Profiler;
+using vernier::bench::ProfilerRegistry;
 using vernier::bench::profiler_env::artifactDirName;
 using vernier::bench::profiler_env::resolveArtifactDir;
 
@@ -133,6 +141,13 @@ static std::vector<WrappedBackend> wrappedBackends() {
           wrapped<vernier::bench::JemallocProfiler>("jemalloc", "jemalloc")};
 }
 
+/// A perf decision that lets the profiler run; its tool is never launched here.
+static std::shared_ptr<const PerfPlan> perfThatRuns() {
+  auto plan = std::make_shared<PerfPlan>();
+  plan->perf = "/nonexistent/perf";
+  return plan;
+}
+
 /* ----------------------------- API Tests ----------------------------- */
 
 /// Inverse of the encoding artifactDirName() applies to a test name: the
@@ -216,7 +231,8 @@ TEST(ArtifactDirNameTest, AdversarialNamesMapToDistinctFolders) {
 /** @test A parameterized test name yields one flat folder under the root, not a nested path */
 TEST_F(ProfilerArtifactDirTest, ParameterizedNameGetsOneFlatFolder) {
   const vernier::bench::test::StderrCapture QUIET;
-  const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Parts/Join.V0/n1000");
+  const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Parts/Join.V0/n1000",
+                                              perfThatRuns());
   const vernier::bench::MassifProfiler MASSIF(configFor("massif"), "Parts/Join.V0/n1000");
 
   EXPECT_EQ(entries(), (std::vector<std::string>{"Parts+2FJoin.V0+2Fn1000.massif",
@@ -275,9 +291,37 @@ TEST_F(ProfilerArtifactDirTest, CsvProfileDirPointsAtWrapFolder) {
 TEST_F(ProfilerArtifactDirTest, WrapByAnotherToolIsIgnored) {
   const vernier::bench::test::StderrCapture QUIET;
   setWrap("massif", "bench-out/Binary_PTEST.massif");
-  const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Suite.Case");
+  const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Suite.Case", perfThatRuns());
   EXPECT_EQ(PERF.artifactDir(), (root_ / "Suite.Case.perf").string());
   EXPECT_EQ(entries(), std::vector<std::string>{"Suite.Case.perf"});
+}
+
+/**
+ * @test A backend built for a request that cannot run creates no folder
+ *
+ * The four backends that decide their own request when constructed directly
+ * leave nothing behind when the decision rejects it, like every backend the
+ * registry does not build. The tools are made absent with an empty PATH.
+ */
+TEST_F(ProfilerArtifactDirTest, RejectedRequestCreatesNoFolder) {
+  const vernier::bench::test::FakeToolDir empty;
+  ASSERT_TRUE(empty.ok());
+  const vernier::bench::test::ScopedEnv path("PATH", empty.path());
+  const vernier::bench::test::StderrCapture QUIET;
+  const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Suite.Perf");
+  const vernier::bench::BpftraceProfiler BPF(configFor("bpftrace"), "Suite.Bpf");
+  const vernier::bench::OffCpuProfiler OFFCPU(configFor("offcpu"), "Suite.OffCpu");
+  EXPECT_EQ(PERF.artifactDir(), "");
+  EXPECT_EQ(BPF.artifactDir(), "");
+  EXPECT_EQ(OFFCPU.artifactDir(), "");
+  if (UB_HAS_GPERF_HEAP == 0) {
+    // Heap mode is not compiled in (or gperftools is absent): rejected either way.
+    PerfConfig heap = configFor("gperf");
+    heap.profileArgs = "heap";
+    const vernier::bench::GperfProfiler GPERF(heap, "Suite.Gperf");
+    EXPECT_EQ(GPERF.artifactDir(), "");
+  }
+  EXPECT_TRUE(entries().empty()) << "a rejected request left '" << entries().front() << "'";
 }
 
 /** @test A wrap that does not say where it writes yields no folder and no claim about one */
@@ -312,6 +356,42 @@ struct SharedCaptureRootCleanup {
 };
 static const SharedCaptureRootCleanup SHARED_CAPTURE_ROOT_CLEANUP;
 
+/// A profiler that only takes its per-test folder, through the same shared
+/// rule every backend uses.
+class FolderOnlyProfiler final : public Profiler {
+public:
+  FolderOnlyProfiler(const PerfConfig& cfg, const std::string& testName)
+      : dir_(resolveArtifactDir(cfg.profileTool, cfg.artifactRoot, testName, "fixture")) {}
+  std::string toolName() const noexcept override { return "folder-fixture"; }
+  std::string artifactDir() const noexcept override { return dir_; }
+
+private:
+  std::string dir_;
+};
+
+/// Registers, for one case, a backend whose request always runs: its check is
+/// always ready and it needs no installed tool.
+class FolderFixtureBackend {
+public:
+  static constexpr const char* NAME = "folder-fixture";
+  FolderFixtureBackend() {
+    ProfilerRegistry::instance().registerReadinessBackend(
+        NAME,
+        [](const vernier::bench::ReadinessRequest&, const vernier::bench::ReadinessContext&) {
+          return vernier::bench::readinessResult(vernier::bench::ReadinessCause::READY,
+                                                 "always ready", "");
+        },
+        [](const PerfConfig& cfg, const std::string& testName,
+           const vernier::bench::ReadinessResult&) {
+          return std::unique_ptr<Profiler>(std::make_unique<FolderOnlyProfiler>(cfg, testName));
+        },
+        "");
+  }
+  ~FolderFixtureBackend() { ProfilerRegistry::instance().unregisterBackend(NAME); }
+  FolderFixtureBackend(const FolderFixtureBackend&) = delete;
+  FolderFixtureBackend& operator=(const FolderFixtureBackend&) = delete;
+};
+
 static std::string readFile(const fs::path& path) {
   std::ifstream in(path);
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
@@ -328,10 +408,12 @@ static void captureAndCheckSibling(const std::string& siblingName) {
   const fs::path ROOT = sharedCaptureRoot();
   fs::create_directories(ROOT);
 
-  // jemalloc: a backend whose factory needs no installed tool and that starts
-  // no process; it creates its per-test folder like every other backend.
+  // A registered fixture whose request always runs: the case builds its
+  // profiler through the registry like any guarded case, with no installed
+  // tool involved, and the profiler takes its folder like every backend.
+  const FolderFixtureBackend BACKEND;
   PerfConfig cfg;
-  cfg.profileTool = "jemalloc";
+  cfg.profileTool = FolderFixtureBackend::NAME;
   cfg.artifactRoot = ROOT.string();
   cfg.cycles = 1;
   cfg.repeats = 2;
@@ -344,7 +426,7 @@ static void captureAndCheckSibling(const std::string& siblingName) {
   ASSERT_TRUE(ROW->profileDir.has_value());
 
   const fs::path OWN_DIR = *ROW->profileDir;
-  const fs::path SIBLING_DIR = ROOT / artifactDirName(siblingName, "jemalloc");
+  const fs::path SIBLING_DIR = ROOT / artifactDirName(siblingName, "fixture");
   EXPECT_EQ(OWN_DIR.parent_path(), ROOT) << "the folder is not directly under the root";
   EXPECT_NE(OWN_DIR, SIBLING_DIR) << "'" << OWN_NAME << "' and '" << siblingName
                                   << "' report the same artifact folder";

@@ -17,11 +17,14 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include <cerrno>
 #include <csignal>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "src/bench/inc/ProfilerReadiness.hpp" // policy and probes the helpers delegate to
 
 namespace vernier {
 namespace bench {
@@ -239,30 +242,33 @@ inline bool cuptiMustYield(const std::string& profileTool) {
 /**
  * @brief True when privilege-needing backends should elevate via `sudo -n`.
  *
- * Opt-in through BENCH_SUDO (truthy) for processes not already running as
- * root. Pairs with a scoped sudoers grant (bpftrace + kill) so kernel-probe
+ * Opt-in through BENCH_SUDO (1, true, yes or on, any case) for processes not
+ * already running as root; the answer of decidePrivilege() for this process.
+ * Pairs with a scoped sudoers grant (bpftrace + kill) so kernel-probe
  * backends work from unprivileged test runs -- the tests and their artifacts
  * stay owned by the user; only the probe tooling elevates.
  */
 inline bool benchSudoActive() {
-  if (::geteuid() == 0)
-    return false;
-  const char* v = std::getenv("BENCH_SUDO");
-  return v != nullptr && v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0;
+  return decidePrivilege(ReadinessContext::capture()).route == PrivilegeRoute::SCOPED_SUDO;
 }
 
 /* ----------------------------- sudoBpftraceUsable ----------------------------- */
 
 /**
- * @brief True when `sudo -n bpftrace` works for this user.
+ * @brief True when `sudo -n <bpftrace> --version` works for this user.
  *
- * Probes the actual capability, not `sudo -n true`: a *scoped* sudoers
- * grant (the recommended setup) authorizes bpftrace specifically, so a
- * generic sudo probe false-negatives on exactly the configuration this
- * feature is designed for.
+ * Proves that one invocation only: a grant restricted to other arguments can
+ * refuse an attach this allows. The bpftrace and offcpu backends decide with
+ * their readiness checks, which attach the selected script instead.
  */
 inline bool sudoBpftraceUsable() {
-  return std::system("sudo -n bpftrace --version >/dev/null 2>&1") == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto SUDO = resolveExecutable("sudo", CTX);
+  const auto TOOL = resolveExecutable("bpftrace", CTX);
+  if (!SUDO || !SUDO->executable || !TOOL || !TOOL->executable) {
+    return false;
+  }
+  return runBoundedProbe({SUDO->path, "-n", "--", TOOL->path, "--version"}, 5000, CTX).succeeded();
 }
 
 /* ----------------------------- bpftraceAttachViable ----------------------------- */
@@ -273,6 +279,7 @@ inline bool sudoBpftraceUsable() {
  * Presence on PATH is not health -- stripped builds break BEGIN/END,
  * missing tracefs breaks attachment, and both fail this real probe in
  * well under its 3s bound where a lookup-based check reports a false OK.
+ * The bound is runBoundedProbe()'s own; no timeout(1) is needed.
  *
  * The probe attaches a sched-family tracepoint -- the same surface the
  * bpftrace-backed profilers use. A kprobe would be the wrong probe: some
@@ -282,12 +289,23 @@ inline bool sudoBpftraceUsable() {
  * work fine.
  */
 inline bool bpftraceAttachViable(bool viaSudo) {
-  const char* CMD =
-      viaSudo ? "timeout 3 sudo -n bpftrace -e "
-                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1"
-              : "timeout 3 bpftrace -e "
-                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1";
-  return std::system(CMD) == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto TOOL = resolveExecutable("bpftrace", CTX);
+  if (!TOOL || !TOOL->executable) {
+    return false;
+  }
+  std::vector<std::string> argv;
+  if (viaSudo) {
+    const auto SUDO = resolveExecutable("sudo", CTX);
+    if (!SUDO || !SUDO->executable) {
+      return false;
+    }
+    argv = {SUDO->path, "-n", "--"};
+  }
+  argv.push_back(TOOL->path);
+  argv.push_back("-e");
+  argv.push_back("tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }");
+  return runBoundedProbe(argv, 3000, CTX).succeeded();
 }
 
 /* ----------------------------- processAlive ----------------------------- */
@@ -340,10 +358,16 @@ inline pid_t tracerPid(pid_t child) {
 inline bool sudoKill(pid_t pid, int sig) {
   if (::geteuid() == 0)
     return ::kill(pid, sig) == 0;
-  char cmd[96];
-  std::snprintf(cmd, sizeof(cmd), "sudo -n kill -%d %d >/dev/null 2>&1", sig,
-                static_cast<int>(pid));
-  return std::system(cmd) == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto SUDO = resolveExecutable("sudo", CTX);
+  const auto KILL = resolveExecutable("kill", CTX);
+  if (!SUDO || !SUDO->executable || !KILL || !KILL->executable) {
+    return false;
+  }
+  return runBoundedProbe({SUDO->path, "-n", "--", KILL->path, "-" + std::to_string(sig),
+                          std::to_string(static_cast<int>(pid))},
+                         5000, CTX)
+      .succeeded();
 }
 
 } // namespace profiler_env

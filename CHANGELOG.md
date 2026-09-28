@@ -169,8 +169,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  prints how to enable heap mode and skips it, and `bench doctor` reports the
-  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  (or `both`) runs unprofiled and says why. With it, the heaptrack backend
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
@@ -236,6 +235,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
+- **A run reports its profiler request as the doctor does** -- a warning or
+  error for the `--profile` request prints once, with the doctor's cause and
+  remedy. After a warning (under `bench run`'s wrap, `unverified`) the case is
+  profiled; a request that cannot collect runs unprofiled and creates no
+  artifact folder, also for a `PerfStatProfiler`, `GperfProfiler`,
+  `BpftraceProfiler` or `OffCpuProfiler` constructed directly; and when only
+  the requested analysis cannot run, the capture still runs and is kept. Exit
+  statuses are unchanged.
+- **`--profile-check` also checks one selected request** -- given
+  `--profile <name>` and that request's options, it adds a `Selected request`
+  row with the report a run of the request prints, `--profile-check-json` adds
+  `backendScope` and, with a request, `selected` while keeping every existing
+  key, and both check flags work in any position. A script that matched the
+  old text header needs the new one,
+  `=== Profiler Backend Doctor (default mode of each backend) ===`, and a
+  backend registered without a check reports `unverified` instead of OK.
+- **bpftrace and offcpu run as the current user unless `BENCH_SUDO=1`** --
+  **Action needed:** a setup that relied on bpftrace's implicit `sudo -n` sets
+  `BENCH_SUDO=1` (or `true`, `yes`, `on`). `PERF_BPF_SUDO` remains through
+  1.0.4 as a deprecated alias for the `bpftrace` backend only and warns;
+  `BENCH_SUDO` wins when both are set, and an invalid `BENCH_SUDO`, or an
+  invalid alias on its own, is a configuration error that launches nothing.
+  See the [BPF scripts guide](src/bench/docs/BPF_SCRIPTS.md#requirements) for
+  the privileges and the sudoers grant.
+- **perf's doctor row and run follow real counter access** -- the check counts
+  the benchmark process briefly with `perf stat` as the current user instead
+  of reading `kernel.perf_event_paranoid`, and a perf that is denied or does
+  not run is an error and is never launched; vernier does not elevate perf.
+  `record`, `mem` and `c2c` are checked only for that counting access and
+  reported `unverified`.
+- **gperf checks the requested mode and runs the analyzer it finds** -- a mode
+  the build lacks is an error, and `--profile-analyze` runs the first of
+  `google-pprof` and `pprof` on `PATH` (it always ran `google-pprof`, so a
+  `pprof`-only installation printed empty analysis). An analyzer that is
+  missing, does not run or fails on the profile is reported, and the capture
+  and its `cpu.prof` are kept.
 
 ### Fixed
 
