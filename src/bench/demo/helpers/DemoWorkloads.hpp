@@ -17,12 +17,10 @@
 #define VERNIER_DEMO_WORKLOADS_HPP
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <mutex>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -137,23 +135,6 @@ inline double sumPositionsSoA(const ParticleSoA& particles, std::size_t count) {
     sum += particles.x[i] + particles.y[i] + particles.z[i];
   }
   return sum;
-}
-
-/* ----------------------------- Contention Workloads ----------------------------- */
-
-/** @brief Slow: Mutex-protected counter increment. */
-inline void incrementMutex(std::mutex& mtx, std::uint64_t& counter, int iterations) {
-  for (int i = 0; i < iterations; ++i) {
-    std::lock_guard<std::mutex> lock(mtx);
-    ++counter;
-  }
-}
-
-/** @brief Fast: Atomic counter increment (lock-free). */
-inline void incrementAtomic(std::atomic<std::uint64_t>& counter, int iterations) {
-  for (int i = 0; i < iterations; ++i) {
-    counter.fetch_add(1, std::memory_order_relaxed);
-  }
 }
 
 /* ----------------------------- Dot Product Workloads ----------------------------- */
