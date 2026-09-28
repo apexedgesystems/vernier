@@ -118,6 +118,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into demo 02 as the filter example, and its standalone executable,
   `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
   so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
+- **Demo 04 (cache-friendly layout) removed** -- `BenchDemo_04_CacheFriendly`
+  and its walkthrough, `src/bench/demo/docs/04_CACHE_FRIENDLY.md`, are gone,
+  and the particle workloads only it used (`ParticleAoS`, `ParticleSoA` and
+  their helpers) leave `helpers/DemoWorkloads.hpp`. Its CSVs have no successor.
 - **Demo 12 (memcheck) measures the shared `join` example and carries a bug
   for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
   and `joinV1`, one version per test, instead of a workload written for the

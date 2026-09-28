@@ -32,7 +32,6 @@ set(CPU_DEMOS
     01_BasicWorkflow
     02_PerfProfiler
     03_GperfProfiler
-    04_CacheFriendly
     06_ThreadScaling
     07_CallgrindProfiler
     08_RaplProfiler
