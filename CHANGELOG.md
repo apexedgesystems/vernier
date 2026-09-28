@@ -9,6 +9,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 07 counts the instructions of the shared join example** --
+  `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
+  its walkthrough quoted instruction counts that workload cannot produce. It
+  measures `joinV0` and `joinV1` from `src/bench/demo/examples/join`, one test
+  and one CSV row each, and a test run by `ctest` holds V0 to several times
+  V1's instructions per call. Its walkthrough,
+  `src/bench/demo/docs/07_CALLGRIND_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig, whose timing CSV is committed at
+  `src/bench/demo/reference/pi4/07_callgrind_profiler.csv`. Demo 07's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones, and `linearSearch` and `binarySearch` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
   code the walkthroughs measure, starting with `join`: `joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
@@ -98,6 +110,31 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
   from earlier releases do not join with newer ones, and `bubbleSort` and
   `fastSort` leave `helpers/DemoWorkloads.hpp`.
+- **Demo 11 measures the join example's peak heap** --
+  `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
+  example instead of allocating an 8 MB buffer per call. `Massif.JoinV0` and
+  `Massif.JoinV1` publish one CSV row each, and `Massif.JoinPeakHeap` counts
+  the bytes one call of each version holds at its peak and fails unless V0
+  holds more than three times what V1 holds. It skips itself under valgrind,
+  which replaces the counting. The demo's earlier tests asserted only that
+  each variant ran more than once a second, which still held with both
+  variants made identical. The join example gains `joinedSize()`, the length
+  of the string both versions return, computed without allocating (a unit
+  test counts no call to `operator new`); demos 07, 11 and 15 check each
+  result against it, and demo 11's guard checks that it holds no heap.
+  `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
+  an ordinary test run includes it; the demo's timing tests are not
+  registered. Its walkthrough,
+  `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
+  on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
+  default instruction axis two of V1's three calls draw as one block), the
+  peak and the call sites that hold it, and where the output lands (the file
+  `--massif-out-file` names; run by hand with `--profile massif`, the binary
+  also creates a `<Suite.Case>.massif/` folder per test, empty unless
+  `--massif-out-file` points into it). That run's CSV is committed at
+  `src/bench/demo/reference/pi4/14_massif_profiler.csv`. Demo 11's test names
+  change (`Massif.SmallChurn` and `Massif.PooledReuse` are gone), so CSVs
+  captured from it before this release do not join with newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
@@ -120,6 +157,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
+  `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
+  `filter` example, with a Raspberry Pi walkthrough
+  (`src/bench/demo/docs/02_PERF_PROFILER.md`) and a reference capture
+  (`src/bench/demo/reference/pi4/02_perf_profiler.csv`). Demo 05 is folded
+  into demo 02 as the filter example, and its standalone executable,
+  `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
+  so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
+- **Demo 12 (memcheck) measures the shared `join` example and carries a bug
+  for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
+  and `joinV1`, one version per test, instead of a workload written for the
+  demo, and a third case calls a deliberately wrong join that writes one byte
+  past its buffer. That case runs only under valgrind and skips itself
+  anywhere else; a check registered with `ctest` under the `memcheck` label
+  fails if memcheck stops reporting the write. Its walkthrough,
+  `src/bench/demo/docs/15_MEMCHECK_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig, replacing a leak size no run
+  produced; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -158,8 +216,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  prints how to enable heap mode and skips it, and `bench doctor` reports the
-  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  (or `both`) runs unprofiled and says why. With it, the heaptrack backend
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
@@ -225,9 +282,54 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
+- **A run reports its profiler request as the doctor does** -- a warning or
+  error for the `--profile` request prints once, with the doctor's cause and
+  remedy. After a warning (under `bench run`'s wrap, `unverified`) the case is
+  profiled; a request that cannot collect runs unprofiled and creates no
+  artifact folder, also for a `PerfStatProfiler`, `GperfProfiler`,
+  `BpftraceProfiler` or `OffCpuProfiler` constructed directly; and when only
+  the requested analysis cannot run, the capture still runs and is kept. Exit
+  statuses are unchanged.
+- **`--profile-check` also checks one selected request** -- given
+  `--profile <name>` and that request's options, it adds a `Selected request`
+  row with the report a run of the request prints, `--profile-check-json` adds
+  `backendScope` and, with a request, `selected` while keeping every existing
+  key, and both check flags work in any position. A script that matched the
+  old text header needs the new one,
+  `=== Profiler Backend Doctor (default mode of each backend) ===`, and a
+  backend registered without a check reports `unverified` instead of OK.
+- **bpftrace and offcpu run as the current user unless `BENCH_SUDO=1`** --
+  **Action needed:** a setup that relied on bpftrace's implicit `sudo -n` sets
+  `BENCH_SUDO=1` (or `true`, `yes`, `on`). `PERF_BPF_SUDO` remains through
+  1.0.4 as a deprecated alias for the `bpftrace` backend only and warns;
+  `BENCH_SUDO` wins when both are set, and an invalid `BENCH_SUDO`, or an
+  invalid alias on its own, is a configuration error that launches nothing.
+  See the [BPF scripts guide](src/bench/docs/BPF_SCRIPTS.md#requirements) for
+  the privileges and the sudoers grant.
+- **perf's doctor row and run follow real counter access** -- the check counts
+  the benchmark process briefly with `perf stat` as the current user instead
+  of reading `kernel.perf_event_paranoid`, and a perf that is denied or does
+  not run is an error and is never launched; vernier does not elevate perf.
+  `record`, `mem` and `c2c` are checked only for that counting access and
+  reported `unverified`.
+- **gperf checks the requested mode and runs the analyzer it finds** -- a mode
+  the build lacks is an error, and `--profile-analyze` runs the first of
+  `google-pprof` and `pprof` on `PATH` (it always ran `google-pprof`, so a
+  `pprof`-only installation printed empty analysis). An analyzer that is
+  missing, does not run or fails on the profile is reported, and the capture
+  and its `cpu.prof` are kept.
 
 ### Fixed
 
+- **The callgrind backend's wrap hint records the measured window** -- the
+  `valgrind --tool=callgrind --instr-atstart=no ...` command that
+  `--profile callgrind` prints outside valgrind recorded nothing
+  (`Collected : 0`). The backend now switches instrumentation on for each
+  measured window and off after it, in a container too, so the profile holds
+  the measured window and none of the test's work around it.
+  `bench run --profile callgrind` still records the whole process. Without
+  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
+  says the profile covers the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it
@@ -334,6 +436,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   like the serial lanes. `ctest.log` is still written and
   `make test-py` still accepts pytest's "no tests collected" status.
   `make docker-disk-usage` succeeds when no vernier image exists.
+- **`make verify` leaves a host-built `tools/py/.venv` in place** -- its C++
+  and Python lanes mount the checkout into images whose Poetry adopted an
+  existing in-project environment, found its interpreter missing (a host
+  Python the images do not have) and deleted and recreated it with the
+  image's Python, which the host cannot run. The C++ lane reaches Poetry
+  through the debug build of the Python tools, which `make testp` also runs
+  through its `debug` prerequisite. Both lanes' container commands, and the
+  matching CI steps, now run with `POETRY_VIRTUALENVS_IN_PROJECT=false`, so
+  the containers keep their own environments. `make test-py` on the host is
+  unchanged.
+- **`make format` and `make format-check` skip a Python virtual environment
+  anywhere in the tree** -- the lane's file search and pre-commit's exclude
+  list skipped a `.venv` only at the top of the checkout. A host build whose
+  Poetry keeps environments in the project (`virtualenvs.in-project`) creates
+  `tools/py/.venv`, and the lane then ran its hooks on that environment:
+  `make format-check` and `make verify` failed until the directory was
+  deleted, and black and isort rewrote the environment's Python files in
+  place while reporting "Passed" (pre-commit detects changes through git,
+  which ignores the environment). A `.venv` is now skipped at any depth, also
+  in a scan narrowed with `PC_SCOPE`.
 - **A release cannot publish with an asset missing** -- the v1.0.3 release
   carries six assets and no Python wheel: the wheel was built under the Python
   tools' own version, the upload list named it by the project version, and an
