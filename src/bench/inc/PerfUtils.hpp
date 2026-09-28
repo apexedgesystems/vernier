@@ -23,6 +23,14 @@
 #include <immintrin.h>
 #endif
 
+// Valgrind's helgrind client requests, where valgrind's headers are installed:
+// StartGate uses them to keep helgrind from reporting its own flags.
+#if defined(__has_include)
+#if __has_include(<valgrind/helgrind.h>)
+#include <valgrind/helgrind.h>
+#endif
+#endif
+
 namespace vernier {
 namespace bench {
 
@@ -146,6 +154,12 @@ inline int countLines(const std::string& s) {
  * condition variables, but for benchmarking (typically <=16 threads),
  * this is sufficient and has minimal overhead.
  *
+ * helgrind sees no ordering in spin-waiting on atomics, so it reports every
+ * access to the gate's two flags as a data race. Where valgrind's helgrind.h
+ * is available to the build, the gate marks those flags as unchecked for its
+ * lifetime; the threads' own accesses are checked as before. Built without
+ * that header, or with NVALGRIND, helgrind reports the flags.
+ *
  * @note RT-safe (lock-free atomics, spin-wait only).
  */
 class StartGate {
@@ -154,7 +168,20 @@ public:
    * @brief Construct gate for specified number of threads.
    * @param total Number of threads that will call start()
    */
-  explicit StartGate(int total) noexcept : total_(total) {}
+  explicit StartGate(int total) noexcept : total_(total) {
+#ifdef VALGRIND_HG_DISABLE_CHECKING
+    VALGRIND_HG_DISABLE_CHECKING(&ready_, sizeof(ready_));
+    VALGRIND_HG_DISABLE_CHECKING(&go_, sizeof(go_));
+#endif
+  }
+
+  /** @brief Returns the flags' memory to helgrind's ordinary checking. */
+  ~StartGate() {
+#ifdef VALGRIND_HG_ENABLE_CHECKING
+    VALGRIND_HG_ENABLE_CHECKING(&ready_, sizeof(ready_));
+    VALGRIND_HG_ENABLE_CHECKING(&go_, sizeof(go_));
+#endif
+  }
 
   /**
    * @brief Worker thread calls this to wait at the start line.
