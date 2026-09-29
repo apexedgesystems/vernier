@@ -1,0 +1,421 @@
+/**
+ * @file 04_ComputeSanitizerProfiler_uTest.cpp
+ * @brief The check behind walkthrough 17: Compute Sanitizer names demo 04's
+ *        unguarded read, and reports nothing for the shared kernel.
+ *
+ * Not part of demo 04, whose source shows only what it teaches. This program
+ * runs the demo binary (BenchDemo_Gpu_04_ComputeSanitizerProfiler, whose path
+ * the build passes in, with the unguarded source's) under compute-sanitizer
+ * as a child and reads the report each run left;
+ * 04_ComputeSanitizerProfiler_Check.hpp holds the runs and the report
+ * reading. ctest runs it under the demo and compute-sanitizer labels.
+ *
+ * Usage:
+ *   @code{.sh}
+ *   ctest --test-dir build -L compute-sanitizer
+ *   ./build/bin/tests/TestDemoComputeSanitizer      # the same, by hand
+ *   @endcode
+ */
+
+#include "src/bench/demo/gpu/utst/04_ComputeSanitizerProfiler_Check.hpp"
+
+#include "src/bench/inc/ProfilerEnv.hpp"
+
+#include <cuda_runtime.h>
+
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+
+#include <filesystem>
+#include <string>
+#include <system_error>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+namespace check = vernier::bench::demo::sanitizer_check;
+namespace vg = vernier::bench::demo::memcheck_check;
+namespace fs = std::filesystem;
+
+/* ----------------------------- Constants ----------------------------- */
+
+namespace {
+
+/// The demo binary the checks run, and the unguarded source; the build passes
+/// both paths.
+constexpr const char* DEMO_BINARY = VERNIER_DEMO_04_BINARY;
+constexpr const char* UNGUARDED_SOURCE = VERNIER_DEMO_04_UNGUARDED_SOURCE;
+
+/// The demo's case that runs past the end, and the one the checks run as the
+/// control.
+constexpr const char* UNGUARDED_CASE = "ComputeSanitizer.SaxpyUnguarded";
+constexpr const char* KERNEL_CASE = "ComputeSanitizer.SaxpyKernel";
+
+/// The unguarded statement, as the unguarded source has it: the report must
+/// name its line. Found in the source, so an edit that moves it moves the
+/// expectation.
+constexpr const char* UNGUARDED_STATEMENT = "y[I] = a * x[I] + y[I];";
+
+/// The kernel that holds it, and its file's name as the report prints it.
+constexpr const char* UNGUARDED_KERNEL = "saxpyUnguarded";
+constexpr const char* UNGUARDED_FILE = "04_ComputeSanitizerProfiler_Unguarded.cu";
+
+/// The demo's sizes: one thread of the last block past the end, so the read
+/// lies right after the vectors' 1,048,575 floats.
+constexpr const char* EXPECTED_THREAD = "by thread (255,0,0) in block (4095,0,0)";
+constexpr long EXPECTED_BYTES_AFTER = 1;
+constexpr long EXPECTED_ALLOCATION_BYTES = 1048575L * 4L;
+
+/// What the tool exits with when it reported an error: not 1, which is also
+/// what a failed test exits with.
+constexpr int SANITIZER_ERROR_EXIT = 99;
+
+/// The demo binary's canonical path, or an empty string when it is missing.
+std::string demoPath() {
+  std::error_code ec;
+  const fs::path PATH = fs::canonical(DEMO_BINARY, ec);
+  return ec ? std::string() : PATH.string();
+}
+
+/// A new temporary directory for one check's runs; empty when it cannot be
+/// made.
+fs::path scratchDir() {
+  std::string dirTemplate = (fs::temp_directory_path() / "vernier-demo04-XXXXXX").string();
+  return ::mkdtemp(dirTemplate.data()) != nullptr ? fs::path(dirTemplate) : fs::path();
+}
+
+/// Why a check that runs a kernel cannot run here, decided before anything
+/// runs: the tool is not on PATH, or the runtime sees no device (its own
+/// words); empty when both are there.
+std::string reasonNotToRunAKernel() {
+  if (!vernier::bench::profiler_env::isOnPath("compute-sanitizer")) {
+    return "compute-sanitizer is not on PATH; this test runs the demo under it";
+  }
+  int devices = 0;
+  const cudaError_t ASKED = cudaGetDeviceCount(&devices);
+  if (ASKED != cudaSuccess) {
+    return std::string("no CUDA device: cudaGetDeviceCount reported \"") +
+           cudaGetErrorString(ASKED) + "\"";
+  }
+  if (devices < 1) {
+    return "no CUDA device: cudaGetDeviceCount counted none";
+  }
+  return {};
+}
+
+} // namespace
+
+/* ----------------------------- Tests ----------------------------- */
+
+/**
+ * @test memcheck reports SaxpyUnguarded's read past the end, at the
+ *       unguarded line, by the one thread past the end.
+ *
+ * Runs the demo binary under compute-sanitizer's memcheck as `bench run
+ * --profile compute-sanitizer` wraps it, plus an exit code for errors.
+ * SaxpyUnguarded must run to its end and pass (it launches once and reports
+ * what the device said); the report must hold exactly one invalid access,
+ * the one launch's one thread past the end, and that one must be a read of
+ * four bytes in the unguarded kernel at the unguarded statement's line, by
+ * thread (255,0,0) in block (4095,0,0), out of bounds, one byte after an
+ * allocation of the vectors' size; the summary must count it, and the tool
+ * must exit with the error status it was given.
+ *
+ * Skipped only where compute-sanitizer is not on PATH or the runtime sees no
+ * device, both decided before anything runs. Any other way of not reaching
+ * the case fails, with what the run printed.
+ */
+TEST(ComputeSanitizer, FindsTheUnguardedRead) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const std::size_t LINE = check::lineOf(vg::readText(UNGUARDED_SOURCE), UNGUARDED_STATEMENT);
+  ASSERT_NE(LINE, 0u) << "the unguarded source does not hold \"" << UNGUARDED_STATEMENT
+                      << "\" on exactly one line: " << UNGUARDED_SOURCE;
+  const std::string LOCATION = std::string(UNGUARDED_FILE) + ":" + std::to_string(LINE);
+  const fs::path DIR = scratchDir();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  const check::SanitizerRun RUN =
+      check::runUnderSanitizer(DEMO, UNGUARDED_CASE, {}, DIR, SANITIZER_ERROR_EXIT);
+  ASSERT_TRUE(vg::testsStarted(RUN.output))
+      << "SaxpyUnguarded did not start under compute-sanitizer: the tool " << vg::describe(RUN.end)
+      << " (its output is in " << DIR << "). The run printed:\n"
+      << vg::lastLines(RUN.log + RUN.output, 40);
+  ASSERT_TRUE(vg::testPassed(RUN.output, UNGUARDED_CASE) && vg::oneTestPassed(RUN.output))
+      << "SaxpyUnguarded did not run to its end under compute-sanitizer (its output is in " << DIR
+      << "):\n"
+      << vg::lastLines(RUN.output);
+
+  const std::vector<check::InvalidAccess> ACCESSES = check::invalidAccesses(RUN.log);
+  const long SUMMARY = check::errorSummary(RUN.log);
+  std::printf("[ComputeSanitizer.FindsTheUnguardedRead]  SaxpyUnguarded: %zu invalid access(es) "
+              "read, ERROR SUMMARY %ld, looking for %s\n",
+              ACCESSES.size(), SUMMARY, LOCATION.c_str());
+  ASSERT_FALSE(ACCESSES.empty())
+      << "compute-sanitizer reported no invalid access for SaxpyUnguarded: the unguarded kernel "
+         "has stopped running past the end (log "
+      << DIR / "sanitizer.log" << ")";
+  EXPECT_EQ(ACCESSES.size(), 1u)
+      << "one launch with one thread past the end was expected to give one access:\n"
+      << ACCESSES[1].text;
+  const check::InvalidAccess& READ = ACCESSES.front();
+  EXPECT_EQ(READ.kind, "Invalid __global__ read of size 4 bytes") << READ.text;
+  EXPECT_TRUE(check::frameAt(READ.frame, UNGUARDED_KERNEL, LOCATION))
+      << "the read is not reported in " << UNGUARDED_KERNEL << " at " << LOCATION << ":\n"
+      << READ.text;
+  EXPECT_EQ(READ.thread, EXPECTED_THREAD) << READ.text;
+  EXPECT_NE(READ.address.find("is out of bounds"), std::string::npos) << READ.text;
+  EXPECT_EQ(check::bytesAfterAllocation(READ), EXPECTED_BYTES_AFTER) << READ.text;
+  EXPECT_EQ(check::allocationSize(READ), EXPECTED_ALLOCATION_BYTES) << READ.text;
+  EXPECT_GE(SUMMARY, 1) << "the summary does not count the read (log " << DIR / "sanitizer.log"
+                        << ")";
+  EXPECT_TRUE(vg::exitedWith(RUN.end, SANITIZER_ERROR_EXIT))
+      << "the tool " << vg::describe(RUN.end) << ", not the --error-exitcode "
+      << SANITIZER_ERROR_EXIT << " it was given for a run with errors";
+
+  if (HasFailure()) {
+    std::printf("compute-sanitizer output kept in %s\n", DIR.c_str());
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+}
+
+/**
+ * @test memcheck reports nothing for SaxpyKernel: the shared kernel, its
+ *       guard included, stays inside its buffers.
+ *
+ * Runs the measured case under the same wrap with one cycle and one repeat
+ * (the harness's warmup launches and one measured launch): it must run to
+ * its end and pass, the report must hold no invalid access and count no
+ * error, and the tool must exit 0. Skipped where FindsTheUnguardedRead
+ * skips.
+ */
+TEST(ComputeSanitizer, KernelReportsNothing) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDir();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  const check::SanitizerRun RUN = check::runUnderSanitizer(
+      DEMO, KERNEL_CASE, {"--cycles", "1", "--repeats", "1"}, DIR, SANITIZER_ERROR_EXIT);
+  ASSERT_TRUE(vg::testsStarted(RUN.output))
+      << "SaxpyKernel did not start under compute-sanitizer: the tool " << vg::describe(RUN.end)
+      << " (its output is in " << DIR << "). The run printed:\n"
+      << vg::lastLines(RUN.log + RUN.output, 40);
+  const std::vector<check::InvalidAccess> ACCESSES = check::invalidAccesses(RUN.log);
+  const long SUMMARY = check::errorSummary(RUN.log);
+  std::printf("[ComputeSanitizer.KernelReportsNothing]  SaxpyKernel: %zu invalid access(es) "
+              "read, ERROR SUMMARY %ld\n",
+              ACCESSES.size(), SUMMARY);
+  EXPECT_TRUE(vg::testPassed(RUN.output, KERNEL_CASE) && vg::oneTestPassed(RUN.output))
+      << "SaxpyKernel did not run to its end under compute-sanitizer:\n"
+      << vg::lastLines(RUN.output);
+  EXPECT_TRUE(ACCESSES.empty()) << "compute-sanitizer reported an invalid access for the shared "
+                                   "kernel (log "
+                                << DIR / "sanitizer.log" << "):\n"
+                                << (ACCESSES.empty() ? std::string() : ACCESSES.front().text);
+  EXPECT_EQ(SUMMARY, 0) << "the summary counts errors for the shared kernel (log "
+                        << DIR / "sanitizer.log" << ")";
+  EXPECT_TRUE(vg::exitedWith(RUN.end, 0))
+      << "the tool " << vg::describe(RUN.end) << " for a run without errors";
+
+  if (HasFailure()) {
+    std::printf("compute-sanitizer output kept in %s\n", DIR.c_str());
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+}
+
+/** @test Run without the tool, SaxpyUnguarded reports SKIPPED, says how to run it, and does not run
+ */
+TEST(ComputeSanitizer, UnguardedSkipsOutsideTheTool) {
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDir();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  const vg::ChildExit END =
+      vg::runLogged({DEMO, std::string("--gtest_filter=") + UNGUARDED_CASE, "--gtest_print_time=0"},
+                    DIR / "plain.txt");
+  const std::string OUTPUT = vg::readText(DIR / "plain.txt");
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+
+  EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << OUTPUT;
+  EXPECT_NE(OUTPUT.find(std::string("[  SKIPPED ] ") + UNGUARDED_CASE), std::string::npos)
+      << OUTPUT;
+  EXPECT_FALSE(vg::testPassed(OUTPUT, UNGUARDED_CASE)) << OUTPUT;
+  EXPECT_NE(OUTPUT.find("compute-sanitizer --tool=memcheck"), std::string::npos) << OUTPUT;
+  EXPECT_NE(OUTPUT.find("bench run --profile compute-sanitizer"), std::string::npos) << OUTPUT;
+}
+
+/**
+ * @test Run plainly with --profile compute-sanitizer, the demo reports no
+ *       wrap and prints the wrap command.
+ *
+ * The backend must decide "under the tool" from the tool, never from the
+ * binary's name, which contains it. The run needs the tool on PATH (without
+ * it the backend is not created and prints nothing of its own) and a device
+ * (the measured case runs the kernel), so it skips where KernelReportsNothing
+ * skips.
+ */
+TEST(ComputeSanitizer, PlainRunIsNotWrapped) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDir();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  // The artifact root is this run's directory, so the per-test folder the
+  // backend creates lands there and not in the working directory.
+  const vg::ChildExit END = vg::runLogged(
+      {DEMO, "--profile", "compute-sanitizer", "--profile-output-dir", DIR.string(), "--cycles",
+       "1", "--repeats", "1", std::string("--gtest_filter=") + KERNEL_CASE, "--gtest_print_time=0"},
+      DIR / "plain.txt");
+  const std::string OUTPUT = vg::readText(DIR / "plain.txt");
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+
+  EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << OUTPUT;
+  EXPECT_TRUE(vg::testPassed(OUTPUT, KERNEL_CASE)) << OUTPUT;
+  EXPECT_EQ(OUTPUT.find("wrapping detected"), std::string::npos)
+      << "the backend reported a wrap that is not there:\n"
+      << OUTPUT;
+  EXPECT_NE(OUTPUT.find("compute-sanitizer --tool=memcheck"), std::string::npos)
+      << "the backend did not print its wrap command:\n"
+      << OUTPUT;
+}
+
+/* ----------------------------- Report Reading Tests ----------------------------- */
+
+// What decides the checks' pass and failures, on report text taken from
+// real runs on a Jetson AGX Thor (compute-sanitizer 2025.3.1) and in the
+// dev-cuda image (2025.4.0).
+
+namespace {
+
+/// One invalid read as the tool printed it on the Thor, with @p allocation as
+/// its allocation line.
+std::string readSnippet(const std::string& allocation) {
+  return "========= COMPUTE-SANITIZER\n"
+         "========= Invalid __global__ read of size 4 bytes\n"
+         "=========     at vernier::bench::demo::sanitizer_demo::<unnamed>::saxpyUnguarded(float, "
+         "const float *, float *)+0x100 in 04_ComputeSanitizerProfiler_Unguarded.cu:33\n"
+         "=========     by thread (255,0,0) in block (4095,0,0)\n"
+         "=========     Access to 0xd67bffffc is out of bounds\n"
+         "=========     " +
+         allocation +
+         "\n"
+         "=========     Saved host backtrace up to driver entry point at kernel launch time\n"
+         "=========         Host Frame: main [0xabeb] in "
+         "BenchDemo_Gpu_04_ComputeSanitizerProfiler\n"
+         "========= \n"
+         "========= Program hit cudaErrorLaunchFailure (error 719) due to \"unspecified launch "
+         "failure\" on CUDA API call to cudaDeviceSynchronize.\n"
+         "=========     Saved host backtrace up to driver entry point at error\n"
+         "========= \n"
+         "========= Target application returned an error\n"
+         "========= ERROR SUMMARY: 4 errors\n";
+}
+
+constexpr const char* THOR_ALLOCATION =
+    "and is 1 bytes after the nearest allocation at 0xd67800000 of size 4,194,300 bytes";
+constexpr const char* IMAGE_ALLOCATION =
+    "and is 1 bytes after the nearest allocation at 0x771b9a200000 of size 4194300 bytes";
+
+} // namespace
+
+/** @test A report is read into its one access, with every line the checks look at */
+TEST(SanitizerReportTest, InvalidAccessReadsItsLines) {
+  const std::vector<check::InvalidAccess> ACCESSES =
+      check::invalidAccesses(readSnippet(THOR_ALLOCATION));
+
+  ASSERT_EQ(ACCESSES.size(), 1u);
+  EXPECT_EQ(ACCESSES[0].kind, "Invalid __global__ read of size 4 bytes");
+  EXPECT_TRUE(check::frameAt(ACCESSES[0].frame, "saxpyUnguarded",
+                             "04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+  EXPECT_EQ(ACCESSES[0].thread, "by thread (255,0,0) in block (4095,0,0)");
+  EXPECT_EQ(ACCESSES[0].address, "Access to 0xd67bffffc is out of bounds");
+  EXPECT_EQ(check::bytesAfterAllocation(ACCESSES[0]), 1);
+  EXPECT_EQ(check::allocationSize(ACCESSES[0]), 4194300);
+  EXPECT_EQ(check::errorSummary(readSnippet(THOR_ALLOCATION)), 4);
+}
+
+/** @test The allocation's size reads the same with and without thousands separators */
+TEST(SanitizerReportTest, AllocationSizeReadsBothVersions) {
+  const std::vector<check::InvalidAccess> THOR =
+      check::invalidAccesses(readSnippet(THOR_ALLOCATION));
+  const std::vector<check::InvalidAccess> IMAGE =
+      check::invalidAccesses(readSnippet(IMAGE_ALLOCATION));
+
+  ASSERT_EQ(THOR.size(), 1u);
+  ASSERT_EQ(IMAGE.size(), 1u);
+  EXPECT_EQ(check::allocationSize(THOR[0]), 4194300);
+  EXPECT_EQ(check::allocationSize(IMAGE[0]), 4194300);
+  EXPECT_EQ(check::bytesAfterAllocation(IMAGE[0]), 1);
+}
+
+/** @test The API failures after the access are not accesses; a clean report has none */
+TEST(SanitizerReportTest, ApiFailuresAndCleanReportsAreNoAccesses) {
+  EXPECT_EQ(check::invalidAccesses(readSnippet(THOR_ALLOCATION)).size(), 1u);
+  const std::string CLEAN = "========= COMPUTE-SANITIZER\n========= ERROR SUMMARY: 0 errors\n";
+  EXPECT_TRUE(check::invalidAccesses(CLEAN).empty());
+  EXPECT_EQ(check::errorSummary(CLEAN), 0);
+  EXPECT_EQ(check::errorSummary(""), -1);
+}
+
+/** @test The first summary is the total; the print-limit line after it is not */
+TEST(SanitizerReportTest, FirstSummaryIsTheTotal) {
+  EXPECT_EQ(check::errorSummary("========= ERROR SUMMARY: 259 errors\n"
+                                "========= ERROR SUMMARY: 159 errors were not printed. Use "
+                                "--print-limit option to adjust the number of printed errors\n"),
+            259);
+}
+
+/** @test A frame needs the kernel and the location; a frame without a location is at none */
+TEST(SanitizerReportTest, FrameAtNeedsTheKernelAndTheLocation) {
+  const std::string WITH_LINE =
+      "at vernier::bench::demo::sanitizer_demo::<unnamed>::saxpyUnguarded(float, const float *, "
+      "float *)+0x100 in 04_ComputeSanitizerProfiler_Unguarded.cu:33";
+  const std::string WITH_DIRECTORY =
+      "at saxpyUnguarded(float, const float *, float *)+0x100 in "
+      "/src/bench/demo/gpu/04_ComputeSanitizerProfiler_Unguarded.cu:33";
+  const std::string WITHOUT_LINE =
+      "at vernier::bench::demo::sanitizer_demo::<unnamed>::saxpyUnguarded(float, const float *, "
+      "float *)+0x100";
+
+  EXPECT_TRUE(
+      check::frameAt(WITH_LINE, "saxpyUnguarded", "04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+  EXPECT_TRUE(check::frameAt(WITH_DIRECTORY, "saxpyUnguarded",
+                             "04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+  EXPECT_FALSE(
+      check::frameAt(WITH_LINE, "saxpyUnguarded", "04_ComputeSanitizerProfiler_Unguarded.cu:32"));
+  EXPECT_FALSE(
+      check::frameAt(WITH_LINE, "saxpyKernel", "04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+  EXPECT_FALSE(
+      check::frameAt(WITH_LINE, "saxpyUnguarded", "x04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+  EXPECT_FALSE(check::frameAt(WITHOUT_LINE, "saxpyUnguarded",
+                              "04_ComputeSanitizerProfiler_Unguarded.cu:33"));
+}
+
+/** @test The unguarded statement's line is found once, or not at all */
+TEST(SanitizerReportTest, LineOfFindsTheStatementOnce) {
+  EXPECT_EQ(check::lineOf("a\n  y[I] = a * x[I] + y[I];\nb\n", UNGUARDED_STATEMENT), 2u);
+  EXPECT_EQ(
+      check::lineOf("y[I] = a * x[I] + y[I];\ny[I] = a * x[I] + y[I];\n", UNGUARDED_STATEMENT), 0u);
+  EXPECT_EQ(check::lineOf("a\nb\n", UNGUARDED_STATEMENT), 0u);
+}

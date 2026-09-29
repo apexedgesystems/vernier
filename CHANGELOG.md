@@ -15,8 +15,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `ComputeSanitizer.SaxpyKernel` (one CSV row, its answer checked) and
   launches the unguarded copy in `ComputeSanitizer.SaxpyUnguarded` only under
   compute-sanitizer, skipping itself anywhere else, where the old deliberate
-  case made a plain run exit 1. The demo's test names change, so CSVs captured
-  from it before this release do not join with newer ones.
+  case made a plain run exit 1; a check registered with `ctest` under the
+  `compute-sanitizer` label fails if the tool stops reporting the read. The
+  demo's test names change, so CSVs captured from it before this release do
+  not join with newer ones.
 - **Demo 07 counts the instructions of the shared join example** --
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts that workload cannot produce. It

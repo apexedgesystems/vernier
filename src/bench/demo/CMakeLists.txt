@@ -232,7 +232,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (1)
+# Demo Effect Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -264,6 +264,42 @@ set_tests_properties(
   Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
 )
+
+# Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only
+# where the GPU demos are built. It links the CUDA runtime for one question
+# decided before anything runs: whether a device is there.
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  vernier_add_gtest(
+    TARGET
+    TestDemoComputeSanitizer
+    SOURCES
+    gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp
+    LINK
+    bench
+    demo_helpers
+    CUDA::cudart
+    LABELS
+    demo
+    compute-sanitizer
+  )
+  target_compile_definitions(
+    TestDemoComputeSanitizer
+    PRIVATE
+      VERNIER_DEMO_04_BINARY="$<TARGET_FILE:BenchDemo_Gpu_04_ComputeSanitizerProfiler>"
+      VERNIER_DEMO_04_UNGUARDED_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/gpu/04_ComputeSanitizerProfiler_Unguarded.cu"
+  )
+  add_dependencies(TestDemoComputeSanitizer BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  foreach (_sanitizer_check
+           ComputeSanitizer.FindsTheUnguardedRead ComputeSanitizer.KernelReportsNothing
+           ComputeSanitizer.PlainRunIsNotWrapped
+  )
+    string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
+    set_tests_properties(
+      ${_sanitizer_check} PROPERTIES SKIP_REGULAR_EXPRESSION
+                                     "\\[  SKIPPED \\] ${_sanitizer_pattern}"
+    )
+  endforeach ()
+endif ()
 
 # ------------------------------------------------------------------------------
 # Demo Helper Tests
