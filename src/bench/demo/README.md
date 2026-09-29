@@ -219,7 +219,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 **Branches and threads:**
 
 6. [02, second example](docs/02_PERF_PROFILER.md#the-second-example-a-filter) -- branch prediction and branchless code
-7. [06](docs/06_THREAD_SCALING.md) -- contention between threads
+7. [06](docs/06_THREAD_SCALING.md) -- contention between threads, measured with `contentionRun()`
 8. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
 9. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind / DRD
 

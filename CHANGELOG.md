@@ -136,10 +136,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   example's words and add the length to one total, holding one lock for the
   whole call (`ThreadScaling.CoarseLock`) or keeping a total per thread
   (`ThreadScaling.NoSharing`), one CSV row each with the thread count it ran;
-  a test run by `ctest` holds both versions to the same total. Its tests
-  replace `MutexContention`, `AtomicLockFree` and `SingleThreadBaseline`, so
-  its CSVs from earlier releases do not join with newer ones, and
-  `incrementMutex` and `incrementAtomic` leave `helpers/DemoWorkloads.hpp`.
+  a test run by `ctest` holds both versions to the same total. Its walkthrough,
+  `src/bench/demo/docs/06_THREAD_SCALING.md`, is rewritten from a Release run
+  on the documented Raspberry Pi 4 rig, whose CSV is committed at
+  `src/bench/demo/reference/pi4/06_thread_scaling.csv`. Its tests replace
+  `MutexContention`, `AtomicLockFree` and `SingleThreadBaseline`, so its CSVs
+  from earlier releases do not join with newer ones, and `incrementMutex` and
+  `incrementAtomic` leave `helpers/DemoWorkloads.hpp`.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
