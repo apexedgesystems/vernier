@@ -38,14 +38,13 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench summary run1.csv
 ```
 
-Captured on the Raspberry Pi 4 rig, 2026-09-20, Release build. The three
+Captured on the Raspberry Pi 4 rig, 2026-09-28 (UTC), Release build. The two
 result lines, without GoogleTest's framing, the harness's calibration lines
 and the end-of-run table:
 
 ```
-[BasicWorkflow.JoinV0]  927.611 us/call  CV=0.1%  ~1.1K calls/s  (p10=927.056 p90=928.317 sd=0.544)
-[BasicWorkflow.JoinV1]  21.044 us/call  CV=0.7%  ~47.5K calls/s  (p10=20.752 p90=21.123 sd=0.149)
-[BasicWorkflow.JoinSpeedup]  V0 927.564 us/call  V1 20.511 us/call  45.2x
+[BasicWorkflow.JoinV0]  1000.531 us/call  CV=0.1%  ~999 calls/s  (p10=999.845 p90=1001.631 sd=0.879)
+[BasicWorkflow.JoinV1]  20.003 us/call  CV=0.1%  ~50.0K calls/s  (p10=19.975 p90=20.022 sd=0.023)
 ```
 
 Then the CSV, read back:
@@ -53,21 +52,20 @@ Then the CSV, read back:
 ```
 Test                   Median (us)       P10       P90        CV       Calls/sec  Stable
 --------------------  ------------  --------  --------  --------  --------------  ------
-BasicWorkflow.JoinV0     927.61100  927.05600  928.31700      0.1%            1078  yes
-BasicWorkflow.JoinV1      21.04410  20.75180  21.12340      0.7%           47519  yes
+BasicWorkflow.JoinV0    1000.53000  999.84500  1001.63000      0.1%             999  yes
+BasicWorkflow.JoinV1      20.00320  19.97520  20.02200      0.1%           49992  yes
 
   2 tests, sorted by name
 ```
 
-Reserving the result once instead of copying it per part is 44 times faster
-in this capture. The third test fails if the speedup falls to three times or
-less. The framework measured both versions, wrote the CSV, and `bench summary`
-read it back. Every demo follows the same pattern: measure something slow,
-measure something fast, compare.
+Reserving the result once instead of copying it per part is 50 times faster
+in this capture. The framework measured both versions, wrote the CSV, and
+`bench summary` read it back. Every demo follows the same pattern: measure
+something slow, measure something fast, compare.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
-walkthrough: how to read those lines, what reproduces on another machine, and
-how to compare two runs.
+walkthrough: how to read those lines, what reproduces on another machine, how
+to compare two runs, and how to measure your own code the same way.
 
 ---
 

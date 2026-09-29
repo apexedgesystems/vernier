@@ -27,6 +27,10 @@
 #   JoinInstructionCounts              - join's instruction counts, callgrind
 #   JoinInstructionCountsStartupFault  - the same, aborting under valgrind
 #
+# Rig checks: performance tests, built into bin/ptests and never registered
+# with CTest, because a timing belongs to the machine that takes it:
+#   JoinSpeedup             - joinV0 at least three times slower than joinV1
+#
 # Test support:
 #   utst/HardwareCounter.hpp - one hardware event counted around a call, for
 #                              the tests that read the counters; no demo
@@ -182,4 +186,19 @@ vernier_add_gtest(
   LABELS
   demo
   massif
+)
+
+# ------------------------------------------------------------------------------
+# Join Timing Check (performance test)
+# ------------------------------------------------------------------------------
+# JoinSpeedup times both join versions at demo 01's 1,000 words and fails
+# unless V0 is at least three times slower: the effect walkthrough 01 shows.
+# A timing belongs to the machine that takes it, so this is a performance test,
+# built into bin/ptests and never registered with CTest, and run on the
+# reference rig by hand.
+# ------------------------------------------------------------------------------
+
+vernier_add_ptest(
+  TARGET JoinSpeedup SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinSpeedup_pTest.cpp" LINK
+  demo_example_join
 )

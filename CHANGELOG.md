@@ -22,20 +22,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   newer ones, and `linearSearch` and `binarySearch` leave
   `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
-  code the walkthroughs measure, starting with `join`: `joinV0` builds the
+  code the walkthroughs measure, starting with `join` (`joinV0` builds the
   result with `out = out + part + sep`, `joinV1` reserves once and appends in
-  place, and unit tests registered with `ctest` hold both versions to the same
-  answers. Demo 01 measured `std::accumulate` against a manual pointer loop,
-  which an optimizing compiler turns into the same loop, and it kept two
-  measurements in one test, so only the second reached the CSV. It now
-  measures one version per test, one CSV row each, and a third test fails when
-  V0 stops being at least three times slower than V1. Its walkthrough,
-  `src/bench/demo/docs/01_BASIC_WORKFLOW.md`, is rewritten from a Release run
-  on the documented Raspberry Pi 4 rig, and that run's CSV is committed at
-  `src/bench/demo/reference/pi4/01_basic_workflow.csv`; the opening section of
-  `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
-  test names change, so CSVs captured from it before this release do not join
-  with newer ones.
+  place), and unit tests registered with `ctest` hold both versions to the
+  same answers. `BenchDemo_01_BasicWorkflow` measures one version per test, one
+  CSV row each, instead of two loops an optimizing compiler makes identical,
+  and the performance test `JoinSpeedup` fails when V0 stops being at least
+  three times slower than V1. Walkthrough 01 and the opening of
+  `src/bench/demo/README.md` are rewritten from a Release run on the
+  documented Raspberry Pi 4 rig, whose CSV is
+  `src/bench/demo/reference/pi4/01_basic_workflow.csv`. Demo 01's test names
+  change, so CSVs captured from it before this release do not join with newer
+  ones.
 - **Demo 03 profiles the shared join example and checks what the profile
   says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
   `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
