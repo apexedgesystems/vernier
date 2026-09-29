@@ -74,6 +74,12 @@ PERF_GUARD(varName)                   // Create scoped PerfCase
 PERF_MAIN()                              // Main function with CSV export
 ```
 
+`PERF_MAIN()` and `PERF_GPU_MAIN()` return the tests' status, or 4
+(`BENCH_PROFILE_FAILED_EXIT_CODE`) when the tests passed and the requested
+`--profile` failed, after a report of each failure. A benchmark with its own
+`main()` gets the same status from `ProfilerRegistry::finishRun()`; the
+[advanced guide](ADVANCED_GUIDE.md#perf_main-macro) shows the call.
+
 ### PerfCase
 
 Core CPU benchmark harness.

@@ -11,8 +11,10 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -330,7 +332,15 @@ void GperfProfiler::runPprofAnalysis() const {
   std::array<char, 4096> exePath{};
   ssize_t len = ::readlink("/proc/self/exe", exePath.data(), exePath.size() - 1);
   if (len <= 0) {
-    std::fprintf(stderr, "[WARN] --profile-analyze: Could not determine binary path\n");
+    const std::string WHY = len < 0 ? std::strerror(errno) : "empty link";
+    ProfilerRegistry::instance().reportFailure(
+        "gperf", testName_,
+        readinessResult(ReadinessCause::MISSING,
+                        "the program to symbolize, /proc/self/exe, could not be read: " + WHY +
+                            "; raw profile kept at " + cpuPath_,
+                        "Analyze it by hand: " + plan_->analyzer + " --text <this program> " +
+                            cpuPath_,
+                        ReadinessStage::ANALYSIS));
     return;
   }
   exePath[static_cast<std::size_t>(len)] = '\0';
@@ -348,9 +358,17 @@ void GperfProfiler::runPprofAnalysis() const {
     const ProbeResult RUN = runBoundedProbe(argv, ANALYZER_TIMEOUT_MS, CTX, ProbeStreams::SEPARATE);
     if (!RUN.succeeded()) {
       const std::string TAIL = outputTail(RUN.errorOutput);
-      std::fprintf(stderr, "[gperf] %s failed: %s%s%s; raw profile kept at %s\n",
-                   plan_->analyzer.c_str(), RUN.describe().c_str(), TAIL.empty() ? "" : ": ",
-                   TAIL.c_str(), cpuPath_.c_str());
+      std::string command;
+      for (const std::string& part : argv) {
+        command += (command.empty() ? "" : " ") + part;
+      }
+      ProfilerRegistry::instance().reportFailure(
+          "gperf", testName_,
+          readinessResult(ReadinessCause::UNUSABLE,
+                          plan_->analyzer + " failed on the profile: " + RUN.describe() +
+                              (TAIL.empty() ? "" : ": " + TAIL) + "; raw profile kept at " +
+                              cpuPath_,
+                          "Run it by hand to see why: " + command, ReadinessStage::ANALYSIS));
       return false;
     }
     const std::string REPORT = firstLines(RUN.output, lines);

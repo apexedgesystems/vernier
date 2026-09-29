@@ -428,7 +428,7 @@ TEST(ReadinessContextTest, RequestForConfiguration) {
 
 /* ----------------------------- Results ----------------------------- */
 
-/** @test Each cause maps to one status and one leading word; analysis says so. */
+/** @test Each cause maps to one status and one leading word; analysis and completion say so. */
 TEST(ReadinessResultTest, CauseWordsAndStatus) {
   struct Row {
     ReadinessCause cause;
@@ -459,6 +459,11 @@ TEST(ReadinessResultTest, CauseWordsAndStatus) {
                                                    "install one", ReadinessStage::ANALYSIS);
   EXPECT_EQ(ANALYSIS.report.message, "analysis: missing: no analyzer");
   EXPECT_TRUE(ANALYSIS.collectionReady()) << "an analysis error still collects";
+  const ReadinessResult COMPLETION =
+      readinessResult(ReadinessCause::MISSING, "no output", "rerun", ReadinessStage::COMPLETION);
+  EXPECT_EQ(COMPLETION.report.message, "completion: missing: no output");
+  EXPECT_EQ(COMPLETION.report.status, EnvReport::Status::Error);
+  EXPECT_TRUE(COMPLETION.collectionReady()) << "a completion outcome concerns a capture that ran";
   EXPECT_FALSE(readinessResult(ReadinessCause::DENIED, "d", "").collectionReady());
   EXPECT_TRUE(readinessResult(ReadinessCause::CAVEAT, "d", "").collectionReady());
 }

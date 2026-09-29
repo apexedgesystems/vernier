@@ -86,10 +86,11 @@ enum class LaunchContext : std::uint8_t {
   NOT_WRAPPED       ///< The backend needs a wrapper and none is present.
 };
 
-/** @brief Which stage of the request a decision concerns. */
+/** @brief Which stage of the request a decision or an outcome concerns. */
 enum class ReadinessStage : std::uint8_t {
   COLLECTION, ///< Capturing data; an Error here means nothing is collected.
-  ANALYSIS    ///< A promised analysis; an Error here still collects and keeps the raw data.
+  ANALYSIS,   ///< A promised analysis; an Error here still collects and keeps the raw data.
+  COMPLETION  ///< The capture's finished output; outcomes only, never a decision.
 };
 
 /** @brief Why a decision came out as it did; selects the status and the message prefix. */
@@ -193,7 +194,7 @@ struct ReadinessResult {
 
   /** @brief True unless collection itself cannot run (an Error at the collection stage). */
   [[nodiscard]] bool collectionReady() const noexcept {
-    return report.status != EnvReport::Status::Error || stage == ReadinessStage::ANALYSIS;
+    return report.status != EnvReport::Status::Error || stage != ReadinessStage::COLLECTION;
   }
 };
 
@@ -212,7 +213,8 @@ using PlannedFactory = std::function<std::unique_ptr<Profiler>(
  * UNVERIFIED gives Warning prefixed "unverified: "; every other cause gives
  * Error prefixed "missing: ", "unusable: ", "unsupported: ", "denied: ",
  * "configuration: ", "missing helper: " or "internal: ". An ANALYSIS-stage
- * result is further prefixed "analysis: ". @p remedy becomes the hint.
+ * result is further prefixed "analysis: ", a COMPLETION-stage one
+ * "completion: ". @p remedy becomes the hint.
  */
 [[nodiscard]] ReadinessResult readinessResult(ReadinessCause cause, std::string detail,
                                               std::string remedy,

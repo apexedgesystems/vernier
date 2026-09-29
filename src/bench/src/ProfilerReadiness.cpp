@@ -370,6 +370,8 @@ ReadinessResult readinessResult(ReadinessCause cause, std::string detail, std::s
   std::string message = prefix + std::move(detail);
   if (stage == ReadinessStage::ANALYSIS) {
     message = "analysis: " + message;
+  } else if (stage == ReadinessStage::COMPLETION) {
+    message = "completion: " + message;
   }
   result.report = EnvReport{status, std::move(message), std::move(remedy)};
   return result;

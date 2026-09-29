@@ -699,7 +699,8 @@ Provides complete main() function with:
 - PerfConfig singleton setup
 - CSV export after all tests
 - Profiler lifecycle management
-- Proper exit codes for CI/CD
+- An exit status for CI/CD: the tests' status, or 4 when the tests passed and
+  the requested `--profile` failed
 
 **Usage:**
 Place at end of test file:
@@ -725,23 +726,37 @@ PERF_MAIN()  // That's it - no custom main() needed!
 
 ```cpp
 int main(int argc, char** argv) {
-  // 1. Parse performance flags
+  // 1. Check that this benchmark and the libbench it loaded share one layout
+  vernier::bench::ensureBenchAbi();
+
+  // 2. Parse performance flags
   auto& cfg = vernier::bench::detail::perfConfigSingleton();
   vernier::bench::parsePerfFlags(cfg, &argc, argv);
 
-  // 2. Register global config for CSV export
+  // 3. Register global config for CSV export
   vernier::bench::setGlobalPerfConfig(&cfg);
 
-  // 3. Install CSV listener
+  // 4. Install CSV listener
   vernier::bench::installPerfEventListener(cfg);
 
-  // 4. Initialize GoogleTest
+  // 5. Initialize GoogleTest
   ::testing::InitGoogleTest(&argc, argv);
 
-  // 5. Run all tests
-  return RUN_ALL_TESTS();
+  // 6. Run all tests
+  const int rc = RUN_ALL_TESTS();
+
+  // 7. Warn when --profile was given and the filter matched no test
+  VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);
+
+  // 8. Report each failure of the --profile request and return the run's
+  //    status: the tests' status, or 4 when they passed and the profile failed
+  return vernier::bench::ProfilerRegistry::instance().finishRun(
+      cfg, rc, ::testing::UnitTest::GetInstance()->test_to_run_count());
 }
 ```
+
+Step 8 comes after `RUN_ALL_TESTS()` returns, in its own statement: GoogleTest
+counts the selected tests during the run.
 
 **When NOT to use:**
 

@@ -356,6 +356,36 @@ ldd ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST | grep libbench
 
 ---
 
+### "--profile ... failed" and Exit Status 4
+
+**Symptoms:** the tests pass, but the benchmark exits with status 4 and ends
+with a report of the profile request that failed, here a misspelled name:
+
+```
+[profile] --profile perff failed; the run exits with status 4:
+[profile]   perff: unknown profiler 'perff'
+```
+
+Earlier in the run a `[FAIL] Profiler 'perff'` line reported the same failure
+with its remedy (for an unknown name, the list of available profilers).
+
+**Cause:** the run was given `--profile` and did not get that profile: the
+name is unknown, the tool cannot collect in this environment, or a requested
+analysis (`--profile-analyze`) could not run or failed. The tests still ran and
+their results are valid, but the requested profile is missing or incomplete,
+so the run does not pass. When tests fail as well, the run exits with their
+status and the report still lists the profile failure.
+
+**Fix:** apply the remedy printed with the `[FAIL]` line, and check the
+request before the next run: `--profile-check` with the same `--profile`
+options prints the same verdict. `--profile cupti` never exits 4, and a run
+without `--profile` exits 4 only when a profiler the benchmark constructs
+itself reports a failure. A benchmark with its own `main()` returns this
+status from `ProfilerRegistry::finishRun()`, called after `RUN_ALL_TESTS()` as
+in [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
+
+---
+
 ### "libbench.so.1: cannot open shared object file"
 
 **Symptoms:** a benchmark built against an earlier release does not start;

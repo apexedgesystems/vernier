@@ -5,9 +5,12 @@
 
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
+#include <atomic>
 #include <cctype>
 #include <cstdio>
 #include <exception>
+#include <mutex>
+#include <set>
 #include <utility>
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -85,23 +88,36 @@ const char* tagFor(EnvReport::Status status) {
   return "[FAIL]";
 }
 
-/** @brief A run's readiness report, printed once per decision to stderr. */
-void printNotice(const std::string& name, const ReadinessResult& result) {
-  const char* consequence = nullptr;
-  if (!result.collectionReady()) {
-    consequence = "Falling back to no-op (measurements will proceed without profiling).";
-  } else if (result.report.status == EnvReport::Status::Error) {
-    consequence = "Collection proceeds; the analysis is skipped and the raw capture is kept.";
+/** @brief The status a recorded failure gives the run, as its reports state it. */
+std::string failingStatus() {
+  return "(exit status " + std::to_string(BENCH_PROFILE_FAILED_EXIT_CODE) + " if the tests pass)";
+}
+
+/** @brief One report to stderr: status, who, message, remedy and consequence. */
+void printReport(const std::string& who, const EnvReport& report, const std::string& consequence) {
+  std::fprintf(stderr, "\n%s Profiler %s: %s\n", tagFor(report.status), who.c_str(),
+               report.message.c_str());
+  if (!report.hint.empty()) {
+    std::fprintf(stderr, "   %s\n", report.hint.c_str());
   }
-  std::fprintf(stderr, "\n%s Profiler '%s': %s\n", tagFor(result.report.status), name.c_str(),
-               result.report.message.c_str());
-  if (!result.report.hint.empty()) {
-    std::fprintf(stderr, "   %s\n", result.report.hint.c_str());
-  }
-  if (consequence != nullptr) {
-    std::fprintf(stderr, "   %s\n", consequence);
+  if (!consequence.empty()) {
+    std::fprintf(stderr, "   %s\n", consequence.c_str());
   }
   std::fprintf(stderr, "\n");
+}
+
+/** @brief A run's readiness report, printed once per decision to stderr. */
+void printNotice(const std::string& name, const ReadinessResult& result) {
+  std::string consequence;
+  if (!result.collectionReady()) {
+    consequence =
+        "Nothing is collected for this request; the run will fail " + failingStatus() + ".";
+  } else if (result.report.status == EnvReport::Status::Error) {
+    consequence = "Collection proceeds and keeps the raw capture; the analysis is skipped and the "
+                  "run will fail " +
+                  failingStatus() + ".";
+  }
+  printReport("'" + name + "'", result.report, consequence);
 }
 
 /** @brief A request as the command line states it. */
@@ -131,9 +147,27 @@ void printRow(const std::string& name, const EnvReport& report) {
   }
 }
 
+/** @brief Who a failure concerns: the backend, and the case when there is one. */
+std::string failureSubject(const std::string& backend, const std::string& test) {
+  return test.empty() ? backend : backend + " (" + test + ")";
+}
+
 } // namespace
 
+/* ------------------------------- Outcome ------------------------------- */
+
+struct ProfilerRegistry::Outcome {
+  std::mutex mutex;
+  std::vector<ProfileFailure> failures; ///< In the order they were first reported.
+  std::set<std::string> recorded;       ///< Backend, test, stage and message of each.
+  std::atomic<bool> created{false};     ///< A backend built a profiler during the run.
+};
+
 /* ------------------------------- API ------------------------------- */
+
+ProfilerRegistry::ProfilerRegistry() : outcome_(std::make_unique<Outcome>()) {}
+
+ProfilerRegistry::~ProfilerRegistry() = default;
 
 ProfilerRegistry& ProfilerRegistry::instance() {
   static ProfilerRegistry s_instance;
@@ -237,17 +271,120 @@ ReadinessResult ProfilerRegistry::checkRequest(const ReadinessRequest& requestIn
   request.backend = canonicalName(request.backend);
   const auto IT = backends_.find(request.backend);
   if (IT == backends_.end()) {
-    ReadinessResult unknown;
-    unknown.report =
-        EnvReport{EnvReport::Status::Error, "unknown profiler '" + request.backend + "'", ""};
-    unknown.cause = ReadinessCause::MISSING;
-    unknown.context = std::make_shared<const ReadinessContext>(ctx);
-    return unknown;
+    return unknownResult(request.backend, ctx);
   }
   return decide(request.backend, IT->second, request, ctx);
 }
 
+ReadinessResult ProfilerRegistry::unknownResult(const std::string& name,
+                                                const ReadinessContext& ctx) const {
+  std::string available;
+  for (const auto& [n, _] : backends_) {
+    available += (available.empty() ? "" : ", ") + n;
+  }
+  ReadinessResult unknown;
+  unknown.report = EnvReport{EnvReport::Status::Error, "unknown profiler '" + name + "'",
+                             "Available: " + available + "."};
+  unknown.cause = ReadinessCause::MISSING;
+  unknown.context = std::make_shared<const ReadinessContext>(ctx);
+  return unknown;
+}
+
 void ProfilerRegistry::resetReadiness() { memo_.reset(); }
+
+bool ProfilerRegistry::recordFailure(const std::string& backend, const std::string& test,
+                                     const ReadinessResult& failure) const {
+  if (failure.report.status != EnvReport::Status::Error) {
+    return false;
+  }
+  std::string key;
+  appendField(key, backend);
+  appendField(key, test);
+  appendField(key, std::to_string(static_cast<int>(failure.stage)));
+  appendField(key, failure.report.message);
+  const std::lock_guard<std::mutex> LOCK(outcome_->mutex);
+  if (!outcome_->recorded.insert(key).second) {
+    return false;
+  }
+  outcome_->failures.push_back(ProfileFailure{backend, test, failure});
+  return true;
+}
+
+void ProfilerRegistry::reportFailure(const std::string& backend, const std::string& test,
+                                     const ReadinessResult& failure) const noexcept {
+  try {
+    if (recordFailure(backend, test, failure)) {
+      const std::string WHO = "'" + backend + "'" + (test.empty() ? "" : " (" + test + ")");
+      printReport(WHO, failure.report, "The run will fail " + failingStatus() + ".");
+    }
+  } catch (...) {
+    // Reporting must not end the run: a failure that cannot be recorded
+    // (out of memory) is dropped rather than thrown into a profiler hook.
+  }
+}
+
+std::vector<ProfileFailure> ProfilerRegistry::failures() const {
+  const std::lock_guard<std::mutex> LOCK(outcome_->mutex);
+  return outcome_->failures;
+}
+
+void ProfilerRegistry::resetFailures() {
+  const std::lock_guard<std::mutex> LOCK(outcome_->mutex);
+  outcome_->failures.clear();
+  outcome_->recorded.clear();
+  outcome_->created.store(false);
+}
+
+int ProfilerRegistry::finishRun(const PerfConfig& cfg, int testStatus, int testsRun) const {
+  const std::string NAME = canonicalName(cfg.profileTool);
+  const ReadinessContext CTX = ReadinessContext::capture();
+  if (!NAME.empty() && NAME != "cupti" && backends_.find(NAME) == backends_.end()) {
+    // An unknown name fails the run even when no case asked for a profiler.
+    const ReadinessResult UNKNOWN = unknownResult(NAME, CTX);
+    if (memo_.claimNotice("unknown;" + NAME)) {
+      printNotice(NAME, UNKNOWN);
+    }
+    (void)recordFailure(NAME, "", UNKNOWN);
+  }
+
+  const std::vector<ProfileFailure> FAILED = failures();
+  const std::string REQUEST =
+      NAME.empty() ? std::string{"a profile"}
+                   : describeRequest(requestFor(NAME, cfg, ReadinessScope::RUNTIME, CTX));
+  int status = testStatus;
+  if (!FAILED.empty()) {
+    if (status == 0) {
+      status = BENCH_PROFILE_FAILED_EXIT_CODE;
+      std::fprintf(stderr, "\n[profile] %s failed; the run exits with status %d:\n",
+                   REQUEST.c_str(), status);
+    } else {
+      std::fprintf(stderr, "\n[profile] %s failed; the run exits with the tests' status %d:\n",
+                   REQUEST.c_str(), status);
+    }
+    for (const ProfileFailure& failure : FAILED) {
+      std::fprintf(stderr, "[profile]   %s: %s\n",
+                   failureSubject(failure.backend, failure.test).c_str(),
+                   failure.result.report.message.c_str());
+    }
+    std::fprintf(stderr, "\n");
+  } else if (!NAME.empty() && NAME != "cupti" && testsRun > 0 && !outcome_->created.load()) {
+    const bool WRAPPED =
+        requestFor(NAME, cfg, ReadinessScope::RUNTIME, CTX).launch == LaunchContext::RUNNER_WRAPPED;
+    if (WRAPPED) {
+      std::fprintf(stderr,
+                   "\n[profile] %s: no case that ran was built with the profiler guard; the %s "
+                   "wrap still recorded the whole process.\n\n",
+                   REQUEST.c_str(), NAME.c_str());
+    } else {
+      std::fprintf(stderr,
+                   "\n[profile] %s: no case that ran was built with the profiler guard, so "
+                   "nothing was profiled.\n\n",
+                   REQUEST.c_str());
+    }
+  }
+  std::fflush(stderr);
+  return status;
+}
 
 std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, const PerfConfig& cfg,
                                                  const std::string& testName) const {
@@ -268,20 +405,18 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
   }
   const auto it = backends_.find(name);
   if (it == backends_.end()) {
-    std::string available;
-    for (const auto& [n, _] : backends_) {
-      if (!available.empty())
-        available += ", ";
-      available += n;
+    const ReadinessResult UNKNOWN = unknownResult(name, ctx);
+    if (memo_.claimNotice("unknown;" + name)) {
+      printNotice(name, UNKNOWN);
     }
-    std::fprintf(stderr, "\n[WARN] Unknown profiler '%s'. Available: %s.\n\n", name.c_str(),
-                 available.c_str());
-    return std::make_unique<detail::NoOpProfiler>(name, "");
+    (void)recordFailure(name, "", UNKNOWN);
+    return std::make_unique<detail::NoOpProfiler>();
   }
   const Entry& entry = it->second;
 
   // One decision per request and context, shared by every case of the run
-  // and identical to the doctor's selected row.
+  // and identical to the doctor's selected row. An Error at either stage is
+  // the run's failure.
   const ReadinessRequest REQUEST = requestFor(name, cfg, ReadinessScope::RUNTIME, ctx);
   const std::string KEY = memoKey(REQUEST, ctx.fingerprint(entry.contextKeys), generation_);
   const ReadinessResult RESULT =
@@ -289,8 +424,9 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
   if (RESULT.report.status != EnvReport::Status::Ok && memo_.claimNotice(KEY)) {
     printNotice(name, RESULT);
   }
+  (void)recordFailure(name, "", RESULT);
   if (!RESULT.collectionReady()) {
-    return std::make_unique<detail::NoOpProfiler>(name, "");
+    return std::make_unique<detail::NoOpProfiler>();
   }
 
   std::unique_ptr<Profiler> p;
@@ -300,15 +436,18 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
     p = entry.factory(cfg, testName);
   }
   if (p) {
+    outcome_->created.store(true);
     return p;
   }
 
-  std::fprintf(stderr,
-               "\n[WARN] Profiler '%s' requested but unavailable on this platform.\n"
-               "   %s\n"
-               "   Falling back to no-op (measurements will proceed without profiling).\n\n",
-               name.c_str(), entry.unavailableHint.c_str());
-  return std::make_unique<detail::NoOpProfiler>(name, "");
+  // A build or platform guard in the factory: nothing can collect here.
+  const ReadinessResult UNAVAILABLE = readinessResult(
+      ReadinessCause::UNUSABLE, name + " is unavailable on this platform", entry.unavailableHint);
+  if (memo_.claimNotice("unavailable;" + KEY)) {
+    printNotice(name, UNAVAILABLE);
+  }
+  (void)recordFailure(name, "", UNAVAILABLE);
+  return std::make_unique<detail::NoOpProfiler>();
 }
 
 bool ProfilerRegistry::hasBackend(const std::string& name) const noexcept {

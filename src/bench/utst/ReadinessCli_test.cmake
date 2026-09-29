@@ -2,6 +2,7 @@
 # ReadinessCli_test.cmake - One command-line readiness case
 #
 # Run with: cmake -DTARGET=<ReadinessFixtureTarget> -DFIXTURES=<fixtures/readiness>
+#                 -DCUSTOM_TARGET=<ReadinessCustomMainTarget>
 #                 -DCASE=<Case> -DWORK_DIR=<dir> -P ReadinessCli_test.cmake
 #
 # The target runs with PATH set to a private directory of fake tools, with
@@ -368,12 +369,119 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
     "text selected row"
   )
   run(run --profile massif ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
-  set(_notice "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Falling back to no-op")
+  expect_eq("${run_RC}" "4" "run exit status")
+  set(_notice
+      "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Nothing is collected for this request; the run will fail (exit status 4 if the tests pass)."
+  )
   expect_has("${run_ERR}" "${_notice}" "run notice")
   count_of(_times "${run_ERR}" "${_notice}")
   expect_eq("${_times}" "1" "notices for two guarded cases")
-  expect_not("${run_ERR}" "requested but unavailable" "run notice")
+  expect_not("${run_ERR}" "unavailable on this platform" "run notice (the factory is not asked)")
+  expect_has(
+    "${run_ERR}"
+    "[profile] --profile massif failed; the run exits with status 4:\n[profile]   massif: ${_message}\n"
+    "run-end report"
+  )
+
+elseif (CASE STREQUAL "RunUnknownProfilerFails")
+  # An unknown name fails the run: one notice for the guarded cases, the
+  # run-end report and exit status 4, and the CSV names no profiler. A run of
+  # the bare case alone fails the same way.
+  run(run --profile nosuch --csv run.csv ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  set(_notice "[FAIL] Profiler 'nosuch': unknown profiler 'nosuch'\n   Available: ")
+  expect_has("${run_ERR}" "${_notice}" "run notice")
+  count_of(_times "${run_ERR}" "${_notice}")
+  expect_eq("${_times}" "1" "notices for two guarded cases")
+  expect_has(
+    "${run_ERR}"
+    "[profile] --profile nosuch failed; the run exits with status 4:\n[profile]   nosuch: unknown profiler 'nosuch'\n"
+    "run-end report"
+  )
+  set(_rows 0)
+  if (EXISTS "${WORK_DIR}/run.csv")
+    file(STRINGS "${WORK_DIR}/run.csv" _lines)
+    list(GET _lines 0 _header)
+    string(REPLACE "," ";" _columns "${_header}")
+    list(FIND _columns "profileTool" _tool_at)
+    list(REMOVE_AT _lines 0)
+    foreach (_line IN LISTS _lines)
+      string(REPLACE "," ";" _cells "${_line}")
+      list(GET _cells 0 _test)
+      list(GET _cells ${_tool_at} _tool)
+      expect_eq("${_tool}" "" "profileTool of ${_test}")
+      math(EXPR _rows "${_rows} + 1")
+    endforeach ()
+  endif ()
+  expect_eq("${_rows}" "3" "CSV rows")
+  run(bare --profile nosuch --gtest_filter=ReadinessFixture.Bare ${_quick})
+  expect_eq("${bare_RC}" "4" "exit status with only the bare case")
+  expect_has(
+    "${bare_ERR}" "[profile] --profile nosuch failed; the run exits with status 4:"
+    "run-end report (bare case)"
+  )
+
+elseif (CASE STREQUAL "UnprofiledRunExitsZero")
+  # Without --profile nothing is decided or reported, and the run exits 0.
+  run(run ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_not("${run_ERR}" "[profile]" "run-end report or notice")
+  expect_not("${run_ERR}" "Profiler '" "run notice")
+
+elseif (CASE STREQUAL "CuptiNeedsNoProfile")
+  # cupti is not a capture: its note, no failure and no notice, exit 0.
+  run(run --profile cupti ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_has("${run_ERR}" "[INFO] 'cupti' needs no --profile" "cupti note")
+  expect_not("${run_ERR}" "[profile]" "run-end report or notice")
+  run(bare --profile cupti --gtest_filter=ReadinessFixture.Bare ${_quick})
+  expect_eq("${bare_RC}" "0" "exit status with only the bare case")
+  expect_not("${bare_ERR}" "[profile]" "run-end report or notice (bare case)")
+
+elseif (CASE STREQUAL "NoProfilerCreatedNotice")
+  # --profile with only a case built without the guard: the run says nothing
+  # was profiled, or, under the runner's wrap of that tool, that the wrap
+  # recorded the whole process. Neither changes the exit status.
+  fake(fake_perf.sh perf)
+  run(bare --profile perf --gtest_filter=ReadinessFixture.Bare ${_quick})
+  expect_eq("${bare_RC}" "0" "run exit status")
+  set(_notice
+      "[profile] --profile perf: no case that ran was built with the profiler guard, so nothing was profiled.\n"
+  )
+  expect_has("${bare_ERR}" "${_notice}" "notice")
+  count_of(_times "${bare_ERR}" "${_notice}")
+  expect_eq("${_times}" "1" "notices")
+  read_log(_text)
+  expect_eq("${_text}" "" "fake log (nothing decided or launched)")
+  list(APPEND _env VERNIER_EXTERNAL_WRAP=massif)
+  run(wrapped --profile massif --gtest_filter=ReadinessFixture.Bare ${_quick})
+  expect_eq("${wrapped_RC}" "0" "wrapped run exit status")
+  expect_has(
+    "${wrapped_ERR}"
+    "[profile] --profile massif: no case that ran was built with the profiler guard; the massif wrap still recorded the whole process.\n"
+    "wrapped notice"
+  )
+
+elseif (CASE STREQUAL "CustomMainReturnsTheRunStatus")
+  # A benchmark with its own main(), written as the advanced guide shows, ends
+  # as PERF_MAIN() does: 0 unprofiled, 4 with a failed request, and the tests'
+  # own status when a test fails as well.
+  set(TARGET "${CUSTOM_TARGET}")
+  run(plain ${_quick})
+  expect_eq("${plain_RC}" "0" "exit status without --profile")
+  run(failed --profile nosuch ${_quick})
+  expect_eq("${failed_RC}" "4" "exit status with a failed request")
+  expect_has(
+    "${failed_ERR}" "[profile] --profile nosuch failed; the run exits with status 4:\n"
+    "run-end report"
+  )
+  list(APPEND _env READINESS_FIXTURE_FAIL=1)
+  run(both --profile nosuch ${_quick})
+  expect_eq("${both_RC}" "1" "exit status with a failed test and a failed request")
+  expect_has(
+    "${both_ERR}" "[profile] --profile nosuch failed; the run exits with the tests' status 1:\n"
+    "run-end report"
+  )
 
 elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
   # No opt-in: the attach runs as the current user, a denial says how to get
@@ -411,7 +519,7 @@ elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
     "selected hint"
   )
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
@@ -465,7 +573,7 @@ elseif (CASE STREQUAL "BpfInvalidValueLaunchesNothing")
   )
   expect_eq("${_message}" "configuration: BENCH_SUDO='maybe' is not a boolean" "selected message")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}" "run notice")
   read_log(_text)
   expect_eq("${_text}" "" "fake log (nothing may run)")
@@ -605,7 +713,7 @@ elseif (CASE STREQUAL "OffcpuRefusedStopLeavesNoTracer")
   expect_not("${row_MESSAGE}" "still runs" "selected message")
   expect_owned_and_gone("doctor")
   run(run --profile offcpu ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'offcpu': denied: cleanup: " "run notice")
   expect_owned_and_gone("run")
 
@@ -634,6 +742,7 @@ elseif (CASE STREQUAL "PerfLaunchesTheResolvedPath")
   )
   expect_eq("${_launches}" "2" "launches of the resolved perf (one per guarded case)")
   expect_not("${_text}" "perf perf " "fake log (perf run by bare name)")
+  expect_not("${run_ERR}" "[profile]" "run-end report or notice (a profiler was created)")
   expect_owned_and_gone("run")
 
 elseif (CASE STREQUAL "PerfBrokenNeverLaunched")
@@ -666,6 +775,7 @@ elseif (CASE STREQUAL "PerfBrokenNeverLaunched")
     "selected message"
   )
   run(run --profile perf ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
   read_log(_text)
   expect_not("${_text}" " stat " "fake log (a broken perf must not run)")
@@ -698,6 +808,7 @@ elseif (CASE STREQUAL "PerfDeniedMatchesDoctor")
     "${_message}" "denied: perf stat cannot open the counters as this user" "selected message"
   )
   run(run --profile perf ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
 
 elseif (CASE MATCHES "^Gperf")
@@ -746,9 +857,9 @@ elseif (CASE MATCHES "^Gperf")
       "text selected row"
     )
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     set(_notice
-        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
     )
     expect_has("${run_ERR}" "${_notice}" "run notice")
     count_of(_times "${run_ERR}" "${_notice}")
@@ -762,6 +873,7 @@ elseif (CASE MATCHES "^Gperf")
       string(APPEND _problems "\n  cpu.prof was not written")
     endif ()
     run(plain --profile gperf ${_quick})
+    expect_eq("${plain_RC}" "0" "run exit status without --profile-analyze")
     expect_not("${plain_ERR}" "Profiler 'gperf'" "run notice without --profile-analyze")
 
   elseif (CASE STREQUAL "GperfAnalyzerBrokenIsAnalysisError")
@@ -779,10 +891,10 @@ elseif (CASE MATCHES "^Gperf")
     )
     expect_eq("${off_STATUS}" "ok" "selected status without --profile-analyze")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
       "run notice"
     )
     expect_has(
@@ -804,11 +916,21 @@ elseif (CASE MATCHES "^Gperf")
     selected_row(on --profile gperf --profile-analyze)
     expect_eq("${on_STATUS}" "ok" "selected status (the analyzer answers --help)")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[gperf] ${WORK_DIR}/bin/google-pprof failed: exit status 1: fake pprof: cannot read profile; raw profile kept at "
+      "[FAIL] Profiler 'gperf' (ReadinessFixture.First): analysis: unusable: ${WORK_DIR}/bin/google-pprof failed on the profile: exit status 1: fake pprof: cannot read profile; raw profile kept at "
       "analysis failure"
+    )
+    expect_has(
+      "${run_ERR}"
+      "\n   Run it by hand to see why: ${WORK_DIR}/bin/google-pprof --text --cum --lines "
+      "analysis failure remedy"
+    )
+    expect_has(
+      "${run_ERR}"
+      "[profile] --profile gperf --profile-analyze failed; the run exits with status 4:\n[profile]   gperf (ReadinessFixture.First): analysis: unusable: "
+      "run-end report"
     )
     if (NOT EXISTS "${_prof}")
       string(APPEND _problems "\n  cpu.prof was not kept")
@@ -829,6 +951,7 @@ elseif (CASE MATCHES "^Gperf")
     )
     expect_eq("${_status}" "ok" "selected status")
     run(run --profile gperf ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status")
     expect_not("${run_ERR}" "Profiler 'gperf'" "run notice")
     if (NOT EXISTS "${_prof}")
       string(APPEND _problems "\n  cpu.prof was not written")
@@ -862,6 +985,7 @@ elseif (CASE MATCHES "^Gperf")
       expect_eq("${_status}" "fail" "selected status")
       expect_has("${_message}" "unsupported: heap profiling is not compiled in" "selected message")
       run(run --profile gperf --profile-args heap ${_quick})
+      expect_eq("${run_RC}" "4" "run exit status")
       expect_has("${run_ERR}" "[FAIL] Profiler 'gperf': ${_message}" "run notice")
       count_of(_times "${run_ERR}" "-DVERNIER_LINK_TCMALLOC=ON")
       expect_eq("${_times}" "1" "the remedy, once for two guarded cases")

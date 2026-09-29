@@ -1252,6 +1252,7 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
   cfg.profileAnalyze = true;
   cfg.artifactRoot = dir_.path();
   std::string err;
+  ProfilerRegistry::instance().resetFailures();
   {
     ScopedEnv mode("FAKE_PPROF_MODE", "fail-on-profile");
     ScopedEnv log("FAKE_LOG", dir_.logPath());
@@ -1266,12 +1267,20 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
     err = capture.text();
   }
   const std::string CPU_PROF = dir_.path() + "/Gperf.Fails.gperf/cpu.prof";
-  EXPECT_NE(
-      err.find("[gperf] " + PPROF +
-               " failed: exit status 1: fake pprof: cannot read profile; raw profile kept at " +
-               CPU_PROF),
-      std::string::npos)
+  EXPECT_NE(err.find("[FAIL] Profiler 'gperf' (Gperf.Fails): analysis: unusable: " + PPROF +
+                     " failed on the profile: exit status 1: fake pprof: cannot read profile; "
+                     "raw profile kept at " +
+                     CPU_PROF + "\n   Run it by hand to see why: " + PPROF +
+                     " --text --cum --lines "),
+            std::string::npos)
       << err;
+  const std::vector<vernier::bench::ProfileFailure> FAILED =
+      ProfilerRegistry::instance().failures();
+  ProfilerRegistry::instance().resetFailures();
+  ASSERT_EQ(FAILED.size(), 1U) << "the failed analysis is the run's failure";
+  EXPECT_EQ(FAILED[0].backend, "gperf");
+  EXPECT_EQ(FAILED[0].test, "Gperf.Fails");
+  EXPECT_EQ(FAILED[0].result.stage, vernier::bench::ReadinessStage::ANALYSIS);
   std::error_code ec;
   EXPECT_TRUE(std::filesystem::exists(CPU_PROF, ec)) << "the raw capture is never removed";
   EXPECT_EQ(dir_.logLines("pprof " + PPROF + " --text --cum --lines ").size(), 1U) << dir_.log();

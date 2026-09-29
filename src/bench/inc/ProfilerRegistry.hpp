@@ -18,11 +18,18 @@
  * their zero-argument check through an adapter that never claims more than
  * that check verified.
  *
+ * One outcome per run: a requested profile that cannot collect, whose
+ * promised analysis fails, or whose output does not complete is recorded
+ * (reportFailure()), and finishRun() ends the run with a report of every
+ * recorded failure and exit status 4 when the tests passed.
+ *
  * Threading:
  *  - Registration runs during static init (single-threaded); registering or
  *    unregistering is not synchronized against make().
  *  - make() may run on several threads: decisions are memoized per request
  *    and context (ReadinessMemo), computed outside any registry lock.
+ *  - reportFailure() may be called from any thread, including a profiler's
+ *    hooks; the record is guarded by its own lock.
  *
  * @note NOT RT-safe (std::map, std::string, std::function, fork/exec probes).
  */
@@ -44,6 +51,18 @@ namespace bench {
 // (PerfConfig.hpp pulls registry-driven diagnostics back in).
 struct PerfConfig;
 class Profiler;
+
+/* ------------------------------ Outcome ------------------------------ */
+
+/// Exit status of a run whose tests passed and whose requested profile failed.
+inline constexpr int BENCH_PROFILE_FAILED_EXIT_CODE = 4;
+
+/** @brief One failed profile request, as the run records and reports it. */
+struct ProfileFailure {
+  std::string backend;    ///< Canonical backend name.
+  std::string test;       ///< The case it concerns; empty for the whole request.
+  ReadinessResult result; ///< An Error: its stage, cause, message and remedy.
+};
 
 /* ------------------------------ Registry ------------------------------ */
 
@@ -98,17 +117,21 @@ public:
   static std::string canonicalName(const std::string& name);
 
   /**
-   * @brief Construct a profiler for the requested backend, or a named no-op.
+   * @brief Construct a profiler for the requested backend, or a no-op.
    *
    * Decides the request first (memoized per request and context):
    *  - Ok: the backend's factory builds the profiler, silently.
    *  - Warning: printed once to stderr; the profiler is built.
-   *  - Error at the analysis stage: printed once; the profiler is built,
-   *    collects, and skips the analysis it cannot run.
-   *  - Error at the collection stage: printed once with its remedy; a named
-   *    no-op is returned and the factory is not called.
-   * A factory that still returns nullptr (a build or platform guard) and an
-   * unregistered name also give a named no-op, with a warning.
+   *  - Error at the analysis stage: printed once and recorded as the run's
+   *    failure; the profiler is built, collects, and skips the analysis it
+   *    cannot run.
+   *  - Error at the collection stage: printed once with its remedy and
+   *    recorded; a no-op is returned and the factory is not called.
+   * An unregistered name and a factory that still returns nullptr (a build or
+   * platform guard) are printed once and recorded, and give a no-op too. Such
+   * a no-op names no tool, so the CSV records no profiler for its case.
+   * `cupti` is not a backend: it says where the CUPTI columns come from and
+   * gives a no-op named `cupti`, recording nothing.
    *
    * Never returns nullptr.
    */
@@ -138,6 +161,54 @@ public:
    * (or a new process) to be seen.
    */
   void resetReadiness();
+
+  /**
+   * @brief Record a failure of the requested profile, for the run's exit status.
+   * @param backend Canonical backend name, e.g. "offcpu".
+   * @param test    The case the failure concerns (the profiler's test name);
+   *                empty when it concerns the whole request.
+   * @param failure What failed, built with readinessResult(): COLLECTION when
+   *                nothing usable was captured, ANALYSIS for a promised
+   *                analysis, COMPLETION when the capture ran and its output is
+   *                missing, unreadable or not this run's.
+   *
+   * A result that is not an Error is ignored. The first report of a failure
+   * (same backend, test, stage and message) is recorded and printed to
+   * stderr with its remedy; a repeat changes nothing. Callable from any
+   * thread, including a profiler's hooks; never throws.
+   */
+  void reportFailure(const std::string& backend, const std::string& test,
+                     const ReadinessResult& failure) const noexcept;
+
+  /** @brief Every failure recorded since the last resetFailures(), in order. */
+  std::vector<ProfileFailure> failures() const;
+
+  /**
+   * @brief Forget the recorded failures and whether a profiler was created.
+   *
+   * For tests and for a process that runs more than once; a new process
+   * starts empty.
+   */
+  void resetFailures();
+
+  /**
+   * @brief End a run: report its profile outcome and return its exit status.
+   * @param cfg        The run's configuration (its `--profile` request).
+   * @param testStatus The tests' status, e.g. RUN_ALL_TESTS().
+   * @param testsRun   How many tests the run selected to run.
+   * @return @p testStatus when it is nonzero; otherwise
+   *         BENCH_PROFILE_FAILED_EXIT_CODE when a failure was recorded;
+   *         otherwise 0.
+   *
+   * Prints, to stderr, every recorded failure under one header. An unknown
+   * `--profile` name fails here even when no case asked for a profiler.
+   * When `--profile` was given, tests ran, nothing failed and no case created
+   * a profiler (only cases built with the profiler guard create one), it says
+   * that nothing was profiled, or, under `bench run`'s wrap of that tool, that
+   * the wrap still recorded the whole process. PERF_MAIN() and PERF_GPU_MAIN()
+   * return its result; a benchmark with its own main() calls it the same way.
+   */
+  int finishRun(const PerfConfig& cfg, int testStatus, int testsRun) const;
 
   /** @brief True if a backend with this name has been registered. */
   bool hasBackend(const std::string& name) const noexcept;
@@ -182,8 +253,14 @@ public:
    */
   int printDoctor(const PerfConfig& cfg) const;
 
+  ~ProfilerRegistry();
+  ProfilerRegistry(const ProfilerRegistry&) = delete;
+  ProfilerRegistry& operator=(const ProfilerRegistry&) = delete;
+
 private:
-  ProfilerRegistry() = default;
+  ProfilerRegistry();
+
+  struct Outcome; ///< The run's recorded failures and whether a profiler was created.
 
   struct Entry {
     Factory factory;                      ///< Legacy factory.
@@ -197,9 +274,17 @@ private:
   ReadinessResult decide(const std::string& name, const Entry& entry,
                          const ReadinessRequest& request, const ReadinessContext& ctx) const;
 
+  /** @brief Record @p failure; true for its first report (the caller prints it). */
+  bool recordFailure(const std::string& backend, const std::string& test,
+                     const ReadinessResult& failure) const;
+
+  /** @brief The decision for a name no backend is registered under. */
+  ReadinessResult unknownResult(const std::string& name, const ReadinessContext& ctx) const;
+
   std::map<std::string, Entry> backends_;
   std::uint64_t generation_ = 0; ///< Bumped by every (un)registration: new memo keys.
   mutable ReadinessMemo memo_;
+  std::unique_ptr<Outcome> outcome_;
 };
 
 /* ------------------------- Registration helper ------------------------- */
