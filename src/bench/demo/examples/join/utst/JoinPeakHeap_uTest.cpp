@@ -14,9 +14,14 @@
  *    their own replacement, which counts calls, not bytes.
  *  - It counts bytes, not time, so a busy machine does not change its answer
  *    and ctest runs it (labels demo and massif).
+ *  - A thread-sanitizer build cannot replace the allocation functions
+ *    (AllocationCounting.hpp), so there it replaces nothing and the test
+ *    skips, saying why.
  */
 
 #include "src/bench/demo/examples/join/inc/Join.hpp"
+
+#include "src/bench/demo/examples/join/utst/AllocationCounting.hpp"
 
 #include <gtest/gtest.h>
 
@@ -27,6 +32,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <new>
+
+using vernier::bench::demo::test::ALLOCATIONS_NOT_COUNTED;
+
+#if VERNIER_DEMO_REPLACES_ALLOCATION
 
 using vernier::bench::demo::joinedSize;
 using vernier::bench::demo::joinV0;
@@ -151,10 +160,13 @@ void* operator new[](std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
   ::operator delete(block);
 }
 
+#endif // VERNIER_DEMO_REPLACES_ALLOCATION
+
 /* ----------------------------- API Tests ----------------------------- */
 
 /** @test V0 holds over MIN_PEAK_RATIO times V1's peak heap, and joinedSize holds none */
 TEST(Massif, JoinPeakHeap) {
+#if VERNIER_DEMO_REPLACES_ALLOCATION
   const auto PARTS = makeParts(PART_COUNT, PART_SEED);
   ASSERT_EQ(joinV0(PARTS, SEPARATOR), joinV1(PARTS, SEPARATOR));
 
@@ -177,4 +189,7 @@ TEST(Massif, JoinPeakHeap) {
   EXPECT_GT(static_cast<double>(V0_PEAK), MIN_PEAK_RATIO * static_cast<double>(V1_PEAK))
       << "V0 held " << V0_PEAK << " bytes at its peak, not " << MIN_PEAK_RATIO << "x the "
       << V1_PEAK << " bytes V1 held: the demo has stopped demonstrating";
+#else
+  GTEST_SKIP() << ALLOCATIONS_NOT_COUNTED;
+#endif
 }

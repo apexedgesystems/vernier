@@ -596,6 +596,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **A thread-sanitizer build links with clang** -- the test programs that
+  count allocations replace `operator new` and `operator delete`, which
+  clang's thread-sanitizer runtime also defines, so a `-DSANITIZER=tsan` build
+  failed to link them. In a thread-sanitizer build they replace nothing and
+  the tests that count allocations skip, saying why; every other test runs
+  instrumented.
 
 ## v1.0.3 - 2026-06-28
 

@@ -627,7 +627,10 @@ heap is what `Massif.JoinPeakHeap` checks.
   built as `TestDemoJoinPeakHeap`. To count, it replaces the global
   `operator new` and `operator delete` with versions that add up the bytes
   handed out and not yet taken back, and it records the most held at once
-  while one call runs. The demo, which massif profiles, replaces neither. The
+  while one call runs. The demo, which massif profiles, replaces neither. Nor
+  does a build with the thread sanitizer (`-DSANITIZER=tsan`): its runtime
+  defines `operator new` itself, and clang's cannot link beside a
+  replacement, so there the check counts nothing and skips, saying why. The
   check counts bytes, not time, so a busy machine does not change its answer,
   and it is registered with `ctest` under the `demo` and `massif` labels.
   Run on its own:
