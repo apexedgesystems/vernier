@@ -136,12 +136,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against a `std::atomic` and labelled the atomic version "Fast", though it
   was the slower of the two. `Helgrind.LockedTotal` measures threads adding
   the length of the shared `join` example's `joinV1` result to one total
-  under a mutex, one CSV row, and `Helgrind.RacyTotal` adds without the mutex
-  on four threads, runs only under valgrind and skips itself anywhere else; a
-  check registered with `ctest` under the `helgrind` label fails unless
-  helgrind names the racy line and reports nothing for the locked version.
-  The demo's test names change, so CSVs captured from it before this release
-  do not join with newer ones.
+  under a mutex, and `Helgrind.RacyTotal` adds without it, runs only under
+  valgrind and skips itself anywhere else; a check registered with `ctest`
+  under the `helgrind` label fails unless helgrind names the racy line and
+  reports nothing for the locked version. Its walkthrough,
+  `src/bench/demo/docs/20_HELGRIND_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig; that run's CSV is committed at
+  `src/bench/demo/reference/pi4/20_helgrind_profiler.csv`. The demo's test
+  names change, so CSVs captured from it before this release do not join with
+  newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
