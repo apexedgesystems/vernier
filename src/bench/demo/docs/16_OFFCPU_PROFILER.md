@@ -123,5 +123,6 @@ during measured windows. Use `--quick` to keep run-time bounded.
 
 - [Demo 9 (bpftrace)](09_BPFTRACE_PROFILER.md) -- the same eBPF
   machinery, different probe targets (syscalls vs context switches)
-- [Demo 6 (Thread Scaling)](06_THREAD_SCALING.md) -- on-CPU view of
-  the same mutex-vs-atomic comparison
+- [Demo 6 (Thread Scaling)](06_THREAD_SCALING.md) -- what a call
+  costs while other threads make it, under one lock held for the whole
+  call and with nothing shared, measured with `contentionRun()`
