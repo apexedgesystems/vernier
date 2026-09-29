@@ -19,7 +19,9 @@
  *    check verified (BpftracePlan).
  *  - In beforeMeasure(), starts one bpftrace process per selected script
  *    (e.g. "write_latency", "fsync_latency") with {{PID}} replaced by the
- *    current PID, and reports a tracer that exits during its start grace.
+ *    current PID, and reports a tracer that exits during its start grace. A
+ *    script's copy and output go to the capture folder under its file's stem:
+ *    <stem>.tmp.bt, <stem>.out.<format> and <stem>.err.txt.
  *  - In afterMeasure(), stops every tracer with SIGINT, then SIGTERM, then
  *    SIGKILL through the same route, and reports each refused delivery.
  *

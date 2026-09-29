@@ -461,9 +461,18 @@ std::string commandLineOf(const std::string& bpftrace, const std::vector<std::st
   return line;
 }
 
-/** @brief Where the run writes its copy of script @p name inside capture folder @p outdir. */
-std::string runCopyPath(const std::string& outdir, const std::string& name) {
-  return (std::filesystem::path(outdir) / (name + ".tmp.bt")).string();
+/**
+ * @brief The name a script's run files take in the capture folder: its file's
+ * stem, so a script given by path writes there too, not beside the script.
+ */
+std::string outputStem(const std::string& scriptPath) {
+  return std::filesystem::path(scriptPath).stem().string();
+}
+
+/** @brief Where the run writes its copy of a script with stem @p stem in capture folder @p outdir.
+ */
+std::string runCopyPath(const std::string& outdir, const std::string& stem) {
+  return (std::filesystem::path(outdir) / (stem + ".tmp.bt")).string();
 }
 
 /** @brief One tracer for one script, started and stopped through the plan's route. */
@@ -472,7 +481,7 @@ public:
   BpfRunner(std::shared_ptr<const BpftracePlan> plan, std::string name, std::string scriptPath,
             std::string outdir)
       : plan_(std::move(plan)), name_(std::move(name)), scriptPath_(std::move(scriptPath)),
-        outdir_(std::move(outdir)) {}
+        stem_(outputStem(scriptPath_)), outdir_(std::move(outdir)) {}
 
   ~BpfRunner() { stop(); }
 
@@ -490,7 +499,7 @@ public:
     const std::filesystem::path OUTDIR(outdir_);
     std::error_code ec;
     std::filesystem::create_directories(OUTDIR, ec);
-    const std::string TEMP_SCRIPT = runCopyPath(outdir_, name_);
+    const std::string TEMP_SCRIPT = runCopyPath(outdir_, stem_);
     {
       std::ofstream out(TEMP_SCRIPT);
       out << src;
@@ -501,8 +510,8 @@ public:
         return false;
       }
     }
-    const std::string STDOUT_PATH = (OUTDIR / (name_ + ".out." + plan_->format)).string();
-    const std::string STDERR_PATH = (OUTDIR / (name_ + ".err.txt")).string();
+    const std::string STDOUT_PATH = (OUTDIR / (stem_ + ".out." + plan_->format)).string();
+    const std::string STDERR_PATH = (OUTDIR / (stem_ + ".err.txt")).string();
 
     const std::vector<std::string> ARGS = launchArgs(plan_->format, TEMP_SCRIPT);
     std::vector<std::string> argv = plan_->route.command();
@@ -549,6 +558,7 @@ private:
   std::shared_ptr<const BpftracePlan> plan_;
   std::string name_;
   std::string scriptPath_;
+  std::string stem_;
   std::string outdir_;
   std::unique_ptr<OwnedHelper> helper_;
 };
@@ -601,6 +611,22 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     plan->scriptPaths.push_back(PATH);
     sources.push_back(std::move(text));
   }
+  // A script's run files take its stem in the capture folder, so two scripts
+  // with one stem would overwrite each other's.
+  for (std::size_t i = 0; i < plan->scriptPaths.size(); ++i) {
+    for (std::size_t j = 0; j < i; ++j) {
+      const std::string STEM = outputStem(plan->scriptPaths[i]);
+      if (STEM == outputStem(plan->scriptPaths[j])) {
+        return readinessResult(
+            ReadinessCause::CONFIGURATION,
+            "bpftrace scripts '" + plan->scripts[j] + "' and '" + plan->scripts[i] +
+                "' would both write the capture folder's " + STEM + ".tmp.bt, " + STEM + ".out." +
+                plan->format + " and " + STEM + ".err.txt",
+            "Select each script once, and give scripts from different directories different "
+            "file names.");
+      }
+    }
+  }
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
   }
@@ -616,7 +642,8 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
   for (std::size_t i = 0; i < plan->scripts.size(); ++i) {
     const std::string RUN_COMMAND =
         commandLineOf(plan->route.bpftrace,
-                      launchArgs(plan->format, runCopyPath("<capture folder>", plan->scripts[i])));
+                      launchArgs(plan->format, runCopyPath("<capture folder>",
+                                                           outputStem(plan->scriptPaths[i]))));
     runCommands += (runCommands.empty() ? "" : ", ") + RUN_COMMAND;
     std::string copy = sources[i];
     replacePid(copy, static_cast<long>(ctx.self()));

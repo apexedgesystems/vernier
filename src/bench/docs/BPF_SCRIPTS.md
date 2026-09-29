@@ -43,6 +43,17 @@ Scripts contain the placeholder `{{PID}}`. The bpftrace backend (`--profile bpft
 replaces it with the current test process PID and writes a temporary script before
 execution. This confines tracing to the test process to reduce noise.
 
+## What a run writes
+
+Each test's capture folder (`<Suite.Case>.bpf/` under the working directory, or
+under `--profile-output-dir`) holds three files per script, named after the
+script file without its `.bt`, wherever the script came from: `<name>.tmp.bt`,
+the copy bpftrace ran, with the PID filled in; `<name>.out.text` (or
+`<name>.out.json` with `PERF_BPF_FMT=json`), what bpftrace printed, the maps at
+its exit; and `<name>.err.txt`, its error output. Two selected scripts whose
+file names match would overwrite each other's files, so such a request is
+refused before anything runs.
+
 ## Scripts
 
 The scripts are in `src/bench/bpf/`. `--profile bpftrace` finds them there from

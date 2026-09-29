@@ -274,18 +274,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **The bpftrace backend finds its scripts from any directory, and parses
-  `--bpf-scripts`** -- a bundled script name is looked up in the `src/bench/bpf/`
-  directory of the source tree the library was built from, by absolute path, so
-  a run from the build directory finds it. `--bpf-scripts DIR`, which the
-  binary forwarded as an unknown option, selects another directory: it sets
-  `PERF_BPF_SCRIPTS` in the process environment, over an inherited value, and an
-  empty value selects the bundled scripts. `--bpf` takes a script path with or
-  without `.bt` (one given with `.bt` was looked up with a second), and a name
-  containing `/` is a path from the working directory. An installed library
-  whose source tree is gone reports the path it looked in; pass `--bpf-scripts`
-  with a copy of the scripts. **Action needed:** a `--bpf sub/name` that meant a
-  subdirectory of the scripts directory names `./sub/name.bt` instead.
+- **bpftrace finds its scripts from any directory and keeps a run's files in
+  its capture folder** -- bundled scripts are found by absolute path in the
+  source tree the library was built from, `--bpf-scripts DIR` selects another
+  directory by setting `PERF_BPF_SCRIPTS` in the process environment, and `--bpf`
+  takes a script path with or without `.bt`. A script given by path writes its
+  copy and output into the test's capture folder instead of beside itself.
+  **Action needed:** a `--bpf` name containing `/` is a path from the working
+  directory, not from the scripts directory; an installed library whose source
+  tree is gone needs `--bpf-scripts`.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

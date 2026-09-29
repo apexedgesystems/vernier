@@ -743,6 +743,56 @@ TEST_F(BpfCheckTest, BpftraceVanishedScriptReportedPlainly) {
                                                           << dir_.log();
 }
 
+/**
+ * @test A script given by path, with or without .bt, writes its copy and
+ * output into the capture folder under its file's stem, and nothing beside it.
+ */
+TEST_F(BpfCheckTest, BpftraceRunFilesLandInTheCaptureFolder) {
+  const std::string WITHOUT_SUFFIX = dir_.path() + "/scripts/probe_script";
+  int run = 0;
+  for (const std::string& name : {WITHOUT_SUFFIX, script_}) {
+    const ReadinessResult R =
+        ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {name}), ctx());
+    ASSERT_TRUE(R.collectionReady()) << name << ": " << R.report.message;
+    const std::string TEST_NAME = "Bpf.ByPath" + std::to_string(run++);
+    (void)runPlanned("bpftrace", R, TEST_NAME);
+    const std::string FOLDER = captures() + "/" + TEST_NAME + ".bpf";
+    for (const char* file :
+         {"probe_script.tmp.bt", "probe_script.out.text", "probe_script.err.txt"}) {
+      EXPECT_TRUE(std::filesystem::is_regular_file(FOLDER + "/" + file))
+          << name << ": no " << FOLDER << "/" << file;
+    }
+    std::vector<std::string> beside;
+    for (const auto& entry : std::filesystem::directory_iterator(dir_.path() + "/scripts")) {
+      beside.push_back(entry.path().filename().string());
+    }
+    EXPECT_EQ(beside, std::vector<std::string>{"probe_script.bt"}) << name;
+  }
+}
+
+/** @test Two selected scripts with one file stem are refused before anything launches */
+TEST_F(BpfCheckTest, BpftraceScriptsSharingAStemRefused) {
+  dir_.makeDirectory("other");
+  const std::string OTHER =
+      dir_.writeFile("other/probe_script.bt",
+                     "tracepoint:sched:sched_switch /pid == {{PID}}/ { @d = count(); }\n");
+  for (const std::vector<std::string>& scripts :
+       {std::vector<std::string>{"probe_script", "probe_script"},
+        std::vector<std::string>{"probe_script", OTHER}}) {
+    const ReadinessResult R =
+        ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", scripts), ctx());
+    EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION) << R.report.message;
+    EXPECT_FALSE(R.collectionReady());
+    EXPECT_EQ(R.report.message, "configuration: bpftrace scripts 'probe_script' and '" +
+                                    scripts[1] +
+                                    "' would both write the capture folder's probe_script.tmp.bt, "
+                                    "probe_script.out.text and probe_script.err.txt");
+    EXPECT_EQ(R.report.hint, "Select each script once, and give scripts from different "
+                             "directories different file names.");
+  }
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+}
+
 /** @test An unreadable selected script is rejected before anything runs, and a run leaves no
  * folder. */
 TEST_F(BpfCheckTest, BpftraceUnreadableScriptLaunchesNothing) {
