@@ -94,7 +94,25 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (8)
+# Demo 04's Private Sources
+# ------------------------------------------------------------------------------
+# The SAXPY kernel without its bounds guard, which compute-sanitizer finds, is
+# a source of its own, compiled with device line information whatever the
+# build type, so the tool's report names the line of the access. Nothing else
+# in the build changes.
+# ------------------------------------------------------------------------------
+
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  target_sources(
+    BenchDemo_Gpu_04_ComputeSanitizerProfiler PRIVATE gpu/04_ComputeSanitizerProfiler_Unguarded.cu
+  )
+  set_source_files_properties(
+    gpu/04_ComputeSanitizerProfiler_Unguarded.cu PROPERTIES COMPILE_OPTIONS "-lineinfo"
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
+# Demos Built on a Shared Example (9)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -131,6 +149,9 @@ target_link_libraries(
 
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
+endif ()
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  target_link_libraries(BenchDemo_Gpu_04_ComputeSanitizerProfiler PRIVATE demo_example_saxpy)
 endif ()
 
 # ------------------------------------------------------------------------------
@@ -257,6 +278,7 @@ vernier_add_gtest(
   TestDemoHelpers
   SOURCES
   helpers/utst/SkipUnlessUnderValgrind_uTest.cpp
+  helpers/utst/SkipUnlessUnderComputeSanitizer_uTest.cpp
   LINK
   bench
   demo_helpers
@@ -267,4 +289,9 @@ set_tests_properties(
   SkipUnlessUnderValgrindProbe.RunsOnlyUnderValgrind
   PROPERTIES SKIP_REGULAR_EXPRESSION
              "\\[  SKIPPED \\] SkipUnlessUnderValgrindProbe\\.RunsOnlyUnderValgrind"
+)
+set_tests_properties(
+  SkipUnlessUnderComputeSanitizerProbe.RunsOnlyUnderTheTool
+  PROPERTIES SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerProbe\\.RunsOnlyUnderTheTool"
 )
