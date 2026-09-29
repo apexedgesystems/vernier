@@ -301,9 +301,11 @@ nsys stats --force-export=true --report nvtx_sum bench-out/BenchDemo_Gpu_02_Nsig
   their medians. The copies take about 53 us on the GPU, but on the timeline
   the host spends about 0.17 ms in each of the two copies to the device, by
   their median. The synchronous `cudaMemcpy` back to the host waits for the
-  kernel, which is why its average (1.08 ms) is far above its median
-  (263 us): read the kernel's time from the kernel summary, not from the call
-  that waited for it.
+  kernel: on the timeline it takes about 2.93 ms by its median, so read the
+  kernel's time from the kernel summary, not from the call that waited for it.
+  The `cudaMemcpy` row of `cuda_api_sum.txt` mixes these 61 long calls with the
+  122 shorter copies to the device, which is why its average (1.08 ms) is far
+  above its median (263 us).
 - **The range.** The 223.77 ms range `NsightProfiler.G0` is the measured
   window: on the timeline it holds 60 of the 61 kernels, 120 `cudaMalloc` and
   120 `cudaFree`; the warmup call comes before it.
