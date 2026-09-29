@@ -39,6 +39,7 @@ set(_readiness_cli_cases
     BpfRunStopsThroughRoute
     BpfRunReportsRefusedStop
     BpfBundledScriptFromAnyDirectory
+    BpfScriptsFlagSelectsTheDirectory
     OffcpuCurrentUserRun
     OffcpuRunAllowedProbeRefused
     OffcpuRefusedStopLeavesNoTracer

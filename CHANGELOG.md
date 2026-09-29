@@ -274,13 +274,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **The bpftrace backend finds its bundled scripts from any directory** -- a
-  bundled script name is looked up in the `src/bench/bpf/` directory of the
-  source tree the library was built from, by absolute path, so a run from the
-  build directory finds it. `PERF_BPF_SCRIPTS` still selects another directory,
-  and an empty value selects the bundled one. An installed library whose source
-  tree is gone reports the path it looked in; point `PERF_BPF_SCRIPTS` at a copy
-  of the scripts.
+- **The bpftrace backend finds its scripts from any directory, and parses
+  `--bpf-scripts`** -- a bundled script name is looked up in the `src/bench/bpf/`
+  directory of the source tree the library was built from, by absolute path, so
+  a run from the build directory finds it. `--bpf-scripts DIR`, which the
+  binary forwarded as an unknown option, selects another directory: it sets
+  `PERF_BPF_SCRIPTS` in the process environment, over an inherited value, and an
+  empty value selects the bundled scripts. An installed library whose source tree
+  is gone reports the path it looked in; pass `--bpf-scripts` with a copy of the
+  scripts.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

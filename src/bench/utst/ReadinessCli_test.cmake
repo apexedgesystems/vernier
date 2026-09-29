@@ -188,12 +188,17 @@ macro (bpf_tools)
   fake(fake_kill.sh kill)
 endmacro ()
 
-# The bpftrace fakes, and a scripts directory holding one sched script.
-macro (bpf_fakes)
-  bpf_tools()
+# A scripts directory holding one sched script.
+macro (bpf_scripts_dir)
   file(WRITE "${WORK_DIR}/scripts/probe_script.bt"
        "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n"
   )
+endmacro ()
+
+# The bpftrace fakes, and PERF_BPF_SCRIPTS naming that scripts directory.
+macro (bpf_fakes)
+  bpf_tools()
+  bpf_scripts_dir()
   list(APPEND _env "PERF_BPF_SCRIPTS=${WORK_DIR}/scripts")
 endmacro ()
 
@@ -882,6 +887,24 @@ elseif (CASE STREQUAL "BpfBundledScriptFromAnyDirectory")
   expect_has("${row_MESSAGE}" "write_latency: a probe copy" "selected message")
   expect_not("${row_MESSAGE}" "not found" "selected message")
   expect_owned_and_gone("doctor")
+
+elseif (CASE STREQUAL "BpfScriptsFlagSelectsTheDirectory")
+  # --bpf-scripts, with no PERF_BPF_SCRIPTS: the doctor's row and the run both
+  # look the script up in the directory the flag names.
+  bpf_tools()
+  bpf_scripts_dir()
+  set(_request --profile bpftrace --bpf probe_script --bpf-scripts "${WORK_DIR}/scripts")
+  selected_row(row ${_request})
+  expect_eq("${row_STATUS}" "ok" "selected status")
+  expect_has("${row_MESSAGE}" "probe_script: a probe copy" "selected message")
+  run(run ${_request} ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_not("${run_ERR}" "unknown option" "run warnings")
+  expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
+  read_log(_text)
+  count_of(_launches "${_text}" "bpftrace -q ./ReadinessFixture.")
+  expect_eq("${_launches}" "2" "launches (one per guarded case)")
+  expect_owned_and_gone("run")
 
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")
