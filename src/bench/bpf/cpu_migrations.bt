@@ -8,12 +8,16 @@
 // Built entirely on sched-family tracepoints, which every kernel ships --
 // including vendor kernels that compile out kprobes and the syscalls
 // tracepoint family. No BEGIN/END on purpose: maps auto-print at exit.
+//
+// args->pid is the migrating thread's id as the host's PID namespace
+// numbers it. The trace ends with the process's main thread, whose thread
+// id (bpftrace's tid) is the process id.
 
 tracepoint:sched:sched_migrate_task /args->pid == {{PID}}/ {
   @migrations[args->pid] = count();
   @dest_cpu[args->dest_cpu] = count();
 }
 
-tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+tracepoint:sched:sched_process_exit /tid == {{PID}}/ {
   exit();
 }

@@ -31,9 +31,11 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <optional>
 #include <regex>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
@@ -128,6 +130,17 @@ std::vector<InlineCall> inlineCalls(const FakeToolDir& dir, const std::string& p
     }
   }
   return calls;
+}
+
+/** @brief True when process @p pid has exited: a zombie not yet reaped, or gone. */
+bool exited(pid_t pid) {
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string text;
+  if (!std::getline(stat, text)) {
+    return true;
+  }
+  const std::size_t COMM_END = text.rfind(')');
+  return COMM_END != std::string::npos && COMM_END + 2 < text.size() && text[COMM_END + 2] == 'Z';
 }
 
 /** @brief True when process @p pid is a child of this process (so this test may signal it). */
@@ -269,6 +282,50 @@ protected:
       profiler.afterMeasure(vernier::bench::Stats{});
     }
     return err.text();
+  }
+
+  /** @brief What a planned bpftrace run printed, and the capture outcome it recorded. */
+  struct BpftraceRun {
+    std::string err;
+    std::optional<ReadinessResult> outcome;
+  };
+
+  /**
+   * @brief runPlanned() for bpftrace, keeping the capture outcome. With
+   * @p untilTracersExit the measured window lasts until every tracer the run
+   * started has exited by itself (at most 30 s), and only then stops them.
+   */
+  BpftraceRun runPlannedBpftrace(const ReadinessResult& decision, const std::string& testName,
+                                 const std::map<std::string, std::string>& env = {},
+                                 bool untilTracersExit = false) const {
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = "bpftrace";
+    cfg.artifactRoot = captures();
+    std::vector<std::unique_ptr<ScopedEnv>> scoped;
+    scoped.push_back(std::make_unique<ScopedEnv>("FAKE_LOG", dir_.logPath()));
+    for (const auto& [KEY, VALUE] : env) {
+      scoped.push_back(std::make_unique<ScopedEnv>(KEY.c_str(), VALUE));
+    }
+    StderrCapture err;
+    BpftraceProfiler profiler(cfg, testName,
+                              std::dynamic_pointer_cast<const BpftracePlan>(decision.plan));
+    profiler.beforeMeasure();
+    if (untilTracersExit) {
+      const std::string FOLDER = captures() + "/" + testName + ".bpf/";
+      const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+      bool allExited = false;
+      while (!allExited && std::chrono::steady_clock::now() < UNTIL) {
+        allExited = true;
+        for (const std::string& line : dir_.logLines("bpftrace -q " + FOLDER)) {
+          const auto AT = line.rfind(" pid=");
+          allExited = allExited && AT != std::string::npos &&
+                      exited(static_cast<pid_t>(std::stol(line.substr(AT + 5))));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+      }
+    }
+    profiler.afterMeasure(vernier::bench::Stats{});
+    return {err.text(), profiler.captureOutcome()};
   }
 
   FakeToolDir dir_;
@@ -791,6 +848,74 @@ TEST_F(BpfCheckTest, BpftraceScriptsSharingAStemRefused) {
                              "directories different file names.");
   }
   EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+}
+
+/** @test A capture whose tracer stopped on SIGINT and flushed its output is READY */
+TEST_F(BpfCheckTest, BpftraceCaptureOutcomeReadyAfterAFlushedStop) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.Flushed");
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
+  EXPECT_EQ(RUN.outcome->report.message, "script 'probe_script' stopped and flushed its output");
+  EXPECT_EQ(RUN.err.find("[bpftrace]"), std::string::npos) << RUN.err;
+}
+
+/**
+ * @test A tracer that ends by itself while the measured repeats go on is
+ * reported, and its capture is incomplete.
+ */
+TEST_F(BpfCheckTest, BpftraceTracerEndingItselfIsReported) {
+  dir_.writeFile("scripts/self_exit.bt", "tracepoint:sched:sched_switch /pid == {{PID}}/ "
+                                         "{ @c = count(); }\ninterval:s:3 { exit(); }\n");
+  const ReadinessResult R =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"self_exit"}), ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.SelfExit", {}, true);
+  const std::string LINE = "script 'self_exit' ended by itself before the measured repeats "
+                           "finished; its output covers only the part before it ended";
+  EXPECT_NE(RUN.err.find("[bpftrace] " + LINE), std::string::npos) << RUN.err;
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(RUN.outcome->report.message, "unusable: " + LINE);
+  EXPECT_EQ(RUN.outcome->report.hint.rfind("End the script only on the traced process's exit", 0),
+            0U)
+      << RUN.outcome->report.hint;
+}
+
+/** @test A tracer the route refuses at the run's start is an incomplete capture, with the reason */
+TEST_F(BpfCheckTest, BpftraceTracerRefusedAtStartIsAFailedCapture) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", ".tmp.bt"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.RefusedRun", POLICY);
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::DENIED);
+  const std::string RUN_COPY = captures() + "/Bpf.RefusedRun.bpf/probe_script.tmp.bt";
+  EXPECT_EQ(RUN.outcome->report.message, "denied: sudo -n refused " + bpftrace_ + " -q " +
+                                             RUN_COPY + ": sudo: a password is required");
+}
+
+/** @test A tracer that ignored SIGINT and SIGTERM and was killed leaves an incomplete capture */
+TEST_F(BpfCheckTest, BpftraceKilledTracerIsAFailedCapture) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_BPFTRACE_MODE", "ignore-int-run"},
+                                                  {"FAKE_SUDO_DENY", "kill -15"}};
+  const ReadinessResult R = check("bpftrace", ctx(POLICY));
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.Killed", POLICY);
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script': the tracer ignored SIGINT and SIGTERM and was "
+            "killed; its output is incomplete");
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the run";
+    endIfLeft(PID);
+  }
 }
 
 /** @test An unreadable selected script is rejected before anything runs, and a run leaves no

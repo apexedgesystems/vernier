@@ -66,15 +66,24 @@ reports the path it looked in; point `--bpf-scripts` at a copy of the scripts.
 
 - `write_latency.bt`: histogram of `write()` latency (us) for the target PID
 - `fsync_latency.bt`: histogram of `fsync()` latency (us) for the target PID
-- `wakeup_latency.bt`: histogram of scheduler wakeup latency (us), from a thread
-  being woken to its getting a CPU, for wakeups of the target PID's main thread
-  and wakeups made by the target process
+- `wakeup_latency.bt`: histogram of wakeup latency (us), from a wake request to
+  the woken thread being switched in, for the wakeups the target process makes
+  (one of its threads handing a lock to another, say) and wakeups of its main
+  thread. The interval includes the wakeup's trip to the woken thread's CPU and
+  any wait for that CPU: under a lock it is not the time a thread waited for the
+  lock.
 - `cpu_migrations.bt`: CPU migrations of the target PID's main thread, counted by
   destination CPU
 
 `write_latency.bt` and `fsync_latency.bt` use the `syscalls` tracepoints, which some
 vendor kernels leave out; `wakeup_latency.bt` and `cpu_migrations.bt` use only
 `sched` tracepoints.
+
+Each script ends itself when the traced process's main thread exits
+(`sched_process_exit` filtered on `tid == {{PID}}`), so a trace of a threaded test
+lasts through its workers' exits; the backend stops it with SIGINT once the
+measured repeats finish. A tracer that ends before then, by its own `exit()`, is
+reported, and the capture counts as incomplete.
 
 Run manually (example): replace `{{PID}}` with the PID to trace (1234 here), then run
 the copy. The histogram prints when bpftrace exits (Ctrl-C).
@@ -84,6 +93,23 @@ sed 's/{{PID}}/1234/' src/bench/bpf/write_latency.bt > /tmp/write_latency.bt
 sudo bpftrace -q /tmp/write_latency.bt
 ```
 
-The bpftrace in the project's dev image (0.20.2) matches the PID as the host sees it:
-inside a container with its own PID namespace, the PID the container reports is a
-different number and nothing matches, so run such a container with `--pid=host`.
+## PID namespaces
+
+The scripts are supported where the benchmark runs in the host's PID namespace:
+natively, or in a container started with `--pid=host`. There every id a script
+compares is the same number. In a PID namespace of its own (a container without
+`--pid=host`, or `unshare --pid`), `{{PID}}` is the benchmark's PID as that
+namespace numbers it, and no bundled script sees the benchmark as it should:
+
+- bpftrace 0.20 to 0.22 (0.20.2 is the project's dev image) numbers `pid` and
+  `tid` as the host does, so neither matches `{{PID}}`.
+- bpftrace 0.23.0 to 0.24.1 (0.23.2 is the reference rig's) numbers them in its
+  own namespace, but swapped: `pid` is the thread's id and `tid` the process's.
+  `pid == {{PID}}` then matches the main thread alone, so `write_latency.bt` and
+  `fsync_latency.bt` miss every other thread's calls, and `tid == {{PID}}`
+  matches every thread, so each script ends at the first thread's exit.
+- A tracepoint's own fields (`args->pid`, `args->next_pid`) always hold the
+  host's numbers, so `cpu_migrations.bt` records nothing there, and
+  `wakeup_latency.bt` keeps only the wakeups the main thread makes.
+
+Run such a benchmark on the host, or in a container started with `--pid=host`.

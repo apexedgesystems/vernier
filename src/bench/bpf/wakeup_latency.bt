@@ -1,7 +1,17 @@
-// Histogram of scheduler wakeup latency (us) for a specific PID: the gap
-// between a thread being woken and actually getting a CPU. Lock convoys
-// and oversubscription show up here before they show up anywhere else.
+// Histogram of wakeup latency (us) for a specific PID: from a wake request
+// to the woken thread being switched in. Recorded for the wakeups the
+// target process makes (one of its threads handing a lock to another, say)
+// and for wakeups of its main thread. The interval includes the wakeup's
+// trip to the woken thread's CPU and any wait for that CPU; under a lock it
+// is not the time a thread waited for the lock.
 // {{PID}} is replaced by the BpfRunner before execution.
+//
+// sched_waking runs in the waking thread; sched_wakeup can run on the
+// woken thread's CPU, outside the process that asked for the wakeup.
+// args->pid (the woken thread) and args->next_pid (the thread switched in)
+// are the kernel's thread ids, as the host's PID namespace numbers them;
+// pid and tid are bpftrace's. The trace ends with the process's main
+// thread, whose thread id is the process id.
 //
 // Built entirely on sched-family tracepoints, which every kernel ships --
 // including vendor kernels (e.g. NVIDIA L4T) that compile out kprobes and
@@ -9,7 +19,7 @@
 // at exit, and stripped distro bpftrace builds cannot run BEGIN/END
 // trigger uprobes.
 
-tracepoint:sched:sched_wakeup /args->pid == {{PID}} || pid == {{PID}}/ {
+tracepoint:sched:sched_waking /args->pid == {{PID}} || pid == {{PID}}/ {
   @woken[args->pid] = nsecs;
 }
 
@@ -18,6 +28,6 @@ tracepoint:sched:sched_switch /@woken[args->next_pid]/ {
   delete(@woken[args->next_pid]);
 }
 
-tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+tracepoint:sched:sched_process_exit /tid == {{PID}}/ {
   exit();
 }

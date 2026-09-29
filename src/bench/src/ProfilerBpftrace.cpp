@@ -475,6 +475,46 @@ std::string runCopyPath(const std::string& outdir, const std::string& stem) {
   return (std::filesystem::path(outdir) / (stem + ".tmp.bt")).string();
 }
 
+/**
+ * @brief What a tracer's stop says about its capture: READY when it stopped on
+ * SIGINT or SIGTERM and flushed its output, else the Error that leaves the
+ * capture incomplete. A tracer that ended with status 0 before the stop ran
+ * its own exit() while the measured repeats went on; that case is printed
+ * here, the others by reportStop().
+ */
+ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& stop, bool flushed) {
+  if (!stop.stillAlive && !stop.wasRunning && WIFEXITED(stop.waitStatus) &&
+      WEXITSTATUS(stop.waitStatus) == 0) {
+    const std::string DETAIL = what +
+                               " ended by itself before the measured repeats finished; its output "
+                               "covers only the part before it ended";
+    std::fprintf(stderr, "[bpftrace] %s\n", DETAIL.c_str());
+    return readinessResult(ReadinessCause::UNUSABLE, DETAIL,
+                           "End the script only on the traced process's exit "
+                           "(sched_process_exit filtered on tid == {{PID}}); the backend stops it "
+                           "when the measured repeats finish.");
+  }
+  if (flushed) {
+    return readinessResult(ReadinessCause::READY, what + " stopped and flushed its output", "");
+  }
+  if (stop.stillAlive) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           what + ": the tracer is still running; its output may be incomplete",
+                           "Stop it by hand, then run the script by hand to see why it did not "
+                           "stop.");
+  }
+  if (!stop.wasRunning) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           what + " ended before the stop (wait status " +
+                               std::to_string(stop.waitStatus) + ")",
+                           "Run the script by hand with bpftrace to see why it ended.");
+  }
+  return readinessResult(ReadinessCause::UNUSABLE,
+                         what + ": the tracer ignored SIGINT and SIGTERM and was killed; its "
+                                "output is incomplete",
+                         "bpftrace prints its maps on SIGINT; check that this build handles it.");
+}
+
 /** @brief One tracer for one script, started and stopped through the plan's route. */
 class BpfRunner {
 public:
@@ -493,6 +533,10 @@ public:
     if (const int ERR = readScript(scriptPath_, src); ERR != 0) {
       std::fprintf(stderr, "[bpftrace] cannot read script '%s' at %s: %s\n", name_.c_str(),
                    scriptPath_.c_str(), errnoText(ERR).c_str());
+      outcome_ = readinessResult(ReadinessCause::UNUSABLE,
+                                 "script '" + name_ + "' cannot be read at " + scriptPath_ + ": " +
+                                     errnoText(ERR),
+                                 "Keep the script where the check found it until the run ends.");
       return false;
     }
     replacePid(src, static_cast<long>(pid));
@@ -507,6 +551,11 @@ public:
       if (!out) {
         std::fprintf(stderr, "[bpftrace] cannot write the run's copy of script '%s' to %s\n",
                      name_.c_str(), TEMP_SCRIPT.c_str());
+        outcome_ = readinessResult(ReadinessCause::UNUSABLE,
+                                   "the run's copy of script '" + name_ +
+                                       "' cannot be written to " + TEMP_SCRIPT,
+                                   "Make the capture folder writable, or select another root "
+                                   "with --profile-output-dir.");
         return false;
       }
     }
@@ -527,6 +576,9 @@ public:
     if (!STARTED.started) {
       std::fprintf(stderr, "[bpftrace] script '%s' could not start: %s\n", name_.c_str(),
                    STARTED.errorTail.c_str());
+      outcome_ = readinessResult(ReadinessCause::UNUSABLE,
+                                 "script '" + name_ + "' could not start: " + STARTED.errorTail,
+                                 "Check that " + argv.front() + " can be executed.");
       helper_.reset();
       return false;
     }
@@ -539,6 +591,7 @@ public:
       if (!WHY.report.hint.empty()) {
         std::fprintf(stderr, "[bpftrace] %s\n", WHY.report.hint.c_str());
       }
+      outcome_ = WHY;
       helper_.reset();
       return false;
     }
@@ -550,9 +603,15 @@ public:
       return;
     }
     const HelperStopResult STOPPED = helper_->stop();
-    (void)bpftrace_tool::reportStop("bpftrace", "script '" + name_ + "'", STOPPED, plan_->route);
+    const std::string WHAT = "script '" + name_ + "'";
+    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", WHAT, STOPPED, plan_->route);
+    outcome_ = stopOutcome(WHAT, STOPPED, FLUSHED);
     helper_.reset();
   }
+
+  /** @brief How this tracer's capture ended: empty while it runs, set by a failed start or the
+   * stop. */
+  [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
 
 private:
   std::shared_ptr<const BpftracePlan> plan_;
@@ -561,6 +620,7 @@ private:
   std::string stem_;
   std::string outdir_;
   std::unique_ptr<OwnedHelper> helper_;
+  std::optional<ReadinessResult> outcome_;
 };
 
 } // anonymous namespace
@@ -745,6 +805,8 @@ public:
                                                 artifactDir_);
       if (runner->start(TARGET)) {
         runners_.push_back(std::move(runner));
+      } else {
+        record(runner->outcome());
       }
     }
   }
@@ -752,17 +814,32 @@ public:
   void afterMeasure() {
     for (auto& runner : runners_) {
       runner->stop();
+      record(runner->outcome());
     }
     runners_.clear();
   }
 
   std::string artifactDir() const { return artifactDir_; }
 
+  [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
+
 private:
+  /** @brief Keep the capture's first failure; READY stands only while nothing failed. */
+  void record(const std::optional<ReadinessResult>& result) {
+    if (!result) {
+      return;
+    }
+    const bool FAILED = result->report.status == EnvReport::Status::Error;
+    if (!outcome_ || (FAILED && outcome_->report.status != EnvReport::Status::Error)) {
+      outcome_ = *result;
+    }
+  }
+
   std::shared_ptr<const BpftracePlan> plan_;
   bool enabled_ = false;
   std::string artifactDir_;
   std::vector<std::unique_ptr<BpfRunner>> runners_;
+  std::optional<ReadinessResult> outcome_;
 };
 
 #else // !__linux__
@@ -832,6 +909,16 @@ BpftraceProfiler::BpftraceProfiler(const PerfConfig& cfg, std::string testName,
 }
 
 BpftraceProfiler::~BpftraceProfiler() = default;
+
+const std::optional<ReadinessResult>& BpftraceProfiler::captureOutcome() const noexcept {
+  static const std::optional<ReadinessResult> NONE;
+#ifdef __linux__
+  if (impl_) {
+    return impl_->outcome();
+  }
+#endif
+  return NONE;
+}
 
 void BpftraceProfiler::beforeMeasure() {
 #ifdef __linux__

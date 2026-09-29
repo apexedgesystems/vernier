@@ -10,6 +10,10 @@
 // compile the syscalls tracepoint family out. On those targets use the
 // sched-family samples (wakeup_latency, cpu_migrations), which every
 // kernel ships.
+//
+// Every filter and key uses bpftrace's pid (the process) and tid (the
+// thread). The trace ends with the process's main thread, whose thread id
+// is the process id; a worker thread's exit does not end it.
 
 tracepoint:syscalls:sys_enter_write /pid == {{PID}}/ {
   @start[tid] = nsecs;
@@ -20,6 +24,6 @@ tracepoint:syscalls:sys_exit_write /@start[tid]/ {
   delete(@start[tid]);
 }
 
-tracepoint:sched:sched_process_exit /pid == {{PID}}/ {
+tracepoint:sched:sched_process_exit /tid == {{PID}}/ {
   exit();
 }

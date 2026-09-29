@@ -23,7 +23,9 @@
  *    script's copy and output go to the capture folder under its file's stem:
  *    <stem>.tmp.bt, <stem>.out.<format> and <stem>.err.txt.
  *  - In afterMeasure(), stops every tracer with SIGINT, then SIGTERM, then
- *    SIGKILL through the same route, and reports each refused delivery.
+ *    SIGKILL through the same route, and reports each refused delivery, and a
+ *    tracer that ended by itself before the stop.
+ *  - captureOutcome() says whether the capture is complete.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n`; PERF_BPF_SUDO is a deprecated alias that BENCH_SUDO overrides.
@@ -209,6 +211,14 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+
+  /**
+   * @brief The capture's outcome: empty until a tracer fails to start or the
+   * measured repeats end; then READY, or the Error that leaves the capture
+   * incomplete (a tracer that could not start, ended before the stop, was
+   * killed or could not be stopped). The first failure is kept.
+   */
+  [[nodiscard]] const std::optional<ReadinessResult>& captureOutcome() const noexcept;
 
 private:
   PerfConfig cfg_;

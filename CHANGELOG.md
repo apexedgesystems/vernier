@@ -274,6 +274,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **The bundled bpftrace scripts trace threaded tests to their end** -- they
+  ended when any thread of the traced process exited, so a `contentionRun()`
+  trace stopped after one repeat; they end with the main thread, and a tracer
+  that ends by itself mid-measurement is reported as an incomplete capture.
+  `wakeup_latency.bt` measures from the wake request in the waking thread
+  (`sched_waking`) to the woken thread being switched in, where it missed the
+  wakeups completed on another CPU. **Action needed:** its histograms are not
+  comparable with earlier ones, and scripts copied from these should filter
+  `sched_process_exit` on `tid == {{PID}}`.
 - **bpftrace finds its scripts from any directory and keeps a run's files in
   its capture folder** -- bundled scripts are found by absolute path in the
   source tree the library was built from, `--bpf-scripts DIR` selects another
