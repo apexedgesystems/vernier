@@ -46,8 +46,11 @@ void failNextNewAfterThird(int acquisitions) {
 // Array and aligned forms pair only within their own families and stay the
 // runtime's. The allocation keeps the standard behaviour: retry through the
 // new-handler while one is installed, then std::bad_alloc, or a null pointer
-// from the nothrow form.
-void* operator new(std::size_t size) {
+// from the nothrow form. The throwing new and the deletes stay out of line:
+// inlined into a caller, the malloc() under one or the free() under the other
+// would meet a call of the other kind, and the compiler would warn about the
+// pair (-Wmismatched-new-delete) although the family matches.
+[[gnu::noinline]] void* operator new(std::size_t size) {
   if (g_failNextNew) {
     g_failNextNew = false;
     throw std::bad_alloc();
@@ -73,8 +76,6 @@ void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
   }
 }
 
-// Out of line: inlined into a caller, free() would meet a pointer the compiler
-// knows came from operator new, and it warns about the pair.
 [[gnu::noinline]] void operator delete(void* p) noexcept { std::free(p); }
 
 [[gnu::noinline]] void operator delete(void* p, std::size_t /*size*/) noexcept { std::free(p); }
