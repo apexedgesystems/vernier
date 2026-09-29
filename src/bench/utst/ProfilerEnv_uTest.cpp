@@ -1,12 +1,13 @@
 /**
  * @file ProfilerEnv_uTest.cpp
  * @brief Unit tests for profiler_env helpers: externalWrapTool(),
- *        nsightSessionTool(), cuptiMustYield() and the privilege helpers
- *        kept for compatibility.
+ *        nsightSessionTool(), cuptiDecision(), cuptiMustYield() and the
+ *        privilege helpers kept for compatibility.
  *
  * The helpers read process environment variables, so each test scrubs or
  * overrides the variables it touches via an RAII guard to stay
- * order-independent. The privilege helpers run fake tools
+ * order-independent. The forms that take a ReadinessContext are given a
+ * snapshot built in the test instead. The privilege helpers run fake tools
  * (ReadinessFixtures.hpp) found through an overridden PATH.
  */
 
@@ -20,12 +21,22 @@
 
 #include <chrono>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
+using vernier::bench::EnvBool;
+using vernier::bench::EnvReport;
+using vernier::bench::parseEnvBool;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessContext;
+using vernier::bench::ReadinessResult;
+using vernier::bench::readinessResult;
+using vernier::bench::profiler_env::CuptiDecision;
 using vernier::bench::profiler_env::cuptiDecision;
 using vernier::bench::profiler_env::cuptiMustYield;
 using vernier::bench::profiler_env::externalWrapTool;
@@ -74,6 +85,11 @@ private:
   std::string name_;
   std::optional<std::string> old_;
 };
+
+/** @brief A snapshot of this process whose environment is exactly @p env. */
+ReadinessContext snapshot(std::map<std::string, std::string> env) {
+  return ReadinessContext(::geteuid(), ::getpid(), std::move(env));
+}
 
 /** @test Without the env var, externalWrapTool() is empty. */
 TEST(ProfilerEnv, ExternalWrapToolDefaultsEmpty) {
@@ -318,6 +334,103 @@ TEST(ProfilerEnv, CuptiDisableInvalidInsideASessionIsStillAnError) {
   ::setenv("VERNIER_DISABLE_CUPTI", "maybe", 1);
   EXPECT_FALSE(cuptiDecision().error.empty());
   EXPECT_THROW((void)cuptiMustYield(), std::invalid_argument);
+}
+
+/** @test The decision reads the snapshot it is given, not the live environment */
+TEST(ProfilerEnv, CuptiDecisionReadsTheSnapshotItIsGiven) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("VERNIER_DISABLE_CUPTI", "maybe", 1);
+  const CuptiDecision CLEAN = cuptiDecision(snapshot({}));
+  EXPECT_EQ(CLEAN.error, "") << "the live value was read";
+  EXPECT_FALSE(CLEAN.yields);
+  ::setenv("VERNIER_DISABLE_CUPTI", "1", 1);
+  EXPECT_FALSE(cuptiDecision(snapshot({})).yields) << "the live override was read";
+  ::unsetenv("VERNIER_DISABLE_CUPTI");
+  EXPECT_TRUE(cuptiDecision(snapshot({{"VERNIER_DISABLE_CUPTI", "on"}})).yields);
+  EXPECT_EQ(cuptiDecision(snapshot({{"VERNIER_DISABLE_CUPTI", "maybe"}})).error,
+            "VERNIER_DISABLE_CUPTI='maybe' is not a boolean");
+}
+
+/** @test Each value is decided as parseEnvBool() reads it: true yields, false not, invalid errs */
+TEST(ProfilerEnv, CuptiDecisionReadsEachValueAsTheSharedParser) {
+  const std::string VALUES[] = {"1",     "true",  "TRUE", "yes", "Yes",    "on",  "ON", "0",
+                                "false", "False", "no",   "NO",  "off",    "Off", "",   "2",
+                                "-1",    "maybe", "y",    "n",   "enable", " 1",  "1 ", "\toff"};
+  for (const std::string& value : VALUES) {
+    const CuptiDecision DECISION = cuptiDecision(snapshot({{"VERNIER_DISABLE_CUPTI", value}}));
+    switch (parseEnvBool(value)) {
+    case EnvBool::TRUE_VALUE:
+      EXPECT_TRUE(DECISION.yields) << "'" << value << "'";
+      EXPECT_EQ(DECISION.error, "") << "'" << value << "'";
+      break;
+    case EnvBool::FALSE_VALUE:
+      EXPECT_FALSE(DECISION.yields) << "'" << value << "'";
+      EXPECT_EQ(DECISION.error, "") << "'" << value << "'";
+      break;
+    case EnvBool::INVALID:
+      EXPECT_EQ(DECISION.error, "VERNIER_DISABLE_CUPTI='" + value + "' is not a boolean");
+      EXPECT_NE(DECISION.remedy, "") << "'" << value << "'";
+      break;
+    case EnvBool::ABSENT:
+      ADD_FAILURE() << "parseEnvBool read the set value '" << value << "' as unset";
+      break;
+    }
+  }
+  const CuptiDecision UNSET = cuptiDecision(snapshot({}));
+  EXPECT_FALSE(UNSET.yields) << "unset is no override";
+  EXPECT_EQ(UNSET.error, "");
+}
+
+/** @test The session comes from the snapshot, for the tool's name and for the decision */
+TEST(ProfilerEnv, CuptiDecisionTakesTheSessionFromTheSnapshot) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("VERNIER_EXTERNAL_WRAP", "ncu", 1);
+  ::setenv("NSYS_PROFILING_SESSION_ID", "1017521", 1);
+  EXPECT_EQ(nsightSessionTool(snapshot({})), "") << "the live session was read";
+  EXPECT_FALSE(cuptiDecision(snapshot({})).yields) << "the live session was read";
+  ::unsetenv("VERNIER_EXTERNAL_WRAP");
+  ::unsetenv("NSYS_PROFILING_SESSION_ID");
+  const struct {
+    const char* name;
+    const char* value;
+    const char* tool;
+  } SESSIONS[] = {{"VERNIER_EXTERNAL_WRAP", "nsight", "nsys"},
+                  {"VERNIER_EXTERNAL_WRAP", "nsys", "nsys"},
+                  {"VERNIER_EXTERNAL_WRAP", "ncu", "ncu"},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521", "nsys"},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152", "ncu"}};
+  for (const auto& session : SESSIONS) {
+    EXPECT_EQ(nsightSessionTool(snapshot({{session.name, session.value}})), session.tool)
+        << session.name << "=" << session.value;
+    EXPECT_TRUE(
+        cuptiDecision(snapshot({{session.name, session.value}, {"VERNIER_DISABLE_CUPTI", "off"}}))
+            .yields)
+        << session.name << "=" << session.value << " with VERNIER_DISABLE_CUPTI=off";
+  }
+  EXPECT_EQ(nsightSessionTool(snapshot({{"VERNIER_EXTERNAL_WRAP", "massif"}})), "");
+}
+
+/**
+ * @test The runtime error is the text of the CONFIGURATION report readinessResult()
+ *       builds from the same decision: a readiness row and the run say the same words
+ */
+TEST(ProfilerEnv, CuptiRuntimeErrorIsTheConfigurationReport) {
+  EnvScrub scrub{"VERNIER_EXTERNAL_WRAP", "VERNIER_DISABLE_CUPTI", "NSYS_PROFILING_SESSION_ID",
+                 "NV_NSIGHT_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH"};
+  ::setenv("VERNIER_DISABLE_CUPTI", "maybe", 1);
+  const CuptiDecision DECISION = cuptiDecision();
+  ASSERT_NE(DECISION.error, "");
+  const ReadinessResult REPORT =
+      readinessResult(ReadinessCause::CONFIGURATION, DECISION.error, DECISION.remedy);
+  EXPECT_EQ(REPORT.report.status, EnvReport::Status::Error);
+  try {
+    (void)cuptiMustYield();
+    ADD_FAILURE() << "VERNIER_DISABLE_CUPTI='maybe' was accepted";
+  } catch (const std::invalid_argument& e) {
+    EXPECT_EQ(std::string(e.what()), REPORT.report.message + ". " + REPORT.report.hint);
+  }
 }
 
 } // namespace

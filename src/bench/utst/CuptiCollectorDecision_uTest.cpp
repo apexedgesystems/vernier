@@ -20,6 +20,11 @@
 #include <string>
 
 using vernier::bench::CuptiCollector;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessResult;
+using vernier::bench::readinessResult;
+using vernier::bench::profiler_env::CuptiDecision;
+using vernier::bench::profiler_env::cuptiDecision;
 using vernier::bench::test::ScopedEnv;
 
 namespace {
@@ -88,7 +93,10 @@ TEST_F(CuptiCollectorDecision, ASessionWinsOverFalse) {
   }
 }
 
-/** @test Any other value is a configuration error, raised before anything registers. */
+/**
+ * @test Any other value is a configuration error, raised before anything
+ *       registers, in the words of its CONFIGURATION readiness report
+ */
 TEST_F(CuptiCollectorDecision, AnInvalidValueIsRejectedBeforeRegistering) {
   for (const char* value : INVALID_VALUES) {
     EXPECT_EQ(registrationsFor(value), -1)
@@ -104,6 +112,10 @@ TEST_F(CuptiCollectorDecision, AnInvalidValueIsRejectedBeforeRegistering) {
                                           0),
               0U)
         << e.what();
+    const CuptiDecision DECISION = cuptiDecision();
+    const ReadinessResult REPORT =
+        readinessResult(ReadinessCause::CONFIGURATION, DECISION.error, DECISION.remedy);
+    EXPECT_EQ(std::string(e.what()), REPORT.report.message + ". " + REPORT.report.hint);
   }
 }
 

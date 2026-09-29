@@ -52,12 +52,20 @@ vernier_add_gtest(
 # against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
 # every configuration, CPU-only included, checks that the collector applies the
 # CUPTI decision before it registers: a setting that stands it down, or one that
-# is rejected, registers nothing.
+# is rejected, registers nothing. It links bench, which defines what the
+# decision is built from: the shared Boolean parser, the readiness context and
+# the report formatter.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
-  TARGET TestBenchCuptiDecision SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp" LABELS benchmarking
+  TARGET
+  TestBenchCuptiDecision
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
 )
 target_include_directories(
   TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"

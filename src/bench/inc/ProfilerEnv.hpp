@@ -10,11 +10,11 @@
  * only one that touches the filesystem.
  */
 
-#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -139,31 +139,35 @@ inline std::string externalWrapTool() {
 /* ----------------------------- nsightSessionTool ----------------------------- */
 
 /**
- * @brief The Nsight tool running this process: "nsys", "ncu", or "" for none.
+ * @brief The Nsight tool running the process @p ctx describes: "nsys", "ncu",
+ * or "" for none.
  *
  * Neither nsys nor ncu can attach to a process that is already running, so a
  * session exists only when the tool started this process. `bench run --profile
  * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by hand is
  * recognised from the variables each tool exports to the process it starts:
  * NSYS_PROFILING_SESSION_ID (nsys) and NV_NSIGHT_INJECTION_PORT_BASE (ncu),
- * as exported by nsys 2025.3 and ncu 2025.3.
+ * as exported by nsys 2025.3 and ncu 2025.3. Reads only the snapshot.
  */
-inline std::string nsightSessionTool() {
-  const std::string WRAP = externalWrapTool();
+inline std::string nsightSessionTool(const ReadinessContext& ctx) {
+  const std::string WRAP = ctx.get("VERNIER_EXTERNAL_WRAP").value_or("");
   if (WRAP == "nsight" || WRAP == "nsys") {
     return "nsys";
   }
   if (WRAP == "ncu") {
     return "ncu";
   }
-  if (std::getenv("NSYS_PROFILING_SESSION_ID") != nullptr) {
+  if (ctx.get("NSYS_PROFILING_SESSION_ID")) {
     return "nsys";
   }
-  if (std::getenv("NV_NSIGHT_INJECTION_PORT_BASE") != nullptr) {
+  if (ctx.get("NV_NSIGHT_INJECTION_PORT_BASE")) {
     return "ncu";
   }
   return {};
 }
+
+/** @brief nsightSessionTool() on a snapshot of this process, taken now. */
+inline std::string nsightSessionTool() { return nsightSessionTool(ReadinessContext::capture()); }
 
 /* ----------------------------- Artifact Directories ----------------------------- */
 
@@ -245,38 +249,6 @@ inline std::string resolveArtifactDir(const std::string& profileTool,
 
 /* ----------------------------- cuptiDecision ----------------------------- */
 
-namespace detail {
-
-/** @brief A boolean setting as read by the common grammar. */
-enum class SettingBool { ABSENT, FALSE_VALUE, TRUE_VALUE, INVALID };
-
-/**
- * @brief Read a boolean setting, in any case: unset is ABSENT; "1", "true",
- * "yes", "on" are TRUE_VALUE; "0", "false", "no", "off" and the empty value are
- * FALSE_VALUE; anything else is INVALID.
- *
- * This is the grammar of the readiness registry's parseEnvBool(); once both
- * are on one branch, that function replaces this one.
- */
-inline SettingBool parseSettingBool(const char* raw) {
-  if (raw == nullptr) {
-    return SettingBool::ABSENT;
-  }
-  std::string value(raw);
-  for (char& c : value) {
-    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-  }
-  if (value.empty() || value == "0" || value == "false" || value == "no" || value == "off") {
-    return SettingBool::FALSE_VALUE;
-  }
-  if (value == "1" || value == "true" || value == "yes" || value == "on") {
-    return SettingBool::TRUE_VALUE;
-  }
-  return SettingBool::INVALID;
-}
-
-} // namespace detail
-
 /** @brief What the in-process CUPTI collector does in this process, and why. */
 struct CuptiDecision {
   bool yields = false; ///< Stand down: an Nsight session owns the process, or the override asks
@@ -285,52 +257,62 @@ struct CuptiDecision {
 };
 
 /**
- * @brief Whether the in-process CUPTI collector stays off for this run.
+ * @brief Whether the in-process CUPTI collector stays off, decided from the
+ * snapshot @p ctx alone.
  *
  * With the collector registered, an nsys session records no kernels (nsys
  * 2025.3.2), and under ncu (2025.3.1) the collector records nothing while ncu
  * profiles every launch. So the collector stands down when:
- *  1. VERNIER_DISABLE_CUPTI is 1, true, yes or on, in any case (the explicit
- *     override), or
+ *  1. VERNIER_DISABLE_CUPTI is true (the explicit override), or
  *  2. an nsys or ncu session owns this process (nsightSessionTool()): one that
  *     `bench run` started, or one typed by hand, recognised from the variables
  *     the tool exports to its target.
  *
- * VERNIER_DISABLE_CUPTI set to 0, false, no, off or empty, in any case, does
- * not disable the collector, and never keeps it on inside a session; unset is
- * no override. Any other value is a configuration error: @ref CuptiDecision::error
- * names it and @ref CuptiDecision::remedy lists the accepted values, and the
- * caller must not register with CUPTI. `--profile nsight|nsys|ncu` alone starts
- * no session. The session variables are what those tool versions export, not a
- * promised interface; with a version that does not export them, set
- * VERNIER_DISABLE_CUPTI=1 when wrapping. The collector, the GPU harness and a
- * readiness check all decide with this function, so they agree.
+ * VERNIER_DISABLE_CUPTI is read with parseEnvBool(), the grammar of every
+ * boolean setting. True (1, true, yes or on, in any case) is the override;
+ * false (0, false, no, off or empty, in any case) leaves the collector on and
+ * never keeps it on inside a session; unset is no override. Any other value is
+ * a configuration error: @ref CuptiDecision::error names it and
+ * @ref CuptiDecision::remedy lists the accepted values, and the caller must not
+ * register with CUPTI. As a readiness result it is ReadinessCause::CONFIGURATION
+ * with those two texts, the report whose text cuptiMustYield() throws.
+ * `--profile nsight|nsys|ncu` alone starts no session. The session variables
+ * are what those tool versions export, not a promised interface; with a version
+ * that does not export them, set VERNIER_DISABLE_CUPTI=1 when wrapping. The
+ * collector and the GPU harness decide with this function, and so should a
+ * readiness check, so that they agree.
  */
-inline CuptiDecision cuptiDecision() {
+inline CuptiDecision cuptiDecision(const ReadinessContext& ctx) {
   CuptiDecision decision;
-  const char* raw = std::getenv("VERNIER_DISABLE_CUPTI");
-  const detail::SettingBool SETTING = detail::parseSettingBool(raw);
-  if (SETTING == detail::SettingBool::INVALID) {
-    decision.error = std::string("VERNIER_DISABLE_CUPTI='") + raw + "' is not a boolean";
+  const std::optional<std::string> RAW = ctx.get("VERNIER_DISABLE_CUPTI");
+  const EnvBool SETTING = parseEnvBool(RAW);
+  if (SETTING == EnvBool::INVALID) {
+    decision.error = "VERNIER_DISABLE_CUPTI='" + *RAW + "' is not a boolean";
     decision.remedy = "Use 1, true, yes or on to turn the in-process CUPTI collector off; 0, "
                       "false, no, off or an empty value to leave it on (it stands down inside "
                       "an Nsight session either way).";
     return decision;
   }
-  decision.yields = SETTING == detail::SettingBool::TRUE_VALUE || !nsightSessionTool().empty();
+  decision.yields = SETTING == EnvBool::TRUE_VALUE || !nsightSessionTool(ctx).empty();
   return decision;
 }
 
+/** @brief cuptiDecision() on a snapshot of this process, taken now. */
+inline CuptiDecision cuptiDecision() { return cuptiDecision(ReadinessContext::capture()); }
+
 /**
  * @brief True when the in-process CUPTI collector must stay off for this run
- * (cuptiDecision()).
- * @throws std::invalid_argument "configuration: <error> <remedy>" when
- *         VERNIER_DISABLE_CUPTI is not a boolean.
+ * (cuptiDecision() on a snapshot of this process).
+ * @throws std::invalid_argument when VERNIER_DISABLE_CUPTI is not a boolean,
+ *         with the text of the CONFIGURATION report readinessResult() gives for
+ *         the decision's error and remedy: its message, ". ", its hint.
  */
 inline bool cuptiMustYield() {
   const CuptiDecision DECISION = cuptiDecision();
   if (!DECISION.error.empty()) {
-    throw std::invalid_argument("configuration: " + DECISION.error + ". " + DECISION.remedy);
+    const ReadinessResult RESULT =
+        readinessResult(ReadinessCause::CONFIGURATION, DECISION.error, DECISION.remedy);
+    throw std::invalid_argument(RESULT.report.message + ". " + RESULT.report.hint);
   }
   return DECISION.yields;
 }
