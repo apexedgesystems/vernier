@@ -27,6 +27,16 @@ performance, not by default in CI.
   (the grant refuses `kill`) ends by its self-exit, and the check waits for it
   rather than leave it running. A ready check lists what it did not check.
 
+## Selecting scripts
+
+`--bpf` takes a comma-separated list. A name without a `/` is a script in the
+scripts directory (`<name>.bt` there); a name with a `/` is a path to a script
+file, absolute or from the working directory, not from the scripts directory:
+`--bpf sub/x` names `./sub/x.bt`. Either form may leave out the `.bt` suffix,
+so `--bpf write_latency`, `--bpf write_latency.bt`, `--bpf ./my_script.bt` and
+`--bpf /path/to/my_script` all work. Without `--bpf`, the backend runs
+`write_latency` and `fsync_latency`.
+
 ## PID filtering
 
 Scripts contain the placeholder `{{PID}}`. The bpftrace backend (`--profile bpftrace`)

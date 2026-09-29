@@ -280,9 +280,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a run from the build directory finds it. `--bpf-scripts DIR`, which the
   binary forwarded as an unknown option, selects another directory: it sets
   `PERF_BPF_SCRIPTS` in the process environment, over an inherited value, and an
-  empty value selects the bundled scripts. An installed library whose source tree
-  is gone reports the path it looked in; pass `--bpf-scripts` with a copy of the
-  scripts.
+  empty value selects the bundled scripts. `--bpf` takes a script path with or
+  without `.bt` (one given with `.bt` was looked up with a second), and a name
+  containing `/` is a path from the working directory. An installed library
+  whose source tree is gone reports the path it looked in; pass `--bpf-scripts`
+  with a copy of the scripts. **Action needed:** a `--bpf sub/name` that meant a
+  subdirectory of the scripts directory names `./sub/name.bt` instead.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

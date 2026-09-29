@@ -386,10 +386,22 @@ std::string scriptsDirectory(const ReadinessContext& ctx) {
   return DIR.empty() ? std::string{DEFAULT_SCRIPTS_DIR} : DIR;
 }
 
-/** @brief Where script @p name is looked up: `<dir>/<name>.bt` (an absolute name keeps its path).
+/** @brief True when @p name ends in the ".bt" suffix. */
+bool hasBtSuffix(const std::string& name) {
+  return name.size() >= 3 && name.compare(name.size() - 3, 3, ".bt") == 0;
+}
+
+/**
+ * @brief Where script @p name is: a name with a '/' is a path to the file,
+ * absolute or from the working directory; any other name is a script in
+ * @p scriptsDir. Either may leave out the ".bt" suffix.
  */
 std::string scriptPathFor(const std::string& scriptsDir, const std::string& name) {
-  return (std::filesystem::path(scriptsDir) / (name + ".bt")).string();
+  const std::string FILE = hasBtSuffix(name) ? name : name + ".bt";
+  if (name.find('/') != std::string::npos) {
+    return FILE;
+  }
+  return (std::filesystem::path(scriptsDir) / FILE).string();
 }
 
 /** @brief Read the script at @p path into @p text; 0, or the errno of the failed open or read. */
@@ -472,12 +484,6 @@ public:
     if (const int ERR = readScript(scriptPath_, src); ERR != 0) {
       std::fprintf(stderr, "[bpftrace] cannot read script '%s' at %s: %s\n", name_.c_str(),
                    scriptPath_.c_str(), errnoText(ERR).c_str());
-      if (ERR == ENOENT) {
-        std::fprintf(stderr,
-                     "[bpftrace] Pass `--bpf <script>` with a script name that exists under\n"
-                     "[bpftrace] `--bpf-scripts <dir>` (default: src/bench/bpf/),\n"
-                     "[bpftrace] or pass an absolute path via `--bpf </path/to/script.bt>`.\n");
-      }
       return false;
     }
     replacePid(src, static_cast<long>(pid));
@@ -579,10 +585,11 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     const std::string PATH = scriptPathFor(SCRIPTS_DIR, name);
     std::error_code ec;
     if (!std::filesystem::is_regular_file(PATH, ec)) {
-      return readinessResult(
-          ReadinessCause::MISSING, "bpftrace script '" + name + "' not found at " + PATH,
-          "Pass --bpf with a script under --bpf-scripts <dir> (PERF_BPF_SCRIPTS, "
-          "default src/bench/bpf/) or an absolute path without the .bt suffix.");
+      return readinessResult(ReadinessCause::MISSING,
+                             "bpftrace script '" + name + "' not found at " + PATH,
+                             "--bpf takes a script name, looked up as <name>.bt in " + SCRIPTS_DIR +
+                                 " (set by --bpf-scripts DIR or PERF_BPF_SCRIPTS), or a path "
+                                 "to a script file, with or without .bt.");
     }
     std::string text;
     if (const int ERR = readScript(PATH, text); ERR != 0) {

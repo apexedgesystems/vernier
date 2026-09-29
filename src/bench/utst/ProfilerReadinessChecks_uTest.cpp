@@ -687,6 +687,62 @@ TEST_F(BpfCheckTest, BpftraceBundledScriptsFromAnyDirectory) {
   }
 }
 
+/**
+ * @test A script named by path keeps its .bt suffix, a bare name may carry
+ * one, and a name without one gets it, in either form.
+ */
+TEST_F(BpfCheckTest, BpftraceScriptWithOrWithoutSuffix) {
+  const std::string WITHOUT_SUFFIX = dir_.path() + "/scripts/probe_script";
+  for (const std::string& name :
+       {script_, WITHOUT_SUFFIX, std::string{"probe_script.bt"}, std::string{"probe_script"}}) {
+    const ReadinessResult R =
+        ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {name}), ctx());
+    ASSERT_EQ(R.cause, ReadinessCause::READY) << name << ": " << R.report.message;
+    const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+    ASSERT_NE(PLAN, nullptr);
+    EXPECT_EQ(PLAN->scriptPaths.at(0), script_) << name;
+  }
+}
+
+/** @test A relative name with a '/' is a path from the working directory, not the scripts one */
+TEST_F(BpfCheckTest, BpftraceRelativeScriptPathFromWorkingDirectory) {
+  const std::string RELATIVE = std::filesystem::relative(script_).string();
+  ASSERT_NE(RELATIVE.find('/'), std::string::npos) << RELATIVE;
+  const ReadinessResult R =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {RELATIVE}), ctx());
+  ASSERT_EQ(R.cause, ReadinessCause::READY) << R.report.message;
+  const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+  ASSERT_NE(PLAN, nullptr);
+  EXPECT_EQ(PLAN->scriptPaths.at(0), RELATIVE);
+  EXPECT_TRUE(std::filesystem::equivalent(PLAN->scriptPaths.at(0), script_));
+}
+
+/** @test A missing script's hint states the lookup rule with the directory in effect */
+TEST_F(BpfCheckTest, BpftraceMissingScriptHintNamesTheRule) {
+  const ReadinessResult R =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"absent_script"}), ctx());
+  EXPECT_EQ(R.cause, ReadinessCause::MISSING);
+  EXPECT_EQ(R.report.hint, "--bpf takes a script name, looked up as <name>.bt in " + dir_.path() +
+                               "/scripts (set by --bpf-scripts DIR or PERF_BPF_SCRIPTS), or a "
+                               "path to a script file, with or without .bt.");
+}
+
+/** @test A script gone by the time the run starts is reported without advice on its suffix */
+TEST_F(BpfCheckTest, BpftraceVanishedScriptReportedPlainly) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  ASSERT_TRUE(std::filesystem::remove(script_));
+  const std::string ERR = runPlanned("bpftrace", R, "Bpf.Vanished");
+  EXPECT_NE(ERR.find("[bpftrace] cannot read script 'probe_script' at " + script_ +
+                     ": No such file or directory"),
+            std::string::npos)
+      << ERR;
+  EXPECT_EQ(ERR.find("--bpf-scripts <dir>"), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find("script.bt>"), std::string::npos) << ERR;
+  EXPECT_TRUE(dir_.logLines("bpftrace -q ").size() <= 1U) << "only the check's probe ran:\n"
+                                                          << dir_.log();
+}
+
 /** @test An unreadable selected script is rejected before anything runs, and a run leaves no
  * folder. */
 TEST_F(BpfCheckTest, BpftraceUnreadableScriptLaunchesNothing) {
