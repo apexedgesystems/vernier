@@ -426,6 +426,67 @@ TEST(ReadinessContextTest, RequestForConfiguration) {
   EXPECT_EQ(OTHER.launch, LaunchContext::IN_PROCESS);
 }
 
+/* ----------------------------- Request Identity ----------------------------- */
+
+/**
+ * @test The request has exactly the fields identity() keys.
+ *
+ * The binding below stops compiling when a field is added to
+ * ReadinessRequest: key it in identity(), vary it in EveryFieldChangesTheKey,
+ * then name it here.
+ */
+TEST(ReadinessRequestIdentityTest, NamesEveryField) {
+  ReadinessRequest request;
+  request.bpfScripts = {"s"};
+  const auto& [backend, profileArgs, bpfScripts, analyze, scope, launch] = request;
+  EXPECT_TRUE(backend.empty());
+  EXPECT_TRUE(profileArgs.empty());
+  EXPECT_EQ(bpfScripts.size(), 1U);
+  EXPECT_FALSE(analyze);
+  EXPECT_EQ(scope, ReadinessScope::DEFAULT_INVENTORY);
+  EXPECT_EQ(launch, LaunchContext::IN_PROCESS);
+}
+
+/** @test A change to any one field is a different identity, and no value imitates a separator. */
+TEST(ReadinessRequestIdentityTest, EveryFieldChangesTheKey) {
+  ReadinessRequest base;
+  base.backend = "b";
+  base.profileArgs = "m";
+  base.bpfScripts = {"x"};
+  std::vector<ReadinessRequest> variants(6, base);
+  variants[0].backend = "c";
+  variants[1].profileArgs = "n";
+  variants[2].bpfScripts = {"y"};
+  variants[3].analyze = true;
+  variants[4].scope = ReadinessScope::RUNTIME;
+  variants[5].launch = LaunchContext::RUNNER_WRAPPED;
+  std::vector<std::string> keys{base.identity()};
+  for (const ReadinessRequest& variant : variants) {
+    keys.push_back(variant.identity());
+  }
+  // Values that a separator-based key would confuse.
+  ReadinessRequest joined = base;
+  joined.bpfScripts = {"x;y"};
+  ReadinessRequest split = base;
+  split.bpfScripts = {"x", "y"};
+  ReadinessRequest none = base;
+  none.bpfScripts = {};
+  ReadinessRequest emptyName = base;
+  emptyName.bpfScripts = {""};
+  ReadinessRequest shifted = base;
+  shifted.backend = "b;1:m";
+  shifted.profileArgs = "";
+  for (const ReadinessRequest* request : {&joined, &split, &none, &emptyName, &shifted}) {
+    keys.push_back(request->identity());
+  }
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    for (std::size_t j = i + 1; j < keys.size(); ++j) {
+      EXPECT_NE(keys[i], keys[j]) << "requests " << i << " and " << j << " share a key";
+    }
+  }
+  EXPECT_EQ(ReadinessRequest{base}.identity(), base.identity()) << "equal requests, equal keys";
+}
+
 /* ----------------------------- Results ----------------------------- */
 
 /** @test Each cause maps to one status and one leading word; analysis and completion say so. */

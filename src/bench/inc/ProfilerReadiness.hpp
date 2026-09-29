@@ -171,6 +171,16 @@ struct ReadinessRequest {
   bool analyze = false;                ///< --profile-analyze promised an analysis.
   ReadinessScope scope = ReadinessScope::DEFAULT_INVENTORY;
   LaunchContext launch = LaunchContext::IN_PROCESS;
+
+  /**
+   * @brief Every field of the request as one key, each length-prefixed.
+   *
+   * Two requests have the same identity exactly when all their fields are
+   * equal. The registry keeps one decision per identity, context and
+   * registration, so a field added to this struct is added here too, or two
+   * different requests would share a decision.
+   */
+  [[nodiscard]] std::string identity() const;
 };
 
 /**

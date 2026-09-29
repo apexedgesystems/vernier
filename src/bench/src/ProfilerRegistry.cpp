@@ -49,19 +49,13 @@ void appendField(std::string& key, const std::string& value) {
   key += ';';
 }
 
-/** @brief Memo key: the request, the decision inputs of its context, the registrations. */
+/**
+ * @brief Memo key: every field of the request (its identity), the decision
+ * inputs of its context, and the registrations.
+ */
 std::string memoKey(const ReadinessRequest& request, const std::string& fingerprint,
                     std::uint64_t generation) {
-  std::string key;
-  appendField(key, request.backend);
-  appendField(key, request.profileArgs);
-  appendField(key, std::to_string(request.bpfScripts.size()));
-  for (const std::string& script : request.bpfScripts) {
-    appendField(key, script);
-  }
-  appendField(key, request.analyze ? "1" : "0");
-  appendField(key, std::to_string(static_cast<int>(request.scope)));
-  appendField(key, std::to_string(static_cast<int>(request.launch)));
+  std::string key = request.identity();
   appendField(key, fingerprint);
   appendField(key, std::to_string(generation));
   return key;

@@ -400,6 +400,17 @@ TEST(ProfilerReadinessRouting, MemoizedPerRequestAndContext) {
   EXPECT_EQ(backend.calls()->checks.load(), 4) << "a declared input changed";
   MAKE(CFG, contextWith({{"PATH", "/a"}, {"BENCH_SUDO", "1"}}));
   EXPECT_EQ(backend.calls()->checks.load(), 5) << "the privilege opt-in changed";
+  PerfConfig analyzed = CFG;
+  analyzed.profileAnalyze = true;
+  MAKE(analyzed, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 6) << "a promised analysis is another request";
+  PerfConfig scripted = CFG;
+  scripted.bpfScripts = {"one"};
+  MAKE(scripted, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 7) << "a script selection is another request";
+  MAKE(analyzed, contextWith({{"PATH", "/a"}}));
+  MAKE(scripted, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 7) << "each is kept once decided";
 }
 
 /** @test A repair is seen only after resetReadiness(), the one reset boundary. */

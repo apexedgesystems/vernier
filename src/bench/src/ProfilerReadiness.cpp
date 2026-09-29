@@ -377,6 +377,28 @@ ReadinessResult readinessResult(ReadinessCause cause, std::string detail, std::s
   return result;
 }
 
+std::string ReadinessRequest::identity() const {
+  // Every field is length-prefixed, so the key reads back as exactly one
+  // sequence of fields: no value can imitate a separator, and the number of
+  // scripts follows from the number of fields.
+  std::string key;
+  const auto FIELD = [&key](const std::string& value) {
+    key += std::to_string(value.size());
+    key += ':';
+    key += value;
+    key += ';';
+  };
+  FIELD(backend);
+  FIELD(profileArgs);
+  for (const std::string& script : bpfScripts) {
+    FIELD(script);
+  }
+  FIELD(analyze ? "1" : "0");
+  FIELD(std::to_string(static_cast<int>(scope)));
+  FIELD(std::to_string(static_cast<int>(launch)));
+  return key;
+}
+
 ReadinessRequest readinessRequestFor(const PerfConfig& cfg, ReadinessScope scope,
                                      const ReadinessContext& ctx) {
   ReadinessRequest request;
