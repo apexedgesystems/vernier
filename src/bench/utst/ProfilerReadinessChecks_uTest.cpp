@@ -938,6 +938,30 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserDenied) {
   EXPECT_EQ(R.report.hint.rfind("Set BENCH_SUDO=1 with a scoped sudoers grant", 0), 0U);
 }
 
+/**
+ * @test The run's exit probe matches only the thread whose id is the
+ * benchmark's pid, its main thread: sched_process_exit fires for every
+ * exiting thread, so a worker's exit must not end the trace. The fake
+ * cannot evaluate a predicate; this reads the program the run launched.
+ */
+TEST_F(BpfCheckTest, OffCpuExitProbeMatchesTheMainThreadOnly) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  (void)runPlanned("offcpu", R, "OffCpu.ExitProbe");
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
+  const InlineCall& RUN = CALLS[1];
+  EXPECT_EQ(RUN.target, ::getpid());
+  const std::regex EXIT_PROBE("tracepoint:sched:sched_process_exit /([^/]*)/");
+  std::vector<std::string> predicates;
+  for (std::sregex_iterator it(RUN.program.begin(), RUN.program.end(), EXIT_PROBE), end; it != end;
+       ++it) {
+    predicates.push_back((*it)[1].str());
+  }
+  ASSERT_EQ(predicates.size(), 1U) << RUN.program;
+  EXPECT_EQ(predicates.front(), "tid == $1") << RUN.program;
+}
+
 /* ----------------------------- perf ----------------------------- */
 
 namespace {

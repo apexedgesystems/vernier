@@ -34,6 +34,10 @@ namespace {
 // map at exit (SIGINT, exit(), or target death via the self-exit probe),
 // and distro builds are often stripped, which breaks BEGIN/END trigger
 // symbols outright. Consumers read @offcpu_blocks / @offcpu_ns.
+//
+// The self-exit probe matches the main thread alone (tid == $1):
+// sched_process_exit fires for every exiting thread, and a test that starts
+// threads must not end its own trace when the first of them finishes.
 constexpr const char* OFFCPU_SCRIPT = R"BT(
 tracepoint:sched:sched_switch /pid == $1 && args->prev_state != 0/ {
   @start[args->prev_pid] = nsecs;
@@ -43,7 +47,7 @@ tracepoint:sched:sched_switch /@start[args->next_pid]/ {
   @offcpu_ns[args->next_pid] = sum(nsecs - @start[args->next_pid]);
   delete(@start[args->next_pid]);
 }
-tracepoint:sched:sched_process_exit /pid == $1/ {
+tracepoint:sched:sched_process_exit /tid == $1/ {
   exit();
 }
 )BT";

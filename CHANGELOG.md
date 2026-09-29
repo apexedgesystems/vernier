@@ -642,6 +642,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **offcpu traces a threaded test to the end** -- the trace ended when any
+  thread of the benchmark exited, so a `contentionRun()` test, which starts
+  new threads for every repeat, was traced only until its first worker
+  finished. It ends when the benchmark's main thread exits.
 
 ## v1.0.3 - 2026-06-28
 

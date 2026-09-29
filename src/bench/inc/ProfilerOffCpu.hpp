@@ -12,7 +12,8 @@
  * Probes: an embedded bpftrace script on the sched tracepoints (a stable
  * kernel interface). At switch-out it counts the user stack of each thread of
  * this process that blocks; at switch-in it sums how long that thread was
- * off the CPU. It exits by itself when this process exits.
+ * off the CPU. It exits by itself when this process's main thread exits,
+ * not when one of its other threads does.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
