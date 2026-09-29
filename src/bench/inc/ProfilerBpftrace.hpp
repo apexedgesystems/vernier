@@ -168,8 +168,10 @@ struct BpftracePlan final : ReadinessPlan {
  * @brief The bpftrace backend's readiness decision for @p request in @p ctx.
  *
  * Reads BENCH_SUDO, PERF_BPF_SUDO, PERF_BPF_SCRIPTS, PERF_BPF_FMT, PERF_BPF and
- * PERF_BPF_OUT from the snapshot. On success the result's plan is a
- * BpftracePlan.
+ * PERF_BPF_OUT from the snapshot. A script name is looked up in
+ * PERF_BPF_SCRIPTS, or, when that is unset or empty, in the bpf/ directory of
+ * the source tree this library was built from, by absolute path. On success
+ * the result's plan is a BpftracePlan.
  */
 ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
 

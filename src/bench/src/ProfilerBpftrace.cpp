@@ -372,7 +372,19 @@ constexpr int PROBE_SELF_EXIT_S = 5; // a readiness probe copy exits by itself a
 constexpr int INTERRUPT_WAIT_MS = 2000;
 constexpr int TERMINATE_WAIT_MS = 1000;
 constexpr int KILL_WAIT_MS = 1000;
-const char* const DEFAULT_SCRIPTS_DIR = "src/bench/bpf";
+
+#ifndef VERNIER_BPF_SCRIPTS_DIR
+#error "VERNIER_BPF_SCRIPTS_DIR must name the bundled scripts (src/bench/CMakeLists.txt sets it)"
+#endif
+// The bundled scripts, in the source tree this library was built from: an
+// absolute path, so the lookup does not depend on the working directory.
+const char* const DEFAULT_SCRIPTS_DIR = VERNIER_BPF_SCRIPTS_DIR;
+
+/** @brief PERF_BPF_SCRIPTS when set and not empty, else the bundled scripts' directory. */
+std::string scriptsDirectory(const ReadinessContext& ctx) {
+  const std::string DIR = ctx.get("PERF_BPF_SCRIPTS").value_or("");
+  return DIR.empty() ? std::string{DEFAULT_SCRIPTS_DIR} : DIR;
+}
 
 /** @brief Where script @p name is looked up: `<dir>/<name>.bt` (an absolute name keeps its path).
  */
@@ -550,7 +562,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     enable += static_cast<char>(std::tolower(static_cast<unsigned char>(CH)));
   }
   plan->envEnabled = enable == "1" || enable == "true";
-  const std::string SCRIPTS_DIR = ctx.get("PERF_BPF_SCRIPTS").value_or(DEFAULT_SCRIPTS_DIR);
+  const std::string SCRIPTS_DIR = scriptsDirectory(ctx);
   plan->outputDir = ctx.get("PERF_BPF_OUT").value_or("");
   plan->format = ctx.get("PERF_BPF_FMT").value_or("text");
   plan->scripts = request.bpfScripts.empty()

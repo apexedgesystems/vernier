@@ -113,13 +113,14 @@ set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarkin
 # profilers' own tools, so the readiness policy, its routing and its error
 # reports are tested without privileges or the real tools. The unit tests copy
 # them into a private directory and hand the checks a context whose PATH is it;
-# the command-line tests run a fixture benchmark with that PATH.
+# the command-line tests run a fixture benchmark with that PATH. The bpftrace
+# tests also read the bundled scripts, where the library looks them up.
 # ------------------------------------------------------------------------------
 
 if (TARGET TestBench)
   target_compile_definitions(
-    TestBench
-    PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+    TestBench PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+                      VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
   )
 endif ()
 

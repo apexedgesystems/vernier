@@ -181,11 +181,16 @@ endfunction ()
 # Fast runs: the cases measure nothing that matters here.
 set(_quick --cycles 50 --repeats 2 --warmup 0)
 
-# The bpftrace fakes, and a scripts directory holding one sched script.
-macro (bpf_fakes)
+# The fake bpftrace, sudo and kill.
+macro (bpf_tools)
   fake(fake_bpftrace.sh bpftrace)
   fake(fake_sudo.sh sudo)
   fake(fake_kill.sh kill)
+endmacro ()
+
+# The bpftrace fakes, and a scripts directory holding one sched script.
+macro (bpf_fakes)
+  bpf_tools()
   file(WRITE "${WORK_DIR}/scripts/probe_script.bt"
        "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n"
   )
@@ -867,6 +872,16 @@ elseif (CASE MATCHES "^Gperf")
       expect_eq("${_times}" "1" "the remedy, once for two guarded cases")
     endif ()
   endif ()
+
+elseif (CASE STREQUAL "BpfBundledScriptFromAnyDirectory")
+  # A bundled script's name, with no PERF_BPF_SCRIPTS, from a working directory
+  # outside the source tree: the check finds the bundled script and probes it.
+  bpf_tools()
+  selected_row(row --profile bpftrace --bpf write_latency)
+  expect_eq("${row_STATUS}" "ok" "selected status")
+  expect_has("${row_MESSAGE}" "write_latency: a probe copy" "selected message")
+  expect_not("${row_MESSAGE}" "not found" "selected message")
+  expect_owned_and_gone("doctor")
 
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")

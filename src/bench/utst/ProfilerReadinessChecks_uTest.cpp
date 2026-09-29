@@ -667,6 +667,26 @@ TEST_F(BpfCheckTest, BpftraceToolAndScriptProblems) {
   EXPECT_EQ(MISSING.report.message, "missing: bpftrace not found on PATH");
 }
 
+/**
+ * @test Without PERF_BPF_SCRIPTS, or with it empty, a bundled script name
+ * resolves in the source tree's bpf directory by absolute path.
+ */
+TEST_F(BpfCheckTest, BpftraceBundledScriptsFromAnyDirectory) {
+  const std::string BUNDLED = std::string{VERNIER_BUNDLED_BPF_DIR} + "/write_latency.bt";
+  for (const std::map<std::string, std::string>& extra :
+       {std::map<std::string, std::string>{},
+        std::map<std::string, std::string>{{"PERF_BPF_SCRIPTS", ""}}}) {
+    const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+        requestFor("bpftrace", {"write_latency"}), dir_.context(extra));
+    ASSERT_EQ(R.cause, ReadinessCause::READY) << R.report.message;
+    const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+    ASSERT_NE(PLAN, nullptr);
+    ASSERT_EQ(PLAN->scriptPaths.size(), 1U);
+    EXPECT_TRUE(std::filesystem::path(PLAN->scriptPaths[0]).is_absolute()) << PLAN->scriptPaths[0];
+    EXPECT_EQ(PLAN->scriptPaths[0], BUNDLED);
+  }
+}
+
 /** @test An unreadable selected script is rejected before anything runs, and a run leaves no
  * folder. */
 TEST_F(BpfCheckTest, BpftraceUnreadableScriptLaunchesNothing) {

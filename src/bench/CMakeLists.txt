@@ -111,6 +111,13 @@ endif ()
 # still get real NVTX ranges when the CUDA toolkit is present.
 vernier_nvtx_enable(${LIB_NAME})
 
+# The bpftrace backend reads its bundled scripts from this source tree by
+# absolute path, so a run finds them whatever its working directory.
+set_source_files_properties(
+  "${SRC_DIR}/ProfilerBpftrace.cpp"
+  PROPERTIES COMPILE_DEFINITIONS "VERNIER_BPF_SCRIPTS_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/bpf\""
+)
+
 # ------------------------------------------------------------------------------
 # CUDA Library (requires CUDA toolkit)
 # ------------------------------------------------------------------------------

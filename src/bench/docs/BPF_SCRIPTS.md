@@ -35,7 +35,12 @@ execution. This confines tracing to the test process to reduce noise.
 
 ## Scripts
 
-The scripts are in `src/bench/bpf/`:
+The scripts are in `src/bench/bpf/`. `--profile bpftrace` finds them there from
+any working directory: the library records the directory's absolute path when
+it is built, and `PERF_BPF_SCRIPTS` selects another directory instead (an empty
+value selects this one). A library installed after its source tree was removed
+reports the path it looked in; point `PERF_BPF_SCRIPTS` at a copy of the
+scripts.
 
 - `write_latency.bt`: histogram of `write()` latency (us) for the target PID
 - `fsync_latency.bt`: histogram of `fsync()` latency (us) for the target PID
