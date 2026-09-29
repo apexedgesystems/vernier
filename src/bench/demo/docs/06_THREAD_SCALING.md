@@ -34,9 +34,12 @@ per test. So the number it prints is the wall time the group needed per call:
 - one call's time divided by the number of threads, when no thread waits for
   another.
 
-Multiplied by the thread count, it is the repeat's wall time divided by the
-calls each thread made: how long a call took, on average, for the thread that
-made it.
+Multiplied by the thread count, it is the repeat's duration amortized over one
+worker's quota, the `--cycles` calls each thread makes. It is not how long a
+call took for the thread that made it, and not how long a thread waited: the
+harness times each repeat as a whole and nothing inside it. When the calls take
+turns, the threads finish one after another, and the repeat lasts until the
+last of them is done.
 
 The repeat's clock starts before the threads are created and stops after they
 are joined, so each repeat also pays for starting and joining them, and for the
@@ -215,13 +218,16 @@ ThreadScaling.NoSharing          7.163    2.9%      139.6K  OK
 With three threads, the version with the lock takes 20.9 us per call, 10% more
 than step 1's 19.0: three threads got through calls no faster than one. Only
 one of them can be joining at a time, so their calls take turns. Multiplied by
-three, 62.6 us: that is how long each thread's call took, on average, most of
-it spent waiting for the other two.
+three, 62.6 us is the repeat's duration amortized over one thread's 10,000
+calls; it is not how long any one of those calls took, which the harness does
+not measure.
 
 The version that shares nothing takes 7.2 us per call, 2.9 times less than the
 lock's: the three threads joined at the same time. Multiplied by three,
-21.5 us: each thread's call took 14% longer than one call takes alone in
-step 1.
+21.5 us is its repeat amortized the same way: three threads making 10,000 calls
+each took 14% longer to finish than one thread took for its 10,000 in step 1,
+so together they got through calls a little less than three times as fast as
+one.
 
 The lock's test ran for 6.3 seconds and the other for 2.1: both made three
 threads times 10,000 calls per repeat, one taking turns and the other not.
@@ -329,7 +335,7 @@ without, 8 ms is 1% and 4%.
 | one thread: the lock's time per call over no sharing's    | 1.01x here; 0.99x to 1.02x over eleven runs: equal                       | equal                                                                                                                       |
 | three threads, the lock: time per call                    | 20.6 to 21.2 us over twelve runs, against 18.7 to 19.2 us for one thread | no lower than one thread's                                                                                                  |
 | three threads: the lock's time per call over no sharing's | 2.9x here; 2.80x to 3.22x over twelve runs                               | near the thread count, with a core for each thread and one more; 2.84x to 3.06x with three threads on four x86 laptop cores |
-| a repeat of one call per thread                           | 195 and 151 us with a core to spare; 8.0 and 7.9 ms without              | whole scheduler ticks without a spare core; how long a tick is depends on the kernel                                        |
+| a repeat of one call per thread                           | 195 and 151 us with a core to spare; 8.0 and 7.9 ms without              | without a spare core, a wait that depends on the kernel's scheduler; whole ticks are this Pi's observation, not a guarantee |
 | absolute times                                            | 19.0 and 18.8 us per call in step 1, 20.9 and 7.2 us in step 2           | will differ                                                                                                                 |
 
 The ranges come from one session on this rig: step 1's and step 2's commands
@@ -390,7 +396,7 @@ running; it says the direction holds, not how far.
   test is not pinned to its cores, or something else is running. The rig
   document's measurement section has the governor recipe, and
   `vcgencmd get_throttled` should read `0x0` before and after.
-- **A thread's calls look `--cycles` times too slow.** The worker loops
+- **The time per call reads `--cycles` times too high.** The worker loops
   `perf.cycles()` times itself; `contentionRun()` already calls it that many
   times on each thread.
 
