@@ -51,11 +51,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `PERF_GPU_MAIN()`. Give a run a cycle count (`--cycles 20`): G0 and the
   one-thread kernel take milliseconds per call, so the default 10,000 cycles
   keep each busy for minutes. Its walkthrough,
-  `src/bench/demo/docs/11_NSIGHT_PROFILER.md`, is rewritten from a Release run
+  `src/bench/demo/docs/11_NSIGHT_PROFILER.md`, is rewritten from Release runs
   on the documented Jetson AGX Thor rig: the demo, Nsight Systems on G0 and G1
-  through `bench run`, and Nsight Compute on the two launch shapes, with that
-  run's output, what reproduces elsewhere, and where each tool's files land;
-  the run's CSV is committed at
+  through `bench run`, and Nsight Compute on the two launch shapes, with their
+  output, what reproduces elsewhere, and where each tool's files land; the
+  demo run's CSV is committed at
   `src/bench/demo/reference/thor/11_nsight_profiler.csv`. The demo's test names
   change, so CSVs of demo 02 captured before this release do not join with
   newer ones.

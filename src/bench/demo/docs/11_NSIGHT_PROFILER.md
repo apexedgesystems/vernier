@@ -5,9 +5,11 @@
 **Example:** `saxpy` (see [Shared Examples](../README.md#shared-examples))
 **Captured:** 2026-09-24 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`. The two `bench compare` outputs were produced from the
-saved CSVs of the runs they show, by the CLI of a later development tree, which
-also reports `bench 1.0.3`.
+reported `bench 1.0.3`. Steps 2, 3 and 4 come from one later session,
+2026-09-29 (UTC), of a later development tree at the same version, with the
+clocks locked as in Step 1. The two `bench compare` outputs were produced from
+the saved CSVs of the runs they show, by the CLI of a later development tree,
+which also reports `bench 1.0.3`.
 
 ## Overview
 
@@ -220,32 +222,39 @@ bench run ./build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler --profile nsight --
 Running: nsys profile -o bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile -t cuda,nvtx --force-overwrite true ./build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler --profile nsight --gtest_filter=NsightProfiler.G0 --cycles 20 --repeats 3
 ...
 [ RUN      ] NsightProfiler.G0
+
+[WARN] Profiler 'nsight': unverified: collection is owned by the nsight wrap; completion is checked at exit
+
 [nsight] this process runs under nsys, which writes the report when the process exits.
-[NsightProfiler.G0]  3367.300 us/call  CV=0.2%  ~297 calls/s  (p10=3366.940 p90=3376.380 sd=5.460)
-[       OK ] NsightProfiler.G0 (352 ms)
+[NsightProfiler.G0]  3567.750 us/call  CV=0.7%  ~280 calls/s  (p10=3564.790 p90=3606.510 sd=23.760)
+[       OK ] NsightProfiler.G0 (371 ms)
 ...
 Generated:
     .../bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
 [nsight] auto-extracted nsys stats reports into bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight
 ```
 
+The `[WARN]` line is the harness's readiness report for the profiler request,
+printed once per run: under `bench run`'s wrap the capture belongs to `nsys`,
+so the harness runs no check of its own and reports the request unverified.
 The report and the four summaries are in
-`bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/`. The capture cost little
-here: `G0` read 3,367 us a call under `nsys`, against 3,438 to 3,664 us in
-Step 1's runs. The run made 61 calls, one warmup and 60 measured.
+`bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/`. The capture cost little:
+`G0` read 3,568 us a call under `nsys`, 4% more than the 3,423 us Step 1's
+command read just before it, in the same session. The run made 61 calls, one
+warmup and 60 measured.
 `cuda_api_sum.txt`, the CUDA calls:
 
 ```
- Time (%)  Total Time (ns)  Num Calls   Avg (ns)    Med (ns)  Min (ns)   Max (ns)   StdDev (ns)           Name
- --------  ---------------  ---------  -----------  --------  --------  ----------  -----------  ----------------------
-     63.9      184,694,694        183  1,009,260.6  56,824.0    38,324   3,335,648  1,361,768.7  cudaMemcpy
-     32.1       92,759,919        122    760,327.2  77,130.0    62,880  83,080,798  7,514,896.6  cudaMalloc
-      3.9       11,151,974        122     91,409.6  91,903.0    47,528     854,676    108,588.1  cudaFree
-      0.1          370,961         61      6,081.3   4,722.0     4,269      72,648      8,790.7  cudaLaunchKernel
-      0.0           38,814          1     38,814.0  38,814.0    38,814      38,814          0.0  cuLibraryLoadData
-      0.0            8,775         61        143.9     130.0        92         333         37.2  cuKernelGetName
-      0.0              778          1        778.0     778.0       778         778          0.0  cuModuleGetLoadingMode
-      0.0              481          1        481.0     481.0       481         481          0.0  cuLibraryGetKernel
+ Time (%)  Total Time (ns)  Num Calls   Avg (ns)    Med (ns)   Min (ns)   Max (ns)   StdDev (ns)           Name
+ --------  ---------------  ---------  -----------  ---------  --------  ----------  -----------  ----------------------
+     64.8      198,379,293        183  1,084,039.9  262,788.0    48,556   3,397,166  1,317,480.8  cudaMemcpy
+     32.0       97,942,066        122    802,803.8   86,745.5    61,916  86,843,778  7,854,498.5  cudaMalloc
+      3.1        9,354,739        122     76,678.2   93,912.0    42,250     480,277     47,273.3  cudaFree
+      0.1          414,536         61      6,795.7    5,204.0     4,509      87,324     10,527.2  cudaLaunchKernel
+      0.0           41,926          1     41,926.0   41,926.0    41,926      41,926          0.0  cuLibraryLoadData
+      0.0           10,486         61        171.9      158.0       111         676         92.2  cuKernelGetName
+      0.0              704          1        704.0      704.0       704         704          0.0  cuModuleGetLoadingMode
+      0.0              435          1        435.0      435.0       435         435          0.0  cuLibraryGetKernel
 ```
 
 `cuda_gpu_kern_sum.txt`, the kernels as the GPU ran them:
@@ -253,7 +262,7 @@ Step 1's runs. The run made 61 calls, one warmup and 60 measured.
 ```
  Time (%)  Total Time (ns)  Instances   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)                                             Name
  --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ------------------------------------------------------------------------------------------
-    100.0      176,629,184         61  2,895,560.4  2,889,504.0  2,867,328  3,269,536     49,815.5  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
+    100.0      176,606,848         61  2,895,194.2  2,888,384.0  2,858,464  3,323,488     57,126.0  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
 ```
 
 `cuda_gpu_mem_time_sum.txt`, the copies as the GPU ran them:
@@ -261,8 +270,8 @@ Step 1's runs. The run made 61 calls, one warmup and 60 measured.
 ```
  Time (%)  Total Time (ns)  Count  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)           Operation
  --------  ---------------  -----  --------  --------  --------  --------  -----------  ----------------------------
-     74.6        2,358,240    122  19,329.8  19,792.0    17,248    40,480      3,281.2  [CUDA memcpy Host-to-Device]
-     25.4          802,592     61  13,157.2  12,864.0    11,680    16,000      1,417.9  [CUDA memcpy Device-to-Host]
+     74.0        2,415,488    122  19,799.1  19,392.0    18,912    40,992      2,501.0  [CUDA memcpy Host-to-Device]
+     26.0          847,232     61  13,889.0  13,952.0    11,968    15,264        526.8  [CUDA memcpy Device-to-Host]
 ```
 
 The test's NVTX range is in the report too. `nsys stats` reads any report;
@@ -276,28 +285,31 @@ nsys stats --force-export=true --report nvtx_sum bench-out/BenchDemo_Gpu_02_Nsig
 ```
  Time (%)  Total Time (ns)  Instances    Avg (ns)       Med (ns)      Min (ns)     Max (ns)    StdDev (ns)   Style         Range
  --------  ---------------  ---------  -------------  -------------  -----------  -----------  -----------  -------  ------------------
-    100.0      210,950,836          1  210,950,836.0  210,950,836.0  210,950,836  210,950,836          0.0  PushPop  :NsightProfiler.G0
+    100.0      223,769,960          1  223,769,960.0  223,769,960.0  223,769,960  223,769,960          0.0  PushPop  :NsightProfiler.G0
 ```
 
 ## Step 3: Read the Report
 
 - **The calls per `G0` call.** 122 `cudaMalloc` and 122 `cudaFree` over 61
-  calls: two allocations and two frees on every call, 77 us and 92 us each by
-  their medians. The longest `cudaMalloc`, 83 ms, is the process's first CUDA
+  calls: two allocations and two frees on every call, 87 us and 94 us each by
+  their medians. The longest `cudaMalloc`, 87 ms, is the process's first CUDA
   runtime call, which pays for setting CUDA up; the medians are the per-call
   cost. 183 `cudaMemcpy`, three per call, each 4.19 MB
   (`cuda_gpu_mem_size_sum.txt`).
-- **Where a call's time goes.** The kernel averages 2.90 ms on the GPU, 86% of
-  the 3.37 ms call. The two allocations and two frees take about 0.34 ms by
-  their medians, the copies about 52 us on the GPU. The synchronous
-  `cudaMemcpy` back to the host waits for the kernel, which is why its average
-  (1.01 ms) is far above its median (57 us): read the kernel's time from the
-  kernel summary, not from the call that waited for it.
-- **The range.** The 210.95 ms range `NsightProfiler.G0` is the measured
+- **Where a call's time goes.** The kernel averages 2.90 ms on the GPU, 81% of
+  the 3.57 ms call. The two allocations and two frees take about 0.36 ms by
+  their medians. The copies take about 53 us on the GPU, but on the timeline
+  the host spends about 0.17 ms in each of the two copies to the device, by
+  their median. The synchronous `cudaMemcpy` back to the host waits for the
+  kernel, which is why its average (1.08 ms) is far above its median
+  (263 us): read the kernel's time from the kernel summary, not from the call
+  that waited for it.
+- **The range.** The 223.77 ms range `NsightProfiler.G0` is the measured
   window: on the timeline it holds 60 of the 61 kernels, 120 `cudaMalloc` and
   120 `cudaFree`; the warmup call comes before it.
 
-So `G0` spends its time in the kernel, and the allocations are the next cost.
+So `G0` spends its time in the kernel; the allocations and the host's part of
+the copies to the device come next.
 Nsight Systems does not say why the kernel takes 2.9 ms to add two vectors.
 That is Nsight Compute's question.
 
@@ -319,7 +331,10 @@ sudo chown -R "$(id -u):$(id -g)" bench-out
 Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler --cycles 3 --repeats 1 --profile ncu --gtest_filter=NsightProfiler.Kernel*
 ...
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
-==PROF== Connected to process 86816 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
+==PROF== Connected to process 18471 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
+
+[WARN] Profiler 'ncu': unverified: collection is owned by the ncu wrap; completion is checked at exit
+
 [nsight] this process runs under ncu, which writes the report when the process exits.
 ==WARNING== Unable to access the following 8 metrics: mcc__cycles_active.avg, mcc__cycles_active.max, mcc__cycles_active.min, mcc__cycles_active.sum, mcc__cycles_elapsed.avg, mcc__cycles_elapsed.max, mcc__cycles_elapsed.min, mcc__cycles_elapsed.sum.
 ...
@@ -327,16 +342,17 @@ Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f 
 ...
 [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
 ...
-[NsightProfiler.KernelOneThreadPerBlock]  910898.844 us/call  CV=0.0%  ~1 calls/s  (p10=910898.844 p90=910898.844 sd=0.000)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (17345 ms)
+[NsightProfiler.KernelOneThreadPerBlock]  914810.547 us/call  CV=0.0%  ~1 calls/s  (p10=914810.547 p90=914810.547 sd=0.000)
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (21421 ms)
 ...
-[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12257 ms)
+[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12285 ms)
 ...
 ==PROF== Report: .../bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep
 ```
 
-The run took 30 seconds for 28 profiled launches, 14 of each shape (the
-harness's warmup launches and the three measured ones). The times it prints
+The `[WARN]` line is Step 2's readiness report, here for `ncu`, which owns
+this capture. The run took 34 seconds for 28 profiled launches, 14 of each
+shape (the harness's warmup launches and the three measured ones). The times it prints
 are `ncu`'s replays, not the kernel's: the timings are Step 1's. The eight
 `mcc__` metrics are not readable on this rig; the sections below do not use
 them. Read the report with the same `ncu`:
@@ -374,8 +390,8 @@ average over its 14 launches:
     Block Limit Warps                     block    6.00    6.00    6.00
     Theoretical Active Warps per SM        warp   48.00   48.00   48.00
     Theoretical Occupancy                     %  100.00  100.00  100.00
-    Achieved Occupancy                        %   74.45   77.70   76.66
-    Achieved Active Warps Per SM           warp   35.74   37.30   36.80
+    Achieved Occupancy                        %   75.07   79.52   77.13
+    Achieved Active Warps Per SM           warp   36.04   38.17   37.02
     ------------------------------- ----------- ------- ------- -------
 
   unnamed>::saxpyKernel(float, const float *, float *, unsigned long) (1048576, 1, 1)x(1, 1, 1), Device 0, CC 11.0, Invocations 14
@@ -403,8 +419,8 @@ average over its 14 launches:
     Block Limit Warps                     block   48.00   48.00   48.00
     Theoretical Active Warps per SM        warp   24.00   24.00   24.00
     Theoretical Occupancy                     %   50.00   50.00   50.00
-    Achieved Occupancy                        %   29.02   31.00   29.84
-    Achieved Active Warps Per SM           warp   13.93   14.88   14.33
+    Achieved Occupancy                        %   29.45   30.98   30.03
+    Achieved Active Warps Per SM           warp   14.14   14.87   14.42
     ------------------------------- ----------- ------- ------- -------
 ```
 
@@ -443,8 +459,8 @@ What it says:
   is 31/32).
 - **Occupancy.** An SM here holds at most 24 blocks (`Block Limit SM`) and 48
   warps. One-warp blocks fill 24 of the 48 warp slots: theoretical occupancy
-  50%, and 29.02% to 31.00% achieved. Blocks of 256 threads are eight warps,
-  six blocks fill all 48 slots: 100% theoretical, 74.45% to 77.70% achieved.
+  50%, and 29.45% to 30.98% achieved. Blocks of 256 threads are eight warps,
+  six blocks fill all 48 slots: 100% theoretical, 75.07% to 79.52% achieved.
   The harness's `occupancy` column in Step 1 is the theoretical figure (0.5
   and 1.0); the achieved figure is `ncu`'s measurement.
 
@@ -587,7 +603,7 @@ and `callsPerSecond` columns. `bench summary` and `bench compare` refuse it
 | `G1`'s CUDA calls                             | two `cudaMalloc`, two `cudaHostAlloc`, one stream once; three `cudaMemcpyAsync`, one launch, one wait a call | the same                                                                                                         |
 | launch shapes (Nsight Compute)                | `(1048576, 1, 1)x(1, 1, 1)` and `(4096, 1, 1)x(256, 1, 1)`                                                   | the same                                                                                                         |
 | theoretical occupancy (ncu; the CSV's column) | 50% and 100% (0.5 and 1.0)                                                                                   | depends on the GPU's limits; both occupancy checks also pass on an RTX 5000 Ada laptop GPU                       |
-| achieved occupancy (ncu)                      | 29.02% to 31.00% and 74.45% to 77.70% over 14 launches each                                                  | depends on the GPU                                                                                               |
+| achieved occupancy (ncu)                      | 29.45% to 30.98% and 75.07% to 79.52% over 14 launches each                                                  | depends on the GPU                                                                                               |
 | kernel alone, one thread vs 256 per block     | 143.1x; 141.7x to 143.3x over six runs, clocks locked; 138.7x to 138.9x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
 | `G0` vs `G1` end to end                       | 5.6x; 4.1x to 5.7x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
 | absolute times                                | 3,640 / 653 / 2,994 / 20.2 us                                                                                | will differ                                                                                                      |
