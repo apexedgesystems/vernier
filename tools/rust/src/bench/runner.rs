@@ -12,9 +12,13 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 
-use super::{find_in_path, Error};
+use super::{find_in_path, BenchmarkExit, Error};
+
+/// Exit status of a benchmark whose tests passed and whose requested profile
+/// failed: libbench's `BENCH_PROFILE_FAILED_EXIT_CODE` (ProfilerRegistry.hpp).
+pub const PROFILE_FAILED_EXIT_CODE: i32 = 4;
 
 /* ----------------------------- RunConfig ----------------------------- */
 
@@ -168,9 +172,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 
     let status = cmd.status()?;
 
-    if !status.success() {
-        let code = status.code().unwrap_or(-1);
-        return Err(Error::Parse(format!("benchmark exited with code {code}")));
+    if let Some(end) = benchmark_exit(status) {
+        return Err(Error::Benchmark(end));
     }
 
     // The wrapped nsys session writes its .nsys-rep at child exit, so the
@@ -185,6 +188,32 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
 
     Ok(cfg.csv.clone())
+}
+
+/// How a finished benchmark ended, or `None` when it succeeded.
+///
+/// For a wrapped run this is the wrap's status; valgrind (memcheck with
+/// `--error-exitcode=0`), heaptrack and taskset pass the benchmark's own
+/// status through.
+fn benchmark_exit(status: ExitStatus) -> Option<BenchmarkExit> {
+    if status.success() {
+        return None;
+    }
+    if let Some(code) = status.code() {
+        return Some(if code == PROFILE_FAILED_EXIT_CODE {
+            BenchmarkExit::ProfileFailed
+        } else {
+            BenchmarkExit::Status(code)
+        });
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Some(BenchmarkExit::Signal(signal));
+        }
+    }
+    Some(BenchmarkExit::Status(-1))
 }
 
 /* ----------------------------- Wrap-externally backends ----------------------------- */
@@ -483,6 +512,27 @@ fn format_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// @test Each way a benchmark can end maps to one report; success to none.
+    #[test]
+    #[cfg(unix)]
+    fn benchmark_exit_names_status_signal_and_profile_failure() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(benchmark_exit(ExitStatus::from_raw(0)), None);
+        assert_eq!(
+            benchmark_exit(ExitStatus::from_raw(1 << 8)),
+            Some(BenchmarkExit::Status(1))
+        );
+        assert_eq!(
+            benchmark_exit(ExitStatus::from_raw(PROFILE_FAILED_EXIT_CODE << 8)),
+            Some(BenchmarkExit::ProfileFailed)
+        );
+        assert_eq!(
+            benchmark_exit(ExitStatus::from_raw(9)),
+            Some(BenchmarkExit::Signal(9))
+        );
+        assert_eq!(PROFILE_FAILED_EXIT_CODE, 4);
+    }
 
     /// @test Missing binary returns InvalidArgs error.
     #[test]

@@ -1328,3 +1328,53 @@ fn run_wrapped_exports_wrap_folder_to_child() {
     );
     assert!(dir.path().join(format!("bench-out/{stem}.massif")).is_dir());
 }
+
+/* ----------------------------- Run: Benchmark Exit ----------------------------- */
+
+/// @test bench run names how the benchmark ended -- its status, its signal, or,
+/// for status 4, the failed profile request -- and exits 1 itself each time.
+#[test]
+fn run_reports_the_benchmark_exit_status() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (i, (body, code, expected)) in [
+        ("exit 0", 0, ""),
+        ("exit 1", 1, "Error: the benchmark exited with status 1\n"),
+        (
+            "exit 4",
+            1,
+            "Error: the requested profile failed (the benchmark's report above says why); \
+             the benchmark exited with status 4\n",
+        ),
+        (
+            "kill -9 $$",
+            1,
+            "Error: the benchmark was ended by signal 9\n",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // A stand-in benchmark that prints a line and ends as the case says.
+        let fake = dir.path().join(format!("fake_bench_{i}"));
+        let script = format!("#!/bin/sh\necho 'stand-in benchmark ran'\n{body}\n");
+        std::fs::write(&fake, script).expect("write the stand-in");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        let out = Command::new(bin())
+            .args(["run", &fake.to_string_lossy()])
+            .current_dir(dir.path())
+            .output()
+            .expect("spawn bench");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(code), "{body}: {stderr}");
+        assert!(
+            stdout.contains("stand-in benchmark ran"),
+            "{body}: {stdout}"
+        );
+        assert!(stderr.ends_with(expected), "{body}: {stderr}");
+        assert!(!stderr.contains("parse error"), "{body}: {stderr}");
+    }
+}

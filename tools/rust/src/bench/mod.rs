@@ -9,6 +9,32 @@ use std::{fmt, path::PathBuf};
 
 /* ----------------------------- Error ----------------------------- */
 
+/// How a benchmark process ended when it did not succeed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchmarkExit {
+    /// Exited with this nonzero status other than 4 (a test failed, a flag
+    /// was refused, the watchdog fired, ...).
+    Status(i32),
+    /// Exited with status 4: the tests passed and the requested profile failed.
+    ProfileFailed,
+    /// Ended by this signal.
+    Signal(i32),
+}
+
+impl fmt::Display for BenchmarkExit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            BenchmarkExit::Status(code) => write!(f, "the benchmark exited with status {code}"),
+            BenchmarkExit::ProfileFailed => write!(
+                f,
+                "the requested profile failed (the benchmark's report above says why); \
+                 the benchmark exited with status 4"
+            ),
+            BenchmarkExit::Signal(sig) => write!(f, "the benchmark was ended by signal {sig}"),
+        }
+    }
+}
+
 /// Unified error type for the bench module.
 #[derive(Debug)]
 pub enum Error {
@@ -17,6 +43,8 @@ pub enum Error {
     Parse(String),
     InvalidArgs(String),
     ToolNotFound(String),
+    /// The benchmark ran and did not succeed; how it ended.
+    Benchmark(BenchmarkExit),
     /// Two runs cannot be compared; the cause names itself.
     Compare(compare::CompareError),
     /// `bench compare --fail-on-regression` found a labelled regression or a
@@ -37,6 +65,7 @@ impl fmt::Display for Error {
             Error::Parse(s) => write!(f, "parse error: {s}"),
             Error::InvalidArgs(s) => write!(f, "invalid arguments: {s}"),
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
+            Error::Benchmark(end) => write!(f, "{end}"),
             Error::Compare(e) => write!(f, "{e}"),
             Error::Gate {
                 regressions,

@@ -198,6 +198,20 @@ and the C++ harness manages its own per-test artifact subdirs.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 
+**How a run ends.** `bench run` exits 0 when the benchmark does and 1
+otherwise, and its last line names how the benchmark ended:
+
+```text
+Error: the benchmark exited with status 1
+Error: the benchmark was ended by signal 9
+Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+```
+
+Status 4 means the tests passed and the `--profile` request failed: the
+benchmark's own `[profile]` report, printed just above, lists each failure. A
+benchmark run directly exits with that status itself (see the exit status 4
+entry in [Troubleshooting](../src/bench/docs/TROUBLESHOOTING.md)).
+
 ### doctor - Backend Environment Check
 
 Runs `--profile-check` against a ptest binary, printing both the binary

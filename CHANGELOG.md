@@ -278,6 +278,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`bench run` reports how the benchmark ended** -- a benchmark that failed
+  was reported as `Error: parse error: benchmark exited with code N`, and one
+  ended by a signal as code -1. `bench run` names the status or the signal,
+  and for status 4 the failed profile request, and still exits 1.
+  **Action needed:** a script that matched `parse error` matches
+  `the benchmark exited with status`, `the benchmark was ended by signal` or
+  `the requested profile failed` instead.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

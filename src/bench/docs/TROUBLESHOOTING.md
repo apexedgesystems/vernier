@@ -368,6 +368,12 @@ with a report of the profile request that failed, here a misspelled name:
 
 Earlier in the run a `[FAIL] Profiler 'perff'` line reported the same failure
 with its remedy (for an unknown name, the list of available profilers).
+Through `bench run`, the same report is followed by `bench`'s own last line,
+and `bench` exits 1:
+
+```
+Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+```
 
 **Cause:** the run was given `--profile` and did not get that profile: the
 name is unknown, the tool cannot collect in this environment, or a requested
