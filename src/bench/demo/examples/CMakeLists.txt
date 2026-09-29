@@ -28,8 +28,10 @@
 #   JoinInstructionCountsStartupFault  - the same, aborting under valgrind
 #
 # Rig checks: performance tests, built into bin/ptests and never registered
-# with CTest, because a timing belongs to the machine that takes it:
+# with CTest, because a timing or a profile's samples belong to the machine:
 #   JoinSpeedup             - joinV0 at least three times slower than joinV1
+#   JoinProfileAttribution  - gperftools puts V0's time in what joinV0 calls
+#                             and V1's in joinV1's own code
 #
 # Test support:
 #   utst/HardwareCounter.hpp - one hardware event counted around a call, for
@@ -201,4 +203,19 @@ vernier_add_gtest(
 vernier_add_ptest(
   TARGET JoinSpeedup SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinSpeedup_pTest.cpp" LINK
   demo_example_join
+)
+
+# ------------------------------------------------------------------------------
+# Join Profile-Attribution Check (performance test)
+# ------------------------------------------------------------------------------
+# JoinProfileAttribution profiles both join versions through the gperf backend
+# and reads the profiles with google-pprof: the reading walkthrough 03 teaches.
+# A profile's shares are samples, so this is a performance test, built into
+# bin/ptests with gperftools linked as every performance test is, never
+# registered with CTest, and run on the reference rig by hand.
+# ------------------------------------------------------------------------------
+
+vernier_add_ptest(
+  TARGET JoinProfileAttribution SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinProfileAttribution_pTest.cpp" LINK demo_example_join
 )
