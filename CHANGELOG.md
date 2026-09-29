@@ -21,49 +21,34 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   names change, so CSVs captured from it before this release do not join with
   newer ones, and `linearSearch` and `binarySearch` leave
   `helpers/DemoWorkloads.hpp`.
-- **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
-  code the walkthroughs measure, starting with `join` (`joinV0` builds the
-  result with `out = out + part + sep`, `joinV1` reserves once and appends in
-  place), and unit tests registered with `ctest` hold both versions to the
-  same answers. `BenchDemo_01_BasicWorkflow` measures one version per test, one
-  CSV row each, instead of two loops an optimizing compiler makes identical,
-  and the performance test `JoinSpeedup` fails when V0 stops being at least
-  three times slower than V1. Walkthrough 01 and the opening of
-  `src/bench/demo/README.md` are rewritten from a Release run on the
-  documented Raspberry Pi 4 rig, whose CSV is
-  `src/bench/demo/reference/pi4/01_basic_workflow.csv`. Demo 01's test names
-  change, so CSVs captured from it before this release do not join with newer
-  ones.
+- **Demo 01 measures a shared example** -- `BenchDemo_01_BasicWorkflow`
+  measures the two versions of the shared `join` example
+  (`src/bench/demo/examples/`), one test each, and a separate performance
+  test, `bin/ptests/JoinSpeedup`, fails when V0 stops being at least three
+  times slower than V1. Walkthrough 01 is rewritten from a Release run on the
+  Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 01's tests are
+  renamed (`SimpleThroughput`, `AccumulateVsManualLoop` and
+  `QuickModeIteration` become `JoinV0` and `JoinV1`), so its CSVs from earlier
+  releases do not join with newer ones.
 - **Demo 03 profiles the shared join example** --
-  `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1`, one test and
-  one CSV row each, instead of a bubble sort that a Release build inlined out
-  of every profile; both versions are declared `[[gnu::noinline]]`, so a
-  profile names them (a build that sees every caller may name a specialized
-  copy, `joinV0 [clone .constprop.0]`). The performance test
-  `JoinProfileAttribution` fails when a profile stops putting V0's time in the
-  copying and allocating `joinV0` calls, or V1's in `joinV1`'s own machine
-  code; it reads the profiles' stacks, so string code inlined into a version,
-  which `google-pprof --text` lists as rows of its own when the build has
-  debug information, still counts as that version's own. Walkthrough 03 is
-  rewritten from a Release run on the documented Raspberry Pi 4 rig, whose CSV
-  is `src/bench/demo/reference/pi4/03_gperf_profiler.csv`. Demo 03's test names
-  change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
-  from earlier releases do not join with newer ones, and `bubbleSort` and
-  `fastSort` leave `helpers/DemoWorkloads.hpp`.
+  `BenchDemo_03_GperfProfiler` measures the two `join` versions, one test
+  each, instead of a bubble sort a Release build inlined out of every profile,
+  and a separate performance test, `bin/ptests/JoinProfileAttribution`, fails
+  when a profile stops putting V0's time in the calls `joinV0` makes and V1's
+  in `joinV1`'s own code. Walkthrough 03 is rewritten from a Release run on
+  the Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 03's tests
+  are renamed (`BubbleSortHotspot` and `StdSortOptimized` become `JoinV0` and
+  `JoinV1`), so its CSVs from earlier releases do not join with newer ones,
+  and `bubbleSort` and `fastSort` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 11 measures the join example's peak heap** --
-  `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
-  example, one test and one CSV row per version, instead of allocating an 8 MB
-  buffer per call under checks that held with both variants made identical.
-  `Massif.JoinPeakHeap`, which fails unless one call of V0 holds more than
-  three times the heap one call of V1 holds, runs under `ctest` (labels `demo`
-  and `massif`) from a test program of its own, `TestDemoJoinPeakHeap`, so the
-  program massif profiles replaces no allocation function; the join example
-  gains `joinedSize()`, the joined length computed without allocating.
-  Walkthrough 14 is rewritten from a Release run on the documented Raspberry
-  Pi 4 rig, whose CSV is `src/bench/demo/reference/pi4/14_massif_profiler.csv`.
-  Demo 11's test names change (`Massif.SmallChurn` and `Massif.PooledReuse`
-  are gone), so CSVs captured from it before this release do not join with
-  newer ones.
+  `BenchDemo_11_MassifProfiler` measures the two `join` versions at 20,000
+  words, one test each, instead of allocating an 8 MB buffer per call, and
+  `Massif.JoinPeakHeap`, run by `ctest` (labels `demo` and `massif`) from a
+  separate test program, `TestDemoJoinPeakHeap`, fails unless V0 holds more
+  than three times V1's peak heap. Walkthrough 14 is rewritten from a Release
+  run on the Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 11's
+  tests are renamed (`SmallChurn` and `PooledReuse` become `JoinV0` and
+  `JoinV1`), so its CSVs from earlier releases do not join with newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
@@ -586,9 +571,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **A thread-sanitizer build links with clang** -- the test programs that
   count allocations replace `operator new` and `operator delete`, which
   clang's thread-sanitizer runtime also defines, so a `-DSANITIZER=tsan` build
-  failed to link them. In a thread-sanitizer build they replace nothing and
-  the tests that count allocations skip, saying why; every other test runs
-  instrumented.
+  failed to link them. In such a build they replace neither, and their
+  counting tests skip, saying why.
 
 ## v1.0.3 - 2026-06-28
 
