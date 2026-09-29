@@ -20,6 +20,8 @@
 #                             the join's allocations and instructions, the
 #                             filter's branch misses
 #   TestDemoSaxpyOwnership  - saxpy's resource release, on any machine
+#   TestDemoJoinPeakHeap    - the heap one call of each join version holds at
+#                             its peak, which walkthrough 14 reads from massif
 #
 # Check programs, which the demo build registers with CTest:
 #   JoinInstructionCounts              - join's instruction counts, callgrind
@@ -158,3 +160,26 @@ if (SANITIZER MATCHES "^(asan|tsan|ubsan)$" AND NOT CMAKE_CROSSCOMPILING)
     endif ()
   endforeach ()
 endif ()
+
+# ------------------------------------------------------------------------------
+# Join Peak-Heap Check
+# ------------------------------------------------------------------------------
+# TestDemoJoinPeakHeap holds joinV0 to more than three times the heap joinV1
+# holds at its peak, at demo 11's 20,000 words: what walkthrough 14 reads from
+# massif. It replaces the global allocation functions to count bytes, so it is
+# a program of its own: demo 11, the program massif profiles, carries no
+# replacement, and the unit tests above keep theirs, which counts calls. Bytes
+# do not depend on load, so CTest runs it under the demo and massif labels.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoJoinPeakHeap
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinPeakHeap_uTest.cpp"
+  LINK
+  demo_example_join
+  LABELS
+  demo
+  massif
+)

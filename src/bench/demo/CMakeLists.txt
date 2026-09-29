@@ -134,32 +134,26 @@ if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Guards Run by CTest (3)
+# Demo Effect Guards Run by CTest (2)
 # ------------------------------------------------------------------------------
 # Demos are ptests: built, not registered with CTest. A guard that checks what
-# its demo demonstrates by counting bytes, not by timing, is registered on its
-# own, the way gtest_add_tests names and runs a test, under the demo label, so
-# ordinary test runs include it and never the demo's timing cases.
+# its demo demonstrates by counting, not by timing, is registered under the
+# demo label, so ordinary test runs include it and never the demo's timing
+# cases. Demo 11's guard, TestDemoJoinPeakHeap, is a program of the join
+# example's tests and registers itself there (examples/CMakeLists.txt).
 #
 # Demo 07's guard counts instructions under callgrind, which load does not
-# change either. It is a program of the join example's tests,
+# change. It is a program of the join example's tests,
 # JoinInstructionCounts (examples/CMakeLists.txt), so demo 07's source holds
 # only what it teaches. It also carries the callgrind label, and skips where
 # valgrind is missing or stops reading the program's debug information, and in
 # a build with a sanitizer (-DSANITIZER), whose instrumentation it would count.
-# The third test, labelled callgrind only, runs the same check in
+# The second test, labelled callgrind only, runs the same check in
 # JoinInstructionCountsStartupFault, whose counting worker aborts under
 # valgrind before its tests start
 # (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the
 # check fails on that abort rather than skipping.
 # ------------------------------------------------------------------------------
-
-add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
-                                          --gtest_filter=Massif.JoinPeakHeap
-)
-set_tests_properties(
-  Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-)
 
 if (TARGET JoinInstructionCounts)
   add_test(NAME CallgrindDemoInstructionCountsTest

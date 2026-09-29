@@ -65,29 +65,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `fastSort` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 11 measures the join example's peak heap** --
   `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
-  example instead of allocating an 8 MB buffer per call. `Massif.JoinV0` and
-  `Massif.JoinV1` publish one CSV row each, and `Massif.JoinPeakHeap` counts
-  the bytes one call of each version holds at its peak and fails unless V0
-  holds more than three times what V1 holds. It skips itself under valgrind,
-  which replaces the counting. The demo's earlier tests asserted only that
-  each variant ran more than once a second, which still held with both
-  variants made identical. The join example gains `joinedSize()`, the length
-  of the string both versions return, computed without allocating (a unit
-  test counts no call to `operator new`); demos 07, 11 and 15 check each
-  result against it, and demo 11's guard checks that it holds no heap.
-  `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
-  an ordinary test run includes it; the demo's timing tests are not
-  registered. Its walkthrough,
-  `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
-  on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
-  default instruction axis two of V1's three calls draw as one block), the
-  peak and the call sites that hold it, and where the output lands (the file
-  `--massif-out-file` names; run by hand with `--profile massif`, the binary
-  also creates a `<Suite.Case>.massif/` folder per test, empty unless
-  `--massif-out-file` points into it). That run's CSV is committed at
-  `src/bench/demo/reference/pi4/14_massif_profiler.csv`. Demo 11's test names
-  change (`Massif.SmallChurn` and `Massif.PooledReuse` are gone), so CSVs
-  captured from it before this release do not join with newer ones.
+  example, one test and one CSV row per version, instead of allocating an 8 MB
+  buffer per call under checks that held with both variants made identical.
+  `Massif.JoinPeakHeap`, which fails unless one call of V0 holds more than
+  three times the heap one call of V1 holds, runs under `ctest` (labels `demo`
+  and `massif`) from a test program of its own, `TestDemoJoinPeakHeap`, so the
+  program massif profiles replaces no allocation function; the join example
+  gains `joinedSize()`, the joined length computed without allocating.
+  Walkthrough 14 is rewritten from a Release run on the documented Raspberry
+  Pi 4 rig, whose CSV is `src/bench/demo/reference/pi4/14_massif_profiler.csv`.
+  Demo 11's test names change (`Massif.SmallChurn` and `Massif.PooledReuse`
+  are gone), so CSVs captured from it before this release do not join with
+  newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
