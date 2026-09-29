@@ -19,9 +19,11 @@
 #include "src/bench/demo/cpu/utst/12_MemcheckProfiler_Check.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 
 #include <filesystem>
+#include <ostream>
 #include <sstream>
 #include <string>
 #include <system_error>
@@ -171,6 +173,67 @@ inline bool frameAt(const std::string& frame, const std::string& function,
 /// of a file whose symbols it could not read ("at 0x...: ??? (in <binary>)").
 inline bool frameUnnamedIn(const std::string& frame, const std::string& binary) {
   return frame.find(": ??? (in " + binary + ")") != std::string::npos;
+}
+
+/// What one access's frame says about where the access was made.
+enum class FrameReading : std::uint8_t {
+  AT_STATEMENT,      ///< In the function looked for, at the file and line looked for
+  UNNAMED_IN_BINARY, ///< Unnamed, in a binary valgrind said it could not read symbols of
+  WRONG              ///< Another function, file, line or object, or no frame at all
+};
+
+/// Short name of @p reading, for test output.
+inline const char* toString(FrameReading reading) noexcept {
+  switch (reading) {
+  case FrameReading::AT_STATEMENT:
+    return "at the statement";
+  case FrameReading::UNNAMED_IN_BINARY:
+    return "unnamed in the binary";
+  case FrameReading::WRONG:
+    return "wrong";
+  }
+  return "?";
+}
+
+/// Lets GoogleTest print a FrameReading by name.
+inline std::ostream& operator<<(std::ostream& out, FrameReading reading) {
+  return out << toString(reading);
+}
+
+/**
+ * @brief Reads @p frame against the function and location looked for.
+ *
+ * A frame valgrind could not name is excused only when it is in @p binary and
+ * valgrind said it could not read that binary's symbols (@p symbolsUnreadable);
+ * any other frame that does not name the statement is wrong.
+ */
+inline FrameReading readFrame(const std::string& frame, const std::string& function,
+                              const std::string& location, const std::string& binary,
+                              bool symbolsUnreadable) {
+  if (frameAt(frame, function, location)) {
+    return FrameReading::AT_STATEMENT;
+  }
+  if (symbolsUnreadable && frameUnnamedIn(frame, binary)) {
+    return FrameReading::UNNAMED_IN_BINARY;
+  }
+  return FrameReading::WRONG;
+}
+
+/// The readings of one race report's two frames.
+struct RaceFrames {
+  FrameReading race = FrameReading::WRONG;    ///< The access that raced
+  FrameReading earlier = FrameReading::WRONG; ///< The earlier access it conflicts with
+};
+
+/// Reads both frames of @p report, each on its own: the excuse one frame has
+/// never covers the other.
+inline RaceFrames readRaceFrames(const RaceReport& report, const std::string& function,
+                                 const std::string& location, const std::string& binary,
+                                 bool symbolsUnreadable) {
+  RaceFrames frames;
+  frames.race = readFrame(report.race.frame, function, location, binary, symbolsUnreadable);
+  frames.earlier = readFrame(report.conflict.frame, function, location, binary, symbolsUnreadable);
+  return frames;
 }
 
 /// The 1-based number of the line of @p source that contains @p statement;

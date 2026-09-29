@@ -622,8 +622,8 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   Release build linked by mold 1.0.3 on an x86-64 laptop, valgrind 3.18.1
   printed `Can't make sense of .rodata section mapping` about the binary, and
   its report gave the racy frame as `???` while still counting 6 errors from 2
-  contexts. The check asserts everything but the function and the line, then
-  skips, quoting valgrind's lines. The build used mold because the project
+  contexts. The check asserts everything else, and the function and the line
+  in any frame valgrind did name, then skips, quoting valgrind's lines. The build used mold because the project
   links with it when it finds it (`VERNIER_USE_FAST_LINKER`, on by default);
   configured with `-DVERNIER_USE_FAST_LINKER=OFF`, the same build was linked
   by GNU ld, and the same valgrind named `addJoinedLength` at line 21.
@@ -712,13 +712,16 @@ Three things check what this page shows, and all fail loudly:
   and fails unless it reports `SKIPPED`, says how to run it, and does not run.
   The first two skip in a build with the address or the thread sanitizer
   (which valgrind cannot check), where valgrind is not installed, and where
-  valgrind gives up reading the demo binary; `FindsTheRace` also skips where
-  valgrind cannot read the binary's symbols, once everything but the function
-  and the line has passed, and `LockedTotalReportsNothing` in a build where
-  the gate is not marked. The skips that rest on valgrind quote its lines.
-  Beside them, `HelgrindReportTest` holds the report reading to its cases (a
-  lock held, a frame at another line or in another function, a file named with
-  its directory, a frame valgrind could not name, a log without a race).
+  valgrind gives up reading the demo binary. `FindsTheRace` also skips where
+  valgrind cannot read the binary's symbols, once every other check has
+  passed: it reads each frame on its own, looks for the function and the line
+  in every frame valgrind named, and excuses only a frame left unnamed in that
+  binary. `LockedTotalReportsNothing` also skips in a build where the gate is
+  not marked. The skips that rest on valgrind quote its lines. Beside them,
+  `HelgrindReportTest` holds the report reading to its cases (a lock held, a
+  frame at another line or in another function, a file named with its
+  directory, a frame valgrind could not name, a wrong frame beside an unnamed
+  one, a log without a race).
 - `StartGateHelgrindTest.GateReportsNothing` and
   `StartGateHelgrindTest.WorkerRaceIsStillReported`, the harness's own test of
   the gate

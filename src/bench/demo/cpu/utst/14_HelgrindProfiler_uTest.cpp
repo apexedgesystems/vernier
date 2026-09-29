@@ -111,9 +111,10 @@ fs::path scratchDir() {
  * valgrind cannot check), without valgrind, where valgrind gives up reading
  * the demo binary's debug information before the program runs, and where
  * valgrind cannot read the demo binary's symbols: valgrind says so for that
- * binary, and the race's own frame, in the binary, is unnamed. Only the
- * function and line go unchecked then, and the skip comes last, once
- * everything else has passed. The last two skips quote valgrind's lines.
+ * binary, and a frame of the report, in the binary, is unnamed. Each frame is
+ * read on its own: only an unnamed frame goes unchecked, a readable wrong
+ * frame or one elsewhere fails, and the skip comes last, once everything
+ * else has passed. The last two skips quote valgrind's lines.
  */
 TEST(Helgrind, FindsTheRace) {
   if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
@@ -159,10 +160,10 @@ TEST(Helgrind, FindsTheRace) {
                                  "stopped racing (log "
                               << DIR / "helgrind.log" << ")";
 
-  // Where valgrind could not read the demo binary's symbols, its log says so
-  // and the race's own frame, in the binary, is unnamed: the function and
-  // line are not looked for, and the test skips at its end on valgrind's
-  // lines. A frame valgrind named is read as it is.
+  // Each access's frame is read on its own. One that valgrind left unnamed in
+  // the demo binary, where its log says it could not read that binary's
+  // symbols, is not looked for, and the test skips at its end on valgrind's
+  // lines; any other frame must name the racy statement.
   const std::string SYMBOLS_UNREADABLE = vg::symbolsUnreadable(RUN.log, DEMO);
   bool namesUnreadable = false;
   for (const check::RaceReport& report : RACES) {
@@ -174,15 +175,15 @@ TEST(Helgrind, FindsTheRace) {
     EXPECT_EQ(report.race.locksHeld, "none") << SHOWN;
     EXPECT_FALSE(report.conflict.kind.empty()) << "no earlier access is shown for " << SHOWN;
     EXPECT_EQ(report.conflict.locksHeld, "none") << SHOWN;
-    if (!SYMBOLS_UNREADABLE.empty() && check::frameUnnamedIn(report.race.frame, DEMO)) {
-      namesUnreadable = true;
-      continue;
-    }
-    EXPECT_TRUE(check::frameAt(report.race.frame, RACY_FUNCTION, RACY_LOCATION))
+    const check::RaceFrames FRAMES = check::readRaceFrames(report, RACY_FUNCTION, RACY_LOCATION,
+                                                           DEMO, !SYMBOLS_UNREADABLE.empty());
+    EXPECT_NE(FRAMES.race, check::FrameReading::WRONG)
         << "the race is not reported at " << RACY_LOCATION << " in " << RACY_FUNCTION << ": "
         << SHOWN;
-    EXPECT_TRUE(check::frameAt(report.conflict.frame, RACY_FUNCTION, RACY_LOCATION))
+    EXPECT_NE(FRAMES.earlier, check::FrameReading::WRONG)
         << "the earlier access is not at " << RACY_LOCATION << ": " << report.conflict.frame;
+    namesUnreadable = namesUnreadable || FRAMES.race == check::FrameReading::UNNAMED_IN_BINARY ||
+                      FRAMES.earlier == check::FrameReading::UNNAMED_IN_BINARY;
   }
   EXPECT_TRUE(vg::exitedWith(RUN.end, HELGRIND_ERROR_EXIT))
       << "valgrind " << vg::describe(RUN.end) << ", not the --error-exitcode "
@@ -196,8 +197,8 @@ TEST(Helgrind, FindsTheRace) {
   fs::remove_all(DIR, ec);
   if (namesUnreadable) {
     GTEST_SKIP() << "helgrind reported the race as expected, but valgrind could not read the demo "
-                    "binary's symbols, so its report names no function or line of it and "
-                 << RACY_LOCATION << " was not looked for. It printed:\n"
+                    "binary's symbols, so the report's frames in it name no function or line: "
+                 << RACY_LOCATION << " was checked only in the frames it named. It printed:\n"
                  << SYMBOLS_UNREADABLE;
   }
 }
@@ -290,9 +291,61 @@ TEST(Helgrind, RacyTotalSkipsOutsideValgrind) {
 
 // What decides FindsTheRace's pass, its failures and its skip, on report text
 // taken from a real run (the laptop's valgrind 3.18.1), the function's
-// argument list shortened.
+// argument list shortened. The mixed-frame cases pair frames of real reports
+// that no one run printed together: each frame is judged on its own.
 
 namespace {
+
+/// The demo binary as the report reading tests name it.
+constexpr const char* TEST_BINARY = "/b/bin/ptests/BenchDemo_14_HelgrindProfiler";
+
+/// One race report whose racing access is at @p raceFrame and whose earlier
+/// access is at @p earlierFrame; an empty frame leaves that access's frame
+/// line out, as a report that shows no frame for it would.
+std::string twoFrameSnippet(const std::string& raceFrame, const std::string& earlierFrame) {
+  std::string text = "==7== Possible data race during read of size 8 at 0x1FFEFFEE08 by thread #3\n"
+                     "==7== Locks held: none\n";
+  if (!raceFrame.empty()) {
+    text += "==7==    " + raceFrame + "\n";
+  }
+  text += "==7==    by 0x4D0AA82: start_thread (pthread_create.c:442)\n"
+          "==7== \n"
+          "==7== This conflicts with a previous write of size 8 by thread #2\n"
+          "==7== Locks held: none\n";
+  if (!earlierFrame.empty()) {
+    text += "==7==    " + earlierFrame + "\n";
+  }
+  text += "==7==  Address 0x1ffeffee08 is on thread #1's stack\n"
+          "==7== \n"
+          "==7== ----------------------------------------------------------------\n";
+  return text;
+}
+
+/// A frame in the demo binary that valgrind could not name.
+std::string unnamedInBinary() { return std::string("at 0x1223D0: ??? (in ") + TEST_BINARY + ")"; }
+
+/// The readable frames that are not the racy statement, and the unnamed one
+/// in another object, and no frame at all: none may be excused.
+std::vector<std::string> framesElsewhere() {
+  return {
+      "at 0x1223D0: vernier::bench::demo::helgrind_demo::addWrongTotal(unsigned long&, "
+      "std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:21)",
+      "at 0x1223D0: vernier::bench::demo::helgrind_demo::addJoinedLength(unsigned long&, "
+      "std::vector<...> const&, char) (14_HelgrindProfiler_Racy.cpp:19)",
+      "at 0x4A1D252: ??? (in /usr/lib/libstdc++.so.6)",
+      "",
+  };
+}
+
+/// The frames of the one report in @p log, read as FindsTheRace reads them.
+check::RaceFrames framesOf(const std::string& log, bool symbolsUnreadable) {
+  const std::vector<check::RaceReport> REPORTS = check::raceReports(log);
+  EXPECT_EQ(REPORTS.size(), 1u) << log;
+  return REPORTS.empty() ? check::RaceFrames{}
+                         : check::readRaceFrames(REPORTS[0], "helgrind_demo::addJoinedLength",
+                                                 "14_HelgrindProfiler_Racy.cpp:21", TEST_BINARY,
+                                                 symbolsUnreadable);
+}
 
 /// One race report with its conflicting access, as helgrind prints it, with
 /// @p frame as the frame of both accesses and @p locks as the racing access's
@@ -396,4 +449,45 @@ TEST(HelgrindReportTest, LineOfFindsTheStatementOnce) {
   EXPECT_EQ(check::lineOf("a\n  total += x;\nb\n", "total += x;"), 2u);
   EXPECT_EQ(check::lineOf("total += x;\ntotal += x;\n", "total += x;"), 0u);
   EXPECT_EQ(check::lineOf("a\nb\n", "total += x;"), 0u);
+}
+
+/** @test Frames at the racy statement read so, whether or not valgrind read the symbols */
+TEST(HelgrindReportTest, NamedFramesReadAtTheStatement) {
+  for (const bool symbolsUnreadable : {false, true}) {
+    const check::RaceFrames FRAMES =
+        framesOf(twoFrameSnippet(racyFrame(21), racyFrame(21)), symbolsUnreadable);
+    EXPECT_EQ(FRAMES.race, check::FrameReading::AT_STATEMENT);
+    EXPECT_EQ(FRAMES.earlier, check::FrameReading::AT_STATEMENT);
+  }
+}
+
+/** @test Unnamed frames in the binary are excused only on valgrind's word about its symbols */
+TEST(HelgrindReportTest, UnnamedFramesAreExcusedOnlyOnValgrindsWord) {
+  const std::string BOTH_UNNAMED = twoFrameSnippet(unnamedInBinary(), unnamedInBinary());
+
+  const check::RaceFrames SAID = framesOf(BOTH_UNNAMED, true);
+  EXPECT_EQ(SAID.race, check::FrameReading::UNNAMED_IN_BINARY);
+  EXPECT_EQ(SAID.earlier, check::FrameReading::UNNAMED_IN_BINARY);
+
+  const check::RaceFrames NOT_SAID = framesOf(BOTH_UNNAMED, false);
+  EXPECT_EQ(NOT_SAID.race, check::FrameReading::WRONG);
+  EXPECT_EQ(NOT_SAID.earlier, check::FrameReading::WRONG);
+}
+
+/** @test An unnamed racing frame leaves a wrong, foreign or missing earlier frame wrong */
+TEST(HelgrindReportTest, UnnamedRaceDoesNotExcuseTheEarlierAccess) {
+  for (const std::string& earlier : framesElsewhere()) {
+    const check::RaceFrames FRAMES = framesOf(twoFrameSnippet(unnamedInBinary(), earlier), true);
+    EXPECT_EQ(FRAMES.race, check::FrameReading::UNNAMED_IN_BINARY) << earlier;
+    EXPECT_EQ(FRAMES.earlier, check::FrameReading::WRONG) << "earlier access: " << earlier;
+  }
+}
+
+/** @test An unnamed earlier frame leaves a wrong, foreign or missing racing frame wrong */
+TEST(HelgrindReportTest, UnnamedEarlierAccessDoesNotExcuseTheRace) {
+  for (const std::string& race : framesElsewhere()) {
+    const check::RaceFrames FRAMES = framesOf(twoFrameSnippet(race, unnamedInBinary()), true);
+    EXPECT_EQ(FRAMES.race, check::FrameReading::WRONG) << "racing access: " << race;
+    EXPECT_EQ(FRAMES.earlier, check::FrameReading::UNNAMED_IN_BINARY) << race;
+  }
 }
