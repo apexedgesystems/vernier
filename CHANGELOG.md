@@ -131,20 +131,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
-- **Demo 14 (helgrind) shares one total between threads, with and without a
-  lock** -- `BenchDemo_14_HelgrindProfiler` counted with an unguarded `long`
-  against a `std::atomic` and labelled the atomic version "Fast", though it
-  was the slower of the two. `Helgrind.LockedTotal` measures threads adding
-  the length of the shared `join` example's `joinV1` result to one total
-  under a mutex, and `Helgrind.RacyTotal` adds without it, runs only under
-  valgrind and skips itself anywhere else; a check registered with `ctest`
-  under the `helgrind` label fails unless helgrind names the racy line and
-  reports nothing for the locked version. Its walkthrough,
-  `src/bench/demo/docs/20_HELGRIND_PROFILER.md`, is rewritten from a Release
-  run on the documented Raspberry Pi 4 rig; that run's CSV is committed at
-  `src/bench/demo/reference/pi4/20_helgrind_profiler.csv`. The demo's test
-  names change, so CSVs captured from it before this release do not join with
-  newer ones.
+- **Demo 14 (helgrind) shows a data race beside its locked fix** -- helgrind
+  names the line where threads add the shared `join` example's result to one
+  total without a lock and reports nothing for the version that takes a mutex,
+  which walkthrough 20 measures: holding the lock across the join, four
+  threads are no faster than one. The demo's test names change, so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -253,14 +245,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- **`contentionRun`'s start gate is marked for helgrind** -- the gate that
-  releases a contention test's threads together spins on two atomic flags,
-  which helgrind cannot see as synchronisation, so every contention test run
-  under helgrind reported data races on them. A libbench built where valgrind's
-  `helgrind.h` is installed asks helgrind to leave the two flags unchecked
-  while the gate exists, and a race-free test reports nothing; one built
-  without the header, or with `NVALGRIND`, makes no request, and they are
-  still reported.
+- **`contentionRun`'s start gate stays out of helgrind's reports** -- the
+  gate that releases a contention test's threads together spins on two atomic
+  flags, which helgrind reported as data races whenever it checked a contention
+  test. A libbench built where valgrind's `helgrind.h` is installed asks
+  helgrind to leave them unchecked, so a race-free test reports nothing; one
+  built without the header, or with `NVALGRIND`, still reports them.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
