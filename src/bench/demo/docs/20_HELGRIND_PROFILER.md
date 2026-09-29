@@ -3,9 +3,9 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
-**Captured:** 2026-09-28 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; valgrind 3.24.0
+**Captured:** 2026-09-28 (UTC), step 4 and the job section 2026-09-29 (UTC);
+written for the Vernier 1.0.4 release; captured from the development tree at
+project version 1.0.3, whose CLI reported `bench 1.0.3`; valgrind 3.24.0
 
 ## Overview
 
@@ -41,7 +41,7 @@ has no order to get wrong: the race is what it shows.
 - **Best for:** data races, locks taken in inconsistent orders, misuse of the
   POSIX threads API.
 - **Overhead:** large, and it changes from run to run. Under helgrind,
-  `Helgrind.LockedTotal`'s result line read from 51.6 to 268.9 ms per call
+  `Helgrind.LockedTotal`'s result line read from 86.1 to 454.4 ms per call
   over the eight runs of it for this page, step 4's among them, against
   22.1 us in step 1: thousands of times as long, and five times apart between
   runs of the same command. Valgrind runs one thread at a time, and its manual
@@ -57,7 +57,8 @@ has no order to get wrong: the race is what it shows.
   instead of the threads library. Helgrind knows the POSIX primitives, and it
   reports accesses that only such an ordering protects as races. Vernier's own
   start gate, which releases a contention test's threads together, is built
-  that way and marks its flags for helgrind ([Step 4](#step-4-confirm-the-fix)).
+  that way, and Vernier's library marks its flags for helgrind
+  ([Step 4](#step-4-confirm-the-fix)).
 
 **In Vernier:** `--profile helgrind` selects the helgrind backend, which does
 not start valgrind itself. `bench run <binary> --profile helgrind` builds the
@@ -83,8 +84,8 @@ the log carries the finding. To fail a job on one, run valgrind yourself
   [OK]   helgrind   valgrind available (helgrind + drd thread-error detectors ship with it)
 ```
 
-To keep Vernier's own start gate out of the report, build the benchmark where
-valgrind's header `helgrind.h` is installed, as this rig's build was
+Vernier's own start gate stays out of the report when Vernier's library was
+built where valgrind's header `helgrind.h` is installed, as this rig's was
 ([If It Does Not Match](#if-it-does-not-match)).
 
 ## The Example
@@ -163,7 +164,7 @@ valgrind, `Helgrind.RacyTotal` skips itself and says how to run it; it asks
 `isRunningUnderValgrind()`, from [`ProfilerEnv.hpp`](../../inc/ProfilerEnv.hpp),
 whether valgrind is running it. It measures nothing: under valgrind a time
 means nothing, and a fixed number of additions is what its total is checked
-against. That check passed in all seven runs of the case under helgrind for
+against. That check passed in all eight runs of the case under helgrind for
 this page, and the check program below requires it. Valgrind runs one thread
 at a time, and in these runs no addition was lost: the total came out right,
 the race was there all the same, and that is why a test of the answer cannot
@@ -449,47 +450,49 @@ Note: Google Test filter = Helgrind.LockedTotal
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.LockedTotal
-[Helgrind.LockedTotal]  112309.500 us/call  CV=0.0%  ~9 calls/s  (p10=112309.500 p90=112309.500 sd=0.000)
-[       OK ] Helgrind.LockedTotal (1103 ms)
-[----------] 1 test from Helgrind (1111 ms total)
+[Helgrind.LockedTotal]  101823.750 us/call  CV=0.0%  ~10 calls/s  (p10=101823.750 p90=101823.750 sd=0.000)
+[       OK ] Helgrind.LockedTotal (1009 ms)
+[----------] 1 test from Helgrind (1018 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (1163 ms total)
+[==========] 1 test from 1 test suite ran. (1070 ms total)
 [  PASSED  ] 1 test.
 ```
 
 and of the log:
 
 ```
-==178557== Helgrind, a thread error detector
-==178557== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
-==178557== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==178557== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
-==178557== Parent PID: 178556
-==178557==
-==178557==
-==178557== Use --history-level=approx or =none to gain increased speed, at
-==178557== the cost of reduced accuracy of conflicting-access information
-==178557== For lists of detected and suppressed errors, rerun with: -s
-==178557== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 34 from 8)
+==44424== Helgrind, a thread error detector
+==44424== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
+==44424== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==44424== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
+==44424== Parent PID: 44423
+==44424==
+==44424==
+==44424== Use --history-level=approx or =none to gain increased speed, at
+==44424== the cost of reduced accuracy of conflicting-access information
+==44424== For lists of detected and suppressed errors, rerun with: -s
+==44424== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 33 from 7)
 ```
 
 `ERROR SUMMARY: 0 errors from 0 contexts`: four threads made two calls each
 through the mutex, and helgrind found every access to the total ordered by the
 lock. `--cycles 2 --repeats 1` keeps the run short, and two calls per thread
-are enough for the threads to share the total. The result line, 112.3 ms per
+are enough for the threads to share the total. The result line, 101.8 ms per
 call, is what helgrind costs, not how fast the locked version is.
 
 Helgrind did not report Vernier's own start gate either, which
 `contentionRun` uses to release the threads together. The gate spins on two
-atomic flags, which helgrind cannot see as synchronisation; where valgrind's
-`helgrind.h` is installed when the benchmark is built, as it was here, the
-gate marks those two flags for helgrind while it exists, and helgrind leaves
-them out. The rest of the program is checked as before: a race between the
-workers of a contention test is still reported
-([What Keeps This Page True](#what-keeps-this-page-true)). Built without that
-header, or with `NVALGRIND`, the same run reports five races in
-`contentionRun` ([If It Does Not Match](#if-it-does-not-match)).
+atomic flags, which helgrind cannot see as synchronisation, so while it exists
+it asks Vernier's library to have helgrind leave those two flags unchecked.
+The library makes the request when it was built where valgrind's `helgrind.h`
+is installed, as this rig's was, whatever the benchmark's own build has. The
+rest of the program is checked as before: a race between the workers of a
+contention test is still reported
+([What Keeps This Page True](#what-keeps-this-page-true)). A library built
+without that header, or with `NVALGRIND`, makes no request, and the same run
+reports five races in `contentionRun`
+([If It Does Not Match](#if-it-does-not-match)).
 
 ## Failing a Job on a Race
 
@@ -534,12 +537,12 @@ Note: Google Test filter = Helgrind.LockedTotal
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.LockedTotal
-[Helgrind.LockedTotal]  148877.875 us/call  CV=0.0%  ~7 calls/s  (p10=148877.875 p90=148877.875 sd=0.000)
-[       OK ] Helgrind.LockedTotal (1353 ms)
-[----------] 1 test from Helgrind (1361 ms total)
+[Helgrind.LockedTotal]  95632.375 us/call  CV=0.0%  ~10 calls/s  (p10=95632.375 p90=95632.375 sd=0.000)
+[       OK ] Helgrind.LockedTotal (927 ms)
+[----------] 1 test from Helgrind (935 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (1414 ms total)
+[==========] 1 test from 1 test suite ran. (989 ms total)
 [  PASSED  ] 1 test.
 exit 0
 ```
@@ -552,12 +555,12 @@ which is 0 in both cases here.
 | Reading                           | On this rig                                                                                                                                                      | Elsewhere                                                                                                                                                                                                            |
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | the race                          | a read and a write of size 8 at line 21 of the racy file, in `addJoinedLength`, each against an earlier write at the same line, `Locks held: none` on both sides | should match: it depends on the code, not the machine; the same on an x86-64 laptop with GCC 11.4 and valgrind 3.18.1, and in this project's container with clang 21, whose report names the file with its directory |
-| errors and contexts               | 6 errors from 2 contexts, in all seven runs of the racy case                                                                                                     | 6 from 2 on the laptop and in the container                                                                                                                                                                          |
+| errors and contexts               | 6 errors from 2 contexts, in all eight runs of the racy case                                                                                                     | 6 from 2 on the laptop and in the container                                                                                                                                                                          |
 | suppressed reports                | 6 from 2, valgrind's `helgrind-glibc2X-005`                                                                                                                      | depend on valgrind and the C library: 0 from 0 on the laptop                                                                                                                                                         |
-| the racy case's answer            | right in all seven runs                                                                                                                                          | right on the laptop and in the container too; the case never runs without valgrind                                                                                                                                   |
+| the racy case's answer            | right in all eight runs                                                                                                                                          | right on the laptop and in the container too; the case never runs without valgrind                                                                                                                                   |
 | the locked version under helgrind | 0 errors from 0 contexts, in all eight runs of it                                                                                                                | 0 errors on the laptop and in the container too; five races in `contentionRun` where the start gate is not marked                                                                                                    |
 | four threads against one (step 1) | four threads slower per call, 22.1 against 18.9 us, in step 1 and in every run of the session                                                                    | no faster than one thread wherever the lock covers the whole call, since only one call runs at a time; by how much depends on the machine                                                                            |
-| helgrind's cost                   | the locked version 51.6 to 268.9 ms per call over eight runs, against 22.1 us                                                                                    | depends on the machine, and changes from run to run                                                                                                                                                                  |
+| helgrind's cost                   | the locked version 86.1 to 454.4 ms per call over eight runs, against 22.1 us                                                                                    | depends on the machine, and changes from run to run                                                                                                                                                                  |
 | absolute times                    | 22.1 and 18.9 us per call in step 1; 21.7 to 22.5 over twelve runs and 18.9 to 19.2 over six                                                                     | will differ                                                                                                                                                                                                          |
 
 The twelve runs are step 1's command run twelve times in one session on this
@@ -609,12 +612,13 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   `ERROR SUMMARY: 5 errors from 2 contexts`: a `write of size 1` by thread #1
   and four `read of size 1` by the workers, in
   `vernier::bench::PerfCase::contentionRun` and in the thread function it
-  starts. That is Vernier's start gate, unmarked: the benchmark was built where
-  valgrind's `helgrind.h` was not found, or with `-DNVALGRIND`. On this rig,
-  the same source built with `-DNVALGRIND` reported exactly that for step 4's
-  case. Build where valgrind's headers are installed, without `NVALGRIND`.
-  `Helgrind.LockedTotalReportsNothing` skips in such a build, with
-  `valgrind's helgrind.h is not available to this build, or NVALGRIND is defined, so contentionRun's start gate is not marked for helgrind and is reported`.
+  starts. That is Vernier's start gate, unmarked: Vernier's library was built
+  where valgrind's `helgrind.h` was not found, or with `-DNVALGRIND`. On this
+  rig, a library built with `-DNVALGRIND` gave exactly that for step 4's case.
+  Rebuild Vernier where valgrind's headers are installed, without
+  `NVALGRIND`; how the benchmark itself is built does not matter.
+  `Helgrind.LockedTotalReportsNothing` skips with such a library, with
+  `this libbench was built without valgrind's helgrind.h, or with NVALGRIND, so contentionRun's start gate is not marked for helgrind and is reported`.
 
 - **`Helgrind.FindsTheRace` reports `SKIPPED`, quoting valgrind.** valgrind
   could not read the demo binary: it gave up reading its debug information
@@ -716,8 +720,9 @@ Three things check what this page shows, and all fail loudly:
   valgrind cannot read the binary's symbols, once every other check has
   passed: it reads each frame on its own, looks for the function and the line
   in every frame valgrind named, and excuses only a frame left unnamed in that
-  binary. `LockedTotalReportsNothing` also skips in a build where the gate is
-  not marked. The skips that rest on valgrind quote its lines. Beside them,
+  binary. `LockedTotalReportsNothing` also skips where Vernier's library says
+  it does not mark the gate. The skips that rest on valgrind quote its lines.
+  Beside them,
   `HelgrindReportTest` holds the report reading to its cases (a lock held, a
   frame at another line or in another function, a file named with its
   directory, a frame valgrind could not name, a wrong frame beside an unnamed
@@ -730,7 +735,8 @@ Three things check what this page shows, and all fail loudly:
   `contentionRun` under helgrind: workers that add under a mutex must report no
   error, and workers that add without one must still report their race, so the
   marking covers the gate's two flags and a race between the workers is still
-  found.
+  found. Both programs ask the library whether it marks the gate; neither
+  decides that from its own build.
 - The example's unit tests hold `joinV0` and `joinV1` to the same answers,
   under the `demo` label.
 

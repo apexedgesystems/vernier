@@ -20,6 +20,7 @@ vernier_module(bench)
 
 set(CPP_SOURCES
     "${SRC_DIR}/PerfAbi.cpp"
+    "${SRC_DIR}/HelgrindRequests.cpp"
     "${SRC_DIR}/ProfilerRegistry.cpp"
     "${SRC_DIR}/ProfilerPerf.cpp"
     "${SRC_DIR}/ProfilerGperf.cpp"

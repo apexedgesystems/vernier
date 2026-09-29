@@ -256,12 +256,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **`contentionRun`'s start gate is marked for helgrind** -- the gate that
   releases a contention test's threads together spins on two atomic flags,
   which helgrind cannot see as synchronisation, so every contention test run
-  under helgrind reported data races on them. Where valgrind's `helgrind.h` is
-  installed when a benchmark is built, the gate marks the two flags as
-  unchecked while it exists, and a race-free test reports nothing; a build
-  without the header, or with `NVALGRIND`, still reports them. A benchmark
-  built with the header also sees its `VALGRIND_*` and `ANNOTATE_*` macros,
-  through `Perf.hpp`.
+  under helgrind reported data races on them. A libbench built where valgrind's
+  `helgrind.h` is installed asks helgrind to leave the two flags unchecked
+  while the gate exists, and a race-free test reports nothing; one built
+  without the header, or with `NVALGRIND`, makes no request, and they are
+  still reported.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

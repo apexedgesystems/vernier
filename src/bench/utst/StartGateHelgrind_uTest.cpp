@@ -5,22 +5,23 @@
  *
  * Notes:
  *  - StartGate spins on two atomic flags, which helgrind cannot see as
- *    synchronisation; where valgrind's helgrind.h is available the gate marks
- *    them unchecked while it exists (PerfUtils.hpp). The tests run this
+ *    synchronisation; the gate asks libbench to mark them unchecked while it
+ *    exists (PerfUtils.hpp, HelgrindRequests.cpp). The tests run this
  *    binary under helgrind as a child, on two probe cases that start four
  *    threads through contentionRun: workers that add to a counter under a
  *    mutex, and workers that add to it without one.
  *  - The helgrind runs skip in a build configured with the address or the
  *    thread sanitizer, where valgrind is not installed, and where valgrind
  *    stops reading this binary's debug information before the program runs,
- *    quoting valgrind; the locked run also skips where the gate is not marked
- *    (no helgrind.h, or NVALGRIND). Any other way of not reaching a probe
- *    fails, with what the run printed.
+ *    quoting valgrind; the locked run also skips where libbench says it does
+ *    not mark the gate (built without helgrind.h, or with NVALGRIND). Any
+ *    other way of not reaching a probe fails, with what the run printed.
  *  - Tests are independent of execution order.
  */
 
 #include "src/bench/inc/PerfUtils.hpp"
 
+#include "src/bench/inc/HelgrindRequests.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
@@ -65,19 +66,6 @@ constexpr const char* RACY_PROBE = "StartGateProbe.RacyWorkers";
 /// What valgrind exits with when helgrind reported an error: not 1, which is
 /// also what a failed test exits with.
 constexpr int HELGRIND_ERROR_EXIT = 99;
-
-/// True where StartGate marks its flags for helgrind: valgrind's helgrind.h
-/// is available to this build, and NVALGRIND does not compile its requests
-/// out.
-#if defined(__has_include)
-#if __has_include(<valgrind/helgrind.h>) && !defined(NVALGRIND)
-constexpr bool GATE_MARKED = true;
-#else
-constexpr bool GATE_MARKED = false;
-#endif
-#else
-constexpr bool GATE_MARKED = false;
-#endif
 
 /// The sanitizer this build is configured with (-DSANITIZER), when it is one
 /// valgrind cannot run: the address or the thread sanitizer.
@@ -320,9 +308,10 @@ TEST(StartGateHelgrindTest, GateReportsNothing) {
   if (!CANNOT_RUN.empty()) {
     GTEST_SKIP() << CANNOT_RUN;
   }
-  if constexpr (!GATE_MARKED) {
-    GTEST_SKIP() << "valgrind's helgrind.h is not available to this build, or NVALGRIND is "
-                    "defined, so StartGate does not mark its flags for helgrind";
+  // Whether the gate marks its flags is libbench's build-time choice, so ask it
+  if (!vernier::bench::helgrind::requestsBuiltIn()) {
+    GTEST_SKIP() << "this libbench was built without valgrind's helgrind.h, or with NVALGRIND, "
+                    "so StartGate does not mark its flags for helgrind";
   }
   const ScratchDir SCRATCH;
   ASSERT_FALSE(SCRATCH.path().empty()) << "could not create a scratch directory";

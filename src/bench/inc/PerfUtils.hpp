@@ -10,6 +10,8 @@
  * - Synchronization primitives (start gate for multi-threaded tests)
  */
 
+#include "src/bench/inc/HelgrindRequests.hpp"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -21,14 +23,6 @@
 
 #if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
 #include <immintrin.h>
-#endif
-
-// Valgrind's helgrind client requests, where valgrind's headers are installed:
-// StartGate uses them to keep helgrind from reporting its own flags.
-#if defined(__has_include)
-#if __has_include(<valgrind/helgrind.h>)
-#include <valgrind/helgrind.h>
-#endif
 #endif
 
 namespace vernier {
@@ -155,10 +149,11 @@ inline int countLines(const std::string& s) {
  * this is sufficient and has minimal overhead.
  *
  * helgrind sees no ordering in spin-waiting on atomics, so it reports every
- * access to the gate's two flags as a data race. Where valgrind's helgrind.h
- * is available to the build, the gate marks those flags as unchecked for its
- * lifetime; the threads' own accesses are checked as before. Built without
- * that header, or with NVALGRIND, helgrind reports the flags.
+ * access to the gate's two flags as a data race. The gate asks libbench to
+ * mark those flags unchecked for its lifetime; the threads' own accesses are
+ * checked as before. A libbench built without valgrind's helgrind.h, or with
+ * NVALGRIND, makes no request (helgrind::requestsBuiltIn() says which), and
+ * helgrind then reports the flags.
  *
  * @note RT-safe (lock-free atomics, spin-wait only).
  */
@@ -169,18 +164,14 @@ public:
    * @param total Number of threads that will call start()
    */
   explicit StartGate(int total) noexcept : total_(total) {
-#ifdef VALGRIND_HG_DISABLE_CHECKING
-    VALGRIND_HG_DISABLE_CHECKING(&ready_, sizeof(ready_));
-    VALGRIND_HG_DISABLE_CHECKING(&go_, sizeof(go_));
-#endif
+    helgrind::disableChecking(&ready_, sizeof(ready_));
+    helgrind::disableChecking(&go_, sizeof(go_));
   }
 
   /** @brief Returns the flags' memory to helgrind's ordinary checking. */
   ~StartGate() {
-#ifdef VALGRIND_HG_ENABLE_CHECKING
-    VALGRIND_HG_ENABLE_CHECKING(&ready_, sizeof(ready_));
-    VALGRIND_HG_ENABLE_CHECKING(&go_, sizeof(go_));
-#endif
+    helgrind::enableChecking(&ready_, sizeof(ready_));
+    helgrind::enableChecking(&go_, sizeof(go_));
   }
 
   /**

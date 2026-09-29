@@ -19,6 +19,7 @@
 #include "src/bench/demo/cpu/utst/14_HelgrindProfiler_Check.hpp"
 
 #include "src/bench/demo/helpers/SkipUnlessUnderValgrind.hpp"
+#include "src/bench/inc/HelgrindRequests.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <cstddef>
@@ -61,20 +62,6 @@ constexpr const char* RACY_FILE = "14_HelgrindProfiler_Racy.cpp";
 /// What valgrind exits with when helgrind reported an error: not 1, which is
 /// also what a failed test exits with.
 constexpr int HELGRIND_ERROR_EXIT = 99;
-
-/// True where StartGate marks its flags for helgrind: valgrind's helgrind.h
-/// is available to this build, and NVALGRIND does not compile its requests
-/// out. Built without that, contentionRun's gate is reported, and the
-/// locked control has nothing to show.
-#if defined(__has_include)
-#if __has_include(<valgrind/helgrind.h>) && !defined(NVALGRIND)
-constexpr bool GATE_MARKED = true;
-#else
-constexpr bool GATE_MARKED = false;
-#endif
-#else
-constexpr bool GATE_MARKED = false;
-#endif
 
 /// The demo binary's canonical path, or an empty string when it is missing.
 std::string demoPath() {
@@ -210,8 +197,8 @@ TEST(Helgrind, FindsTheRace) {
  * four threads, two calls each, one repeat: it must run to its end, and
  * helgrind must count no error, contentionRun's start gate included; valgrind
  * must exit 0. Skipped where FindsTheRace skips before running anything, on
- * valgrind's give-up lines, and in a build where the gate is not marked for
- * helgrind.
+ * valgrind's give-up lines, and where libbench says it does not mark the gate
+ * for helgrind.
  */
 TEST(Helgrind, LockedTotalReportsNothing) {
   if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
@@ -220,10 +207,12 @@ TEST(Helgrind, LockedTotalReportsNothing) {
   if (!vernier::bench::profiler_env::isOnPath("valgrind")) {
     GTEST_SKIP() << "valgrind is not installed; this test runs the locked case under helgrind";
   }
-  if constexpr (!GATE_MARKED) {
-    GTEST_SKIP() << "valgrind's helgrind.h is not available to this build, or NVALGRIND is "
-                    "defined, so contentionRun's start gate is not marked for helgrind and is "
-                    "reported";
+  // Whether contentionRun's start gate is marked is libbench's build-time
+  // choice; without the marking the gate is reported, and the locked control
+  // has nothing to show
+  if (!vernier::bench::helgrind::requestsBuiltIn()) {
+    GTEST_SKIP() << "this libbench was built without valgrind's helgrind.h, or with NVALGRIND, "
+                    "so contentionRun's start gate is not marked for helgrind and is reported";
   }
   const std::string DEMO = demoPath();
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
