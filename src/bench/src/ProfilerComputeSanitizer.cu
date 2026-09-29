@@ -24,31 +24,9 @@ bool isComputeSanitizerOnPath() {
   return std::system("command -v compute-sanitizer >/dev/null 2>&1") == 0;
 }
 
-// Heuristic detection that this process is running under compute-sanitizer.
-// compute-sanitizer injects a launch hook via this env var. Not guaranteed
-// to be stable across CUDA releases, but reliable on 2025.x.
-bool detectUnderSanitizer() {
-  const char* p = std::getenv("CUDA_INJECTION64_PATH");
-  if (p && (std::strstr(p, "sanitizer") != nullptr || std::strstr(p, "Sanitizer") != nullptr))
-    return true;
-  // Fallback: the injection library is mapped into the process whenever
-  // compute-sanitizer is actually instrumenting. The env-var name/value has
-  // drifted across CUDA releases, so scanning /proc/self/maps is the reliable
-  // signal (and avoids a false "NOT running" hint when the auto-wrap ran).
-  std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp)
-    return false;
-  char line[512];
-  bool found = false;
-  while (std::fgets(line, sizeof(line), fp)) {
-    if (std::strstr(line, "sanitizer") || std::strstr(line, "Sanitizer")) {
-      found = true;
-      break;
-    }
-  }
-  std::fclose(fp);
-  return found;
-}
+// Whether compute-sanitizer started this process: decided as the shared
+// helper decides it, from what the tool exports and maps, never from a name.
+bool detectUnderSanitizer() { return profiler_env::isRunningUnderComputeSanitizer(); }
 
 std::string sanitizerToolFromArgs(const std::string& profileArgs) {
   static const char* const TOOLS[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
