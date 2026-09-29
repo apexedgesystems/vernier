@@ -551,19 +551,26 @@ different `--profile-output-dir` gives a run a file of its own.
 | heap V0's call holds at its peak, against V1's | 5.0x (`Massif.JoinPeakHeap`); 746,453 against 149,813 bytes in massif's trees                              | 5.0x with libstdc++, also on an x86 laptop; 4.0x with libc++ 14                                       |
 | who holds V0's peak                            | the input 640,000 bytes; `joinV0` 597,158 through `append` and 149,295 through `reserve`; libstdc++ 73,728 | the same owners and the same line of `Join.cpp`; the bytes depend on the standard library             |
 | total heap at the peak                         | 1,470,720 against 874,064 bytes, 1.68x                                                                     | depends on the size of `std::string` (32 bytes here) and on what else the process holds               |
-| byte counts from run to run                    | the join's entries identical in all four profiles of V0 taken for this page; the total within 16 bytes     | should hold                                                                                           |
+| byte counts from run to run                    | the same owners and lines in every profile; the bytes within massif's 1% peak inaccuracy (step 3)          | the same owners and lines; the bytes within the same inaccuracy                                       |
 | V0 and V1 per call                             | 387.5 ms and 0.47 ms in step 1's run (826x); the spread is below                                           | will differ: V0's time grows with the square of the word count, and memory bandwidth decides the rest |
 
-The byte counts are the reading this page checks, and they repeat: every run of
-the check on this rig printed the same `Massif.JoinPeakHeap` line, and every
-profile of V0 the same entries for the join and the input. The times do not.
-Over the twelve step 1 runs behind this page, V0's median ranged from 384.6 to
-395.8 ms and V1's from 469.4 to 513.7 us, and V0 was 764 to 834 times slower
-than V1. V1's median is the noisiest reading here: one of the twelve runs
-read 513.7 us, 7.5% above the next highest, with a CV of 0.4%, steady within
-itself and apart from the others. That range describes those twelve runs. It
-is not a bound a run has to meet, and another run of the same command can land
-outside it. The times give the context; the byte counts are the check.
+The byte counts are the reading this page checks. The check counts exactly,
+and its counts repeat: every run of it on this rig printed the same
+`Massif.JoinPeakHeap` line. Massif's peak is approximate (step 3). The four
+profiles of V0 behind this page held the same entries for the join and the
+input, with totals within 16 bytes, but that describes those runs, not a
+bound: another run can take its peak snapshot at a slightly different moment
+of the call, and its entries then differ within massif's 1%, about 14,700 of
+V0's 1,470,720 bytes, with the same owners and lines.
+
+The times vary more. Over the twelve step 1 runs behind this page, V0's median
+ranged from 384.6 to 395.8 ms and V1's from 469.4 to 513.7 us, and V0 was 764 to
+834 times slower than V1. V1's median is the noisiest reading here: one of the
+twelve runs read 513.7 us, 7.5% above the next highest, with a CV of 0.4%,
+steady within itself and apart from the others. That range describes those
+twelve runs. It is not a bound a run has to meet, and another run of the same
+command can land outside it. The times give the context; the byte counts are the
+check.
 
 ## If It Does Not Match
 
@@ -575,6 +582,12 @@ outside it. The times give the context; the byte counts are the check.
 - **V0 holds about four times V1's heap, not five.** The build uses another
   standard library; libc++ regrows strings differently. The check's floor is
   three.
+- **Massif's byte counts differ a little from this page's.** Its peak
+  snapshot is recorded only when the heap passes the last one recorded by 1%
+  (step 3), so two runs of the same binary can take it at slightly different
+  moments of the same call. Compare the owners, the lines and the ratio of the
+  join's entries to V1's; `Massif.JoinPeakHeap` counts exactly, and its line
+  should not change on this rig.
 - **A CV well above a few percent in step 1.** Over the twelve runs behind this
   page, with the governor pinned, V0's CV ranged from 0.4% to 3.7% and V1's
   from 0.4% to 2.2%; V0 runs once per repeat, so each of its repeats is one
