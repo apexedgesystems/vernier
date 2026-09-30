@@ -100,17 +100,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                             | Slow Path                                            | Fast Path                                   | Walkthrough                                               |
+| --- | ------------------ | ----------------------------------- | ---------------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats                              | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads                                 | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose                               | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | A kernel past the end of its buffer | SAXPY kernel without its guard (under the tool only) | The shared SAXPY kernel                     | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demo 01 measures the shared SAXPY example (see
-[Shared Examples](#shared-examples)); the other three carry their own kernels.
+Demos 01 and 04 measure the shared SAXPY example (see
+[Shared Examples](#shared-examples)); the other two carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -196,7 +196,7 @@ the demos that use each example.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 07, 12, 14, 21 |
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                          |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demo 10                          |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 17                     |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
@@ -242,7 +242,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 17. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
 18. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
 19. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
-20. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
+20. [17](docs/17_COMPUTE_SANITIZER.md) -- a kernel past the end of its buffer, found by Compute Sanitizer
 21. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
 
 ---
