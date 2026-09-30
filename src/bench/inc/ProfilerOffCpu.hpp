@@ -19,13 +19,20 @@
  * Capture: beforeMeasure() starts the tracer and waits until it arms. The
  * script records nothing until it sees a thread of this process named
  * vernier-arm, which the backend starts, go to sleep, and it then prints
- * "offcpu armed <pid> <tid>"; the backend checks that the ids are its own.
- * afterMeasure() names the calling thread vernier-stop until the tracer
- * disarms and prints "offcpu disarmed <pid> <tid> <n>", n the switch-outs it
- * recorded, then stops it with SIGINT, which makes it print its maps. The
- * backend's own waits run under the name vernier-wait, which the script does
- * not record. The three names are reserved: a test's own thread given one of
- * them disturbs the capture.
+ * "offcpu armed <pid> <tid>"; the backend checks the ids against this
+ * process and that thread. bpftrace (0.20.2 and 0.23.2) reads a probe's
+ * output only once every probe of the script is attached, so the line's
+ * arrival also shows the whole script attached. afterMeasure() names the
+ * calling thread vernier-stop until the tracer disarms and prints
+ * "offcpu disarmed <pid> <tid> <n>", n the switch-outs it recorded, and
+ * checks the ids against this process and the calling thread; then it stops
+ * the tracer with SIGINT, on which bpftrace prints the lines it still had
+ * queued, where a late disarm line counts too, and then its maps. Lines are
+ * read in order from the start of the output, which each capture creates
+ * afresh, so a disarm line counts only after the arm line. The backend's own
+ * waits run under the name vernier-wait, which the script does not record.
+ * The three names are reserved: a test's own thread given one of them
+ * disturbs the capture.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
@@ -52,13 +59,15 @@
  * with one outcome, printed with an `[offcpu]` prefix and kept by
  * captureOutcome(): `stacks written to <path>` for a capture the tracer
  * acknowledged from its start to its stop, that ended cleanly on the stop and
- * whose dump is whole; a line of its own when no thread of this process slept
- * in that window; an error otherwise, the output kept: no arm
- * acknowledgement, or one for other ids; a tracer that ended before the stop,
- * could not be stopped, was killed or did not end cleanly; no stop
- * acknowledgement ("capture validity could not be established"); an output
- * that cannot be read, or a dump cut short (an entry cut, or no @recorded
- * line where the tracer recorded switch-outs).
+ * whose dump is whole; a line of its own when the stop's count is 0 and the
+ * dump, whole, holds no stack: no thread of this process slept in that
+ * window; an error otherwise, the output kept: no arm acknowledgement, or one
+ * for other ids; a tracer that ended before the stop, could not be stopped,
+ * was killed or did not end cleanly; no stop acknowledgement, in time or at
+ * the stop, or one for other ids ("capture validity could not be
+ * established"); an output that cannot be read, or a dump missing or cut
+ * short (no map dump after the acknowledgements, an entry cut, or no
+ * @recorded line where the tracer recorded switch-outs).
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the

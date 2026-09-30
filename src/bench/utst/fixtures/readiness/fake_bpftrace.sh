@@ -134,7 +134,16 @@ fi
 #   wrong-arm      acknowledges it for the main thread, not the arm thread
 #   foreign-arm    acknowledges it for the arm thread with another pid (1)
 #   end-after-arm  prints its maps and exits 0 right after the arm
+#   die-after-arm  kills itself (SIGKILL) right after the arm, printing no maps
 #   no-disarm      never acknowledges the stop
+#   early-disarm   prints a disarm line for the main thread before it arms,
+#                  and none at the stop
+#   late-disarm    acknowledges the stop only when it prints its maps, before
+#                  them, as bpftrace prints lines still queued at the stop
+#   wrong-disarm   acknowledges the stop for the arm thread, not the stopping
+#                  thread
+#   foreign-disarm acknowledges the stop for the stopping thread with another
+#                  pid (1)
 #   remove-output  removes its output file once it has printed its maps
 #   bad-exit       exits 3 instead of 0 once it has printed its maps
 label=$(printf '%s\n' "$program" | sed -n 's/.*printf("\([a-z]*\) armed %d %d.*/\1/p' | head -n 1)
@@ -147,7 +156,11 @@ if [ -n "$label" ]; then
       recorded=$(awk '/^, .*\]: [0-9]+$/ { n += $NF } END { print n + 0 }' "$FAKE_BPFTRACE_OUTPUT")
     fi
   fi
+  late=
   finish() {
+    if [ -n "$late" ]; then
+      printf '%s\n' "$late"
+    fi
     if [ -n "${FAKE_BPFTRACE_OUTPUT:-}" ]; then
       cat "$FAKE_BPFTRACE_OUTPUT"
     else
@@ -173,6 +186,9 @@ if [ -n "$label" ]; then
   tail -s 0.1 -f /dev/null --pid=$$ &
   tail -s 0.1 -f /dev/null --pid=$$ &
   echo "Attaching 2 probes..."
+  if [ "$window" = early-disarm ]; then
+    printf '%s disarmed %s %s %s\n' "$label" "$target" "$target" "$recorded"
+  fi
   # Centiseconds since boot, from /proc/uptime: the self-exit's clock.
   read -r up _ </proc/uptime
   deadline=$((${up%.*}${up#*.} + limit_cs))
@@ -193,6 +209,7 @@ if [ -n "$label" ]; then
       if [ "$state" = arming ] && [ "$name" = vernier-arm ] && [ "$tid" != "$target" ] &&
         [ "$window" != no-arm ]; then
         ack_pid=$target
+        arm_tid=$tid
         if [ "$window" = wrong-arm ]; then
           tid=$target
         elif [ "$window" = foreign-arm ]; then
@@ -202,9 +219,23 @@ if [ -n "$label" ]; then
         state=armed
         if [ "$window" = end-after-arm ]; then
           finish
+        elif [ "$window" = die-after-arm ]; then
+          kill -9 $$
         fi
-      elif [ "$state" = armed ] && [ "$name" = vernier-stop ] && [ "$window" != no-disarm ]; then
-        printf '%s disarmed %s %s %s\n' "$label" "$target" "$tid" "$recorded"
+      elif [ "$state" = armed ] && [ "$name" = vernier-stop ] && [ "$window" != no-disarm ] &&
+        [ "$window" != early-disarm ]; then
+        ack_pid=$target
+        if [ "$window" = wrong-disarm ]; then
+          tid=$arm_tid
+        elif [ "$window" = foreign-disarm ]; then
+          ack_pid=1
+        fi
+        line=$(printf '%s disarmed %s %s %s' "$label" "$ack_pid" "$tid" "$recorded")
+        if [ "$window" = late-disarm ]; then
+          late=$line
+        else
+          printf '%s\n' "$line"
+        fi
         state=disarmed
       fi
     done

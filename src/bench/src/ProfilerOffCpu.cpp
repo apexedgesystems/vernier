@@ -68,7 +68,9 @@ namespace {
 //    prints "offcpu disarmed <pid> <tid> <n>", n the switch-outs it recorded;
 //  - the capture's own waits run under the name vernier-wait, not recorded.
 // @recorded counts with ++ because printf takes no count() map; increments
-// racing on two CPUs can only make n smaller than the dump's counts.
+// racing on two CPUs can only make n smaller than the dump's counts. @armed
+// stays 2 after the disarm and is the first map printed, so an output
+// without "@armed: 2" holds no dump, whatever its acknowledgements say.
 //
 // No END block on purpose: bpftrace auto-prints every map at exit (SIGINT,
 // exit(), or target death via the self-exit probe), and distro builds are
@@ -406,19 +408,23 @@ const StopDelivery* refusedDelivery(const HelperStopResult& stop) {
 
 /** @brief What a map dump holds of the capture's own counts. */
 struct DumpCounts {
+  bool disarmed = false;  ///< The dump holds "@armed: 2": the maps as the disarm left them.
   bool wellFormed = true; ///< Every @offcpu_blocks entry ends with its count.
   long blocks = 0;        ///< The sum of the @offcpu_blocks counts.
   long recorded = -1;     ///< The @recorded line's value; -1 when there is none.
 };
 
 /**
- * @brief Read the @offcpu_blocks entries and the @recorded line of a dump.
+ * @brief Read the @armed line, the @offcpu_blocks entries and the @recorded
+ * line of a dump.
  *
- * bpftrace prints its maps in the order of their names, so @recorded comes
- * after @offcpu_blocks and @offcpu_ns: a dump cut short loses it. The block
- * counts are not compared with it: count() creates a key with an insert
- * that fails when another CPU created the same key at the same moment, so
- * threads that first sleep at one stack together can leave that entry short.
+ * bpftrace prints its maps in the order of their names, so @armed comes
+ * first and @recorded after @offcpu_blocks and @offcpu_ns: an output without
+ * @armed holds no dump at all, and a dump cut short loses @recorded. The
+ * block counts are not compared with it: count() creates a key with an
+ * insert that fails when another CPU created the same key at the same
+ * moment, so threads that first sleep at one stack together can leave that
+ * entry short.
  */
 DumpCounts countsIn(const std::string& dump) {
   DumpCounts counts;
@@ -426,6 +432,10 @@ DumpCounts countsIn(const std::string& dump) {
   std::istringstream lines(dump);
   std::string line;
   while (std::getline(lines, line)) {
+    if (line == "@armed: 2") {
+      counts.disarmed = true;
+      continue;
+    }
     if (line.rfind("@offcpu_blocks[", 0) == 0) {
       counts.wellFormed = counts.wellFormed && !inEntry;
       inEntry = true;
@@ -803,6 +813,16 @@ void OffCpuProfiler::stopBpftrace() {
   if (STOPPED.wasRunning) {
     (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route);
   }
+  // At the stop bpftrace prints the lines it still had queued, then its
+  // maps: a disarm line that did not arrive in time can arrive there.
+  if (disarmed.state == AckState::TIMED_OUT) {
+    for (const std::string& line : CAPTURE->output.next()) {
+      if (const std::optional<Ack> ACK = parseAck(line, DISARMED_LINE, true)) {
+        disarmed = {AckState::ACKNOWLEDGED, *ACK};
+        break;
+      }
+    }
+  }
   const bool SUDO = plan_->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const StopDelivery* const REFUSED = refusedDelivery(STOPPED);
   const std::string KEPT = "; the capture in " + artifactDir_ + " is incomplete";
@@ -860,7 +880,8 @@ void OffCpuProfiler::stopBpftrace() {
     finish(readinessResult(
         ReadinessCause::UNUSABLE,
         VALIDITY + "the tracer did not acknowledge the stop within " +
-            std::to_string(plan_->disarmWaitMs) + " ms; its output is in " + artifactDir_,
+            std::to_string(plan_->disarmWaitMs) +
+            " ms, nor in the lines it printed at the stop; its output is in " + artifactDir_,
         "The tracer ran but did not see the stopping thread go to sleep; see offcpu.err.txt "
         "there.",
         CAPTURE_STAGE));
@@ -889,6 +910,8 @@ void OffCpuProfiler::stopBpftrace() {
   std::string cut;
   if (!COUNTS.wellFormed) {
     cut = "an @offcpu_blocks entry of its dump is cut short";
+  } else if (!COUNTS.disarmed) {
+    cut = "it holds no map dump (no @armed: 2 line after the acknowledgements)";
   } else if (N > 0 && COUNTS.recorded < N) {
     cut = "the tracer recorded " + std::to_string(N) +
           " sleeping switch-outs, and its dump ends before the @recorded line that counts them";
