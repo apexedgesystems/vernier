@@ -139,9 +139,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `transposeSharedPadded`, and each of its three tests checks the transpose it
   measured instead of a calls-per-second floor; unit tests registered with
   `ctest` under the `demo` label hold the three kernels to a CPU transpose and
-  the declared bytes to the kernels. The test `SharedMemoryOpt.SharedConflictFree`
-  is renamed `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured from
-  the demo before this release does not join with newer ones.
+  the declared bytes to the kernels, and a check under the `demo` and `ncu`
+  labels runs the demo under Nsight Compute, where its counters are readable,
+  and fails unless the conflicting tile's column reads take 32 wavefronts per
+  shared-load instruction and the padded tile's one. The test
+  `SharedMemoryOpt.SharedConflictFree` is renamed
+  `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured from the demo
+  before this release does not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

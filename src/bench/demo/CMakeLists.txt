@@ -275,12 +275,20 @@ set_tests_properties(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Demo Tests Run by CTest (1)
+# GPU Demo Tests and Effect Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # Demo 03's transpose kernels are held to a CPU transpose's answers, and the
 # shared-memory bytes the demo hands the harness to the bytes the kernels
-# declare, by a test that compiles the demo's kernels itself. Registered under
-# the demo label where the GPU demos are built; its cases skip without a device.
+# declare, by TestDemoTranspose, which compiles the demo's kernels itself and
+# skips without a device. TestDemoBankConflicts runs the demo binary, whose
+# path it is given, under Nsight Compute and reads the counters walkthrough 12
+# reads: a check that counts, so load does not change its answer. It carries
+# the ncu label beside demo; it skips where ncu or a device is absent, where
+# ncu refuses the counters to this user (administrators only on Jetson: run it
+# as root there) and where ncu has no value for a metric, quoting ncu; and its
+# skip expression names its own case, so a child run's GoogleTest lines cannot
+# turn a failure into a skip. Both are registered only where the GPU demos are
+# built.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -296,4 +304,27 @@ if (TARGET bench_cuda)
     demo
   )
   target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
+
+  # The check behind walkthrough 12, beside the demo it runs.
+  vernier_add_gtest(
+    TARGET
+    TestDemoBankConflicts
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_BankConflicts_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    ncu
+  )
+  target_compile_definitions(
+    TestDemoBankConflicts
+    PRIVATE VERNIER_DEMO_GPU_03_BINARY="$<TARGET_FILE:BenchDemo_Gpu_03_SharedMemoryOpt>"
+  )
+  add_dependencies(TestDemoBankConflicts BenchDemo_Gpu_03_SharedMemoryOpt)
+  set_tests_properties(
+    BankConflicts.CountedByNsightCompute
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] BankConflicts\\.CountedByNsightCompute"
+  )
 endif ()
