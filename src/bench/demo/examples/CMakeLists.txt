@@ -195,9 +195,6 @@ vernier_add_gtest(
 # ------------------------------------------------------------------------------
 # JoinSpeedup times both join versions at demo 01's 1,000 words and fails
 # unless V0 is at least three times slower: the effect walkthrough 01 shows.
-# A timing belongs to the machine that takes it, so this is a performance test,
-# built into bin/ptests and never registered with CTest, and run on the
-# reference rig by hand.
 # ------------------------------------------------------------------------------
 
 vernier_add_ptest(
@@ -210,9 +207,6 @@ vernier_add_ptest(
 # ------------------------------------------------------------------------------
 # JoinProfileAttribution profiles both join versions through the gperf backend
 # and reads the profiles with google-pprof: the reading walkthrough 03 teaches.
-# A profile's shares are samples, so this is a performance test, built into
-# bin/ptests with gperftools linked as every performance test is, never
-# registered with CTest, and run on the reference rig by hand.
 # ------------------------------------------------------------------------------
 
 vernier_add_ptest(
