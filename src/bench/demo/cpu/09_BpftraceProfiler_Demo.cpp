@@ -1,108 +1,110 @@
 /**
  * @file 09_BpftraceProfiler_Demo.cpp
- * @brief Demo 09: bpftrace for syscall overhead analysis
+ * @brief Demo 09: bpftrace -- what the kernel did while a test ran
  *
- * Demonstrates using bpftrace to identify syscall overhead from
- * inefficient I/O patterns. Shows how batching writes eliminates
- * per-byte syscall overhead.
- *
- * Slow: One write() syscall per byte (N syscalls for N bytes)
- * Fast: Single batched write() syscall (1 syscall for N bytes)
+ * Two pairs of cases, one CSV row each (09_BpftraceProfiler_Workload.hpp):
+ *  1. WritePerLine writes the join example's 1,000 words to /dev/null as
+ *     lines, one write() per line; WriteBatched writes the same text with one
+ *     write(). bpftrace's write_latency.bt counts and times the writes.
+ *  2. CoarseLock: threads join the words and add the length to one total,
+ *     holding its lock for the whole call; NoSharing: each thread adds to a
+ *     total of its own and hands it over once, when the thread ends. The lock
+ *     makes threads sleep until another wakes them, which wakeup_latency.bt
+ *     records.
  *
  * Usage:
  *   @code{.sh}
- *   # Baseline measurement
- *   ./BenchDemo_09_BpftraceProfiler --csv baseline.csv
+ *   # Measure the writes, on one core
+ *   taskset -c 3 ./BenchDemo_09_BpftraceProfiler --gtest_filter='BpftraceProfiler.Write*' \
+ *     --target-time 50ms --repeats 10 --csv writes.csv
  *
- *   # Profile syscall latency (requires root)
- *   sudo ./BenchDemo_09_BpftraceProfiler --profile bpftrace --bpf syslat \
- *     --gtest_filter="*ManySmallWrites*"
+ *   # Trace them; the histogram lands in
+ *   # BpftraceProfiler.WritePerLine.bpf/write_latency.out.text
+ *   BENCH_SUDO=1 ./BenchDemo_09_BpftraceProfiler --profile bpftrace --bpf write_latency \
+ *     --gtest_filter=BpftraceProfiler.WritePerLine --cycles 20 --repeats 2
  *
- *   # Compare
- *   bench summary baseline.csv
+ *   # Wakeups while three threads take turns at the lock
+ *   BENCH_SUDO=1 taskset -c 0-3 ./BenchDemo_09_BpftraceProfiler --profile bpftrace \
+ *     --bpf wakeup_latency --gtest_filter=BpftraceProfiler.CoarseLock --threads 3
  *   @endcode
  *
- * @note Requires root/sudo for bpftrace. Falls back gracefully if unavailable.
+ * What the writes and the totals do, and what write_latency.bt counts for
+ * WritePerLine, is checked apart from the demo, by
+ * utst/09_BpftraceProfiler_uTest.cpp.
  *
- * @see docs/09_BPFTRACE_PROFILER.md for step-by-step walkthrough
+ * @see docs/09_BPFTRACE_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
-#include <cstdint>
-#include <cstdio>
+
 #include <fcntl.h>
 #include <unistd.h>
-#include <vector>
+
+#include <string>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
+#include "src/bench/demo/cpu/09_BpftraceProfiler_Workload.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
 
-/* ----------------------------- Constants ----------------------------- */
-
-// 1 KB payload: small enough for many-writes test to finish quickly
-static constexpr std::size_t PAYLOAD_SIZE = 1024;
+using vernier::bench::demo::bpftrace_demo::addToThreadTotal;
+using vernier::bench::demo::bpftrace_demo::addUnderCoarseLock;
+using vernier::bench::demo::bpftrace_demo::LINE_END;
+using vernier::bench::demo::bpftrace_demo::linesOf;
+using vernier::bench::demo::bpftrace_demo::PART_COUNT;
+using vernier::bench::demo::bpftrace_demo::PART_SEED;
+using vernier::bench::demo::bpftrace_demo::SharedTotal;
+using vernier::bench::demo::bpftrace_demo::writeBatched;
+using vernier::bench::demo::bpftrace_demo::writeEachLine;
 
 /* ----------------------------- Tests ----------------------------- */
 
-/**
- * @test Slow: One write() syscall per byte.
- *
- * Each byte triggers a separate write() syscall to /dev/null.
- * The overhead is not in the data transfer but in the kernel
- * context switch for each syscall (~1-5 us per syscall).
- *
- * bpftrace with the syslat script will show a histogram of
- * write() latencies, with 1024 calls per measurement iteration.
- */
-PERF_IO(BpftraceProfiler, ManySmallWrites) {
-  UB_PERF_GUARD(perf);
+/** @test 1,000 lines to /dev/null, one write() per line. */
+PERF_IO(BpftraceProfiler, WritePerLine) {
+  PERF_GUARD(perf);
 
-  std::vector<std::uint8_t> data(PAYLOAD_SIZE, 0xAB);
+  const auto LINES = linesOf(demo::makeParts(PART_COUNT, PART_SEED));
+  const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+  ASSERT_GE(FD, 0) << "cannot open /dev/null";
 
-  // Open /dev/null for writing
-  int fd = ::open("/dev/null", O_WRONLY);
-  ASSERT_GE(fd, 0) << "Failed to open /dev/null";
-
-  perf.warmup([&] { demo::manySmallWrites(fd, data.data(), data.size()); });
-
-  auto result = perf.throughputLoop([&] { demo::manySmallWrites(fd, data.data(), data.size()); },
-                                    "many_small_writes");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  ::close(fd);
+  perf.warmup([&] { writeEachLine(FD, LINES); });
+  perf.throughputLoop([&] { writeEachLine(FD, LINES); }, "write_per_line");
+  ::close(FD);
 }
 
-/**
- * @test Fast: Single batched write() syscall.
- *
- * All 1024 bytes go in a single write() syscall. One context switch
- * instead of 1024. The kernel handles the buffer in one pass.
- *
- * bpftrace will show 1 write() call per iteration instead of 1024.
- * The latency histogram shows a single peak instead of a cloud.
- *
- * Expected improvement: 100-1000x (dominated by syscall overhead reduction).
- */
-PERF_IO(BpftraceProfiler, SingleBatchedWrite) {
-  UB_PERF_GUARD(perf);
+/** @test The same 1,000 lines, end to end, with one write(). */
+PERF_IO(BpftraceProfiler, WriteBatched) {
+  PERF_GUARD(perf);
 
-  std::vector<std::uint8_t> data(PAYLOAD_SIZE, 0xAB);
+  const std::string TEXT = demo::joinV1(demo::makeParts(PART_COUNT, PART_SEED), LINE_END);
+  const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
+  ASSERT_GE(FD, 0) << "cannot open /dev/null";
 
-  int fd = ::open("/dev/null", O_WRONLY);
-  ASSERT_GE(fd, 0) << "Failed to open /dev/null";
+  perf.warmup([&] { writeBatched(FD, TEXT); });
+  perf.throughputLoop([&] { writeBatched(FD, TEXT); }, "write_batched");
+  ::close(FD);
+}
 
-  perf.warmup([&] { demo::singleBatchedWrite(fd, data.data(), data.size()); });
+/** @test Threads add joined lengths to one total, holding its lock for the whole call. */
+PERF_CONTENTION(BpftraceProfiler, CoarseLock) {
+  PERF_GUARD(perf);
 
-  auto result = perf.throughputLoop([&] { demo::singleBatchedWrite(fd, data.data(), data.size()); },
-                                    "single_batched_write");
+  const auto WORDS = demo::makeParts(PART_COUNT, PART_SEED);
+  SharedTotal total;
 
-  EXPECT_GT(result.callsPerSecond, 100.0);
+  perf.warmup([&] { addUnderCoarseLock(total, WORDS); });
+  perf.contentionRun([&] { addUnderCoarseLock(total, WORDS); }, "coarse_lock");
+}
 
-  ::close(fd);
+/** @test Threads add joined lengths to totals of their own, sharing nothing while they run. */
+PERF_CONTENTION(BpftraceProfiler, NoSharing) {
+  PERF_GUARD(perf);
+
+  const auto WORDS = demo::makeParts(PART_COUNT, PART_SEED);
+
+  perf.warmup([&] { addToThreadTotal(WORDS); });
+  perf.contentionRun([&] { addToThreadTotal(WORDS); }, "no_sharing");
 }
 
 PERF_MAIN()

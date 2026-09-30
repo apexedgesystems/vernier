@@ -177,20 +177,6 @@ inline double fastDotProduct(const double* a, const double* b, std::size_t len) 
   return std::inner_product(a, a + len, b, 0.0);
 }
 
-/* ----------------------------- I/O Workloads ----------------------------- */
-
-/** @brief Slow: Many small writes (one syscall per byte). */
-inline void manySmallWrites(int fd, const std::uint8_t* data, std::size_t len) {
-  for (std::size_t i = 0; i < len; ++i) {
-    [[maybe_unused]] auto r = ::write(fd, &data[i], 1);
-  }
-}
-
-/** @brief Fast: Single batched write. */
-inline void singleBatchedWrite(int fd, const std::uint8_t* data, std::size_t len) {
-  [[maybe_unused]] auto r = ::write(fd, data, len);
-}
-
 } // namespace demo
 
 } // namespace bench

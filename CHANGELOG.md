@@ -9,6 +9,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 09 traces writes and lock hand-offs on the shared join example** --
+  `BpftraceProfiler.WritePerLine` writes the example's 1,000 words as lines,
+  one `write()` per line, against `WriteBatched`'s one `write()` of the same
+  text, and `CoarseLock` and `NoSharing` add joined lengths from several
+  threads under one lock or to totals of their own. A check run by `ctest`
+  counts each version's writes and totals, and traces `WritePerLine` with
+  `write_latency.bt` where bpftrace can run. **Action needed:**
+  `ManySmallWrites` and `SingleBatchedWrite` are gone, so CSVs captured from
+  demo 09 before this release do not join with newer ones, and
+  `manySmallWrites()` and `singleBatchedWrite()` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 07 counts the instructions of the shared join example** --
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts that workload cannot produce. It

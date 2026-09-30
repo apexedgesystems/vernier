@@ -94,7 +94,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (8)
+# Demos Built on a Shared Example (9)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -114,6 +114,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_09_BpftraceProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -211,7 +215,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (1)
+# Demo Effect Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -242,6 +246,36 @@ add_dependencies(TestDemoMemcheck BenchDemo_12_MemcheckProfiler)
 set_tests_properties(
   Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
+)
+
+# Demo 09's check also counts the demo's writes and totals, with no tool, under
+# the demo label; only its traced test runs bpftrace, and carries that label
+# too. That test runs alone: its tracer compiles its program and traces every
+# write of the process, which timing tests running beside it would feel. Its
+# backend bounds each of its waits; the test's own bound is far above their sum.
+vernier_add_gtest(
+  TARGET
+  TestDemoBpftrace
+  SOURCES
+  cpu/utst/09_BpftraceProfiler_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
+)
+target_compile_definitions(
+  TestDemoBpftrace PRIVATE VERNIER_DEMO_09_BINARY="$<TARGET_FILE:BenchDemo_09_BpftraceProfiler>"
+)
+add_dependencies(TestDemoBpftrace BenchDemo_09_BpftraceProfiler)
+set_property(
+  TEST Bpftrace.CountsEveryWrite
+  APPEND
+  PROPERTY LABELS bpftrace
+)
+set_tests_properties(
+  Bpftrace.CountsEveryWrite PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 SKIP_REGULAR_EXPRESSION
+                                       "\\[  SKIPPED \\] Bpftrace\\.CountsEveryWrite"
 )
 
 # ------------------------------------------------------------------------------
