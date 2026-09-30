@@ -314,6 +314,27 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **`bench validate` reports facts, and a binary's own rows when given
+  one** -- it reported a tool's presence as readiness (a found valgrind,
+  msr device or `nsys` was `[OK]`, and a clean list ended "Environment is
+  ready for profiling"), marked an absent perf or analyzer `[FAIL]` while
+  exiting 0, and had no row for `ncu`. Without a binary it reports what is
+  installed, each tool with its path and version (`ncu` included), and
+  `kernel.perf_event_paranoid` as what the kernel allows, and says that
+  access and modes are for `bench doctor <binary>`; no row is `[FAIL]`.
+  `bench validate <binary>` shows the binary's default-mode rows at
+  advisory severity: a profiler it cannot use here is `[WARN]` with
+  `not usable here:` and the doctor's remedy. It exits 0 unless the binary
+  is missing, does not start or prints no usable doctor document (exit 1,
+  with how the binary ended and its last line on stderr).
+  A program on PATH without an execute bit no longer counts as found, and
+  `bench run` names such a wrapper before it starts anything. `bench doctor`
+  and `bench validate` start a binary named without a directory from the
+  working directory, where they found it, instead of looking the name up on
+  PATH. **Action needed:** a lane that should fail when a profiler is not
+  ready gates on `bench doctor <binary> --require <backends>`;
+  `bench validate` never fails on its rows, and its JSON has no `fail`
+  status.
 - **`bench doctor` checks the request a lane runs** -- `--require` judged
   every backend by its default mode, so a lane that ran
   `--profile massif --profile-args pages` could pass the doctor while its

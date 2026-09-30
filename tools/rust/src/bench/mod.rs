@@ -269,18 +269,72 @@ pub enum CheckStatus {
 
 /* ----------------------------- Tool Search ----------------------------- */
 
-/// Search for an executable in PATH.
+/// Where PATH resolves a program name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InPath {
+    /// The first regular file of that name with an execute bit set.
+    Executable(PathBuf),
+    /// No executable one; the first entry of that name, which is not an
+    /// executable file (no execute bit, or not a regular file).
+    NotExecutable(PathBuf),
+    /// Nothing of that name.
+    Absent,
+}
+
+/// Look `name` up on PATH by the rule the benchmark's own resolver uses: the
+/// first regular file with an execute bit set wins; failing that, the first
+/// entry of that name is reported as not executable. An unset PATH searches
+/// `/bin:/usr/bin`, as `execvp` does; an empty entry is the current
+/// directory.
+pub fn lookup_in_path(name: &str) -> InPath {
+    let search = std::env::var_os("PATH").unwrap_or_else(|| "/bin:/usr/bin".into());
+    lookup_in(&search, name)
+}
+
+/// Whether @p meta describes a file PATH would run: a regular file with an
+/// execute bit set (on Unix; elsewhere any regular file).
+fn is_executable(meta: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        meta.is_file() && meta.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        meta.is_file()
+    }
+}
+
+/// `lookup_in_path` over the PATH value `search`.
+fn lookup_in(search: &std::ffi::OsStr, name: &str) -> InPath {
+    let mut not_executable = None;
+    for dir in std::env::split_paths(search) {
+        let dir = if dir.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            dir
+        };
+        let candidate = dir.join(name);
+        let Ok(meta) = std::fs::metadata(&candidate) else {
+            continue;
+        };
+        if is_executable(&meta) {
+            return InPath::Executable(candidate);
+        }
+        if not_executable.is_none() {
+            not_executable = Some(candidate);
+        }
+    }
+    not_executable.map_or(InPath::Absent, InPath::NotExecutable)
+}
+
+/// Search PATH for an executable named `name` (`lookup_in_path`): a file
+/// without an execute bit is skipped, as the shell skips it.
 pub fn find_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                Some(candidate)
-            } else {
-                None
-            }
-        })
-    })
+    match lookup_in_path(name) {
+        InPath::Executable(path) => Some(path),
+        InPath::NotExecutable(_) | InPath::Absent => None,
+    }
 }
 
 /* ----------------------------- Modules ----------------------------- */
@@ -308,3 +362,58 @@ pub use report::{print_comparison_table, print_summary_table, to_json, to_markdo
 pub use runner::run_benchmark;
 pub use stats::{median, percentile};
 pub use validate::run_checks;
+
+/* ----------------------------- Tests ----------------------------- */
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    fn file(dir: &std::path::Path, name: &str, mode: u32) -> PathBuf {
+        std::fs::create_dir_all(dir).expect("mkdir");
+        let path = dir.join(name);
+        std::fs::write(&path, "#!/bin/sh\n").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+        path
+    }
+
+    fn search(dirs: &[&std::path::Path]) -> std::ffi::OsString {
+        std::env::join_paths(dirs).expect("join")
+    }
+
+    /// @test The first executable file wins; a file without an execute bit
+    /// before it is skipped, as the shell skips it.
+    #[test]
+    fn lookup_skips_a_file_without_an_execute_bit() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        file(&a, "tool", 0o644);
+        let tool = file(&b, "tool", 0o755);
+        assert_eq!(
+            lookup_in(&search(&[&a, &b]), "tool"),
+            InPath::Executable(tool)
+        );
+    }
+
+    /// @test Without an executable one, the first entry of that name is
+    /// reported as not executable: a file without an execute bit, or a
+    /// directory.
+    #[test]
+    fn lookup_names_what_is_not_executable() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (root.path().join("a"), root.path().join("b"));
+        let plain = file(&a, "tool", 0o644);
+        file(&b, "tool", 0o600);
+        assert_eq!(
+            lookup_in(&search(&[&a, &b]), "tool"),
+            InPath::NotExecutable(plain)
+        );
+        std::fs::create_dir_all(b.join("dir")).expect("mkdir");
+        assert_eq!(
+            lookup_in(&search(&[&b]), "dir"),
+            InPath::NotExecutable(b.join("dir"))
+        );
+        assert_eq!(lookup_in(&search(&[&a, &b]), "other"), InPath::Absent);
+    }
+}

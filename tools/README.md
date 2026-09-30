@@ -150,14 +150,36 @@ label from `classification`: `delta_pct` is the change as binary floating
 point computes it, so a change exactly at the threshold in the CSVs' decimals
 can read a few units in its last digit past it (`5.000000000000004`).
 
-### validate - Environment Checks
+### validate - Profiling Tools on This Host
 
-Verify system readiness for benchmarking.
+An advisory inventory: it exits 0 whatever it finds. Without a binary it
+reports facts, not readiness: the profiling tools PATH finds, each with its
+path and the version its `--version` prints (`ncu` has a row of its own, and
+the `gperftools` row names the analyzer `--profile-analyze` runs), the msr
+device `rapl` reads, ASLR, the FlameGraph scripts, and
+`kernel.perf_event_paranoid` with what the kernel allows at its value. A tool
+PATH does not find, or finds without an execute bit, is `[WARN]`. Whether a
+profiler can run here, and in which modes, is what `bench doctor <binary>`
+checks.
 
 ```bash
 bench validate
 bench validate --json
+bench validate ./build/native-linux-release/bin/ptests/MyComponent_PTEST
 ```
+
+With a binary, the tool rows give way to the binary's own rows for each
+profiler's default mode (its doctor's JSON document), after the ASLR,
+FlameGraph and `perf_event_paranoid` rows: `ok` stays `[OK]`, `warn` stays
+`[WARN]`, and a profiler the binary cannot use here is `[WARN]` with
+`not usable here: <message>`, the doctor's remedy on the line after it. No
+row fails the command; to fail a lane on the profilers it needs, use
+`bench doctor <binary> --require <backends>`. A binary that is missing, does
+not start, or prints no usable doctor document is an error (exit 1, the cause
+on stderr, nothing on stdout).
+
+`--json` prints one array of rows: `label`, `status` (`ok` or `warn`),
+`detail`, and `hint` where the binary's row has a remedy.
 
 ### run - Execute Benchmark Binary
 
@@ -289,6 +311,9 @@ and every other backend by its default mode's row, so a requirement on
 `massif` with `--profile-args pages` is met only when that mode is ready. A
 binary built before the requested row existed cannot answer such a
 requirement: rebuild it against this vernier, or drop `--profile`.
+
+`bench validate <binary>` shows the same default-mode rows as an advisory
+report that never fails on them.
 
 ### profile-all - Iterate Every Profiler
 

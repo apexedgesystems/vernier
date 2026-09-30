@@ -6,7 +6,7 @@
 //! Usage:
 //!   bench summary <results.csv>                      # Pretty-print one CSV
 //!   bench compare <baseline.csv> <candidate.csv>     # Colored median-change diff
-//!   bench validate                                   # CPU environment readiness
+//!   bench validate [<binary>]                        # Profiling tools here (advisory)
 //!   bench gpu-env                                    # GPU environment readiness
 //!   bench gpu-lock lock [--freq MHz] [-- cmd...]     # Lock GPU clocks for benchmarking
 //!   bench gpu-lock reset                             # Reset GPU clocks to default
@@ -100,8 +100,12 @@ enum Command {
         fail_on_regression: bool,
     },
 
-    /// Check environment readiness for profiling
+    /// Report the profiling tools and settings this host has, or a binary's
+    /// profilers at advisory severity; never fails on them (bench doctor
+    /// --require is the gate)
     Validate {
+        /// A benchmark binary whose default-mode doctor rows to report
+        binary: Option<PathBuf>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -413,13 +417,16 @@ fn run(args: Args) -> Result<(), Error> {
             }
         }
 
-        Command::Validate { json } => {
-            let results = bench::validate::run_checks();
+        Command::Validate { binary, json } => {
+            let rows = match binary.as_deref() {
+                Some(binary) => bench::validate::binary_rows(binary)?,
+                None => bench::validate::run_checks(),
+            };
 
             if json {
-                println!("{}", bench::report::validate_to_json(&results));
+                println!("{}", bench::report::validate_to_json(&rows));
             } else {
-                bench::validate::print_results(&results);
+                bench::validate::print_results(&rows, binary.as_deref());
             }
         }
 

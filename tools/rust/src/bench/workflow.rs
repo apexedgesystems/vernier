@@ -141,37 +141,19 @@ pub fn doctor(
     json: bool,
     require: &[String],
 ) -> Result<i32, Error> {
-    let bin = binary.to_path_buf();
-    if !bin.is_file() {
-        return Err(Error::InvalidArgs(format!(
-            "binary not found: {}",
-            bin.display()
-        )));
-    }
+    let bin = require_binary(binary)?;
     let mut request_args = super::runner::profile_request_args(request);
     request_args.extend(request.extra_args.iter().cloned());
     let selected = request.profile.as_deref().map(canonical_backend);
     if json || !require.is_empty() {
-        let out = Command::new(&bin)
-            .arg("--profile-check-json")
-            .args(&request_args)
-            .envs(env.iter().map(|(k, v)| (k, v)))
-            .output()
-            .map_err(Error::Io)?;
-        let doc = String::from_utf8_lossy(&out.stdout).to_string();
-        let parsed: serde_json::Value = serde_json::from_str(&doc).map_err(|e| {
-            Error::Parse(format!(
-                "{} --profile-check-json printed no valid doctor document: {e}",
-                bin.display()
-            ))
-        })?;
+        let doc = read_doctor_document(&bin, &request_args, env)?;
         if json {
-            print!("{doc}");
+            print!("{}", doc.text);
         }
         if require.is_empty() {
-            return Ok(out.status.code().unwrap_or(1));
+            return Ok(doc.status.unwrap_or(1));
         }
-        let verdict = evaluate_required_backends(&parsed, require, selected);
+        let verdict = evaluate_required_backends(&doc.value, require, selected);
         for line in &verdict.lines {
             if json {
                 eprintln!("{line}");
@@ -186,8 +168,86 @@ pub fn doctor(
         .args(&request_args)
         .envs(env.iter().map(|(k, v)| (k, v)))
         .status()
-        .map_err(Error::Io)?;
+        .map_err(|e| did_not_start(&bin, e))?;
     Ok(status.code().unwrap_or(1))
+}
+
+/// A spawn failure, naming the binary that did not start.
+fn did_not_start(bin: &Path, e: std::io::Error) -> Error {
+    Error::Io(std::io::Error::new(
+        e.kind(),
+        format!("{} did not start: {e}", bin.display()),
+    ))
+}
+
+/// A binary's `--profile-check-json` output: the text, the parsed document
+/// and the binary's exit status (None when a signal ended it).
+pub(crate) struct DoctorDocument {
+    pub text: String,
+    pub value: serde_json::Value,
+    pub status: Option<i32>,
+}
+
+/// @p binary as a path to an existing file, or the error that names it. A
+/// bare file name becomes `./<name>`: it was found in the working directory,
+/// and a bare name would be looked up on PATH when it is started.
+fn require_binary(binary: &Path) -> Result<PathBuf, Error> {
+    if !binary.is_file() {
+        return Err(Error::InvalidArgs(format!(
+            "binary not found: {}",
+            binary.display()
+        )));
+    }
+    if binary
+        .parent()
+        .is_some_and(|dir| dir.as_os_str().is_empty())
+    {
+        Ok(Path::new(".").join(binary))
+    } else {
+        Ok(binary.to_path_buf())
+    }
+}
+
+/// Run `<binary> --profile-check-json <args>` with @p env added to its
+/// environment, and parse what it prints: the doctor's reader, shared by
+/// `bench doctor` and `bench validate <binary>`. A binary that is not a file
+/// or does not start, and output that is not a JSON document, are errors.
+pub(crate) fn read_doctor_document(
+    binary: &Path,
+    args: &[String],
+    env: &[(String, String)],
+) -> Result<DoctorDocument, Error> {
+    let bin = require_binary(binary)?;
+    let out = Command::new(&bin)
+        .arg("--profile-check-json")
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .output()
+        .map_err(|e| did_not_start(&bin, e))?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let value = serde_json::from_str(&text).map_err(|e| {
+        // How it ended and its last word, for a binary that could not load
+        // or run its doctor.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let last = stderr.lines().rev().map(str::trim).find(|l| !l.is_empty());
+        let ended = match out.status.code() {
+            Some(code) => format!("exit status {code}"),
+            None => "ended by a signal".to_string(),
+        };
+        let how = match last {
+            Some(line) => format!("{ended}; stderr: {line}"),
+            None => ended,
+        };
+        Error::Parse(format!(
+            "{} --profile-check-json printed no valid doctor document ({how}): {e}",
+            bin.display()
+        ))
+    })?;
+    Ok(DoctorDocument {
+        text,
+        value,
+        status: out.status.code(),
+    })
 }
 
 /// The --require verdict: its lines, one per requirement and a summary when

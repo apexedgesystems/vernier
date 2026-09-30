@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use super::workflow::canonical_backend;
-use super::{find_in_path, BenchmarkExit, Error, ProfileFailure, SanitizerFailure};
+use super::{
+    find_in_path, lookup_in_path, BenchmarkExit, Error, InPath, ProfileFailure, SanitizerFailure,
+};
 
 /// Exit status of a benchmark whose tests passed and whose requested profile
 /// failed: libbench's `BENCH_PROFILE_FAILED_EXIT_CODE` (ProfilerRegistry.hpp).
@@ -120,7 +122,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
                 request_text(&r.tool, cfg.profile_args.as_deref()),
             )
         }),
-        find_in_path,
+        lookup_in_path,
     )?;
 
     // The route's folder exists and holds none of the files this run's wrap
@@ -474,29 +476,52 @@ fn request_text(tool: &str, profile_args: Option<&str>) -> String {
     }
 }
 
-/// Check that the programs a run is launched through resolve: `taskset` when
-/// pinning, and the program of a wrapped profile's route with the request it
-/// serves. `lookup` is the PATH search (injected so tests need not edit the
-/// process environment).
+/// Check that the programs a run is launched through resolve to executable
+/// files: `taskset` when pinning, and the program of a wrapped profile's route
+/// with the request it serves. `lookup` is the PATH search (injected so tests
+/// need not edit the process environment).
 fn require_launch_programs(
     pinned: bool,
     wrapper: Option<(&str, String)>,
-    lookup: impl Fn(&str) -> Option<PathBuf>,
+    lookup: impl Fn(&str) -> InPath,
 ) -> Result<(), Error> {
-    if pinned && lookup("taskset").is_none() {
-        return Err(Error::ToolNotFound(
-            "'taskset' is not on PATH; --taskset runs the benchmark under it. \
-             Install taskset, or drop --taskset"
-                .to_string(),
-        ));
+    if pinned {
+        match lookup("taskset") {
+            InPath::Executable(_) => {}
+            InPath::NotExecutable(path) => {
+                return Err(Error::ToolNotFound(format!(
+                    "'taskset' at {} is not executable; --taskset runs the benchmark under \
+                     it. Make it executable, put a working taskset first on PATH, or drop \
+                     --taskset",
+                    path.display()
+                )))
+            }
+            InPath::Absent => {
+                return Err(Error::ToolNotFound(
+                    "'taskset' is not on PATH; --taskset runs the benchmark under it. \
+                     Install taskset, or drop --taskset"
+                        .to_string(),
+                ))
+            }
+        }
     }
     if let Some((program, request)) = wrapper {
-        if lookup(program).is_none() {
-            return Err(Error::ToolNotFound(format!(
-                "'{program}' is not on PATH; {request} runs the benchmark under it. \
-                 Install {program}, or run `bench doctor` to see which profilers this \
-                 machine can use"
-            )));
+        match lookup(program) {
+            InPath::Executable(_) => {}
+            InPath::NotExecutable(path) => {
+                return Err(Error::ToolNotFound(format!(
+                    "'{program}' at {} is not executable; {request} runs the benchmark under \
+                     it. Make it executable, or put a working {program} first on PATH",
+                    path.display()
+                )))
+            }
+            InPath::Absent => {
+                return Err(Error::ToolNotFound(format!(
+                    "'{program}' is not on PATH; {request} runs the benchmark under it. \
+                     Install {program}, or run `bench doctor` to see which profilers this \
+                     machine can use"
+                )))
+            }
         }
     }
     Ok(())
@@ -1216,7 +1241,7 @@ mod tests {
         let err = require_launch_programs(
             false,
             Some(("ncu", request_text("nsight", Some("compute")))),
-            |_| None,
+            |_| InPath::Absent,
         )
         .expect_err("ncu does not resolve");
         assert!(matches!(err, Error::ToolNotFound(_)), "got {err:?}");
@@ -1231,24 +1256,58 @@ mod tests {
     /// @test A missing taskset is reported when pinning is requested, and only then.
     #[test]
     fn require_launch_programs_names_missing_taskset() {
-        let err =
-            require_launch_programs(true, None, |_| None).expect_err("taskset does not resolve");
+        let err = require_launch_programs(true, None, |_| InPath::Absent)
+            .expect_err("taskset does not resolve");
         assert!(err.to_string().contains("'taskset'"), "{err}");
-        assert!(require_launch_programs(false, None, |_| None).is_ok());
+        assert!(require_launch_programs(false, None, |_| InPath::Absent).is_ok());
+    }
+
+    /// @test A wrapper or taskset that PATH finds without an execute bit is
+    /// named with its path, before anything is spawned.
+    #[test]
+    fn require_launch_programs_names_a_non_executable_program() {
+        let plain = |name: &str| InPath::NotExecutable(PathBuf::from("/opt/x").join(name));
+        let err = require_launch_programs(
+            false,
+            Some(("valgrind", request_text("massif", Some("pages")))),
+            plain,
+        )
+        .expect_err("valgrind is not executable");
+        let text = err.to_string();
+        assert!(
+            text.contains("'valgrind' at /opt/x/valgrind is not executable"),
+            "{text}"
+        );
+        assert!(
+            text.contains("--profile massif --profile-args 'pages'"),
+            "{text}"
+        );
+        let err = require_launch_programs(true, None, plain).expect_err("taskset");
+        assert!(
+            err.to_string()
+                .contains("'taskset' at /opt/x/taskset is not executable"),
+            "{err}"
+        );
     }
 
     /// @test Only the programs a run needs are looked up.
     #[test]
     fn require_launch_programs_looks_up_only_what_it_needs() {
         let only = |wanted: &'static str| {
-            move |name: &str| (name == wanted).then(|| PathBuf::from("/usr/bin").join(name))
+            move |name: &str| {
+                if name == wanted {
+                    InPath::Executable(PathBuf::from("/usr/bin").join(name))
+                } else {
+                    InPath::Absent
+                }
+            }
         };
         let massif = || Some(("valgrind", request_text("massif", None)));
         assert!(require_launch_programs(false, massif(), only("valgrind")).is_ok());
         assert!(require_launch_programs(true, None, only("taskset")).is_ok());
         assert!(require_launch_programs(true, massif(), only("taskset")).is_err());
         // In-process profiles are driven by the binary itself: nothing to resolve.
-        assert!(require_launch_programs(false, None, |_| None).is_ok());
+        assert!(require_launch_programs(false, None, |_| InPath::Absent).is_ok());
     }
 
     /// @test The child is told the same folder the route writes into.

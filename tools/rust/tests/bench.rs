@@ -1006,21 +1006,313 @@ fn compare_invalid_threshold_is_an_error() {
 
 /* ----------------------------- Validate ----------------------------- */
 
+/// @test Without a binary, validate on this host prints the presence-only
+/// header and exits 0 whatever it finds.
 #[test]
 fn validate_runs_successfully() {
     let (code, out, _) = run(&["validate"]);
     assert_eq!(code, 0);
-    assert!(out.contains("Profile Readiness Check"));
-    assert!(out.contains("passed"));
+    assert!(out.contains("=== bench validate: profiling tools and settings on this host ==="));
+    assert!(out.contains("Presence only"), "{out}");
+    assert!(!out.contains("[FAIL]"), "{out}");
 }
 
+/// @test Without a binary, --json prints one array of rows, none failing.
 #[test]
 fn validate_json_output() {
     let (code, out, _) = run(&["validate", "--json"]);
     assert_eq!(code, 0);
     let parsed: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
-    assert!(parsed.is_array());
-    assert!(parsed.as_array().unwrap().len() >= 5);
+    let rows = parsed.as_array().expect("an array");
+    assert_eq!(rows.len(), 14);
+    for row in rows {
+        assert!(row["status"] == "ok" || row["status"] == "warn", "{row}");
+    }
+}
+
+/// Run `bench validate <args>` with PATH set to @p path; returns the exit
+/// status, stdout and stderr.
+fn run_validate_with_path(path: &Path, args: &[&str]) -> (i32, String, String) {
+    let out = output_of(
+        Command::new(bin())
+            .arg("validate")
+            .args(args)
+            .env("PATH", path),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The row of `bench validate --json` output labelled @p label.
+fn validate_row<'a>(rows: &'a serde_json::Value, label: &str) -> &'a serde_json::Value {
+    rows.as_array()
+        .expect("an array")
+        .iter()
+        .find(|r| r["label"] == label)
+        .unwrap_or_else(|| panic!("no row {label}: {rows}"))
+}
+
+/// @test Without a binary validate reports tool-presence facts: a found
+/// tool is OK with its path and the version its --version prints, a file
+/// without an execute bit and an absent tool are WARN, perf that does not
+/// run is WARN, the gperftools row names the analyzer PATH gives (pprof when
+/// there is no google-pprof), Nsight Compute has its own row, and no row is
+/// FAIL. The header says access and modes are the doctor's.
+#[test]
+fn validate_without_binary_reports_facts() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("mkdir");
+    write_executable(&tools.join("valgrind"), "#!/bin/sh\necho valgrind-3.99.0\n");
+    write_executable(
+        &tools.join("ncu"),
+        "#!/bin/sh\necho 'NVIDIA (R) Nsight Compute Command Line Profiler'\necho 'Copyright (c) 2018-2099'\necho 'Version 2099.1.0.0 (build 1)'\n",
+    );
+    write_executable(
+        &tools.join("perf"),
+        "#!/bin/sh\necho 'WARNING: perf not found for kernel 9.9' >&2\nexit 2\n",
+    );
+    write_executable(&tools.join("pprof"), "#!/bin/sh\nexit 2\n");
+    std::fs::write(tools.join("heaptrack"), "#!/bin/sh\necho heaptrack 9.9\n").expect("write");
+
+    let (code, out, err) = run_validate_with_path(&tools, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains("Presence only: whether each profiler can run here, and in which"),
+        "{out}"
+    );
+    assert!(!out.contains("[FAIL]"), "{out}");
+
+    let (code, out, err) = run_validate_with_path(&tools, &["--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rows: serde_json::Value = serde_json::from_str(&out).expect("one JSON array");
+    for row in rows.as_array().expect("an array") {
+        assert!(row["status"] == "ok" || row["status"] == "warn", "{row}");
+    }
+    let t = tools.display();
+    let valgrind = validate_row(&rows, "valgrind (callgrind/massif/memcheck/helgrind)");
+    assert_eq!(valgrind["status"], "ok");
+    assert_eq!(
+        valgrind["detail"],
+        format!(
+            "installed at {t}/valgrind (valgrind-3.99.0); access and modes: bench doctor <binary>"
+        )
+    );
+    let ncu = validate_row(&rows, "Nsight Compute");
+    assert_eq!(ncu["status"], "ok");
+    assert!(
+        ncu["detail"]
+            .as_str()
+            .unwrap()
+            .contains("(Version 2099.1.0.0 (build 1))"),
+        "{ncu}"
+    );
+    let nsys = validate_row(&rows, "Nsight Systems");
+    assert_eq!(nsys["status"], "warn");
+    assert!(
+        nsys["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("nsys not found on PATH"),
+        "{nsys}"
+    );
+    let heaptrack = validate_row(&rows, "heaptrack");
+    assert_eq!(heaptrack["status"], "warn");
+    assert!(
+        heaptrack["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{t}/heaptrack is not an executable file")),
+        "{heaptrack}"
+    );
+    let perf = validate_row(&rows, "perf");
+    assert_eq!(perf["status"], "warn");
+    assert!(
+        perf["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("{t}/perf does not run")),
+        "{perf}"
+    );
+    let gperf = validate_row(&rows, "gperftools");
+    assert_eq!(gperf["status"], "ok");
+    assert!(
+        gperf["detail"].as_str().unwrap().starts_with(&format!(
+            "--profile gperf --profile-analyze runs {t}/pprof;"
+        )),
+        "{gperf}"
+    );
+    assert_eq!(validate_row(&rows, "compute-sanitizer")["status"], "warn");
+
+    // With both analyzers, google-pprof is the one the analysis runs, as the
+    // benchmark chooses it, wherever PATH puts pprof.
+    let later = dir.path().join("later");
+    std::fs::create_dir_all(&later).expect("mkdir");
+    write_executable(
+        &later.join("google-pprof"),
+        "#!/bin/sh\necho 'pprof (part of gperftools 9.9)'\n",
+    );
+    let path = std::env::join_paths([&tools, &later]).expect("join");
+    let (code, out, err) = run_validate_with_path(Path::new(&path), &["--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rows: serde_json::Value = serde_json::from_str(&out).expect("one JSON array");
+    assert_eq!(
+        validate_row(&rows, "gperftools")["detail"],
+        format!(
+            "--profile gperf --profile-analyze runs {}/google-pprof (pprof (part of gperftools \
+             9.9)); collection needs libprofiler in the binary: bench doctor <binary>",
+            later.display()
+        )
+    );
+}
+
+/// @test With a binary validate shows the host facts and the binary's own
+/// default-mode rows at advisory severity: a failing row is WARN "not usable
+/// here:" with the doctor's message and hint, and the exit is 0.
+#[test]
+fn validate_with_binary_is_advisory() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let b = bench.to_string_lossy().into_owned();
+
+    let (code, out, err) = run(&["validate", &b]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        out.contains(&format!("=== bench validate: {b} on this host ===")),
+        "{out}"
+    );
+    assert!(
+        out.contains(
+            "offcpu                         not usable here: missing: bpftrace not found on PATH\n"
+        ),
+        "{out}"
+    );
+    assert!(
+        out.contains(&format!("\n  {:<37} apt install bpftrace\n", "")),
+        "{out}"
+    );
+    assert!(!out.contains("[FAIL]"), "{out}");
+
+    let (code, out, err) = run(&["validate", &b, "--json"]);
+    assert_eq!(code, 0, "{err}");
+    let rows: serde_json::Value = serde_json::from_str(&out).expect("one JSON array");
+    let labels: Vec<&str> = rows
+        .as_array()
+        .expect("an array")
+        .iter()
+        .map(|r| r["label"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        labels,
+        [
+            "ASLR",
+            "FlameGraph",
+            "perf_event_paranoid",
+            "perf",
+            "offcpu"
+        ]
+    );
+    assert_eq!(
+        validate_row(&rows, "perf"),
+        &serde_json::json!({"label": "perf", "status": "ok", "detail": "perf stat counted"})
+    );
+    assert_eq!(
+        validate_row(&rows, "offcpu"),
+        &serde_json::json!({"label": "offcpu", "status": "warn",
+            "detail": "not usable here: missing: bpftrace not found on PATH",
+            "hint": "apt install bpftrace"})
+    );
+    let argv = std::fs::read_to_string(dir.path().join("argv.log")).unwrap_or_default();
+    assert_eq!(argv, "--profile-check-json\n--profile-check-json\n");
+}
+
+/// @test A binary named without a directory is the file in the working
+/// directory, for bench validate and bench doctor alike, not a program looked
+/// up on PATH.
+#[test]
+fn validate_and_doctor_start_a_bare_file_name() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    doctor_stand_in(dir.path(), DOCTOR_DOC);
+    for args in [
+        vec!["validate", "doctor_bench", "--json"],
+        vec!["doctor", "doctor_bench", "--json"],
+        vec!["doctor", "doctor_bench"],
+    ] {
+        let out = output_of(Command::new(bin()).args(&args).current_dir(dir.path()));
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {err}");
+    }
+    let argv = std::fs::read_to_string(dir.path().join("argv.log")).unwrap_or_default();
+    assert_eq!(
+        argv,
+        "--profile-check-json\n--profile-check-json\n--profile-check\n"
+    );
+}
+
+/// @test A binary that is missing, does not start, prints no JSON document
+/// (with how it ended and its last stderr line), or prints one without
+/// usable backend rows is an operational error: exit 1 with the cause on
+/// stderr and nothing on stdout, with or without --json.
+#[test]
+fn validate_operational_errors_exit_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("missing");
+    let plain = dir.path().join("plain");
+    std::fs::write(&plain, "#!/bin/sh\n").expect("write");
+    let unloadable = dir.path().join("unloadable");
+    write_executable(
+        &unloadable,
+        "#!/bin/sh\necho 'error while loading shared libraries: libbench.so' >&2\nexit 127\n",
+    );
+    let mut cases = vec![
+        (missing, "binary not found".to_string()),
+        (plain.clone(), format!("{} did not start", plain.display())),
+        (
+            unloadable.clone(),
+            format!(
+                "{} --profile-check-json printed no valid doctor document (exit status 127; \
+                 stderr: error while loading shared libraries: libbench.so)",
+                unloadable.display()
+            ),
+        ),
+    ];
+    for (name, doc, cause) in [
+        (
+            "garbage",
+            "not json\n",
+            "printed no valid doctor document (exit status 0)",
+        ),
+        (
+            "no_rows",
+            "{\"binary\": {}}\n",
+            "printed no usable doctor document: it has no \"backends\" array",
+        ),
+        (
+            "bad_status",
+            "{\"backends\": [{\"name\": \"perf\", \"status\": \"bogus\"}]}\n",
+            "backend row 'perf' has status \"bogus\"",
+        ),
+    ] {
+        let sub = dir.path().join(name);
+        std::fs::create_dir_all(&sub).expect("mkdir");
+        cases.push((doctor_stand_in(&sub, doc), cause.to_string()));
+    }
+    for (binary, cause) in cases {
+        let b = binary.to_string_lossy().into_owned();
+        for json in [false, true] {
+            let mut args = vec!["validate", b.as_str()];
+            if json {
+                args.push("--json");
+            }
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(err.contains(&cause), "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?}: {out}");
+        }
+    }
 }
 
 /* ----------------------------- GPU Env ----------------------------- */
@@ -1206,6 +1498,36 @@ fn run_profile_names_missing_wrapper() {
             "--profile {profile}: raw OS error leaked: {err}"
         );
     }
+}
+
+/// @test A wrapper that PATH finds without an execute bit is named with its
+/// path and the request before anything starts: no raw permission error, no
+/// artifact directory.
+#[test]
+fn run_names_a_non_executable_wrapper() {
+    let target = bin().to_string_lossy().into_owned();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("mkdir");
+    let valgrind = tools.join("valgrind");
+    std::fs::write(&valgrind, "#!/bin/sh\nexit 0\n").expect("write");
+    let out = output_of(
+        Command::new(bin())
+            .args(["run", &target, "--profile", "massif"])
+            .env("PATH", &tools)
+            .current_dir(dir.path()),
+    );
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains(&format!(
+            "'valgrind' at {} is not executable; --profile massif runs the benchmark under it",
+            valgrind.display()
+        )),
+        "{err}"
+    );
+    assert!(!err.contains("Permission denied"), "{err}");
+    assert!(!dir.path().join("bench-out").exists());
 }
 
 /// @test A missing wrapper leaves no artifact directory behind.
