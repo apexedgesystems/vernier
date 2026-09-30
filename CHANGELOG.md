@@ -142,7 +142,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the declared bytes to the kernels, and a check under the `demo` and `ncu`
   labels runs the demo under Nsight Compute, where its counters are readable,
   and fails unless the conflicting tile's column reads take 32 wavefronts per
-  shared-load instruction and the padded tile's one. The test
+  shared-load instruction and the padded tile's one. Its walkthrough,
+  `src/bench/demo/docs/12_SHARED_MEMORY_OPT.md`, is rewritten from a Release run
+  on the documented Jetson AGX Thor rig, reading that counter from a
+  hand-typed `ncu` command because `bench run --profile ncu` collects ncu's
+  default sections only; that run's CSV is committed at
+  `src/bench/demo/reference/thor/12_shared_memory_opt.csv`. The test
   `SharedMemoryOpt.SharedConflictFree` is renamed
   `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured from the demo
   before this release does not join with newer ones.
