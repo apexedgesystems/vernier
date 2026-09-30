@@ -293,7 +293,7 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     _sanitizer_check
     ComputeSanitizer.FindsTheUnguardedRead ComputeSanitizer.KernelReportsNothing
     ComputeSanitizer.PlainRunIsNotWrapped ComputeSanitizer.PlainRunHintShape
-    ComputeSanitizer.HintRunsOnTheFirstRun
+    ComputeSanitizer.HintRunsOnTheFirstRun ComputeSanitizer.UnguardedSkipsOutsideTheTool
   )
     string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
     set_tests_properties(
@@ -332,4 +332,9 @@ set_tests_properties(
   SkipUnlessUnderComputeSanitizerProbe.RunsOnlyUnderTheTool
   PROPERTIES SKIP_REGULAR_EXPRESSION
              "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerProbe\\.RunsOnlyUnderTheTool"
+)
+set_tests_properties(
+  SkipUnlessUnderComputeSanitizerTest.ToolRunRunsTheProbe
+  PROPERTIES SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe"
 )

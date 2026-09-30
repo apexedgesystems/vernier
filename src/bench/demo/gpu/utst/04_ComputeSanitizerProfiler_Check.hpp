@@ -35,6 +35,62 @@ namespace sanitizer_check {
 namespace fs = std::filesystem;
 namespace vg = vernier::bench::demo::memcheck_check;
 
+/* ----------------------------- Sanitizer Builds ----------------------------- */
+
+/// True in a build with the address sanitizer. In such a build the GPU demo
+/// does not start (its run prints "Your application is linked against
+/// incompatible ASan runtimes"), the CUDA runtime reports "out of memory" to
+/// cudaGetDeviceCount, and compute-sanitizer's injected libraries make the
+/// sanitizer abort a program before its tests start ("AddressSanitizer:
+/// alloc-dealloc-mismatch"), so the checks that run the demo or the tool
+/// skip there.
+#if defined(__SANITIZE_ADDRESS__)
+inline constexpr bool BUILT_WITH_ASAN = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+inline constexpr bool BUILT_WITH_ASAN = true;
+#else
+inline constexpr bool BUILT_WITH_ASAN = false;
+#endif
+#else
+inline constexpr bool BUILT_WITH_ASAN = false;
+#endif
+
+/// True in a build with the thread sanitizer. In such a build the GPU demo,
+/// run plainly, overflows its stack in __tls_get_addr ("ThreadSanitizer:
+/// stack-overflow") before its first test ends, and run under the tool it
+/// exits 66 on a race the sanitizer reports in pthread_mutex_destroy at its
+/// end, so the checks that run the demo skip there; the tool itself runs a
+/// program of that build.
+#if defined(__SANITIZE_THREAD__)
+inline constexpr bool BUILT_WITH_TSAN = true;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+inline constexpr bool BUILT_WITH_TSAN = true;
+#else
+inline constexpr bool BUILT_WITH_TSAN = false;
+#endif
+#else
+inline constexpr bool BUILT_WITH_TSAN = false;
+#endif
+
+/// The skip message of a check that runs the demo binary, in a build with
+/// the address or the thread sanitizer; empty in any other build.
+inline const char* reasonNotToRunTheDemo() {
+  if (BUILT_WITH_ASAN) {
+    return "this binary is built with the address sanitizer, in which the GPU demo does not start "
+           "(its run prints `Your application is linked against incompatible ASan runtimes`) and "
+           "the CUDA runtime reports `out of memory`; run this test in a build without it";
+  }
+  if (BUILT_WITH_TSAN) {
+    return "this binary is built with the thread sanitizer, in which the GPU demo run plainly "
+           "overflows its stack in __tls_get_addr (`ThreadSanitizer: stack-overflow`) and run "
+           "under the tool exits 66 on a race the sanitizer reports in pthread_mutex_destroy at "
+           "its end; run this test in a build without it";
+  }
+  return "";
+}
+
 /* ----------------------------- Tool Runs ----------------------------- */
 
 /// What a run under compute-sanitizer left.

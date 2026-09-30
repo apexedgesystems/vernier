@@ -9,14 +9,18 @@
  *    once under compute-sanitizer, and read what GoogleTest printed for the
  *    probe. This binary calls no CUDA, so the tool is told not to require it
  *    (`--require-cuda-init no`); what it exports to the process is the same.
- *  - The tool run skips where compute-sanitizer is not on PATH, decided
- *    before anything runs; any other way of not reaching the probe fails.
+ *  - The tool run skips in a build with the address sanitizer, whose runtime
+ *    aborts the program before its tests start once the tool's libraries are
+ *    injected ("AddressSanitizer: alloc-dealloc-mismatch"), and where
+ *    compute-sanitizer is not on PATH, both decided before anything runs;
+ *    any other way of not reaching the probe fails.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
 #include "src/bench/demo/helpers/SkipUnlessUnderComputeSanitizer.hpp"
 
 #include "src/bench/demo/cpu/utst/12_MemcheckProfiler_Check.hpp"
+#include "src/bench/demo/gpu/utst/04_ComputeSanitizerProfiler_Check.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <unistd.h>
@@ -37,6 +41,7 @@ namespace fs = std::filesystem;
 
 using vernier::bench::demo::reasonToSkipUnlessUnderComputeSanitizer;
 using vernier::bench::demo::SKIP_UNLESS_UNDER_COMPUTE_SANITIZER_REASON;
+using vernier::bench::demo::sanitizer_check::BUILT_WITH_ASAN;
 using vernier::bench::profiler_env::isOnPath;
 
 /* ----------------------------- Constants ----------------------------- */
@@ -104,6 +109,12 @@ TEST(SkipUnlessUnderComputeSanitizerTest, PlainRunSkipsTheProbe) {
 
 /** @test Under compute-sanitizer the probe runs and passes */
 TEST(SkipUnlessUnderComputeSanitizerTest, ToolRunRunsTheProbe) {
+  if constexpr (BUILT_WITH_ASAN) {
+    GTEST_SKIP() << "this binary is built with the address sanitizer, whose runtime aborts the "
+                    "program before its tests start once compute-sanitizer's libraries are "
+                    "injected (`AddressSanitizer: alloc-dealloc-mismatch`); run this test in a "
+                    "build without it";
+  }
   if (!isOnPath("compute-sanitizer")) {
     GTEST_SKIP() << "compute-sanitizer is not on PATH; this test runs the probe under it";
   }

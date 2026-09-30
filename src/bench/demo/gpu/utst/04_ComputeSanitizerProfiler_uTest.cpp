@@ -87,9 +87,12 @@ fs::path scratchDir() {
 }
 
 /// Why a check that runs a kernel cannot run here, decided before anything
-/// runs: the tool is not on PATH, or the runtime sees no device (its own
-/// words); empty when both are there.
+/// runs: a sanitizer build, the tool not on PATH, or the runtime seeing no
+/// device (its own words); empty when none of these holds.
 std::string reasonNotToRunAKernel() {
+  if (const std::string SANITIZED = check::reasonNotToRunTheDemo(); !SANITIZED.empty()) {
+    return SANITIZED;
+  }
   if (!vernier::bench::profiler_env::isOnPath("compute-sanitizer")) {
     return "compute-sanitizer is not on PATH; this test runs the demo under it";
   }
@@ -123,9 +126,11 @@ std::string reasonNotToRunAKernel() {
  * allocation of the vectors' size; the summary must count it, and the tool
  * must exit with the error status it was given.
  *
- * Skipped only where compute-sanitizer is not on PATH or the runtime sees no
- * device, both decided before anything runs. Any other way of not reaching
- * the case fails, with what the run printed.
+ * Skipped only in a build with the address or the thread sanitizer (where the
+ * demo does not run, as the check support says), where compute-sanitizer is
+ * not on PATH, or where the runtime sees no device, all decided before
+ * anything runs. Any other way of not reaching the case fails, with what the
+ * run printed.
  */
 TEST(ComputeSanitizer, FindsTheUnguardedRead) {
   const std::string CANNOT = reasonNotToRunAKernel();
@@ -238,9 +243,16 @@ TEST(ComputeSanitizer, KernelReportsNothing) {
   fs::remove_all(DIR, ec);
 }
 
-/** @test Run without the tool, SaxpyUnguarded reports SKIPPED, says how to run it, and does not run
+/**
+ * @test Run without the tool, SaxpyUnguarded reports SKIPPED, says how to
+ *       run it, and does not run. Needs neither the tool nor a device;
+ *       skipped in a build with the address or the thread sanitizer, where
+ *       the demo does not run plainly.
  */
 TEST(ComputeSanitizer, UnguardedSkipsOutsideTheTool) {
+  if (const std::string SANITIZED = check::reasonNotToRunTheDemo(); !SANITIZED.empty()) {
+    GTEST_SKIP() << SANITIZED;
+  }
   const std::string DEMO = demoPath();
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
   const fs::path DIR = scratchDir();
