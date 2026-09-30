@@ -19,11 +19,8 @@
 #include <vector>
 
 #ifdef __linux__
-#include <array>
 #include <csignal>
 #include <filesystem>
-#include <thread>
-#include <chrono>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -293,6 +290,43 @@ PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName,
 #endif
 }
 
+namespace {
+
+#ifdef __linux__
+/** @brief How a process ended, from its wait status. */
+std::string waitStatusText(int status) {
+  if (WIFEXITED(status)) {
+    return "exit status " + std::to_string(WEXITSTATUS(status));
+  }
+  if (WIFSIGNALED(status)) {
+    return "signal " + std::to_string(WTERMSIG(status));
+  }
+  return "an unknown end";
+}
+
+/** @brief The whole text of @p path, or "" when it cannot be read. */
+std::string readText(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::ostringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+
+/** @brief The end of perf's own output in @p path, for a report. */
+std::string perfSaid(const std::string& path) {
+  const std::string TAIL = outputTail(readText(path));
+  return TAIL.empty() ? std::string{"perf wrote nothing to "} + path : "perf: " + TAIL;
+}
+#endif
+
+} // namespace
+
+void PerfStatProfiler::fail(ReadinessCause cause, const std::string& detail,
+                            ReadinessStage stage) const {
+  ProfilerRegistry::instance().reportFailure("perf", testName_,
+                                             readinessResult(cause, detail, "", stage));
+}
+
 void PerfStatProfiler::beforeMeasure() {
 #ifdef __linux__
   if (!plan_) {
@@ -303,29 +337,29 @@ void PerfStatProfiler::beforeMeasure() {
   // whatever it contains. --profile-args stays shell text on purpose.
   const std::string PERF = shellQuote(plan_->perf);
   pid_t targetPid = ::getpid();
+  std::string cmd;
+  std::string errPath;
 
   if (plan_->mode == PerfMode::MEM) {
     // perf mem -- memory-access profiling. Captures load/store latency
     // distribution; useful for finding L1/L2/LLC stalls.
     dataPath_ = artifactDir_ + "/perf.mem.data";
     errPath_ = artifactDir_ + "/mem.err.txt";
-    std::string cmd =
-        PERF + " mem record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
-    launchBackground(cmd, /*stdoutPath*/ "", errPath_);
+    cmd = PERF + " mem record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
+    errPath = errPath_;
   } else if (plan_->mode == PerfMode::C2C) {
     // perf c2c -- cache-line contention profiling. Surfaces false sharing
     // by attributing HITM events to the source line of the contended write.
     dataPath_ = artifactDir_ + "/perf.c2c.data";
     errPath_ = artifactDir_ + "/c2c.err.txt";
-    std::string cmd =
-        PERF + " c2c record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
-    launchBackground(cmd, /*stdoutPath*/ "", errPath_);
+    cmd = PERF + " c2c record -p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
+    errPath = errPath_;
   } else if (plan_->mode == PerfMode::RECORD) {
     // perf record mode
     dataPath_ = artifactDir_ + "/perf.data";
     errPath_ = artifactDir_ + "/record.err.txt";
     // Build: perf record <args> -p PID
-    std::string cmd = PERF + " record ";
+    cmd = PERF + " record ";
     if (!cfg_.profileArgs.empty()) {
       // strip leading "record"
       auto i = cfg_.profileArgs.find_first_not_of(" \t", 6);
@@ -333,148 +367,101 @@ void PerfStatProfiler::beforeMeasure() {
       cmd += rest + " ";
     }
     cmd += "-p " + std::to_string(targetPid) + " -o " + shellQuote(dataPath_);
-    launchBackground(cmd, /*stdoutPath*/ "", errPath_);
+    errPath = errPath_;
   } else {
-    // perf stat mode (default)
+    // perf stat mode (default); perf stat writes its counts to stderr.
     statPath_ = artifactDir_ + "/stat.txt";
-    std::string cmd = PERF + " stat -e " + PERF_STAT_EVENTS + " -p " + std::to_string(targetPid);
+    cmd = PERF + " stat -e " + PERF_STAT_EVENTS + " -p " + std::to_string(targetPid);
     if (!cfg_.profileArgs.empty()) {
       cmd += " " + cfg_.profileArgs;
     }
-    // perf stat writes to stderr -> redirect to file
-    launchBackground(cmd, /*stdoutPath*/ "", statPath_);
+    errPath = statPath_;
   }
 
-  // Grace period to ensure perf attaches properly before measurement starts
-  // Critical for short benchmarks where measurement might start before perf is ready
-  std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  // `exec` makes perf this process's own child, so the stop can wait for it.
+  // The start grace covers perf attaching before the measured phase.
+  HelperStopPolicy policy;
+  policy.interruptWaitMs = PERF_WRITE_WAIT_MS;
+  helper_ = OwnedHelper(policy);
+  const HelperStart START =
+      helper_.start({"/bin/sh", "-c", "exec " + cmd}, "", errPath, PERF_START_GRACE_MS);
+  if (!START.started) {
+    fail(ReadinessCause::UNUSABLE, "perf could not be started: " + START.errorTail,
+         ReadinessStage::COLLECTION);
+    return;
+  }
+  if (START.exitedEarly) {
+    fail(ReadinessCause::UNUSABLE,
+         "perf ended (" + waitStatusText(START.waitStatus) +
+             ") before the measured phase: " + perfSaid(errPath),
+         ReadinessStage::COLLECTION);
+    return;
+  }
+  started_ = true;
 #endif
 }
 
 void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
 #ifdef __linux__
-  if (childPid_ <= 0) {
+  if (!started_) {
     return;
   }
-
-  // ============================================================================
-  // Proper perf termination with data flush
-  // ============================================================================
-
-  // Step 1: Send SIGINT to allow perf to finalize data gracefully
-  if (::kill(childPid_, 0) == 0) { // Check if process exists
-    ::kill(childPid_, SIGINT);
-  } else {
-    childPid_ = -1;
-    return; // Process already exited
+  started_ = false;
+  const std::string OUTPUT = statPath_.empty() ? errPath_ : statPath_;
+  const HelperStopResult STOP = helper_.stop();
+  if (!STOP.wasRunning) {
+    fail(ReadinessCause::UNUSABLE,
+         "perf ended (" + waitStatusText(STOP.waitStatus) +
+             ") during the measured phase, so its output covers part of it at most: " +
+             perfSaid(OUTPUT),
+         ReadinessStage::COMPLETION);
+    return;
   }
+  if (STOP.stillAlive) {
+    fail(ReadinessCause::UNUSABLE,
+         "perf did not end after SIGINT, SIGTERM and SIGKILL; its output is not final",
+         ReadinessStage::COMPLETION);
+    return;
+  }
+  if (STOP.stoppedBy != SIGINT) {
+    fail(ReadinessCause::UNUSABLE,
+         std::string{"perf did not finish writing within "} +
+             std::to_string(PERF_WRITE_WAIT_MS / 1000) + " s of SIGINT and was stopped by " +
+             (STOP.stoppedBy == SIGTERM ? "SIGTERM" : "SIGKILL") +
+             ", so its output may be incomplete",
+         ReadinessStage::COMPLETION);
+    return;
+  }
+  checkOutput();
+#endif
+}
 
-  // Step 2: Give perf initial time to start shutdown (CRITICAL for perf record)
-  // Perf needs time to stop sampling, write buffers, and finalize the data file header
-  // This is the most critical step - perf.data header is written during shutdown
-  std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
-  // Step 3: Wait for perf to finish writing data (with timeout)
-  constexpr int TIMEOUT_MS = 5000; // 5 second total timeout
-  constexpr int POLL_INTERVAL_MS = 100;
-  int elapsed = 1000; // Already waited 1000ms
-  int status = 0;
-
-  while (elapsed < TIMEOUT_MS) {
-    pid_t result = ::waitpid(childPid_, &status, WNOHANG);
-
-    if (result == childPid_) {
-      // Process exited - give filesystem time to flush buffers
-      std::this_thread::sleep_for(std::chrono::milliseconds(200));
-      childPid_ = -1;
-
-      // Verify perf.data was written (for record mode)
-      if (!dataPath_.empty()) {
-        if (std::filesystem::exists(dataPath_)) {
-          auto fileSize = std::filesystem::file_size(dataPath_);
-          if (fileSize > 0) {
-            // Success: perf.data written and has data
-            return;
-          } else {
-            std::fprintf(stderr,
-                         "Warning: perf.data exists but is empty (size=%zu) - perf may not have "
-                         "flushed data\n",
-                         fileSize);
-          }
-        } else {
-          std::fprintf(stderr,
-                       "Warning: perf.data not found - perf may have terminated abnormally\n");
-        }
-      }
-      return;
-    } else if (result == -1) {
-      // Error in waitpid (process may have been reaped)
-      childPid_ = -1;
-      return;
+void PerfStatProfiler::checkOutput() const {
+#ifdef __linux__
+  if (!statPath_.empty()) {
+    // perf stat prints this header before its counts; an error message in
+    // its place is not a count (a zero or <not supported> count is one).
+    if (readText(statPath_).find("Performance counter stats") == std::string::npos) {
+      fail(ReadinessCause::UNUSABLE, statPath_ + " holds no counts: " + perfSaid(statPath_),
+           ReadinessStage::COMPLETION);
     }
-
-    // Process still running, wait a bit more
-    std::this_thread::sleep_for(std::chrono::milliseconds(POLL_INTERVAL_MS));
-    elapsed += POLL_INTERVAL_MS;
-  }
-
-  // Step 3: Timeout reached - force kill
-  std::fprintf(stderr, "Warning: perf did not exit after %dms - forcing termination\n", TIMEOUT_MS);
-
-  if (::kill(childPid_, 0) == 0) {
-    ::kill(childPid_, SIGKILL);
-    ::waitpid(childPid_, &status, 0); // Block until killed
-  }
-
-  childPid_ = -1;
-#endif
-}
-
-void PerfStatProfiler::launchBackground(const std::string& cmdCore, const std::string& stdoutPath,
-                                        const std::string& stderrPath) {
-#ifdef __linux__
-  // popen() runs "<cmd> >STDOUT 2>STDERR & echo $!" with /bin/sh itself, so
-  // the launch needs no sh on PATH, and $! is perf's own pid.
-  std::string cmd = cmdCore;
-  std::string redirs;
-  if (!stdoutPath.empty()) {
-    redirs += " >" + shellQuote(stdoutPath);
-  }
-  if (!stderrPath.empty()) {
-    redirs += " 2>" + shellQuote(stderrPath);
-  }
-  std::string shellCmd = cmd + redirs + " & echo $!";
-
-  FILE* pipe = ::popen(shellCmd.c_str(), "r");
-  if (!pipe) {
     return;
   }
-
-  std::array<char, 64> buf{};
-  if (::fgets(buf.data(), static_cast<int>(buf.size()), pipe)) {
-    childPid_ = static_cast<pid_t>(std::strtol(buf.data(), nullptr, 10));
+  std::error_code ec;
+  const auto SIZE = std::filesystem::file_size(dataPath_, ec);
+  if (ec || SIZE == 0) {
+    fail(ReadinessCause::MISSING,
+         dataPath_ + (ec ? " was not written: " : " is empty: ") + perfSaid(errPath_),
+         ReadinessStage::COMPLETION);
+    return;
   }
-  ::pclose(pipe);
-#else
-  (void)cmdCore;
-  (void)stdoutPath;
-  (void)stderrPath;
-#endif
-}
-
-bool PerfStatProfiler::killChild(int sig) noexcept {
-#ifdef __linux__
-  if (childPid_ <= 0) {
-    return false;
+  // perf record, mem and c2c confirm the finished file on their stderr.
+  if (readText(errPath_).find("Captured and wrote") == std::string::npos) {
+    fail(ReadinessCause::UNUSABLE,
+         dataPath_ + " was not confirmed written (no \"Captured and wrote\" in " + errPath_ +
+             "): " + perfSaid(errPath_),
+         ReadinessStage::COMPLETION);
   }
-  if (::kill(childPid_, 0) != 0) {
-    return false;
-  }
-  ::kill(childPid_, sig);
-  return true;
-#else
-  (void)sig;
-  return false;
 #endif
 }
 

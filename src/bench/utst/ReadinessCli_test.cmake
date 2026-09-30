@@ -811,6 +811,23 @@ elseif (CASE STREQUAL "PerfDeniedMatchesDoctor")
   expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'perf': ${_message}\n   ${_hint}" "run notice")
 
+elseif (CASE STREQUAL "PerfStartFailureFails")
+  # The request is ready, and the run's perf fails as it starts: each case
+  # reports it with perf's own words, and the run exits 4.
+  fake(fake_perf.sh perf)
+  list(APPEND _env FAKE_PERF_MODE=exit-early)
+  selected_row(row --profile perf)
+  expect_eq("${row_STATUS}" "ok" "selected status (the probes pass)")
+  run(run --profile perf ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  foreach (_case First Second)
+    expect_has(
+      "${run_ERR}"
+      "[FAIL] Profiler 'perf' (ReadinessFixture.${_case}): unusable: perf ended (exit status 1) before the measured phase: perf: Error: failed to open counters: No such process"
+      "run report (${_case})"
+    )
+  endforeach ()
+
 elseif (CASE MATCHES "^Gperf")
   # gperf cases need gperftools compiled into libbench.
   run(inventory --profile-check-json)

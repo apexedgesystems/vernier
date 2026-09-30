@@ -818,7 +818,10 @@ sudo setcap cap_perfmon=ep ./MyComponent_PTEST
 
 **3. Check what perf wrote**: the default mode's `stat.txt` holds perf's
 output, the counts or its error message; a `--profile-args "record ..."` run
-writes `perf.data`:
+writes `perf.data`. A run whose perf ended early, had to be stopped with
+SIGTERM or SIGKILL, left an error message instead of counts, or left no
+confirmed `perf.data` reports `[FAIL] Profiler 'perf' (<test>)` with perf's
+own last words and exits with status 4:
 
 ```bash
 cat MyComponent.Test.perf/stat.txt

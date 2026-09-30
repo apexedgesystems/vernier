@@ -4,14 +4,24 @@
 # Records the path it was run as and its arguments in FAKE_LOG, then acts on
 # FAKE_PERF_MODE:
 #   ok           --version works; `stat ... --timeout N` prints counts; any
-#                other invocation (a run's launch) runs until SIGINT
+#                other invocation (a run's launch) runs until SIGINT and then
+#                writes what perf writes: stat's counts to stderr, or record's
+#                data file (-o) and its "Captured and wrote" line
 #   broken       --version fails the way a wrapper without the kernel's build does
 #   denied       stat fails with the kernel's counter-access message
 #   unsupported  stat counts, but one event is <not supported>
+# and, for a run's launch only:
+#   exit-early   fails at once with an error message
+#   exit-soon    exits (status 3) half a second after starting, logging
+#                "perf exited pid=<pid>" to FAKE_LOG first
+#   slow-stop    writes its output 2 s after SIGINT
+#   ignore-int   ignores SIGINT; SIGTERM ends it without output
+#   hang         ignores SIGINT and SIGTERM (SIGKILL ends it)
+#   error-text   answers SIGINT with an error message instead of counts
 
 PATH=/usr/bin:/bin
 export PATH
-if [ -n "${FAKE_LOG:-}" ]; then
+if [ -n "${FAKE_LOG:-}" ] && [ -z "${FAKE_PERF_RESTORED:-}" ]; then
   printf 'perf %s %s pid=%s\n' "$0" "$*" "$$" >>"$FAKE_LOG"
 fi
 mode=${FAKE_PERF_MODE:-ok}
@@ -57,10 +67,76 @@ if [ "${1:-}" = "stat" ] && [ "$probe" = "yes" ]; then
   esac
 fi
 
-# A run's launch: perf handles SIGINT (it prints its counts and exits), even
-# though the shell that starts it in the background ignores SIGINT for its
-# children; restore the default so the fake stops on SIGINT the same way.
-if env --default-signal=INT true 2>/dev/null; then
-  exec env --default-signal=INT sleep 30
+# A run's launch. perf handles SIGINT even when it starts with SIGINT ignored
+# (a shell ignores it for a command it starts in the background), and a shell
+# cannot trap a signal ignored on entry: start again with the default, once.
+if [ -z "${FAKE_PERF_RESTORED:-}" ] && env --default-signal=INT true 2>/dev/null; then
+  FAKE_PERF_RESTORED=1 exec env --default-signal=INT /bin/sh "$0" "$@"
 fi
-exec sleep 30
+if [ "$mode" = "exit-early" ]; then
+  echo "Error: failed to open counters: No such process" >&2
+  exit 1
+fi
+if [ "$mode" = "exit-soon" ]; then
+  sleep 0.5
+  echo "Error: the target process exited" >&2
+  if [ -n "${FAKE_LOG:-}" ]; then
+    printf 'perf exited pid=%s\n' "$$" >>"$FAKE_LOG"
+  fi
+  exit 3
+fi
+out=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    out=$arg
+  fi
+  prev=$arg
+done
+
+finish() {
+  case "$mode" in
+  error-text)
+    echo "Error: the fake perf could not read its counters" >&2
+    ;;
+  *)
+    if [ -n "$out" ]; then
+      printf 'fake perf data\n' >"$out"
+      echo "[ perf record: Woken up 1 times to write data ]" >&2
+      echo "[ perf record: Captured and wrote 0.001 MB $out ]" >&2
+    else
+      echo "" >&2
+      echo " Performance counter stats for process id '$$':" >&2
+      echo "" >&2
+      echo "            66,055      cpu-cycles:u" >&2
+      echo "" >&2
+      echo "       0.101234567 seconds time elapsed" >&2
+    fi
+    ;;
+  esac
+}
+
+on_int() {
+  kill "$sleeper" 2>/dev/null
+  if [ "$mode" = "slow-stop" ]; then
+    sleep 2
+  fi
+  finish
+  exit 130
+}
+
+case "$mode" in
+hang) trap '' INT TERM ;;
+ignore-int)
+  trap '' INT
+  trap 'kill "$sleeper" 2>/dev/null; exit 143' TERM
+  ;;
+*) trap on_int INT ;;
+esac
+# Wait in one-second steps: a trapped signal interrupts `wait` at once, and a
+# SIGKILL leaves no sleep behind for more than a second.
+while :; do
+  sleep 1 &
+  sleeper=$!
+  wait "$sleeper"
+done

@@ -10,7 +10,12 @@
  *  - If `cfg.profileArgs` begins with "record", we run `perf record <args> -p <PID>` instead and
  *    write `<artifactDir>/perf.data` (+ `record.err.txt`); "mem" and "c2c" select
  *    `perf mem record` and `perf c2c record`.
- *  - Only the measured window is profiled: we start in beforeMeasure() and stop in afterMeasure().
+ *  - Only the measured window is profiled: perf starts in beforeMeasure() and is
+ *    stopped in afterMeasure(), which returns once perf has finished writing.
+ *  - perf runs as this process's own child (OwnedHelper): a perf that ends
+ *    before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
+ *    leaves no counts (stat) or no data (record, mem, c2c) is reported through
+ *    ProfilerRegistry::reportFailure(), which fails the run.
  *
  * Readiness (checkPerfRequest): perf is resolved on PATH, `perf --version`
  * must run, and a bounded `perf stat` on this process must open the counters
@@ -66,7 +71,10 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
  * @brief Linux perf profiler implementation.
  *
  * Supports both `perf stat` (default) and `perf record` modes.
- * Attaches to running process via `-p <PID>`.
+ * Attaches to running process via `-p <PID>`. perf is started as
+ * `/bin/sh -c "exec <perf command>"`, so `--profile-args` stays shell text and
+ * perf itself is the owned child that afterMeasure() stops: SIGINT, with
+ * PERF_WRITE_WAIT_MS for perf to write, then SIGTERM, then SIGKILL.
  */
 class PerfStatProfiler final : public Profiler {
 public:
@@ -89,11 +97,18 @@ public:
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
 
+  /** @brief How long perf may take to write its output after SIGINT. */
+  static constexpr int PERF_WRITE_WAIT_MS = 5000;
+
+  /** @brief How long perf is given to start counting before the measured phase. */
+  static constexpr int PERF_START_GRACE_MS = 200;
+
 private:
-  // Helper methods
-  void launchBackground(const std::string& cmdCore, const std::string& stdoutPath,
-                        const std::string& stderrPath);
-  bool killChild(int sig) noexcept;
+  /** @brief Record a failure of this test's capture at @p stage. */
+  void fail(ReadinessCause cause, const std::string& detail, ReadinessStage stage) const;
+
+  /** @brief Check the output perf left after a clean stop. */
+  void checkOutput() const;
 
   // State
   PerfConfig cfg_;
@@ -102,7 +117,8 @@ private:
   std::shared_ptr<const PerfPlan> plan_;
 
 #ifdef __linux__
-  pid_t childPid_ = -1;
+  OwnedHelper helper_;
+  bool started_ = false;
   std::string statPath_;
   std::string dataPath_;
   std::string errPath_;

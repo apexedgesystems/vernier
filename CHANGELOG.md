@@ -296,6 +296,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrapped profile and ignored is now refused; use one of the modes the
   [tools README](tools/README.md#run---execute-benchmark-binary) lists, or drop
   it.
+- **`--profile perf` waits for perf to finish, and fails a capture that did
+  not** -- perf was started in the background and its stop returned after a
+  fixed second whether or not perf had written anything, so `stat.txt` or
+  `perf.data` could still be incomplete or hold only an error message when the
+  test ended, and the run passed. The benchmark starts perf as its own child
+  and waits up to 5 s after SIGINT for it to write, and a perf that ends
+  before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
+  leaves an error message instead of counts (or no confirmed `perf.data`)
+  fails the run (exit status 4) with perf's own words.
 - **A wrapped `bench run` checks this run's output after exit** -- a wrap
   folder that could not be created ran the benchmark unwrapped, a wrap that
   wrote nothing (or left a previous run's file in place) passed, and a failing

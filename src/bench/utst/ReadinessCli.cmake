@@ -66,6 +66,7 @@ set(_readiness_cli_cases
     PerfLaunchesTheResolvedPath
     PerfBrokenNeverLaunched
     PerfDeniedMatchesDoctor
+    PerfStartFailureFails
     GperfAnalyzerFoundIsRun
     GperfAnalyzerMissingIsAnalysisError
     GperfAnalyzerBrokenIsAnalysisError
