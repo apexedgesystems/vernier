@@ -1,15 +1,43 @@
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
+use std::sync::RwLock;
 
 fn bin() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_bench"))
 }
 
+/// Writing a stand-in program and starting a process never overlap. A process
+/// started while a thread of this test binary holds a stand-in open for
+/// writing inherits that descriptor until it execs, and running the stand-in
+/// meanwhile fails with "Text file busy" (ETXTBSY). A writer takes the gate
+/// exclusively; every start takes it shared until the child has exec'd.
+static START_GATE: RwLock<()> = RwLock::new(());
+
+/// Write an executable stand-in while no process is being started.
+fn write_executable(path: &Path, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _gate = START_GATE.write().unwrap_or_else(|e| e.into_inner());
+    std::fs::write(path, script).expect("write the stand-in");
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+}
+
+/// `command.output()`, started while no stand-in is being written.
+fn output_of(command: &mut Command) -> Output {
+    let child = {
+        let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn bench")
+    };
+    child.wait_with_output().expect("wait for bench")
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(bin())
-        .args(args)
-        .output()
-        .expect("spawn bench");
+    let out = output_of(Command::new(bin()).args(args));
     let code = out.status.code().unwrap_or(255);
     (
         code,
@@ -1133,12 +1161,12 @@ fn invalid_sort_column() {
 fn run_without_tools(cwd: &std::path::Path, args: &[&str]) -> (i32, String, String) {
     let empty_path = cwd.join("empty-path");
     std::fs::create_dir_all(&empty_path).expect("create empty PATH dir");
-    let out = Command::new(bin())
-        .args(args)
-        .env("PATH", &empty_path)
-        .current_dir(cwd)
-        .output()
-        .expect("spawn bench");
+    let out = output_of(
+        Command::new(bin())
+            .args(args)
+            .env("PATH", &empty_path)
+            .current_dir(cwd),
+    );
     (
         out.status.code().unwrap_or(255),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -1229,8 +1257,6 @@ fn run_taskset_names_missing_program() {
 /// refuses; the run's own output stays on stdout whether or not the summary follows.
 #[test]
 fn run_analyze_refuses_an_unreadable_measurement() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().expect("tempdir");
     let written = dir.path().join("results.csv");
     let written_arg = written.to_string_lossy().into_owned();
@@ -1245,20 +1271,19 @@ fn run_analyze_refuses_an_unreadable_measurement() {
             "#!/bin/sh\necho 'stand-in benchmark ran'\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --csv ]; then cp '{}' \"$2\"; fi\n  shift\ndone\n",
             fixture(source)
         );
-        std::fs::write(&fake, script).expect("write the stand-in");
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        write_executable(&fake, &script);
 
-        let out = Command::new(bin())
-            .args([
-                "run",
-                &fake.to_string_lossy(),
-                "--csv",
-                &written_arg,
-                "--analyze",
-            ])
-            .current_dir(dir.path())
-            .output()
-            .expect("spawn bench");
+        let out = output_of(
+            Command::new(bin())
+                .args([
+                    "run",
+                    &fake.to_string_lossy(),
+                    "--csv",
+                    &written_arg,
+                    "--analyze",
+                ])
+                .current_dir(dir.path()),
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(code), "{source}: {stderr}");
@@ -1288,8 +1313,6 @@ fn run_analyze_refuses_an_unreadable_measurement() {
 /// @test A wrapped run tells the benchmark which folder holds the wrap's output.
 #[test]
 fn run_wrapped_exports_wrap_folder_to_child() {
-    use std::os::unix::fs::PermissionsExt;
-
     // A stand-in for valgrind that records what the runner exported and
     // exits cleanly; built from shell builtins because PATH holds only it.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1301,17 +1324,16 @@ fn run_wrapped_exports_wrap_folder_to_child() {
         record.display()
     );
     let fake = tools.join("valgrind");
-    std::fs::write(&fake, script).expect("write fake valgrind");
-    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+    write_executable(&fake, &script);
 
     let target = bin();
     let stem = target.file_stem().unwrap().to_string_lossy().into_owned();
-    let out = Command::new(bin())
-        .args(["run", &target.to_string_lossy(), "--profile", "massif"])
-        .env("PATH", &tools)
-        .current_dir(dir.path())
-        .output()
-        .expect("spawn bench");
+    let out = output_of(
+        Command::new(bin())
+            .args(["run", &target.to_string_lossy(), "--profile", "massif"])
+            .env("PATH", &tools)
+            .current_dir(dir.path()),
+    );
     assert!(
         out.status.success(),
         "stderr: {}",
@@ -1335,8 +1357,6 @@ fn run_wrapped_exports_wrap_folder_to_child() {
 /// for status 4, the failed profile request -- and exits 1 itself each time.
 #[test]
 fn run_reports_the_benchmark_exit_status() {
-    use std::os::unix::fs::PermissionsExt;
-
     let dir = tempfile::tempdir().expect("tempdir");
     for (i, (body, code, expected)) in [
         ("exit 0", 0, ""),
@@ -1359,22 +1379,254 @@ fn run_reports_the_benchmark_exit_status() {
         // A stand-in benchmark that prints a line and ends as the case says.
         let fake = dir.path().join(format!("fake_bench_{i}"));
         let script = format!("#!/bin/sh\necho 'stand-in benchmark ran'\n{body}\n");
-        std::fs::write(&fake, script).expect("write the stand-in");
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        write_executable(&fake, &script);
 
-        let out = Command::new(bin())
-            .args(["run", &fake.to_string_lossy()])
-            .current_dir(dir.path())
-            .output()
-            .expect("spawn bench");
+        let out = output_of(
+            Command::new(bin())
+                .args(["run", &fake.to_string_lossy()])
+                .current_dir(dir.path()),
+        );
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert_eq!(out.status.code(), Some(code), "{body}: {stderr}");
         assert!(
             stdout.contains("stand-in benchmark ran"),
-            "{body}: {stdout}"
+            "{body}: {stdout}{stderr}"
         );
         assert!(stderr.ends_with(expected), "{body}: {stderr}");
         assert!(!stderr.contains("parse error"), "{body}: {stderr}");
+    }
+}
+
+/* ----------------------------- Run: Routes ----------------------------- */
+
+/// A private PATH holding recording stand-ins for wrapper programs, and a
+/// stand-in benchmark. Every stand-in appends one line to `log` -- its name,
+/// the wrap variable it was given, and its arguments -- and exits 0; a
+/// wrapper does not start the benchmark, whose argv is what is under test.
+struct RouteRig {
+    dir: tempfile::TempDir,
+    log: std::path::PathBuf,
+    bench: std::path::PathBuf,
+}
+
+fn route_rig(programs: &[&str]) -> RouteRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    let log = dir.path().join("argv.log");
+    let write = |path: &std::path::Path, name: &str| {
+        let script = format!(
+            "#!/bin/sh\necho \"{name} wrap=$VERNIER_EXTERNAL_WRAP $*\" >> '{}'\n",
+            log.display()
+        );
+        write_executable(path, &script);
+    };
+    for program in programs {
+        write(&tools.join(program), program);
+    }
+    let bench = dir.path().join("fake_bench");
+    write(&bench, "bench");
+    RouteRig { dir, log, bench }
+}
+
+/// Run `bench run <rig's benchmark> <args>` with PATH set to the rig's
+/// stand-ins; returns the exit status, stderr and the stand-ins' log.
+fn run_rig(rig: &RouteRig, args: &[&str]) -> (i32, String, String) {
+    let out = output_of(
+        Command::new(bin())
+            .arg("run")
+            .arg(&rig.bench)
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path()),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test --profile nsys runs under nsys exactly as --profile nsight does, and
+/// the benchmark is told nsight, the canonical name.
+#[test]
+fn run_nsys_alias_wraps_like_nsight() {
+    for spelling in ["nsys", "nsight"] {
+        let rig = route_rig(&["nsys"]);
+        let (code, err, log) = run_rig(&rig, &["--profile", spelling]);
+        assert_eq!(code, 0, "{spelling}: {err}");
+        assert_eq!(
+            log,
+            format!(
+                "nsys wrap=nsight profile -o bench-out/fake_bench.nsight/profile -t cuda,nvtx \
+                 --force-overwrite true {} --profile nsight\n",
+                rig.bench.display()
+            ),
+            "{spelling}"
+        );
+    }
+}
+
+/// @test massif's modes reach valgrind.
+#[test]
+fn run_massif_modes_reach_valgrind() {
+    for (mode, flag) in [("pages", "--pages-as-heap=yes"), ("stacks", "--stacks=yes")] {
+        let rig = route_rig(&["valgrind"]);
+        let (code, err, log) = run_rig(&rig, &["--profile", "massif", "--profile-args", mode]);
+        assert_eq!(code, 0, "{mode}: {err}");
+        assert_eq!(
+            log,
+            format!(
+                "valgrind wrap=massif --tool=massif {flag} \
+                 --massif-out-file=bench-out/fake_bench.massif/massif.out {} --profile massif \
+                 --profile-args {mode}\n",
+                rig.bench.display()
+            )
+        );
+    }
+}
+
+/// @test memcheck's track-origins reaches valgrind; the leak check stays full.
+#[test]
+fn run_memcheck_track_origins() {
+    let rig = route_rig(&["valgrind"]);
+    let (code, err, log) = run_rig(
+        &rig,
+        &["--profile", "memcheck", "--profile-args", "track-origins"],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "valgrind wrap=memcheck --tool=memcheck --leak-check=full --error-exitcode=0 \
+             --track-origins=yes --log-file=bench-out/fake_bench.memcheck/memcheck.log {} \
+             --profile memcheck --profile-args track-origins\n",
+            rig.bench.display()
+        )
+    );
+}
+
+/// @test helgrind's drd mode runs valgrind's DRD tool, into helgrind's folder.
+#[test]
+fn run_helgrind_drd() {
+    let rig = route_rig(&["valgrind"]);
+    let (code, err, log) = run_rig(&rig, &["--profile", "helgrind", "--profile-args", "drd"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "valgrind wrap=helgrind --tool=drd --log-file=bench-out/fake_bench.helgrind/helgrind.log \
+             {} --profile helgrind --profile-args drd\n",
+            rig.bench.display()
+        )
+    );
+}
+
+/// @test compute-sanitizer's tools reach it.
+#[test]
+fn run_compute_sanitizer_tools() {
+    for tool in ["racecheck", "synccheck", "initcheck"] {
+        let rig = route_rig(&["compute-sanitizer"]);
+        let (code, err, log) = run_rig(
+            &rig,
+            &["--profile", "compute-sanitizer", "--profile-args", tool],
+        );
+        assert_eq!(code, 0, "{tool}: {err}");
+        assert!(
+            log.starts_with(&format!(
+                "compute-sanitizer wrap=compute-sanitizer --tool={tool} --log-file \
+                 bench-out/fake_bench.compute-sanitizer/sanitizer.log {}",
+                rig.bench.display()
+            )),
+            "{tool}: {log}"
+        );
+    }
+}
+
+/// @test nsight's compute mode runs under ncu, into nsight's folder, and nsys
+/// is not started.
+#[test]
+fn run_nsight_compute_mode_uses_ncu() {
+    let rig = route_rig(&["nsys", "ncu"]);
+    let (code, err, log) = run_rig(&rig, &["--profile", "nsight", "--profile-args", "compute"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "ncu wrap=nsight -o bench-out/fake_bench.nsight/kernel_profile -f --target-processes \
+             all {} --profile nsight --profile-args compute\n",
+            rig.bench.display()
+        )
+    );
+}
+
+/// @test A mode bench run does not wrap, a word the tool does not take and a
+/// combination the tool cannot run are refused before anything starts or is
+/// created.
+#[test]
+fn run_refuses_replay_and_unknown_modes() {
+    for (profile, args, expected) in [
+        (
+            "nsight",
+            "replay",
+            "bench run does not wrap a kernel replay",
+        ),
+        ("ncu", "replay", "bench run does not wrap a kernel replay"),
+        (
+            "massif",
+            "heap",
+            "'heap' is not a mode of massif; its modes are pages, stacks",
+        ),
+        (
+            "massif",
+            "pages,stacks",
+            "valgrind's massif cannot combine pages",
+        ),
+        (
+            "callgrind",
+            "instr",
+            "'instr' is not a mode of callgrind, which takes none",
+        ),
+        (
+            "compute-sanitizer",
+            "memcheck racecheck",
+            "compute-sanitizer runs one tool at a time",
+        ),
+    ] {
+        let rig = route_rig(&["valgrind", "nsys", "ncu", "compute-sanitizer"]);
+        let (code, err, log) = run_rig(&rig, &["--profile", profile, "--profile-args", args]);
+        assert_eq!(code, 1, "{profile} {args}: {err}");
+        assert!(
+            err.contains(&format!(
+                "Error: invalid arguments: --profile {profile} --profile-args '{args}': {expected}"
+            )),
+            "{profile} {args}: {err}"
+        );
+        assert_eq!(log, "", "{profile} {args}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{profile} {args}: a folder was created"
+        );
+    }
+}
+
+/// @test --profile-args may start with a hyphen, and reaches the benchmark
+/// as one argument.
+#[test]
+fn run_profile_args_may_start_with_a_hyphen() {
+    // After a space, and attached with '='.
+    for args in [
+        &["--profile", "perf", "--profile-args", "-e cycles"][..],
+        &["--profile", "perf", "--profile-args=-e cycles"][..],
+    ] {
+        let rig = route_rig(&[]);
+        let (code, err, log) = run_rig(&rig, args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        // The stand-in benchmark logs its own arguments only.
+        assert_eq!(
+            log, "bench wrap= --profile perf --profile-args -e cycles\n",
+            "{args:?}"
+        );
     }
 }

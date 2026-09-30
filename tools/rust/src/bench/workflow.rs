@@ -114,8 +114,9 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
 
 /// Map user-typed backend names to registered ones, mirroring the C++
 /// registry's canonicalName (the tool is called nsys everywhere outside
-/// the registry).
-fn canonical_backend(name: &str) -> &str {
+/// the registry). `tools/rust/tests/fixtures/profile_routes.tsv` holds the
+/// aliases both sides are tested against.
+pub(crate) fn canonical_backend(name: &str) -> &str {
     match name {
         "nsys" => "nsight",
         other => other,

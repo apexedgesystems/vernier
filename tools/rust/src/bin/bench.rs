@@ -134,13 +134,18 @@ enum Command {
         #[arg(long)]
         repeats: Option<u32>,
 
-        /// Profiling tool (passed to binary as --profile)
+        /// Profiling tool, passed to the binary as --profile by its canonical
+        /// name (nsys is nsight)
         #[arg(long)]
         profile: Option<String>,
 
-        /// Verbatim pass-through to the profiler backend (passed to the
-        /// binary as --profile-args, e.g. "replay" for ncu kernel replay)
-        #[arg(long)]
+        /// The profile's mode, passed to the binary as --profile-args. For a
+        /// profile bench run wraps it also selects the wrap (massif: pages or
+        /// stacks; memcheck: leak-full, track-origins; helgrind: drd;
+        /// compute-sanitizer: memcheck, racecheck, synccheck or initcheck;
+        /// nsight: compute), and any other word is refused. May start with
+        /// '-', e.g. "-e cycles" for perf
+        #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 
         /// Per-test profiler watchdog timeout in seconds (passed to the

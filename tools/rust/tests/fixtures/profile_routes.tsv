@@ -1,0 +1,73 @@
+# Profile routes: the names both languages agree on and what `bench run`
+# starts for each wrapped request. Read by the Rust tests (runner.rs) and the
+# C++ tests (ProfilerRegistry_uTest.cpp, through VERNIER_SHARED_FIXTURE_DIR).
+#
+# Tab-separated. '#' starts a comment line. A '-' field is empty. In a route,
+# <dir> is the folder the wrap writes into (<output-dir>/<binary>.<canonical
+# tool>) and <bin> the benchmark; arguments are separated by single spaces.
+#
+# alias   <spelling>  <canonical backend>
+alias	nsys	nsight
+alias	nsight	nsight
+alias	ncu	ncu
+alias	callgrind	callgrind
+alias	massif	massif
+alias	memcheck	memcheck
+alias	helgrind	helgrind
+alias	heaptrack	heaptrack
+alias	compute-sanitizer	compute-sanitizer
+alias	perf	perf
+alias	gperf	gperf
+alias	bpftrace	bpftrace
+alias	offcpu	offcpu
+alias	rapl	rapl
+alias	jemalloc	jemalloc
+alias	rocprof	rocprof
+#
+# route   <--profile>  <--profile-args>  <program>  <arguments>
+route	callgrind	-	valgrind	--tool=callgrind --callgrind-out-file=<dir>/callgrind.out <bin>
+route	massif	-	valgrind	--tool=massif --massif-out-file=<dir>/massif.out <bin>
+route	massif	pages	valgrind	--tool=massif --pages-as-heap=yes --massif-out-file=<dir>/massif.out <bin>
+route	massif	stacks	valgrind	--tool=massif --stacks=yes --massif-out-file=<dir>/massif.out <bin>
+route	memcheck	-	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	helgrind	-	valgrind	--tool=helgrind --log-file=<dir>/helgrind.log <bin>
+route	helgrind	drd	valgrind	--tool=drd --log-file=<dir>/helgrind.log <bin>
+route	heaptrack	-	heaptrack	-o <dir>/run <bin>
+route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --log-file <dir>/sanitizer.log <bin>
+route	nsight	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
+route	nsys	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
+route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+route	nsight	ncu	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+#
+# unwrapped   <--profile>  (the benchmark runs itself; --profile-args reach it untouched)
+unwrapped	perf
+unwrapped	gperf
+unwrapped	bpftrace
+unwrapped	offcpu
+unwrapped	rapl
+unwrapped	jemalloc
+unwrapped	rocprof
+#
+# refuse   <--profile>  <--profile-args>  <text the refusal contains>
+refuse	nsight	replay	does not wrap a kernel replay
+refuse	ncu	replay	does not wrap a kernel replay
+refuse	nsys	compute,replay	does not wrap a kernel replay
+refuse	massif	pages,stacks	cannot combine pages
+refuse	massif	heap	'heap' is not a mode of massif; its modes are pages, stacks
+refuse	memcheck	leak-summary	'leak-summary' is not a mode of memcheck
+refuse	helgrind	helgrind	'helgrind' is not a mode of helgrind; its modes are drd
+refuse	compute-sanitizer	memcheck,racecheck	runs one tool at a time
+refuse	callgrind	instr	'instr' is not a mode of callgrind, which takes none
+refuse	heaptrack	x	'x' is not a mode of heaptrack, which takes none
+refuse	ncu	compute	'compute' is not a mode of ncu, which takes none
+#
+# exit   <meaning>  <status>
+exit	profile-failed	4

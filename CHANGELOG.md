@@ -285,6 +285,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **Action needed:** a script that matched `parse error` matches
   `the benchmark exited with status`, `the benchmark was ended by signal` or
   `the requested profile failed` instead.
+- **`bench run` runs the tool and mode a request names** -- `--profile nsys`
+  ran the benchmark unwrapped, and the modes of wrapped profiles (massif
+  `pages`/`stacks`, memcheck `track-origins`, helgrind `drd`, compute-sanitizer's
+  tools, nsight `compute`) never reached their tool. `bench run` wraps `nsys` as
+  `nsight`, passes each mode to its tool, refuses before launching anything a
+  word the profile does not take (and a kernel `replay`, which the benchmark
+  runs itself), and accepts a `--profile-args` value that starts with `-`.
+  **Action needed:** a `--profile-args` value that `bench run` passed to a
+  wrapped profile and ignored is now refused; use one of the modes the
+  [tools README](tools/README.md#run---execute-benchmark-binary) lists, or drop
+  it.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

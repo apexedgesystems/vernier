@@ -121,6 +121,11 @@ if (TARGET TestBench)
     TestBench
     PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
   )
+  # Tables both languages are tested against (the Rust tools read them in
+  # place), e.g. the profile aliases and the profile-failed exit status.
+  target_compile_definitions(
+    TestBench PRIVATE VERNIER_SHARED_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tools/rust/tests/fixtures"
+  )
 endif ()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")

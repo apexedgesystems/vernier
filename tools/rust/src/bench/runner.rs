@@ -1,19 +1,22 @@
 //! Benchmark binary execution with optional CPU pinning and profiling.
 //!
-//! When `--profile <X>` names a wrap-externally backend (valgrind tools,
-//! heaptrack, compute-sanitizer, nsys), the runner transparently invokes
-//! the correct wrap command so a single `bench run --profile massif <bin>`
-//! produces real heap-profile artifacts without the caller copy/pasting
-//! the printed wrap instruction. Wrapped children get
-//! `VERNIER_EXTERNAL_WRAP=<tool>` so in-process backends stay passive
-//! instead of re-attaching or printing manual-wrap hints; for nsight the
-//! runner also extracts the canonical `nsys stats` reports after the run
-//! (the .nsys-rep only exists once the wrapped process exits).
+//! A request is read by its canonical name (`nsys` is `nsight`), which is also
+//! the `--profile` the benchmark receives. When it names a wrap-externally
+//! backend (valgrind tools, heaptrack, compute-sanitizer, nsys, ncu), the
+//! runner starts the benchmark under the route that request selects: the
+//! tool, and the mode its `--profile-args` words name, or it refuses a word
+//! the tool does not take before anything is created or started. Wrapped
+//! children get `VERNIER_EXTERNAL_WRAP=<tool>` so in-process backends stay
+//! passive instead of re-attaching or printing manual-wrap hints; for
+//! nsight's nsys route the runner also extracts the canonical `nsys stats`
+//! reports after the run (the .nsys-rep only exists once the wrapped process
+//! exits).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
+use super::workflow::canonical_backend;
 use super::{find_in_path, BenchmarkExit, Error};
 
 /// Exit status of a benchmark whose tests passed and whose requested profile
@@ -76,9 +79,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         args.push("--repeats".to_string());
         args.push(repeats.to_string());
     }
-    if let Some(ref profile) = cfg.profile {
+    let tool = cfg.profile.as_deref().map(canonical_backend);
+    if let Some(tool) = tool {
         args.push("--profile".to_string());
-        args.push(profile.clone());
+        args.push(tool.to_string());
     }
     if let Some(ref pa) = cfg.profile_args {
         args.push("--profile-args".to_string());
@@ -94,19 +98,39 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     args.extend(cfg.extra_args.iter().cloned());
 
+    // The route a wrapped profile runs under (e.g. `valgrind --tool=massif
+    // ...`), decided before anything is created or started: a mode the tool
+    // does not take is refused here.
+    let route = match tool {
+        Some(tool) => route_for(
+            tool,
+            cfg.profile_args.as_deref(),
+            &cfg.binary,
+            cfg.profile_output_dir.as_deref(),
+        )?,
+        None => None,
+    };
+
     // Every program the runner itself spawns must resolve before anything
     // is created or started: a spawn failure only says "No such file or
     // directory", without saying which file.
-    require_launch_programs(cfg.taskset.is_some(), cfg.profile.as_deref(), find_in_path)?;
+    require_launch_programs(
+        cfg.taskset.is_some(),
+        route.as_ref().map(|r| {
+            (
+                r.program,
+                request_text(&r.tool, cfg.profile_args.as_deref()),
+            )
+        }),
+        find_in_path,
+    )?;
 
-    // If the requested profile is a wrap-externally backend we know how to
-    // wrap, build the wrap command (e.g. `valgrind --tool=massif ...`) and
-    // run the benchmark binary under it. Otherwise execute the binary
-    // directly. taskset, if requested, layers on the outside of either.
-    let wrap = cfg
-        .profile
-        .as_deref()
-        .and_then(|t| wrap_command_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+    // The benchmark runs under its route when it has one, directly
+    // otherwise; taskset, if requested, layers on the outside of either.
+    let route = route.filter(|r| fs::create_dir_all(&r.dir).is_ok());
+    let wrap = route
+        .as_ref()
+        .map(|r| (r.program.to_string(), r.args.clone()));
 
     let mut cmd = match (&cfg.taskset, &wrap) {
         (Some(cpuset), Some((prog, prefix))) => {
@@ -132,10 +156,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .stderr(Stdio::inherit());
 
     // Env-shaped wraps (jemalloc) inject via the environment instead of argv.
-    let env_wrap = cfg
-        .profile
-        .as_deref()
-        .and_then(|t| env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+    let env_wrap =
+        tool.and_then(|t| env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
     if let Some(ref pairs) = env_wrap {
         for (k, v) in pairs {
             cmd.env(k, v);
@@ -148,7 +170,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     // this folder as the artifact location, which is what the CSV records.
     // See profiler_env::externalWrapTool() / externalWrapDir() on the C++ side.
     if wrap.is_some() || env_wrap.is_some() {
-        if let Some(ref tool) = cfg.profile {
+        if let Some(tool) = tool {
             for (k, v) in wrap_child_env(tool, &cfg.binary, cfg.profile_output_dir.as_deref()) {
                 cmd.env(k, v);
             }
@@ -176,15 +198,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         return Err(Error::Benchmark(end));
     }
 
-    // The wrapped nsys session writes its .nsys-rep at child exit, so the
-    // report extraction the C++ backend does for attach-mode runs has to
-    // happen runner-side for wrapped runs.
-    if wrap.is_some() && cfg.profile.as_deref() == Some("nsight") {
-        extract_nsys_stats(&wrap_artifact_dir(
-            "nsight",
-            &cfg.binary,
-            cfg.profile_output_dir.as_deref(),
-        ));
+    // nsys writes its .nsys-rep when the process it started exits, so the
+    // summaries are extracted after the run, for nsight's nsys route only.
+    if let Some(route) = route.as_ref().filter(|r| r.program == "nsys") {
+        extract_nsys_stats(&route.dir);
     }
 
     Ok(cfg.csv.clone())
@@ -247,25 +264,21 @@ fn wrap_child_env(tool: &str, binary: &Path, output_dir: Option<&Path>) -> [(Str
     ]
 }
 
-/// Program that wraps the benchmark binary for a wrap-externally backend,
-/// `None` for every other backend.
-fn wrap_program(tool: &str) -> Option<&'static str> {
-    match tool {
-        "callgrind" | "massif" | "memcheck" | "helgrind" => Some("valgrind"),
-        "heaptrack" => Some("heaptrack"),
-        "compute-sanitizer" => Some("compute-sanitizer"),
-        "nsight" => Some("nsys"),
-        "ncu" => Some("ncu"),
-        _ => None,
+/// A request as the command line states it, for messages.
+fn request_text(tool: &str, profile_args: Option<&str>) -> String {
+    match profile_args {
+        Some(a) if !a.is_empty() => format!("--profile {tool} --profile-args '{a}'"),
+        _ => format!("--profile {tool}"),
     }
 }
 
 /// Check that the programs a run is launched through resolve: `taskset` when
-/// pinning, and the wrapper of a wrap-externally profile. `lookup` is the
-/// PATH search (injected so tests need not edit the process environment).
+/// pinning, and the program of a wrapped profile's route with the request it
+/// serves. `lookup` is the PATH search (injected so tests need not edit the
+/// process environment).
 fn require_launch_programs(
     pinned: bool,
-    profile: Option<&str>,
+    wrapper: Option<(&str, String)>,
     lookup: impl Fn(&str) -> Option<PathBuf>,
 ) -> Result<(), Error> {
     if pinned && lookup("taskset").is_none() {
@@ -275,122 +288,212 @@ fn require_launch_programs(
                 .to_string(),
         ));
     }
-    if let Some(tool) = profile {
-        if let Some(program) = wrap_program(tool) {
-            if lookup(program).is_none() {
-                return Err(Error::ToolNotFound(format!(
-                    "'{program}' is not on PATH; --profile {tool} runs the benchmark under it. \
-                     Install {program}, or run `bench doctor` to see which profilers this \
-                     machine can use"
-                )));
-            }
+    if let Some((program, request)) = wrapper {
+        if lookup(program).is_none() {
+            return Err(Error::ToolNotFound(format!(
+                "'{program}' is not on PATH; {request} runs the benchmark under it. \
+                 Install {program}, or run `bench doctor` to see which profilers this \
+                 machine can use"
+            )));
         }
     }
     Ok(())
 }
 
-/// Wrap command (program + prefix args ending in the binary path) for a
-/// backend that must be invoked externally. Returns `None` for backends the
-/// runner does not argv-wrap: the in-process ones (perf, gperf, rapl,
-/// bpftrace, offcpu) that the binary drives from its own `--profile` flag,
-/// plus jemalloc (env-shaped wrap: LD_PRELOAD + MALLOC_CONF) and rocprof
-/// (injects its own tracer libs).
-fn wrap_command_for(
+/* ----------------------------- Routes ----------------------------- */
+
+/// How `bench run` starts a wrap-externally profile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Route {
+    /// Canonical backend name: the child's VERNIER_EXTERNAL_WRAP and the
+    /// suffix of the folder.
+    tool: String,
+    /// The program started in place of the benchmark.
+    program: &'static str,
+    /// The program's arguments, ending with the benchmark binary.
+    args: Vec<String>,
+    /// The folder the wrap writes into.
+    dir: PathBuf,
+}
+
+/// The words of a `--profile-args` value, split on whitespace and commas:
+/// for a wrapped profile, the modes it selects.
+fn mode_words(profile_args: Option<&str>) -> Vec<&str> {
+    profile_args
+        .unwrap_or("")
+        .split(|c: char| c.is_whitespace() || c == ',')
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// The modes a wrap-externally backend takes, as its header advertises them;
+/// `None` for every profile `bench run` does not wrap in argv.
+fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
+    Some(match tool {
+        "callgrind" | "heaptrack" | "ncu" => &[],
+        "massif" => &["pages", "stacks"],
+        "memcheck" => &["leak-full", "track-origins"],
+        "helgrind" => &["drd"],
+        "compute-sanitizer" => &["memcheck", "racecheck", "synccheck", "initcheck"],
+        "nsight" => &["compute", "ncu"],
+        _ => return None,
+    })
+}
+
+/// The route of a request for canonical backend @p tool with its
+/// `--profile-args`, or `None` for the profiles the benchmark runs itself
+/// (perf, gperf, rapl, bpftrace, offcpu), jemalloc's environment wrap and
+/// rocprof. A word the tool does not take, a combination it cannot run and a
+/// mode `bench run` does not wrap are refused, naming what is accepted.
+/// Creates nothing.
+fn route_for(
     tool: &str,
+    profile_args: Option<&str>,
     binary: &Path,
     output_dir: Option<&Path>,
-) -> Option<(String, Vec<String>)> {
-    // Return early for in-process backends so we don't materialize a
-    // per-tool artifact directory the C++ harness will never use --
-    // perf/gperf/rapl/bpftrace/offcpu manage their own per-test dirs and
-    // jemalloc/rocprof need wraps that aren't reducible to argv.
-    let program = wrap_program(tool)?.to_string();
-
-    let bin = binary.to_str()?.to_string();
-    let per_dir = wrap_artifact_dir(tool, binary, output_dir);
-    fs::create_dir_all(&per_dir).ok()?;
-    let dir = per_dir.display().to_string();
-
-    let args = match tool {
-        "callgrind" => {
-            // `--instr-atstart=no` would require `callgrind_control` to
-            // toggle instrumentation around the measured region, which
-            // can't cross PID namespaces (i.e. fails in Docker). Letting
-            // callgrind instrument the whole run is slower but works
-            // everywhere and matches what the binary's `Docker fallback`
-            // hint already prints.
+) -> Result<Option<Route>, Error> {
+    let Some(accepted) = wrapped_modes(tool) else {
+        return Ok(None);
+    };
+    let request = request_text(tool, profile_args);
+    let refuse = |why: String| Err(Error::InvalidArgs(format!("{request}: {why}")));
+    let words = mode_words(profile_args);
+    if (tool == "nsight" || tool == "ncu") && words.contains(&"replay") {
+        return refuse(
+            "bench run does not wrap a kernel replay; run the benchmark directly with \
+             these flags, and it prints the ncu command that replays its kernels"
+                .to_string(),
+        );
+    }
+    if let Some(word) = words.iter().find(|w| !accepted.contains(w)) {
+        return refuse(if accepted.is_empty() {
+            format!("'{word}' is not a mode of {tool}, which takes none")
+        } else {
+            format!(
+                "'{word}' is not a mode of {tool}; its modes are {}",
+                accepted.join(", ")
+            )
+        });
+    }
+    let has = |mode: &str| words.contains(&mode);
+    let bin = binary
+        .to_str()
+        .ok_or_else(|| {
+            Error::InvalidArgs(format!(
+                "{request}: the binary path {} is not valid UTF-8",
+                binary.display()
+            ))
+        })?
+        .to_string();
+    let dir = wrap_artifact_dir(tool, binary, output_dir);
+    let d = dir.display().to_string();
+    let ncu = |d: &str| -> Vec<String> {
+        vec![
+            "-o".into(),
+            format!("{d}/kernel_profile"),
+            "-f".into(),
+            "--target-processes".into(),
+            "all".into(),
+        ]
+    };
+    let (program, mut args): (&'static str, Vec<String>) = match tool {
+        // The whole process is recorded: under the runner's wrap the
+        // benchmark's callgrind backend leaves the recording alone.
+        "callgrind" => (
+            "valgrind",
             vec![
                 "--tool=callgrind".into(),
-                format!("--callgrind-out-file={dir}/callgrind.out"),
-                bin,
-            ]
-        }
+                format!("--callgrind-out-file={d}/callgrind.out"),
+            ],
+        ),
         "massif" => {
-            vec![
-                "--tool=massif".into(),
-                format!("--massif-out-file={dir}/massif.out"),
-                bin,
-            ]
+            if has("pages") && has("stacks") {
+                return refuse(
+                    "valgrind's massif cannot combine pages (--pages-as-heap=yes) with \
+                     stacks (--stacks=yes); choose one"
+                        .to_string(),
+                );
+            }
+            let mut a = vec!["--tool=massif".to_string()];
+            if has("pages") {
+                a.push("--pages-as-heap=yes".into());
+            }
+            if has("stacks") {
+                a.push("--stacks=yes".into());
+            }
+            a.push(format!("--massif-out-file={d}/massif.out"));
+            ("valgrind", a)
         }
         "memcheck" => {
-            vec![
-                "--tool=memcheck".into(),
+            let mut a = vec![
+                "--tool=memcheck".to_string(),
                 "--leak-check=full".into(),
                 "--error-exitcode=0".into(),
-                format!("--log-file={dir}/memcheck.log"),
-                bin,
-            ]
+            ];
+            if has("track-origins") {
+                a.push("--track-origins=yes".into());
+            }
+            a.push(format!("--log-file={d}/memcheck.log"));
+            ("valgrind", a)
         }
-        "helgrind" => {
+        "helgrind" => (
+            "valgrind",
             vec![
-                "--tool=helgrind".into(),
-                format!("--log-file={dir}/helgrind.log"),
-                bin,
-            ]
-        }
-        "heaptrack" => {
-            vec!["-o".into(), format!("{dir}/run"), bin]
-        }
+                if has("drd") {
+                    "--tool=drd"
+                } else {
+                    "--tool=helgrind"
+                }
+                .into(),
+                format!("--log-file={d}/helgrind.log"),
+            ],
+        ),
+        "heaptrack" => ("heaptrack", vec!["-o".into(), format!("{d}/run")]),
         "compute-sanitizer" => {
-            vec![
-                "--tool=memcheck".into(),
-                "--log-file".into(),
-                format!("{dir}/sanitizer.log"),
-                bin,
-            ]
+            if words.len() > 1 {
+                return refuse(format!(
+                    "compute-sanitizer runs one tool at a time; choose one of {}",
+                    accepted.join(", ")
+                ));
+            }
+            let sanitizer = words.first().copied().unwrap_or("memcheck");
+            (
+                "compute-sanitizer",
+                vec![
+                    format!("--tool={sanitizer}"),
+                    "--log-file".into(),
+                    format!("{d}/sanitizer.log"),
+                ],
+            )
         }
-        // Mirrors the wrap command the C++ backend prints as its Docker
-        // fallback hint; the child's backend stays passive via
-        // VERNIER_EXTERNAL_WRAP and the runner extracts stats post-run.
-        "nsight" => {
+        // nsight's compute mode is ncu's route, into nsight's folder.
+        "nsight" if has("compute") || has("ncu") => ("ncu", ncu(&d)),
+        // nsys records the whole process; the benchmark's backend stays
+        // passive (VERNIER_EXTERNAL_WRAP) and the summaries are extracted
+        // after the run. nsys refuses to overwrite a report, so a rerun
+        // forces it rather than reprocess the previous capture.
+        "nsight" => (
+            "nsys",
             vec![
                 "profile".into(),
                 "-o".into(),
-                format!("{dir}/profile"),
+                format!("{d}/profile"),
                 "-t".into(),
                 "cuda,nvtx".into(),
-                // nsys refuses to overwrite an existing report and the rerun
-                // then silently reprocesses the stale capture; force it.
                 "--force-overwrite".into(),
                 "true".into(),
-                bin,
-            ]
-        }
-        // First-class Nsight Compute: same external-wrap pattern; the
-        // replay pass stays a --profile-args opt-in inside the binary.
-        "ncu" => {
-            vec![
-                "-o".into(),
-                format!("{dir}/kernel_profile"),
-                "-f".into(),
-                "--target-processes".into(),
-                "all".into(),
-                bin,
-            ]
-        }
-        _ => unreachable!("wrap_program() admits only the tools matched above"),
+            ],
+        ),
+        "ncu" => ("ncu", ncu(&d)),
+        _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
-    Some((program, args))
+    args.push(bin);
+    Ok(Some(Route {
+        tool: tool.to_string(),
+        program,
+        args,
+        dir,
+    }))
 }
 
 /// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
@@ -592,9 +695,11 @@ mod tests {
         );
     }
 
-    /// @test Each wrap-externally profile maps to the program that wraps it.
+    /// @test Each wrap-externally profile maps to the program that wraps it;
+    /// the profiles the benchmark runs itself have no route.
     #[test]
-    fn wrap_program_names_the_wrapper() {
+    fn route_program_names_the_wrapper() {
+        let bin = Path::new("./my_test");
         for (tool, program) in [
             ("callgrind", "valgrind"),
             ("massif", "valgrind"),
@@ -605,24 +710,37 @@ mod tests {
             ("nsight", "nsys"),
             ("ncu", "ncu"),
         ] {
-            assert_eq!(wrap_program(tool), Some(program), "tool {tool}");
+            let route = route_for(tool, None, bin, None)
+                .expect("the default mode is accepted")
+                .expect("a wrapped tool has a route");
+            assert_eq!(route.program, program, "tool {tool}");
+            assert_eq!(route.tool, tool);
         }
         for tool in [
             "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "rocprof",
         ] {
-            assert_eq!(wrap_program(tool), None, "tool {tool}");
+            // Whatever the mode text: it is the benchmark's to read.
+            let route = route_for(tool, Some("record -g"), bin, None).expect("not refused");
+            assert!(route.is_none(), "tool {tool}");
         }
     }
 
-    /// @test A missing wrapper is reported by program and profile name.
+    /// @test A missing wrapper is reported by program and request.
     #[test]
     fn require_launch_programs_names_missing_wrapper() {
-        let err = require_launch_programs(false, Some("callgrind"), |_| None)
-            .expect_err("valgrind does not resolve");
+        let err = require_launch_programs(
+            false,
+            Some(("ncu", request_text("nsight", Some("compute")))),
+            |_| None,
+        )
+        .expect_err("ncu does not resolve");
         assert!(matches!(err, Error::ToolNotFound(_)), "got {err:?}");
         let text = err.to_string();
-        assert!(text.contains("'valgrind'"), "{text}");
-        assert!(text.contains("--profile callgrind"), "{text}");
+        assert!(text.contains("'ncu'"), "{text}");
+        assert!(
+            text.contains("--profile nsight --profile-args 'compute'"),
+            "{text}"
+        );
     }
 
     /// @test A missing taskset is reported when pinning is requested, and only then.
@@ -640,14 +758,15 @@ mod tests {
         let only = |wanted: &'static str| {
             move |name: &str| (name == wanted).then(|| PathBuf::from("/usr/bin").join(name))
         };
-        assert!(require_launch_programs(false, Some("massif"), only("valgrind")).is_ok());
+        let massif = || Some(("valgrind", request_text("massif", None)));
+        assert!(require_launch_programs(false, massif(), only("valgrind")).is_ok());
         assert!(require_launch_programs(true, None, only("taskset")).is_ok());
-        assert!(require_launch_programs(true, Some("massif"), only("taskset")).is_err());
+        assert!(require_launch_programs(true, massif(), only("taskset")).is_err());
         // In-process profiles are driven by the binary itself: nothing to resolve.
-        assert!(require_launch_programs(false, Some("perf"), |_| None).is_ok());
+        assert!(require_launch_programs(false, None, |_| None).is_ok());
     }
 
-    /// @test The child is told the same folder the wrap command writes into.
+    /// @test The child is told the same folder the route writes into.
     #[test]
     fn wrap_child_env_names_the_wrap_folder() {
         let root = std::env::temp_dir().join("vernier_runner_utst_wrap_env");
@@ -672,12 +791,18 @@ mod tests {
                     expected.display().to_string()
                 )
             );
-            if let Some((_, args)) = wrap_command_for(tool, Path::new("./my_test"), Some(&root)) {
+            if let Some(route) =
+                route_for(tool, None, Path::new("./my_test"), Some(&root)).expect("accepted")
+            {
+                assert_eq!(route.dir, expected, "{tool}");
                 assert!(
-                    args.iter()
+                    route
+                        .args
+                        .iter()
                         .any(|a| a.contains(&expected.display().to_string())),
-                    "{tool}: wrap command does not write into {}: {args:?}",
-                    expected.display()
+                    "{tool}: route does not write into {}: {:?}",
+                    expected.display(),
+                    route.args
                 );
             }
         }
@@ -685,61 +810,85 @@ mod tests {
         assert_eq!(default_root[1].1, "bench-out/my_test.ncu");
     }
 
-    /// @test wrap_command_for returns None for in-process backends.
+    /// @test A route decides without creating its folder.
     #[test]
-    fn wrap_command_for_in_process_is_none() {
-        for tool in [
-            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "rocprof",
-        ] {
-            let r = wrap_command_for(tool, Path::new("./bin"), None);
-            assert!(r.is_none(), "tool {tool} should be None");
+    fn route_for_creates_nothing() {
+        let root = std::env::temp_dir().join("vernier_runner_utst_route_creates_nothing");
+        let _ = fs::remove_dir_all(&root);
+        let route = route_for("massif", Some("pages"), Path::new("./my_test"), Some(&root))
+            .expect("accepted")
+            .expect("massif has a route");
+        assert!(!route.dir.exists(), "{} was created", route.dir.display());
+        assert!(!root.exists());
+    }
+
+    /// One row of the shared table, split on tabs, with `-` read as empty.
+    fn table_rows(kind: &str) -> Vec<Vec<String>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile_routes.tsv");
+        let text = fs::read_to_string(&path).expect("the shared route table");
+        text.lines()
+            .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+            .map(|l| {
+                l.split('\t')
+                    .map(|f| {
+                        if f == "-" {
+                            String::new()
+                        } else {
+                            f.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .filter(|fields| fields[0] == kind)
+            .collect()
+    }
+
+    /// @test Every alias, route, refusal and the profile-failed status match
+    /// the table the C++ tests read too.
+    #[test]
+    fn routes_match_the_shared_table() {
+        for row in table_rows("alias") {
+            assert_eq!(canonical_backend(&row[1]), row[2], "alias {}", row[1]);
         }
-    }
-
-    /// @test nsight wraps with nsys profile into the per-binary artifact dir.
-    #[test]
-    fn wrap_command_for_nsight_uses_nsys_profile() {
-        let root = std::env::temp_dir().join("vernier_runner_utst_nsight");
-        let (prog, args) = wrap_command_for("nsight", Path::new("./my_test"), Some(&root))
-            .expect("nsight should wrap externally");
-        let dir = root.join("my_test.nsight");
-        assert_eq!(prog, "nsys");
-        assert_eq!(
-            args,
-            vec![
-                "profile".to_string(),
-                "-o".to_string(),
-                format!("{}/profile", dir.display()),
-                "-t".to_string(),
-                "cuda,nvtx".to_string(),
-                "--force-overwrite".to_string(),
-                "true".to_string(),
-                "./my_test".to_string(),
-            ]
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    /// @test ncu wraps with the kernel-profile output and all target processes.
-    #[test]
-    fn wrap_command_for_ncu_uses_ncu() {
-        let root = std::env::temp_dir().join("vernier_runner_utst_ncu");
-        let (prog, args) = wrap_command_for("ncu", Path::new("./my_test"), Some(&root))
-            .expect("ncu should wrap externally");
-        let dir = root.join("my_test.ncu");
-        assert_eq!(prog, "ncu");
-        assert_eq!(
-            args,
-            vec![
-                "-o".to_string(),
-                format!("{}/kernel_profile", dir.display()),
-                "-f".to_string(),
-                "--target-processes".to_string(),
-                "all".to_string(),
-                "./my_test".to_string(),
-            ]
-        );
-        let _ = fs::remove_dir_all(&root);
+        let root = Path::new("out");
+        let bin = Path::new("./my_test");
+        let routes = table_rows("route");
+        assert!(routes.len() >= 20, "the table lost its routes");
+        for row in routes {
+            let tool = canonical_backend(&row[1]);
+            let args = (!row[2].is_empty()).then_some(row[2].as_str());
+            let dir = format!("out/my_test.{tool}");
+            let expected: Vec<String> = row[4]
+                .split(' ')
+                .map(|a| a.replace("<dir>", &dir).replace("<bin>", "./my_test"))
+                .collect();
+            let route = route_for(tool, args, bin, Some(root))
+                .unwrap_or_else(|e| panic!("{row:?} refused: {e}"))
+                .unwrap_or_else(|| panic!("{row:?} has no route"));
+            assert_eq!(route.program, row[3], "{row:?}");
+            assert_eq!(route.args, expected, "{row:?}");
+            assert_eq!(route.dir, PathBuf::from(&dir), "{row:?}");
+        }
+        for row in table_rows("unwrapped") {
+            let route = route_for(canonical_backend(&row[1]), Some("-e x"), bin, None);
+            assert!(matches!(route, Ok(None)), "{row:?}: {route:?}");
+        }
+        for row in table_rows("refuse") {
+            let tool = canonical_backend(&row[1]);
+            let err = route_for(tool, Some(&row[2]), bin, Some(root))
+                .expect_err(&format!("{row:?} was accepted"));
+            assert!(matches!(err, Error::InvalidArgs(_)), "{row:?}: {err:?}");
+            let text = err.to_string();
+            assert!(text.contains(&row[3]), "{row:?}: {text}");
+            assert!(
+                text.contains(&request_text(tool, Some(&row[2]))),
+                "{row:?}: {text}"
+            );
+        }
+        let exits = table_rows("exit");
+        assert_eq!(exits.len(), 1);
+        assert_eq!(exits[0][1], "profile-failed");
+        assert_eq!(exits[0][2], PROFILE_FAILED_EXIT_CODE.to_string());
     }
 
     /// @test wrap_artifact_dir follows the <root>/<stem>.<tool> convention.

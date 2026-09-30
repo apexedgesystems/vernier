@@ -493,8 +493,8 @@ and exited with status 0, so its own status does not tell you either.
 
 In stat mode, `--profile-args` text that does not start with `record` is
 appended to the `perf stat` command, so `-e <event>` adds an event to the
-five. The value starts with a hyphen, which the `bench` CLI's parser takes
-for an option of its own unless the value is attached with `=`:
+five. `bench run` takes the value attached with `=`, as below, or after a
+space:
 
 ```bash
 bench run ./build/bin/ptests/BenchDemo_02_PerfProfiler --taskset 3 --profile perf \
@@ -575,8 +575,6 @@ rig's.
   `cpu_core` rows.
 - **`perf report` says the data size field is 0.** perf record was still
   writing: see [Record Mode](#record-mode).
-- **`bench run` rejects `--profile-args "-e ..."`.** Attach the value with
-  `=`: see [Adding an Event](#adding-an-event).
 - **Different per-call figures.** Check the call count: the totals cover
   `--cycles` times `--repeats` calls, and with `--target-time` the calibrated
   cycle count is the one the `[target-time]` line prints.

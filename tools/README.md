@@ -185,16 +185,34 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--quick`                  | Fewer cycles/repeats for fast iteration              | --           |
 | `--taskset CPUS`           | Pin to specific CPU cores                            | --           |
 | `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
+| `--profile-args ARGS`      | The profile's mode (see below); may start with `-`   | --           |
 | `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
 | `--analyze`                | Run summary after execution                          | --           |
 
 When `--profile` names a wrap-externally backend (`callgrind`, `massif`,
-`memcheck`, `helgrind`, `heaptrack`, `compute-sanitizer`), `bench run` transparently
-invokes the correct wrap (`valgrind --tool=...`, `heaptrack -o ...`,
-etc.) and writes the artifacts to
-`<--profile-output-dir>/<binary-stem>.<tool>/`. In-process backends
-(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly
-and the C++ harness manages its own per-test artifact subdirs.
+`memcheck`, `helgrind`, `heaptrack`, `compute-sanitizer`, `nsight` or its
+other name `nsys`, `ncu`), `bench run` starts the binary under that tool
+(`valgrind --tool=...`, `heaptrack -o ...`, `nsys profile ...`, etc.) and
+writes the artifacts to `<--profile-output-dir>/<binary-stem>.<tool>/`, where
+`<tool>` is the canonical name (`nsys` writes to `.nsight`). The words of
+`--profile-args` select the tool's mode, and any other word is refused before
+anything starts:
+
+| `--profile`         | `--profile-args` words                                   | Selects                                                  |
+| ------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
+| `massif`            | `pages` or `stacks`                                      | `--pages-as-heap=yes` or `--stacks=yes`                  |
+| `memcheck`          | `leak-full`, `track-origins`                             | the full leak check (the default), `--track-origins=yes` |
+| `helgrind`          | `drd`                                                    | valgrind's DRD instead of Helgrind                       |
+| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
+| `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
+
+`callgrind`, `heaptrack` and `ncu` take no mode. A kernel replay
+(`--profile-args replay`) is refused: its metrics are the benchmark's own, so
+run the benchmark directly, and it prints the `ncu` command that replays its
+kernels. In-process backends
+(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly, which
+reads `--profile-args` itself, and the C++ harness manages its own per-test
+artifact subdirs.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 

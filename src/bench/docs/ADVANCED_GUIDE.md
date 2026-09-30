@@ -806,7 +806,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 **Profiling flags:**
 
 ```bash
---profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind
+--profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind|massif|memcheck|helgrind|offcpu|heaptrack|jemalloc|nsight (or nsys)|ncu|compute-sanitizer|rocprof
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
 --profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md

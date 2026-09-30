@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -827,6 +828,45 @@ TEST_F(ProfilerOutcomeTest, NoProfilerCreatedNotice) {
   StderrCapture capture;
   EXPECT_EQ(reg.finishRun(CFG, 0, 2), 0);
   EXPECT_EQ(capture.text(), "") << "a profiler was created";
+}
+
+/* ----------------------------- Shared Route Table ----------------------------- */
+
+/** @brief The rows of @p kind in the table the Rust tools are tested against too. */
+std::vector<std::vector<std::string>> sharedTableRows(const std::string& kind) {
+  std::ifstream in(std::string{VERNIER_SHARED_FIXTURE_DIR} + "/profile_routes.tsv");
+  std::vector<std::vector<std::string>> rows;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (std::size_t tab = line.find('\t'); tab != std::string::npos;
+         start = tab + 1, tab = line.find('\t', start)) {
+      fields.push_back(line.substr(start, tab - start));
+    }
+    fields.push_back(line.substr(start));
+    if (fields[0] == kind) {
+      rows.push_back(fields);
+    }
+  }
+  return rows;
+}
+
+/** @test The aliases and the profile-failed status are the ones `bench run` uses. */
+TEST(ProfilerRoutesTable, AliasesAndExitStatus) {
+  const auto ALIASES = sharedTableRows("alias");
+  ASSERT_GE(ALIASES.size(), 16U) << "the shared table was not read";
+  for (const auto& row : ALIASES) {
+    ASSERT_EQ(row.size(), 3U);
+    EXPECT_EQ(ProfilerRegistry::canonicalName(row[1]), row[2]) << "alias " << row[1];
+  }
+  const auto EXITS = sharedTableRows("exit");
+  ASSERT_EQ(EXITS.size(), 1U);
+  EXPECT_EQ(EXITS[0][1], "profile-failed");
+  EXPECT_EQ(std::to_string(vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE), EXITS[0][2]);
 }
 
 } // namespace
