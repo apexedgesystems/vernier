@@ -289,9 +289,11 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
       VERNIER_DEMO_04_UNGUARDED_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/gpu/04_ComputeSanitizerProfiler_Unguarded.cu"
   )
   add_dependencies(TestDemoComputeSanitizer BenchDemo_Gpu_04_ComputeSanitizerProfiler)
-  foreach (_sanitizer_check
-           ComputeSanitizer.FindsTheUnguardedRead ComputeSanitizer.KernelReportsNothing
-           ComputeSanitizer.PlainRunIsNotWrapped
+  foreach (
+    _sanitizer_check
+    ComputeSanitizer.FindsTheUnguardedRead ComputeSanitizer.KernelReportsNothing
+    ComputeSanitizer.PlainRunIsNotWrapped ComputeSanitizer.PlainRunHintShape
+    ComputeSanitizer.HintRunsOnTheFirstRun
   )
     string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
     set_tests_properties(

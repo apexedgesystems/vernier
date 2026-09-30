@@ -28,6 +28,7 @@
 #include <cstdlib>
 
 #include <filesystem>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -298,6 +299,221 @@ TEST(ComputeSanitizer, PlainRunIsNotWrapped) {
   EXPECT_NE(OUTPUT.find("compute-sanitizer --tool=memcheck"), std::string::npos)
       << "the backend did not print its wrap command:\n"
       << OUTPUT;
+}
+
+/* ----------------------------- The Hint ----------------------------- */
+
+namespace {
+
+/// The lines of the backend's not-wrapped hint in @p output, without their
+/// "[compute-sanitizer] " prefix, in order.
+std::vector<std::string> hintLines(const std::string& output) {
+  constexpr const char* PREFIX = "[compute-sanitizer] ";
+  std::vector<std::string> lines;
+  std::istringstream in(output);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.rfind(PREFIX, 0) == 0) {
+      lines.push_back(line.substr(std::string(PREFIX).size()));
+    }
+  }
+  return lines;
+}
+
+/// The by-hand command of a hint: from the first command line that starts
+/// with "mkdir -p " or "compute-sanitizer " through the lines a trailing
+/// backslash continues, joined with one space; empty when there is none.
+std::string byHandCommand(const std::vector<std::string>& lines) {
+  std::string command;
+  bool inCommand = false;
+  for (const std::string& raw : lines) {
+    std::string line = check::trimmedStart(raw);
+    if (!inCommand) {
+      if (line.rfind("mkdir -p ", 0) != 0 && line.rfind("compute-sanitizer ", 0) != 0) {
+        continue;
+      }
+      inCommand = true;
+    }
+    const bool CONTINUED = !line.empty() && line.back() == '\\';
+    if (CONTINUED) {
+      line.pop_back();
+    }
+    command += (command.empty() ? "" : " ") + check::trimmedStart(line);
+    if (!CONTINUED) {
+      break;
+    }
+  }
+  return command;
+}
+
+/// @p text with every @p from replaced by @p to.
+std::string replaced(std::string text, const std::string& from, const std::string& to) {
+  for (std::size_t at = text.find(from); at != std::string::npos;
+       at = text.find(from, at + to.size())) {
+    text.replace(at, from.size(), to);
+  }
+  return text;
+}
+
+/// True when one of @p lines is @p line.
+bool hasLine(const std::vector<std::string>& lines, const std::string& line) {
+  for (const std::string& candidate : lines) {
+    if (candidate == line) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// True when one of @p lines contains @p text.
+bool anyLineContains(const std::vector<std::string>& lines, const std::string& text) {
+  for (const std::string& candidate : lines) {
+    if (candidate.find(text) != std::string::npos) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// A new temporary directory whose name holds a '%', for the hint tests:
+/// the tool expands '%' in its log's name, so the hint must write it "%%".
+fs::path scratchDirWithPercent() {
+  std::string dirTemplate = (fs::temp_directory_path() / "vernier-demo04-%-XXXXXX").string();
+  return ::mkdtemp(dirTemplate.data()) != nullptr ? fs::path(dirTemplate) : fs::path();
+}
+
+/// Runs the demo plainly with --profile compute-sanitizer, the artifact root
+/// @p root and @p extraArgs, on the measured case with one cycle and one
+/// repeat, and returns everything it printed.
+std::string plainProfileRun(const std::string& demo, const fs::path& root,
+                            const std::vector<std::string>& extraArgs, const fs::path& outputFile) {
+  std::vector<std::string> args = {demo,
+                                   "--profile",
+                                   "compute-sanitizer",
+                                   "--profile-output-dir",
+                                   root.string(),
+                                   "--cycles",
+                                   "1",
+                                   "--repeats",
+                                   "1",
+                                   std::string("--gtest_filter=") + KERNEL_CASE,
+                                   "--gtest_print_time=0"};
+  args.insert(args.end(), extraArgs.begin(), extraArgs.end());
+  vg::runLogged(args, outputFile);
+  return vg::readText(outputFile);
+}
+
+/// The folder the backend names for the measured case under @p root.
+std::string kernelFolder(const fs::path& root) {
+  return root.string() + "/" + KERNEL_CASE + ".compute-sanitizer";
+}
+
+} // namespace
+
+/**
+ * @test The not-wrapped hint names bench run first, then a by-hand command
+ *       that makes the log folder before the tool opens its log, with '%'
+ *       written for the tool and --profile-args only for a tool other than
+ *       memcheck.
+ *
+ * Runs the demo plainly with --profile compute-sanitizer under an artifact
+ * root whose name holds a '%', reads the hint's lines, and runs it again
+ * with --profile-args racecheck. Skipped where KernelReportsNothing skips:
+ * the hint is printed by the backend, which the registry creates only with
+ * the tool on PATH, when the measured case reaches its measurement.
+ */
+TEST(ComputeSanitizer, PlainRunHintShape) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDirWithPercent();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+  const fs::path ROOT = DIR / "out";
+  const std::string FOLDER = kernelFolder(ROOT);
+
+  const std::string OUTPUT = plainProfileRun(DEMO, ROOT, {}, DIR / "plain.txt");
+  const std::vector<std::string> LINES = hintLines(OUTPUT);
+  EXPECT_TRUE(hasLine(LINES, "  bench run <this-binary> --profile compute-sanitizer -- [...]"))
+      << OUTPUT;
+  EXPECT_TRUE(hasLine(LINES, "  mkdir -p " + FOLDER +
+                                 " && compute-sanitizer --tool=memcheck --log-file=" +
+                                 vg::escapePercent(FOLDER) + "/sanitizer.log \\"))
+      << OUTPUT;
+  EXPECT_TRUE(hasLine(LINES, "      <this-binary> --profile compute-sanitizer [...]")) << OUTPUT;
+  EXPECT_FALSE(anyLineContains(LINES, "--profile-args"))
+      << "the default tool is passed as a mode, which the registry reports unchecked:\n"
+      << OUTPUT;
+
+  const std::string RACECHECK =
+      plainProfileRun(DEMO, ROOT, {"--profile-args", "racecheck"}, DIR / "racecheck.txt");
+  const std::vector<std::string> RACECHECK_LINES = hintLines(RACECHECK);
+  EXPECT_TRUE(hasLine(RACECHECK_LINES, "  bench run <this-binary> --profile compute-sanitizer "
+                                       "--profile-args racecheck -- [...]"))
+      << RACECHECK;
+  EXPECT_TRUE(
+      anyLineContains(RACECHECK_LINES, " && compute-sanitizer --tool=racecheck --log-file="))
+      << RACECHECK;
+  EXPECT_TRUE(
+      hasLine(RACECHECK_LINES,
+              "      <this-binary> --profile compute-sanitizer --profile-args racecheck [...]"))
+      << RACECHECK;
+
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+}
+
+/**
+ * @test The hint's by-hand command, run as printed where its folder does not
+ *       exist, writes the log where it says.
+ *
+ * Takes the by-hand command from a plain run's hint, fills in the binary and
+ * the arguments, removes the folder the plain run created, and runs the
+ * command through the shell: the log must exist afterwards and count no
+ * error. Skipped where KernelReportsNothing skips.
+ */
+TEST(ComputeSanitizer, HintRunsOnTheFirstRun) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDirWithPercent();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+  const fs::path ROOT = DIR / "out";
+  const fs::path FOLDER = kernelFolder(ROOT);
+
+  const std::string OUTPUT = plainProfileRun(DEMO, ROOT, {}, DIR / "plain.txt");
+  const std::string COMMAND = byHandCommand(hintLines(OUTPUT));
+  ASSERT_FALSE(COMMAND.empty()) << "no by-hand command in the hint:\n" << OUTPUT;
+  const std::string FILLED = replaced(replaced(COMMAND, "<this-binary>", DEMO), "[...]",
+                                      std::string("--cycles 1 --repeats 1 --gtest_filter=") +
+                                          KERNEL_CASE + " --gtest_print_time=0");
+
+  // The plain run made the folder; the hint must work without it.
+  std::error_code ec;
+  fs::remove_all(FOLDER, ec);
+  ASSERT_FALSE(fs::exists(FOLDER)) << "could not remove " << FOLDER;
+  const vg::ChildExit END = vg::runLogged({"sh", "-c", FILLED}, DIR / "byhand.txt");
+  const std::string BY_HAND = vg::readText(DIR / "byhand.txt");
+  const fs::path LOG = FOLDER / "sanitizer.log";
+  const std::string LOG_TEXT = vg::readText(LOG);
+
+  EXPECT_TRUE(fs::exists(LOG)) << "the hint's command wrote no log where it says (" << LOG << "):\n"
+                               << FILLED << "\n"
+                               << BY_HAND;
+  EXPECT_TRUE(vg::testPassed(BY_HAND, KERNEL_CASE) && vg::oneTestPassed(BY_HAND)) << BY_HAND;
+  EXPECT_EQ(check::errorSummary(LOG_TEXT), 0) << LOG_TEXT;
+  EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << BY_HAND;
+
+  if (HasFailure()) {
+    std::printf("the hint's run kept in %s\n", DIR.c_str());
+    return;
+  }
+  fs::remove_all(DIR, ec);
 }
 
 /* ----------------------------- Report Reading Tests ----------------------------- */

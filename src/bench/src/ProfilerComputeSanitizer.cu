@@ -38,6 +38,56 @@ std::string sanitizerToolFromArgs(const std::string& profileArgs) {
   return "memcheck"; // default
 }
 
+// @p path with each '%' written "%%": compute-sanitizer expands %p, %q{VAR}
+// and %% in its --log-file name and refuses any other '%'.
+std::string escapePercent(const std::string& path) {
+  std::string out;
+  for (const char CH : path) {
+    out += CH;
+    if (CH == '%') {
+      out += '%';
+    }
+  }
+  return out;
+}
+
+// The mode argument the commands carry: none for memcheck, the default the
+// registry checks; a tool asked for by name is passed on.
+std::string toolArguments(const std::string& tool) {
+  return tool == "memcheck" ? std::string() : " --profile-args " + tool;
+}
+
+// What the backend prints when the process is not under the tool: the two
+// ways to check it, `bench run` first, which makes the folder its wrap logs
+// into, then the tool by hand. The tool opens its log before this program
+// starts and drops it silently when the folder is missing, so the by-hand
+// command makes the folder first.
+std::string notWrappedHint(const std::string& tool, const std::string& artifactDir) {
+  const std::string ARGS = toolArguments(tool);
+  return "\n[compute-sanitizer] not running under compute-sanitizer: this measurement runs "
+         "unchecked. To check it:\n"
+         "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer" +
+         ARGS +
+         " -- [...]\n"
+         "[compute-sanitizer] or by hand, making the folder first (the tool opens its log before "
+         "this program starts):\n"
+         "[compute-sanitizer]   mkdir -p " +
+         artifactDir + " && compute-sanitizer --tool=" + tool +
+         " --log-file=" + escapePercent(artifactDir) +
+         "/sanitizer.log \\\n"
+         "[compute-sanitizer]       <this-binary> --profile compute-sanitizer" +
+         ARGS + " [...]\n\n";
+}
+
+// What the backend prints when the process is under the tool, which reports
+// at process exit into its --log-file, or on its stdout without one.
+std::string wrappedNotice(const std::string& tool, const std::string& artifactDir) {
+  return "[compute-sanitizer] tool=" + tool +
+         " -- wrapping detected; compute-sanitizer reports at process exit, in its --log-file "
+         "or on its stdout. Artifact directory: " +
+         artifactDir + "\n";
+}
+
 } // namespace
 
 /* ----------------------- ComputeSanitizerProfiler ----------------------- */
@@ -53,22 +103,13 @@ ComputeSanitizerProfiler::ComputeSanitizerProfiler(const PerfConfig& cfg, std::s
 
 void ComputeSanitizerProfiler::beforeMeasure() {
   if (runningUnderSanitizer_) {
-    std::fprintf(stderr,
-                 "[compute-sanitizer] tool=%s -- wrapping detected; errors will be reported on "
-                 "stderr at process exit. Artifact directory: %s\n",
-                 sanitizerTool_.c_str(), artifactDir_.c_str());
+    std::fputs(wrappedNotice(sanitizerTool_, artifactDir_).c_str(), stderr);
     return;
   }
-  // Not wrapped: print the exact invocation the user should run instead.
-  // We DO NOT re-exec the parent here; that would surprise long-running test
-  // binaries. The friendly hint is more predictable.
-  std::fprintf(stderr,
-               "\n[compute-sanitizer] NOT running under compute-sanitizer; this measurement\n"
-               "[compute-sanitizer] will execute normally but no checking happens. To check:\n"
-               "[compute-sanitizer]   compute-sanitizer --tool=%s --log-file=%s/sanitizer.log \\\n"
-               "[compute-sanitizer]       <this-binary> --profile compute-sanitizer "
-               "--profile-args %s [...]\n\n",
-               sanitizerTool_.c_str(), artifactDir_.c_str(), sanitizerTool_.c_str());
+  // Not wrapped: print the exact invocations the user should run instead.
+  // The parent is not re-executed here; that would surprise long-running
+  // test binaries.
+  std::fputs(notWrappedHint(sanitizerTool_, artifactDir_).c_str(), stderr);
 }
 
 void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {

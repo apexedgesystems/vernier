@@ -285,13 +285,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`--profile compute-sanitizer` tells the tool apart from the binary's
-  name** -- the backend decided "running under compute-sanitizer" by finding
-  the word "sanitizer" in the process's own memory map, so a benchmark whose
-  path contains it (the demo's does) reported a wrap that was not there and
-  printed no wrap command. It now decides from what the tool exports to the
-  process it starts (`NV_SANITIZER_INJECTION_PORT_BASE`, compute-sanitizer
-  2025.3 and 2025.4) and from the tool's own libraries mapped into the
-  process, never from a name.
+  name, and its printed wrap command keeps its log** -- the backend decided
+  "running under compute-sanitizer" by finding the word "sanitizer" in the
+  process's own memory map, so a benchmark whose path contains it (the demo's
+  does) reported a wrap that was not there, and the wrap command it prints
+  when not wrapped named a log folder that did not exist yet, which the tool
+  drops silently. It now decides from what the tool exports to the process
+  it starts (`NV_SANITIZER_INJECTION_PORT_BASE`, compute-sanitizer 2025.3 and
+  2025.4) and from the tool's own libraries mapped into the process, and it
+  prints `bench run` first and a by-hand command that makes the folder before
+  the tool opens its log, passing `--profile-args` only for a tool other than
+  memcheck.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
