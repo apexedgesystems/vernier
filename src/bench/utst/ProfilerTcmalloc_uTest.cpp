@@ -8,8 +8,9 @@
  *    loader mapped, and check the two backends that must tell the user.
  *  - Each expectation holds in both configurations; which branch runs
  *    depends on how the tree was configured.
- *  - The gperf heap-mode explanation prints once per process, so it is
- *    asserted in a child process that starts with that state clear.
+ *  - A heap request without heap support is a readiness error that the
+ *    registry prints once per process, so it is asserted in a child process
+ *    that starts with that state clear.
  */
 
 #include "src/bench/inc/ProfilerGperf.hpp"
@@ -33,7 +34,6 @@
 
 using vernier::bench::EnvReport;
 using vernier::bench::HeaptrackProfiler;
-using vernier::bench::makeGperfProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::Profiler;
 using vernier::bench::ProfilerRegistry;
@@ -58,17 +58,13 @@ constexpr bool TCMALLOC_REQUESTED = true;
 constexpr bool TCMALLOC_REQUESTED = false;
 #endif
 
-/** @brief True when the gperf backend is compiled in; never requests heap mode. */
-bool gperfCompiledIn(PerfConfig cfg) {
-  cfg.profileArgs = "cpu";
-  StderrCapture quiet;
-  return makeGperfProfiler(cfg, "Tcmalloc.GperfProbe") != nullptr;
-}
+/** @brief True when the gperf backend is compiled in. */
+constexpr bool GPERF_COMPILED_IN = UB_HAS_GPERF_CPU != 0 || UB_HAS_GPERF_HEAP != 0;
 
-/** @brief Construct one heap-mode profiler; true when the explanation was printed. */
+/** @brief Create one heap-mode profiler as a run does; true when the explanation was printed. */
 bool heapRequestExplains(const PerfConfig& cfg) {
   StderrCapture capture;
-  const std::unique_ptr<Profiler> profiler = makeGperfProfiler(cfg, "Tcmalloc.GperfHeap");
+  const std::unique_ptr<Profiler> profiler = Profiler::make(cfg, "Tcmalloc.GperfHeap");
   return capture.text().find("VERNIER_LINK_TCMALLOC") != std::string::npos;
 }
 
@@ -148,12 +144,12 @@ TEST_F(TcmallocOptInTest, HeaptrackDoctorWarnsOnlyWhenTcmallocMapped) {
 /** @brief Same fixture, named so GoogleTest schedules the death test first. */
 using TcmallocOptInDeathTest = TcmallocOptInTest;
 
-/** @test Explains an unavailable heap mode on the first request in a process and never again */
+/** @test Reports an unavailable heap mode on the first request in a process and never again */
 TEST_F(TcmallocOptInDeathTest, GperfHeapModeExplainsOncePerProcess) {
   cfg_.profileTool = "gperf";
   cfg_.profileArgs = "heap";
 
-  if (!gperfCompiledIn(cfg_)) {
+  if (!GPERF_COMPILED_IN) {
     GTEST_SKIP() << "gperftools headers not present at build time";
   }
 

@@ -32,7 +32,6 @@ set(CPU_DEMOS
     01_BasicWorkflow
     02_PerfProfiler
     03_GperfProfiler
-    04_CacheFriendly
     06_ThreadScaling
     07_CallgrindProfiler
     08_RaplProfiler
@@ -105,9 +104,9 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (9)
+# Demos Built on a Shared Example (11)
 # ------------------------------------------------------------------------------
-# After both demo lists, so every demo target exists. The GPU demo and its
+# After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
 # ------------------------------------------------------------------------------
 
@@ -121,6 +120,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_03_GperfProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_06_ThreadScaling
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -146,7 +149,33 @@ target_link_libraries(
 
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
+  target_link_libraries(BenchDemo_Gpu_02_NsightProfiler PRIVATE demo_example_saxpy)
+  # Demo 02's guard timing, in a source of its own so the host test below builds it.
+  target_sources(BenchDemo_Gpu_02_NsightProfiler PRIVATE gpu/02_NsightProfiler_Timing.cpp)
 endif ()
+
+# ------------------------------------------------------------------------------
+# Host Test on the Stand-in Runtime (1)
+# ------------------------------------------------------------------------------
+# Demo 02's guard timing built against the tracked stand-in for the CUDA
+# runtime (examples/saxpy/utst/fake_cuda), so every configuration, CPU-only
+# included, checks that it releases its stream and events on every path,
+# exceptions included: TestDemoNsightProfilerTiming.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoNsightProfilerTiming
+  SOURCES
+  gpu/utst/02_NsightProfiler_Timing_uTest.cpp
+  gpu/02_NsightProfiler_Timing.cpp
+  LABELS
+  demo
+)
+target_include_directories(
+  TestDemoNsightProfilerTiming BEFORE
+  PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/examples/saxpy/utst/fake_cuda" "${PROJECT_SOURCE_DIR}"
+)
 
 # ------------------------------------------------------------------------------
 # Demo Effect Guards Run by CTest (3)
@@ -283,6 +312,26 @@ foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothin
     ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
   )
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# Demo 06's Totals Check Run by CTest
+# ------------------------------------------------------------------------------
+# What demo 06's two versions cost is a timing, measured on the rig and not
+# registered. What the machine's load cannot change is: run through
+# contentionRun() as the demo runs them, both versions reach the same total.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoThreadScaling
+  SOURCES
+  cpu/utst/06_ThreadScaling_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
+)
 
 # ------------------------------------------------------------------------------
 # Demo Helper Tests

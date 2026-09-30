@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (13 files)
+# Sources (15 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -24,6 +24,8 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerArtifactDir_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerEnv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -44,11 +46,40 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (1 file)
+# Host Test on a Stand-in CUPTI (1)
 # ------------------------------------------------------------------------------
-# What the GPU harness measures and publishes. They run a kernel, so they need
-# both the CUDA toolkit (to build) and a device (to run; they skip without
-# one) and exist only where libbench_cuda does.
+# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
+# every configuration, CPU-only included, checks that the collector applies the
+# CUPTI decision before it registers: a setting that stands it down, or one that
+# is rejected, registers nothing. It links bench, which defines what the
+# decision is built from: the shared Boolean parser, the readiness context and
+# the report formatter.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchCuptiDecision
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(
+  TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------------------------
+# GPU Unit Tests (2 files)
+# ------------------------------------------------------------------------------
+# TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
+# kernel, so they need the CUDA toolkit (to build) and a device (to run; they
+# skip without one). TestBenchNsight: the Nsight backend, which lives in
+# libbench_cuda but makes no CUDA call, so it needs the toolkit and no device.
+# Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -64,6 +95,18 @@ if (TARGET bench_cuda)
     benchmarking
     gpu
     TIMING_ALL
+  )
+  vernier_add_gtest(
+    TARGET
+    TestBenchNsight
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsight_uTest.cpp"
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    benchmarking
+    gpu
   )
 endif ()
 
@@ -103,6 +146,25 @@ add_test(NAME CudaArchitecturesResolveTest
                  "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/CudaArchitectures_test.cmake"
 )
 set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")
+
+# ------------------------------------------------------------------------------
+# Readiness Fixtures
+# ------------------------------------------------------------------------------
+# Fake tools (POSIX sh templates) that stand in for sudo, kill and the
+# profilers' own tools, so the readiness policy, its routing and its error
+# reports are tested without privileges or the real tools. The unit tests copy
+# them into a private directory and hand the checks a context whose PATH is it;
+# the command-line tests run a fixture benchmark with that PATH.
+# ------------------------------------------------------------------------------
+
+if (TARGET TestBench)
+  target_compile_definitions(
+    TestBench
+    PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+  )
+endif ()
+
+include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
 
 # ------------------------------------------------------------------------------
 # Layout Check Consumers (2)

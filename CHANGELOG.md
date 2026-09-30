@@ -36,6 +36,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 02 (Nsight) measures the shared SAXPY example** --
+  `BenchDemo_Gpu_02_NsightProfiler` times the example's `G0` and `G1` versions
+  and the kernel in each version's launch shape, and its walkthrough,
+  `src/bench/demo/docs/11_NSIGHT_PROFILER.md`, is rewritten from runs on the
+  documented Jetson AGX Thor rig, with the reference CSV at
+  `src/bench/demo/reference/thor/11_nsight_profiler.csv`. The tests are renamed
+  (`NsightProfiler.G0`, `G1`, `KernelOneThreadPerBlock`,
+  `Kernel256ThreadsPerBlock`, `LaunchShapeSpeedup`), so capture a new baseline:
+  demo 02 CSVs from earlier releases do not join with newer ones.
+- **The GPU harness's CUPTI collector stands down only inside an Nsight session
+  or on request** -- it stands down when nsys or ncu started the process
+  (`bench run --profile nsight|ncu`, or a wrap typed by hand, recognised from
+  `NSYS_PROFILING_SESSION_ID` or `NV_NSIGHT_INJECTION_PORT_BASE`) or when
+  `VERNIER_DISABLE_CUPTI` is true, and a `--profile` value alone no longer turns
+  it off. `VERNIER_DISABLE_CUPTI` reads `1`, `true`, `yes` or `on` as true and
+  `0`, `false`, `no`, `off` or an empty value as false, in any letter case, and
+  false does not override a session; any other value is a configuration error
+  (building a GPU case or a `CuptiCollector` throws `std::invalid_argument`).
+  With an Nsight version that does not export those session variables, set
+  `VERNIER_DISABLE_CUPTI=1` when wrapping.
 - **Demo 03 profiles the shared join example and checks what the profile
   says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
   `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
@@ -118,6 +138,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into demo 02 as the filter example, and its standalone executable,
   `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
   so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
+- **Demo 04 (cache-friendly layout) removed** -- `BenchDemo_04_CacheFriendly`
+  and its walkthrough, `src/bench/demo/docs/04_CACHE_FRIENDLY.md`, are gone,
+  and the particle workloads only it used (`ParticleAoS`, `ParticleSoA` and
+  their helpers) leave `helpers/DemoWorkloads.hpp`. Its CSVs have no successor.
 - **Demo 12 (memcheck) measures the shared `join` example and carries a bug
   for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
   and `joinV1`, one version per test, instead of a workload written for the
@@ -131,6 +155,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
+- **Demo 06 measures threads sharing the join example** --
+  `ThreadScaling.CoarseLock` and `ThreadScaling.NoSharing` time the shared
+  `join` example called from several threads, under one lock and with a total
+  per thread, and demo 06's walkthrough is rewritten for them. They replace
+  `MutexContention`, `AtomicLockFree` and `SingleThreadBaseline`, so older
+  demo 06 CSVs do not join with newer ones, and `incrementMutex` and
+  `incrementAtomic` are removed from `helpers/DemoWorkloads.hpp`.
 - **Demo 14 (helgrind) shows a data race beside its locked fix** -- helgrind
   names the line where threads add the shared `join` example's result to one
   total without a lock and reports nothing for the version that takes a mutex,
@@ -175,8 +206,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  prints how to enable heap mode and skips it, and `bench doctor` reports the
-  gperf backend as `cpu` rather than `cpu heap`. With it, the heaptrack backend
+  (or `both`) runs unprofiled and says why. With it, the heaptrack backend
   warns that C++ allocations will be missing from its trace. Allocation-heavy
   timings captured on a machine that had the dev package installed are not
   comparable across this change.
@@ -242,6 +272,42 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `threshold_pct`, `baseline_only` and `candidate_only`; the document was a
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
+- **A run reports its profiler request as the doctor does** -- a warning or
+  error for the `--profile` request prints once, with the doctor's cause and
+  remedy. After a warning (under `bench run`'s wrap, `unverified`) the case is
+  profiled; a request that cannot collect runs unprofiled and creates no
+  artifact folder, also for a `PerfStatProfiler`, `GperfProfiler`,
+  `BpftraceProfiler` or `OffCpuProfiler` constructed directly; and when only
+  the requested analysis cannot run, the capture still runs and is kept. Exit
+  statuses are unchanged.
+- **`--profile-check` also checks one selected request** -- given
+  `--profile <name>` and that request's options, it adds a `Selected request`
+  row with the report a run of the request prints, `--profile-check-json` adds
+  `backendScope` and, with a request, `selected` while keeping every existing
+  key, and both check flags work in any position. A script that matched the
+  old text header needs the new one,
+  `=== Profiler Backend Doctor (default mode of each backend) ===`, and a
+  backend registered without a check reports `unverified` instead of OK.
+- **bpftrace and offcpu run as the current user unless `BENCH_SUDO=1`** --
+  **Action needed:** a setup that relied on bpftrace's implicit `sudo -n` sets
+  `BENCH_SUDO=1` (or `true`, `yes`, `on`). `PERF_BPF_SUDO` remains through
+  1.0.4 as a deprecated alias for the `bpftrace` backend only and warns;
+  `BENCH_SUDO` wins when both are set, and an invalid `BENCH_SUDO`, or an
+  invalid alias on its own, is a configuration error that launches nothing.
+  See the [BPF scripts guide](src/bench/docs/BPF_SCRIPTS.md#requirements) for
+  the privileges and the sudoers grant.
+- **perf's doctor row and run follow real counter access** -- the check counts
+  the benchmark process briefly with `perf stat` as the current user instead
+  of reading `kernel.perf_event_paranoid`, and a perf that is denied or does
+  not run is an error and is never launched; vernier does not elevate perf.
+  `record`, `mem` and `c2c` are checked only for that counting access and
+  reported `unverified`.
+- **gperf checks the requested mode and runs the analyzer it finds** -- a mode
+  the build lacks is an error, and `--profile-analyze` runs the first of
+  `google-pprof` and `pprof` on `PATH` (it always ran `google-pprof`, so a
+  `pprof`-only installation printed empty analysis). An analyzer that is
+  missing, does not run or fails on the profile is reported, and the capture
+  and its `cpu.prof` are kept.
 
 ### Fixed
 
@@ -569,6 +635,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
+- **`--profile nsight` and `--profile ncu` no longer try to attach** -- nsys
+  and ncu capture only a process they start, so the backend starts no tool;
+  outside an nsys or ncu session it prints, once per test, the command that
+  captures the run. Start the benchmark under
+  `bench run --profile nsight|ncu`, which also writes nsys's summary reports, or
+  under the printed command; a run without either captures nothing.
+- **A GPU test's profiler window closes when its measurement ends** -- every
+  `PerfGpuCase` measurement, `cpuBaseline()` included, runs the profiler's
+  before and after hooks around that measurement alone, so a test's NVTX range
+  no longer runs into the next test and GPU rows name the profiler and its
+  folder. The hooks run when a measurement starts and ends, not when a kernel
+  builder is created; the timed window is unchanged.
 - **`bench compare` fails instead of certifying a comparison it cannot make**
   -- two runs with no test name in common printed `No common tests to
   compare.` and exited 0, so a CI job that compared the wrong pair of files,
@@ -619,6 +697,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **The Jetson AGX Thor rig procedure leaves the board as it found it** --
+  `RIG_THOR_AGX.md`'s measurement script restores GPU persistence mode to its
+  state before the run (`jetson_clocks` turns it on and its `--restore` leaves
+  it on), attempts each restoration even when another fails, reports every
+  failure and keeps the saved clock state, and exits with the measurement's own
+  status when that failed, otherwise nonzero if a restoration did. The rig
+  document also describes the board's two bands of end-to-end GPU time and why
+  its build makes no Python tools.
+- **`nsight-parse` reads the reports `bench run` leaves, and fails when it
+  cannot** -- it imports Nsight Compute reports with `ncu --import` and reads
+  the Nsight Systems summaries from its own export of each report; its CSV is
+  its own format, which `bench summary`, `bench compare` and `bench-plot` do
+  not accept. It exits 1, naming the input, when a requested input could not be
+  read, still writing the rows it did read (a summary with no data is only a
+  warning), so a script that relied on exit 0 after a failed read now sees 1.
 
 ## v1.0.3 - 2026-06-28
 
