@@ -150,12 +150,14 @@ include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 
 # ------------------------------------------------------------------------------
-# Callgrind Window Probe (2 tests)
+# Callgrind Window Probe (3 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
 # valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
 # prints must record the window and none of the work around it, the wrap
-# `bench run` uses the whole process. A test fixture, never installed; the
+# `bench run` uses the whole process, and under that wrap with
+# --profile-analyze the benchmark leaves the annotation to `bench run`, which
+# makes it after valgrind has written the profile. A test fixture, never installed; the
 # tests skip without valgrind, where valgrind cannot read the probe and says
 # so, and in a build with the address sanitizer, which the driver learns from
 # the build's SANITIZER setting.
@@ -178,7 +180,7 @@ vernier_add_app(
 )
 
 if (TARGET CallgrindWindowProbe)
-  foreach (_case Hint Runner)
+  foreach (_case Hint Runner Analyze)
     string(TOLOWER "${_case}" _mode)
     add_test(
       NAME CallgrindWindow${_case}Test

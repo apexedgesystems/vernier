@@ -810,7 +810,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
 --profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
---profile-analyze      # Auto-run analysis after profiling
+--profile-analyze      # Run the profile's analysis (callgrind: bench run, after valgrind exits)
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 ```
 

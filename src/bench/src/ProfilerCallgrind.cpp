@@ -12,12 +12,8 @@
 #include "src/bench/inc/ProfilerCallgrind.hpp"
 
 #ifdef __linux__
-#include <array>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <string>
 #include <unistd.h>
 #endif
@@ -117,54 +113,25 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
   // Valgrind writes the profile when the process exits, to the file its
   // --callgrind-out-file names: callgrind.out in artifactDir_ under bench
   // run's wrap and under the hint's. Any other manual wrap names its own.
+  // The profile is complete only then, so nothing here reads it: bench run
+  // checks it, and annotates it for --profile-analyze, after the exit.
   const std::string outFile = artifactDir_ + "/callgrind.out";
-  const bool KNOWN_FILE = canToggle_ || isWrappedByRunner(cfg_);
+  const bool BY_RUNNER = isWrappedByRunner(cfg_);
+  const bool KNOWN_FILE = canToggle_ || BY_RUNNER;
 
   std::printf("\n=== Callgrind Profile ===\n");
   std::printf("Output: %s%s\n", artifactDir_.c_str(),
               KNOWN_FILE ? ""
                          : " (or where --callgrind-out-file points; by default "
                            "callgrind.out.<pid> in the working directory)");
-
-  if (cfg_.profileAnalyze) {
-    runAnnotateAnalysis();
-  } else if (KNOWN_FILE) {
-    std::printf("   Run with --profile-analyze for automatic annotation\n");
-    std::printf("   Or manually: callgrind_annotate %s\n", outFile.c_str());
-    std::printf("   Or: kcachegrind %s\n", outFile.c_str());
+  if (BY_RUNNER) {
+    std::printf("   bench run checks the profile after valgrind has written it%s\n",
+                cfg_.profileAnalyze ? ", then annotates it" : "");
+  } else {
+    std::printf("   valgrind writes the profile when this process exits; read it then with\n");
+    std::printf("   callgrind_annotate %s (or kcachegrind)\n",
+                KNOWN_FILE ? outFile.c_str() : "<profile>");
   }
-  std::printf("\n");
-#endif
-}
-
-void CallgrindProfiler::runAnnotateAnalysis() const {
-#ifdef __linux__
-  bool hasAnnotate = (std::system("command -v callgrind_annotate >/dev/null 2>&1") == 0);
-  if (!hasAnnotate) {
-    std::fprintf(stderr, "[INFO] callgrind_annotate not found. Install valgrind.\n");
-    return;
-  }
-
-  // Find the most recent callgrind.out file in the artifact directory
-  std::string latestFile;
-  std::error_code ec;
-  for (const auto& entry : std::filesystem::directory_iterator(artifactDir_, ec)) {
-    const std::string NAME = entry.path().filename().string();
-    if (NAME.find("callgrind.out") != std::string::npos) {
-      latestFile = entry.path().string();
-    }
-  }
-
-  if (latestFile.empty()) {
-    std::fprintf(stderr, "[WARN] No callgrind output file found in %s\n", artifactDir_.c_str());
-    return;
-  }
-
-  std::printf("\n--- Callgrind Annotation (top functions) ---\n\n");
-
-  std::string cmd = "callgrind_annotate --auto=yes '" + latestFile + "' 2>/dev/null | head -40";
-  [[maybe_unused]] int rc = std::system(cmd.c_str());
-
   std::printf("\n");
 #endif
 }

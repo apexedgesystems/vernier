@@ -28,10 +28,13 @@
  *  - Not for: Real-time profiling, measuring wall-clock time
  *
  * Usage:
- *   --profile callgrind                    # Basic instruction counts
- *   --profile callgrind --profile-analyze  # Auto-run callgrind_annotate
+ *   bench run ./MyTest --profile callgrind                    # Whole-process counts
+ *   bench run ./MyTest --profile callgrind --profile-analyze  # Then callgrind_annotate
  *   # Cache simulation: wrap with valgrind directly:
  *   #   valgrind --tool=callgrind --cache-sim=yes ./MyTest --profile callgrind
+ *
+ * The profile is complete when valgrind exits: bench run checks it and runs
+ * callgrind_annotate after that exit; under a manual wrap, read it then.
  */
 
 #include <memory>
@@ -72,8 +75,6 @@ public:
   void afterMeasure(const Stats& s) override;
 
 private:
-  void runAnnotateAnalysis() const;
-
   PerfConfig cfg_;
   std::string testName_;
   std::string artifactDir_;

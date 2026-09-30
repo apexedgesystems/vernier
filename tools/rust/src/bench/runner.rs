@@ -39,6 +39,9 @@ pub struct RunConfig {
     pub profile_args: Option<String>,
     pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
+    /// `--profile-analyze`: the requested profile's analysis (forwarded to
+    /// the binary; for callgrind, run by the runner after the exit).
+    pub profile_analyze: bool,
     pub taskset: Option<String>,
     pub extra_args: Vec<String>,
 }
@@ -95,6 +98,12 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     if let Some(ref dir) = cfg.profile_output_dir {
         args.push("--profile-output-dir".to_string());
         args.push(dir.display().to_string());
+    }
+    // --profile-analyze given to bench run, or forwarded after `--`: one
+    // request either way.
+    let analyze = cfg.profile_analyze || cfg.extra_args.iter().any(|a| a == "--profile-analyze");
+    if cfg.profile_analyze && !cfg.extra_args.iter().any(|a| a == "--profile-analyze") {
+        args.push("--profile-analyze".to_string());
     }
     args.extend(cfg.extra_args.iter().cloned());
 
@@ -213,6 +222,9 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         }
         if r.program == "nsys" {
             extract_nsys_stats(&r.dir, &request)?;
+        }
+        if analyze && r.tool == "callgrind" {
+            annotate_callgrind(&r.dir.join("callgrind.out"), &request)?;
         }
     }
     if env_wrap.is_some() {
@@ -758,6 +770,107 @@ fn jemalloc_preloadable() -> bool {
         .output()
         .map(|o| !String::from_utf8_lossy(&o.stderr).contains("cannot be preloaded"))
         .unwrap_or(false)
+}
+
+/// How long `callgrind_annotate` may take on one profile.
+const ANNOTATE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// How many lines of the annotation are printed.
+const ANNOTATE_LINES: usize = 40;
+
+/// Annotate a callgrind profile valgrind has finished writing (checked
+/// before this runs): `callgrind_annotate --auto=yes <profile>`, bounded,
+/// its first lines printed. A missing, failing or overrunning annotator is
+/// an analysis failure; the profile is kept.
+fn annotate_callgrind(profile: &Path, request: &str) -> Result<(), Error> {
+    let kept = format!("; the profile is kept at {}", profile.display());
+    let Some(annotator) = find_in_path("callgrind_annotate") else {
+        return Err(profile_failure(
+            request,
+            "analysis",
+            format!("callgrind_annotate is not on PATH (it ships with valgrind){kept}"),
+        ));
+    };
+    let mut child = Command::new(&annotator)
+        .arg("--auto=yes")
+        .arg(profile)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            profile_failure(
+                request,
+                "analysis",
+                format!("{} could not be started: {e}{kept}", annotator.display()),
+            )
+        })?;
+    // Read both pipes while waiting, so a long annotation cannot fill one.
+    let mut stdout = child.stdout.take().expect("piped stdout");
+    let mut stderr = child.stderr.take().expect("piped stderr");
+    let out_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        text
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stderr, &mut text);
+        text
+    });
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break Some(status);
+        }
+        if started.elapsed() >= ANNOTATE_TIMEOUT {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let out = out_reader.join().unwrap_or_default();
+    let err = err_reader.join().unwrap_or_default();
+    let Some(status) = status else {
+        return Err(profile_failure(
+            request,
+            "analysis",
+            format!(
+                "{} did not finish within {} s and was stopped{kept}",
+                annotator.display(),
+                ANNOTATE_TIMEOUT.as_secs()
+            ),
+        ));
+    };
+    if !status.success() {
+        let tail = err
+            .lines()
+            .rev()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("");
+        return Err(profile_failure(
+            request,
+            "analysis",
+            format!(
+                "{} {}{}{}{kept}",
+                annotator.display(),
+                describe_status(status),
+                if tail.is_empty() { "" } else { ": " },
+                tail
+            ),
+        ));
+    }
+    println!(
+        "\n--- callgrind_annotate {} (first {ANNOTATE_LINES} lines) ---\n",
+        profile.display()
+    );
+    for line in out.lines().take(ANNOTATE_LINES) {
+        println!("{line}");
+    }
+    println!();
+    Ok(())
 }
 
 /// The four summaries extracted from a wrapped nsight run's report.

@@ -187,6 +187,7 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
 | `--profile-args ARGS`      | The profile's mode (see below); may start with `-`   | --           |
 | `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
+| `--profile-analyze`        | The profile's analysis (callgrind: see below)        | --           |
 | `--analyze`                | Run summary after execution                          | --           |
 
 When `--profile` names a wrap-externally backend (`callgrind`, `massif`,
@@ -227,7 +228,11 @@ removed. After the benchmark exits 0, the file must exist and hold
 something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
 For nsight, a `nsys stats` summary that fails fails the run as `analysis:`,
-and the report is kept.
+and the report is kept. With `--profile-analyze` (given to `bench run`, or
+forwarded after `--`), a callgrind run's profile is annotated after valgrind
+has written it: `callgrind_annotate --auto=yes <profile>`, its first 40 lines
+printed; a missing or failing `callgrind_annotate` fails the run as
+`analysis:`, and the profile is kept.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 

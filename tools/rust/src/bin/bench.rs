@@ -164,6 +164,12 @@ enum Command {
         #[arg(long)]
         taskset: Option<String>,
 
+        /// Run the requested profile's analysis (passed to the binary as
+        /// --profile-analyze; for callgrind, bench run annotates the profile
+        /// after valgrind has written it, and a failed annotation fails the run)
+        #[arg(long)]
+        profile_analyze: bool,
+
         /// Auto-run comparison after execution (requires --csv)
         #[arg(long)]
         analyze: bool,
@@ -415,6 +421,7 @@ fn run(args: Args) -> Result<(), Error> {
             profile_test_timeout,
             profile_output_dir,
             taskset,
+            profile_analyze,
             analyze,
             extra_args,
         } => {
@@ -438,6 +445,7 @@ fn run(args: Args) -> Result<(), Error> {
                 profile_args,
                 profile_test_timeout,
                 profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
+                profile_analyze,
                 taskset,
                 extra_args,
             };

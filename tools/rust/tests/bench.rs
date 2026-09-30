@@ -1407,7 +1407,9 @@ fn run_reports_the_benchmark_exit_status() {
 /// wrapper does not start the benchmark, whose argv is what is under test.
 /// A wrapper writes the output file its arguments name, as the tool would
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
-/// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead).
+/// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
+/// and `callgrind_annotate` one line naming its profile (`FAKE_ANNOTATE=fail`
+/// fails instead).
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
@@ -1426,6 +1428,11 @@ echo "{name} wrap=$VERNIER_EXTERNAL_WRAP $*" >> '{log}'
 if [ "{name}" = nsys ] && [ "$1" = stats ]; then
   if [ "$FAKE_NSYS_STATS" = fail ]; then echo "fake nsys: cannot export the report" >&2; exit 1; fi
   echo "fake summary"
+  exit 0
+fi
+if [ "{name}" = callgrind_annotate ]; then
+  if [ "$FAKE_ANNOTATE" = fail ]; then echo "fake annotate: cannot read the profile" >&2; exit 1; fi
+  echo "fake annotation of $2"
   exit 0
 fi
 [ "$FAKE_WRITE" = none ] && exit 0
@@ -1818,4 +1825,96 @@ fn run_nsight_stats_failure_is_reported() {
         .path()
         .join("bench-out/fake_bench.nsight/profile.nsys-rep")
         .is_file());
+}
+
+/* ----------------------------- Run: Callgrind Analysis ----------------------------- */
+
+/// @test --profile-analyze, given to bench run or forwarded after `--`,
+/// annotates the callgrind profile after valgrind has written it, and the
+/// benchmark is asked for the analysis once.
+#[test]
+fn run_callgrind_analyze_after_exit() {
+    for forwarded in [false, true] {
+        let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+        let args: &[&str] = if forwarded {
+            &["--profile", "callgrind", "--", "--profile-analyze"]
+        } else {
+            &["--profile", "callgrind", "--profile-analyze"]
+        };
+        let (rc, stdout, err, log) = run_rig_env(&rig, args, &[]);
+        assert_eq!(rc, 0, "{args:?}: {err}");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "{args:?}: {log}");
+        assert!(
+            lines[0].starts_with("valgrind wrap=callgrind --tool=callgrind")
+                && lines[0].ends_with("--profile callgrind --profile-analyze"),
+            "{args:?}: the benchmark is asked for the analysis once: {log}"
+        );
+        assert_eq!(
+            lines[1],
+            "callgrind_annotate wrap= --auto=yes \
+             bench-out/fake_bench.callgrind/callgrind.out",
+            "{args:?}: annotated after the run: {log}"
+        );
+        assert!(
+            stdout.contains(
+                "--- callgrind_annotate bench-out/fake_bench.callgrind/callgrind.out \
+                 (first 40 lines) ---\n\nfake annotation of \
+                 bench-out/fake_bench.callgrind/callgrind.out\n"
+            ),
+            "{args:?}: {stdout}"
+        );
+    }
+}
+
+/// @test A failing or missing callgrind_annotate fails the run as an
+/// analysis failure, and the profile is kept.
+#[test]
+fn run_callgrind_analyze_failure() {
+    let profile = "bench-out/fake_bench.callgrind/callgrind.out";
+    let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+    let (rc, _, err, _) = run_rig_env(
+        &rig,
+        &["--profile", "callgrind", "--profile-analyze"],
+        &[("FAKE_ANNOTATE", "fail")],
+    );
+    assert_eq!(rc, 1, "{err}");
+    assert!(
+        err.contains(&format!(
+            "Error: --profile callgrind failed: analysis: {} exited with status 1: fake annotate: \
+             cannot read the profile; the profile is kept at {profile}",
+            rig.dir.path().join("tools/callgrind_annotate").display()
+        )),
+        "{err}"
+    );
+    assert!(rig.dir.path().join(profile).is_file());
+
+    // No profile: the run fails at completion, and nothing is annotated.
+    let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+    let (rc, _, err, log) = run_rig_env(
+        &rig,
+        &["--profile", "callgrind", "--profile-analyze"],
+        &[("FAKE_WRITE", "none")],
+    );
+    assert_eq!(rc, 1, "{err}");
+    assert!(
+        err.contains(&format!("completion: {profile} was not written")),
+        "{err}"
+    );
+    assert!(
+        !log.contains("callgrind_annotate"),
+        "annotated a missing profile: {log}"
+    );
+
+    let rig = route_rig(&["valgrind"]);
+    let (rc, _, err, _) = run_rig_env(&rig, &["--profile", "callgrind", "--profile-analyze"], &[]);
+    assert_eq!(rc, 1, "{err}");
+    assert!(
+        err.contains(&format!(
+            "analysis: callgrind_annotate is not on PATH (it ships with valgrind); the profile \
+             is kept at {profile}"
+        )),
+        "{err}"
+    );
+    assert!(rig.dir.path().join(profile).is_file());
 }

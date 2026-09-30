@@ -297,6 +297,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             profile_args: None,
             profile_test_timeout: None,
             profile_output_dir: Some(out_dir.clone()),
+            profile_analyze: false,
             taskset: None,
             extra_args: cfg
                 .gtest_filter
