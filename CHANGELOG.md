@@ -131,6 +131,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
+- **Demo 03 (GPU shared memory) reports its tiles to the harness and checks
+  its answers** -- `BenchDemo_Gpu_03_SharedMemoryOpt` hands `withLaunchConfig()`
+  the static shared memory its two tiled transpose kernels declare (on the
+  reference rig the 1,024-thread block, not the tile, limits occupancy, so the
+  `occupancy` column does not change), names its padded kernel
+  `transposeSharedPadded`, and each of its three tests checks the transpose it
+  measured instead of a calls-per-second floor; unit tests registered with
+  `ctest` under the `demo` label hold the three kernels to a CPU transpose and
+  the declared bytes to the kernels. The test `SharedMemoryOpt.SharedConflictFree`
+  is renamed `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured from
+  the demo before this release does not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

@@ -91,6 +91,11 @@ if (TARGET bench_cuda)
       demo_helpers
     )
   endforeach ()
+
+  # Demo 03's kernels are a source of their own, so the tests beside the demo
+  # compile the kernels the demo launches (the sections at the end of this
+  # file).
+  target_sources(BenchDemo_Gpu_03_SharedMemoryOpt PRIVATE gpu/03_SharedMemoryOpt_Transpose.cu)
 endif ()
 
 # ------------------------------------------------------------------------------
@@ -268,3 +273,27 @@ set_tests_properties(
   PROPERTIES SKIP_REGULAR_EXPRESSION
              "\\[  SKIPPED \\] SkipUnlessUnderValgrindProbe\\.RunsOnlyUnderValgrind"
 )
+
+# ------------------------------------------------------------------------------
+# GPU Demo Tests Run by CTest (1)
+# ------------------------------------------------------------------------------
+# Demo 03's transpose kernels are held to a CPU transpose's answers, and the
+# shared-memory bytes the demo hands the harness to the bytes the kernels
+# declare, by a test that compiles the demo's kernels itself. Registered under
+# the demo label where the GPU demos are built; its cases skip without a device.
+# ------------------------------------------------------------------------------
+
+if (TARGET bench_cuda)
+  vernier_add_gtest(
+    TARGET
+    TestDemoTranspose
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_uTest.cu
+    gpu/03_SharedMemoryOpt_Transpose.cu
+    LINK
+    CUDA::cudart
+    LABELS
+    demo
+  )
+  target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
+endif ()
