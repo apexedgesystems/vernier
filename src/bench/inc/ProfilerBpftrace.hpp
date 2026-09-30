@@ -8,24 +8,29 @@
  *  - The readiness check (checkBpftraceRequest) decides the privilege route,
  *    resolves bpftrace (and, on the sudo route, sudo and kill) on PATH,
  *    resolves and reads every selected script, runs `bpftrace --version` as
- *    the current user, and runs a probe copy of each script (with a 5 s
- *    self-exit added) through the route for the start grace, stopping it
- *    with SIGINT; a copy whose stop is refused ends by its self-exit, and the
- *    check waits for it and reaps it. The run's own command reads a copy in
- *    its capture folder, which does not exist yet, so on the sudo route a
- *    grant refusal of the probe copy is unverified rather than denied: the
- *    run's start decides.
+ *    the current user, and runs a probe copy of each script (with the
+ *    capture window and a 5 s self-exit added) through the route for one
+ *    second, stopping it with SIGINT; a copy whose stop is refused ends by
+ *    its self-exit, and the check waits for it and reaps it. The run's own
+ *    command reads a copy in its capture folder, which does not exist yet,
+ *    so on the sudo route a grant refusal of the probe copy is unverified
+ *    rather than denied: the run's start decides.
  *    The profiler launches and stops with exactly the tools and route that
  *    check verified (BpftracePlan).
  *  - In beforeMeasure(), starts one bpftrace process per selected script
  *    (e.g. "write_latency", "fsync_latency") with {{PID}} replaced by the
- *    current PID, and reports a tracer that exits during its start grace. A
- *    script's copy and output go to the capture folder under its file's stem:
- *    <stem>.tmp.bt, <stem>.out.<format> and <stem>.err.txt.
- *  - In afterMeasure(), stops every tracer with SIGINT, then SIGTERM, then
- *    SIGKILL through the same route, and reports each refused delivery, and a
- *    tracer that ended by itself before the stop.
- *  - captureOutcome() says whether the capture is complete.
+ *    current PID and the capture window appended (captureWindowProgram()),
+ *    run with -B none, and returns once every tracer has acknowledged its
+ *    arm probe, or failed, within the plan's armWaitMs. A script's copy and
+ *    output go to the capture folder under its file's stem: <stem>.tmp.bt,
+ *    <stem>.out.<format> and <stem>.err.txt.
+ *  - In afterMeasure(), waits up to the plan's disarmWaitMs for every armed
+ *    tracer to acknowledge the stop, then stops each with SIGINT, then
+ *    SIGTERM, then SIGKILL through the same route, and reports each refused
+ *    delivery, and a tracer that ended by itself before the stop.
+ *  - captureOutcome() says whether the capture is complete: READY only for a
+ *    tracer that acknowledged both ends of the capture with this process's
+ *    ids, stopped on a signal that flushes its output, and left an output.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n`; PERF_BPF_SUDO is a deprecated alias that BENCH_SUDO overrides.
@@ -35,10 +40,14 @@
  *  - Linux-only. Safe no-op on other platforms (compile-time guard).
  */
 
+#include <atomic>
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -98,7 +107,7 @@ struct AttachProbe {
    * refusal of the probe is then unverified.
    */
   std::string runCommand;
-  int graceMs = 1000; ///< The start grace, the run's own.
+  int graceMs = 1000; ///< How long the probe runs before its stop.
   int selfExitMs = 0; ///< When the probe's own script ends it after its start; 0: never.
 };
 
@@ -153,6 +162,156 @@ std::string grantRemedy(const BpftraceRoute& route, const ReadinessContext& ctx)
 bool reportStop(const char* tag, const std::string& what, const HelperStopResult& stop,
                 const BpftraceRoute& route);
 
+/* ----------------------------- The capture window ----------------------------- */
+
+// A capture starts when its tracer acknowledges that it sees this process,
+// and ends when the tracer acknowledges the stop. Both acknowledgements come
+// from a sched_switch program the tracer runs (captureWindowProgram()): a
+// sleeping switch-out of a thread of this process named ARM_THREAD arms it,
+// one named STOP_THREAD disarms it, and the backend waits under WAIT_THREAD,
+// which the program does not count. The three names are reserved: a
+// benchmark's own threads must not take them. A backend launches its tracers,
+// waits (waitUntil()) as WAIT_THREAD (ThreadNameScope) while an ArmThread
+// naps, reads each tracer's output as it grows (WindowWatch), compares the
+// acknowledged ids with its own, and at the stop waits the same way as
+// STOP_THREAD.
+
+/// Thread names the capture window reserves.
+inline constexpr const char* ARM_THREAD = "vernier-arm";
+inline constexpr const char* WAIT_THREAD = "vernier-wait";
+inline constexpr const char* STOP_THREAD = "vernier-stop";
+
+/// Default bounds of the waits for the arm and the stop acknowledgements.
+inline constexpr int ARM_WAIT_MS = 5000;
+inline constexpr int DISARM_WAIT_MS = 3000;
+
+/// The nap of every wait, and of the arm thread.
+inline constexpr int WINDOW_NAP_MS = 5;
+
+/**
+ * @brief The capture-window program for process @p pid, its two
+ *        acknowledgements labelled @p label ("bpftrace", "offcpu").
+ *
+ * One tracepoint:sched:sched_switch program. A sleeping switch-out
+ * (prev_state 1 or 2) of a thread of @p pid named ARM_THREAD, other than the
+ * main thread, arms it once and prints "<label> armed <pid> <tid>". A
+ * sleeping switch-out of one named STOP_THREAD then disarms it, prints
+ * "<label> disarmed <pid> <tid> <n>", n being the sleeping switch-outs of the
+ * process's other threads while it was armed (the three reserved names
+ * excluded), and clears its two maps (@vernier_window, @vernier_recorded), so
+ * a report holds no map of its own. Run it with -B none, so each line reaches
+ * the output as it is printed.
+ *
+ * bpftrace attaches a script's tracepoint, rawtracepoint, kretprobe, fexit,
+ * interval, profile, hardware and watchpoint probes first, in the order the
+ * script declares them, and its kprobe, uprobe, uretprobe, USDT, software,
+ * fentry and iter probes after them, in reverse order (0.14 to 0.23 alike).
+ * Appended to a script, the program's arm acknowledgement therefore shows
+ * that every probe of the first kind is attached, and says nothing of the
+ * second kind.
+ */
+[[nodiscard]] std::string captureWindowProgram(const std::string& label, long pid);
+
+/** @brief One acknowledgement: the ids the tracer printed, and the disarm's count. */
+struct WindowAck {
+  long pid = -1;      ///< The process id it printed.
+  long tid = -1;      ///< The thread id it printed.
+  long recorded = -1; ///< The disarm's count; -1 for the arm.
+};
+
+/**
+ * @brief "<label> armed <pid> <tid>" in @p line, anywhere in it, so a JSON
+ *        printf record is read too; nullopt when the line holds none.
+ */
+[[nodiscard]] std::optional<WindowAck> parseArmAck(std::string_view line, std::string_view label);
+
+/** @brief "<label> disarmed <pid> <tid> <n>" in @p line, anywhere in it; nullopt when none. */
+[[nodiscard]] std::optional<WindowAck> parseDisarmAck(std::string_view line,
+                                                      std::string_view label);
+
+/**
+ * @brief A tracer's output file, read as it grows, and the capture window's
+ *        two acknowledgements found in it (the first of each).
+ */
+class WindowWatch {
+public:
+  WindowWatch(std::string outputPath, std::string label);
+
+  /**
+   * @brief Read what the tracer wrote since the last call, and look for the
+   *        acknowledgements in every line it completed.
+   * @return 0, or the errno of the failed open or read.
+   */
+  int poll();
+
+  [[nodiscard]] const std::optional<WindowAck>& armed() const noexcept { return armed_; }
+  [[nodiscard]] const std::optional<WindowAck>& disarmed() const noexcept { return disarmed_; }
+  [[nodiscard]] const std::string& path() const noexcept { return path_; }
+
+private:
+  std::string path_;
+  std::string label_;
+  std::uintmax_t offset_ = 0;
+  std::string partial_;
+  std::optional<WindowAck> armed_;
+  std::optional<WindowAck> disarmed_;
+};
+
+/** @brief Names the calling thread @p name until the scope ends, then restores its name. */
+class ThreadNameScope {
+public:
+  explicit ThreadNameScope(const char* name);
+  ~ThreadNameScope();
+
+  ThreadNameScope(const ThreadNameScope&) = delete;
+  ThreadNameScope& operator=(const ThreadNameScope&) = delete;
+
+private:
+  char saved_[16] = {};
+  bool renamed_ = false;
+};
+
+/**
+ * @brief A thread named ARM_THREAD that naps WINDOW_NAP_MS at a time, each
+ *        nap a sleeping switch-out, until it is destroyed. The constructor
+ *        returns once the thread has named itself.
+ */
+class ArmThread {
+public:
+  ArmThread();
+  ~ArmThread();
+
+  ArmThread(const ArmThread&) = delete;
+  ArmThread& operator=(const ArmThread&) = delete;
+
+  /** @brief Its thread id; -1 where the platform has none to give. */
+  [[nodiscard]] long tid() const noexcept { return tid_.load(); }
+
+private:
+  std::atomic<bool> stop_{false};
+  std::atomic<bool> named_{false};
+  std::atomic<long> tid_{-1};
+  std::thread thread_;
+};
+
+/**
+ * @brief Call @p done every WINDOW_NAP_MS until it returns true or
+ *        @p boundMs has passed.
+ * @return Whether it returned true.
+ */
+bool waitUntil(const std::function<bool()>& done, int boundMs);
+
+/** @brief The calling thread's id; -1 where the platform has none to give. */
+[[nodiscard]] long currentThreadId() noexcept;
+
+/**
+ * @brief What /proc/self/ns/pid links to ("pid:[4026532284]") when this
+ *        process runs in a PID namespace other than the host's, whose inode
+ *        the kernel fixes at 0xEFFFFFFC (bpftrace makes the same comparison);
+ *        empty in the host's, and where the link cannot be read.
+ */
+[[nodiscard]] std::string foreignPidNamespace();
+
 } // namespace bpftrace_tool
 
 /* ----------------------------- BpftracePlan ----------------------------- */
@@ -166,6 +325,8 @@ struct BpftracePlan final : ReadinessPlan {
   std::string outputDir;                ///< PERF_BPF_OUT, or empty.
   bool envEnabled = false;              ///< PERF_BPF asked for bpftrace.
   std::shared_ptr<const ReadinessContext> context;
+  int armWaitMs = bpftrace_tool::ARM_WAIT_MS;       ///< Bound of the wait for every arm.
+  int disarmWaitMs = bpftrace_tool::DISARM_WAIT_MS; ///< Bound of the wait for every stop.
 };
 
 /**
@@ -215,8 +376,11 @@ public:
   /**
    * @brief The capture's outcome: empty until a tracer fails to start or the
    * measured repeats end; then READY, or the Error that leaves the capture
-   * incomplete (a tracer that could not start, ended before the stop, was
-   * killed or could not be stopped). The first failure is kept.
+   * incomplete: a tracer that could not start, ended before its arm or its
+   * stop acknowledgement, did not acknowledge either within its bound (named
+   * UNSUPPORTED, with the PID namespace, in one other than the host's),
+   * acknowledged either with other ids, was killed or could not be stopped,
+   * or left no output or an empty one. The first failure is kept.
    */
   [[nodiscard]] const std::optional<ReadinessResult>& captureOutcome() const noexcept;
 

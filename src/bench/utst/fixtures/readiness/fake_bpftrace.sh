@@ -2,8 +2,8 @@
 # Fake bpftrace for the readiness tests.
 #
 # `--version` prints a version, or fails in mode version-fails. Any other
-# invocation is an attach (`-q [-f json] <script>` or `-e <program> [pid]`),
-# which FAKE_BPFTRACE_MODE selects:
+# invocation is an attach (`-q [-B none] [-f json] <script>` or
+# `-e <program> [pid]`), which FAKE_BPFTRACE_MODE selects:
 #   ok           run until signalled; a program with an interval:s:N or
 #                interval:ms:N probe (a readiness probe's self-exit) ends by
 #                itself then; one without that exits on sched_process_exit
@@ -22,6 +22,23 @@
 #   eperm        exit 1 at once with bpftrace's message for a non-root user
 #   unsupported  exit 1 at once with bpftrace's message for a missing tracepoint
 #   broken       exit 1 at once with a message of no known kind
+#
+# A program that holds the capture window the backends append (a printf of
+# "<label> armed %d %d" in a program filtered on "pid == <target>") is
+# answered as bpftrace answers it, once attached: when a thread of the target
+# other than its main thread is named vernier-arm, the fake prints "<label>
+# armed <target> <tid>"; after that, when one is named vernier-stop, "<label>
+# disarmed <target> <tid> <n>", n being FAKE_BPFTRACE_RECORDED (default 0). On
+# SIGINT it then prints three empty lines, as bpftrace prints its maps, and
+# exits 0. FAKE_WINDOW changes the answer:
+#   end-before-arm exit 0 at once, acknowledging nothing
+#   no-arm         never acknowledge the arm
+#   wrong-arm      acknowledge it with the main thread's id for the thread's
+#   end-after-arm  exit 0 right after acknowledging the arm
+#   no-disarm      never acknowledge the stop
+#   wrong-disarm   acknowledge the stop with a thread id one above the thread's
+#   remove-output  on SIGINT, delete the output file, then exit 0
+#   empty-output   on SIGINT, empty the output file, then exit 0
 # Every invocation is recorded in FAKE_LOG with the fake's pid.
 
 PATH=/usr/bin:/bin
@@ -50,7 +67,7 @@ while [ $# -gt 0 ]; do
     inline=yes
     shift 2
     ;;
-  -f)
+  -f | -B)
     shift 2
     ;;
   -*)
@@ -101,20 +118,110 @@ run_launch=no
 if [ -z "$seconds" ] && [ -z "$millis" ]; then
   run_launch=yes
 fi
+int_ignored=no
 if [ "$mode" = "ignore-int" ]; then
   trap '' INT
+  int_ignored=yes
 fi
 if [ "$mode" = "ignore-int-run" ] && [ "$run_launch" = yes ]; then
   trap '' INT
+  int_ignored=yes
 fi
 if [ "$mode" = "slow-attach" ]; then
   sleep "${FAKE_ATTACH_S:-3}"
 fi
 
-# bpftrace's exit() on the target's sched_process_exit: a launch ends with
-# its target. A probe's self-exit ends it first, whatever its target does.
-if [ "$run_launch" = yes ] && [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
-  printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
-  exec tail -s 0.1 -f /dev/null --pid="$target"
+# The capture window: its label and the process it watches.
+label=$(printf '%s\n' "$program" | sed -n 's/.*printf("\([A-Za-z0-9_-]*\) armed %d %d.*/\1/p' | head -n 1)
+watched=$(printf '%s\n' "$program" | sed -n 's/.*if (pid == \([0-9][0-9]*\) && (args->prev_state.*/\1/p' | head -n 1)
+
+if [ -z "$label" ] || [ -z "$watched" ]; then
+  # bpftrace's exit() on the target's sched_process_exit: a launch ends with
+  # its target. A probe's self-exit ends it first, whatever its target does.
+  if [ "$run_launch" = yes ] && [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+    printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
+    exec tail -s 0.1 -f /dev/null --pid="$target"
+  fi
+  exec sleep "$limit"
 fi
-exec sleep "$limit"
+
+# On the sudo route the backend signals the only child of the process it
+# started, when there is exactly one (sudo's monitor keeps the tool as its
+# only child). This fake is sudo and tool in one process, and its loop starts
+# short-lived children; two children that live as long as it does keep that
+# choice on the fake itself.
+tail -s 0.1 -f /dev/null --pid=$$ &
+tail -s 0.1 -f /dev/null --pid=$$ &
+
+# The thread of the watched process named $1, other than its main thread
+# when $2 is "worker"; empty when there is none.
+thread_named() {
+  for task in /proc/"$watched"/task/*; do
+    tid=${task##*/}
+    if [ "$2" = worker ] && [ "$tid" = "$watched" ]; then
+      continue
+    fi
+    name=""
+    read -r name 2>/dev/null <"$task/comm"
+    if [ "$name" = "$1" ]; then
+      printf '%s\n' "$tid"
+      return
+    fi
+  done
+}
+
+# The output file, for the modes that remove or empty it: only a regular
+# file, never a device such as a probe's /dev/null.
+output=$(readlink /proc/$$/fd/1)
+if [ ! -f "$output" ]; then
+  output=""
+fi
+window=${FAKE_WINDOW:-}
+on_interrupt() {
+  case "$window" in
+  remove-output) [ -n "$output" ] && rm -f "$output" ;;
+  empty-output) [ -n "$output" ] && : >"$output" ;;
+  *) printf '\n\n\n' ;;
+  esac
+  exit 0
+}
+if [ "$int_ignored" = no ]; then
+  trap on_interrupt INT
+fi
+
+if [ "$window" = end-before-arm ]; then
+  exit 0
+fi
+limit_ms=$(printf '%s\n' "$limit" | awk '{ printf "%d", $1 * 1000 }')
+started=$(date +%s%N)
+armed=no
+disarmed=no
+while :; do
+  if [ "$armed" = no ] && [ "$window" != no-arm ]; then
+    tid=$(thread_named vernier-arm worker)
+    if [ -n "$tid" ]; then
+      if [ "$window" = wrong-arm ]; then
+        tid=$watched
+      fi
+      printf '%s armed %s %s\n' "$label" "$watched" "$tid"
+      armed=yes
+      if [ "$window" = end-after-arm ]; then
+        exit 0
+      fi
+    fi
+  elif [ "$armed" = yes ] && [ "$disarmed" = no ] && [ "$window" != no-disarm ]; then
+    tid=$(thread_named vernier-stop any)
+    if [ -n "$tid" ]; then
+      if [ "$window" = wrong-disarm ]; then
+        tid=$((tid + 1))
+      fi
+      printf '%s disarmed %s %s %s\n' "$label" "$watched" "$tid" "${FAKE_BPFTRACE_RECORDED:-0}"
+      disarmed=yes
+    fi
+  fi
+  now=$(date +%s%N)
+  if [ $(((now - started) / 1000000)) -ge "$limit_ms" ]; then
+    exit 0
+  fi
+  sleep 0.01
+done

@@ -495,7 +495,7 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   )
   expect_has(
     "${row_MESSAGE}"
-    "/probe0.bt: sudo: a password is required; the run executes ${WORK_DIR}/bin/bpftrace -q <capture folder>/probe_script.tmp.bt instead, which only the run can try"
+    "/probe0.bt: sudo: a password is required; the run executes ${WORK_DIR}/bin/bpftrace -q -B none <capture folder>/probe_script.tmp.bt instead, which only the run can try"
     "selected message"
   )
   expect_not("${row_MESSAGE}" "${WORK_DIR}/scripts/" "selected message (a command not attempted)")
@@ -509,7 +509,7 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   foreach (_case First Second)
     expect_has(
       "${run_ERR}"
-      "[bpftrace] the tracer exited during its start grace: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
+      "[bpftrace] the tracer exited before it acknowledged its arm probe: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
       "run report (${_case})"
     )
   endforeach ()
@@ -528,7 +528,7 @@ elseif (CASE STREQUAL "BpfRunAllowedProbeRefused")
   expect_eq("${run_RC}" "0" "run exit status")
   expect_not("${run_ERR}" "[bpftrace]" "run reports")
   read_log(_text)
-  count_of(_launches "${_text}" "\nbpftrace -q ./ReadinessFixture.")
+  count_of(_launches "${_text}" "\nbpftrace -q -B none ./ReadinessFixture.")
   expect_eq("${_launches}" "2" "tracers the run started (one per guarded case)")
   expect_owned_and_gone("run")
 
@@ -541,7 +541,9 @@ elseif (CASE STREQUAL "BpfRunStopsThroughRoute")
   expect_eq("${run_RC}" "0" "run exit status")
   expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
   read_log(_text)
-  count_of(_launches "${_text}" "sudo -n -- ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.")
+  count_of(_launches "${_text}"
+           "sudo -n -- ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture."
+  )
   expect_eq("${_launches}" "2" "launches through sudo (one per guarded case)")
   count_of(_interrupts "${_text}" "sudo -n -- ${WORK_DIR}/bin/kill -2 ")
   expect_eq("${_interrupts}" "3" "SIGINT through sudo (the probe and two launches)")
@@ -902,7 +904,7 @@ elseif (CASE STREQUAL "BpfScriptsFlagSelectsTheDirectory")
   expect_not("${run_ERR}" "unknown option" "run warnings")
   expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
   read_log(_text)
-  count_of(_launches "${_text}" "bpftrace -q ./ReadinessFixture.")
+  count_of(_launches "${_text}" "bpftrace -q -B none ./ReadinessFixture.")
   expect_eq("${_launches}" "2" "launches (one per guarded case)")
   expect_owned_and_gone("run")
 

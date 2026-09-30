@@ -15,10 +15,16 @@
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 #include <fcntl.h>
+#include <pthread.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/syscall.h>
+#endif
 
+#include <algorithm>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
@@ -358,6 +364,235 @@ bool reportStop(const char* tag, const std::string& what, const HelperStopResult
   return true;
 }
 
+/* ----------------------------- The capture window ----------------------------- */
+
+std::string captureWindowProgram(const std::string& label, long pid) {
+  const std::string PID = std::to_string(pid);
+  const std::string ARM = ARM_THREAD;
+  const std::string WAIT = WAIT_THREAD;
+  const std::string STOP = STOP_THREAD;
+  return "// Added by Vernier: the capture window (BPF_SCRIPTS.md). The measured\n"
+         "// repeats run between its arm line and its stop line.\n"
+         "tracepoint:sched:sched_switch {\n"
+         "  if (pid == " +
+         PID +
+         " && (args->prev_state == 1 || args->prev_state == 2)) {\n"
+         "    if (comm == \"" +
+         ARM +
+         "\") {\n"
+         "      if (@vernier_window == 0 && tid != " +
+         PID +
+         ") {\n"
+         "        @vernier_window = 1;\n"
+         "        printf(\"" +
+         label +
+         " armed %d %d\\n\", pid, tid);\n"
+         "      }\n"
+         "    } else if (comm == \"" +
+         STOP +
+         "\") {\n"
+         "      if (@vernier_window == 1) {\n"
+         "        printf(\"" +
+         label +
+         " disarmed %d %d %d\\n\", pid, tid, @vernier_recorded);\n"
+         "        clear(@vernier_window);\n"
+         "        clear(@vernier_recorded);\n"
+         "      }\n"
+         "    } else if (@vernier_window == 1 && comm != \"" +
+         WAIT +
+         "\") {\n"
+         "      @vernier_recorded++;\n"
+         "    }\n"
+         "  }\n"
+         "}\n";
+}
+
+namespace {
+
+/// The decimal number at @p at in @p text, and the index after it; nullopt when no digit is there,
+/// or more than an id holds.
+std::optional<long> numberAt(std::string_view text, std::size_t& at) {
+  constexpr std::size_t MAX_DIGITS = 18;
+  const std::size_t FROM = at;
+  long value = 0;
+  while (at < text.size() && text[at] >= '0' && text[at] <= '9') {
+    if (at - FROM == MAX_DIGITS) {
+      return std::nullopt;
+    }
+    value = value * 10 + (text[at] - '0');
+    ++at;
+  }
+  if (at == FROM) {
+    return std::nullopt;
+  }
+  return value;
+}
+
+/// "<label> <word> " followed by @p count numbers separated by one space, anywhere in @p line.
+std::optional<WindowAck> parseAck(std::string_view line, std::string_view label,
+                                  std::string_view word, int count) {
+  const std::string PREFIX = std::string(label) + " " + std::string(word) + " ";
+  for (std::size_t found = line.find(PREFIX); found != std::string_view::npos;
+       found = line.find(PREFIX, found + 1)) {
+    // The label must start the line or follow a character that cannot be
+    // part of a name, so "xbpftrace armed" is not "bpftrace armed".
+    if (found > 0) {
+      const char BEFORE = line[found - 1];
+      if (std::isalnum(static_cast<unsigned char>(BEFORE)) != 0 || BEFORE == '_' || BEFORE == '-') {
+        continue;
+      }
+    }
+    std::size_t at = found + PREFIX.size();
+    long numbers[3] = {-1, -1, -1};
+    bool ok = true;
+    for (int i = 0; i < count && ok; ++i) {
+      if (i > 0) {
+        ok = at < line.size() && line[at] == ' ';
+        ++at;
+      }
+      if (ok) {
+        const std::optional<long> VALUE = numberAt(line, at);
+        ok = VALUE.has_value();
+        numbers[i] = VALUE.value_or(-1);
+      }
+    }
+    if (ok) {
+      return WindowAck{numbers[0], numbers[1], count == 3 ? numbers[2] : -1};
+    }
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
+std::optional<WindowAck> parseArmAck(std::string_view line, std::string_view label) {
+  return parseAck(line, label, "armed", 2);
+}
+
+std::optional<WindowAck> parseDisarmAck(std::string_view line, std::string_view label) {
+  return parseAck(line, label, "disarmed", 3);
+}
+
+WindowWatch::WindowWatch(std::string outputPath, std::string label)
+    : path_(std::move(outputPath)), label_(std::move(label)) {}
+
+int WindowWatch::poll() {
+  const int FD = ::open(path_.c_str(), O_RDONLY | O_CLOEXEC);
+  if (FD < 0) {
+    return errno;
+  }
+  std::string fresh;
+  char buf[4096];
+  while (true) {
+    const ssize_t N = ::pread(FD, buf, sizeof(buf), static_cast<off_t>(offset_));
+    if (N < 0 && errno == EINTR) {
+      continue;
+    }
+    if (N < 0) {
+      const int ERR = errno;
+      ::close(FD);
+      return ERR;
+    }
+    if (N == 0) {
+      break;
+    }
+    fresh.append(buf, static_cast<std::size_t>(N));
+    offset_ += static_cast<std::uintmax_t>(N);
+  }
+  ::close(FD);
+  partial_ += fresh;
+  std::size_t start = 0;
+  for (std::size_t end = partial_.find('\n'); end != std::string::npos;
+       end = partial_.find('\n', start)) {
+    const std::string_view LINE(partial_.data() + start, end - start);
+    if (!armed_) {
+      armed_ = parseArmAck(LINE, label_);
+    }
+    if (!disarmed_) {
+      disarmed_ = parseDisarmAck(LINE, label_);
+    }
+    start = end + 1;
+  }
+  partial_.erase(0, start);
+  return 0;
+}
+
+ThreadNameScope::ThreadNameScope(const char* name) {
+#ifdef __linux__
+  renamed_ = ::pthread_getname_np(::pthread_self(), saved_, sizeof(saved_)) == 0 &&
+             ::pthread_setname_np(::pthread_self(), name) == 0;
+#else
+  (void)name;
+#endif
+}
+
+ThreadNameScope::~ThreadNameScope() {
+#ifdef __linux__
+  if (renamed_) {
+    (void)::pthread_setname_np(::pthread_self(), saved_);
+  }
+#endif
+}
+
+ArmThread::ArmThread()
+    : thread_([this] {
+#ifdef __linux__
+        (void)::pthread_setname_np(::pthread_self(), ARM_THREAD);
+#endif
+        tid_ = currentThreadId();
+        named_ = true;
+        while (!stop_) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(WINDOW_NAP_MS));
+        }
+      }) {
+  while (!named_.load()) {
+    std::this_thread::yield();
+  }
+}
+
+ArmThread::~ArmThread() {
+  stop_ = true;
+  if (thread_.joinable()) {
+    thread_.join();
+  }
+}
+
+bool waitUntil(const std::function<bool()>& done, int boundMs) {
+  const auto UNTIL =
+      std::chrono::steady_clock::now() + std::chrono::milliseconds(std::max(boundMs, 0));
+  while (true) {
+    if (done()) {
+      return true;
+    }
+    if (std::chrono::steady_clock::now() >= UNTIL) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(WINDOW_NAP_MS));
+  }
+}
+
+long currentThreadId() noexcept {
+#ifdef __linux__
+  return static_cast<long>(::syscall(SYS_gettid));
+#else
+  return -1;
+#endif
+}
+
+std::string foreignPidNamespace() {
+  constexpr const char* LINK = "/proc/self/ns/pid";
+  constexpr unsigned long HOST_PID_NAMESPACE_INODE = 0xEFFFFFFCUL;
+  struct stat info{};
+  if (::stat(LINK, &info) != 0 ||
+      static_cast<unsigned long>(info.st_ino) == HOST_PID_NAMESPACE_INODE) {
+    return "";
+  }
+  char target[64] = {};
+  const ssize_t LENGTH = ::readlink(LINK, target, sizeof(target) - 1);
+  return LENGTH > 0 ? std::string(target, static_cast<std::size_t>(LENGTH))
+                    : "pid:[" + std::to_string(info.st_ino) + "]";
+}
+
 } // namespace bpftrace_tool
 
 #ifdef __linux__
@@ -367,8 +602,9 @@ bool reportStop(const char* tag, const std::string& what, const HelperStopResult
 
 namespace { // Internal implementation details
 
-constexpr int START_GRACE_MS = 1000; // bpftrace attaches within this before measuring
+constexpr int PROBE_RUN_MS = 1000;   // how long a readiness probe copy runs before its stop
 constexpr int PROBE_SELF_EXIT_S = 5; // a readiness probe copy exits by itself after this
+constexpr const char* WINDOW_LABEL = "bpftrace"; // the capture window's acknowledgement label
 constexpr int INTERRUPT_WAIT_MS = 2000;
 constexpr int TERMINATE_WAIT_MS = 1000;
 constexpr int KILL_WAIT_MS = 1000;
@@ -442,9 +678,13 @@ void replacePid(std::string& text, long pid) {
   }
 }
 
-/** @brief `-q [-f json] <script>`: the arguments every launch passes. */
+/**
+ * @brief `-q -B none [-f json] <script>`: the arguments every launch passes.
+ * -B none writes each printed line out as it is printed, so the capture
+ * window's acknowledgements reach the output at once.
+ */
 std::vector<std::string> launchArgs(const std::string& format, const std::string& script) {
-  std::vector<std::string> args{"-q"};
+  std::vector<std::string> args{"-q", "-B", "none"};
   if (format == "json") {
     args.insert(args.end(), {"-f", "json"});
   }
@@ -515,34 +755,46 @@ ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& sto
                          "bpftrace prints its maps on SIGINT; check that this build handles it.");
 }
 
-/** @brief One tracer for one script, started and stopped through the plan's route. */
+/**
+ * @brief One tracer for one script: launched through the plan's route with the
+ * capture window appended to its copy, armed and disarmed through the window,
+ * and stopped through the route. Every failure is printed as a "[bpftrace]"
+ * line, stops the tracer at once and is kept as its outcome.
+ */
 class BpfRunner {
 public:
   BpfRunner(std::shared_ptr<const BpftracePlan> plan, std::string name, std::string scriptPath,
             std::string outdir)
       : plan_(std::move(plan)), name_(std::move(name)), scriptPath_(std::move(scriptPath)),
-        stem_(outputStem(scriptPath_)), outdir_(std::move(outdir)) {}
+        stem_(outputStem(scriptPath_)), outdir_(std::move(outdir)), what_("script '" + name_ + "'"),
+        stdoutPath_((std::filesystem::path(outdir_) / (stem_ + ".out." + plan_->format)).string()),
+        stderrPath_((std::filesystem::path(outdir_) / (stem_ + ".err.txt")).string()) {}
 
-  ~BpfRunner() { stop(); }
+  ~BpfRunner() { stopTracer(); }
 
   BpfRunner(const BpfRunner&) = delete;
   BpfRunner& operator=(const BpfRunner&) = delete;
 
-  bool start(pid_t pid) {
+  /**
+   * @brief Write the run's copy (the script with {{PID}} filled in and the
+   * capture window appended) and start its tracer, without waiting for it.
+   * @return False, with the outcome kept and printed, when it did not start.
+   */
+  bool launch(pid_t pid) {
     std::string src;
     if (const int ERR = readScript(scriptPath_, src); ERR != 0) {
       std::fprintf(stderr, "[bpftrace] cannot read script '%s' at %s: %s\n", name_.c_str(),
                    scriptPath_.c_str(), errnoText(ERR).c_str());
-      outcome_ = readinessResult(ReadinessCause::UNUSABLE,
-                                 "script '" + name_ + "' cannot be read at " + scriptPath_ + ": " +
-                                     errnoText(ERR),
-                                 "Keep the script where the check found it until the run ends.");
+      outcome_ =
+          readinessResult(ReadinessCause::UNUSABLE,
+                          what_ + " cannot be read at " + scriptPath_ + ": " + errnoText(ERR),
+                          "Keep the script where the check found it until the run ends.");
       return false;
     }
     replacePid(src, static_cast<long>(pid));
-    const std::filesystem::path OUTDIR(outdir_);
+    src += "\n" + bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(pid));
     std::error_code ec;
-    std::filesystem::create_directories(OUTDIR, ec);
+    std::filesystem::create_directories(outdir_, ec);
     const std::string TEMP_SCRIPT = runCopyPath(outdir_, stem_);
     {
       std::ofstream out(TEMP_SCRIPT);
@@ -551,75 +803,269 @@ public:
       if (!out) {
         std::fprintf(stderr, "[bpftrace] cannot write the run's copy of script '%s' to %s\n",
                      name_.c_str(), TEMP_SCRIPT.c_str());
-        outcome_ = readinessResult(ReadinessCause::UNUSABLE,
-                                   "the run's copy of script '" + name_ +
-                                       "' cannot be written to " + TEMP_SCRIPT,
-                                   "Make the capture folder writable, or select another root "
-                                   "with --profile-output-dir.");
+        outcome_ =
+            readinessResult(ReadinessCause::UNUSABLE,
+                            "the run's copy of " + what_ + " cannot be written to " + TEMP_SCRIPT,
+                            "Make the capture folder writable, or select another root "
+                            "with --profile-output-dir.");
         return false;
       }
     }
-    const std::string STDOUT_PATH = (OUTDIR / (stem_ + ".out." + plan_->format)).string();
-    const std::string STDERR_PATH = (OUTDIR / (stem_ + ".err.txt")).string();
-
     const std::vector<std::string> ARGS = launchArgs(plan_->format, TEMP_SCRIPT);
+    commandLine_ = commandLineOf(plan_->route.bpftrace, ARGS);
     std::vector<std::string> argv = plan_->route.command();
     argv.insert(argv.end(), ARGS.begin(), ARGS.end());
 
     // fork+exec of the resolved paths, never a shell: signals land on the
     // process this runner tracks, and the executed tools are the ones the
-    // check verified.
+    // check verified. No start grace: the capture window's arm is awaited.
     helper_ = std::make_unique<OwnedHelper>(plan_->route.stopPolicy(
         INTERRUPT_WAIT_MS, TERMINATE_WAIT_MS, KILL_WAIT_MS, plan_->context));
-    const HelperStart STARTED =
-        helper_->start(argv, STDOUT_PATH, STDERR_PATH, START_GRACE_MS, nullptr);
+    const HelperStart STARTED = helper_->start(argv, stdoutPath_, stderrPath_, 0, nullptr);
     if (!STARTED.started) {
       std::fprintf(stderr, "[bpftrace] script '%s' could not start: %s\n", name_.c_str(),
                    STARTED.errorTail.c_str());
       outcome_ = readinessResult(ReadinessCause::UNUSABLE,
-                                 "script '" + name_ + "' could not start: " + STARTED.errorTail,
+                                 what_ + " could not start: " + STARTED.errorTail,
                                  "Check that " + argv.front() + " can be executed.");
       helper_.reset();
       return false;
     }
+    watch_ = std::make_unique<bpftrace_tool::WindowWatch>(stdoutPath_, WINDOW_LABEL);
     if (STARTED.exitedEarly) {
-      const ReadinessResult WHY = bpftrace_tool::classifyAttachFailure(
-          plan_->route, "script '" + name_ + "'", commandLineOf(plan_->route.bpftrace, ARGS),
-          STARTED.errorTail, *plan_->context);
-      std::fprintf(stderr, "[bpftrace] the tracer exited during its start grace: %s\n",
-                   WHY.report.message.c_str());
-      if (!WHY.report.hint.empty()) {
-        std::fprintf(stderr, "[bpftrace] %s\n", WHY.report.hint.c_str());
-      }
-      outcome_ = WHY;
-      helper_.reset();
+      endedBeforeArm();
       return false;
     }
+    phase_ = Phase::LAUNCHED;
     return true;
   }
 
-  void stop() noexcept {
+  /**
+   * @brief One look while the arm is awaited: true once the tracer has
+   * acknowledged its arm, from @p armTid in process @p pid, or failed.
+   */
+  bool armSettled(pid_t pid, long armTid) {
+    if (phase_ != Phase::LAUNCHED) {
+      return true;
+    }
+    if (const int ERR = watch_->poll(); ERR != 0) {
+      fail(unreadableOutput(ERR));
+      return true;
+    }
+    if (const std::optional<bpftrace_tool::WindowAck>& ACK = watch_->armed()) {
+      if (ACK->pid != static_cast<long>(pid) || ACK->tid != armTid) {
+        fail(wrongTarget("arm probe", *ACK, pid, armTid, "the arm thread"));
+      } else {
+        phase_ = Phase::ARMED;
+      }
+      return true;
+    }
+    if (!helper_->running()) {
+      endedBeforeArm();
+      return true;
+    }
+    return false;
+  }
+
+  /** @brief After the arm's wait: a tracer that neither acknowledged nor failed has failed. */
+  void endArmWait() {
+    if (phase_ == Phase::LAUNCHED) {
+      fail(noArmAcknowledgement());
+    }
+  }
+
+  /** @brief True once the tracer acknowledged its arm, while nothing has failed. */
+  [[nodiscard]] bool armed() const noexcept { return phase_ == Phase::ARMED; }
+
+  /**
+   * @brief One look while the stop is awaited: true once an armed tracer has
+   * acknowledged the stop, ended, or failed, and for any other.
+   */
+  bool disarmSettled() {
+    if (phase_ != Phase::ARMED) {
+      return true;
+    }
+    if (const int ERR = watch_->poll(); ERR != 0) {
+      fail(unreadableOutput(ERR));
+      return true;
+    }
+    return watch_->disarmed().has_value() || !helper_->running();
+  }
+
+  /**
+   * @brief After the stop's wait: judge the capture, the stop acknowledged by
+   * @p stopTid in process @p pid, and stop the tracer.
+   */
+  void finish(pid_t pid, long stopTid) {
+    if (phase_ != Phase::ARMED) {
+      stopTracer();
+      return;
+    }
+    const std::optional<bpftrace_tool::WindowAck> ACK = watch_->disarmed();
+    if (ACK && (ACK->pid != static_cast<long>(pid) || ACK->tid != stopTid)) {
+      fail(wrongTarget("stop", *ACK, pid, stopTid, "the stopping thread"));
+      return;
+    }
+    if (!ACK && helper_->running()) {
+      fail(readinessResult(ReadinessCause::UNUSABLE,
+                           what_ + " did not acknowledge the stop within " +
+                               std::to_string(plan_->disarmWaitMs) +
+                               " ms, so the capture's validity could not be established",
+                           "Run the script by hand with " + plan_->route.bpftrace +
+                               "; its errors are in " + stderrPath_ + "."));
+      return;
+    }
+    // The stop acknowledged, or the tracer ended before it: stop it, judge
+    // the stop, then the output it left.
+    const HelperStopResult STOPPED = helper_->stop();
+    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+    helper_.reset();
+    phase_ = Phase::DONE;
+    ReadinessResult result = stopOutcome(what_, STOPPED, FLUSHED);
+    if (result.report.status == EnvReport::Status::Ok) {
+      result = judgeOutput(ACK ? ACK->recorded : -1, pid);
+    }
+    outcome_ = std::move(result);
+  }
+
+  /** @brief How this tracer's capture ended: empty while it runs, set by a failure or the stop. */
+  [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
+
+private:
+  enum class Phase { IDLE, LAUNCHED, ARMED, FAILED, DONE };
+
+  /** @brief Stop a tracer still running; the outcome of a stop nothing judged yet. */
+  void stopTracer() noexcept {
     if (!helper_) {
       return;
     }
     const HelperStopResult STOPPED = helper_->stop();
-    const std::string WHAT = "script '" + name_ + "'";
-    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", WHAT, STOPPED, plan_->route);
-    outcome_ = stopOutcome(WHAT, STOPPED, FLUSHED);
+    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+    if (!outcome_) {
+      outcome_ = stopOutcome(what_, STOPPED, FLUSHED);
+    }
     helper_.reset();
+    phase_ = Phase::DONE;
   }
 
-  /** @brief How this tracer's capture ended: empty while it runs, set by a failed start or the
-   * stop. */
-  [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
+  /** @brief Print @p why, keep it, and stop the tracer. */
+  void fail(ReadinessResult why) {
+    std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
+    if (!why.report.hint.empty()) {
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.hint.c_str());
+    }
+    outcome_ = std::move(why);
+    phase_ = Phase::FAILED;
+    if (helper_) {
+      const HelperStopResult STOPPED = helper_->stop();
+      (void)bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+      helper_.reset();
+    }
+  }
 
-private:
+  /** @brief The tracer ended before it acknowledged its arm: reap it and say why. */
+  void endedBeforeArm() {
+    const HelperStopResult ENDED = helper_->stop();
+    helper_.reset();
+    std::string errorText;
+    (void)readScript(stderrPath_, errorText);
+    ReadinessResult why =
+        WIFEXITED(ENDED.waitStatus) && WEXITSTATUS(ENDED.waitStatus) == 0
+            ? readinessResult(ReadinessCause::UNUSABLE,
+                              what_ + " ended by itself before it acknowledged its arm probe",
+                              "End the script only on the traced process's exit "
+                              "(sched_process_exit filtered on tid == {{PID}}).")
+            : bpftrace_tool::classifyAttachFailure(plan_->route, what_, commandLine_, errorText,
+                                                   *plan_->context);
+    std::fprintf(stderr, "[bpftrace] the tracer exited before it acknowledged its arm probe: %s\n",
+                 why.report.message.c_str());
+    if (!why.report.hint.empty()) {
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.hint.c_str());
+    }
+    outcome_ = std::move(why);
+    phase_ = Phase::FAILED;
+  }
+
+  /** @brief No arm acknowledgement within the plan's bound; the PID namespace named when foreign.
+   */
+  ReadinessResult noArmAcknowledgement() const {
+    const std::string DETAIL = what_ + " did not acknowledge its arm probe within " +
+                               std::to_string(plan_->armWaitMs) + " ms";
+    const std::string NAMESPACE = bpftrace_tool::foreignPidNamespace();
+    if (!NAMESPACE.empty()) {
+      return readinessResult(ReadinessCause::UNSUPPORTED,
+                             DETAIL + ": this process runs in PID namespace " + NAMESPACE +
+                                 ", not the host's, where bpftrace does not see its threads "
+                                 "under the ids it knows",
+                             "Run the benchmark on the host, or in a container started with "
+                             "--pid=host.");
+    }
+    return readinessResult(
+        ReadinessCause::UNUSABLE, DETAIL + ", so nothing shows that it sees this process",
+        "Run the script by hand with " + plan_->route.bpftrace +
+            " to see whether it attaches; its errors are in " + stderrPath_ + ".");
+  }
+
+  /** @brief An acknowledgement that names another process or thread. */
+  ReadinessResult wrongTarget(const char* of, const bpftrace_tool::WindowAck& ack, pid_t pid,
+                              long tid, const char* whose) const {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           what_ + " acknowledged its " + of + " for pid " +
+                               std::to_string(ack.pid) + " thread " + std::to_string(ack.tid) +
+                               ", not for this process, pid " + std::to_string(pid) + ", and " +
+                               whose + ", " + std::to_string(tid),
+                           "bpftrace numbers this process's threads otherwise than the process "
+                           "does; run the benchmark in the host's PID namespace.");
+  }
+
+  ReadinessResult unreadableOutput(int err) const {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           "the output of " + what_ + " cannot be read at " + stdoutPath_ + ": " +
+                               errnoText(err),
+                           "Keep the capture folder and its files until the run ends.");
+  }
+
+  /** @brief After a flushed stop: the output must be there and hold something. */
+  ReadinessResult judgeOutput(long recorded, pid_t pid) {
+    const int FD = ::open(stdoutPath_.c_str(), O_RDONLY | O_CLOEXEC);
+    if (FD < 0) {
+      ReadinessResult why = unreadableOutput(errno);
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
+      return why;
+    }
+    struct stat info{};
+    const bool SIZED = ::fstat(FD, &info) == 0;
+    ::close(FD);
+    if (!SIZED || info.st_size == 0) {
+      ReadinessResult why =
+          readinessResult(ReadinessCause::UNUSABLE,
+                          what_ + " stopped, but its output at " + stdoutPath_ + " is empty",
+                          "Keep the capture folder and its files until the run ends.");
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
+      return why;
+    }
+    return readinessResult(ReadinessCause::READY,
+                           what_ +
+                               " captured the measured repeats: its tracer acknowledged the "
+                               "arm and the stop for pid " +
+                               std::to_string(pid) + ", with " + std::to_string(recorded) +
+                               " sleeping switch-outs of its threads between them, and "
+                               "flushed its output",
+                           "");
+  }
+
   std::shared_ptr<const BpftracePlan> plan_;
   std::string name_;
   std::string scriptPath_;
   std::string stem_;
   std::string outdir_;
+  std::string what_;
+  std::string stdoutPath_;
+  std::string stderrPath_;
+  std::string commandLine_;
+  Phase phase_ = Phase::IDLE;
   std::unique_ptr<OwnedHelper> helper_;
+  std::unique_ptr<bpftrace_tool::WindowWatch> watch_;
   std::optional<ReadinessResult> outcome_;
 };
 
@@ -691,10 +1137,11 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     return *failure;
   }
 
-  // Run a copy of each selected script through the route, for the run's start
-  // grace, and stop it with the run's first stop signal. The copy also exits
-  // by itself, and it lives in a private directory: the run's own copy goes
-  // in a capture folder that does not exist before the run.
+  // Run a copy of each selected script, with the capture window the run
+  // appends, through the route for a second, and stop it with the run's first
+  // stop signal. The copy also exits by itself, and it lives in a private
+  // directory: the run's own copy goes in a capture folder that does not
+  // exist before the run.
   const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const ProbeScratch SCRATCH(ctx);
   std::optional<ReadinessResult> caveat;
@@ -707,6 +1154,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     runCommands += (runCommands.empty() ? "" : ", ") + RUN_COMMAND;
     std::string copy = sources[i];
     replacePid(copy, static_cast<long>(ctx.self()));
+    copy += "\n" + bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(ctx.self()));
     copy += "\ninterval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
     const std::string COPY_PATH = SCRATCH.write("probe" + std::to_string(i) + ".bt", copy);
     if (COPY_PATH.empty()) {
@@ -724,7 +1172,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     probe.what = "script '" + plan->scripts[i] + "'";
     probe.commandLine = commandLineOf(plan->route.bpftrace, probe.toolArgs);
     probe.runCommand = RUN_COMMAND;
-    probe.graceMs = START_GRACE_MS;
+    probe.graceMs = PROBE_RUN_MS;
     probe.selfExitMs = PROBE_SELF_EXIT_S * 1000;
     auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
     if (verdict && verdict->report.status == EnvReport::Status::Error) {
@@ -742,10 +1190,9 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
   }
   std::string message =
       names + ": " + (plan->scripts.size() == 1 ? "a probe copy" : "a probe copy of each") +
-      " with a " + std::to_string(PROBE_SELF_EXIT_S) + " s self-exit stayed running for the " +
-      std::to_string(START_GRACE_MS) + " ms start grace " + plan->route.describe() +
-      " and stopped on SIGINT" + (SUDO ? " through sudo -n kill" : "") + " (probe with " +
-      plan->route.bpftrace + ")";
+      " with a " + std::to_string(PROBE_SELF_EXIT_S) + " s self-exit stayed running for " +
+      std::to_string(PROBE_RUN_MS) + " ms " + plan->route.describe() + " and stopped on SIGINT" +
+      (SUDO ? " through sudo -n kill" : "") + " (probe with " + plan->route.bpftrace + ")";
   if (plan->route.privilege.route == PrivilegeRoute::ALREADY_ROOT && plan->route.privilege.optIn) {
     message += "; running as root; BENCH_SUDO not needed";
   }
@@ -794,6 +1241,12 @@ public:
     }
   }
 
+  /**
+   * @brief Launch every script's tracer, then wait, as the capture window's
+   * WAIT_THREAD while an ArmThread naps, until each has acknowledged its arm
+   * or failed, up to the plan's armWaitMs. Every tracer is launched before
+   * any is awaited, so no run copy is written while a tracer runs.
+   */
   void beforeMeasure() {
     if (!enabled_) {
       return;
@@ -803,17 +1256,61 @@ public:
       // One tracer per started script: each runner owns its own process.
       auto runner = std::make_unique<BpfRunner>(plan_, plan_->scripts[i], plan_->scriptPaths[i],
                                                 artifactDir_);
-      if (runner->start(TARGET)) {
+      if (runner->launch(TARGET)) {
         runners_.push_back(std::move(runner));
       } else {
         record(runner->outcome());
       }
     }
+    if (runners_.empty()) {
+      return;
+    }
+    {
+      const bpftrace_tool::ThreadNameScope WAITING(bpftrace_tool::WAIT_THREAD);
+      const bpftrace_tool::ArmThread ARM;
+      (void)bpftrace_tool::waitUntil(
+          [&] {
+            bool settled = true;
+            for (auto& runner : runners_) {
+              settled = runner->armSettled(TARGET, ARM.tid()) && settled;
+            }
+            return settled;
+          },
+          plan_->armWaitMs);
+    }
+    for (auto& runner : runners_) {
+      runner->endArmWait();
+      if (!runner->armed()) {
+        record(runner->outcome());
+      }
+    }
   }
 
+  /**
+   * @brief Wait, as the capture window's STOP_THREAD, until every armed tracer
+   * has acknowledged the stop or ended, up to the plan's disarmWaitMs; then
+   * stop and judge each.
+   */
   void afterMeasure() {
+    if (runners_.empty()) {
+      return;
+    }
+    const pid_t TARGET = ::getpid();
+    const long STOPPING = bpftrace_tool::currentThreadId();
+    {
+      const bpftrace_tool::ThreadNameScope STOPPING_NAME(bpftrace_tool::STOP_THREAD);
+      (void)bpftrace_tool::waitUntil(
+          [&] {
+            bool settled = true;
+            for (auto& runner : runners_) {
+              settled = runner->disarmSettled() && settled;
+            }
+            return settled;
+          },
+          plan_->disarmWaitMs);
+    }
     for (auto& runner : runners_) {
-      runner->stop();
+      runner->finish(TARGET, STOPPING);
       record(runner->outcome());
     }
     runners_.clear();
