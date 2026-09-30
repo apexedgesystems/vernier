@@ -1409,12 +1409,55 @@ fn run_reports_the_benchmark_exit_status() {
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
 /// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
 /// and `callgrind_annotate` one line naming its profile (`FAKE_ANNOTATE=fail`
-/// fails instead).
+/// fails instead). compute-sanitizer is `SANITIZER_STAND_IN`.
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
     bench: std::path::PathBuf,
 }
+
+/// A compute-sanitizer stand-in (bash, for its pattern replacement) that
+/// writes the report `FAKE_SANITIZER` names, in the real tool's words
+/// (compute-sanitizer 2025.4.0, recorded runs), and ends as the tool does:
+/// errors found end with its `--error-exitcode` value (0 without one, the
+/// tool's default), otherwise with the benchmark's own status. It reads its
+/// `--log-file` value as the tool does: `%%` is one `%`, and any other `%`
+/// is refused, with status 255 and no report.
+const SANITIZER_STAND_IN: &str = r#"#!/bin/bash
+echo "compute-sanitizer wrap=$VERNIER_EXTERNAL_WRAP $*" >> '{log}'
+log=""
+ec=0
+prev=""
+for a in "$@"; do
+  [ "$prev" = --log-file ] && log="$a"
+  [ "$prev" = --error-exitcode ] && ec="$a"
+  prev="$a"
+done
+if [[ "${log//\%\%/}" == *%* ]]; then
+  echo "fake compute-sanitizer: a '%' macro in the log path $log" >&2
+  exit 255
+fi
+log="${log//\%\%/%}"
+report() { printf '========= %s\n' 'COMPUTE-SANITIZER' "$@" > "$log"; }
+case "${FAKE_SANITIZER:-clean}" in
+  clean) report 'ERROR SUMMARY: 0 errors'; exit 0 ;;
+  findings) report 'Invalid __global__ write of size 4 bytes' 'ERROR SUMMARY: 1 error'; exit "$ec" ;;
+  app-fail) report 'Target application returned an error' 'ERROR SUMMARY: 0 errors'; exit 1 ;;
+  app-fail-findings)
+    report 'Invalid __global__ write of size 4 bytes' 'Target application returned an error' \
+      'ERROR SUMMARY: 3 errors'
+    [ "$ec" = 0 ] && exit 1
+    exit "$ec" ;;
+  collision) report 'Target application returned an error' 'ERROR SUMMARY: 0 errors'; exit 5 ;;
+  abnormal)
+    report "Error: process didn't terminate successfully" 'Target application returned an error' \
+      'ERROR SUMMARY: 0 errors'
+    exit 9 ;;
+  startup) report 'Error: Target application terminated before first instrumented API call'; exit 255 ;;
+  truncated) report 'Invalid __global__ write of size 4 bytes'; exit "${FAKE_SANITIZER_EXIT:-5}" ;;
+  no-report) exit 5 ;;
+esac
+"#;
 
 fn route_rig(programs: &[&str]) -> RouteRig {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1457,7 +1500,12 @@ fi
         write_executable(path, &script);
     };
     for program in programs {
-        write(&tools.join(program), program);
+        if *program == "compute-sanitizer" {
+            let script = SANITIZER_STAND_IN.replace("{log}", &log.display().to_string());
+            write_executable(&tools.join(program), &script);
+        } else {
+            write(&tools.join(program), program);
+        }
     }
     let bench = dir.path().join("fake_bench");
     write(&bench, "bench");
@@ -1594,8 +1642,8 @@ fn run_compute_sanitizer_tools() {
         assert_eq!(code, 0, "{tool}: {err}");
         assert!(
             log.starts_with(&format!(
-                "compute-sanitizer wrap=compute-sanitizer --tool={tool} --log-file \
-                 bench-out/fake_bench.compute-sanitizer/sanitizer.log {}",
+                "compute-sanitizer wrap=compute-sanitizer --tool={tool} --error-exitcode 5 \
+                 --log-file bench-out/fake_bench.compute-sanitizer/sanitizer.log {}",
                 rig.bench.display()
             )),
             "{tool}: {log}"
@@ -2128,5 +2176,187 @@ fn profile_all_reports_a_folder_it_cannot_create() {
     assert!(
         err.ends_with("Error: 2 of 2 profile runs failed: gperf, perf\n"),
         "{err}"
+    );
+}
+
+/* ----------------------------- Run: Compute Sanitizer ----------------------------- */
+
+/// The report path of a compute-sanitizer run of the rig's benchmark.
+const SANITIZER_REPORT: &str = "bench-out/fake_bench.compute-sanitizer/sanitizer.log";
+
+/// Run `bench run --profile compute-sanitizer` on a rig whose stand-in writes
+/// the report `scenario` names; returns the exit status, stdout, stderr and
+/// the stand-ins' log.
+fn run_sanitizer(scenario: &str, extra: &[(&str, &str)]) -> (i32, String, String, String) {
+    let rig = route_rig(&["compute-sanitizer"]);
+    let mut env = vec![("FAKE_SANITIZER", scenario)];
+    env.extend_from_slice(extra);
+    run_rig_env(&rig, &["--profile", "compute-sanitizer"], &env)
+}
+
+/// @test A clean application with no findings passes: the tool's report counts
+/// no errors and the run prints where it is.
+#[test]
+fn run_compute_sanitizer_clean() {
+    let (code, stdout, err, log) = run_sanitizer("clean", &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        stdout.contains(&format!(
+            "[bench] compute-sanitizer wrote {SANITIZER_REPORT} ("
+        )),
+        "{stdout}"
+    );
+    assert!(log.contains("--error-exitcode 5"), "{log}");
+}
+
+/// @test A successful application with a reported invalid access fails the
+/// run, the count taken from the report's summary, and names the report.
+#[test]
+fn run_compute_sanitizer_findings() {
+    let (code, _, err, _) = run_sanitizer("findings", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: compute-sanitizer reported 1 error in the benchmark; the report is \
+             {SANITIZER_REPORT} (the tool exited with status 5)\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test A failing application keeps its own status when the tool finds
+/// nothing; when the tool also finds errors, it returns its own status in
+/// place of the application's, and the run says both.
+#[test]
+fn run_compute_sanitizer_application_failure() {
+    let (code, _, err, _) = run_sanitizer("app-fail", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with("Error: the benchmark exited with status 1\n"),
+        "{err}"
+    );
+    let (code, _, err, _) = run_sanitizer("app-fail-findings", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: compute-sanitizer reported 3 errors in the benchmark; the report is \
+             {SANITIZER_REPORT} (the tool exited with status 5); the report also says the \
+             benchmark returned an error, whose status the tool does not pass on\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test A tool that fails before the benchmark ran to its end is a
+/// collection failure in the tool's own words, not the benchmark's status.
+#[test]
+fn run_compute_sanitizer_startup_failure() {
+    let (code, _, err, _) = run_sanitizer("startup", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: --profile compute-sanitizer failed: collection: compute-sanitizer \
+             reported its own error, \"Error: Target application terminated before first \
+             instrumented API call\" (the tool exited with status 255); the report is \
+             {SANITIZER_REPORT}\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test An absent or truncated report is named by its path and nothing is
+/// counted, whatever the tool's status.
+#[test]
+fn run_compute_sanitizer_report_missing() {
+    let (code, _, err, _) = run_sanitizer("no-report", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: --profile compute-sanitizer failed: completion: compute-sanitizer exited \
+             with status 5 and wrote no report at {SANITIZER_REPORT}: nothing can be counted\n"
+        )),
+        "{err}"
+    );
+    for status in ["5", "0"] {
+        let (code, _, err, _) = run_sanitizer("truncated", &[("FAKE_SANITIZER_EXIT", status)]);
+        assert_eq!(code, 1, "exit {status}: {err}");
+        assert!(
+            err.ends_with(&format!(
+                "Error: --profile compute-sanitizer failed: completion: compute-sanitizer \
+                 exited with status {status}, and its report {SANITIZER_REPORT} holds no \
+                 error summary: it is incomplete, and nothing in it is counted\n"
+            )),
+            "exit {status}: {err}"
+        );
+        assert!(!err.contains("reported"), "exit {status}: {err}");
+    }
+}
+
+/// @test An application that returns the reserved status itself is reported
+/// by its own status, never as a finding.
+#[test]
+fn run_compute_sanitizer_status_collision() {
+    let (code, stdout, err, _) = run_sanitizer("collision", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with("Error: the benchmark exited with status 5\n"),
+        "{err}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "[bench] compute-sanitizer's report {SANITIZER_REPORT} counts no errors: status 5 \
+             is the benchmark's own"
+        )),
+        "{stdout}"
+    );
+    assert!(!err.contains("reported"), "{err}");
+}
+
+/// @test A benchmark that did not end normally under the tool is reported in
+/// the report's words, not as a plain status.
+#[test]
+fn run_compute_sanitizer_abnormal_end() {
+    let (code, _, err, _) = run_sanitizer("abnormal", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: the benchmark did not end normally under compute-sanitizer, whose report \
+             says \"Error: process didn't terminate successfully\" (the tool exited with status \
+             9); the report is {SANITIZER_REPORT}\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test An output folder holding '%' reaches the tool with each '%' doubled,
+/// and the report lands in the folder as named.
+#[test]
+fn run_compute_sanitizer_log_path_with_percent() {
+    let rig = route_rig(&["compute-sanitizer"]);
+    let (code, stdout, err, log) = run_rig_env(
+        &rig,
+        &[
+            "--profile",
+            "compute-sanitizer",
+            "--profile-output-dir",
+            "out%p",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        log.contains("--log-file out%%p/fake_bench.compute-sanitizer/sanitizer.log"),
+        "{log}"
+    );
+    let report = rig
+        .dir
+        .path()
+        .join("out%p/fake_bench.compute-sanitizer/sanitizer.log");
+    assert!(report.is_file(), "{stdout}{err}");
+    assert!(
+        stdout.contains(
+            "[bench] compute-sanitizer wrote out%p/fake_bench.compute-sanitizer/sanitizer.log ("
+        ),
+        "{stdout}"
     );
 }

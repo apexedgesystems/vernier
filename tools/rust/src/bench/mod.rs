@@ -35,13 +35,14 @@ impl fmt::Display for BenchmarkExit {
     }
 }
 
-/// A requested profile that failed after its benchmark ran: its output is
-/// missing or not this run's (completion), or its analysis failed (analysis).
+/// A requested profile that failed after its benchmark ran: its tool failed
+/// on its own (collection), its output is missing, incomplete or not this
+/// run's (completion), or its analysis failed (analysis).
 #[derive(Debug)]
 pub struct ProfileFailure {
     /// The request as the command line states it, e.g. `--profile massif`.
     pub request: String,
-    /// "completion" or "analysis".
+    /// "collection", "completion" or "analysis".
     pub stage: &'static str,
     pub message: String,
 }
@@ -53,6 +54,68 @@ impl fmt::Display for ProfileFailure {
             "{} failed: {}: {}",
             self.request, self.stage, self.message
         )
+    }
+}
+
+/// A compute-sanitizer run whose report shows what failed: errors the tool
+/// found in the benchmark, or a benchmark that did not end normally under it.
+/// A count comes only from the report's summary.
+#[derive(Debug)]
+pub enum SanitizerFailure {
+    /// The report's summary counts errors in the benchmark.
+    Findings {
+        errors: u64,
+        report: PathBuf,
+        /// How the tool ended, e.g. "exited with status 5".
+        status: String,
+        /// The report says the benchmark itself returned an error; the tool
+        /// returns its own status in place of the benchmark's.
+        benchmark_failed: bool,
+    },
+    /// The report counts no errors and says the benchmark did not end normally.
+    AbnormalEnd {
+        line: String,
+        report: PathBuf,
+        status: String,
+    },
+}
+
+impl fmt::Display for SanitizerFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            SanitizerFailure::Findings {
+                errors,
+                report,
+                status,
+                benchmark_failed,
+            } => {
+                write!(
+                    f,
+                    "compute-sanitizer reported {errors} error{} in the benchmark; the \
+                     report is {} (the tool {status})",
+                    if *errors == 1 { "" } else { "s" },
+                    report.display()
+                )?;
+                if *benchmark_failed {
+                    write!(
+                        f,
+                        "; the report also says the benchmark returned an error, whose \
+                         status the tool does not pass on"
+                    )?;
+                }
+                Ok(())
+            }
+            SanitizerFailure::AbnormalEnd {
+                line,
+                report,
+                status,
+            } => write!(
+                f,
+                "the benchmark did not end normally under compute-sanitizer, whose report \
+                 says \"{line}\" (the tool {status}); the report is {}",
+                report.display()
+            ),
+        }
     }
 }
 
@@ -68,6 +131,9 @@ pub enum Error {
     Benchmark(BenchmarkExit),
     /// The benchmark succeeded and its requested profile did not.
     Profile(ProfileFailure),
+    /// A compute-sanitizer run whose report shows errors in the benchmark, or
+    /// a benchmark that did not end normally under the tool.
+    Sanitizer(SanitizerFailure),
     /// `bench profile-all`: these of `total` profile runs failed.
     ProfileAll {
         failed: Vec<String>,
@@ -95,6 +161,7 @@ impl fmt::Display for Error {
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
+            Error::Sanitizer(failure) => write!(f, "{failure}"),
             Error::ProfileAll { failed, total } => write!(
                 f,
                 "{} of {total} profile runs failed: {}",

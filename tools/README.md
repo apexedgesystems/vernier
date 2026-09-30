@@ -234,6 +234,17 @@ has written it: `callgrind_annotate --auto=yes <profile>`, its first 40 lines
 printed; a missing or failing `callgrind_annotate` fails the run as
 `analysis:`, and the profile is kept.
 
+**compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
+tool ends with status 5 when it reports errors, whatever the benchmark itself
+returned, and otherwise with the benchmark's own status. `bench run` reads
+this run's `sanitizer.log` to tell them apart. Errors counted by its `ERROR
+SUMMARY` line fail the run, and the count printed is that line's; with no
+errors counted, the status is the benchmark's own, 5 included. A report that
+holds only the tool's own `Error:` line fails the run as `collection:`, a
+missing report or one without its summary as `completion:`, and nothing is
+counted. The `--log-file` value has each `%` of the folder doubled, since the
+tool reads `%p`, `%q{VAR}` and `%%` in it as macros.
+
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 
 **How a run ends.** `bench run` exits 0 when the benchmark does and 1
@@ -243,6 +254,7 @@ otherwise, and its last line names how the benchmark ended:
 Error: the benchmark exited with status 1
 Error: the benchmark was ended by signal 9
 Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+Error: compute-sanitizer reported 3 errors in the benchmark; the report is bench-out/probe.compute-sanitizer/sanitizer.log (the tool exited with status 5)
 ```
 
 Status 4 means the tests passed and the `--profile` request failed: the

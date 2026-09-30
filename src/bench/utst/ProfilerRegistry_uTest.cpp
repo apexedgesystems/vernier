@@ -15,6 +15,7 @@
  * the tests passed, and a run that created no profiler says so.
  */
 
+#include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
@@ -855,7 +856,12 @@ std::vector<std::vector<std::string>> sharedTableRows(const std::string& kind) {
   return rows;
 }
 
-/** @test The aliases and the profile-failed status are the ones `bench run` uses. */
+/**
+ * @test The aliases and the profile-failed status are the ones `bench run`
+ * uses, and the status `bench run` reserves for compute-sanitizer's findings
+ * is none that a benchmark ends with: 1 (a test failed), 2 (the watchdog or a
+ * refused flag), BENCH_ABI_MISMATCH_EXIT_CODE or BENCH_PROFILE_FAILED_EXIT_CODE.
+ */
 TEST(ProfilerRoutesTable, AliasesAndExitStatus) {
   const auto ALIASES = sharedTableRows("alias");
   ASSERT_GE(ALIASES.size(), 16U) << "the shared table was not read";
@@ -864,9 +870,15 @@ TEST(ProfilerRoutesTable, AliasesAndExitStatus) {
     EXPECT_EQ(ProfilerRegistry::canonicalName(row[1]), row[2]) << "alias " << row[1];
   }
   const auto EXITS = sharedTableRows("exit");
-  ASSERT_EQ(EXITS.size(), 1U);
+  ASSERT_EQ(EXITS.size(), 2U);
   EXPECT_EQ(EXITS[0][1], "profile-failed");
   EXPECT_EQ(std::to_string(vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE), EXITS[0][2]);
+  ASSERT_EQ(EXITS[1][1], "tool-findings");
+  const int FINDINGS = std::stoi(EXITS[1][2]);
+  for (const int BENCHMARK_STATUS : {0, 1, 2, vernier::bench::BENCH_ABI_MISMATCH_EXIT_CODE,
+                                     vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE}) {
+    EXPECT_NE(FINDINGS, BENCHMARK_STATUS);
+  }
 }
 
 } // namespace

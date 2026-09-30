@@ -36,16 +36,23 @@ route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --leak-check=ful
 route	helgrind	-	valgrind	--tool=helgrind --log-file=<dir>/helgrind.log <bin>
 route	helgrind	drd	valgrind	--tool=drd --log-file=<dir>/helgrind.log <bin>
 route	heaptrack	-	heaptrack	-o <dir>/run <bin>
-route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
 route	nsight	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
 route	nsys	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
 route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	nsight	ncu	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+#
+# escape   <--profile>  <--profile-output-dir>  <the --log-file value the route writes>
+# (compute-sanitizer expands %p, %q{VAR} and %% in the value and refuses any
+# other '%': each '%' of the folder is doubled; the report lands in the folder
+# as named)
+escape	compute-sanitizer	out%p	out%%p/my_test.compute-sanitizer/sanitizer.log
+escape	compute-sanitizer	a%%b%x	a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
 #
 # unwrapped   <--profile>  (the benchmark runs itself; --profile-args reach it untouched)
 unwrapped	perf
@@ -70,4 +77,7 @@ refuse	heaptrack	x	'x' is not a mode of heaptrack, which takes none
 refuse	ncu	compute	'compute' is not a mode of ncu, which takes none
 #
 # exit   <meaning>  <status>
+# profile-failed: the tests passed and the requested profile failed (libbench)
+# tool-findings: compute-sanitizer reported errors (the route's --error-exitcode)
 exit	profile-failed	4
+exit	tool-findings	5

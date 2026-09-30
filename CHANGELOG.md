@@ -314,6 +314,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **`bench run --profile compute-sanitizer` fails when the tool reports
+  errors** -- the tool's default exit status is 0, so a benchmark whose kernels
+  it reported as faulty passed, and an output folder holding `%` broke its log
+  path. `bench run` passes `--error-exitcode 5`, counts the errors from this
+  run's report, fails naming the report, and leaves the benchmark its own
+  status when the report counts none. **Action needed:** a job that passed
+  with sanitizer findings now fails; a manual wrap passes `--error-exitcode`
+  itself.
 - **`bench profile-all` fails when a profiler fails** -- it printed a failed
   profiler's error, went on, and exited 0 whatever happened. It still runs
   every profiler, then prints one line per run (completed, or failed with the

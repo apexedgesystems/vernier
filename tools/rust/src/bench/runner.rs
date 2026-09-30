@@ -10,18 +10,25 @@
 //! passive instead of re-attaching or printing manual-wrap hints; for
 //! nsight's nsys route the runner also extracts the canonical `nsys stats`
 //! reports after the run (the .nsys-rep only exists once the wrapped process
-//! exits).
+//! exits), and for compute-sanitizer it reads the tool's report to tell the
+//! errors the tool found from the benchmark's own status.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use super::workflow::canonical_backend;
-use super::{find_in_path, BenchmarkExit, Error, ProfileFailure};
+use super::{find_in_path, BenchmarkExit, Error, ProfileFailure, SanitizerFailure};
 
 /// Exit status of a benchmark whose tests passed and whose requested profile
 /// failed: libbench's `BENCH_PROFILE_FAILED_EXIT_CODE` (ProfilerRegistry.hpp).
 pub const PROFILE_FAILED_EXIT_CODE: i32 = 4;
+
+/// Exit status the compute-sanitizer route asks the tool to return when it
+/// reports errors in the benchmark (`--error-exitcode`). Distinct from every
+/// status libbench ends a benchmark with (1 to 4); the report, not this
+/// status, says whether and how many errors were found.
+pub const TOOL_FINDINGS_EXIT_CODE: i32 = 5;
 
 /* ----------------------------- RunConfig ----------------------------- */
 
@@ -209,6 +216,17 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 
     let status = cmd.status()?;
 
+    // compute-sanitizer's status mixes its own verdict with the benchmark's:
+    // its report decides which one this is.
+    if let Some(ref r) = route {
+        if r.program == "compute-sanitizer" {
+            check_sanitizer_run(
+                &r.dir.join("sanitizer.log"),
+                status,
+                &request_text(&r.tool, cfg.profile_args.as_deref()),
+            )?;
+        }
+    }
     if let Some(end) = benchmark_exit(status) {
         return Err(Error::Benchmark(end));
     }
@@ -668,8 +686,10 @@ fn route_for(
                 "compute-sanitizer",
                 vec![
                     format!("--tool={sanitizer}"),
+                    "--error-exitcode".into(),
+                    TOOL_FINDINGS_EXIT_CODE.to_string(),
                     "--log-file".into(),
-                    format!("{d}/sanitizer.log"),
+                    format!("{}/sanitizer.log", escape_percent(&d)),
                 ],
                 &[&["sanitizer.log"]],
             )
@@ -934,6 +954,111 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
         dir.display()
     );
     Ok(())
+}
+
+/// compute-sanitizer's `--log-file` value for @p path: the tool expands `%p`,
+/// `%q{VAR}` and `%%` in it and refuses any other `%`, so each `%` of the
+/// path is doubled.
+fn escape_percent(path: &str) -> String {
+    path.replace('%', "%%")
+}
+
+/// The error count of a compute-sanitizer report: its last `ERROR SUMMARY: N
+/// error(s)` line, or `None` when it has none (a report cut short, or a tool
+/// that stopped before summarizing).
+fn sanitizer_error_count(report: &str) -> Option<u64> {
+    report.lines().rev().find_map(|line| {
+        let rest = line.split_once("ERROR SUMMARY:")?.1.trim();
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let count = rest[..digits].parse().ok()?;
+        rest[digits..]
+            .trim_start()
+            .starts_with("error")
+            .then_some(count)
+    })
+}
+
+/// The first line of @p report holding @p text, without the tool's
+/// `=========` prefix.
+fn report_line<'a>(report: &'a str, text: &str) -> Option<&'a str> {
+    report
+        .lines()
+        .find(|line| line.contains(text))
+        .map(|line| line.trim_start_matches('=').trim())
+}
+
+/// Decide a finished compute-sanitizer run from this run's report and the
+/// tool's exit status. The route passes `--error-exitcode 5`, and the tool
+/// then returns 5 whenever it reports errors, whatever the benchmark itself
+/// returned; without errors it returns the benchmark's own status. So the
+/// report's summary decides: errors counted there are findings; no errors
+/// leave the status to the benchmark (a benchmark returning 5 itself is not a
+/// finding), unless the report says the benchmark did not end normally. A
+/// report without its summary is the tool's own failure when it holds the
+/// tool's `Error:` line (collection), and otherwise incomplete (completion);
+/// no report at all is a completion failure naming its path. Nothing is
+/// counted without a summary. `Ok` hands the status on as the benchmark's.
+fn check_sanitizer_run(report: &Path, status: ExitStatus, request: &str) -> Result<(), Error> {
+    let how = describe_status(status);
+    let Ok(text) = fs::read_to_string(report) else {
+        return Err(profile_failure(
+            request,
+            "completion",
+            format!(
+                "compute-sanitizer {how} and wrote no report at {}: nothing can be counted",
+                report.display()
+            ),
+        ));
+    };
+    match sanitizer_error_count(&text) {
+        Some(0) => {
+            if status.success() {
+                return Ok(());
+            }
+            if let Some(line) = report_line(&text, "process didn't terminate successfully") {
+                return Err(Error::Sanitizer(SanitizerFailure::AbnormalEnd {
+                    line: line.to_string(),
+                    report: report.to_path_buf(),
+                    status: how,
+                }));
+            }
+            if status.code() == Some(TOOL_FINDINGS_EXIT_CODE) {
+                println!(
+                    "[bench] compute-sanitizer's report {} counts no errors: status {} is \
+                     the benchmark's own",
+                    report.display(),
+                    TOOL_FINDINGS_EXIT_CODE
+                );
+            }
+            Ok(())
+        }
+        Some(errors) => Err(Error::Sanitizer(SanitizerFailure::Findings {
+            errors,
+            report: report.to_path_buf(),
+            status: how,
+            benchmark_failed: report_line(&text, "Target application returned an error").is_some(),
+        })),
+        None => Err(match report_line(&text, "Error:") {
+            Some(line) => profile_failure(
+                request,
+                "collection",
+                format!(
+                    "compute-sanitizer reported its own error, \"{line}\" (the tool {how}); \
+                     the report is {}",
+                    report.display()
+                ),
+            ),
+            None => profile_failure(
+                request,
+                "completion",
+                format!(
+                    "compute-sanitizer {how}, and its report {} holds no error summary: it \
+                     is incomplete, and nothing in it is counted",
+                    report.display()
+                ),
+            ),
+        }),
+    }
 }
 
 /* ----------------------------- Helpers ----------------------------- */
@@ -1234,10 +1359,57 @@ mod tests {
                 "{row:?}: {text}"
             );
         }
+        for row in table_rows("escape") {
+            let tool = canonical_backend(&row[1]);
+            let route = route_for(tool, None, bin, Some(Path::new(&row[2])))
+                .unwrap_or_else(|e| panic!("{row:?} refused: {e}"))
+                .unwrap_or_else(|| panic!("{row:?} has no route"));
+            let at = route.args.iter().position(|a| a == "--log-file");
+            let value = at.and_then(|i| route.args.get(i + 1));
+            assert_eq!(value, Some(&row[3]), "{row:?}: {:?}", route.args);
+            assert_eq!(
+                route.dir,
+                Path::new(&row[2]).join(format!("my_test.{tool}")),
+                "{row:?}: the folder keeps its own name"
+            );
+        }
         let exits = table_rows("exit");
-        assert_eq!(exits.len(), 1);
+        assert_eq!(exits.len(), 2);
         assert_eq!(exits[0][1], "profile-failed");
         assert_eq!(exits[0][2], PROFILE_FAILED_EXIT_CODE.to_string());
+        assert_eq!(exits[1][1], "tool-findings");
+        assert_eq!(exits[1][2], TOOL_FINDINGS_EXIT_CODE.to_string());
+    }
+
+    /// @test A report's error count comes from its last summary line, and a
+    /// report without one has no count.
+    #[test]
+    fn sanitizer_error_count_reads_the_summary() {
+        let head = "========= COMPUTE-SANITIZER\n";
+        for (text, count) in [
+            ("========= ERROR SUMMARY: 0 errors\n", Some(0)),
+            ("========= ERROR SUMMARY: 1 error\n", Some(1)),
+            ("========= ERROR SUMMARY: 259 errors\n", Some(259)),
+            ("========= Invalid __global__ write of size 4 bytes\n", None),
+            ("========= ERROR SUMMARY: many errors\n", None),
+            ("========= ERROR SUMMARY: 3 warnings\n", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                sanitizer_error_count(&format!("{head}{text}")),
+                count,
+                "{text:?}"
+            );
+        }
+    }
+
+    /// @test compute-sanitizer's --log-file value doubles every '%' and
+    /// nothing else.
+    #[test]
+    fn escape_percent_doubles_each_percent() {
+        assert_eq!(escape_percent("out/a.b"), "out/a.b");
+        assert_eq!(escape_percent("out%p"), "out%%p");
+        assert_eq!(escape_percent("%%q{X}%"), "%%%%q{X}%%");
     }
 
     /// @test wrap_artifact_dir follows the <root>/<stem>.<tool> convention.
