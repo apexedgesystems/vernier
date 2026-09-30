@@ -362,7 +362,7 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
     selected
     hint
   )
-  expect_eq("${_message}" "valgrind binary not found on PATH" "selected message")
+  expect_eq("${_message}" "missing: valgrind not found on PATH" "selected message")
   run(text --profile massif --profile-check)
   expect_has(
     "${text_OUT}" "Selected request: --profile massif\n  [FAIL] massif     ${_message}"
@@ -382,6 +382,35 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
     "[profile] --profile massif failed; the run exits with status 4:\n[profile]   massif: ${_message}\n"
     "run-end report"
   )
+
+elseif (CASE STREQUAL "MassifUnwrappedFails")
+  # valgrind is on PATH, so the doctor starts massif; the run is not under
+  # valgrind, so it collects nothing and fails, printing the wrap command.
+  fake(fake_valgrind.sh valgrind)
+  selected_row(doctor --profile massif --profile-args pages)
+  expect_eq("${doctor_STATUS}" "ok" "doctor status (the tool starts)")
+  expect_has("${doctor_MESSAGE}" "valgrind starts massif with --pages-as-heap=yes" "doctor message")
+  read_log(_before_run)
+  run(run --profile massif --profile-args pages ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  set(_message
+      "missing: massif collects only when valgrind's massif runs the process, and valgrind does not run this one"
+  )
+  set(_hint
+      "Wrap it: valgrind --tool=massif --pages-as-heap=yes --massif-out-file=./massif.out <this-binary> --profile massif --profile-args pages [...]; or run it with bench run --profile massif --profile-args pages, which wraps it."
+  )
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Nothing is collected for this request"
+    "run notice"
+  )
+  count_of(_times "${run_ERR}" "${_hint}")
+  expect_eq("${_times}" "1" "the wrap command, once for two guarded cases")
+  expect_has("${run_ERR}" "[profile]   massif: ${_message}" "run-end report")
+  file(GLOB _folders "${WORK_DIR}/*.massif")
+  expect_eq("${_folders}" "" "folders left by a run that collected nothing")
+  read_log(_after_run)
+  expect_eq("${_after_run}" "${_before_run}" "valgrind runs started by the run (none)")
 
 elseif (CASE STREQUAL "RunUnknownProfilerFails")
   # An unknown name fails the run: one notice for the guarded cases, the

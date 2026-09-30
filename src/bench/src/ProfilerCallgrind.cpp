@@ -5,44 +5,149 @@
  * Under a manual `valgrind --tool=callgrind --instr-atstart=no` wrap, switches
  * instrumentation on for each measured window and off after it with
  * callgrind_control. A recording made by bench run's wrap covers the whole
- * process and is left alone. Not under valgrind, the backend prints how to
- * wrap and the measurement runs normally.
+ * process and is left alone. Whether valgrind's callgrind runs the process,
+ * and how the wrap began, is the readiness check's decision.
  */
 
 #include "src/bench/inc/ProfilerCallgrind.hpp"
 
-#ifdef __linux__
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <utility>
+#include <vector>
+
+#ifdef __linux__
 #include <unistd.h>
 #endif
 
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
 namespace bench {
+
+/* ----------------------------- Mode and Check ----------------------------- */
+
+std::optional<ReadinessResult> parseCallgrindMode(const std::string& profileArgs,
+                                                  valgrind_tool::ValgrindMode& mode) {
+  mode = valgrind_tool::ValgrindMode{};
+  mode.tool = "callgrind";
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    return valgrind_tool::refusedWord("callgrind", WORD, {});
+  }
+  return std::nullopt;
+}
+
+namespace {
+
+ReadinessResult decideCallgrind(const ReadinessRequest& request, const ReadinessContext& ctx,
+                                const valgrind_tool::ValgrindIdentity* identity) {
+  valgrind_tool::ValgrindMode mode;
+  if (auto refused = parseCallgrindMode(request.profileArgs, mode)) {
+    return *refused;
+  }
+  // Without callgrind_control the window cannot be switched on, so the wrap
+  // command leaves instrumentation on from the start.
+  const auto CONTROL = resolveExecutable("callgrind_control", ctx);
+  const bool HAS_CONTROL = CONTROL && CONTROL->executable;
+  const std::vector<std::string> WINDOW =
+      HAS_CONTROL ? std::vector<std::string>{"--instr-atstart=no"} : std::vector<std::string>{};
+  ReadinessResult result = valgrind_tool::decideCollection(
+      "callgrind", mode, request, ctx,
+      valgrind_tool::wrapRemedy("callgrind", mode, request.profileArgs, WINDOW), identity);
+
+  const auto PLAN = std::dynamic_pointer_cast<const valgrind_tool::ValgrindPlan>(result.plan);
+  const bool RUNTIME = request.scope == ReadinessScope::RUNTIME;
+  if (RUNTIME && result.collectionReady() && PLAN &&
+      PLAN->launch == LaunchContext::MANUALLY_WRAPPED) {
+    auto plan = std::make_shared<valgrind_tool::ValgrindPlan>(*PLAN);
+    plan->canToggle = HAS_CONTROL;
+    result.plan = plan;
+    if (!HAS_CONTROL && result.report.status == EnvReport::Status::Ok) {
+      ReadinessResult caveat = readinessResult(
+          ReadinessCause::CAVEAT,
+          "valgrind's callgrind runs this process, but callgrind_control is not on PATH: the "
+          "measured window cannot be switched on and off, so the profile holds what the wrap "
+          "records (nothing, for a wrap started with --instr-atstart=no)",
+          "Put valgrind's callgrind_control on PATH, or run it with bench run --profile "
+          "callgrind, which records the whole process.");
+      caveat.plan = std::move(plan);
+      result = std::move(caveat);
+    }
+  }
+  if (!request.analyze) {
+    return result;
+  }
+
+  // valgrind writes the profile when the process exits, after the last hook:
+  // the annotation is bench run's, after that exit.
+  if (RUNTIME) {
+    if (PLAN && PLAN->launch == LaunchContext::RUNNER_WRAPPED) {
+      if (result.report.status == EnvReport::Status::Ok) {
+        result.report.message += "; bench run annotates the profile after the process exits";
+      }
+      return result;
+    }
+    return valgrind_tool::withAnalysis(
+        std::move(result),
+        readinessResult(ReadinessCause::UNSUPPORTED,
+                        "--profile-analyze: valgrind writes the profile when this process "
+                        "exits, after the benchmark's last hook, so the benchmark cannot "
+                        "annotate it; the capture still runs",
+                        "Run callgrind_annotate on the profile after the process exits, or run "
+                        "it with bench run --profile callgrind --profile-analyze, which does.",
+                        ReadinessStage::ANALYSIS));
+  }
+  const auto ANNOTATE = resolveExecutable("callgrind_annotate", ctx);
+  if (!ANNOTATE || !ANNOTATE->executable) {
+    return valgrind_tool::withAnalysis(
+        std::move(result),
+        readinessResult(ReadinessCause::MISSING,
+                        "--profile-analyze needs callgrind_annotate, which ships with valgrind, "
+                        "and it is not on PATH; the capture still runs",
+                        "Install valgrind's callgrind_annotate, or drop --profile-analyze.",
+                        ReadinessStage::ANALYSIS));
+  }
+  if (result.report.status == EnvReport::Status::Ok) {
+    result.report.message +=
+        "; bench run annotates the profile after the process exits with " + ANNOTATE->path;
+  }
+  return result;
+}
+
+} // namespace
+
+ReadinessResult checkCallgrindRequest(const ReadinessRequest& request,
+                                      const ReadinessContext& ctx) {
+  return decideCallgrind(request, ctx, nullptr);
+}
+
+ReadinessResult checkCallgrindRequestWithIdentity(const ReadinessRequest& request,
+                                                  const ReadinessContext& ctx,
+                                                  const valgrind_tool::ValgrindIdentity& identity) {
+  return decideCallgrind(request, ctx, &identity);
+}
 
 /* ----------------------------- Helpers ----------------------------- */
 
 namespace {
 
+std::shared_ptr<const valgrind_tool::ValgrindPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const valgrind_tool::ValgrindPlan>(result.plan);
+}
+
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "callgrind";
+  return checkCallgrindRequest(request, CTX);
+}
+
 #ifdef __linux__
-bool isValgrindAvailable() { return (std::system("command -v valgrind >/dev/null 2>&1") == 0); }
-
-bool isCallgrindControlAvailable() {
-  return (std::system("command -v callgrind_control >/dev/null 2>&1") == 0);
-}
-
-bool isRunningUnderValgrind() { return profiler_env::isRunningUnderValgrind(); }
-
-/// True when bench run wrapped this process with callgrind: that recording
-/// covers the whole process, and switching instrumentation off after a
-/// measured window would cut it short.
-bool isWrappedByRunner(const PerfConfig& cfg) {
-  return !cfg.profileTool.empty() && profiler_env::externalWrapTool() == cfg.profileTool;
-}
-
 /// Switch callgrind's instrumentation for this process on or off.
 /// callgrind_control takes the process id as a trailing argument, not as an
 /// option. It exits 0 whether or not the command reached the process, so its
@@ -60,37 +165,31 @@ void switchInstrumentation(const char* state) {
 
 CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-#ifdef __linux__
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "callgrind");
-
-  runningUnderValgrind_ = isRunningUnderValgrind();
-  const bool HAS_CONTROL = isCallgrindControlAvailable();
-  canToggle_ = runningUnderValgrind_ && HAS_CONTROL && !isWrappedByRunner(cfg_);
-
-  if (!runningUnderValgrind_) {
-    // Without callgrind_control the window cannot be switched on, so the hint
-    // leaves instrumentation on from the start and records the whole process.
-    std::fprintf(stderr,
-                 "\n[callgrind] not running under valgrind; instrumentation skipped.\n"
-                 "[callgrind] To collect a profile, wrap externally:\n"
-                 "[callgrind]   valgrind --tool=callgrind%s \\\n"
-                 "[callgrind]     --callgrind-out-file=%s/callgrind.out \\\n"
-                 "[callgrind]     <this-binary> --profile callgrind [...]\n%s\n",
-                 HAS_CONTROL ? " --instr-atstart=no" : "", artifactDir_.c_str(),
-                 HAS_CONTROL ? ""
-                             : "[callgrind] callgrind_control is not on PATH, so the profile "
-                               "covers the whole process.\n");
-  } else if (!HAS_CONTROL && !isWrappedByRunner(cfg_)) {
-    std::fprintf(stderr,
-                 "\n[callgrind] running under valgrind, but callgrind_control is not on PATH:\n"
-                 "[callgrind] instrumentation cannot be switched on for the measured window,\n"
-                 "[callgrind] so a run started with --instr-atstart=no records nothing.\n\n");
+  const ReadinessResult DECISION = decideNow(cfg_);
+  plan_ = readyPlan(DECISION);
+  if (!plan_) {
+    std::fprintf(stderr, "[callgrind] no profile: %s\n", DECISION.report.message.c_str());
+    if (!DECISION.report.hint.empty()) {
+      std::fprintf(stderr, "[callgrind] %s\n", DECISION.report.hint.c_str());
+    }
   }
-#else
-  (void)cfg_;
-  (void)testName_;
-#endif
+  applyPlan();
+}
+
+CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName,
+                                     std::shared_ptr<const valgrind_tool::ValgrindPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "callgrind");
+  applyPlan();
+}
+
+void CallgrindProfiler::applyPlan() {
+  runningUnderValgrind_ = plan_ != nullptr;
+  wrappedByRunner_ = plan_ && plan_->launch == LaunchContext::RUNNER_WRAPPED;
+  canToggle_ = plan_ && plan_->canToggle;
 }
 
 void CallgrindProfiler::beforeMeasure() {
@@ -112,25 +211,19 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
 
   // Valgrind writes the profile when the process exits, to the file its
   // --callgrind-out-file names: callgrind.out in artifactDir_ under bench
-  // run's wrap and under the hint's. Any other manual wrap names its own.
-  // The profile is complete only then, so nothing here reads it: bench run
-  // checks it, and annotates it for --profile-analyze, after the exit.
-  const std::string outFile = artifactDir_ + "/callgrind.out";
-  const bool BY_RUNNER = isWrappedByRunner(cfg_);
-  const bool KNOWN_FILE = canToggle_ || BY_RUNNER;
-
+  // run's wrap. Any other wrap names its own. The profile is complete only
+  // then, so nothing here reads it: bench run checks it, and annotates it for
+  // --profile-analyze, after the exit.
   std::printf("\n=== Callgrind Profile ===\n");
-  std::printf("Output: %s%s\n", artifactDir_.c_str(),
-              KNOWN_FILE ? ""
-                         : " (or where --callgrind-out-file points; by default "
-                           "callgrind.out.<pid> in the working directory)");
-  if (BY_RUNNER) {
+  if (wrappedByRunner_) {
+    std::printf("Output: %s\n", artifactDir_.c_str());
     std::printf("   bench run checks the profile after valgrind has written it%s\n",
                 cfg_.profileAnalyze ? ", then annotates it" : "");
   } else {
+    std::printf("Output: where the wrap's --callgrind-out-file points (by default "
+                "callgrind.out.<pid> in the working directory)\n");
     std::printf("   valgrind writes the profile when this process exits; read it then with\n");
-    std::printf("   callgrind_annotate %s (or kcachegrind)\n",
-                KNOWN_FILE ? outFile.c_str() : "<profile>");
+    std::printf("   callgrind_annotate <profile> (or kcachegrind)\n");
   }
   std::printf("\n");
 #endif
@@ -140,42 +233,26 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
 
 std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg,
                                                 const std::string& testName) {
-#ifdef __linux__
-  if (!isValgrindAvailable()) {
+  return std::make_unique<CallgrindProfiler>(cfg, testName);
+}
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedCallgrindProfiler(const PerfConfig& cfg,
+                                                       const std::string& testName,
+                                                       const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
     return nullptr;
   }
-  return std::make_unique<CallgrindProfiler>(cfg, testName);
-#else
-  (void)cfg;
-  (void)testName;
-  return nullptr;
-#endif
+  return std::make_unique<CallgrindProfiler>(cfg, testName, std::move(plan));
 }
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-namespace vernier {
-namespace bench {
-
-EnvReport checkCallgrindEnvironment() {
-  if (std::system("command -v valgrind >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
-                     "apt install valgrind."};
-  }
-  // Under a Docker PID namespace, callgrind_control attach is unreliable; run
-  // callgrind by wrapping valgrind directly instead.
-  if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "valgrind available; running in Docker (PID namespace)",
-                     "Run via 'bench run', which wraps valgrind directly (no attach needed)."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "valgrind available", ""};
-}
-
-} // namespace bench
-} // namespace vernier
-
-VERNIER_REGISTER_PROFILER_BACKEND("callgrind", ::vernier::bench::makeCallgrindProfiler,
-                                  ::vernier::bench::checkCallgrindEnvironment,
-                                  "Install valgrind: apt install valgrind.")
+VERNIER_REGISTER_READINESS_BACKEND("callgrind", ::vernier::bench::checkCallgrindRequest,
+                                   ::vernier::bench::makePlannedCallgrindProfiler,
+                                   "Install valgrind: apt install valgrind.")

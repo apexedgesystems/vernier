@@ -47,6 +47,7 @@ set(_readiness_cli_cases
     DoctorLabel
     DoctorJsonKeys
     SelectedRowMatchesRun
+    MassifUnwrappedFails
     RunUnknownProfilerFails
     UnprofiledRunExitsZero
     CuptiNeedsNoProfile

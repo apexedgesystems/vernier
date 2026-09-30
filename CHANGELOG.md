@@ -314,6 +314,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **Valgrind profiles check the tool that runs the process** --
+  `--profile callgrind`, `massif`, `memcheck` or `helgrind` without valgrind
+  around the process printed a hint and passed with nothing collected, and the
+  doctor reported valgrind's presence as OK (callgrind's row warned about
+  Docker). A run reads its own memory map and fails (exit status 4, printing
+  the wrap command) unless the requested tool runs it, the doctor starts that
+  tool once (`drd` as drd), and `--profile-analyze` with massif, memcheck or
+  helgrind fails the analysis stage, naming the reader. **Action needed:** run
+  these profiles through `bench run --profile <tool>` or the printed valgrind
+  command.
 - **`bench run --profile compute-sanitizer` fails when the tool reports
   errors** -- the tool's default exit status is 0, so a benchmark whose kernels
   it reported as faulty passed, and an output folder holding `%` broke its log

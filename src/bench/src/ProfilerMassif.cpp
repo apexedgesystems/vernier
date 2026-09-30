@@ -2,76 +2,116 @@
  * @file ProfilerMassif.cpp
  * @brief Valgrind Massif heap profiler implementation.
  *
- * Same wrap-externally pattern as callgrind: the binary running with
- * --profile massif is passive when not under valgrind; under valgrind it
- * cooperates by setting up the artifact dir for ms_print output.
+ * Massif records the whole process when valgrind runs it; the backend only
+ * reports where the artifacts belong. Whether valgrind's massif runs the
+ * process is the readiness check's decision.
  */
 
 #include "src/bench/inc/ProfilerMassif.hpp"
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
 namespace bench {
 
-/* ----------------------------- Helpers ----------------------------- */
+/* ----------------------------- Mode and Check ----------------------------- */
+
+std::optional<ReadinessResult> parseMassifMode(const std::string& profileArgs,
+                                               valgrind_tool::ValgrindMode& mode) {
+  mode = valgrind_tool::ValgrindMode{};
+  mode.tool = "massif";
+  bool pages = false;
+  bool stacks = false;
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    if (WORD == "pages") {
+      pages = true;
+    } else if (WORD == "stacks") {
+      stacks = true;
+    } else {
+      return valgrind_tool::refusedWord("massif", WORD, {"pages", "stacks"});
+    }
+  }
+  if (pages && stacks) {
+    return readinessResult(ReadinessCause::CONFIGURATION,
+                           "valgrind's massif cannot combine pages (--pages-as-heap=yes) with "
+                           "stacks (--stacks=yes); choose one",
+                           "Use --profile-args pages or --profile-args stacks.");
+  }
+  if (pages) {
+    mode.options.push_back("--pages-as-heap=yes");
+  }
+  if (stacks) {
+    mode.options.push_back("--stacks=yes");
+  }
+  mode.unseen = mode.options;
+  return std::nullopt;
+}
+
+ReadinessResult checkMassifRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
+  valgrind_tool::ValgrindMode mode;
+  if (auto refused = parseMassifMode(request.profileArgs, mode)) {
+    return *refused;
+  }
+  ReadinessResult result = valgrind_tool::decideCollection(
+      "massif", mode, request, ctx, valgrind_tool::wrapRemedy("massif", mode, request.profileArgs));
+  if (!request.analyze) {
+    return result;
+  }
+  return valgrind_tool::withAnalysis(
+      std::move(result),
+      readinessResult(ReadinessCause::UNSUPPORTED,
+                      "--profile-analyze: massif has no automatic analysis; the capture still "
+                      "runs and its profile is kept",
+                      "Read the profile with ms_print after the process exits, and drop "
+                      "--profile-analyze.",
+                      ReadinessStage::ANALYSIS));
+}
+
+/* ----------------------------- MassifProfiler ----------------------------- */
 
 namespace {
 
-bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
-
-// Detect a live valgrind by scanning /proc/self/maps for the vgpreload module;
-// this is reliable regardless of how the tool was launched. RUNNING_ON_VALGRIND
-// is a valgrind client request rather than an environment variable, so a
-// getenv() check cannot stand in for the maps scan.
-bool isRunningUnderValgrind() {
-  const char* preload = std::getenv("LD_PRELOAD");
-  if (preload && std::strstr(preload, "vgpreload"))
-    return true;
-  std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp)
-    return false;
-  char line[512];
-  bool found = false;
-  while (std::fgets(line, sizeof(line), fp)) {
-    if (std::strstr(line, "vgpreload") || std::strstr(line, "/valgrind/")) {
-      found = true;
-      break;
-    }
+std::shared_ptr<const valgrind_tool::ValgrindPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
   }
-  std::fclose(fp);
-  return found;
+  return std::dynamic_pointer_cast<const valgrind_tool::ValgrindPlan>(result.plan);
+}
+
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "massif";
+  return checkMassifRequest(request, CTX);
 }
 
 } // namespace
-
-/* ----------------------------- MassifProfiler ----------------------------- */
 
 MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "massif");
-
-  runningUnderValgrind_ = isRunningUnderValgrind();
-  if (!runningUnderValgrind_) {
-    const bool PAGES = cfg_.profileArgs.find("pages") != std::string::npos;
-    const bool STACKS = cfg_.profileArgs.find("stacks") != std::string::npos;
-    std::fprintf(stderr,
-                 "\n[massif] NOT running under valgrind; measurement will execute normally but\n"
-                 "[massif] no heap profile will be collected. To collect:\n"
-                 "[massif]   valgrind --tool=massif%s%s \\\n"
-                 "[massif]       --massif-out-file=%s/massif.out \\\n"
-                 "[massif]       <this-binary> --profile massif [...]\n"
-                 "[massif] Then: ms_print %s/massif.out | head -40\n\n",
-                 PAGES ? " --pages-as-heap=yes" : "", STACKS ? " --stacks=yes" : "",
-                 artifactDir_.c_str(), artifactDir_.c_str());
+  const ReadinessResult DECISION = decideNow(cfg_);
+  plan_ = readyPlan(DECISION);
+  if (!plan_) {
+    std::fprintf(stderr, "[massif] no heap profile: %s\n", DECISION.report.message.c_str());
+    if (!DECISION.report.hint.empty()) {
+      std::fprintf(stderr, "[massif] %s\n", DECISION.report.hint.c_str());
+    }
   }
+}
+
+MassifProfiler::MassifProfiler(const PerfConfig& cfg, std::string testName,
+                               std::shared_ptr<const valgrind_tool::ValgrindPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "massif");
 }
 
 void MassifProfiler::beforeMeasure() {
@@ -82,27 +122,29 @@ void MassifProfiler::afterMeasure(const Stats& /*s*/) {
   // Massif writes its output file at process exit when running under valgrind.
 }
 
-/* ----------------------------- Env check ----------------------------- */
-
-EnvReport checkMassifEnvironment() {
-  if (!isValgrindAvailable()) {
-    return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
-                     "apt install valgrind."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "valgrind available (massif tool ships with it)", ""};
-}
-
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeMassifProfiler(const PerfConfig& cfg, const std::string& testName) {
-  if (!isValgrindAvailable())
-    return nullptr;
   return std::make_unique<MassifProfiler>(cfg, testName);
 }
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedMassifProfiler(const PerfConfig& cfg,
+                                                    const std::string& testName,
+                                                    const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<MassifProfiler>(cfg, testName, std::move(plan));
+}
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND("massif", ::vernier::bench::makeMassifProfiler,
-                                  ::vernier::bench::checkMassifEnvironment,
-                                  "apt install valgrind (massif ships with it).")
+VERNIER_REGISTER_READINESS_BACKEND("massif", ::vernier::bench::checkMassifRequest,
+                                   ::vernier::bench::makePlannedMassifProfiler,
+                                   "apt install valgrind (massif ships with it).")
