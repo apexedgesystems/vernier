@@ -48,6 +48,8 @@ set(_readiness_cli_cases
     DoctorJsonKeys
     SelectedRowMatchesRun
     MassifUnwrappedFails
+    HeaptrackUnwrappedFails
+    RocprofUnwrappedFails
     RunUnknownProfilerFails
     UnprofiledRunExitsZero
     CuptiNeedsNoProfile

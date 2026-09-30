@@ -314,6 +314,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **heaptrack and rocprof check the tool that runs the process** --
+  `--profile heaptrack` or `--profile rocprof` without its tool around the
+  process printed a hint, passed with nothing collected and left an empty
+  folder per case, and the doctor reported the tool's presence as OK. The
+  doctor's heaptrack row records `/bin/true` and a run reads its own memory
+  map, rocprof is never OK (AMD collection is not validated), an unwrapped
+  request fails (exit status 4) printing the wrap command, and
+  `--profile-analyze` fails the analysis stage. **Action needed:** run
+  heaptrack through `bench run --profile heaptrack` or the printed command,
+  and rocprof under the printed rocprof command.
 - **Valgrind profiles check the tool that runs the process** --
   `--profile callgrind`, `massif`, `memcheck` or `helgrind` without valgrind
   around the process printed a hint and passed with nothing collected, and the

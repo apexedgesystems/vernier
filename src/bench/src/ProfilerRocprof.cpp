@@ -1,147 +1,209 @@
 /**
  * @file ProfilerRocprof.cpp
- * @brief AMD ROCm rocprof backend implementation.
+ * @brief Backend for AMD's legacy rocprof.
  *
- * rocprof wraps the binary externally; the backend itself stays passive
- * unless detected wrapping, mirroring compute-sanitizer and callgrind.
+ * rocprof wraps the binary externally; the backend only reports where the
+ * artifacts belong. Whether rocprof's injection is present is the readiness
+ * check's decision, which is never Ok: the integration is not validated.
  */
 
 #include "src/bench/inc/ProfilerRocprof.hpp"
 
+#include <algorithm>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 
 namespace vernier {
 namespace bench {
 
 namespace {
 
-bool isRocprofOnPath() { return std::system("command -v rocprof >/dev/null 2>&1") == 0; }
+const char* const NOT_VALIDATED = "AMD collection is not validated (legacy rocprof)";
 
-bool isRocmRuntimePresent() {
-  // /opt/rocm/lib/libhsa-runtime64.so is the canonical install marker;
-  // /sys/class/kfd/kfd/topology/nodes is the kernel-driver marker. Either
-  // is good enough to claim "AMD GPU stack is installed on this host".
-  if (std::FILE* f = std::fopen("/opt/rocm/lib/libhsa-runtime64.so", "rb")) {
-    std::fclose(f);
-    return true;
+ReadinessResult rocprofMissing() {
+  return readinessResult(ReadinessCause::MISSING, "rocprof not found on PATH",
+                         "Install ROCm's rocprofiler (apt install rocprofiler on Debian and "
+                         "Ubuntu).");
+}
+
+/** @brief rocprof's injection markers in the snapshot, named; "" when there is none. */
+std::string injectionMarkers(const ReadinessContext& ctx) {
+  std::string found;
+  for (const char* NAME : {"ROCP_TOOL_LIB", "ROCPROFILER_LIBRARY"}) {
+    if (ctx.get(NAME)) {
+      found += (found.empty() ? "" : ", ") + std::string{NAME};
+    }
   }
-  if (std::FILE* f = std::fopen("/sys/class/kfd/kfd/topology/nodes", "rb")) {
-    std::fclose(f);
-    return true;
+  const auto PRELOAD = ctx.get("LD_PRELOAD");
+  if (PRELOAD && PRELOAD->find("rocprof") != std::string::npos) {
+    found += (found.empty() ? "" : ", ") + std::string{"rocprof in LD_PRELOAD"};
   }
-  return false;
+  return found;
 }
 
-// rocprof sets ROCP_TOOL_LIB / ROCPROFILER_LIBRARY to inject its tracer
-// before the process starts. Use either env signal as the "wrapping detected"
-// marker; both are stable across rocprof v1 and v2.
-bool detectUnderRocprof() {
-  if (std::getenv("ROCP_TOOL_LIB") != nullptr)
-    return true;
-  if (std::getenv("ROCPROFILER_LIBRARY") != nullptr)
-    return true;
-  const char* preload = std::getenv("LD_PRELOAD");
-  return preload && std::strstr(preload, "rocprof") != nullptr;
+std::string wrapRemedy(const std::vector<std::string>& flags, const std::string& profileArgs) {
+  std::string command = "rocprof";
+  for (const std::string& FLAG : flags) {
+    command += " " + FLAG;
+  }
+  std::string words;
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    words += (words.empty() ? "" : ",") + WORD;
+  }
+  return "Wrap it: " + command + " -o ./results.csv <this-binary> --profile rocprof" +
+         (words.empty() ? std::string{} : " --profile-args " + words) +
+         " [...]; bench run does not wrap rocprof.";
 }
 
-std::string modeFromArgs(const std::string& args) {
-  if (args.find("stats") != std::string::npos)
-    return "stats";
-  if (args.find("hsa-trace") != std::string::npos)
-    return "hsa-trace";
-  if (args.find("hip-trace") != std::string::npos)
-    return "hip-trace";
-  return "default";
+std::shared_ptr<const RocprofPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const RocprofPlan>(result.plan);
 }
 
-std::string modeFlag(const std::string& mode) {
-  if (mode == "stats")
-    return "--stats";
-  if (mode == "hsa-trace")
-    return "--hsa-trace";
-  if (mode == "hip-trace")
-    return "--hip-trace";
-  return ""; // default: no extra flag
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "rocprof";
+  return checkRocprofRequest(request, CTX);
 }
 
 } // namespace
+
+/* ----------------------------- Mode and Check ----------------------------- */
+
+std::optional<ReadinessResult> parseRocprofMode(const std::string& profileArgs,
+                                                std::vector<std::string>& flags) {
+  flags.clear();
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    if (WORD != "stats" && WORD != "hsa-trace" && WORD != "hip-trace") {
+      return valgrind_tool::refusedWord("rocprof", WORD, {"stats", "hsa-trace", "hip-trace"});
+    }
+    const std::string FLAG = "--" + WORD;
+    if (std::find(flags.begin(), flags.end(), FLAG) == flags.end()) {
+      flags.push_back(FLAG);
+    }
+  }
+  return std::nullopt;
+}
+
+ReadinessResult checkRocprofRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
+  auto plan = std::make_shared<RocprofPlan>();
+  if (auto refused = parseRocprofMode(request.profileArgs, plan->flags)) {
+    return *refused;
+  }
+  ReadinessResult result;
+  if (request.scope == ReadinessScope::RUNTIME) {
+    const std::string MARKERS = injectionMarkers(ctx);
+    if (!MARKERS.empty()) {
+      plan->launch = LaunchContext::MANUALLY_WRAPPED;
+      result =
+          readinessResult(ReadinessCause::UNVERIFIED,
+                          "rocprof's injection is present (" + MARKERS + "); " + NOT_VALIDATED, "");
+    } else {
+      plan->launch = LaunchContext::NOT_WRAPPED;
+      result = !resolveExecutable("rocprof", ctx)
+                   ? rocprofMissing()
+                   : readinessResult(ReadinessCause::MISSING,
+                                     "rocprof collects only when rocprof runs the process, and "
+                                     "rocprof does not run this one",
+                                     wrapRemedy(plan->flags, request.profileArgs));
+    }
+  } else {
+    const auto TOOL = resolveExecutable("rocprof", ctx);
+    if (!TOOL) {
+      result = rocprofMissing();
+    } else if (!TOOL->executable) {
+      result = readinessResult(ReadinessCause::UNUSABLE, TOOL->path + " is not an executable file",
+                               "Reinstall rocprofiler, or fix PATH so it finds a working "
+                               "rocprof.");
+    } else {
+      plan->rocprof = TOOL->path;
+      result = readinessResult(ReadinessCause::UNVERIFIED,
+                               std::string{NOT_VALIDATED} + ": rocprof is " + TOOL->path +
+                                   "; no AMD device access or capture is checked",
+                               "");
+    }
+  }
+  result.plan = std::move(plan);
+  if (!request.analyze) {
+    return result;
+  }
+  return valgrind_tool::withAnalysis(
+      std::move(result),
+      readinessResult(ReadinessCause::UNSUPPORTED,
+                      "--profile-analyze: rocprof has no automatic analysis; its reports are read "
+                      "as they are, and the capture still runs",
+                      "Read the reports rocprof writes where its -o option points, and drop "
+                      "--profile-analyze.",
+                      ReadinessStage::ANALYSIS));
+}
 
 /* ----------------------------- RocprofProfiler ----------------------------- */
 
 RocprofProfiler::RocprofProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  mode_ = modeFromArgs(cfg_.profileArgs);
-  runningUnderRocprof_ = detectUnderRocprof();
+  const ReadinessResult DECISION = decideNow(cfg_);
+  plan_ = readyPlan(DECISION);
+  if (!plan_) {
+    // An empty folder is not capture evidence: none is created.
+    std::fprintf(stderr, "[rocprof] no profile: %s\n", DECISION.report.message.c_str());
+    if (!DECISION.report.hint.empty()) {
+      std::fprintf(stderr, "[rocprof] %s\n", DECISION.report.hint.c_str());
+    }
+    return;
+  }
+  artifactDir_ =
+      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "rocprof");
+}
 
+RocprofProfiler::RocprofProfiler(const PerfConfig& cfg, std::string testName,
+                                 std::shared_ptr<const RocprofPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "rocprof");
 }
 
 void RocprofProfiler::beforeMeasure() {
-  if (runningUnderRocprof_) {
-    std::fprintf(stderr,
-                 "[rocprof] mode=%s -- wrapping detected; reports written by rocprof at\n"
-                 "[rocprof] process exit. Artifact directory: %s\n",
-                 mode_.c_str(), artifactDir_.c_str());
-    return;
-  }
-  // Not wrapped: print the precise rocprof invocation, matching the
-  // hint pattern the other wrap-externally backends use
-  // (compute-sanitizer / callgrind / nsight).
-  const std::string FLAG = modeFlag(mode_);
-  std::fprintf(stderr,
-               "\n[rocprof] NOT running under rocprof; this measurement will execute\n"
-               "[rocprof] normally but no profile is collected. To collect:\n"
-               "[rocprof]   rocprof%s%s -o %s/results.csv \\\n"
-               "[rocprof]       <this-binary> --profile rocprof --profile-args %s [...]\n\n",
-               FLAG.empty() ? "" : " ", FLAG.c_str(), artifactDir_.c_str(), mode_.c_str());
+  // rocprof records the whole process when its injection is present.
 }
 
 void RocprofProfiler::afterMeasure(const Stats& /*s*/) {
-  // rocprof writes results.{csv,json} at process exit when wrapping; nothing
-  // to do per-measure on the in-process side.
-}
-
-/* ----------------------------- Env check ----------------------------- */
-
-EnvReport checkRocprofEnvironment() {
-  const bool TOOL = isRocprofOnPath();
-  const bool RUNTIME = isRocmRuntimePresent();
-  if (!TOOL && !RUNTIME) {
-    return EnvReport{EnvReport::Status::Error,
-                     "ROCm not detected (no rocprof on PATH, no /opt/rocm)",
-                     "Install ROCm + roctracer (https://rocm.docs.amd.com)."};
-  }
-  if (!TOOL) {
-    return EnvReport{EnvReport::Status::Error, "ROCm runtime present but rocprof binary missing",
-                     "apt install rocprofiler (or your distro's equivalent)."};
-  }
-  if (!RUNTIME) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "rocprof present but no ROCm runtime / GPU kernel driver detected",
-                     "rocprof will run but cannot attach to AMD GPUs on this host."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "rocprof + ROCm runtime available", ""};
+  // rocprof writes its reports at process exit when wrapping; nothing to do
+  // per-measure on the in-process side.
 }
 
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeRocprofProfiler(const PerfConfig& cfg, const std::string& testName) {
-  if (!isRocprofOnPath()) {
-    return nullptr;
-  }
   return std::make_unique<RocprofProfiler>(cfg, testName);
 }
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedRocprofProfiler(const PerfConfig& cfg,
+                                                     const std::string& testName,
+                                                     const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<RocprofProfiler>(cfg, testName, std::move(plan));
+}
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "rocprof", ::vernier::bench::makeRocprofProfiler, ::vernier::bench::checkRocprofEnvironment,
-    "Install ROCm + rocprof (apt install rocprofiler on Debian/Ubuntu).")
+VERNIER_REGISTER_READINESS_BACKEND(
+    "rocprof", ::vernier::bench::checkRocprofRequest, ::vernier::bench::makePlannedRocprofProfiler,
+    "Install ROCm + rocprof (apt install rocprofiler on Debian/Ubuntu).", "ROCP_TOOL_LIB",
+    "ROCPROFILER_LIBRARY", "LD_PRELOAD")

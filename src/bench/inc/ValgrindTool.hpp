@@ -10,7 +10,9 @@
  *
  * Each backend parses its own mode (the words it takes and the options they
  * add), decides its own analysis and builds its check from these pieces.
- * Nothing here decides a backend's policy.
+ * Nothing here decides a backend's policy. The words of a mode, and the
+ * refusal of one, are those `bench run` reads for every wrapped tool, so the
+ * heaptrack and rocprof backends read theirs with the same two functions.
  *
  * @note NOT RT-safe (heap allocation, fork/exec probes, file reads).
  */

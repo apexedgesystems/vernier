@@ -412,6 +412,44 @@ elseif (CASE STREQUAL "MassifUnwrappedFails")
   read_log(_after_run)
   expect_eq("${_after_run}" "${_before_run}" "valgrind runs started by the run (none)")
 
+elseif (CASE STREQUAL "HeaptrackUnwrappedFails")
+  # heaptrack records /bin/true for the doctor; the run is not under heaptrack,
+  # so it collects nothing and fails, printing the wrap command.
+  fake(fake_heaptrack.sh heaptrack)
+  selected_row(doctor --profile heaptrack)
+  expect_eq("${doctor_STATUS}" "ok" "doctor status (heaptrack records)")
+  run(run --profile heaptrack ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'heaptrack': missing: heaptrack collects only when heaptrack runs the process, and heaptrack does not run this one\n   Wrap it: heaptrack -o ./run <this-binary> --profile heaptrack [...]; or run it with bench run --profile heaptrack, which wraps it.\n"
+    "run notice"
+  )
+  file(GLOB _folders "${WORK_DIR}/*.heaptrack")
+  expect_eq("${_folders}" "" "folders left by a run that collected nothing")
+
+elseif (CASE STREQUAL "RocprofUnwrappedFails")
+  # rocprof on PATH is never ok for the doctor; a run without its injection
+  # fails, printing the wrap command, and creates no folder.
+  fake(fake_rocprof.sh rocprof)
+  selected_row(doctor --profile rocprof --profile-args stats)
+  expect_eq("${doctor_STATUS}" "warn" "doctor status (never ok)")
+  expect_has(
+    "${doctor_MESSAGE}" "unverified: AMD collection is not validated (legacy rocprof)"
+    "doctor message"
+  )
+  run(run --profile rocprof --profile-args stats ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'rocprof': missing: rocprof collects only when rocprof runs the process, and rocprof does not run this one\n   Wrap it: rocprof --stats -o ./results.csv <this-binary> --profile rocprof --profile-args stats [...]; bench run does not wrap rocprof.\n"
+    "run notice"
+  )
+  file(GLOB _folders "${WORK_DIR}/*.rocprof")
+  expect_eq("${_folders}" "" "folders left by a run that collected nothing")
+  read_log(_text)
+  expect_eq("${_text}" "" "rocprof started by the doctor or the run (never)")
+
 elseif (CASE STREQUAL "RunUnknownProfilerFails")
   # An unknown name fails the run: one notice for the guarded cases, the
   # run-end report and exit status 4, and the CSV names no profiler. A run of

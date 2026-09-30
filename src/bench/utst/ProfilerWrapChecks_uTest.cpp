@@ -1,29 +1,36 @@
 /**
  * @file ProfilerWrapChecks_uTest.cpp
- * @brief Unit tests for the readiness checks of the backends valgrind wraps.
+ * @brief Unit tests for the readiness checks of the backends a tool wraps:
+ * valgrind's (callgrind, massif, memcheck, helgrind and drd), heaptrack and
+ * rocprof.
  *
- * The doctor's scopes run a start probe through a fake valgrind in a private
- * PATH (ReadinessFixtures.hpp); the runtime scope decides from memory maps
- * given as text, in the shapes valgrind 3.18 to 3.24 map on amd64 and arm64,
- * or from this test process's own map (never under valgrind). The modes and
- * wrap arguments are pinned to the route table `bench run` reads. Nothing
- * here changes the process environment or needs privileges.
+ * The doctor's scopes run a start probe through a fake tool in a private PATH
+ * (ReadinessFixtures.hpp); the runtime scope decides from memory maps given
+ * as text, in the shapes valgrind 3.18 to 3.24 and heaptrack 1.3 to 1.5 map on
+ * amd64 and arm64, from this test process's own map (never under a tool), or,
+ * for rocprof, from the snapshot's environment. The modes and wrap arguments
+ * are pinned to the route table `bench run` reads. Nothing here changes the
+ * process environment or needs privileges.
  */
 
 #include "src/bench/inc/ProfilerCallgrind.hpp"
+#include "src/bench/inc/ProfilerHeaptrack.hpp"
 #include "src/bench/inc/ProfilerHelgrind.hpp"
 #include "src/bench/inc/ProfilerMassif.hpp"
 #include "src/bench/inc/ProfilerMemcheck.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/inc/ProfilerRocprof.hpp"
 #include "src/bench/inc/ValgrindTool.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
 
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -698,4 +705,256 @@ TEST(CallgrindWindowCheck, CorePreloadAloneIsNotCallgrind) {
       identityFromMaps(valgrindMaps("/usr/libexec/valgrind", "amd64-linux", {}, {})));
   EXPECT_EQ(RESULT.cause, ReadinessCause::UNVERIFIED);
   EXPECT_NE(RESULT.cause, ReadinessCause::READY);
+}
+
+/* ----------------------------- heaptrack ----------------------------- */
+
+namespace {
+
+/** @brief A /proc/<pid>/maps of a process heaptrack started (preload) or attached to (inject). */
+std::string heaptrackMaps(const std::string& library) {
+  return "55d0c1a00000-55d0c1a2f000 r--p 00000000 fd:01 1048601 "
+         "/home/user/build/bin/ReadinessFixtureTarget\n"
+         "7f1c3a000000-7f1c3a020000 r-xp 00000000 fd:01 900001 /usr/lib/heaptrack/" +
+         library + "\n";
+}
+
+} // namespace
+
+/** @test heaptrack's route and refusal in the shared table are the backend's. */
+TEST(HeaptrackCheck, RouteAndRefusalMatchTheSharedTable) {
+  int routes = 0;
+  for (const auto& row : sharedTableRows("route")) {
+    if (row[3] != "heaptrack") {
+      continue;
+    }
+    std::vector<std::string> args = vernier::bench::heaptrackWrapArguments("<dir>");
+    args.emplace_back("<bin>");
+    EXPECT_EQ(joined(args), row[4]);
+    ++routes;
+  }
+  EXPECT_EQ(routes, 1);
+  const FakeToolDir DIR;
+  ASSERT_TRUE(DIR.ok());
+  int refusals = 0;
+  for (const auto& row : sharedTableRows("refuse")) {
+    if (row[1] != "heaptrack") {
+      continue;
+    }
+    const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequest(
+        requestFor("heaptrack", ReadinessScope::PREFLIGHT, row[2]), DIR.context());
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CONFIGURATION);
+    EXPECT_NE(RESULT.report.message.find(row[3]), std::string::npos) << RESULT.report.message;
+    ++refusals;
+  }
+  EXPECT_EQ(refusals, 1);
+}
+
+/** @test The doctor records /bin/true with heaptrack into a private directory, which it removes. */
+TEST(HeaptrackCheck, DoctorRecordsTheProbe) {
+  for (const std::string MODE : {"ok", "gz"}) {
+    FakeToolDir dir;
+    ASSERT_TRUE(dir.ok());
+    dir.install("fake_heaptrack.sh", "heaptrack");
+    const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+        requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+        dir.context({{"FAKE_HEAPTRACK_MODE", MODE}}), "");
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << MODE << ": " << RESULT.report.message;
+    EXPECT_NE(RESULT.report.message.find(std::string{"which wrote probe."} +
+                                         (MODE == "gz" ? "gz" : "zst")),
+              std::string::npos)
+        << RESULT.report.message;
+    const std::vector<std::string> LINES = dir.logLines("heaptrack ");
+    ASSERT_EQ(LINES.size(), 1U) << dir.log();
+    const std::size_t AT = LINES.front().find(" -o ");
+    ASSERT_NE(AT, std::string::npos) << LINES.front();
+    const std::string OUTPUT =
+        LINES.front().substr(AT + 4, LINES.front().find(' ', AT + 4) - AT - 4);
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(OUTPUT).parent_path()))
+        << "the probe's directory was left behind: " << OUTPUT;
+    EXPECT_EQ(LINES.front().substr(LINES.front().size() - 10), " /bin/true") << LINES.front();
+  }
+}
+
+/** @test A heaptrack that fails, or exits 0 without a trace, is UNUSABLE; none is MISSING. */
+TEST(HeaptrackCheck, BrokenSilentOrMissingHeaptrack) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessRequest REQUEST = requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY);
+  EXPECT_EQ(
+      vernier::bench::checkHeaptrackRequestWithMaps(REQUEST, dir.context(), "").report.message,
+      "missing: heaptrack not found on PATH");
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult BROKEN = vernier::bench::checkHeaptrackRequestWithMaps(
+      REQUEST, dir.context({{"FAKE_HEAPTRACK_MODE", "broken"}}), "");
+  EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
+  EXPECT_NE(BROKEN.report.message.find("cannot find libheaptrack_preload.so"), std::string::npos)
+      << BROKEN.report.message;
+  const ReadinessResult SILENT = vernier::bench::checkHeaptrackRequestWithMaps(
+      REQUEST, dir.context({{"FAKE_HEAPTRACK_MODE", "empty"}}), "");
+  EXPECT_EQ(SILENT.cause, ReadinessCause::UNUSABLE);
+  EXPECT_NE(SILENT.report.message.find("wrote no trace"), std::string::npos)
+      << SILENT.report.message;
+}
+
+/** @test With libtcmalloc in the process, the doctor's heaptrack row is a caveat naming it. */
+TEST(HeaptrackCheck, TcmallocInTheProcessIsACaveat) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::PREFLIGHT), dir.context(),
+      "7f00-7f10 r-xp 0 fd:01 1 /usr/lib/x86_64-linux-gnu/libtcmalloc.so.4\n");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT);
+  EXPECT_NE(RESULT.report.message.find("libtcmalloc"), std::string::npos);
+  EXPECT_NE(RESULT.report.hint.find("VERNIER_LINK_TCMALLOC"), std::string::npos);
+}
+
+/** @test heaptrack's library in the map (preloaded or injected) establishes heaptrack. */
+TEST(HeaptrackCheck, MappedLibraryIsTheEvidence) {
+  EXPECT_TRUE(vernier::bench::heaptrackMapped(heaptrackMaps("libheaptrack_preload.so")));
+  EXPECT_TRUE(vernier::bench::heaptrackMapped(heaptrackMaps("libheaptrack_inject.so")));
+  EXPECT_FALSE(vernier::bench::heaptrackMapped(heaptrackMaps("libstdc++.so.6")));
+  EXPECT_FALSE(vernier::bench::heaptrackMapped(""));
+}
+
+/** @test A run under heaptrack is READY; one without it fails with the wrap command. */
+TEST(HeaptrackCheck, RunDecidesFromTheMap) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessResult NONE = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::RUNTIME), dir.context(), "");
+  EXPECT_EQ(NONE.report.message, "missing: heaptrack not found on PATH")
+      << "without heaptrack, the doctor's own words";
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult UNWRAPPED = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::RUNTIME), dir.context(), "");
+  EXPECT_EQ(UNWRAPPED.cause, ReadinessCause::MISSING);
+  EXPECT_FALSE(UNWRAPPED.collectionReady());
+  EXPECT_EQ(UNWRAPPED.report.hint,
+            "Wrap it: heaptrack -o ./run <this-binary> --profile heaptrack [...]; or run it with "
+            "bench run --profile heaptrack, which wraps it.");
+  for (const LaunchContext LAUNCH : {LaunchContext::RUNNER_WRAPPED, LaunchContext::IN_PROCESS}) {
+    const ReadinessResult WRAPPED = vernier::bench::checkHeaptrackRequestWithMaps(
+        requestFor("heaptrack", ReadinessScope::RUNTIME, "", false, LAUNCH), dir.context(),
+        heaptrackMaps("libheaptrack_preload.so"));
+    EXPECT_EQ(WRAPPED.cause, ReadinessCause::READY) << WRAPPED.report.message;
+    const auto PLAN = std::dynamic_pointer_cast<const vernier::bench::HeaptrackPlan>(WRAPPED.plan);
+    ASSERT_NE(PLAN, nullptr);
+    EXPECT_EQ(PLAN->launch, LAUNCH == LaunchContext::RUNNER_WRAPPED
+                                ? LaunchContext::RUNNER_WRAPPED
+                                : LaunchContext::MANUALLY_WRAPPED);
+  }
+  EXPECT_EQ(dir.log(), "") << "a run's check starts no heaptrack";
+}
+
+/** @test --profile-analyze with heaptrack fails the analysis stage, naming heaptrack_print. */
+TEST(HeaptrackCheck, AnalyzeFailsTheAnalysisStage) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::RUNTIME, "", /*analyze=*/true), dir.context(),
+      heaptrackMaps("libheaptrack_preload.so"));
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(RESULT.stage, ReadinessStage::ANALYSIS);
+  EXPECT_TRUE(RESULT.collectionReady());
+  EXPECT_NE(RESULT.report.hint.find("heaptrack_print"), std::string::npos) << RESULT.report.hint;
+}
+
+/* ----------------------------- rocprof ----------------------------- */
+
+/** @test rocprof is never Ok: the doctor reports it unverified, or missing. */
+TEST(RocprofCheck, NeverOk) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessRequest REQUEST = requestFor("rocprof", ReadinessScope::DEFAULT_INVENTORY);
+  EXPECT_EQ(vernier::bench::checkRocprofRequest(REQUEST, dir.context()).report.message,
+            "missing: rocprof not found on PATH");
+  const std::string ROCPROF = dir.install("fake_rocprof.sh", "rocprof");
+  const ReadinessResult RESULT = vernier::bench::checkRocprofRequest(REQUEST, dir.context());
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_EQ(RESULT.report.message,
+            "unverified: AMD collection is not validated (legacy rocprof): rocprof is " + ROCPROF +
+                "; no AMD device access or capture is checked");
+  const ReadinessResult INJECTED = vernier::bench::checkRocprofRequest(
+      requestFor("rocprof", ReadinessScope::RUNTIME), dir.context({{"ROCP_TOOL_LIB", "x.so"}}));
+  EXPECT_EQ(INJECTED.cause, ReadinessCause::UNVERIFIED);
+  EXPECT_TRUE(INJECTED.collectionReady());
+  EXPECT_EQ(dir.log(), "") << "the rocprof check starts nothing";
+}
+
+/** @test Each of rocprof's injection markers is its evidence at run time. */
+TEST(RocprofCheck, InjectionMarkersAreTheEvidence) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_rocprof.sh", "rocprof");
+  for (const auto& [NAME, VALUE] : std::map<std::string, std::string>{
+           {"ROCP_TOOL_LIB", "/opt/rocm/lib/librocprof-tool.so"},
+           {"ROCPROFILER_LIBRARY", "/opt/rocm/lib/librocprofiler64.so"},
+           {"LD_PRELOAD", "/opt/rocm/lib/librocprofiler-sdk-tool.so:librocprof.so"}}) {
+    const ReadinessResult RESULT = vernier::bench::checkRocprofRequest(
+        requestFor("rocprof", ReadinessScope::RUNTIME), dir.context({{NAME, VALUE}}));
+    EXPECT_EQ(RESULT.cause, ReadinessCause::UNVERIFIED) << NAME << ": " << RESULT.report.message;
+    EXPECT_NE(RESULT.report.message.find("injection is present"), std::string::npos)
+        << RESULT.report.message;
+  }
+}
+
+/** @test Without rocprof's injection a run fails with the wrap command; bench run does not wrap it.
+ */
+TEST(RocprofCheck, UnwrappedRunFailsWithTheWrapCommand) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_rocprof.sh", "rocprof");
+  const ReadinessResult RESULT = vernier::bench::checkRocprofRequest(
+      requestFor("rocprof", ReadinessScope::RUNTIME, "stats"), dir.context());
+  EXPECT_EQ(RESULT.cause, ReadinessCause::MISSING);
+  EXPECT_FALSE(RESULT.collectionReady());
+  EXPECT_EQ(RESULT.report.hint,
+            "Wrap it: rocprof --stats -o ./results.csv <this-binary> --profile rocprof "
+            "--profile-args stats [...]; bench run does not wrap rocprof.");
+}
+
+/** @test rocprof's words select its flags; any other word is refused. */
+TEST(RocprofCheck, ModesSelectFlags) {
+  std::vector<std::string> flags;
+  EXPECT_FALSE(vernier::bench::parseRocprofMode("stats,hip-trace", flags).has_value());
+  EXPECT_EQ(flags, (std::vector<std::string>{"--stats", "--hip-trace"}));
+  EXPECT_FALSE(vernier::bench::parseRocprofMode("", flags).has_value());
+  EXPECT_TRUE(flags.empty());
+  const auto REFUSED = vernier::bench::parseRocprofMode("hsa", flags);
+  ASSERT_TRUE(REFUSED.has_value());
+  EXPECT_EQ(REFUSED->report.message,
+            "configuration: 'hsa' is not a mode of rocprof; its modes are stats, hsa-trace, "
+            "hip-trace");
+}
+
+/** @test --profile-analyze with rocprof fails the analysis stage; the capture still runs. */
+TEST(RocprofCheck, AnalyzeFailsTheAnalysisStage) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessResult RESULT = vernier::bench::checkRocprofRequest(
+      requestFor("rocprof", ReadinessScope::RUNTIME, "", /*analyze=*/true),
+      dir.context({{"ROCPROFILER_LIBRARY", "x.so"}}));
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(RESULT.stage, ReadinessStage::ANALYSIS);
+  EXPECT_TRUE(RESULT.collectionReady());
+}
+
+/** @test A rocprof profiler built directly for a request that cannot run creates no folder. */
+TEST(RocprofCheck, RefusedDirectConstructionCreatesNoFolder) {
+  for (const char* NAME : {"ROCP_TOOL_LIB", "ROCPROFILER_LIBRARY"}) {
+    if (std::getenv(NAME) != nullptr) {
+      GTEST_SKIP() << NAME << " is set in this process: rocprof's injection is present";
+    }
+  }
+  const FakeToolDir ROOT;
+  ASSERT_TRUE(ROOT.ok());
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "rocprof";
+  cfg.artifactRoot = ROOT.path();
+  const vernier::bench::test::StderrCapture QUIET;
+  const vernier::bench::RocprofProfiler PROFILER(cfg, "Suite.Case");
+  EXPECT_EQ(PROFILER.artifactDir(), "");
+  EXPECT_FALSE(std::filesystem::exists(ROOT.path() + "/Suite.Case.rocprof"));
 }

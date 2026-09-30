@@ -2,46 +2,67 @@
 #define VERNIER_PROFILERROCPROF_HPP
 /**
  * @file ProfilerRocprof.hpp
- * @brief AMD ROCm rocprof backend -- timeline + kernel profiling on AMD GPUs.
+ * @brief Backend for AMD's legacy rocprof, the command-line profiler of the
+ * first ROCProfiler generation.
  *
- * rocprof is the AMD analog of Nsight Systems. It wraps a HIP / OpenCL /
- * OpenMP binary and produces:
- *   - results.csv      per-kernel timing summary
- *   - results.json     timeline (Chrome trace format; open with chrome://tracing)
- *   - results.stats.csv kernel statistics
+ * Not validated: nobody on this project has run this backend against an AMD
+ * GPU, and AMD deprecates rocprof in favour of newer tools. Its readiness
+ * decision is therefore never Ok: with rocprof on PATH the doctor reports it
+ * as unverified, and a run under rocprof's injection proceeds with the same
+ * warning. rocprof writes its reports where its -o option points; which files
+ * a given rocprof writes, and what they hold, is not checked here.
  *
- * Opens AMD MI / Radeon Instinct support for vernier without requiring ROCm
- * at build time -- detection is purely runtime (rocprof on PATH). The
- * binary's own code path stays vendor-agnostic; rocprof attaches via HSA /
- * roctracer at runtime, the way nsys attaches via CUPTI for NVIDIA.
+ * Nothing is needed at build time: detection is at run time only (rocprof on
+ * PATH, its injection in the process's environment). `bench run` does not
+ * wrap rocprof; a request run without it fails (exit status 4) and prints the
+ * command, for example:
  *
- * Modes (selectable via --profile-args):
- *   default                kernel time + API trace
- *   "stats"                kernel statistics report (--stats)
- *   "hsa-trace"            HSA trace + kernel time (--hsa-trace)
- *   "hip-trace"            HIP trace + kernel time (--hip-trace)
+ *   rocprof --stats -o ./results.csv \
+ *       ./MyTest --profile rocprof --profile-args stats [...]
  *
- * Invocation (wrap externally, same pattern as nsight / compute-sanitizer):
- *
- *   rocprof --stats -o run.csv \
- *       ./MyTest --profile rocprof --cycles 10 --gtest_filter='Gpu.Kernel'
+ * Modes (--profile-args, words separated by spaces or commas):
+ *   default                no extra flag
+ *   "stats"                --stats
+ *   "hsa-trace"            --hsa-trace
+ *   "hip-trace"            --hip-trace
  */
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
 
 namespace vernier {
 namespace bench {
+
+/* ----------------------------- RocprofPlan ----------------------------- */
+
+/** @brief What the rocprof check verified, for the launch to use. */
+struct RocprofPlan final : ReadinessPlan {
+  std::string rocprof;                              ///< The resolved rocprof (doctor scopes).
+  std::vector<std::string> flags;                   ///< rocprof's flags for the requested modes.
+  LaunchContext launch = LaunchContext::IN_PROCESS; ///< At the runtime scope: how the wrap began.
+};
 
 /* ----------------------------- RocprofProfiler ----------------------------- */
 
 class RocprofProfiler final : public Profiler {
 public:
+  /**
+   * @brief Decide the request now; prints the decision when it cannot run,
+   * and creates no folder then.
+   */
   RocprofProfiler(const PerfConfig& cfg, std::string testName);
+
+  /** @brief Build from a decision that lets the request run. */
+  RocprofProfiler(const PerfConfig& cfg, std::string testName,
+                  std::shared_ptr<const RocprofPlan> plan);
+
   ~RocprofProfiler() override = default;
 
   std::string toolName() const noexcept override { return "rocprof"; }
@@ -54,13 +75,33 @@ private:
   PerfConfig cfg_;
   std::string testName_;
   std::string artifactDir_;
-  std::string mode_; // "default" | "stats" | "hsa-trace" | "hip-trace"
-  bool runningUnderRocprof_{false};
+  std::shared_ptr<const RocprofPlan> plan_;
 };
 
 /* --------------------------------- API --------------------------------- */
 
-/** @brief Factory: returns a backend instance, or nullptr if rocprof is unavailable. */
+/**
+ * @brief Read rocprof's flags from @p profileArgs into @p flags.
+ * @return The error that refuses a word other than stats, hsa-trace and
+ *         hip-trace; nullopt when the flags were read.
+ */
+std::optional<ReadinessResult> parseRocprofMode(const std::string& profileArgs,
+                                                std::vector<std::string>& flags);
+
+/**
+ * @brief The rocprof backend's readiness decision for @p request in @p ctx.
+ *
+ * Never Ok. The doctor's scopes: MISSING without rocprof, otherwise
+ * unverified (AMD collection is not validated). A run: unverified under
+ * rocprof's injection (ROCP_TOOL_LIB, ROCPROFILER_LIBRARY, or rocprof in
+ * LD_PRELOAD, from the snapshot), otherwise an error that prints the wrap
+ * command. --profile-analyze is an analysis-stage error: rocprof's reports are
+ * read as they are. On a result that lets the request run the plan is a
+ * RocprofPlan.
+ */
+ReadinessResult checkRocprofRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
+
+/** @brief Factory: decides the request when the profiler is constructed. */
 std::unique_ptr<Profiler> makeRocprofProfiler(const PerfConfig& cfg, const std::string& testName);
 
 } // namespace bench
