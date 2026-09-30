@@ -296,6 +296,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrapped profile and ignored is now refused; use one of the modes the
   [tools README](tools/README.md#run---execute-benchmark-binary) lists, or drop
   it.
+- **A wrapped `bench run` checks this run's output after exit** -- a wrap
+  folder that could not be created ran the benchmark unwrapped, a wrap that
+  wrote nothing (or left a previous run's file in place) passed, and a failing
+  `nsys stats` was ignored. `bench run` stops before anything starts
+  when it cannot create the folder, removes the previous run's copies of the
+  wrap's own files from that folder first, and fails the run when the output
+  is missing or empty after exit (`completion:`) or a `nsys stats` summary
+  fails (`analysis:`, the report kept). **Action needed:** a rerun into the
+  same `--profile-output-dir` removes the previous `callgrind.out`,
+  `massif.out`, `memcheck.log`, `helgrind.log`, `run.zst`/`run.gz`,
+  `sanitizer.log`, nsight report files, `kernel_profile.ncu-rep` or
+  `jeprof.*.heap` from `<binary>.<tool>/` before it starts: copy them first to
+  keep them.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

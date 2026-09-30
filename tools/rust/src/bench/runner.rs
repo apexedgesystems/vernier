@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use super::workflow::canonical_backend;
-use super::{find_in_path, BenchmarkExit, Error};
+use super::{find_in_path, BenchmarkExit, Error, ProfileFailure};
 
 /// Exit status of a benchmark whose tests passed and whose requested profile
 /// failed: libbench's `BENCH_PROFILE_FAILED_EXIT_CODE` (ProfilerRegistry.hpp).
@@ -125,9 +125,13 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         find_in_path,
     )?;
 
-    // The benchmark runs under its route when it has one, directly
-    // otherwise; taskset, if requested, layers on the outside of either.
-    let route = route.filter(|r| fs::create_dir_all(&r.dir).is_ok());
+    // The route's folder exists and holds none of the files this run's wrap
+    // will write, so what is there after the run is this run's. The
+    // benchmark runs under its route when it has one, directly otherwise;
+    // taskset, if requested, layers on the outside of either.
+    if let Some(ref r) = route {
+        prepare_folder(&r.dir, &r.stale_names())?;
+    }
     let wrap = route
         .as_ref()
         .map(|r| (r.program.to_string(), r.args.clone()));
@@ -156,8 +160,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .stderr(Stdio::inherit());
 
     // Env-shaped wraps (jemalloc) inject via the environment instead of argv.
-    let env_wrap =
-        tool.and_then(|t| env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref()));
+    let env_wrap = match tool {
+        Some(t) => env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref())?,
+        None => None,
+    };
     if let Some(ref pairs) = env_wrap {
         for (k, v) in pairs {
             cmd.env(k, v);
@@ -198,13 +204,168 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         return Err(Error::Benchmark(end));
     }
 
-    // nsys writes its .nsys-rep when the process it started exits, so the
-    // summaries are extracted after the run, for nsight's nsys route only.
-    if let Some(route) = route.as_ref().filter(|r| r.program == "nsys") {
-        extract_nsys_stats(&route.dir);
+    // A wrap writes its output when the process it started exits: this run's
+    // output is checked here, after that exit, and only then analysed.
+    if let Some(ref r) = route {
+        let request = request_text(&r.tool, cfg.profile_args.as_deref());
+        for alternatives in r.outputs {
+            require_output(&r.tool, &request, &r.dir, alternatives)?;
+        }
+        if r.program == "nsys" {
+            extract_nsys_stats(&r.dir, &request)?;
+        }
+    }
+    if env_wrap.is_some() {
+        if let Some(tool) = tool {
+            require_jemalloc_dumps(
+                &wrap_artifact_dir(tool, &cfg.binary, cfg.profile_output_dir.as_deref()),
+                &request_text(tool, cfg.profile_args.as_deref()),
+            )?;
+        }
     }
 
     Ok(cfg.csv.clone())
+}
+
+/// Create a wrap's folder and remove from it the previous run's copies of the
+/// files the wrap writes (@p names, exact names), so that no stale output can
+/// stand for this run's. Nothing else in the folder or outside it is touched.
+fn prepare_folder(dir: &Path, names: &[&str]) -> Result<(), Error> {
+    fs::create_dir_all(dir).map_err(|e| {
+        Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("cannot create the output folder {}: {e}", dir.display()),
+        ))
+    })?;
+    for name in names {
+        remove_previous(&dir.join(name))?;
+    }
+    Ok(())
+}
+
+/// Remove one file a previous run left, saying so; a file that is not there
+/// is fine.
+fn remove_previous(path: &Path) -> Result<(), Error> {
+    match fs::remove_file(path) {
+        Ok(()) => {
+            println!("[bench] removed {} from a previous run", path.display());
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io(std::io::Error::new(
+            e.kind(),
+            format!(
+                "cannot remove {} left by a previous run: {e}",
+                path.display()
+            ),
+        ))),
+    }
+}
+
+/// The failure of a requested profile after its benchmark ran.
+fn profile_failure(request: &str, stage: &'static str, message: String) -> Error {
+    Error::Profile(ProfileFailure {
+        request: request.to_string(),
+        stage,
+        message,
+    })
+}
+
+/// Require one of @p alternatives (file names in @p dir) to exist and hold
+/// something, and print which, with its size.
+fn require_output(
+    tool: &str,
+    request: &str,
+    dir: &Path,
+    alternatives: &[&str],
+) -> Result<(), Error> {
+    let found = alternatives
+        .iter()
+        .map(|name| dir.join(name))
+        .find(|path| path.is_file());
+    let Some(path) = found else {
+        let names = alternatives
+            .iter()
+            .map(|name| dir.join(name).display().to_string())
+            .collect::<Vec<_>>()
+            .join(" or ");
+        return Err(profile_failure(
+            request,
+            "completion",
+            format!("{names} was not written"),
+        ));
+    };
+    let size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    if size == 0 {
+        return Err(profile_failure(
+            request,
+            "completion",
+            format!("{} is empty", path.display()),
+        ));
+    }
+    println!("[bench] {tool} wrote {} ({size} bytes)", path.display());
+    Ok(())
+}
+
+/// jemalloc's dumps, `jeprof.<pid>.<n>.<kind>.heap` under the prefix the
+/// environment wrap sets: the names carry the process id, so they are matched
+/// by that prefix and suffix inside the wrap's own folder.
+fn jemalloc_dumps(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut dumps: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("jeprof.") && n.ends_with(".heap"))
+        })
+        .collect();
+    dumps.sort();
+    dumps
+}
+
+/// Require a non-empty jemalloc dump from this run, and print each.
+fn require_jemalloc_dumps(dir: &Path, request: &str) -> Result<(), Error> {
+    let dumps: Vec<(PathBuf, u64)> = jemalloc_dumps(dir)
+        .into_iter()
+        .map(|p| {
+            let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+            (p, size)
+        })
+        .filter(|(_, size)| *size > 0)
+        .collect();
+    if dumps.is_empty() {
+        return Err(profile_failure(
+            request,
+            "completion",
+            format!(
+                "no jemalloc dump (jeprof.*.heap) was written in {}",
+                dir.display()
+            ),
+        ));
+    }
+    for (dump, size) in dumps {
+        println!("[bench] jemalloc wrote {} ({size} bytes)", dump.display());
+    }
+    Ok(())
+}
+
+/// How a helper program ended, for messages.
+fn describe_status(status: ExitStatus) -> String {
+    if let Some(code) = status.code() {
+        return format!("exited with status {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("was ended by signal {signal}");
+        }
+    }
+    "ended without a status".to_string()
 }
 
 /// How a finished benchmark ended, or `None` when it succeeded.
@@ -314,7 +475,34 @@ struct Route {
     args: Vec<String>,
     /// The folder the wrap writes into.
     dir: PathBuf,
+    /// The files the wrap writes into the folder: each entry is one required
+    /// output, satisfied by any one of its names.
+    outputs: &'static [&'static [&'static str]],
+    /// Files the runner derives from the output after the run.
+    derived: &'static [&'static str],
 }
+
+impl Route {
+    /// Every name a run of this route writes into its folder: removed from
+    /// the folder before the run.
+    fn stale_names(&self) -> Vec<&'static str> {
+        self.outputs
+            .iter()
+            .flat_map(|alternatives| alternatives.iter().copied())
+            .chain(self.derived.iter().copied())
+            .collect()
+    }
+}
+
+/// The summaries extracted from an nsys report, one `<report>.txt` each, and
+/// the SQLite export `nsys stats` writes beside the report.
+const NSYS_DERIVED: [&str; 5] = [
+    "profile.sqlite",
+    "cuda_gpu_kern_sum.txt",
+    "cuda_api_sum.txt",
+    "cuda_gpu_mem_size_sum.txt",
+    "cuda_gpu_mem_time_sum.txt",
+];
 
 /// The words of a `--profile-args` value, split on whitespace and commas:
 /// for a wrapped profile, the modes it selects.
@@ -396,7 +584,7 @@ fn route_for(
             "all".into(),
         ]
     };
-    let (program, mut args): (&'static str, Vec<String>) = match tool {
+    let (program, mut args, outputs): Routed = match tool {
         // The whole process is recorded: under the runner's wrap the
         // benchmark's callgrind backend leaves the recording alone.
         "callgrind" => (
@@ -405,6 +593,7 @@ fn route_for(
                 "--tool=callgrind".into(),
                 format!("--callgrind-out-file={d}/callgrind.out"),
             ],
+            &[&["callgrind.out"]],
         ),
         "massif" => {
             if has("pages") && has("stacks") {
@@ -422,7 +611,7 @@ fn route_for(
                 a.push("--stacks=yes".into());
             }
             a.push(format!("--massif-out-file={d}/massif.out"));
-            ("valgrind", a)
+            ("valgrind", a, &[&["massif.out"]])
         }
         "memcheck" => {
             let mut a = vec![
@@ -434,7 +623,7 @@ fn route_for(
                 a.push("--track-origins=yes".into());
             }
             a.push(format!("--log-file={d}/memcheck.log"));
-            ("valgrind", a)
+            ("valgrind", a, &[&["memcheck.log"]])
         }
         "helgrind" => (
             "valgrind",
@@ -447,8 +636,14 @@ fn route_for(
                 .into(),
                 format!("--log-file={d}/helgrind.log"),
             ],
+            &[&["helgrind.log"]],
         ),
-        "heaptrack" => ("heaptrack", vec!["-o".into(), format!("{d}/run")]),
+        // heaptrack appends the suffix of the compression it was built with.
+        "heaptrack" => (
+            "heaptrack",
+            vec!["-o".into(), format!("{d}/run")],
+            &[&["run.zst", "run.gz"]],
+        ),
         "compute-sanitizer" => {
             if words.len() > 1 {
                 return refuse(format!(
@@ -464,10 +659,13 @@ fn route_for(
                     "--log-file".into(),
                     format!("{d}/sanitizer.log"),
                 ],
+                &[&["sanitizer.log"]],
             )
         }
         // nsight's compute mode is ncu's route, into nsight's folder.
-        "nsight" if has("compute") || has("ncu") => ("ncu", ncu(&d)),
+        "nsight" if has("compute") || has("ncu") => {
+            ("ncu", ncu(&d), &[&["kernel_profile.ncu-rep"]])
+        }
         // nsys records the whole process; the benchmark's backend stays
         // passive (VERNIER_EXTERNAL_WRAP) and the summaries are extracted
         // after the run. nsys refuses to overwrite a report, so a rerun
@@ -483,8 +681,9 @@ fn route_for(
                 "--force-overwrite".into(),
                 "true".into(),
             ],
+            &[&["profile.nsys-rep"]],
         ),
-        "ncu" => ("ncu", ncu(&d)),
+        "ncu" => ("ncu", ncu(&d), &[&["kernel_profile.ncu-rep"]]),
         _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
     args.push(bin);
@@ -493,8 +692,21 @@ fn route_for(
         program,
         args,
         dir,
+        outputs,
+        derived: if program == "nsys" {
+            &NSYS_DERIVED
+        } else {
+            &[]
+        },
     }))
 }
+
+/// A route's program, arguments and required outputs, as `route_for` builds them.
+type Routed = (
+    &'static str,
+    Vec<String>,
+    &'static [&'static [&'static str]],
+);
 
 /// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
 /// prof_final:true guarantees the exit-time dump the backend's docs promise.
@@ -515,23 +727,24 @@ fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
 
 /// Wrap for backends that inject via environment rather than argv.
 /// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
-/// into the per-binary artifact dir. Returns None when the tool is not
-/// env-shaped or the loader cannot resolve the library (the binary's own
-/// hint then explains the manual setup).
+/// into the per-binary artifact dir, whose previous dumps are removed first.
+/// `Ok(None)` when the tool is not env-shaped or the loader cannot resolve
+/// the library (the binary's own hint then explains the manual setup); an
+/// error when the folder cannot be prepared.
 fn env_wrap_for(
     tool: &str,
     binary: &Path,
     output_dir: Option<&Path>,
-) -> Option<Vec<(String, String)>> {
-    if tool != "jemalloc" {
-        return None;
-    }
-    if !jemalloc_preloadable() {
-        return None;
+) -> Result<Option<Vec<(String, String)>>, Error> {
+    if tool != "jemalloc" || !jemalloc_preloadable() {
+        return Ok(None);
     }
     let dir = wrap_artifact_dir(tool, binary, output_dir);
-    fs::create_dir_all(&dir).ok()?;
-    Some(jemalloc_env(&dir))
+    prepare_folder(&dir, &[])?;
+    for dump in jemalloc_dumps(&dir) {
+        remove_previous(&dump)?;
+    }
+    Ok(Some(jemalloc_env(&dir)))
 }
 
 /// The loader is the only honest oracle for "will LD_PRELOAD work": preload
@@ -547,8 +760,7 @@ fn jemalloc_preloadable() -> bool {
         .unwrap_or(false)
 }
 
-/// The four canonical nsys stats reports, matching what the C++ backend
-/// extracts for attach-mode runs (ProfilerNsight.cu).
+/// The four summaries extracted from a wrapped nsight run's report.
 const NSYS_STATS_REPORTS: [&str; 4] = [
     "cuda_gpu_kern_sum",
     "cuda_api_sum",
@@ -556,35 +768,59 @@ const NSYS_STATS_REPORTS: [&str; 4] = [
     "cuda_gpu_mem_time_sum",
 ];
 
-/// Extract the canonical `nsys stats` reports beside a wrapped run's
-/// .nsys-rep. Best-effort: a missing report file (nsys produced nothing)
-/// or a failing nsys invocation prints a notice rather than erroring the
-/// run, matching the attach-mode behavior.
-fn extract_nsys_stats(dir: &Path) {
+/// Extract the four `nsys stats` summaries beside the report of a wrapped
+/// nsight run, one `<report>.txt` each. The report exists (checked before
+/// this runs). An `nsys stats` that fails is an analysis failure naming the
+/// summary, its status and the end of its error output; the report is kept.
+fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
     let rep = dir.join("profile.nsys-rep");
-    if !rep.is_file() {
-        eprintln!(
-            "[nsight] no report at {} (nsys produced nothing for this run)",
-            rep.display()
-        );
-        return;
-    }
     for report in NSYS_STATS_REPORTS {
         let out_path = dir.join(format!("{report}.txt"));
-        let Ok(out_file) = fs::File::create(&out_path) else {
-            continue;
-        };
-        let _ = Command::new("nsys")
+        let out_file = fs::File::create(&out_path).map_err(|e| {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("cannot write {}: {e}", out_path.display()),
+            ))
+        })?;
+        let out = Command::new("nsys")
             .args(["stats", "--force-export=true", "--report", report])
             .arg(&rep)
+            .stdin(Stdio::null())
             .stdout(Stdio::from(out_file))
-            .stderr(Stdio::null())
-            .status();
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot start nsys stats: {e}"),
+                ))
+            })?;
+        if !out.status.success() {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let tail = stderr
+                .lines()
+                .rev()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
+            return Err(profile_failure(
+                request,
+                "analysis",
+                format!(
+                    "nsys stats --report {report} {}{}{}; the report is kept at {}",
+                    describe_status(out.status),
+                    if tail.is_empty() { "" } else { ": " },
+                    tail,
+                    rep.display()
+                ),
+            ));
+        }
     }
     println!(
-        "[nsight] auto-extracted nsys stats reports into {}",
+        "[nsight] wrote the nsys stats summaries into {}",
         dir.display()
     );
+    Ok(())
 }
 
 /* ----------------------------- Helpers ----------------------------- */
@@ -919,11 +1155,54 @@ mod tests {
         );
     }
 
+    /// @test jemalloc's dumps are found by the wrap's prefix and suffix only,
+    /// and a run needs a non-empty one.
+    #[test]
+    fn jemalloc_dumps_match_the_wrap_prefix() {
+        let dir = tempfile_dir("vernier_runner_utst_jemalloc_dumps");
+        for (name, text) in [
+            ("jeprof.41.0.f.heap", "heap"),
+            ("jeprof.41.1.i0.heap", ""),
+            ("jeprof.txt", "not a dump"),
+            ("other.heap", "not the wrap's"),
+        ] {
+            fs::write(dir.join(name), text).expect("write");
+        }
+        let names: Vec<String> = jemalloc_dumps(&dir)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["jeprof.41.0.f.heap", "jeprof.41.1.i0.heap"]);
+        assert!(require_jemalloc_dumps(&dir, "--profile jemalloc").is_ok());
+        fs::remove_file(dir.join("jeprof.41.0.f.heap")).expect("remove");
+        let err = require_jemalloc_dumps(&dir, "--profile jemalloc")
+            .expect_err("only an empty dump is left");
+        assert!(
+            err.to_string().starts_with(
+                "--profile jemalloc failed: completion: no jemalloc dump (jeprof.*.heap) was \
+                 written in"
+            ),
+            "{err}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A fresh, empty directory under the system's temporary directory.
+    fn tempfile_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create the test directory");
+        dir
+    }
+
     /// @test env_wrap_for is None for tools that are not env-shaped.
     #[test]
     fn env_wrap_for_non_jemalloc_is_none() {
         for tool in ["perf", "massif", "nsight", "ncu", "rocprof", "heaptrack"] {
-            assert!(env_wrap_for(tool, Path::new("./b"), None).is_none());
+            assert!(matches!(
+                env_wrap_for(tool, Path::new("./b"), None),
+                Ok(None)
+            ));
         }
     }
 }

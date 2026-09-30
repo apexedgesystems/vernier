@@ -1320,7 +1320,8 @@ fn run_wrapped_exports_wrap_folder_to_child() {
     std::fs::create_dir_all(&tools).expect("create tools dir");
     let record = dir.path().join("exported.txt");
     let script = format!(
-        "#!/bin/sh\nprintf '%s\\n%s\\n' \"$VERNIER_EXTERNAL_WRAP\" \"$VERNIER_EXTERNAL_WRAP_DIR\" > '{}'\n",
+        "#!/bin/sh\nprintf '%s\\n%s\\n' \"$VERNIER_EXTERNAL_WRAP\" \"$VERNIER_EXTERNAL_WRAP_DIR\" > '{}'\n\
+         for a in \"$@\"; do case \"$a\" in --massif-out-file=*) echo heap > \"${{a#*=}}\" ;; esac; done\n",
         record.display()
     );
     let fake = tools.join("valgrind");
@@ -1404,6 +1405,9 @@ fn run_reports_the_benchmark_exit_status() {
 /// stand-in benchmark. Every stand-in appends one line to `log` -- its name,
 /// the wrap variable it was given, and its arguments -- and exits 0; a
 /// wrapper does not start the benchmark, whose argv is what is under test.
+/// A wrapper writes the output file its arguments name, as the tool would
+/// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
+/// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead).
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
@@ -1417,8 +1421,31 @@ fn route_rig(programs: &[&str]) -> RouteRig {
     let log = dir.path().join("argv.log");
     let write = |path: &std::path::Path, name: &str| {
         let script = format!(
-            "#!/bin/sh\necho \"{name} wrap=$VERNIER_EXTERNAL_WRAP $*\" >> '{}'\n",
-            log.display()
+            r#"#!/bin/sh
+echo "{name} wrap=$VERNIER_EXTERNAL_WRAP $*" >> '{log}'
+if [ "{name}" = nsys ] && [ "$1" = stats ]; then
+  if [ "$FAKE_NSYS_STATS" = fail ]; then echo "fake nsys: cannot export the report" >&2; exit 1; fi
+  echo "fake summary"
+  exit 0
+fi
+[ "$FAKE_WRITE" = none ] && exit 0
+out=""
+prev=""
+for a in "$@"; do
+  case "$a" in
+    --callgrind-out-file=*|--massif-out-file=*|--log-file=*) out="${{a#*=}}" ;;
+  esac
+  case "$prev" in
+    --log-file) out="$a" ;;
+    -o) case "{name}" in nsys) out="$a.nsys-rep" ;; ncu) out="$a.ncu-rep" ;; heaptrack) out="$a.gz" ;; esac ;;
+  esac
+  prev="$a"
+done
+if [ -n "$out" ]; then
+  if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
+fi
+"#,
+            log = log.display()
         );
         write_executable(path, &script);
     };
@@ -1433,16 +1460,30 @@ fn route_rig(programs: &[&str]) -> RouteRig {
 /// Run `bench run <rig's benchmark> <args>` with PATH set to the rig's
 /// stand-ins; returns the exit status, stderr and the stand-ins' log.
 fn run_rig(rig: &RouteRig, args: &[&str]) -> (i32, String, String) {
-    let out = output_of(
-        Command::new(bin())
-            .arg("run")
-            .arg(&rig.bench)
-            .args(args)
-            .env("PATH", rig.dir.path().join("tools"))
-            .current_dir(rig.dir.path()),
-    );
+    let (code, _, err, log) = run_rig_env(rig, args, &[]);
+    (code, err, log)
+}
+
+/// `run_rig` with extra environment for the stand-ins; also returns stdout.
+fn run_rig_env(
+    rig: &RouteRig,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String, String) {
+    let mut command = Command::new(bin());
+    command
+        .arg("run")
+        .arg(&rig.bench)
+        .args(args)
+        .env("PATH", rig.dir.path().join("tools"))
+        .current_dir(rig.dir.path());
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let out = output_of(&mut command);
     (
         out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
         std::fs::read_to_string(&rig.log).unwrap_or_default(),
     )
@@ -1456,14 +1497,25 @@ fn run_nsys_alias_wraps_like_nsight() {
         let rig = route_rig(&["nsys"]);
         let (code, err, log) = run_rig(&rig, &["--profile", spelling]);
         assert_eq!(code, 0, "{spelling}: {err}");
+        let mut lines = log.lines();
         assert_eq!(
-            log,
+            lines.next().unwrap_or(""),
             format!(
                 "nsys wrap=nsight profile -o bench-out/fake_bench.nsight/profile -t cuda,nvtx \
-                 --force-overwrite true {} --profile nsight\n",
+                 --force-overwrite true {} --profile nsight",
                 rig.bench.display()
             ),
             "{spelling}"
+        );
+        // Then the four summaries, from the report of this run.
+        let stats: Vec<&str> = lines.collect();
+        assert_eq!(stats.len(), 4, "{spelling}: {log}");
+        assert!(
+            stats
+                .iter()
+                .all(|l| l.starts_with("nsys wrap= stats --force-export=true")
+                    && l.ends_with(" bench-out/fake_bench.nsight/profile.nsys-rep")),
+            "{spelling}: {log}"
         );
     }
 }
@@ -1629,4 +1681,141 @@ fn run_profile_args_may_start_with_a_hyphen() {
             "{args:?}"
         );
     }
+}
+
+/* ----------------------------- Run: Completion ----------------------------- */
+
+/// @test An output folder that cannot be created stops the run before
+/// anything starts, naming the folder.
+#[test]
+fn run_refuses_an_output_folder_it_cannot_create() {
+    let rig = route_rig(&["valgrind"]);
+    let blocker = rig.dir.path().join("not-a-folder");
+    std::fs::write(&blocker, "a file where the output root should be").expect("write blocker");
+    let root = blocker.join("out");
+    let (code, err, log) = run_rig(
+        &rig,
+        &[
+            "--profile",
+            "massif",
+            "--profile-output-dir",
+            &root.to_string_lossy(),
+        ],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains(&format!(
+            "Error: I/O error: cannot create the output folder {}",
+            root.join("fake_bench.massif").display()
+        )),
+        "{err}"
+    );
+    assert_eq!(log, "", "something was started: {log}");
+}
+
+/// @test A wrapped run that exits 0 without its output, or with it empty,
+/// fails by naming the file; with it, the run says what was written.
+#[test]
+fn run_wrapped_output_is_checked_after_exit() {
+    let out = "bench-out/fake_bench.massif/massif.out";
+    for (write, code, expected) in [
+        (
+            "none",
+            1,
+            format!("Error: --profile massif failed: completion: {out} was not written"),
+        ),
+        (
+            "empty",
+            1,
+            format!("Error: --profile massif failed: completion: {out} is empty"),
+        ),
+        ("full", 0, format!("[bench] massif wrote {out} (")),
+    ] {
+        let rig = route_rig(&["valgrind"]);
+        let (rc, stdout, err, log) =
+            run_rig_env(&rig, &["--profile", "massif"], &[("FAKE_WRITE", write)]);
+        assert_eq!(rc, code, "{write}: {err}");
+        assert!(
+            stdout.contains(&expected) || err.contains(&expected),
+            "{write}: {stdout}{err}"
+        );
+        assert!(
+            log.starts_with("valgrind "),
+            "{write}: the wrap did not run: {log}"
+        );
+    }
+}
+
+/// @test heaptrack's output is found under the suffix its build chose.
+#[test]
+fn run_heaptrack_output_is_found_by_suffix() {
+    let rig = route_rig(&["heaptrack"]);
+    let (rc, stdout, err, _) = run_rig_env(&rig, &["--profile", "heaptrack"], &[]);
+    assert_eq!(rc, 0, "{err}");
+    assert!(
+        stdout.contains("[bench] heaptrack wrote bench-out/fake_bench.heaptrack/run.gz ("),
+        "{stdout}"
+    );
+}
+
+/// @test A previous run's output cannot stand for this run's: the wrap's own
+/// files are removed from its folder before the run, and nothing else is.
+#[test]
+fn run_wrapped_stale_output_fails() {
+    let rig = route_rig(&["valgrind"]);
+    let folder = rig.dir.path().join("bench-out/fake_bench.massif");
+    std::fs::create_dir_all(&folder).expect("create the wrap folder");
+    std::fs::write(folder.join("massif.out"), "a previous run's profile").expect("stale");
+    std::fs::write(folder.join("massif.out.old"), "kept").expect("neighbour");
+    std::fs::write(folder.join("notes.txt"), "kept").expect("neighbour");
+    std::fs::write(rig.dir.path().join("bench-out/massif.out"), "kept").expect("outside");
+    let (rc, stdout, err, _) =
+        run_rig_env(&rig, &["--profile", "massif"], &[("FAKE_WRITE", "none")]);
+    assert_eq!(rc, 1, "{err}");
+    assert!(
+        stdout
+            .contains("[bench] removed bench-out/fake_bench.massif/massif.out from a previous run"),
+        "{stdout}"
+    );
+    assert!(
+        err.contains("completion: bench-out/fake_bench.massif/massif.out was not written"),
+        "{err}"
+    );
+    assert!(
+        !folder.join("massif.out").exists(),
+        "the stale file stands for this run"
+    );
+    for kept in [
+        folder.join("massif.out.old"),
+        folder.join("notes.txt"),
+        rig.dir.path().join("bench-out/massif.out"),
+    ] {
+        assert!(kept.exists(), "{} was removed", kept.display());
+    }
+}
+
+/// @test A failing nsys stats fails the run as an analysis failure naming
+/// the summary, and keeps the report.
+#[test]
+fn run_nsight_stats_failure_is_reported() {
+    let rig = route_rig(&["nsys"]);
+    let (rc, _, err, _) = run_rig_env(
+        &rig,
+        &["--profile", "nsight"],
+        &[("FAKE_NSYS_STATS", "fail")],
+    );
+    assert_eq!(rc, 1, "{err}");
+    assert!(
+        err.contains(
+            "Error: --profile nsight failed: analysis: nsys stats --report cuda_gpu_kern_sum \
+             exited with status 1: fake nsys: cannot export the report; the report is kept at \
+             bench-out/fake_bench.nsight/profile.nsys-rep"
+        ),
+        "{err}"
+    );
+    assert!(rig
+        .dir
+        .path()
+        .join("bench-out/fake_bench.nsight/profile.nsys-rep")
+        .is_file());
 }

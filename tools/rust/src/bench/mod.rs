@@ -35,6 +35,27 @@ impl fmt::Display for BenchmarkExit {
     }
 }
 
+/// A requested profile that failed after its benchmark ran: its output is
+/// missing or not this run's (completion), or its analysis failed (analysis).
+#[derive(Debug)]
+pub struct ProfileFailure {
+    /// The request as the command line states it, e.g. `--profile massif`.
+    pub request: String,
+    /// "completion" or "analysis".
+    pub stage: &'static str,
+    pub message: String,
+}
+
+impl fmt::Display for ProfileFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} failed: {}: {}",
+            self.request, self.stage, self.message
+        )
+    }
+}
+
 /// Unified error type for the bench module.
 #[derive(Debug)]
 pub enum Error {
@@ -45,6 +66,8 @@ pub enum Error {
     ToolNotFound(String),
     /// The benchmark ran and did not succeed; how it ended.
     Benchmark(BenchmarkExit),
+    /// The benchmark succeeded and its requested profile did not.
+    Profile(ProfileFailure),
     /// Two runs cannot be compared; the cause names itself.
     Compare(compare::CompareError),
     /// `bench compare --fail-on-regression` found a labelled regression or a
@@ -66,6 +89,7 @@ impl fmt::Display for Error {
             Error::InvalidArgs(s) => write!(f, "invalid arguments: {s}"),
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
             Error::Benchmark(end) => write!(f, "{end}"),
+            Error::Profile(failure) => write!(f, "{failure}"),
             Error::Compare(e) => write!(f, "{e}"),
             Error::Gate {
                 regressions,

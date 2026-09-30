@@ -214,6 +214,21 @@ kernels. In-process backends
 reads `--profile-args` itself, and the C++ harness manages its own per-test
 artifact subdirs.
 
+**A wrapped run's output.** Before it starts the benchmark, `bench run`
+creates the wrap's folder (a folder it cannot create stops the run before
+anything starts) and removes from that folder the files a previous run of
+the same wrap left: `callgrind.out`, `massif.out`, `memcheck.log`,
+`helgrind.log`, `run.zst` and `run.gz` (heaptrack), `sanitizer.log`,
+`profile.nsys-rep` with `profile.sqlite` and the four summaries (nsight),
+`kernel_profile.ncu-rep` (ncu, and nsight's compute mode) and
+`jeprof.*.heap` (jemalloc), each removal printed as `[bench] removed <file>
+from a previous run`. Nothing else in the folder, and nothing outside it, is
+removed. After the benchmark exits 0, the file must exist and hold
+something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
+otherwise fails with `completion: <file> was not written` (or `is empty`).
+For nsight, a `nsys stats` summary that fails fails the run as `analysis:`,
+and the report is kept.
+
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 
 **How a run ends.** `bench run` exits 0 when the benchmark does and 1
