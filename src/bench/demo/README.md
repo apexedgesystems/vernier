@@ -82,7 +82,6 @@ how to compare two runs.
 | 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
 | 08  | RAPL Profiler       | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
 | 09  | bpftrace Profiler   | Syscall overhead tracing                       | One write() per byte                                        | Single batched write()                       | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
-| 10  | NVTX Annotation     | Timeline labeling for Nsight                   | Single opaque region                                        | Per-phase named ranges                       | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
 | 13  | Off-CPU Profiler    | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
@@ -99,16 +98,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block   | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                           | Walkthrough                                               |
+| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers         | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block           | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                             | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                                | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| 05  | NVTX Annotation    | Named ranges on an Nsight Systems timeline    | SAXPY G1 as it is: the test's range only    | G1 in three named phases: copy_in, kernel, copy_out | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demos 01 and 02 measure the shared SAXPY example (see
+Demos 01, 02 and 05 measure the shared SAXPY example (see
 [Shared Examples](#shared-examples)); the other two carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
@@ -194,7 +194,7 @@ the demos that use each example.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 07, 12, 14, 21 |
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                          |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                     |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13                 |
 
 The saxpy example and its tests are built only where the GPU demos are.
 

@@ -36,7 +36,6 @@ set(CPU_DEMOS
     07_CallgrindProfiler
     08_RaplProfiler
     09_BpftraceProfiler
-    10_NvtxAnnotation
     11_MassifProfiler
     12_MemcheckProfiler
     13_OffCpuProfiler
@@ -75,7 +74,7 @@ set_source_files_properties(cpu/12_MemcheckProfiler_OffByOne.cpp PROPERTIES COMP
 
 if (TARGET bench_cuda)
   set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt
-                04_ComputeSanitizerProfiler
+                04_ComputeSanitizerProfiler 05_NvtxAnnotation
   )
 
   foreach (DEMO ${GPU_DEMOS})
@@ -93,7 +92,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (9)
+# Demos Built on a Shared Example (10)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -131,6 +130,7 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
   target_link_libraries(BenchDemo_Gpu_02_NsightProfiler PRIVATE demo_example_saxpy)
+  target_link_libraries(BenchDemo_Gpu_05_NvtxAnnotation PRIVATE demo_example_saxpy)
   # Demo 02's guard timing, in a source of its own so the host test below builds it.
   target_sources(BenchDemo_Gpu_02_NsightProfiler PRIVATE gpu/02_NsightProfiler_Timing.cpp)
 endif ()
