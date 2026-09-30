@@ -119,6 +119,13 @@ vernier_nvtx_enable(${LIB_NAME})
 # ------------------------------------------------------------------------------
 
 if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
+  # NVML samples GPU clocks, power and temperature for the harness's CSV.
+  # COMPAT_NVML_AVAILABLE is 1 when it is found and linked, 0 otherwise
+  # (vernier_nvml_enable), and 0 with VERNIER_USE_NVML off, which skips it.
+  set(_bench_cuda_nvml "")
+  if (NOT VERNIER_USE_NVML)
+    set(_bench_cuda_nvml NO_NVML)
+  endif ()
   vernier_add_library_cuda(
     NAME
     ${LIB_NAME}_cuda
@@ -130,7 +137,11 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
     ${CUDA_SOURCES}
     ABI_VERSION
     ${BENCH_ABI_SOVERSION}
+    ${_bench_cuda_nvml}
   )
+  if (NOT VERNIER_USE_NVML)
+    target_compile_definitions(${LIB_NAME}_cuda PUBLIC COMPAT_NVML_AVAILABLE=0)
+  endif ()
   vernier_standard_optins(${LIB_NAME}_cuda)
 
   # bench_cuda links bench for its symbols and so also receives bench's

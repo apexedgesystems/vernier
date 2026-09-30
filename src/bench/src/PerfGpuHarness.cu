@@ -21,7 +21,7 @@
 #include <cstdio>
 #include <thread>
 
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
 #include <nvml.h>
 #endif
 
@@ -249,7 +249,7 @@ public:
 
     queryDeviceInfo();
 
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
     if (gpuCfg_.captureClockSpeeds) {
       if (nvmlInit() == NVML_SUCCESS) {
         nvmlDeviceGetHandleByIndex(gpuCfg_.deviceId, &nvmlDevice_);
@@ -264,7 +264,7 @@ public:
     cudaEventDestroy(eventStop_);
     cudaStreamDestroy(stream_);
 
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
     if (nvmlInitialized_) {
       nvmlShutdown();
     }
@@ -710,7 +710,7 @@ private:
   }
 
   void captureClockSpeed(ClockSpeedProfile& clocks, bool isStart) {
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
     if (!nvmlInitialized_)
       return;
 
@@ -744,7 +744,7 @@ private:
   }
 
   void capturePowerThermal(PowerThermalProfile& pt, bool isStart) {
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
     if (!nvmlInitialized_)
       return;
 
@@ -959,7 +959,7 @@ private:
   /// (non-owning; set by the PerfGpuCase constructor).
   const PerfGpuCase* owner_ = nullptr;
 
-#ifdef COMPAT_NVML_AVAILABLE
+#if COMPAT_NVML_AVAILABLE
   nvmlDevice_t nvmlDevice_{};
   bool nvmlInitialized_ = false;
 #endif

@@ -78,6 +78,9 @@ option(VERNIER_LINK_TCMALLOC "Link gperftools tcmalloc into bench and ptests" OF
 # Off builds the GPU harness's CUPTI collector without CUPTI: its cupti* CSV
 # cells stay empty. A toolkit without CUPTI builds the same way.
 option(VERNIER_USE_CUPTI "Collect CUPTI kernel records in GPU builds when the toolkit has CUPTI" ON)
+# Off builds the GPU harness without NVML, so it samples no GPU clock, power or
+# temperature. A system without NVML builds the same way.
+option(VERNIER_USE_NVML "Sample GPU clocks, power and temperature through NVML when found" ON)
 option(PROJECT_BUILD_DOCS "Enable Doxygen doc targets" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy integration" OFF)
 

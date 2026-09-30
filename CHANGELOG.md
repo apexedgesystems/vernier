@@ -698,6 +698,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   CUPTI collector builds as a no-op and the `cupti*` CSV cells stay empty. The
   collector keys on what the build linked, not on whether `cupti.h` exists, so
   a toolkit that has the header without the library builds too.
+- **A GPU build without NVML runs** -- a build that did not find NVML compiled
+  the harness's NVML calls without linking NVML, so every GPU test died at its
+  first case on an undefined `nvmlInit_v2`. The calls are compiled only when
+  NVML was found, and `-DVERNIER_USE_NVML=OFF` (a new option, on by default)
+  builds without it.
 
 ## v1.0.3 - 2026-06-28
 
