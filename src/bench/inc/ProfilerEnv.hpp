@@ -14,14 +14,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 #include <cerrno>
 #include <csignal>
 #include <sys/types.h>
 #include <unistd.h>
+
+#include "src/bench/inc/ProfilerReadiness.hpp" // policy and probes the helpers delegate to
 
 namespace vernier {
 namespace bench {
@@ -131,6 +136,39 @@ inline std::string externalWrapTool() {
   return (v != nullptr) ? std::string{v} : std::string{};
 }
 
+/* ----------------------------- nsightSessionTool ----------------------------- */
+
+/**
+ * @brief The Nsight tool running the process @p ctx describes: "nsys", "ncu",
+ * or "" for none.
+ *
+ * Neither nsys nor ncu can attach to a process that is already running, so a
+ * session exists only when the tool started this process. `bench run --profile
+ * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by hand is
+ * recognised from the variables each tool exports to the process it starts:
+ * NSYS_PROFILING_SESSION_ID (nsys) and NV_NSIGHT_INJECTION_PORT_BASE (ncu),
+ * as exported by nsys 2025.3 and ncu 2025.3. Reads only the snapshot.
+ */
+inline std::string nsightSessionTool(const ReadinessContext& ctx) {
+  const std::string WRAP = ctx.get("VERNIER_EXTERNAL_WRAP").value_or("");
+  if (WRAP == "nsight" || WRAP == "nsys") {
+    return "nsys";
+  }
+  if (WRAP == "ncu") {
+    return "ncu";
+  }
+  if (ctx.get("NSYS_PROFILING_SESSION_ID")) {
+    return "nsys";
+  }
+  if (ctx.get("NV_NSIGHT_INJECTION_PORT_BASE")) {
+    return "ncu";
+  }
+  return {};
+}
+
+/** @brief nsightSessionTool() on a snapshot of this process, taken now. */
+inline std::string nsightSessionTool() { return nsightSessionTool(ReadinessContext::capture()); }
+
 /* ----------------------------- Artifact Directories ----------------------------- */
 
 /**
@@ -209,29 +247,74 @@ inline std::string resolveArtifactDir(const std::string& profileTool,
   return dir;
 }
 
-/* ----------------------------- cuptiMustYield ----------------------------- */
+/* ----------------------------- cuptiDecision ----------------------------- */
+
+/** @brief What the in-process CUPTI collector does in this process, and why. */
+struct CuptiDecision {
+  bool yields = false; ///< Stand down: an Nsight session owns the process, or the override asks
+  std::string error;   ///< Not empty when VERNIER_DISABLE_CUPTI is not a boolean
+  std::string remedy;  ///< How to fix @ref error; empty when there is none
+};
 
 /**
- * @brief True when in-process CUPTI collection must stay off for this run.
+ * @brief Whether the in-process CUPTI collector stays off, decided from the
+ * snapshot @p ctx alone.
  *
- * CUPTI is single-client per process: if an external Nsight session
- * (nsys/ncu) owns the interface, an in-process subscriber wins the race
- * and the external tool records zero kernels. Yield when:
- *  1. VERNIER_DISABLE_CUPTI is set truthy (explicit operator override),
- *  2. the active --profile tool is nsight or ncu (an external session is
- *     the point of the run, attach-mode or wrapped), or
- *  3. the runner wrapped this process with nsys/ncu
- *     (VERNIER_EXTERNAL_WRAP, see externalWrapTool()).
+ * With the collector registered, an nsys session records no kernels (nsys
+ * 2025.3.2), and under ncu (2025.3.1) the collector records nothing while ncu
+ * profiles every launch. So the collector stands down when:
+ *  1. VERNIER_DISABLE_CUPTI is true (the explicit override), or
+ *  2. an nsys or ncu session owns this process (nsightSessionTool()): one that
+ *     `bench run` started, or one typed by hand, recognised from the variables
+ *     the tool exports to its target.
+ *
+ * VERNIER_DISABLE_CUPTI is read with parseEnvBool(), the grammar of every
+ * boolean setting. True (1, true, yes or on, in any case) is the override;
+ * false (0, false, no, off or empty, in any case) leaves the collector on and
+ * never keeps it on inside a session; unset is no override. Any other value is
+ * a configuration error: @ref CuptiDecision::error names it and
+ * @ref CuptiDecision::remedy lists the accepted values, and the caller must not
+ * register with CUPTI. As a readiness result it is ReadinessCause::CONFIGURATION
+ * with those two texts, the report whose text cuptiMustYield() throws.
+ * `--profile nsight|nsys|ncu` alone starts no session. The session variables
+ * are what those tool versions export, not a promised interface; with a version
+ * that does not export them, set VERNIER_DISABLE_CUPTI=1 when wrapping. The
+ * collector and the GPU harness decide with this function, and so should a
+ * readiness check, so that they agree.
  */
-inline bool cuptiMustYield(const std::string& profileTool) {
-  if (const char* v = std::getenv("VERNIER_DISABLE_CUPTI")) {
-    if (v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0)
-      return true;
+inline CuptiDecision cuptiDecision(const ReadinessContext& ctx) {
+  CuptiDecision decision;
+  const std::optional<std::string> RAW = ctx.get("VERNIER_DISABLE_CUPTI");
+  const EnvBool SETTING = parseEnvBool(RAW);
+  if (SETTING == EnvBool::INVALID) {
+    decision.error = "VERNIER_DISABLE_CUPTI='" + *RAW + "' is not a boolean";
+    decision.remedy = "Use 1, true, yes or on to turn the in-process CUPTI collector off; 0, "
+                      "false, no, off or an empty value to leave it on (it stands down inside "
+                      "an Nsight session either way).";
+    return decision;
   }
-  if (profileTool == "nsight" || profileTool == "ncu")
-    return true;
-  const std::string wrap = externalWrapTool();
-  return wrap == "nsight" || wrap == "ncu";
+  decision.yields = SETTING == EnvBool::TRUE_VALUE || !nsightSessionTool(ctx).empty();
+  return decision;
+}
+
+/** @brief cuptiDecision() on a snapshot of this process, taken now. */
+inline CuptiDecision cuptiDecision() { return cuptiDecision(ReadinessContext::capture()); }
+
+/**
+ * @brief True when the in-process CUPTI collector must stay off for this run
+ * (cuptiDecision() on a snapshot of this process).
+ * @throws std::invalid_argument when VERNIER_DISABLE_CUPTI is not a boolean,
+ *         with the text of the CONFIGURATION report readinessResult() gives for
+ *         the decision's error and remedy: its message, ". ", its hint.
+ */
+inline bool cuptiMustYield() {
+  const CuptiDecision DECISION = cuptiDecision();
+  if (!DECISION.error.empty()) {
+    const ReadinessResult RESULT =
+        readinessResult(ReadinessCause::CONFIGURATION, DECISION.error, DECISION.remedy);
+    throw std::invalid_argument(RESULT.report.message + ". " + RESULT.report.hint);
+  }
+  return DECISION.yields;
 }
 
 /* ----------------------------- benchSudoActive ----------------------------- */
@@ -239,30 +322,33 @@ inline bool cuptiMustYield(const std::string& profileTool) {
 /**
  * @brief True when privilege-needing backends should elevate via `sudo -n`.
  *
- * Opt-in through BENCH_SUDO (truthy) for processes not already running as
- * root. Pairs with a scoped sudoers grant (bpftrace + kill) so kernel-probe
+ * Opt-in through BENCH_SUDO (1, true, yes or on, any case) for processes not
+ * already running as root; the answer of decidePrivilege() for this process.
+ * Pairs with a scoped sudoers grant (bpftrace + kill) so kernel-probe
  * backends work from unprivileged test runs -- the tests and their artifacts
  * stay owned by the user; only the probe tooling elevates.
  */
 inline bool benchSudoActive() {
-  if (::geteuid() == 0)
-    return false;
-  const char* v = std::getenv("BENCH_SUDO");
-  return v != nullptr && v[0] != '\0' && v[0] != '0' && std::strcmp(v, "false") != 0;
+  return decidePrivilege(ReadinessContext::capture()).route == PrivilegeRoute::SCOPED_SUDO;
 }
 
 /* ----------------------------- sudoBpftraceUsable ----------------------------- */
 
 /**
- * @brief True when `sudo -n bpftrace` works for this user.
+ * @brief True when `sudo -n <bpftrace> --version` works for this user.
  *
- * Probes the actual capability, not `sudo -n true`: a *scoped* sudoers
- * grant (the recommended setup) authorizes bpftrace specifically, so a
- * generic sudo probe false-negatives on exactly the configuration this
- * feature is designed for.
+ * Proves that one invocation only: a grant restricted to other arguments can
+ * refuse an attach this allows. The bpftrace and offcpu backends decide with
+ * their readiness checks, which attach the selected script instead.
  */
 inline bool sudoBpftraceUsable() {
-  return std::system("sudo -n bpftrace --version >/dev/null 2>&1") == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto SUDO = resolveExecutable("sudo", CTX);
+  const auto TOOL = resolveExecutable("bpftrace", CTX);
+  if (!SUDO || !SUDO->executable || !TOOL || !TOOL->executable) {
+    return false;
+  }
+  return runBoundedProbe({SUDO->path, "-n", "--", TOOL->path, "--version"}, 5000, CTX).succeeded();
 }
 
 /* ----------------------------- bpftraceAttachViable ----------------------------- */
@@ -273,6 +359,7 @@ inline bool sudoBpftraceUsable() {
  * Presence on PATH is not health -- stripped builds break BEGIN/END,
  * missing tracefs breaks attachment, and both fail this real probe in
  * well under its 3s bound where a lookup-based check reports a false OK.
+ * The bound is runBoundedProbe()'s own; no timeout(1) is needed.
  *
  * The probe attaches a sched-family tracepoint -- the same surface the
  * bpftrace-backed profilers use. A kprobe would be the wrong probe: some
@@ -282,12 +369,23 @@ inline bool sudoBpftraceUsable() {
  * work fine.
  */
 inline bool bpftraceAttachViable(bool viaSudo) {
-  const char* CMD =
-      viaSudo ? "timeout 3 sudo -n bpftrace -e "
-                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1"
-              : "timeout 3 bpftrace -e "
-                "'tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }' >/dev/null 2>&1";
-  return std::system(CMD) == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto TOOL = resolveExecutable("bpftrace", CTX);
+  if (!TOOL || !TOOL->executable) {
+    return false;
+  }
+  std::vector<std::string> argv;
+  if (viaSudo) {
+    const auto SUDO = resolveExecutable("sudo", CTX);
+    if (!SUDO || !SUDO->executable) {
+      return false;
+    }
+    argv = {SUDO->path, "-n", "--"};
+  }
+  argv.push_back(TOOL->path);
+  argv.push_back("-e");
+  argv.push_back("tracepoint:sched:sched_switch { } interval:ms:200 { exit(); }");
+  return runBoundedProbe(argv, 3000, CTX).succeeded();
 }
 
 /* ----------------------------- processAlive ----------------------------- */
@@ -340,10 +438,16 @@ inline pid_t tracerPid(pid_t child) {
 inline bool sudoKill(pid_t pid, int sig) {
   if (::geteuid() == 0)
     return ::kill(pid, sig) == 0;
-  char cmd[96];
-  std::snprintf(cmd, sizeof(cmd), "sudo -n kill -%d %d >/dev/null 2>&1", sig,
-                static_cast<int>(pid));
-  return std::system(cmd) == 0;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const auto SUDO = resolveExecutable("sudo", CTX);
+  const auto KILL = resolveExecutable("kill", CTX);
+  if (!SUDO || !SUDO->executable || !KILL || !KILL->executable) {
+    return false;
+  }
+  return runBoundedProbe({SUDO->path, "-n", "--", KILL->path, "-" + std::to_string(sig),
+                          std::to_string(static_cast<int>(pid))},
+                         5000, CTX)
+      .succeeded();
 }
 
 } // namespace profiler_env

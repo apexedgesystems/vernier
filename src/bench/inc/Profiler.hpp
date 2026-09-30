@@ -3,6 +3,12 @@
 /**
  * @file Profiler.hpp
  * @brief Lightweight facade for optional profilers (perf, gperftools, bpftrace, RAPL, callgrind).
+ *
+ * A profiler exists only for cases that create one: the profiler guard
+ * (UB_PERF_GUARD / PERF_GUARD), makePerfCaseWithProfiler() and
+ * attachProfilerHooks() call Profiler::make(), where the --profile request is
+ * checked and its report printed. A bare PerfCase never calls it, so
+ * --profile does nothing for such a case.
  */
 
 #include <cstdio>
@@ -43,7 +49,8 @@ public:
 
   /**
    * @brief Factory: returns a concrete profiler or a no-op based on cfg.
-   * No-Op if cfg.profileTool is empty or unsupported on this platform.
+   * No-Op if cfg.profileTool is empty, or if the registry's readiness decision
+   * for the request says collection cannot run (the report is printed once).
    */
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
 };
