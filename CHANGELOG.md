@@ -23,32 +23,22 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `helpers/DemoWorkloads.hpp`.
 - **Demo 01 measures a shared example** -- `BenchDemo_01_BasicWorkflow`
   measures the two versions of the shared `join` example
-  (`src/bench/demo/examples/`), one test each, and a separate performance
-  test, `bin/ptests/JoinSpeedup`, fails when V0 stops being at least three
-  times slower than V1. Walkthrough 01 is rewritten from a Release run on the
-  Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 01's tests are
-  renamed (`SimpleThroughput`, `AccumulateVsManualLoop` and
-  `QuickModeIteration` become `JoinV0` and `JoinV1`), so its CSVs from earlier
-  releases do not join with newer ones.
+  (`src/bench/demo/examples/`), one test each. Demo 01's tests are renamed
+  (`SimpleThroughput`, `AccumulateVsManualLoop` and `QuickModeIteration`
+  become `JoinV0` and `JoinV1`), so its CSVs from earlier releases do not join
+  with newer ones.
 - **Demo 03 profiles the shared join example** --
   `BenchDemo_03_GperfProfiler` measures the two `join` versions, one test
-  each, instead of a bubble sort a Release build inlined out of every profile,
-  and a separate performance test, `bin/ptests/JoinProfileAttribution`, fails
-  when a profile stops putting V0's time in the calls `joinV0` makes and V1's
-  in `joinV1`'s own code. Walkthrough 03 is rewritten from a Release run on
-  the Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 03's tests
-  are renamed (`BubbleSortHotspot` and `StdSortOptimized` become `JoinV0` and
-  `JoinV1`), so its CSVs from earlier releases do not join with newer ones,
-  and `bubbleSort` and `fastSort` leave `helpers/DemoWorkloads.hpp`.
+  each, instead of a bubble sort a Release build inlined out of every profile.
+  Demo 03's tests are renamed (`BubbleSortHotspot` and `StdSortOptimized`
+  become `JoinV0` and `JoinV1`), so its CSVs from earlier releases do not join
+  with newer ones, and `bubbleSort` and `fastSort` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 11 measures the join example's peak heap** --
   `BenchDemo_11_MassifProfiler` measures the two `join` versions at 20,000
-  words, one test each, instead of allocating an 8 MB buffer per call, and
-  `Massif.JoinPeakHeap`, run by `ctest` (labels `demo` and `massif`) from a
-  separate test program, `TestDemoJoinPeakHeap`, fails unless V0 holds more
-  than three times V1's peak heap. Walkthrough 14 is rewritten from a Release
-  run on the Raspberry Pi 4 rig, with a reference CSV from that rig. Demo 11's
-  tests are renamed (`SmallChurn` and `PooledReuse` become `JoinV0` and
-  `JoinV1`), so its CSVs from earlier releases do not join with newer ones.
+  words, one test each, instead of allocating an 8 MB buffer per call.
+  Demo 11's tests are renamed (`SmallChurn` and `PooledReuse` become `JoinV0`
+  and `JoinV1`), so its CSVs from earlier releases do not join with newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
