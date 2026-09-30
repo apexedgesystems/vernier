@@ -962,6 +962,30 @@ TEST_F(BpfCheckTest, OffCpuExitProbeMatchesTheMainThreadOnly) {
   EXPECT_EQ(predicates.front(), "tid == $1") << RUN.program;
 }
 
+/**
+ * @test The switch-out probe counts a thread only when it goes to sleep,
+ * prev_state 1 (S) or 2 (D): a task preempted in user space reports 0, one
+ * preempted in the kernel 256 and an exiting one 16, and none of them waits
+ * for anything. The fake cannot evaluate a predicate; this reads the program
+ * the run launched, whose only test of the state must be that one.
+ */
+TEST_F(BpfCheckTest, OffCpuCountsSleepingSwitchOutsOnly) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  (void)runPlanned("offcpu", R, "OffCpu.SleepsOnly");
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
+  const std::string& PROGRAM = CALLS[1].program;
+  std::size_t uses = 0;
+  for (std::size_t at = PROGRAM.find("prev_state"); at != std::string::npos;
+       at = PROGRAM.find("prev_state", at + 1)) {
+    ++uses;
+  }
+  EXPECT_EQ(uses, 2U) << PROGRAM;
+  EXPECT_NE(PROGRAM.find("(args->prev_state == 1 || args->prev_state == 2)"), std::string::npos)
+      << PROGRAM;
+}
+
 /* ----------------------------- perf ----------------------------- */
 
 namespace {

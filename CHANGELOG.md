@@ -646,6 +646,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   thread of the benchmark exited, so a `contentionRun()` test, which starts
   new threads for every repeat, was traced only until its first worker
   finished. It ends when the benchmark's main thread exits.
+- **offcpu counts only threads that go to sleep** -- a thread preempted
+  inside the kernel, or exiting, was counted as blocked, adding rows under
+  whatever code it was running and an empty-stack row per exiting thread.
+  Only sleeping threads count, and each time runs until the thread runs
+  again, so it includes the wait for a CPU after the wakeup. Counts and times
+  from earlier captures include those rows and do not compare with new ones.
 
 ## v1.0.3 - 2026-06-28
 

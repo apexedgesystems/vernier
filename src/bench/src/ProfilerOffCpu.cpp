@@ -28,18 +28,23 @@ namespace {
 // traverse -- probes look live and record nothing.
 //
 // At switch-out the current task IS the thread being descheduled, so its
-// user stack is the blocking site; prev_state != 0 keeps only genuine
-// blocks (preemption excluded). Wait time joins at switch-in through the
-// per-tid start map. No END block on purpose: bpftrace auto-prints every
-// map at exit (SIGINT, exit(), or target death via the self-exit probe),
-// and distro builds are often stripped, which breaks BEGIN/END trigger
-// symbols outright. Consumers read @offcpu_blocks / @offcpu_ns.
+// user stack is the blocking site. Only a thread that goes to sleep is
+// counted: prev_state 1 (S, interruptible) or 2 (D, uninterruptible). A task
+// preempted on its way back to user space reports 0, one preempted inside
+// the kernel 256 (the preempted flag), and an exiting thread 16 (EXIT_DEAD);
+// none of them waits for anything. The time from a sleeping switch-out to the
+// thread's next switch-in joins through the per-tid start map; it holds the
+// sleep and the wait for a CPU after the wakeup. No END block on purpose:
+// bpftrace auto-prints every map at exit (SIGINT, exit(), or target death via
+// the self-exit probe), and distro builds are often stripped, which breaks
+// BEGIN/END trigger symbols outright. Consumers read @offcpu_blocks /
+// @offcpu_ns.
 //
 // The self-exit probe matches the main thread alone (tid == $1):
 // sched_process_exit fires for every exiting thread, and a test that starts
 // threads must not end its own trace when the first of them finishes.
 constexpr const char* OFFCPU_SCRIPT = R"BT(
-tracepoint:sched:sched_switch /pid == $1 && args->prev_state != 0/ {
+tracepoint:sched:sched_switch /pid == $1 && (args->prev_state == 1 || args->prev_state == 2)/ {
   @start[args->prev_pid] = nsecs;
   @offcpu_blocks[ustack, comm] = count();
 }

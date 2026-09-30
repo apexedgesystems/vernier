@@ -6,14 +6,15 @@
  *
  * The on-CPU profilers (perf, gperf, callgrind, bpftrace, rapl, nsight)
  * measure work. Off-CPU profiling answers the complementary question: where
- * do threads spend time *blocked* (sleep, mutex wait, I/O wait, scheduler
- * delay)?
+ * do threads spend time *blocked* (asleep, waiting for a mutex, for I/O or
+ * for another thread)?
  *
  * Probes: an embedded bpftrace script on the sched tracepoints (a stable
  * kernel interface). At switch-out it counts the user stack of each thread of
- * this process that blocks; at switch-in it sums how long that thread was
- * off the CPU. It exits by itself when this process's main thread exits,
- * not when one of its other threads does.
+ * this process that goes to sleep; a thread that is preempted or exits is not
+ * counted. At switch-in it sums how long that thread was off the CPU, which
+ * includes the wait for a CPU after its wakeup. It exits by itself when this
+ * process's main thread exits, not when one of its other threads does.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
