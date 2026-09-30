@@ -131,6 +131,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
+- **Demo 13 (offcpu) measures the shared `join` example between threads** --
+  `BenchDemo_13_OffCpuProfiler` adds joined lengths to one total from several
+  threads, `OffCpu.CoarseLock` under one lock held for the whole call and
+  `OffCpu.NoSharing` with a total per thread, one CSV row each, and a test
+  run by `ctest` holds both versions to the same total. Its test names change
+  (`MutexCounter` and `AtomicCounter` are gone), so CSVs captured from it
+  before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

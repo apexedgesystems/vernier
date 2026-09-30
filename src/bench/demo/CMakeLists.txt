@@ -94,7 +94,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (8)
+# Demos Built on a Shared Example (9)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demo and its
 # example are only built where the GPU demos are.
@@ -122,6 +122,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_12_MemcheckProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_13_OffCpuProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -242,6 +246,26 @@ add_dependencies(TestDemoMemcheck BenchDemo_12_MemcheckProfiler)
 set_tests_properties(
   Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
+)
+
+# ------------------------------------------------------------------------------
+# Demo 13's Totals Check Run by CTest
+# ------------------------------------------------------------------------------
+# Where demo 13's threads wait, and for how long, is measured on the rig and
+# not registered. What the machine's load cannot change is: run through
+# contentionRun() as the demo runs them, both versions reach the same total.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoOffCpu
+  SOURCES
+  cpu/utst/13_OffCpuProfiler_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
 )
 
 # ------------------------------------------------------------------------------
