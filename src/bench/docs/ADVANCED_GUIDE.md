@@ -552,9 +552,15 @@ machine-readable and enforceable:
 bench doctor MyComponent_PTEST --json > doctor.json
 
 # Fail a profile lane fast unless its tools are actually ready
-# ("warn" is not ready -- a warning offcpu row means empty artifacts):
+# ("warn" is not ready: --require accepts only [OK]):
 bench doctor MyComponent_PTEST --require offcpu,heaptrack
+
+# Check the request the lane runs, mode included, as bench run passes it:
+bench doctor MyComponent_PTEST --profile massif --profile-args pages --require massif
 ```
+
+`bench doctor` takes the binary's full path. With `--json` its stdout is one
+JSON document and the `--require` lines go to stderr.
 
 Assess-and-record on gate lanes, assess-and-enforce on profile lanes;
 the doctor never installs anything.

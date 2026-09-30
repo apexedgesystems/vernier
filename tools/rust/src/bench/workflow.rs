@@ -123,34 +123,39 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
     }
 }
 
-/// Run a binary's `--profile-check` (binary readiness + backend doctor).
-/// Text mode streams the human report. `json` prints the binary's JSON
-/// document, once it parses, and nothing else on stdout (fleet capability
-/// records). `require` reads that document and exits 1 unless every named
-/// backend reports OK -- warn is not good enough for a profile lane (an
-/// offcpu row that warns "not running as root" produces empty artifacts,
-/// not failures); its verdict lines go to stderr with `json`, to stdout
-/// without it. A document that does not parse is an error.
-pub fn doctor(binary: Option<&Path>, json: bool, require: &[String]) -> Result<i32, Error> {
-    let bin = match binary {
-        Some(p) => p.to_path_buf(),
-        None => {
-            return Err(Error::InvalidArgs(
-                "no binary given. Pass a ptest binary path, e.g. \
-             `bench doctor build/native-linux-debug/bin/ptests/BenchDemo_01_BasicWorkflow`."
-                    .into(),
-            ))
-        }
-    };
+/// Run a binary's `--profile-check` (binary readiness + backend doctor),
+/// with @p request's profile flags spelled as `bench run` passes them
+/// (`runner::profile_request_args`, then its arguments after `--`), and
+/// @p env added to the binary's environment. Text mode streams the human
+/// report. `json` prints the binary's JSON document, once it parses, and
+/// nothing else on stdout (fleet capability records). `require` reads that
+/// document and exits 1 unless every named backend reports OK -- warn is not
+/// good enough for a profile lane; the requested backend is judged by the
+/// document's `selected` row, the others by their default-mode rows. Its
+/// verdict lines go to stderr with `json`, to stdout without it. A document
+/// that does not parse is an error.
+pub fn doctor(
+    binary: &Path,
+    request: &super::runner::RunConfig,
+    env: &[(String, String)],
+    json: bool,
+    require: &[String],
+) -> Result<i32, Error> {
+    let bin = binary.to_path_buf();
     if !bin.is_file() {
         return Err(Error::InvalidArgs(format!(
             "binary not found: {}",
             bin.display()
         )));
     }
+    let mut request_args = super::runner::profile_request_args(request);
+    request_args.extend(request.extra_args.iter().cloned());
+    let selected = request.profile.as_deref().map(canonical_backend);
     if json || !require.is_empty() {
         let out = Command::new(&bin)
             .arg("--profile-check-json")
+            .args(&request_args)
+            .envs(env.iter().map(|(k, v)| (k, v)))
             .output()
             .map_err(Error::Io)?;
         let doc = String::from_utf8_lossy(&out.stdout).to_string();
@@ -166,7 +171,7 @@ pub fn doctor(binary: Option<&Path>, json: bool, require: &[String]) -> Result<i
         if require.is_empty() {
             return Ok(out.status.code().unwrap_or(1));
         }
-        let verdict = evaluate_required_backends(&parsed, require);
+        let verdict = evaluate_required_backends(&parsed, require, selected);
         for line in &verdict.lines {
             if json {
                 eprintln!("{line}");
@@ -178,6 +183,8 @@ pub fn doctor(binary: Option<&Path>, json: bool, require: &[String]) -> Result<i
     }
     let status = Command::new(&bin)
         .arg("--profile-check")
+        .args(&request_args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
         .status()
         .map_err(Error::Io)?;
     Ok(status.code().unwrap_or(1))
@@ -191,22 +198,55 @@ struct RequireVerdict {
 }
 
 /// The --require verdict: every named backend must exist and report "ok".
-fn evaluate_required_backends(doc: &serde_json::Value, require: &[String]) -> RequireVerdict {
+/// @p selected names the backend of the request the doctor was asked about:
+/// that backend is judged by the document's `selected` row, which a binary
+/// older than the selected row does not print (the requirement is then
+/// unmet); every other backend by its default-mode row.
+fn evaluate_required_backends(
+    doc: &serde_json::Value,
+    require: &[String],
+    selected: Option<&str>,
+) -> RequireVerdict {
     let rows = doc["backends"].as_array().cloned().unwrap_or_default();
     let mut lines = Vec::new();
     let mut failed = 0;
     for raw in require {
         let want = canonical_backend(raw.trim());
-        let row = rows.iter().find(|r| r["name"] == want);
+        let (row, label) = if selected == Some(want) {
+            match doc.get("selected").filter(|row| row.is_object()) {
+                Some(row) => {
+                    let args = row["profileArgs"].as_str().unwrap_or("");
+                    let request = if args.is_empty() {
+                        format!("--profile {want}")
+                    } else {
+                        format!("--profile {want} --profile-args '{args}'")
+                    };
+                    (Some(row.clone()), format!("{want} ({request})"))
+                }
+                None => {
+                    failed += 1;
+                    lines.push(format!(
+                        "[require] {want}: this binary does not report selected requests; \
+                         rebuild it against this vernier, or drop --profile"
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            (
+                rows.iter().find(|r| r["name"] == want).cloned(),
+                want.to_string(),
+            )
+        };
         match row {
             Some(r) if r["status"] == "ok" => {
-                lines.push(format!("[require] {want}: OK"));
+                lines.push(format!("[require] {label}: OK"));
             }
             Some(r) => {
                 failed += 1;
                 let msg = r["message"].as_str().unwrap_or("");
                 let hint = r["hint"].as_str().unwrap_or("");
-                lines.push(format!("[require] {want}: NOT READY ({msg})"));
+                lines.push(format!("[require] {label}: NOT READY ({msg})"));
                 if !hint.is_empty() {
                     lines.push(format!("          {hint}"));
                 }
@@ -241,7 +281,7 @@ mod doctor_tests {
     /// @test A backend that reports ok meets its requirement.
     #[test]
     fn require_ok_passes() {
-        let verdict = evaluate_required_backends(&doc(), &["offcpu".into()]);
+        let verdict = evaluate_required_backends(&doc(), &["offcpu".into()], None);
         assert_eq!(verdict.status, 0);
         assert_eq!(verdict.lines, ["[require] offcpu: OK"]);
     }
@@ -249,7 +289,7 @@ mod doctor_tests {
     /// @test A warning does not meet a requirement: the verdict names it and its remedy.
     #[test]
     fn require_warn_fails() {
-        let verdict = evaluate_required_backends(&doc(), &["perf".into()]);
+        let verdict = evaluate_required_backends(&doc(), &["perf".into()], None);
         assert_eq!(verdict.status, 1);
         assert_eq!(
             verdict.lines,
@@ -265,16 +305,33 @@ mod doctor_tests {
     #[test]
     fn require_missing_fails() {
         assert_eq!(
-            evaluate_required_backends(&doc(), &["rocprof".into()]).status,
+            evaluate_required_backends(&doc(), &["rocprof".into()], None).status,
             1
         );
+    }
+
+    /// @test The requested backend is judged by its selected row, the others
+    /// by their default-mode rows.
+    #[test]
+    fn require_selected_row_judges_the_request() {
+        let mut doc = doc();
+        doc["selected"] = serde_json::json!({"name": "offcpu", "profileArgs": "x",
+            "status": "fail", "message": "configuration: 'x'", "hint": "drop it"});
+        let verdict =
+            evaluate_required_backends(&doc, &["offcpu".into(), "nsight".into()], Some("offcpu"));
+        assert_eq!(verdict.status, 1);
+        assert_eq!(
+            verdict.lines[0],
+            "[require] offcpu (--profile offcpu --profile-args 'x'): NOT READY (configuration: 'x')"
+        );
+        assert!(verdict.lines.contains(&"[require] nsight: OK".to_string()));
     }
 
     /// @test nsys is required as nsight, its registered name.
     #[test]
     fn require_nsys_alias_resolves() {
         assert_eq!(
-            evaluate_required_backends(&doc(), &["nsys".into()]).status,
+            evaluate_required_backends(&doc(), &["nsys".into()], None).status,
             0
         );
     }

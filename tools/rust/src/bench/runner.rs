@@ -90,28 +90,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         args.push(repeats.to_string());
     }
     let tool = cfg.profile.as_deref().map(canonical_backend);
-    if let Some(tool) = tool {
-        args.push("--profile".to_string());
-        args.push(tool.to_string());
-    }
-    if let Some(ref pa) = cfg.profile_args {
-        args.push("--profile-args".to_string());
-        args.push(pa.clone());
-    }
-    if let Some(t) = cfg.profile_test_timeout {
-        args.push("--profile-test-timeout".to_string());
-        args.push(t.to_string());
-    }
-    if let Some(ref dir) = cfg.profile_output_dir {
-        args.push("--profile-output-dir".to_string());
-        args.push(dir.display().to_string());
-    }
+    args.extend(profile_request_args(cfg));
     // --profile-analyze given to bench run, or forwarded after `--`: one
     // request either way.
     let analyze = cfg.profile_analyze || cfg.extra_args.iter().any(|a| a == "--profile-analyze");
-    if cfg.profile_analyze && !cfg.extra_args.iter().any(|a| a == "--profile-analyze") {
-        args.push("--profile-analyze".to_string());
-    }
     args.extend(cfg.extra_args.iter().cloned());
 
     // The route a wrapped profile runs under (e.g. `valgrind --tool=massif
@@ -255,6 +237,35 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
 
     Ok(cfg.csv.clone())
+}
+
+/// The profile request as the benchmark reads it: `--profile` by its
+/// canonical name, `--profile-args`, `--profile-test-timeout`,
+/// `--profile-output-dir`, and `--profile-analyze` unless it is among the
+/// arguments forwarded after `--` (which the caller appends after these).
+/// `bench run` and `bench doctor` spell a request with this one function.
+pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(tool) = cfg.profile.as_deref().map(canonical_backend) {
+        args.push("--profile".to_string());
+        args.push(tool.to_string());
+    }
+    if let Some(ref pa) = cfg.profile_args {
+        args.push("--profile-args".to_string());
+        args.push(pa.clone());
+    }
+    if let Some(t) = cfg.profile_test_timeout {
+        args.push("--profile-test-timeout".to_string());
+        args.push(t.to_string());
+    }
+    if let Some(ref dir) = cfg.profile_output_dir {
+        args.push("--profile-output-dir".to_string());
+        args.push(dir.display().to_string());
+    }
+    if cfg.profile_analyze && !cfg.extra_args.iter().any(|a| a == "--profile-analyze") {
+        args.push("--profile-analyze".to_string());
+    }
+    args
 }
 
 /// Create a wrap's folder and remove from it the previous run's copies of the

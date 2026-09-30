@@ -213,9 +213,23 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Comma-separated backends that must report OK (exit nonzero otherwise),
-        /// e.g. --require offcpu,heaptrack. Implies parsing the JSON form.
+        /// e.g. --require offcpu,heaptrack. Implies parsing the JSON form. The
+        /// backend of --profile is judged by that request's own row
         #[arg(long, value_delimiter = ',')]
         require: Vec<String>,
+        /// A profile request to check, passed to the binary as bench run
+        /// passes it (--profile by its canonical name; nsys is nsight)
+        #[arg(long)]
+        profile: Option<String>,
+        /// The request's mode, passed to the binary as --profile-args
+        #[arg(long, allow_hyphen_values = true)]
+        profile_args: Option<String>,
+        /// The request's analysis, passed to the binary as --profile-analyze
+        #[arg(long)]
+        profile_analyze: bool,
+        /// Further arguments for the binary, after --, as bench run passes them
+        #[arg(last = true)]
+        extra_args: Vec<String>,
     },
 
     /// Run a benchmark binary under each profiler in sequence
@@ -549,8 +563,20 @@ fn run(args: Args) -> Result<(), Error> {
             binary,
             json,
             require,
+            profile,
+            profile_args,
+            profile_analyze,
+            extra_args,
         } => {
-            let rc = bench::workflow::doctor(Some(&binary), json, &require)?;
+            let request = bench::runner::RunConfig {
+                binary: binary.clone(),
+                profile,
+                profile_args,
+                profile_analyze,
+                extra_args,
+                ..Default::default()
+            };
+            let rc = bench::workflow::doctor(&binary, &request, &[], json, &require)?;
             std::process::exit(rc);
         }
 

@@ -223,7 +223,8 @@ directory.
 `--profile X` dispatches to whichever backend self-registered under that
 name; `bench doctor` lists them all with their environment readiness
 (`--json` for CI capability records, `--require a,b` to gate a profile
-lane on the backends it needs).
+lane on the backends it needs, `--profile X` with its options to check one
+request).
 
 | Backend             | Layer | Wraps                                         |
 | ------------------- | ----- | --------------------------------------------- |

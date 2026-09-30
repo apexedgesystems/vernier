@@ -272,6 +272,8 @@ per-backend doctor (whether each registered profiler can actually run here).
 bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST
 bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --json > doctor.json
 bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --require offcpu,heaptrack
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST \
+  --profile massif --profile-args pages --require massif
 ```
 
 With `--json`, stdout is the binary's JSON document and nothing else. With
@@ -279,6 +281,14 @@ With `--json`, stdout is the binary's JSON document and nothing else. With
 and prints one `[require]` line per backend: on stderr when `--json` is also
 given, so that stdout stays one document, and on stdout otherwise. A binary
 whose doctor prints no valid document is an error (exit 1).
+
+`--profile`, `--profile-args`, `--profile-analyze` and the arguments after
+`--` are passed to the binary as `bench run` passes them, and the doctor adds
+a row for that request. `--require` judges the requested backend by that row
+and every other backend by its default mode's row, so a requirement on
+`massif` with `--profile-args pages` is met only when that mode is ready. A
+binary built before the requested row existed cannot answer such a
+requirement: rebuild it against this vernier, or drop `--profile`.
 
 ### profile-all - Iterate Every Profiler
 

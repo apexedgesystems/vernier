@@ -314,6 +314,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **`bench doctor` checks the request a lane runs** -- `--require` judged
+  every backend by its default mode, so a lane that ran
+  `--profile massif --profile-args pages` could pass the doctor while its
+  own mode could not run. `bench doctor` takes `--profile`,
+  `--profile-args`, `--profile-analyze` and arguments after `--`, passes
+  them to the binary as `bench run` does, and judges the requested backend
+  by that request's row. **Action needed:** a binary built before the
+  requested row existed cannot meet such a requirement; rebuild it against
+  this vernier, or drop `--profile`.
 - **`bench doctor --json --require` prints one JSON document** -- the
   `--require` verdict followed the document on stdout, so the output did not
   parse, and a binary that printed no valid document passed its text through.

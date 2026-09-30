@@ -2368,7 +2368,8 @@ const DOCTOR_DOC: &str = r#"{"binary": {"frameInfo": "ok"}, "backendScope": "def
 "#;
 
 /// A stand-in benchmark whose doctor prints @p doc for --profile-check-json
-/// and a line of text for --profile-check; returns its path.
+/// and a line of text for --profile-check, and appends its arguments to
+/// `argv.log` beside it; returns its path.
 fn doctor_stand_in(dir: &Path, doc: &str) -> PathBuf {
     let doc_file = dir.join("doc.json");
     std::fs::write(&doc_file, doc).expect("write the document");
@@ -2376,7 +2377,8 @@ fn doctor_stand_in(dir: &Path, doc: &str) -> PathBuf {
     write_executable(
         &bench,
         &format!(
-            "#!/bin/sh\ncase \"$*\" in\n  *--profile-check-json*) cat '{}' ;;\n  *--profile-check*) echo 'text doctor' ;;\nesac\n",
+            "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in\n  *--profile-check-json*) cat '{}' ;;\n  *--profile-check*) echo 'text doctor' ;;\nesac\n",
+            dir.join("argv.log").display(),
             doc_file.display()
         ),
     );
@@ -2462,4 +2464,91 @@ fn doctor_require_without_json_prints_the_verdict() {
         "the verdict on stdout: {out}"
     );
     assert!(!out.contains("\"backends\""), "{out}");
+}
+
+/// @test bench doctor passes a profile request to the binary as bench run
+/// does: the canonical --profile, its mode (which may start with '-'), the
+/// analysis, and the arguments after --.
+#[test]
+fn doctor_forwards_the_request() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let b = bench.to_string_lossy().into_owned();
+    let (rc, _, err) = run_doctor(&[
+        &b,
+        "--profile",
+        "nsys",
+        "--profile-args",
+        "-e cycles",
+        "--profile-analyze",
+        "--",
+        "--gtest_filter=A.B",
+    ]);
+    assert_eq!(rc, 0, "{err}");
+    let (rc, out, err) = run_doctor(&[&b, "--json", "--profile", "massif", "--", "--x"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(out, DOCTOR_DOC);
+    let argv = std::fs::read_to_string(dir.path().join("argv.log")).unwrap_or_default();
+    assert_eq!(
+        argv,
+        "--profile-check --profile nsight --profile-args -e cycles --profile-analyze \
+         --gtest_filter=A.B\n--profile-check-json --profile massif --x\n"
+    );
+}
+
+/// @test --require judges the requested backend by the request's own row:
+/// a default mode that is ready does not meet a requested mode that is not.
+/// Other backends keep their default-mode rows.
+#[test]
+fn doctor_require_uses_the_selected_row() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let doc = DOCTOR_DOC.trim_end().trim_end_matches('}').to_string()
+        + r#", "selected": {"name": "perf", "profileArgs": "record", "status": "fail", "message": "denied: perf record", "hint": "lower paranoid"}}"#
+        + "\n";
+    let bench = doctor_stand_in(dir.path(), &doc);
+    let b = bench.to_string_lossy().into_owned();
+    let (rc, out, _) = run_doctor(&[&b, "--require", "perf"]);
+    assert_eq!(rc, 0, "without --profile, perf's default-mode row: {out}");
+    let (rc, out, _) = run_doctor(&[
+        &b,
+        "--profile",
+        "perf",
+        "--profile-args",
+        "record",
+        "--require",
+        "perf",
+    ]);
+    assert_eq!(rc, 1, "{out}");
+    assert!(
+        out.contains(
+            "[require] perf (--profile perf --profile-args 'record'): NOT READY (denied: perf record)"
+        ),
+        "{out}"
+    );
+    let (rc, out, _) = run_doctor(&[&b, "--profile", "perf", "--require", "offcpu"]);
+    assert_eq!(rc, 1, "{out}");
+    assert!(out.contains("[require] offcpu: NOT READY"), "{out}");
+}
+
+/// @test A binary that reports no selected row cannot meet a requirement on
+/// the requested backend, and says why.
+#[test]
+fn doctor_require_old_binary_is_unmet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let (rc, out, _) = run_doctor(&[
+        &bench.to_string_lossy(),
+        "--profile",
+        "perf",
+        "--require",
+        "perf",
+    ]);
+    assert_eq!(rc, 1, "{out}");
+    assert!(
+        out.contains(
+            "[require] perf: this binary does not report selected requests; rebuild it \
+             against this vernier, or drop --profile"
+        ),
+        "{out}"
+    );
 }
