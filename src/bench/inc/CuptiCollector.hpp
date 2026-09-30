@@ -22,6 +22,11 @@
  * takes the same stand-down decision, but it never collects: isAvailable() is
  * false and stats() stays empty.
  *
+ * Every CUPTI call is checked. A collector that cannot collect says why
+ * (unavailableReason()); a window whose records are not known to be complete
+ * says what went wrong (windowProblem()) and reports no launch, so no count
+ * or median is published from part of a window.
+ *
  * Threading: all calls are serialized on the harness thread. The CUPTI
  * activity buffers fill on whatever thread CUDA dispatches; we only read
  * them inside stop(), which runs on the harness thread after a measurement
@@ -75,20 +80,47 @@ public:
   CuptiCollector(const CuptiCollector&) = delete;
   CuptiCollector& operator=(const CuptiCollector&) = delete;
 
-  /** @return true when CUPTI was linked at build time AND init succeeded. */
+  /**
+   * @return true while the collector can collect: this build links CUPTI, the
+   *         decision did not stand it down, CUPTI accepted its callbacks, and
+   *         no start() or stop() has since failed to switch kernel records on
+   *         or off.
+   */
   [[nodiscard]] bool isAvailable() const noexcept { return available_; }
 
-  /** Start collection. Safe no-op when isAvailable() is false. Idempotent. */
+  /**
+   * @return Why isAvailable() is false, as a phrase a message can quote (this
+   *         build has no CUPTI; the collector stood down; CUPTI refused its
+   *         callbacks, or to record kernel activity, or to stop recording it,
+   *         with CUPTI's name for the result). Empty while it is available.
+   */
+  [[nodiscard]] const std::string& unavailableReason() const noexcept;
+
+  /**
+   * Start a window: the last window's stats() and windowProblem() are cleared,
+   * then kernel records are switched on. A no-op otherwise when isAvailable()
+   * is false; a refusal from CUPTI makes it false. Idempotent.
+   */
   void start();
 
   /** Stop collection, flush activity buffers, aggregate into stats(). */
   void stop();
 
-  /** Discard accumulated records without disabling collection. */
+  /** Discard accumulated records and the last window's problem without disabling collection. */
   void reset();
 
   /** @return aggregated metrics from the last start/stop window. */
   [[nodiscard]] const CuptiKernelStats& stats() const noexcept { return stats_; }
+
+  /**
+   * @return What kept the last start/stop window's records from being
+   *         complete, as a phrase a message can quote (the flush failed; CUPTI
+   *         dropped records or could not count them; CUPTI recorded no kernel
+   *         launch). stats() is empty for such a window. Empty when the
+   *         window's records are complete, or when the collector did not
+   *         collect (see unavailableReason()).
+   */
+  [[nodiscard]] const std::string& windowProblem() const noexcept;
 
 private:
   bool available_{false};

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <cstdio>
@@ -225,6 +226,32 @@ double sharedSuiteBaselineUs(const std::string& testName) {
 } // namespace
 
 // ============================================================================
+// A GPU cell a run cannot measure is left empty, and the run says why. What
+// holds for the whole run (this build has no CUPTI, a provider refused) is
+// said once per process, at the first measurement it empties cells of; what
+// went wrong in one measured window is said for that window, naming the test.
+// ============================================================================
+
+namespace {
+
+/// The CSV columns filled from the CUPTI collector's stats.
+constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, "
+                                    "cuptiRegistersMax, cuptiStaticSmemBytes and "
+                                    "cuptiDynamicSmemBytes";
+
+/** @brief Writes @p line and a newline to stderr, the first time this process asks for it. */
+void stateOnce(const std::string& line) {
+  static std::mutex mu;
+  static std::set<std::string> stated;
+  const std::lock_guard<std::mutex> LOCK(mu);
+  if (stated.insert(line).second) {
+    std::fprintf(stderr, "%s\n", line.c_str());
+  }
+}
+
+} // namespace
+
+// ============================================================================
 // PerfGpuCaseImpl - PIMPL
 // ============================================================================
 
@@ -341,12 +368,17 @@ public:
       capturePowerThermal(powerThermal, true);
     }
 
-    // Start in-process kernel metrics; no-op when libcupti is unavailable.
-    // Off when this case yielded to an nsys/ncu session or to the explicit
-    // override (cuptiYields_, decided before the collector registered).
+    // Start in-process kernel metrics. Off when this case yielded to an
+    // nsys/ncu session or to the explicit override (cuptiYields_, decided
+    // before the collector registered). A collector that cannot collect for
+    // any other reason (no CUPTI in this build, a refusal from CUPTI) is
+    // stated once per process.
     const bool cuptiEnabled = !cuptiYields_;
     if (cuptiEnabled) {
       cupti_.start();
+      if (!cupti_.isAvailable()) {
+        stateOnce("[gpu] " + cupti_.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.");
+      }
     } else {
       std::fprintf(stderr, "[gpu] in-process CUPTI collection disabled for this run "
                            "(external Nsight session or VERNIER_DISABLE_CUPTI); "
@@ -422,8 +454,13 @@ public:
     }
 
     // Drain CUPTI activity buffers and aggregate before publishing the result.
+    // A window whose records are not known to be complete has no stats.
     if (cuptiEnabled) {
       cupti_.stop();
+      if (!cupti_.windowProblem().empty()) {
+        std::fprintf(stderr, "[gpu] %s in %s's measured window, so its %s stay empty.\n",
+                     cupti_.windowProblem().c_str(), testName_.c_str(), CUPTI_CELLS);
+      }
     }
 
     auto kernelVals = kernelTimes;

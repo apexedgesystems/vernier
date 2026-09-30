@@ -4,7 +4,11 @@
  *
  * Buffer-based model: register two callbacks; CUPTI fills our buffers with
  * activity records from kernel-launch threads; we walk the records in
- * stop() to populate the aggregate metrics.
+ * stop() to populate the aggregate metrics. Every CUPTI call's result is
+ * checked: a refusal to register, or to switch kernel records on or off,
+ * leaves the collector unavailable with the reason; a failed flush, dropped
+ * records or no record at all leave the window without stats, with the
+ * problem named.
  */
 
 #include "src/bench/inc/CuptiCollector.hpp"
@@ -17,6 +21,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string>
 #include <vector>
 
 // The build decides (src/bench/CMakeLists.txt): COMPAT_CUPTI_AVAILABLE is 1
@@ -82,12 +87,34 @@ struct KernelRecord {
 struct Aggregator {
   std::mutex mtx;
   std::vector<KernelRecord> records;
+  std::size_t dropped{0};                  ///< Records CUPTI dropped in this window
+  CUptiResult droppedCount{CUPTI_SUCCESS}; ///< The first failed count of them, if any
   bool enabled{false};
+
+  /** @brief Adds one reading of CUPTI's dropped-record count (call with mtx held). */
+  void noteDropped(CUptiResult counted, std::size_t n) {
+    if (counted != CUPTI_SUCCESS) {
+      if (droppedCount == CUPTI_SUCCESS) {
+        droppedCount = counted;
+      }
+      return;
+    }
+    dropped += n;
+  }
 };
 
 Aggregator& aggregator() {
   static Aggregator g;
   return g;
+}
+
+/** @brief CUPTI's name for @p result, or its number when CUPTI gives none. */
+std::string resultName(CUptiResult result) {
+  const char* text = nullptr;
+  if (cuptiGetResultString(result, &text) == CUPTI_SUCCESS && text != nullptr) {
+    return text;
+  }
+  return "CUPTI result " + std::to_string(static_cast<long long>(result));
 }
 
 extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer, size_t* size,
@@ -104,17 +131,23 @@ extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer, size_t* size,
   *maxNumRecords = 0; // 0 means "as many as fit"
 }
 
-extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/, uint32_t /*streamId*/,
-                                              uint8_t* buffer, size_t /*size*/, size_t validSize) {
-  if (!buffer)
-    return;
+extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, uint8_t* buffer,
+                                              size_t /*size*/, size_t validSize) {
+  // CUPTI counts the records it had no buffer space for; reading the count
+  // resets it. It is read with every buffer so that a window knows whether
+  // its records are complete.
+  std::size_t dropped = 0;
+  const CUptiResult COUNTED = cuptiActivityGetNumDroppedRecords(ctx, streamId, &dropped);
 
   Aggregator& agg = aggregator();
   CUpti_Activity* record = nullptr;
   CUptiResult status = CUPTI_SUCCESS;
 
   std::lock_guard<std::mutex> guard(agg.mtx);
-  if (!agg.enabled) {
+  if (agg.enabled) {
+    agg.noteDropped(COUNTED, dropped);
+  }
+  if (!agg.enabled || !buffer) {
     std::free(buffer);
     return;
   }
@@ -124,8 +157,8 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/, uint32_t /*stre
     if (status != CUPTI_SUCCESS || !record)
       break;
 
-    // Tolerate both KERNEL and CONCURRENT_KERNEL activity kinds; payload
-    // shape is identical for the fields we read.
+    // The collector enables KERNEL records; CONCURRENT_KERNEL records share
+    // their record type, so either kind is read.
     if (record->kind == CUPTI_ACTIVITY_KIND_KERNEL ||
         record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
       auto* k = reinterpret_cast<CUpti_ActivityKernel9*>(record);
@@ -145,7 +178,11 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/, uint32_t /*stre
 
 #endif // VERNIER_HAS_CUPTI
 
-struct CuptiCollector::Impl {};
+/** @brief What the collector says about itself; kept here, off the class's layout. */
+struct CuptiCollector::Impl {
+  std::string unavailableReason; ///< Why the collector does not collect; empty while it can
+  std::string windowProblem;     ///< What kept the last window's records from being complete
+};
 
 CuptiCollector::CuptiCollector(bool forceDisabled) {
   // Decide before acquiring or registering anything: registering the
@@ -160,13 +197,23 @@ CuptiCollector::CuptiCollector(bool forceDisabled) {
   // false keeps start()/stop()/stats() as safe no-ops.
   const bool YIELD = forceDisabled || profiler_env::cuptiMustYield();
   impl_ = new Impl();
-  if (YIELD)
+  if (YIELD) {
+    impl_->unavailableReason =
+        "the collector stood down (an Nsight session, VERNIER_DISABLE_CUPTI or its caller)";
     return;
-#if VERNIER_HAS_CUPTI
-  if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) == CUPTI_SUCCESS) {
-    aggregator().records.reserve(RECORD_RESERVE);
-    available_ = true;
   }
+#if VERNIER_HAS_CUPTI
+  const CUptiResult REGISTERED =
+      cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted);
+  if (REGISTERED != CUPTI_SUCCESS) {
+    impl_->unavailableReason =
+        "CUPTI refused the collector's activity callbacks (" + resultName(REGISTERED) + ")";
+    return;
+  }
+  aggregator().records.reserve(RECORD_RESERVE);
+  available_ = true;
+#else
+  impl_->unavailableReason = "this build has no CUPTI";
 #endif
 }
 
@@ -176,19 +223,44 @@ CuptiCollector::~CuptiCollector() {
   delete impl_;
 }
 
+const std::string& CuptiCollector::unavailableReason() const noexcept {
+  return impl_->unavailableReason;
+}
+
+const std::string& CuptiCollector::windowProblem() const noexcept { return impl_->windowProblem; }
+
 void CuptiCollector::start() {
-  // A collector that stood down at construction, or has no CUPTI, is not
-  // available.
-  if (!available_ || running_)
+  if (running_)
+    return;
+  // A new window: nothing of the last one carries over, also when this one
+  // collects nothing.
+  stats_ = {};
+  impl_->windowProblem.clear();
+  // A collector that stood down at construction, has no CUPTI, or was
+  // refused by CUPTI is not available.
+  if (!available_)
     return;
 #if VERNIER_HAS_CUPTI
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().records.clear();
+    aggregator().dropped = 0;
+    aggregator().droppedCount = CUPTI_SUCCESS;
     aggregator().enabled = true;
   }
-  cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
-  cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+  // KERNEL records only: with KERNEL on, CUPTI refuses CONCURRENT_KERNEL
+  // (CUPTI_ERROR_NOT_COMPATIBLE).
+  const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
+  if (ENABLED != CUPTI_SUCCESS) {
+    {
+      std::lock_guard<std::mutex> guard(aggregator().mtx);
+      aggregator().enabled = false;
+    }
+    available_ = false;
+    impl_->unavailableReason =
+        "CUPTI refused to record kernel activity (" + resultName(ENABLED) + ")";
+    return;
+  }
 #endif
   running_ = true;
 }
@@ -198,23 +270,56 @@ void CuptiCollector::stop() {
     return;
 
 #if VERNIER_HAS_CUPTI
-  cuptiActivityFlushAll(1); // 1 = force flush even partially-filled buffers
-  cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
-  cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+  // 1 = force: partly filled buffers are handed over too.
+  const CUptiResult FLUSHED = cuptiActivityFlushAll(1);
+  const CUptiResult DISABLED = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
+  // Records dropped while CUPTI had no buffer to hand over are counted in the
+  // same global queue the completion callback reads, but reach no callback.
+  std::size_t droppedUnbuffered = 0;
+  const CUptiResult COUNTED = cuptiActivityGetNumDroppedRecords(nullptr, 0, &droppedUnbuffered);
 
-  // Aggregate under the mutex; callbacks can no longer fire because the
-  // activities are disabled and the buffers have been drained by flush.
+  // Aggregate under the mutex. A buffer CUPTI completes after this (when the
+  // flush or the disable failed) finds the aggregator disabled and is freed
+  // unread.
   std::vector<KernelRecord> snapshot;
+  std::size_t dropped = 0;
+  CUptiResult droppedCount = CUPTI_SUCCESS;
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
+    aggregator().noteDropped(COUNTED, droppedUnbuffered);
     aggregator().enabled = false;
     snapshot = std::move(aggregator().records);
     aggregator().records.clear();
+    dropped = aggregator().dropped;
+    droppedCount = aggregator().droppedCount;
+  }
+
+  // Kernel records still on would arrive between windows and be read into
+  // the next one, so the collector collects no further window.
+  if (DISABLED != CUPTI_SUCCESS) {
+    available_ = false;
+    impl_->unavailableReason =
+        "CUPTI did not stop recording kernel activity (" + resultName(DISABLED) + ")";
+  }
+
+  // A count or a median from part of a window is not published: the window
+  // reports no launch and names what went wrong.
+  if (FLUSHED != CUPTI_SUCCESS) {
+    impl_->windowProblem =
+        "CUPTI failed to flush its activity buffers (" + resultName(FLUSHED) + ")";
+  } else if (droppedCount != CUPTI_SUCCESS) {
+    impl_->windowProblem =
+        "CUPTI could not count its dropped records (" + resultName(droppedCount) + ")";
+  } else if (dropped > 0) {
+    impl_->windowProblem = "CUPTI dropped " + std::to_string(dropped) +
+                           (dropped == 1 ? " activity record" : " activity records");
+  } else if (snapshot.empty()) {
+    impl_->windowProblem = "CUPTI recorded no kernel launch";
   }
 
   stats_ = {};
-  stats_.kernelLaunches = snapshot.size();
-  if (!snapshot.empty()) {
+  if (impl_->windowProblem.empty() && !snapshot.empty()) {
+    stats_.kernelLaunches = snapshot.size();
     stats_.firstKernelName = snapshot.front().name;
 
     auto medianU16 = [](std::vector<std::uint16_t>& v) -> std::uint16_t {
@@ -252,10 +357,15 @@ void CuptiCollector::stop() {
 
 void CuptiCollector::reset() {
 #if VERNIER_HAS_CUPTI
-  std::lock_guard<std::mutex> guard(aggregator().mtx);
-  aggregator().records.clear();
+  {
+    std::lock_guard<std::mutex> guard(aggregator().mtx);
+    aggregator().records.clear();
+    aggregator().dropped = 0;
+    aggregator().droppedCount = CUPTI_SUCCESS;
+  }
 #endif
   stats_ = {};
+  impl_->windowProblem.clear();
 }
 
 } // namespace bench

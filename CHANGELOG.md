@@ -295,6 +295,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pprof`-only installation printed empty analysis). An analyzer that is
   missing, does not run or fails on the profile is reported, and the capture
   and its `cpu.prof` are kept.
+- **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
+  harness's CUPTI collector checks every CUPTI call. A collector that cannot
+  collect (a build without CUPTI, or CUPTI refusing its callbacks or its kernel
+  records) is named once per process, with the `cupti*` columns it leaves
+  empty; a measured window whose records CUPTI dropped, failed to flush or did
+  not record leaves that row's `cupti*` cells empty, where a partial window
+  used to fill them, and the run names the test. The collector now asks for
+  `KERNEL` records only: CUPTI refused the `CONCURRENT_KERNEL` records it also
+  asked for, every time, so what it records is unchanged. `CuptiCollector`
+  gains `unavailableReason()` and `windowProblem()`.
 
 ### Fixed
 

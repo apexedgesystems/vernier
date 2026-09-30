@@ -16,8 +16,11 @@
 
 #include <atomic>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -752,4 +755,107 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
     EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable())
         << "forceDisabled must win without reading the value";
   }
+}
+
+/* ----------------------------- CUPTI Statements ----------------------------- */
+
+namespace {
+
+/// The CSV columns filled from CUPTI, as the run names them when they stay empty.
+constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, "
+                                    "cuptiRegistersMax, cuptiStaticSmemBytes and "
+                                    "cuptiDynamicSmemBytes";
+
+/**
+ * @brief Measures the kernel in two cases of this process, then writes to
+ *        stderr how many lines were @p statement, how many stderr lines said
+ *        the CUPTI cells stay empty, and how many rows had CUPTI cells, and
+ *        exits 0.
+ */
+[[noreturn]] void reportCuptiStatements(const ub::PerfConfig& cfg, const std::string& statement) {
+  std::size_t filledRows = 0;
+  std::string captured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    for (int i = 0; i < 2; ++i) {
+      ub::PerfGpuCase perf{uniqueSuite("GpuCuptiStatement") + ".Kernel", cfg};
+      perf.cudaWarmup(data.launch());
+      static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+      const std::optional<ub::PerfRow> ROW = ub::PerfRegistry::instance().take();
+      if (ROW.has_value() && ROW->cuptiKernelLaunches.has_value()) {
+        ++filledRows;
+      }
+    }
+    captured = capture.text();
+  }
+  std::size_t statements = 0;
+  std::size_t emptyCuptiLines = 0;
+  std::size_t from = 0;
+  while (from < captured.size()) {
+    std::size_t end = captured.find('\n', from);
+    if (end == std::string::npos) {
+      end = captured.size();
+    }
+    const std::string LINE = captured.substr(from, end - from);
+    statements += (LINE == statement) ? 1 : 0;
+    emptyCuptiLines +=
+        (LINE.find(std::string(CUPTI_CELLS) + " stay empty.") != std::string::npos) ? 1 : 0;
+    from = end + 1;
+  }
+  std::fprintf(stderr, "statements=%zu emptyCuptiLines=%zu filledRows=%zu\n", statements,
+               emptyCuptiLines, filledRows);
+  std::exit(0);
+}
+
+} // namespace
+
+/**
+ * @test A measured window in which CUPTI recorded no kernel launch is said for
+ *       its test, naming the cells it leaves empty, and they are empty
+ */
+TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const std::string NAME = uniqueSuite("GpuCuptiNoLaunch") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernel([](cudaStream_t) {}, "nothing").measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.cuptiKernelLaunches.has_value());
+  EXPECT_FALSE(ROW.cuptiRegistersMedian.has_value());
+  const std::string LINE = "[gpu] CUPTI recorded no kernel launch in " + NAME +
+                           "'s measured window, so its " + CUPTI_CELLS + " stay empty.";
+  EXPECT_NE(captured.find(LINE), std::string::npos) << "stderr said:\n" << captured;
+}
+
+/** @brief Same fixture, named so GoogleTest schedules the death test first. */
+using PerfGpuHarnessDeathTest = PerfGpuHarnessTest;
+
+/**
+ * @test A collector that cannot collect is stated once per process, in the
+ *       collector's words and naming the cells it leaves empty, and those cells
+ *       are empty; a collector that can collect fills them and states nothing
+ */
+TEST_F(PerfGpuHarnessDeathTest, ACollectorThatCannotCollectIsStatedOnce) {
+  const YieldEnvCleared CLEARED;
+  const ub::CuptiCollector PROBE(false);
+  const std::string STATEMENT =
+      "[gpu] " + PROBE.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.";
+  const std::string EXPECTED = PROBE.isAvailable() ? "statements=0 emptyCuptiLines=0 filledRows=2"
+                                                   : "statements=1 emptyCuptiLines=1 filledRows=0";
+
+  // "threadsafe" re-executes the test binary for the child, so the
+  // once-per-process state starts clear whatever ran before in this process;
+  // the default style forks, which would also inherit an initialised CUDA.
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportCuptiStatements(cfg_, STATEMENT), ::testing::ExitedWithCode(0), EXPECTED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }

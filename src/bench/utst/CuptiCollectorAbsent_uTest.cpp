@@ -53,7 +53,14 @@ TEST_F(CuptiCollectorAbsent, IsNeverAvailable) {
   EXPECT_FALSE(CuptiCollector(false).isAvailable()) << "a false override enables nothing here";
 }
 
-/** @test start, stop and reset collect nothing: the stats stay empty */
+/** @test It says why it does not collect; a collector that stood down says that first */
+TEST_F(CuptiCollectorAbsent, SaysWhy) {
+  EXPECT_EQ(CuptiCollector().unavailableReason(), "this build has no CUPTI");
+  EXPECT_EQ(CuptiCollector(true).unavailableReason(),
+            "the collector stood down (an Nsight session, VERNIER_DISABLE_CUPTI or its caller)");
+}
+
+/** @test start, stop and reset collect nothing: the stats stay empty, with no window problem */
 TEST_F(CuptiCollectorAbsent, CollectsNothing) {
   CuptiCollector collector;
   collector.start();
@@ -64,6 +71,7 @@ TEST_F(CuptiCollectorAbsent, CollectsNothing) {
   EXPECT_EQ(collector.stats().staticSmemBytes, 0U);
   EXPECT_EQ(collector.stats().dynamicSmemBytes, 0U);
   EXPECT_TRUE(collector.stats().firstKernelName.empty());
+  EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
   collector.reset();
   EXPECT_EQ(collector.stats().kernelLaunches, 0U);
 }
