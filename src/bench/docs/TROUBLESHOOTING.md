@@ -768,7 +768,7 @@ Error: tool not found: 'nsys' is not on PATH; --profile nsight runs the benchmar
 must be on `PATH`: `callgrind`, `massif`, `memcheck` and `helgrind`
 (`valgrind`), `heaptrack`, `compute-sanitizer`, `nsight` (`nsys`) and `ncu`.
 `--taskset` needs `taskset` the same way. `bench profile-all` reports the same
-line for that profiler and moves on to the next one.
+line for that profiler, runs the others, and exits 1 after its summary.
 
 **Fix:** install the named program, or add the directory that holds it to
 `PATH`. `bench doctor <binary>` lists each profiler backend the binary has and

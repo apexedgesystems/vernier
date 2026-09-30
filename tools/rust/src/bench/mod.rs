@@ -68,6 +68,11 @@ pub enum Error {
     Benchmark(BenchmarkExit),
     /// The benchmark succeeded and its requested profile did not.
     Profile(ProfileFailure),
+    /// `bench profile-all`: these of `total` profile runs failed.
+    ProfileAll {
+        failed: Vec<String>,
+        total: usize,
+    },
     /// Two runs cannot be compared; the cause names itself.
     Compare(compare::CompareError),
     /// `bench compare --fail-on-regression` found a labelled regression or a
@@ -90,6 +95,12 @@ impl fmt::Display for Error {
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
+            Error::ProfileAll { failed, total } => write!(
+                f,
+                "{} of {total} profile runs failed: {}",
+                failed.len(),
+                failed.join(", ")
+            ),
             Error::Compare(e) => write!(f, "{e}"),
             Error::Gate {
                 regressions,

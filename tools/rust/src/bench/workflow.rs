@@ -240,9 +240,9 @@ mod doctor_tests {
 
 /* ----------------------------- profile-all ----------------------------- */
 
-/// Default profiler ladder when the user doesn't supply one.
-/// Three CPU sampling/instruction tools; rocprof / nsight are GPU-specific
-/// and would silently no-op on a CPU binary, so they're excluded by default.
+/// Default profiler ladder when the user doesn't supply one: three CPU
+/// sampling and instruction tools. rocprof and nsight are GPU-specific and a
+/// CPU binary cannot serve them, so they are excluded by default.
 const DEFAULT_PROFILERS: &[&str] = &["gperf", "perf", "callgrind"];
 
 pub struct ProfileAllConfig {
@@ -255,11 +255,22 @@ pub struct ProfileAllConfig {
     pub quick: bool,
 }
 
-/// Iterate over each profiler, invoking the binary in sequence. Each run gets
-/// its own artifact subdirectory: `<artifact_root>/<profiler>/`. Routes through
-/// `run_benchmark` so wrap-externally backends (callgrind, massif, memcheck,
-/// helgrind, heaptrack, compute-sanitizer) get the same auto-wrap treatment as
-/// a direct `bench run --profile <X>` invocation.
+/// One profiler's run in `bench profile-all`: the tool, its folder, and why
+/// it failed (`None` when it completed).
+struct ProfileAllRun {
+    tool: String,
+    folder: PathBuf,
+    failure: Option<String>,
+}
+
+/// Run the binary under each profiler in sequence, each into its own folder
+/// `<artifact_root>/<profiler>/`, through `run_benchmark`, so a wrapped
+/// profile (callgrind, massif, memcheck, helgrind, heaptrack,
+/// compute-sanitizer, nsight, ncu) is started and checked exactly as `bench
+/// run --profile <X>` does. Every profiler runs whatever the others did; the
+/// run ends with one summary line per profiler (completed or failed, its
+/// folder, and the reason) and fails when any of them failed: every profiler
+/// in the list, given or default, is required.
 pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
     if !cfg.binary.is_file() {
         return Err(Error::InvalidArgs(format!(
@@ -272,14 +283,13 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
     } else {
         cfg.profilers.iter().map(|s| s.as_str()).collect()
     };
+    let root = cfg
+        .artifact_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("bench-out"));
+    let mut runs: Vec<ProfileAllRun> = Vec::new();
     for tool in &profilers {
-        let out_dir = cfg
-            .artifact_root
-            .clone()
-            .unwrap_or_else(|| PathBuf::from("bench-out"))
-            .join(tool);
-        fs::create_dir_all(&out_dir).map_err(Error::Io)?;
-
+        let out_dir = root.join(tool);
         eprintln!(
             "\n=== bench profile-all: tool={} -> {} ===",
             tool,
@@ -305,14 +315,59 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
                 .map(|f| vec![format!("--gtest_filter={}", f)])
                 .unwrap_or_default(),
         };
-        if let Err(e) = super::runner::run_benchmark(&run_cfg) {
-            eprintln!(
-                "[bench] --profile {} failed: {}; continuing with next profiler.",
-                tool, e
-            );
+        let result = fs::create_dir_all(&out_dir)
+            .map_err(|e| {
+                Error::Io(std::io::Error::new(
+                    e.kind(),
+                    format!("cannot create the output folder {}: {e}", out_dir.display()),
+                ))
+            })
+            .and_then(|()| super::runner::run_benchmark(&run_cfg).map(|_| ()));
+        let failure = result.err().map(|e| e.to_string());
+        if let Some(ref why) = failure {
+            eprintln!("[bench] --profile {tool} failed: {why}");
+        }
+        runs.push(ProfileAllRun {
+            tool: tool.to_string(),
+            folder: out_dir,
+            failure,
+        });
+    }
+    print_profile_all_summary(&runs);
+    let failed: Vec<String> = runs
+        .iter()
+        .filter(|r| r.failure.is_some())
+        .map(|r| r.tool.clone())
+        .collect();
+    if failed.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::ProfileAll {
+            failed,
+            total: runs.len(),
+        })
+    }
+}
+
+/// One line per run: the profiler, `completed` or `failed`, its folder, and
+/// for a failure the reason.
+fn print_profile_all_summary(runs: &[ProfileAllRun]) {
+    let width = runs.iter().map(|r| r.tool.len()).max().unwrap_or(0);
+    eprintln!("\n=== bench profile-all: summary ===");
+    for run in runs {
+        match &run.failure {
+            None => eprintln!(
+                "  {:<width$}  completed  {}",
+                run.tool,
+                run.folder.display()
+            ),
+            Some(why) => eprintln!(
+                "  {:<width$}  failed     {} -- {why}",
+                run.tool,
+                run.folder.display()
+            ),
         }
     }
-    Ok(())
 }
 
 /* ----------------------------- profile-summarize ----------------------------- */

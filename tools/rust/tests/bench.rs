@@ -1918,3 +1918,215 @@ fn run_callgrind_analyze_failure() {
     );
     assert!(rig.dir.path().join(profile).is_file());
 }
+
+/* ----------------------------- Profile-all ----------------------------- */
+
+/// A route rig whose stand-in benchmark logs its argv and ends with the status
+/// `FAKE_EXIT_<tool>` names for the `--profile <tool>` it is given, else
+/// `FAKE_EXIT`, else 0. The rig's valgrind stand-in writes callgrind's output
+/// (`FAKE_WRITE=none`: nothing).
+fn profile_all_rig() -> RouteRig {
+    let rig = route_rig(&["valgrind"]);
+    let script = format!(
+        r#"#!/bin/sh
+echo "bench $*" >> '{log}'
+tool=""
+prev=""
+for a in "$@"; do
+  [ "$prev" = --profile ] && tool="$a"
+  prev="$a"
+done
+eval "code=\${{FAKE_EXIT_$tool:-\${{FAKE_EXIT:-0}}}}"
+exit "$code"
+"#,
+        log = rig.log.display()
+    );
+    write_executable(&rig.bench, &script);
+    rig
+}
+
+/// Run `bench profile-all` on the rig's benchmark with its stand-ins on PATH,
+/// into `<rig>/out` (or `out`, when given); returns the exit status, stderr
+/// and the stand-ins' log.
+fn run_profile_all(
+    rig: &RouteRig,
+    profilers: &str,
+    out: Option<&Path>,
+    env: &[(&str, &str)],
+) -> (i32, String, String) {
+    let default_out = rig.dir.path().join("out");
+    let out = out.unwrap_or(&default_out);
+    let mut command = Command::new(bin());
+    command
+        .args(["profile-all"])
+        .arg(&rig.bench)
+        .args(["--profilers", profilers, "--out"])
+        .arg(out)
+        .env("PATH", rig.dir.path().join("tools"))
+        .current_dir(rig.dir.path());
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let output = output_of(&mut command);
+    (
+        output.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// The lines of profile-all's summary, one per run, as printed.
+fn profile_all_summary(stderr: &str) -> Vec<String> {
+    stderr
+        .lines()
+        .skip_while(|l| *l != "=== bench profile-all: summary ===")
+        .skip(1)
+        .take_while(|l| l.starts_with("  "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// @test profile-all runs every profiler and, when each completes, exits 0
+/// after one summary line per run naming its folder.
+#[test]
+fn profile_all_all_succeed() {
+    let rig = profile_all_rig();
+    let (code, err, log) = run_profile_all(&rig, "gperf,perf,callgrind", None, &[]);
+    assert_eq!(code, 0, "{err}");
+    let out = rig.dir.path().join("out");
+    assert_eq!(
+        profile_all_summary(&err),
+        [
+            format!("  gperf      completed  {}", out.join("gperf").display()),
+            format!("  perf       completed  {}", out.join("perf").display()),
+            format!(
+                "  callgrind  completed  {}",
+                out.join("callgrind").display()
+            ),
+        ],
+        "{err}"
+    );
+    assert!(!err.contains("Error:"), "{err}");
+    assert!(
+        log.contains("--profile gperf") && log.contains("--profile perf"),
+        "{log}"
+    );
+    assert!(
+        log.contains("valgrind wrap=callgrind --tool=callgrind"),
+        "{log}"
+    );
+}
+
+/// @test A profiler that fails does not stop the others; the summary names it
+/// with its reason, and profile-all exits 1 naming how many of how many failed.
+#[test]
+fn profile_all_mixed() {
+    let rig = profile_all_rig();
+    let (code, err, log) = run_profile_all(
+        &rig,
+        "gperf,perf,callgrind",
+        None,
+        &[("FAKE_EXIT_perf", "4")],
+    );
+    assert_eq!(code, 1, "{err}");
+    let out = rig.dir.path().join("out");
+    assert_eq!(
+        profile_all_summary(&err),
+        [
+            format!("  gperf      completed  {}", out.join("gperf").display()),
+            format!(
+                "  perf       failed     {} -- the requested profile failed (the benchmark's \
+                 report above says why); the benchmark exited with status 4",
+                out.join("perf").display()
+            ),
+            format!(
+                "  callgrind  completed  {}",
+                out.join("callgrind").display()
+            ),
+        ],
+        "{err}"
+    );
+    assert!(
+        err.ends_with("Error: 1 of 3 profile runs failed: perf\n"),
+        "{err}"
+    );
+    assert!(
+        log.contains("valgrind wrap=callgrind"),
+        "callgrind ran after perf failed: {log}"
+    );
+}
+
+/// @test When every profiler fails, each is still run and reported, and
+/// profile-all exits 1.
+#[test]
+fn profile_all_all_fail() {
+    let rig = profile_all_rig();
+    let (code, err, log) = run_profile_all(
+        &rig,
+        "gperf,perf,callgrind",
+        None,
+        &[("FAKE_EXIT", "1"), ("FAKE_WRITE", "none")],
+    );
+    assert_eq!(code, 1, "{err}");
+    let out = rig.dir.path().join("out");
+    let callgrind = out.join("callgrind");
+    let profile = callgrind.join("fake_bench.callgrind").join("callgrind.out");
+    assert_eq!(
+        profile_all_summary(&err),
+        [
+            format!(
+                "  gperf      failed     {} -- the benchmark exited with status 1",
+                out.join("gperf").display()
+            ),
+            format!(
+                "  perf       failed     {} -- the benchmark exited with status 1",
+                out.join("perf").display()
+            ),
+            format!(
+                "  callgrind  failed     {} -- --profile callgrind failed: completion: {} was \
+                 not written",
+                callgrind.display(),
+                profile.display()
+            ),
+        ],
+        "{err}"
+    );
+    assert!(
+        err.ends_with("Error: 3 of 3 profile runs failed: gperf, perf, callgrind\n"),
+        "{err}"
+    );
+    assert_eq!(log.matches("--profile gperf").count(), 1, "{log}");
+    assert_eq!(log.matches("--profile perf").count(), 1, "{log}");
+}
+
+/// @test A folder profile-all cannot create fails that run, not the others'
+/// turn: every profiler is reported.
+#[test]
+fn profile_all_reports_a_folder_it_cannot_create() {
+    let rig = profile_all_rig();
+    let blocker = rig.dir.path().join("not-a-folder");
+    std::fs::write(&blocker, "a regular file").expect("write the blocker");
+    let root = blocker.join("out");
+    let (code, err, log) = run_profile_all(&rig, "gperf,perf", Some(&root), &[]);
+    assert_eq!(code, 1, "{err}");
+    let summary = profile_all_summary(&err);
+    assert_eq!(summary.len(), 2, "{err}");
+    for (line, tool) in summary.iter().zip(["gperf", "perf"]) {
+        assert!(
+            line.contains(&format!(
+                "failed     {} -- I/O error: cannot create the output folder {}",
+                root.join(tool).display(),
+                root.join(tool).display()
+            )),
+            "{line}"
+        );
+    }
+    assert!(
+        log.is_empty(),
+        "nothing may start without its folder: {log}"
+    );
+    assert!(
+        err.ends_with("Error: 2 of 2 profile runs failed: gperf, perf\n"),
+        "{err}"
+    );
+}

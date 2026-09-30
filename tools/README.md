@@ -271,6 +271,22 @@ bench profile-all MyComponent --profilers gperf,callgrind --out out/
 bench profile-all MyComponent --quick --filter '*Hot*'
 ```
 
+Each profiler runs as `bench run --profile <name>` does, into
+`<out>/<name>/`, whatever the others did. The run ends with one line per
+profiler, `completed` or `failed` with the reason, and exits 1 when any of them
+failed:
+
+```
+=== bench profile-all: summary ===
+  gperf      completed  bench-out/gperf
+  perf       failed     bench-out/perf -- the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+  callgrind  completed  bench-out/callgrind
+Error: 1 of 3 profile runs failed: perf
+```
+
+Every profiler in the list is required, the default three included: on a
+machine that lacks one, name the others with `--profilers`.
+
 ### profile-summarize - Tabulate Artifacts
 
 Walks an artifact root and reports per-tool file counts + total bytes.

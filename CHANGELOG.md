@@ -314,6 +314,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **`bench profile-all` fails when a profiler fails** -- it printed a failed
+  profiler's error, went on, and exited 0 whatever happened. It still runs
+  every profiler, then prints one line per run (completed, or failed with the
+  reason, and its folder) and exits 1 when any failed. **Action needed:** every
+  profiler in the list, the default gperf, perf and callgrind included, must
+  work on the machine; name the ones that do with `--profilers`.
 - **A `BENCH_SUDO=1` tracer is signalled directly on kernels without a
   children list** -- on a kernel built without `CONFIG_PROC_CHILDREN` (the
   Jetson AGX Thor's), which has no `/proc/<pid>/task/<tid>/children`, the stop
