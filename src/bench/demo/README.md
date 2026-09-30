@@ -78,7 +78,7 @@ how to compare two runs.
 | 01  | Basic Workflow      | Measure-export-analyze cycle                   | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)         |
 | 02  | perf Profiler       | Hardware counters: instructions, branch misses | join V0 (copy per part); filter with a branch, random input | join V1 (reserve, append); filter branchless | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)           |
 | 03  | gperftools Profiler | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
-| 06  | Thread Scaling      | Lock contention analysis                       | Mutex-protected counter                                     | Atomic relaxed counter                       | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
+| 06  | Thread Scaling      | What a call costs while other threads make it  | join, one lock held for the whole call                      | join, a total per thread                     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
 | 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
 | 08  | RAPL Profiler       | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
 | 09  | bpftrace Profiler   | Syscall overhead tracing                       | One write() per byte                                        | Single batched write()                       | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
@@ -174,7 +174,6 @@ slow/fast workload pairs used across demos:
 
 | Category    | Slow               | Fast               | Used In |
 | ----------- | ------------------ | ------------------ | ------- |
-| Contention  | Mutex increment    | Atomic increment   | Demo 06 |
 | Dot product | Naive (dependency) | std::inner_product | Demo 08 |
 | I/O         | Per-byte write()   | Batched write()    | Demo 09 |
 
@@ -190,11 +189,11 @@ registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), and the table below names
 the demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                          |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 07, 12, 14, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                          |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                     |
+| Example                                  | Versions                                                                                                                                           | Used In                              |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 12, 14, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                         |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
@@ -217,7 +216,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 **Branches and threads:**
 
 5. [02, second example](docs/02_PERF_PROFILER.md#the-second-example-a-filter) -- branch prediction and branchless code
-6. [06](docs/06_THREAD_SCALING.md) -- contention between threads
+6. [06](docs/06_THREAD_SCALING.md) -- contention between threads, measured with `contentionRun()`
 7. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
 8. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind / DRD
 
