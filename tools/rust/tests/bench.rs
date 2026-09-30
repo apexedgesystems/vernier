@@ -2360,3 +2360,106 @@ fn run_compute_sanitizer_log_path_with_percent() {
         "{stdout}"
     );
 }
+
+/* ----------------------------- Doctor ----------------------------- */
+
+/// A doctor document with one backend that is ready and one that is not.
+const DOCTOR_DOC: &str = r#"{"binary": {"frameInfo": "ok"}, "backendScope": "default-mode", "backends": [{"name": "perf", "status": "ok", "message": "perf stat counted", "hint": ""}, {"name": "offcpu", "status": "fail", "message": "missing: bpftrace not found on PATH", "hint": "apt install bpftrace"}]}
+"#;
+
+/// A stand-in benchmark whose doctor prints @p doc for --profile-check-json
+/// and a line of text for --profile-check; returns its path.
+fn doctor_stand_in(dir: &Path, doc: &str) -> PathBuf {
+    let doc_file = dir.join("doc.json");
+    std::fs::write(&doc_file, doc).expect("write the document");
+    let bench = dir.join("doctor_bench");
+    write_executable(
+        &bench,
+        &format!(
+            "#!/bin/sh\ncase \"$*\" in\n  *--profile-check-json*) cat '{}' ;;\n  *--profile-check*) echo 'text doctor' ;;\nesac\n",
+            doc_file.display()
+        ),
+    );
+    bench
+}
+
+/// Run `bench doctor <args>`; returns the exit status, stdout and stderr.
+fn run_doctor(args: &[&str]) -> (i32, String, String) {
+    let mut all = vec!["doctor"];
+    all.extend_from_slice(args);
+    run(&all)
+}
+
+/// @test With --json and --require, stdout is the binary's document and
+/// nothing else, whether the requirements are met (exit 0) or not (exit 1);
+/// the verdict goes to stderr.
+#[test]
+fn doctor_json_require_is_one_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let b = bench.to_string_lossy().into_owned();
+    for (require, code, verdict) in [
+        ("perf", 0, "[require] perf: OK\n"),
+        (
+            "perf,offcpu",
+            1,
+            "[require] offcpu: NOT READY (missing: bpftrace not found on PATH)\n",
+        ),
+    ] {
+        let (rc, out, err) = run_doctor(&[&b, "--json", "--require", require]);
+        assert_eq!(rc, code, "--require {require}: {err}");
+        assert_eq!(
+            out, DOCTOR_DOC,
+            "--require {require}: stdout is the document"
+        );
+        let parsed: serde_json::Value =
+            serde_json::from_str(&out).expect("stdout parses as one JSON document");
+        assert_eq!(parsed["backends"][0]["name"], "perf");
+        assert!(err.contains(verdict), "--require {require}: {err}");
+    }
+}
+
+/// @test --json alone prints the document and exits with the binary's status.
+#[test]
+fn doctor_json_prints_the_document() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let (rc, out, err) = run_doctor(&[&bench.to_string_lossy(), "--json"]);
+    assert_eq!(rc, 0, "{err}");
+    assert_eq!(out, DOCTOR_DOC);
+}
+
+/// @test A binary whose doctor prints no valid document is an error on
+/// stderr, and nothing reaches stdout.
+#[test]
+fn doctor_unparseable_document_is_an_error() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), "[doctor] not a document\n");
+    let b = bench.to_string_lossy().into_owned();
+    for args in [
+        vec![b.as_str(), "--json"],
+        vec![b.as_str(), "--require", "perf"],
+    ] {
+        let (rc, out, err) = run_doctor(&args);
+        assert_eq!(rc, 1, "{args:?}: {err}");
+        assert_eq!(out, "", "{args:?}: stdout");
+        assert!(
+            err.contains("--profile-check-json printed no valid doctor document"),
+            "{args:?}: {err}"
+        );
+    }
+}
+
+/// @test Without --json, the --require verdict is the output, on stdout.
+#[test]
+fn doctor_require_without_json_prints_the_verdict() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    let (rc, out, _) = run_doctor(&[&bench.to_string_lossy(), "--require", "offcpu"]);
+    assert_eq!(rc, 1);
+    assert!(
+        out.starts_with("[require] offcpu: NOT READY"),
+        "the verdict on stdout: {out}"
+    );
+    assert!(!out.contains("\"backends\""), "{out}");
+}

@@ -270,7 +270,15 @@ per-backend doctor (whether each registered profiler can actually run here).
 
 ```bash
 bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --json > doctor.json
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --require offcpu,heaptrack
 ```
+
+With `--json`, stdout is the binary's JSON document and nothing else. With
+`--require`, `bench doctor` exits 1 unless every named backend reports OK,
+and prints one `[require]` line per backend: on stderr when `--json` is also
+given, so that stdout stays one document, and on stdout otherwise. A binary
+whose doctor prints no valid document is an error (exit 1).
 
 ### profile-all - Iterate Every Profiler
 

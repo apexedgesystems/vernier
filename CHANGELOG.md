@@ -314,6 +314,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **`bench doctor --json --require` prints one JSON document** -- the
+  `--require` verdict followed the document on stdout, so the output did not
+  parse, and a binary that printed no valid document passed its text through.
+  With `--json`, stdout is the document alone and the verdict goes to stderr;
+  a document that does not parse is an error (exit 1). **Action needed:** read
+  the `[require]` lines from stderr when `--json` is given.
 - **heaptrack and rocprof check the tool that runs the process** --
   `--profile heaptrack` or `--profile rocprof` without its tool around the
   process printed a hint, passed with nothing collected and left an empty
