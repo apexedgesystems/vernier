@@ -10,17 +10,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Demo 04 measures the shared SAXPY kernel and carries a copy without its
-  bounds guard for Compute Sanitizer to find** --
-  `BenchDemo_Gpu_04_ComputeSanitizerProfiler` times the example's kernel in
-  `ComputeSanitizer.SaxpyKernel` (one CSV row, its answer checked) and
-  launches the unguarded copy in `ComputeSanitizer.SaxpyUnguarded` only under
-  compute-sanitizer, skipping itself anywhere else, where the old deliberate
-  case made a plain run exit 1; a check registered with `ctest` under the
-  `compute-sanitizer` label fails if the tool stops reporting the read. Its
-  walkthrough, `src/bench/demo/docs/17_COMPUTE_SANITIZER.md`, is rewritten
-  from a Release run on the documented Jetson AGX Thor rig, with the tool's
-  report read line by line and its cost measured there; that run's CSV is
-  committed at `src/bench/demo/reference/thor/17_compute_sanitizer.csv`. The
+  bounds guard for Compute Sanitizer to find** -- the copy runs only under
+  the tool, and a check registered with `ctest` under the `compute-sanitizer`
+  label fails if the tool stops reporting its out-of-bounds read. Its
+  walkthrough and reference CSV are captured on the Jetson AGX Thor rig. The
   demo's test names change, so CSVs captured from it before this release do
   not join with newer ones.
 - **Demo 07 counts the instructions of the shared join example** --
@@ -289,17 +282,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - **`--profile compute-sanitizer` tells the tool apart from the binary's
-  name, and its printed wrap command keeps its log** -- the backend decided
-  "running under compute-sanitizer" by finding the word "sanitizer" in the
-  process's own memory map, so a benchmark whose path contains it (the demo's
-  does) reported a wrap that was not there, and the wrap command it prints
-  when not wrapped named a log folder that did not exist yet, which the tool
-  drops silently. It now decides from what the tool exports to the process
-  it starts (`NV_SANITIZER_INJECTION_PORT_BASE`, compute-sanitizer 2025.3 and
-  2025.4) and from the tool's own libraries mapped into the process, and it
-  prints `bench run` first and a by-hand command that makes the folder before
-  the tool opens its log, passing `--profile-args` only for a tool other than
-  memcheck.
+  name, and its printed wrap command keeps its log** -- the backend decides
+  it is running under the tool from what the tool exports to the process and
+  maps into it, not from a name in a path, and the by-hand command it prints
+  makes the log's folder first.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
