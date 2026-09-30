@@ -693,6 +693,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
+- **A GPU build without CUPTI compiles** -- with `-DVERNIER_USE_CUPTI=OFF` (a
+  new option, on by default) or a CUDA toolkit without CUPTI, the GPU harness's
+  CUPTI collector builds as a no-op and the `cupti*` CSV cells stay empty. The
+  collector keys on what the build linked, not on whether `cupti.h` exists, so
+  a toolkit that has the header without the library builds too.
 
 ## v1.0.3 - 2026-06-28
 

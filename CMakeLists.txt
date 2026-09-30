@@ -75,6 +75,9 @@ option(VERNIER_BUILD_TOOLS "Build CLI tools (Rust + Python, requires cargo and p
 # preload heap profilers, which interpose the malloc family only. Needed solely
 # for the gperftools heap profiler (--profile gperf --profile-args heap).
 option(VERNIER_LINK_TCMALLOC "Link gperftools tcmalloc into bench and ptests" OFF)
+# Off builds the GPU harness's CUPTI collector without CUPTI: its cupti* CSV
+# cells stay empty. A toolkit without CUPTI builds the same way.
+option(VERNIER_USE_CUPTI "Collect CUPTI kernel records in GPU builds when the toolkit has CUPTI" ON)
 option(PROJECT_BUILD_DOCS "Enable Doxygen doc targets" ON)
 option(ENABLE_CLANG_TIDY "Enable clang-tidy integration" OFF)
 

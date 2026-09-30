@@ -140,12 +140,17 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
   target_link_options(${LIB_NAME}_cuda PRIVATE "LINKER:--as-needed")
 
   # CUPTI is the CUDA Profiling Tools Interface. find_package(CUDAToolkit)
-  # exposes it as the CUDA::cupti imported target on any system layout
-  # (legacy /usr/local/cuda/extras/CUPTI/ or modern targets/<arch>/), so we
-  # never need a path string here. When the target is missing on older
-  # toolkits, CuptiCollector compiles to a no-op via __has_include.
-  if (TARGET CUDA::cupti)
+  # creates the CUDA::cupti imported target, on any system layout, only when
+  # it finds both cupti.h and the library. COMPAT_CUPTI_AVAILABLE is the one
+  # switch CuptiCollector.cu builds its collection on: 1 with the library
+  # linked, 0 otherwise (VERNIER_USE_CUPTI off, or no CUPTI in the toolkit).
+  # The header alone decides nothing: cupti.h sits in the toolkit's main
+  # include directory whether or not the library is there.
+  if (VERNIER_USE_CUPTI AND TARGET CUDA::cupti)
     target_link_libraries(${LIB_NAME}_cuda PRIVATE CUDA::cupti)
+    target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=1)
+  else ()
+    target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=0)
   endif ()
 endif ()
 

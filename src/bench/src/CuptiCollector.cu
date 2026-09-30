@@ -12,13 +12,18 @@
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
 
-#if __has_include(<cupti.h>)
+// The build decides (src/bench/CMakeLists.txt): COMPAT_CUPTI_AVAILABLE is 1
+// only when libcupti is linked. The presence of cupti.h decides nothing; it
+// sits in the CUDA toolkit's main include directory with or without the
+// library.
+#if defined(COMPAT_CUPTI_AVAILABLE) && COMPAT_CUPTI_AVAILABLE
 #define VERNIER_HAS_CUPTI 1
 #include <cupti.h>
 #else
@@ -31,6 +36,34 @@ namespace bench {
 #if VERNIER_HAS_CUPTI
 
 namespace {
+
+// Kernel records are read through CUpti_ActivityKernel9, which CUPTI declares
+// from CUDA 12.0 (API version 19) on. CUPTI hands each kernel over as the
+// newest kernel record its library knows; the fields read here sit at the same
+// offsets in every version from 4 to 11, so this view reads a newer record
+// correctly. The asserts hold that for the newest records the header declares.
+static_assert(CUPTI_API_VERSION >= 19, "CuptiCollector.cu reads CUpti_ActivityKernel9, which "
+                                       "CUPTI declares from CUDA 12.0 (API version 19) on");
+
+/** @brief True when @p Newer keeps the fields read here where Kernel9 has them. */
+template <typename Newer> constexpr bool readsThroughKernel9() {
+  return offsetof(CUpti_ActivityKernel9, kind) == offsetof(Newer, kind) &&
+         offsetof(CUpti_ActivityKernel9, registersPerThread) ==
+             offsetof(Newer, registersPerThread) &&
+         offsetof(CUpti_ActivityKernel9, staticSharedMemory) ==
+             offsetof(Newer, staticSharedMemory) &&
+         offsetof(CUpti_ActivityKernel9, dynamicSharedMemory) ==
+             offsetof(Newer, dynamicSharedMemory) &&
+         offsetof(CUpti_ActivityKernel9, name) == offsetof(Newer, name);
+}
+#if CUPTI_API_VERSION >= 130000
+static_assert(readsThroughKernel9<CUpti_ActivityKernel10>(),
+              "CUpti_ActivityKernel10 moves a field read through CUpti_ActivityKernel9");
+#endif
+#if CUPTI_API_VERSION >= 130100
+static_assert(readsThroughKernel9<CUpti_ActivityKernel11>(),
+              "CUpti_ActivityKernel11 moves a field read through CUpti_ActivityKernel9");
+#endif
 
 constexpr std::size_t BUFFER_SIZE = 32 * 1024; // bytes per CUPTI activity buffer
 constexpr std::size_t BUFFER_ALIGN = 8;        // CUPTI requires 8-byte aligned buffers
@@ -110,9 +143,9 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext /*ctx*/, uint32_t /*stre
 
 } // namespace
 
-struct CuptiCollector::Impl {
-  bool subscribed{false};
-};
+#endif // VERNIER_HAS_CUPTI
+
+struct CuptiCollector::Impl {};
 
 CuptiCollector::CuptiCollector(bool forceDisabled) {
   // Decide before acquiring or registering anything: registering the
@@ -123,16 +156,18 @@ CuptiCollector::CuptiCollector(bool forceDisabled) {
   // session), the one the GPU harness passes in as forceDisabled, so a direct
   // caller gets the same rule; an explicit forceDisabled request wins over it.
   // An invalid VERNIER_DISABLE_CUPTI throws here, a configuration error,
-  // before any CUPTI call. Leaving available_ false keeps start()/stop()/stats()
-  // as safe no-ops.
+  // before any CUPTI call, in a build without CUPTI too. Leaving available_
+  // false keeps start()/stop()/stats() as safe no-ops.
   const bool YIELD = forceDisabled || profiler_env::cuptiMustYield();
   impl_ = new Impl();
   if (YIELD)
     return;
+#if VERNIER_HAS_CUPTI
   if (cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted) == CUPTI_SUCCESS) {
     aggregator().records.reserve(RECORD_RESERVE);
     available_ = true;
   }
+#endif
 }
 
 CuptiCollector::~CuptiCollector() {
@@ -142,9 +177,11 @@ CuptiCollector::~CuptiCollector() {
 }
 
 void CuptiCollector::start() {
-  // A collector that stood down at construction is not available.
+  // A collector that stood down at construction, or has no CUPTI, is not
+  // available.
   if (!available_ || running_)
     return;
+#if VERNIER_HAS_CUPTI
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().records.clear();
@@ -152,6 +189,7 @@ void CuptiCollector::start() {
   }
   cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
   cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+#endif
   running_ = true;
 }
 
@@ -159,6 +197,7 @@ void CuptiCollector::stop() {
   if (!available_ || !running_)
     return;
 
+#if VERNIER_HAS_CUPTI
   cuptiActivityFlushAll(1); // 1 = force flush even partially-filled buffers
   cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
   cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
@@ -206,27 +245,18 @@ void CuptiCollector::stop() {
     stats_.staticSmemBytes = medianU32(ssmem);
     stats_.dynamicSmemBytes = medianU32(dsmem);
   }
+#endif
 
   running_ = false;
 }
 
 void CuptiCollector::reset() {
+#if VERNIER_HAS_CUPTI
   std::lock_guard<std::mutex> guard(aggregator().mtx);
   aggregator().records.clear();
+#endif
   stats_ = {};
 }
-
-#else // !VERNIER_HAS_CUPTI
-
-struct CuptiCollector::Impl {};
-
-CuptiCollector::CuptiCollector() { impl_ = nullptr; }
-CuptiCollector::~CuptiCollector() {}
-void CuptiCollector::start() {}
-void CuptiCollector::stop() {}
-void CuptiCollector::reset() {}
-
-#endif // VERNIER_HAS_CUPTI
 
 } // namespace bench
 } // namespace vernier

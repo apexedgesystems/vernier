@@ -15,6 +15,10 @@
 
 #define CUPTIAPI
 
+/// The API version of CUDA 12.0's CUPTI, the first to declare
+/// CUpti_ActivityKernel9, whose shape the stand-in's record imitates.
+#define CUPTI_API_VERSION 19
+
 /* ----------------------------- Types ----------------------------- */
 
 using CUptiResult = int;

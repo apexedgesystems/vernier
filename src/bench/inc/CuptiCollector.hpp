@@ -2,25 +2,25 @@
 #define VERNIER_CUPTICOLLECTOR_HPP
 /**
  * @file CuptiCollector.hpp
- * @brief In-process kernel metrics via the CUPTI Activity API.
+ * @brief In-process kernel records via the CUPTI Activity API.
  *
- * The existing GPU harness captures wall time via CUDA events and clocks via
- * NVML. CUPTI fills the gap left by both: per-kernel register count, static
- * and dynamic shared memory, launch geometry, and a precise device-side
- * duration -- all without spawning ncu as an external process (which is
- * fragile inside container PID namespaces; see TROUBLESHOOTING.md).
+ * The GPU harness times kernels with CUDA events. This collector adds what
+ * CUPTI's kernel activity records say about the launches in one measured
+ * window: how many there were, the registers per thread each launch was
+ * allocated, its static and dynamic shared memory, and the kernel's name. It
+ * reads no time, launch shape or occupancy from the records.
  *
- * Scope: this collector exposes only the metrics CUPTI's Activity API
- * surfaces directly (`CUpti_ActivityKernel*` records). The CUPTI Profiler /
- * Perfworks API offers richer metrics (achieved occupancy, warp efficiency,
- * cache hit rates) but requires kernel replay, which is incompatible with
- * the bench harness's single-launch measurement model. Use the Nsight
- * Compute backend for replay-mode profiling.
+ * Scope: only what the Activity API's kernel records carry
+ * (`CUpti_ActivityKernel*`). Counter metrics (achieved occupancy, warp
+ * efficiency, cache hit rates) need kernel replay, which Nsight Compute does
+ * (`--profile ncu`); the harness's measured launch sequence runs each launch
+ * once.
  *
- * Build-time gate: COMPAT_CUPTI_AVAILABLE -- set by the CMake target when
- * libcupti and cupti.h are both found. When not available, the class is
- * still instantiable but every method is a no-op so callers do not need
- * conditional code paths.
+ * Build-time gate: COMPAT_CUPTI_AVAILABLE, which src/bench/CMakeLists.txt sets
+ * to 1 when it links libcupti (VERNIER_USE_CUPTI on and the toolkit's CUPTI
+ * found) and to 0 otherwise. Without CUPTI the class is still instantiable and
+ * takes the same stand-down decision, but it never collects: isAvailable() is
+ * false and stats() stays empty.
  *
  * Threading: all calls are serialized on the harness thread. The CUPTI
  * activity buffers fill on whatever thread CUDA dispatches; we only read
@@ -41,9 +41,9 @@ namespace bench {
 /**
  * @brief Aggregated kernel-launch metrics over one measured window.
  *
- * Counts and medians, not per-launch records: the harness already times
- * each individual kernel via CUDA events; CUPTI adds the launch-geometry
- * + resource-usage view at the same granularity as the timing view.
+ * Counts and medians, not per-launch records: the harness times the launches
+ * with CUDA events; CUPTI adds their count and resource use over the same
+ * window.
  */
 struct CuptiKernelStats {
   std::size_t kernelLaunches{0};     ///< Number of kernels observed in this window

@@ -46,15 +46,17 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# Host Test on a Stand-in CUPTI (1)
+# Host Tests of the CUPTI Collector (2)
 # ------------------------------------------------------------------------------
-# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
-# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
-# every configuration, CPU-only included, checks that the collector applies the
-# CUPTI decision before it registers: a setting that stands it down, or one that
-# is rejected, registers nothing. It links bench, which defines what the
-# decision is built from: the shared Boolean parser, the readiness context and
-# the report formatter.
+# The real CuptiCollector.cu, compiled into each test, so every configuration,
+# CPU-only included, checks it. TestBenchCuptiDecision builds it with CUPTI,
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/): the
+# collector applies the CUPTI decision before it registers, and a setting that
+# stands it down, or one that is rejected, registers nothing.
+# TestBenchCuptiAbsent builds it as a GPU build without CUPTI does
+# (COMPAT_CUPTI_AVAILABLE=0): it compiles, never collects and takes the same
+# decision. Both link bench, which defines what the decision is built from:
+# the shared Boolean parser, the readiness context and the report formatter.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -71,6 +73,20 @@ target_include_directories(
   TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
                                         "${PROJECT_SOURCE_DIR}"
 )
+target_compile_definitions(TestBenchCuptiDecision PRIVATE COMPAT_CUPTI_AVAILABLE=1)
+
+vernier_add_gtest(
+  TARGET
+  TestBenchCuptiAbsent
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorAbsent_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(TestBenchCuptiAbsent BEFORE PRIVATE "${PROJECT_SOURCE_DIR}")
+target_compile_definitions(TestBenchCuptiAbsent PRIVATE COMPAT_CUPTI_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
 # GPU Unit Tests (2 files)

@@ -973,8 +973,7 @@ private:
   // the collector registers and before the constructor touches the device.
   const bool cuptiYields_ = profiler_env::cuptiMustYield();
 
-  // In-process kernel metric collector (no-op when libcupti is not linked
-  // or when the CUDA toolkit is too old to expose CUpti_ActivityKernel9).
+  // In-process kernel records; a no-op in a build without CUPTI.
   CuptiCollector cupti_{cuptiYields_};
 
   friend class PerfGpuCase;
