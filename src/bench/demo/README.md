@@ -100,12 +100,12 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                   | Slow Path                               | Fast Path                                       | Walkthrough                                               |
+| --- | ------------------ | ----------------------------------------- | --------------------------------------- | ----------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost       | CPU loop over 1M floats                 | Same kernel, with and without its transfers     | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Memory coalescing analysis                | Strided global reads                    | Sequential global reads                         | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts, counted by Nsight Compute | Transpose through a 32-wide shared tile | The same tile with each row padded by one float | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels                  | Deliberate OOB write                    | Bounds-checked scale                            | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
@@ -243,7 +243,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 18. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
 19. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
 20. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
-21. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
+21. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared-memory bank conflicts, read from Nsight Compute's counter (advanced)
 
 ---
 
