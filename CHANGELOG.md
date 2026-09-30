@@ -130,7 +130,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-process data (a tool that `bench run` wraps around the whole binary) to
   `<root>/<binary>.<tool>/`. What changes for a user:
   - Under `bench run --profile callgrind|massif|memcheck|helgrind|heaptrack|
-    compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
+compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
     empty `<Suite.Case>.<tool>/` folder per test next to the real output in
     `bench-out/<binary>.<tool>/`, and the CSV `profileDir` column names that
     real folder instead of the empty one. Running the binary under the tool by
@@ -153,8 +153,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `.nsight` in every mode.
   - The rocprof and compute-sanitizer hints print their folder with a leading
     `./`, as the other backends do; the folder is the same.
-  Default roots are unchanged: the working directory for in-process backends,
-  `bench-out/` for wrapped ones.
+    Default roots are unchanged: the working directory for in-process backends,
+    `bench-out/` for wrapped ones.
 - **Unknown long options produce a warning** -- a test binary given a `--option`
   that neither vernier nor GoogleTest recognizes prints one stderr line naming
   it (`[WARN] unknown option '--target-tmie': ...`); the argument is still
@@ -225,7 +225,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `-UCMAKE_CUDA_ARCHITECTURES` (add `-UCUDA_ARCHS` if you never set it), or
   start from an empty build directory.
 - **`bench run` names a missing wrapper program** -- `bench run --profile
-  callgrind` on a machine without valgrind failed with
+callgrind` on a machine without valgrind failed with
   `I/O error: No such file or directory`, naming neither the file nor the
   cause, and left an empty `bench-out/<binary>.callgrind/` directory behind.
   The CLI resolves the programs it launches a run through before creating or
@@ -233,7 +233,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   callgrind, massif, memcheck and helgrind; `heaptrack`; `compute-sanitizer`;
   `nsys` for nsight; `ncu`) and `taskset` for `--taskset`. A missing one
   fails with `tool not found: 'valgrind' is not on PATH; --profile callgrind
-  runs the benchmark under it. ...` and a non-zero exit, and points at
+runs the benchmark under it. ...` and a non-zero exit, and points at
   `bench doctor`. `bench profile-all` reports the same line for that profiler
   and continues with the next.
 - **`bench doctor` warns when heaptrack cannot see C++ allocations** -- in a
@@ -243,8 +243,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   family heaptrack records, so a heaptrack trace of that process holds almost
   none of them. `bench doctor <binary>`, which checks the benchmark's own
   process, reported heaptrack `[OK]` there, and `bench doctor --require
-  heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
-  libtcmalloc is loaded: C++ allocations will be missing`, followed by the
+heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
+libtcmalloc is loaded: C++ allocations will be missing`, followed by the
   build option that removes tcmalloc, and `--require heaptrack` fails, as it
   does for any warning. The default build does not link tcmalloc and reports
   `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
@@ -378,9 +378,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   library compares it with its own build. On a mismatch the run prints one line
   and exits with status 3, before any profiler is constructed:
   `[bench] ABI mismatch: this benchmark and the libbench it loaded were built
-  from different vernier headers (sizeof(PerfConfig): benchmark 232, library
-  240). Rebuild the benchmark against this libbench, or load the libbench that
-  matches the benchmark's headers. Exiting.` The ABI version and the size of
+from different vernier headers (sizeof(PerfConfig): benchmark 232, library
+240). Rebuild the benchmark against this libbench, or load the libbench that
+matches the benchmark's headers. Exiting.` The ABI version and the size of
   each of the three structs must be equal on both sides; a larger struct in the
   benchmark is refused like a smaller one, because the libraries copy these
   objects into storage of their own size. Members are still only appended
@@ -510,15 +510,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   columns are when they have no value.
 - **`bench compare` fails instead of certifying a comparison it cannot make**
   -- two runs with no test name in common printed `No common tests to
-  compare.` and exited 0, so a CI job that compared the wrong pair of files,
+compare.` and exited 0, so a CI job that compared the wrong pair of files,
   or a suite whose tests had all been renamed, passed its regression gate
   without comparing anything. Such a comparison exits 1, with or without
   `--fail-on-regression`, and names the tests each side ran alone. The same
   holds for input a comparison cannot be built from: a `--threshold` that is
   not a finite percentage of zero or more, a test name a CSV reports twice
   (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
-  is missing from its row, empty, not a number (the loader read all three as
-  0) or not finite, a `wallMedian` of zero or less (a relative change against
+  is missing from its row, empty, not a number (the loader read all three as 0) or not finite, a `wallMedian` of zero or less (a relative change against
   a zero baseline was reported as a neutral `+0.0%`), a negative `wallCV`,
   and a candidate median so many times its baseline that the percentage
   change overflows (it printed as `+inf%` in the table and `null` in the
@@ -554,7 +553,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   empty or only whitespace loaded as a test with that name, so two CSVs with
   one such row each compared them as the same test and passed
   `--fail-on-regression`, and `bench summary` listed an unnamed row. `bench
-  summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
+summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
@@ -639,17 +638,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from a hardcoded if-chain to a registry. New backends slot in via a
   single `VERNIER_REGISTER_PROFILER_BACKEND` line at file scope.
 - **Eight new profiler backends** (registry now lists 14):
-  - `massif`            -- valgrind heap profiler (full timeline, ~20x)
-  - `memcheck`          -- valgrind memory error / leak detector
-  - `helgrind`          -- valgrind thread-error detector: data races, lock
+  - `massif` -- valgrind heap profiler (full timeline, ~20x)
+  - `memcheck` -- valgrind memory error / leak detector
+  - `helgrind` -- valgrind thread-error detector: data races, lock
     order, pthread misuse (`--profile-args drd` selects DRD). CPU analog of
     compute-sanitizer's racecheck
-  - `offcpu`            -- bpftrace finish_task_switch (where threads sleep)
-  - `heaptrack`         -- low-overhead heap profiler (~1.5x)
-  - `jemalloc`          -- jemalloc prof sampling (~5-10%, LD_PRELOAD)
+  - `offcpu` -- bpftrace finish_task_switch (where threads sleep)
+  - `heaptrack` -- low-overhead heap profiler (~1.5x)
+  - `jemalloc` -- jemalloc prof sampling (~5-10%, LD_PRELOAD)
   - `compute-sanitizer` -- NVIDIA GPU memcheck (race / sync / init)
-  - `rocprof`           -- AMD ROCm GPU profiler
-  - `perf` `mem`/`c2c`  -- memory + cache-line-contention submodes
+  - `rocprof` -- AMD ROCm GPU profiler
+  - `perf` `mem`/`c2c` -- memory + cache-line-contention submodes
 - **CUPTI in-process kernel metrics** -- per-launch register count, static /
   dynamic shared memory, kernel name surface in the GPU CSV section without
   spawning `ncu` as an external process.
@@ -755,11 +754,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now use `HOST_UID` / `HOST_GID` uniformly.
 - **CSV listener GPU-mode detection** -- previously scanned test names
   for "Gpu" / "CUDA" substrings, which missed `PERF_GPU_BANDWIDTH(Foo,
-  Bar)`-style tests. Now reads an explicit flag set by `PERF_GPU_MAIN`.
+Bar)`-style tests. Now reads an explicit flag set by `PERF_GPU_MAIN`.
 - **Valgrind under-detection** -- massif / memcheck reported "not running
   under valgrind" (and printed the manual-wrap hint) even when the auto-wrap
   had the binary under valgrind, because they checked `getenv(
-  "RUNNING_ON_VALGRIND")` -- a valgrind *client request*, never an env var.
+"RUNNING_ON_VALGRIND")` -- a valgrind _client request_, never an env var.
   They now scan `/proc/self/maps` for the `vgpreload` library. compute-sanitizer
   detection gained the same `/proc/self/maps` fallback (its injection env var
   drifted across CUDA releases).
