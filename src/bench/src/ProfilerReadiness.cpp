@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -28,6 +29,7 @@
 #include <future>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -1000,6 +1002,53 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   return outcome;
 }
 
+std::vector<pid_t> childProcesses(pid_t parent, const std::string& procRoot) {
+  std::vector<pid_t> children;
+  const std::string PID = std::to_string(parent);
+  std::ifstream list(procRoot + "/" + PID + "/task/" + PID + "/children");
+  if (list) {
+    long pid = 0;
+    while (list >> pid) {
+      if (pid > 0) {
+        children.push_back(static_cast<pid_t>(pid));
+      }
+    }
+    std::sort(children.begin(), children.end());
+    return children;
+  }
+  // No children list on this kernel: read each process's parent instead. The
+  // walk throws nothing (stop() runs from a destructor): an unreadable
+  // directory ends it and a name that is not a pid is skipped.
+  std::error_code ec;
+  std::filesystem::directory_iterator entry(procRoot, ec);
+  for (; !ec && entry != std::filesystem::directory_iterator(); entry.increment(ec)) {
+    const std::string NAME = entry->path().filename().string();
+    const char* const END = NAME.data() + NAME.size();
+    pid_t pid = 0;
+    const auto [STOP, ERR] = std::from_chars(NAME.data(), END, pid);
+    if (NAME.empty() || ERR != std::errc{} || STOP != END || pid <= 0) {
+      continue;
+    }
+    std::ifstream stat(entry->path() / "stat");
+    std::string line;
+    if (!std::getline(stat, line)) {
+      continue;
+    }
+    const std::size_t CLOSE = line.rfind(')');
+    if (CLOSE == std::string::npos) {
+      continue;
+    }
+    std::istringstream fields(line.substr(CLOSE + 1));
+    std::string state;
+    long ppid = 0;
+    if (fields >> state >> ppid && ppid == static_cast<long>(parent)) {
+      children.push_back(pid);
+    }
+  }
+  std::sort(children.begin(), children.end());
+  return children;
+}
+
 HelperStopResult OwnedHelper::stop() {
   HelperStopResult result;
   if (child_ <= 0) {
@@ -1031,17 +1080,9 @@ HelperStopResult OwnedHelper::stop() {
 #ifdef __linux__
       // sudo may keep a monitor process between itself and the tool: the
       // tool is then the monitor's only child.
-      char path[96];
-      std::snprintf(path, sizeof(path), "/proc/%d/task/%d/children", static_cast<int>(child_),
-                    static_cast<int>(child_));
-      std::ifstream children(path);
-      std::vector<long> pids;
-      long p = 0;
-      while (children >> p) {
-        pids.push_back(p);
-      }
-      if (pids.size() == 1 && pids.front() > 0) {
-        delivery.target = static_cast<pid_t>(pids.front());
+      const std::vector<pid_t> CHILDREN = childProcesses(child_);
+      if (CHILDREN.size() == 1) {
+        delivery.target = CHILDREN.front();
       }
 #endif
       const std::vector<std::string> ARGV = {policy_.sudoPath,

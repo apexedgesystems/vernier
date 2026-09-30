@@ -314,6 +314,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
   leaves an error message instead of counts (or no confirmed `perf.data`)
   fails the run (exit status 4) with perf's own words.
+- **A `BENCH_SUDO=1` tracer is signalled directly on kernels without a
+  children list** -- on a kernel built without `CONFIG_PROC_CHILDREN` (the
+  Jetson AGX Thor's), which has no `/proc/<pid>/task/<tid>/children`, the stop
+  of a bpftrace or offcpu tracer started through sudo signalled sudo's monitor
+  process instead of the tracer. The tracer is found there from each process's
+  parent in `/proc/<pid>/stat`.
 - **A wrapped `bench run` checks this run's output after exit** -- a wrap
   folder that could not be created ran the benchmark unwrapped, a wrap that
   wrote nothing (or left a previous run's file in place) passed, and a failing

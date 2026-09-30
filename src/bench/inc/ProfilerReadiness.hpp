@@ -441,6 +441,21 @@ struct HelperStopResult {
 };
 
 /**
+ * @brief The children of process @p parent, in pid order.
+ *
+ * Read from `<procRoot>/<parent>/task/<parent>/children` where the kernel
+ * provides that list; a kernel built without it (CONFIG_PROC_CHILDREN off)
+ * has no such file, and then every `<procRoot>/<pid>/stat` is read for its
+ * parent id (the field after the command name's closing parenthesis, so a
+ * command name holding spaces or parentheses cannot shift it). An empty list
+ * when @p parent has no child or does not exist. Entries that cannot be read
+ * or parsed are skipped, and nothing but an allocation failure throws.
+ * @p procRoot lets tests use a tree of their own.
+ */
+[[nodiscard]] std::vector<pid_t> childProcesses(pid_t parent,
+                                                const std::string& procRoot = "/proc");
+
+/**
  * @brief A helper process this benchmark started and alone may signal.
  *
  * start() forks and executes argv[0] directly (an absolute path, often the

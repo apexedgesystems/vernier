@@ -333,16 +333,8 @@ inline bool processAlive(pid_t pid) {
  * own, that grandchild is the tracer.
  */
 inline pid_t tracerPid(pid_t child) {
-  char path[96];
-  std::snprintf(path, sizeof(path), "/proc/%d/task/%d/children", static_cast<int>(child),
-                static_cast<int>(child));
-  std::FILE* f = std::fopen(path, "r");
-  if (f == nullptr)
-    return child;
-  long grandchild = 0;
-  const int GOT = std::fscanf(f, "%ld", &grandchild);
-  std::fclose(f);
-  return (GOT == 1 && grandchild > 0) ? static_cast<pid_t>(grandchild) : child;
+  const std::vector<pid_t> CHILDREN = childProcesses(child);
+  return CHILDREN.size() == 1 ? CHILDREN.front() : child;
 }
 
 /* ----------------------------- sudoKill ----------------------------- */

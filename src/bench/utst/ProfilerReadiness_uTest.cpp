@@ -12,6 +12,7 @@
 #include "src/bench/inc/ProfilerReadiness.hpp"
 
 #include "src/bench/inc/PerfConfig.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 
 #include <gtest/gtest.h>
@@ -25,6 +26,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <csignal>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <map>
@@ -35,6 +37,7 @@
 #include <thread>
 #include <vector>
 
+using vernier::bench::childProcesses;
 using vernier::bench::decidePrivilege;
 using vernier::bench::EnvBool;
 using vernier::bench::EnvReport;
@@ -960,6 +963,181 @@ TEST(ReadinessOwnedHelper, UnwritableCaptureFileFailsToStart) {
   EXPECT_FALSE(START.started);
   EXPECT_EQ(START.spawnErrno, ENOENT);
   EXPECT_NE(START.errorTail.find("could not open"), std::string::npos) << START.errorTail;
+}
+
+/* ----------------------------- Child Processes ----------------------------- */
+
+namespace {
+
+/** @brief A process table in a temporary directory, laid out as /proc is. */
+class FakeProcTree {
+public:
+  FakeProcTree() {
+    std::string pattern = (std::filesystem::temp_directory_path() / "vernier_proc_XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      root_ = pattern;
+    }
+  }
+  ~FakeProcTree() {
+    std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+  }
+  FakeProcTree(const FakeProcTree&) = delete;
+  FakeProcTree& operator=(const FakeProcTree&) = delete;
+
+  [[nodiscard]] const std::string& root() const { return root_; }
+
+  /** @brief Process @p pid named @p comm with parent @p ppid (its stat line). */
+  void process(pid_t pid, const std::string& comm, pid_t ppid) const {
+    entry(std::to_string(pid), comm, ppid);
+  }
+
+  /** @brief A directory named @p name whose stat line names @p comm and @p ppid. */
+  void entry(const std::string& name, const std::string& comm, pid_t ppid) const {
+    const std::string DIR = root_ + "/" + name;
+    std::filesystem::create_directories(DIR);
+    std::ofstream(DIR + "/stat") << name << " (" << comm << ") S " << ppid << " " << name
+                                 << " 0 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0\n";
+  }
+
+  /** @brief The kernel's children list of @p pid, holding @p text. */
+  void childrenList(pid_t pid, const std::string& text) const {
+    const std::string DIR = root_ + "/" + std::to_string(pid) + "/task/" + std::to_string(pid);
+    std::filesystem::create_directories(DIR);
+    std::ofstream(DIR + "/children") << text;
+  }
+
+private:
+  std::string root_;
+};
+
+} // namespace
+
+/** @test Where the kernel lists a process's children, the list is what counts. */
+TEST(ReadinessChildProcesses, ReadsTheKernelsChildrenList) {
+  FakeProcTree proc;
+  ASSERT_FALSE(proc.root().empty());
+  proc.process(10, "sudo", 1);
+  proc.process(11, "bpftrace", 10);
+  proc.process(12, "sh", 10); // listed by stat only: the kernel's list wins
+  proc.childrenList(10, "11 ");
+  EXPECT_EQ(childProcesses(10, proc.root()), (std::vector<pid_t>{11}));
+  proc.childrenList(12, "");
+  EXPECT_TRUE(childProcesses(12, proc.root()).empty());
+}
+
+/**
+ * @test Without the kernel's list (CONFIG_PROC_CHILDREN off, as on the Jetson
+ * AGX Thor), each process's parent is read from its stat line, whatever its
+ * command name holds.
+ */
+TEST(ReadinessChildProcesses, WithoutTheListReadsEachParent) {
+  FakeProcTree proc;
+  ASSERT_FALSE(proc.root().empty());
+  proc.process(10, "sudo", 1);
+  proc.process(11, "a) (b 9 ", 10);
+  proc.process(13, "tool name", 10);
+  proc.process(14, "unrelated", 1);
+  proc.process(15, "grandchild", 11);
+  std::filesystem::create_directories(proc.root() + "/self");
+  // Names that are not pids are skipped, even when their stat names the parent.
+  proc.entry("99999999999999999999", "too large", 10);
+  proc.entry("16x", "not a pid", 10);
+  EXPECT_EQ(childProcesses(10, proc.root()), (std::vector<pid_t>{11, 13}));
+  EXPECT_EQ(childProcesses(11, proc.root()), (std::vector<pid_t>{15}));
+  EXPECT_TRUE(childProcesses(14, proc.root()).empty());
+  EXPECT_TRUE(childProcesses(99, proc.root()).empty()) << "no such process";
+}
+
+/** @test The default root lists a child this process started. */
+TEST(ReadinessChildProcesses, ListsALiveChildOfThisProcess) {
+  const pid_t CHILD = ::fork();
+  ASSERT_GE(CHILD, 0);
+  if (CHILD == 0) {
+    ::pause();
+    ::_exit(0);
+  }
+  const std::vector<pid_t> CHILDREN = childProcesses(::getpid());
+  ::kill(CHILD, SIGKILL);
+  int status = 0;
+  ::waitpid(CHILD, &status, 0);
+  EXPECT_NE(std::find(CHILDREN.begin(), CHILDREN.end(), CHILD), CHILDREN.end());
+}
+
+namespace {
+
+/** @brief A forked process holding children of its own, all paused. */
+struct ParentOfPaused {
+  pid_t pid = -1;
+  std::vector<pid_t> children;
+};
+
+/** @brief Fork a process that starts @p count paused children and reports their pids. */
+ParentOfPaused startParentOf(int count) {
+  ParentOfPaused out;
+  int fds[2] = {-1, -1};
+  if (::pipe(fds) != 0) {
+    return out;
+  }
+  out.pid = ::fork();
+  if (out.pid == 0) {
+    ::close(fds[0]);
+    for (int i = 0; i < count; ++i) {
+      const pid_t KID = ::fork();
+      if (KID == 0) {
+        ::pause();
+        ::_exit(0);
+      }
+      (void)!::write(fds[1], &KID, sizeof(KID));
+    }
+    ::close(fds[1]);
+    ::pause();
+    ::_exit(0);
+  }
+  ::close(fds[1]);
+  pid_t kid = -1;
+  while (out.pid > 0 && static_cast<int>(out.children.size()) < count &&
+         ::read(fds[0], &kid, sizeof(kid)) == static_cast<ssize_t>(sizeof(kid))) {
+    out.children.push_back(kid);
+  }
+  ::close(fds[0]);
+  return out;
+}
+
+/** @brief Kill @p parent's children and @p parent, and reap @p parent. */
+void stopParentOf(const ParentOfPaused& parent) {
+  for (const pid_t KID : parent.children) {
+    if (KID > 0) {
+      ::kill(KID, SIGKILL);
+    }
+  }
+  if (parent.pid > 0) {
+    ::kill(parent.pid, SIGKILL);
+    int status = 0;
+    ::waitpid(parent.pid, &status, 0);
+  }
+}
+
+} // namespace
+
+/**
+ * @test tracerPid() names a process's only child, and the process itself when
+ * it has none or more than one.
+ */
+TEST(ReadinessChildProcesses, TracerPidIsTheOnlyChild) {
+  const ParentOfPaused ONE = startParentOf(1);
+  const ParentOfPaused TWO = startParentOf(2);
+  const pid_t ONLY = ONE.children.empty() ? -1 : ONE.children.front();
+  const pid_t TRACER = vernier::bench::profiler_env::tracerPid(ONE.pid);
+  const pid_t ALONE = vernier::bench::profiler_env::tracerPid(ONLY);
+  const pid_t AMBIGUOUS = vernier::bench::profiler_env::tracerPid(TWO.pid);
+  stopParentOf(ONE);
+  stopParentOf(TWO);
+  ASSERT_EQ(ONE.children.size(), 1U);
+  ASSERT_EQ(TWO.children.size(), 2U);
+  EXPECT_EQ(TRACER, ONLY);
+  EXPECT_EQ(ALONE, ONLY) << "a process with no child is its own tracer";
+  EXPECT_EQ(AMBIGUOUS, TWO.pid) << "two children: neither is the tracer";
 }
 
 /* ----------------------------- Memo ----------------------------- */
