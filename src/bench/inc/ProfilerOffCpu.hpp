@@ -16,28 +16,64 @@
  * includes the wait for a CPU after its wakeup. It exits by itself when this
  * process's main thread exits, not when one of its other threads does.
  *
+ * Capture: beforeMeasure() starts the tracer and waits until it arms. The
+ * script records nothing until it sees a thread of this process named
+ * vernier-arm, which the backend starts, go to sleep, and it then prints
+ * "offcpu armed <pid> <tid>"; the backend checks that the ids are its own.
+ * afterMeasure() names the calling thread vernier-stop until the tracer
+ * disarms and prints "offcpu disarmed <pid> <tid> <n>", n the switch-outs it
+ * recorded, then stops it with SIGINT, which makes it print its maps. The
+ * backend's own waits run under the name vernier-wait, which the script does
+ * not record. The three names are reserved: a test's own thread given one of
+ * them disturbs the capture.
+ *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
- * sudo. The readiness check (checkOffCpuRequest) runs the launch's script
- * with a 5 s self-exit added through that route for the start grace and
- * stops it with SIGINT; a probe whose stop is refused ends by that self-exit,
- * and the check waits for it and reaps it. The added interval makes the
- * probe a command the run never runs, so a grant's refusal of it is
- * unverified and the run's start decides. The profiler launches and stops
- * with exactly the tools and route it verified (OffCpuPlan).
+ * sudo. The run's command is `<bpftrace> -B none -e <the off-CPU script>
+ * <pid>`, its output unbuffered so that each acknowledgement arrives as it is
+ * printed; with BENCH_SUDO it runs as `sudo -n -- <bpftrace> -B none -e ...`,
+ * and `sudo -n -- <kill> -2|-15|-9 <tracer>` stops it. The readiness check
+ * (checkOffCpuRequest) runs the launch's script with a 5 s self-exit added
+ * through that route for the start grace and stops it with SIGINT; a probe
+ * whose stop is refused ends by that self-exit, and the check waits for it
+ * and reaps it. The added interval makes the probe a command the run never
+ * runs, so a grant's refusal of it is unverified and the run's start decides.
+ * The profiler launches and stops with exactly the tools and route it
+ * verified (OffCpuPlan).
  *
- * Output: `<testName>.offcpu/offcpu.txt` (the bpftrace map dump) and
- * `offcpu.err.txt` (bpftrace's messages).
+ * Output: `<testName>.offcpu/offcpu.txt` (the tracer's acknowledgements and
+ * its map dump) and `offcpu.err.txt` (bpftrace's messages). Each capture ends
+ * with one outcome, printed with an `[offcpu]` prefix and kept by
+ * captureOutcome(): `stacks written to <path>` for a capture the tracer
+ * acknowledged from its start to its stop, that ended cleanly on the stop and
+ * whose dump is whole; a line of its own when no thread of this process slept
+ * in that window; an error otherwise, the output kept: no arm
+ * acknowledgement, or one for other ids; a tracer that ended before the stop,
+ * could not be stopped, was killed or did not end cleanly; no stop
+ * acknowledgement ("capture validity could not be established"); an output
+ * that cannot be read, or a dump cut short (an entry cut, or no @recorded
+ * line where the tracer recorded switch-outs).
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the
  *    tid-keyed start map.
+ *  - bpftrace's count() creates a key with an insert that fails when another
+ *    CPU creates the same key at the same moment, so threads that first sleep
+ *    at one stack at the same moment can leave that stack's count short. The
+ *    per-thread times, whose keys are the threads, are not affected.
+ *  - Host PID view only. bpftrace in a PID namespace of its own does not
+ *    number this process's threads as the process does (0.20 reports the
+ *    host's ids there, 0.23.0 to 0.24.1 read pid and tid swapped), so the
+ *    tracer never arms and the run reports that, naming the namespace. Run
+ *    such a benchmark on the host, or in a container started with
+ *    --pid=host.
  *  - The sched tracepoints need tracefs (`/sys/kernel/tracing`). The default
  *    dev container does not mount it, so there the check reports the
  *    tracepoint as unsupported.
  */
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -54,7 +90,16 @@ namespace bench {
 struct OffCpuPlan final : ReadinessPlan {
   BpftraceRoute route;
   std::shared_ptr<const ReadinessContext> context;
+  int armWaitMs = 5000;    ///< How long a capture's start waits for the tracer to arm.
+  int disarmWaitMs = 3000; ///< How long its stop waits for the tracer to disarm.
 };
+
+/**
+ * @brief The sentence a report adds when this process is not in the initial
+ * PID namespace, from the text of the /proc/self/ns/pid link
+ * ("pid:[4026531836]" for the initial one); "" in the initial namespace.
+ */
+[[nodiscard]] std::string offCpuPidNamespaceNote(const std::string& namespaceLink);
 
 /**
  * @brief The offcpu backend's readiness decision for @p request in @p ctx.
@@ -84,9 +129,22 @@ public:
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
 
+  /**
+   * @brief How the last capture ended: Ok for a verified capture (with
+   * stacks, or with no thread asleep in its window), an Error saying what
+   * failed otherwise, the decision's Error when the request could not run.
+   * Empty before the first capture ends.
+   */
+  [[nodiscard]] const std::optional<ReadinessResult>& captureOutcome() const noexcept {
+    return outcome_;
+  }
+
 private:
+  struct Capture; ///< One running capture: its tracer and what was read of its output.
+
   void spawnBpftrace();
   void stopBpftrace();
+  void finish(ReadinessResult outcome, const std::string& context = {});
 
   PerfConfig cfg_;
   std::string testName_;
@@ -94,7 +152,8 @@ private:
   std::string outputPath_;
   std::string errorPath_;
   std::shared_ptr<const OffCpuPlan> plan_;
-  std::unique_ptr<OwnedHelper> helper_;
+  std::unique_ptr<Capture> capture_;
+  std::optional<ReadinessResult> outcome_;
 };
 
 /* --------------------------------- API --------------------------------- */

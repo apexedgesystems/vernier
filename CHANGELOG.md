@@ -652,6 +652,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Only sleeping threads count, and each time runs until the thread runs
   again, so it includes the wait for a CPU after the wakeup. Counts and times
   from earlier captures include those rows and do not compare with new ones.
+- **offcpu reports whether each capture is valid** -- `stacks written` was
+  printed whenever the tracer stopped, even for a trace that ended early,
+  recorded nothing of the benchmark or left an unreadable dump. The tracer
+  records only between two acknowledgements it prints on seeing the
+  benchmark's own threads sleep, and the run prints `stacks written` only for
+  a capture confirmed from start to stop, a line of its own when no thread
+  slept, and an error otherwise. `offcpu.txt` gains the `offcpu armed` and
+  `offcpu disarmed` lines and loses the backend's own start and stop waits,
+  the tracer runs as `bpftrace -B none -e ...`, which a sudoers grant that
+  pins arguments must allow, and the thread names `vernier-arm`,
+  `vernier-wait` and `vernier-stop` are reserved.
 
 ## v1.0.3 - 2026-06-28
 
