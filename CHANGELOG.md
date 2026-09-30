@@ -278,13 +278,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   -- the backend waited a fixed second for each tracer to attach, so on a busy
   machine the measured repeats could run before it had, and the empty report
   counted as a clean capture. Each run's copy of a script ends with a short
-  program whose two acknowledgements, from threads named `vernier-arm` and
-  `vernier-stop`, open and close the measured repeats, and a capture without
-  both, with other ids or with no output is reported as failed. **Action
-  needed:** the report holds a `bpftrace armed` and a `bpftrace disarmed` line,
-  bpftrace runs with `-B none`, and the thread names `vernier-arm`,
-  `vernier-wait` and `vernier-stop` and the map names `@vernier_window` and
-  `@vernier_recorded` are reserved.
+  program whose two acknowledgements, bound to the benchmark's process and
+  threads, open and close the measured repeats; a capture without both, with
+  other ids or out of order is reported as failed, and one whose script printed
+  nothing else as holding no data. **Action needed:** the report holds a
+  `bpftrace armed` and a `bpftrace disarmed` line, bpftrace runs with
+  `-B none`, the thread names `vernier-arm`, `vernier-wait` and `vernier-stop`
+  and maps named `@vernier_...` are reserved, and a script with an iterator
+  probe runs only by hand.
 - **The bundled bpftrace scripts trace threaded tests to their end** -- they
   ended when any thread of the traced process exited, so a `contentionRun()`
   trace stopped after one repeat; they end with the main thread, and a tracer

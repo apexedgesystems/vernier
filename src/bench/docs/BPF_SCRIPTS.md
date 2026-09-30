@@ -17,8 +17,9 @@ performance, not by default in CI.
   with a warning; an invalid `BENCH_SUDO`, or an invalid alias on its own, is
   a configuration error.
 - `--profile-check --profile bpftrace --bpf <scripts>` runs a copy of each
-  selected script, with the capture window (below) and a 5 s self-exit added,
-  through that route for a second and stops it, and reports what failed; a run
+  selected script, with the capture window (below, bound to no thread, so it
+  never arms) and a 5 s self-exit added, through that route for a second and
+  stops it, and reports what failed; a run
   makes the same decision before its first case. The copy lives in a private
   temporary directory, while the run's own copy lives in its capture folder, so
   the check cannot try the run's exact command: with `BENCH_SUDO=1`, a grant
@@ -51,65 +52,78 @@ script file without its `.bt`, wherever the script came from: `<name>.tmp.bt`,
 the copy bpftrace ran, with the PID filled in and the capture window appended;
 `<name>.out.text` (or `<name>.out.json` with `PERF_BPF_FMT=json`), what bpftrace
 printed: the capture window's two lines, then the maps at its exit; and
-`<name>.err.txt`, its error output. Two selected scripts whose file names match
-would overwrite each other's files, so such a request is refused before
-anything runs.
+`<name>.err.txt`, its error output. The files stay whatever the capture's
+outcome. Two selected scripts whose file names match would overwrite each
+other's files, so such a request is refused before anything runs.
 
 ## The capture window
 
 A run measures only while its tracers show that they see the benchmark. Each
 run's copy of a script ends with one program the backend appends; for a
-benchmark whose PID is 4242:
+benchmark whose PID is 4242, whose arm thread is 4250 and whose measured
+repeats run on its main thread:
 
 ```text
 // Added by Vernier: the capture window (BPF_SCRIPTS.md). The measured
 // repeats run between its arm line and its stop line.
 tracepoint:sched:sched_switch {
   if (pid == 4242 && (args->prev_state == 1 || args->prev_state == 2)) {
-    if (comm == "vernier-arm") {
-      if (@vernier_window == 0 && tid != 4242) {
+    if (tid == 4250 && comm == "vernier-arm") {
+      if (@vernier_window == 0) {
         @vernier_window = 1;
         printf("bpftrace armed %d %d\n", pid, tid);
       }
-    } else if (comm == "vernier-stop") {
+    } else if (tid == 4242 && comm == "vernier-stop") {
       if (@vernier_window == 1) {
-        printf("bpftrace disarmed %d %d %d\n", pid, tid, @vernier_recorded);
+        @vernier_window = 2;
+        printf("bpftrace disarmed %d %d\n", pid, tid);
         clear(@vernier_window);
-        clear(@vernier_recorded);
       }
-    } else if (@vernier_window == 1 && comm != "vernier-wait") {
-      @vernier_recorded++;
     }
   }
 }
 ```
 
-bpftrace runs with `-B none`, so each line it prints reaches the report at
-once. Once every selected script's tracer has started, the thread that runs the
-test takes the name `vernier-wait` and starts a thread named `vernier-arm` that
-sleeps 5 ms at a time. The measured repeats start when every tracer has printed
-`bpftrace armed <pid> <tid>` with the benchmark's PID and that thread's id,
-within 5 s. After them, the same thread, named `vernier-stop`, sleeps until
-every tracer has printed `bpftrace disarmed <pid> <tid> <n>`, within 3 s, `<n>`
-being the sleeping switch-outs of the benchmark's other threads in between;
-the tracers are then stopped with SIGINT. Both lines stay in the report, before
-the maps bpftrace prints at its exit; the program clears its own maps, so it
-adds none there.
+Before it launches the tracers, the backend starts a thread named `vernier-arm`
+that sleeps 5 ms at a time; the program names that thread and the thread that
+runs the test by their ids. Once every selected script's tracer has started,
+the thread that runs the test takes the name `vernier-wait` and waits, up to
+5 s, until each tracer has printed `bpftrace armed <pid> <tid>` with the
+benchmark's PID and the arm thread's id; the measured repeats start then.
+After them it takes the name `vernier-stop` and waits, up to 3 s, for each
+tracer's `bpftrace disarmed <pid> <tid>` with its own id; the tracers are then
+stopped with SIGINT. bpftrace runs with `-B none`, so each line reaches the
+report as it is printed. bpftrace clears a map only when its own process
+handles the `clear()`, a moment after the program ran, so the disarm also sets
+`@vernier_window` to 2 at once: a later switch-out does not print the line
+again. Both lines stay in the report, before what bpftrace prints at its exit.
 
-bpftrace attaches a script's tracepoint, rawtracepoint, kretprobe, fexit,
-interval, profile, hardware and watchpoint probes first, in the order the
-script declares them, and its kprobe, uprobe, uretprobe, USDT, software and
-fentry probes after them. The arm line therefore shows that every probe of the
-first kind is attached, the bundled scripts' included; it says nothing of a
-probe of the second kind.
+bpftrace prints what its programs emit only once it has attached every probe
+of the script: 0.14.0, 0.20.2 and 0.23.2 read their programs' output after
+both of their attach passes. The arm line therefore shows that the script's
+probes are attached and that the tracer sees the benchmark's threads under the
+ids the backend knows. It does not confine the script's own probes to the
+measured repeats: they record from their attach until the tracer stops, which
+includes the waits before and after the measured repeats.
 
 The capture is reported as failed, with a `[bpftrace]` line, when a tracer ends
 before its arm or its stop line, prints neither within its bound, prints either
-with other ids, cannot be stopped, or leaves no output or an empty one.
+with other ids or out of order (a stop line before the arm, or before the stop
+was asked for), cannot be stopped, or leaves no output, an empty one or one
+without the two lines, and when the measured repeats end on another thread
+than the one they started on. A report that holds nothing but the two lines is
+a complete capture whose script printed no data of its own: the run says so
+with a `[bpftrace]` line, and the capture counts as a caveat, not as a zero.
 
-The thread names `vernier-arm`, `vernier-wait` and `vernier-stop` and the map
-names `@vernier_window` and `@vernier_recorded` are reserved: a benchmark
-thread or a script map of one of those names would disturb the capture.
+The thread names `vernier-arm`, `vernier-wait` and `vernier-stop` are reserved
+for the backend's own threads: a benchmark thread must not take them. A script
+must not use a map whose name starts with `@vernier_`, nor print
+`bpftrace armed` or `bpftrace disarmed`: the check refuses such a script
+before anything runs. A script with an iterator probe (`iter:`) cannot take
+the program, since bpftrace runs an iterator probe only as a script's single
+probe; the check reports it unsupported, and such a script runs by hand. The
+program needs the `sched:sched_switch` tracepoint; where bpftrace refuses it,
+the check says so.
 
 ## Scripts
 

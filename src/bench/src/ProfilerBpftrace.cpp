@@ -366,10 +366,9 @@ bool reportStop(const char* tag, const std::string& what, const HelperStopResult
 
 /* ----------------------------- The capture window ----------------------------- */
 
-std::string captureWindowProgram(const std::string& label, long pid) {
+std::string captureWindowProgram(const std::string& label, long pid, long armTid, long stopTid) {
   const std::string PID = std::to_string(pid);
   const std::string ARM = ARM_THREAD;
-  const std::string WAIT = WAIT_THREAD;
   const std::string STOP = STOP_THREAD;
   return "// Added by Vernier: the capture window (BPF_SCRIPTS.md). The measured\n"
          "// repeats run between its arm line and its stop line.\n"
@@ -377,31 +376,25 @@ std::string captureWindowProgram(const std::string& label, long pid) {
          "  if (pid == " +
          PID +
          " && (args->prev_state == 1 || args->prev_state == 2)) {\n"
-         "    if (comm == \"" +
-         ARM +
+         "    if (tid == " +
+         std::to_string(armTid) + " && comm == \"" + ARM +
          "\") {\n"
-         "      if (@vernier_window == 0 && tid != " +
-         PID +
-         ") {\n"
+         "      if (@vernier_window == 0) {\n"
          "        @vernier_window = 1;\n"
          "        printf(\"" +
          label +
          " armed %d %d\\n\", pid, tid);\n"
          "      }\n"
-         "    } else if (comm == \"" +
-         STOP +
+         "    } else if (tid == " +
+         std::to_string(stopTid) + " && comm == \"" + STOP +
          "\") {\n"
          "      if (@vernier_window == 1) {\n"
+         "        @vernier_window = 2;\n"
          "        printf(\"" +
          label +
-         " disarmed %d %d %d\\n\", pid, tid, @vernier_recorded);\n"
+         " disarmed %d %d\\n\", pid, tid);\n"
          "        clear(@vernier_window);\n"
-         "        clear(@vernier_recorded);\n"
          "      }\n"
-         "    } else if (@vernier_window == 1 && comm != \"" +
-         WAIT +
-         "\") {\n"
-         "      @vernier_recorded++;\n"
          "    }\n"
          "  }\n"
          "}\n";
@@ -428,9 +421,9 @@ std::optional<long> numberAt(std::string_view text, std::size_t& at) {
   return value;
 }
 
-/// "<label> <word> " followed by @p count numbers separated by one space, anywhere in @p line.
+/// "<label> <word> <pid> <tid>", the ids separated by one space, anywhere in @p line.
 std::optional<WindowAck> parseAck(std::string_view line, std::string_view label,
-                                  std::string_view word, int count) {
+                                  std::string_view word) {
   const std::string PREFIX = std::string(label) + " " + std::string(word) + " ";
   for (std::size_t found = line.find(PREFIX); found != std::string_view::npos;
        found = line.find(PREFIX, found + 1)) {
@@ -443,9 +436,9 @@ std::optional<WindowAck> parseAck(std::string_view line, std::string_view label,
       }
     }
     std::size_t at = found + PREFIX.size();
-    long numbers[3] = {-1, -1, -1};
+    long numbers[2] = {-1, -1};
     bool ok = true;
-    for (int i = 0; i < count && ok; ++i) {
+    for (int i = 0; i < 2 && ok; ++i) {
       if (i > 0) {
         ok = at < line.size() && line[at] == ' ';
         ++at;
@@ -457,7 +450,7 @@ std::optional<WindowAck> parseAck(std::string_view line, std::string_view label,
       }
     }
     if (ok) {
-      return WindowAck{numbers[0], numbers[1], count == 3 ? numbers[2] : -1};
+      return WindowAck{numbers[0], numbers[1]};
     }
   }
   return std::nullopt;
@@ -466,11 +459,26 @@ std::optional<WindowAck> parseAck(std::string_view line, std::string_view label,
 } // namespace
 
 std::optional<WindowAck> parseArmAck(std::string_view line, std::string_view label) {
-  return parseAck(line, label, "armed", 2);
+  return parseAck(line, label, "armed");
 }
 
 std::optional<WindowAck> parseDisarmAck(std::string_view line, std::string_view label) {
-  return parseAck(line, label, "disarmed", 3);
+  return parseAck(line, label, "disarmed");
+}
+
+bool isWindowLine(std::string_view line, std::string_view label) {
+  if (parseArmAck(line, label) || parseDisarmAck(line, label)) {
+    return true;
+  }
+  // A map the window reserves, as text ("@vernier_window: 2") or JSON
+  // ("\"@vernier_window\"") prints it.
+  const std::size_t FIRST = line.find_first_not_of(" \t");
+  if (FIRST == std::string_view::npos) {
+    return false;
+  }
+  const std::string_view REST = line.substr(FIRST);
+  return REST.rfind(WINDOW_MAP_PREFIX, 0) == 0 ||
+         line.find(std::string("\"") + WINDOW_MAP_PREFIX) != std::string_view::npos;
 }
 
 WindowWatch::WindowWatch(std::string outputPath, std::string label)
@@ -510,11 +518,114 @@ int WindowWatch::poll() {
     }
     if (!disarmed_) {
       disarmed_ = parseDisarmAck(LINE, label_);
+      disarmedBeforeArmed_ = disarmed_.has_value() && !armed_.has_value();
     }
     start = end + 1;
   }
   partial_.erase(0, start);
   return 0;
+}
+
+namespace {
+
+/// A script's code apart from its comments, and its string literals' contents.
+struct ScriptCode {
+  std::string code;                 ///< Comments as one space, each string literal as "".
+  std::vector<std::string> strings; ///< The string literals' contents, escapes as written.
+};
+
+/// Split @p script as bpftrace reads it: // and /* */ comments, "strings".
+ScriptCode codeOf(std::string_view script) {
+  ScriptCode out;
+  std::size_t i = 0;
+  while (i < script.size()) {
+    const char CH = script[i];
+    const char NEXT = i + 1 < script.size() ? script[i + 1] : '\0';
+    if (CH == '/' && NEXT == '/') {
+      while (i < script.size() && script[i] != '\n') {
+        ++i;
+      }
+      out.code += ' ';
+    } else if (CH == '/' && NEXT == '*') {
+      const std::size_t CLOSE = script.find("*/", i + 2);
+      i = CLOSE == std::string_view::npos ? script.size() : CLOSE + 2;
+      out.code += ' ';
+    } else if (CH == '"') {
+      std::string text;
+      ++i;
+      while (i < script.size() && script[i] != '"') {
+        if (script[i] == '\\' && i + 1 < script.size()) {
+          text += script[i];
+          ++i;
+        }
+        text += script[i];
+        ++i;
+      }
+      ++i;
+      out.strings.push_back(std::move(text));
+      out.code += "\"\"";
+    } else {
+      out.code += CH;
+      ++i;
+    }
+  }
+  return out;
+}
+
+bool identifierChar(char ch) {
+  return std::isalnum(static_cast<unsigned char>(ch)) != 0 || ch == '_';
+}
+
+} // namespace
+
+std::string reservedNameIn(std::string_view script, std::string_view label) {
+  const ScriptCode CODE = codeOf(script);
+  const std::size_t MAP = CODE.code.find(WINDOW_MAP_PREFIX);
+  if (MAP != std::string::npos) {
+    std::size_t end = MAP + 1;
+    while (end < CODE.code.size() && identifierChar(CODE.code[end])) {
+      ++end;
+    }
+    return "the map " + CODE.code.substr(MAP, end - MAP);
+  }
+  for (const std::string& text : CODE.strings) {
+    for (const char* WORD : {" disarmed", " armed"}) {
+      const std::string MARKER = std::string(label) + WORD;
+      if (text.find(MARKER) != std::string::npos) {
+        return "the text '" + MARKER + "'";
+      }
+    }
+  }
+  return "";
+}
+
+std::string iteratorProbeIn(std::string_view script) {
+  const std::string CODE = codeOf(script).code;
+  int depth = 0;
+  for (std::size_t i = 0; i < CODE.size(); ++i) {
+    const char CH = CODE[i];
+    if (CH == '{') {
+      ++depth;
+    } else if (CH == '}') {
+      depth = std::max(depth - 1, 0);
+    } else if (depth == 0 && identifierChar(CH) && (i == 0 || !identifierChar(CODE[i - 1]))) {
+      std::size_t end = i;
+      while (end < CODE.size() && identifierChar(CODE[end])) {
+        ++end;
+      }
+      const std::string WORD = CODE.substr(i, end - i);
+      if ((WORD == "iter" || WORD == "it") && end < CODE.size() && CODE[end] == ':') {
+        std::size_t stop = end;
+        while (stop < CODE.size() && std::isspace(static_cast<unsigned char>(CODE[stop])) == 0 &&
+               CODE[stop] != ',' && CODE[stop] != '{' && CODE[stop] != '/') {
+          ++stop;
+        }
+        return CODE.substr(i, stop - i);
+      }
+      i = end - 1;
+    }
+  }
+  return "";
 }
 
 ThreadNameScope::ThreadNameScope(const char* name) {
@@ -757,9 +868,10 @@ ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& sto
 
 /**
  * @brief One tracer for one script: launched through the plan's route with the
- * capture window appended to its copy, armed and disarmed through the window,
- * and stopped through the route. Every failure is printed as a "[bpftrace]"
- * line, stops the tracer at once and is kept as its outcome.
+ * capture window appended to its copy, bound to the benchmark's pid, the arm
+ * thread and the measuring thread, armed and disarmed through the window, and
+ * stopped through the route. Every failure is printed as a "[bpftrace]" line,
+ * stops the tracer at once and is kept as its outcome.
  */
 class BpfRunner {
 public:
@@ -777,10 +889,12 @@ public:
 
   /**
    * @brief Write the run's copy (the script with {{PID}} filled in and the
-   * capture window appended) and start its tracer, without waiting for it.
+   * capture window, bound to @p pid, @p armTid and @p stopTid, appended) and
+   * start its tracer, without waiting for it. The script file itself is only
+   * read.
    * @return False, with the outcome kept and printed, when it did not start.
    */
-  bool launch(pid_t pid) {
+  bool launch(pid_t pid, long armTid, long stopTid) {
     std::string src;
     if (const int ERR = readScript(scriptPath_, src); ERR != 0) {
       std::fprintf(stderr, "[bpftrace] cannot read script '%s' at %s: %s\n", name_.c_str(),
@@ -792,7 +906,8 @@ public:
       return false;
     }
     replacePid(src, static_cast<long>(pid));
-    src += "\n" + bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(pid));
+    src += "\n" + bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(pid), armTid,
+                                                      stopTid);
     std::error_code ec;
     std::filesystem::create_directories(outdir_, ec);
     const std::string TEMP_SCRIPT = runCopyPath(outdir_, stem_);
@@ -852,6 +967,10 @@ public:
       fail(unreadableOutput(ERR));
       return true;
     }
+    if (watch_->disarmedBeforeArmed()) {
+      fail(outOfOrder("before its arm", *watch_->disarmed()));
+      return true;
+    }
     if (const std::optional<bpftrace_tool::WindowAck>& ACK = watch_->armed()) {
       if (ACK->pid != static_cast<long>(pid) || ACK->tid != armTid) {
         fail(wrongTarget("arm probe", *ACK, pid, armTid, "the arm thread"));
@@ -876,6 +995,38 @@ public:
 
   /** @brief True once the tracer acknowledged its arm, while nothing has failed. */
   [[nodiscard]] bool armed() const noexcept { return phase_ == Phase::ARMED; }
+
+  /**
+   * @brief Before the measuring thread takes the stop's name: read what the
+   * tracer wrote during the measured repeats. A stop line there came before
+   * the stop was asked for.
+   */
+  void beginStop() {
+    if (phase_ != Phase::ARMED) {
+      return;
+    }
+    if (const int ERR = watch_->poll(); ERR != 0) {
+      fail(unreadableOutput(ERR));
+      return;
+    }
+    if (watch_->disarmed()) {
+      fail(outOfOrder("before the measured repeats finished", *watch_->disarmed()));
+    }
+  }
+
+  /** @brief The measured repeats ended on a thread the window's stop is not bound to. */
+  void endedOnAnotherThread(long endTid, long stopTid) {
+    if (phase_ != Phase::ARMED) {
+      return;
+    }
+    fail(readinessResult(ReadinessCause::UNUSABLE,
+                         what_ + ": the measured repeats ended on thread " +
+                             std::to_string(endTid) + ", not on thread " + std::to_string(stopTid) +
+                             ", where they started and which the capture window's stop names, "
+                             "so the stop cannot be acknowledged",
+                         "Call the profiler's beforeMeasure() and afterMeasure() from one "
+                         "thread, as the harness does."));
+  }
 
   /**
    * @brief One look while the stop is awaited: true once an armed tracer has
@@ -923,7 +1074,7 @@ public:
     phase_ = Phase::DONE;
     ReadinessResult result = stopOutcome(what_, STOPPED, FLUSHED);
     if (result.report.status == EnvReport::Status::Ok) {
-      result = judgeOutput(ACK ? ACK->recorded : -1, pid);
+      result = judgeOutput(pid);
     }
     outcome_ = std::move(result);
   }
@@ -1006,6 +1157,16 @@ private:
             " to see whether it attaches; its errors are in " + stderrPath_ + ".");
   }
 
+  /** @brief A stop line that came @p when ("before its arm", ...). */
+  ReadinessResult outOfOrder(const char* when, const bpftrace_tool::WindowAck& ack) const {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           what_ + " acknowledged a stop " + when + ", for pid " +
+                               std::to_string(ack.pid) + " thread " + std::to_string(ack.tid) +
+                               ", so its capture window did not cover the measured repeats",
+                           "A thread of the benchmark may carry a name the capture window "
+                           "reserves (vernier-arm, vernier-wait, vernier-stop); rename it.");
+  }
+
   /** @brief An acknowledgement that names another process or thread. */
   ReadinessResult wrongTarget(const char* of, const bpftrace_tool::WindowAck& ack, pid_t pid,
                               long tid, const char* whose) const {
@@ -1025,18 +1186,33 @@ private:
                            "Keep the capture folder and its files until the run ends.");
   }
 
-  /** @brief After a flushed stop: the output must be there and hold something. */
-  ReadinessResult judgeOutput(long recorded, pid_t pid) {
+  /**
+   * @brief After a flushed stop: the output must be there and still hold the
+   * two acknowledgements; READY when the script printed something else too,
+   * CAVEAT, printed, when it printed nothing but the window's lines.
+   */
+  ReadinessResult judgeOutput(pid_t pid) {
     const int FD = ::open(stdoutPath_.c_str(), O_RDONLY | O_CLOEXEC);
     if (FD < 0) {
       ReadinessResult why = unreadableOutput(errno);
       std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
       return why;
     }
-    struct stat info{};
-    const bool SIZED = ::fstat(FD, &info) == 0;
     ::close(FD);
-    if (!SIZED || info.st_size == 0) {
+    std::ifstream in(stdoutPath_);
+    std::string line;
+    bool any = false;
+    bool armLine = false;
+    bool stopLine = false;
+    bool data = false;
+    while (std::getline(in, line)) {
+      any = true;
+      armLine = armLine || bpftrace_tool::parseArmAck(line, WINDOW_LABEL).has_value();
+      stopLine = stopLine || bpftrace_tool::parseDisarmAck(line, WINDOW_LABEL).has_value();
+      data = data || (line.find_first_not_of(" \t\r") != std::string::npos &&
+                      !bpftrace_tool::isWindowLine(line, WINDOW_LABEL));
+    }
+    if (!any) {
       ReadinessResult why =
           readinessResult(ReadinessCause::UNUSABLE,
                           what_ + " stopped, but its output at " + stdoutPath_ + " is empty",
@@ -1044,14 +1220,31 @@ private:
       std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
       return why;
     }
+    if (!armLine || !stopLine) {
+      ReadinessResult why =
+          readinessResult(ReadinessCause::UNUSABLE,
+                          what_ + " stopped, but its output at " + stdoutPath_ +
+                              " lacks the capture window's two lines, so it is not the output that "
+                              "acknowledged them",
+                          "Keep the capture folder and its files until the run ends.");
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
+      return why;
+    }
+    const std::string CAPTURED = "its tracer acknowledged their start and their end for pid " +
+                                 std::to_string(pid) + " and flushed its output";
+    if (!data) {
+      ReadinessResult why = readinessResult(
+          ReadinessCause::CAVEAT,
+          what_ + " captured the measured repeats (" + CAPTURED +
+              "), but printed no data of its own: its output holds only the capture window's "
+              "lines",
+          "Its probes recorded nothing it prints for this process; check the script's filters, "
+          "and that the test makes the calls the script traces.");
+      std::fprintf(stderr, "[bpftrace] %s\n", why.report.message.c_str());
+      return why;
+    }
     return readinessResult(ReadinessCause::READY,
-                           what_ +
-                               " captured the measured repeats: its tracer acknowledged the "
-                               "arm and the stop for pid " +
-                               std::to_string(pid) + ", with " + std::to_string(recorded) +
-                               " sleeping switch-outs of its threads between them, and "
-                               "flushed its output",
-                           "");
+                           what_ + " captured the measured repeats: " + CAPTURED, "");
   }
 
   std::shared_ptr<const BpftracePlan> plan_;
@@ -1114,6 +1307,27 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
           "bpftrace script '" + name + "' at " + PATH + " cannot be read: " + errnoText(ERR),
           "Give this user read access to " + PATH + ", or select a script it can read with --bpf.");
     }
+    // The run appends the capture window to its copy: a script must leave the
+    // window's names to it, and be able to run beside it.
+    if (const std::string RESERVED = bpftrace_tool::reservedNameIn(text, WINDOW_LABEL);
+        !RESERVED.empty()) {
+      return readinessResult(ReadinessCause::CONFIGURATION,
+                             "bpftrace script '" + name + "' at " + PATH + " uses " + RESERVED +
+                                 ", which the capture window the run appends reserves",
+                             "Rename it: maps named @vernier_... and the lines 'bpftrace armed' "
+                             "and 'bpftrace disarmed' belong to the capture window "
+                             "(BPF_SCRIPTS.md).");
+    }
+    if (const std::string ITERATOR = bpftrace_tool::iteratorProbeIn(text); !ITERATOR.empty()) {
+      return readinessResult(ReadinessCause::UNSUPPORTED,
+                             "bpftrace script '" + name + "' at " + PATH +
+                                 " has an iterator probe (" + ITERATOR +
+                                 "), which bpftrace runs only as a script's single probe, so the "
+                                 "run cannot append the capture window that times its capture",
+                             "Run the script by hand with " + plan->route.bpftrace +
+                                 "; --profile bpftrace takes scripts whose probes run beside a "
+                                 "sched_switch tracepoint.");
+    }
     plan->scriptPaths.push_back(PATH);
     sources.push_back(std::move(text));
   }
@@ -1154,7 +1368,9 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     runCommands += (runCommands.empty() ? "" : ", ") + RUN_COMMAND;
     std::string copy = sources[i];
     replacePid(copy, static_cast<long>(ctx.self()));
-    copy += "\n" + bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(ctx.self()));
+    // The window the run appends, bound to no thread: the probe copy never arms.
+    copy += "\n" +
+            bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(ctx.self()), 0, 0);
     copy += "\ninterval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
     const std::string COPY_PATH = SCRATCH.write("probe" + std::to_string(i) + ".bt", copy);
     if (COPY_PATH.empty()) {
@@ -1176,6 +1392,13 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     probe.selfExitMs = PROBE_SELF_EXIT_S * 1000;
     auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());
     if (verdict && verdict->report.status == EnvReport::Status::Error) {
+      // The window adds a dependency of its own: say so when it is the one
+      // refused.
+      if (verdict->report.message.find("sched_switch") != std::string::npos &&
+          sources[i].find("sched_switch") == std::string::npos) {
+        verdict->report.message += "; the capture window the run appends to every script needs "
+                                   "tracepoint:sched:sched_switch, which bpftrace refused here";
+      }
       return *verdict;
     }
     if (verdict && !caveat) {
@@ -1242,21 +1465,25 @@ public:
   }
 
   /**
-   * @brief Launch every script's tracer, then wait, as the capture window's
-   * WAIT_THREAD while an ArmThread naps, until each has acknowledged its arm
-   * or failed, up to the plan's armWaitMs. Every tracer is launched before
-   * any is awaited, so no run copy is written while a tracer runs.
+   * @brief Start the capture window's arm thread, launch every script's
+   * tracer with the window bound to this process, that thread and the calling
+   * thread, then wait, as the window's WAIT_THREAD while the arm thread naps,
+   * until each tracer has acknowledged its arm or failed, up to the plan's
+   * armWaitMs. Every tracer is launched before any is awaited, so no run copy
+   * is written while a tracer runs.
    */
   void beforeMeasure() {
     if (!enabled_) {
       return;
     }
     const pid_t TARGET = ::getpid();
+    stopTid_ = bpftrace_tool::currentThreadId();
+    const bpftrace_tool::ArmThread ARM;
     for (std::size_t i = 0; i < plan_->scripts.size(); ++i) {
       // One tracer per started script: each runner owns its own process.
       auto runner = std::make_unique<BpfRunner>(plan_, plan_->scripts[i], plan_->scriptPaths[i],
                                                 artifactDir_);
-      if (runner->launch(TARGET)) {
+      if (runner->launch(TARGET, ARM.tid(), stopTid_)) {
         runners_.push_back(std::move(runner));
       } else {
         record(runner->outcome());
@@ -1267,7 +1494,6 @@ public:
     }
     {
       const bpftrace_tool::ThreadNameScope WAITING(bpftrace_tool::WAIT_THREAD);
-      const bpftrace_tool::ArmThread ARM;
       (void)bpftrace_tool::waitUntil(
           [&] {
             bool settled = true;
@@ -1287,9 +1513,10 @@ public:
   }
 
   /**
-   * @brief Wait, as the capture window's STOP_THREAD, until every armed tracer
-   * has acknowledged the stop or ended, up to the plan's disarmWaitMs; then
-   * stop and judge each.
+   * @brief On the thread that started the capture: read what each armed
+   * tracer wrote during the measured repeats, then wait, as the capture
+   * window's STOP_THREAD, until every armed tracer has acknowledged the stop
+   * or ended, up to the plan's disarmWaitMs; then stop and judge each.
    */
   void afterMeasure() {
     if (runners_.empty()) {
@@ -1297,6 +1524,13 @@ public:
     }
     const pid_t TARGET = ::getpid();
     const long STOPPING = bpftrace_tool::currentThreadId();
+    for (auto& runner : runners_) {
+      if (STOPPING != stopTid_) {
+        runner->endedOnAnotherThread(STOPPING, stopTid_);
+      } else {
+        runner->beginStop();
+      }
+    }
     {
       const bpftrace_tool::ThreadNameScope STOPPING_NAME(bpftrace_tool::STOP_THREAD);
       (void)bpftrace_tool::waitUntil(
@@ -1321,13 +1555,15 @@ public:
   [[nodiscard]] const std::optional<ReadinessResult>& outcome() const noexcept { return outcome_; }
 
 private:
-  /** @brief Keep the capture's first failure; READY stands only while nothing failed. */
+  /**
+   * @brief Keep the capture's gravest outcome, the first of its kind: a
+   * failure over a caveat, a caveat over READY.
+   */
   void record(const std::optional<ReadinessResult>& result) {
     if (!result) {
       return;
     }
-    const bool FAILED = result->report.status == EnvReport::Status::Error;
-    if (!outcome_ || (FAILED && outcome_->report.status != EnvReport::Status::Error)) {
+    if (!outcome_ || result->report.status > outcome_->report.status) {
       outcome_ = *result;
     }
   }
@@ -1336,6 +1572,7 @@ private:
   bool enabled_ = false;
   std::string artifactDir_;
   std::vector<std::unique_ptr<BpfRunner>> runners_;
+  long stopTid_ = -1; ///< The thread that started the capture, which the window's stop names.
   std::optional<ReadinessResult> outcome_;
 };
 

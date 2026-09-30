@@ -36,6 +36,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
@@ -374,9 +375,33 @@ protected:
     return run;
   }
 
-  /** @brief The report a planned run of probe_script writes for @p testName. */
-  std::string reportPath(const std::string& testName) const {
-    return captures() + "/" + testName + ".bpf/probe_script.out.text";
+  /** @brief The report a planned run of the script with @p stem writes for @p testName. */
+  std::string reportPath(const std::string& testName,
+                         const std::string& stem = "probe_script") const {
+    return captures() + "/" + testName + ".bpf/" + stem + ".out.text";
+  }
+
+  /** @brief The run's copy of the script with @p stem for @p testName, as written. */
+  std::string runCopy(const std::string& testName, const std::string& stem = "probe_script") const {
+    std::ifstream in(captures() + "/" + testName + ".bpf/" + stem + ".tmp.bt");
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str();
+  }
+
+  /** @brief The thread a run copy's capture window binds to the thread name @p name; -1 if none. */
+  static long boundThread(const std::string& copy, const std::string& name) {
+    const std::regex BOUND("tid == ([0-9]+) && comm == \"" + name + "\"");
+    std::smatch match;
+    return std::regex_search(copy, match, BOUND) ? std::stol(match[1]) : -1;
+  }
+
+  /** @brief What a file holds. */
+  static std::string fileText(const std::string& path) {
+    std::ifstream in(path);
+    std::stringstream text;
+    text << in.rdbuf();
+    return text.str();
   }
 
   FakeToolDir dir_;
@@ -913,11 +938,9 @@ TEST_F(BpfCheckTest, BpftraceCaptureOutcomeReadyAfterAFlushedStop) {
   ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
   EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
   EXPECT_EQ(RUN.outcome->report.message,
-            "script 'probe_script' captured the measured repeats: its tracer acknowledged the "
-            "arm and the stop for pid " +
-                std::to_string(::getpid()) +
-                ", with 0 sleeping switch-outs of its threads between them, and flushed its "
-                "output");
+            "script 'probe_script' captured the measured repeats: its tracer acknowledged their "
+            "start and their end for pid " +
+                std::to_string(::getpid()) + " and flushed its output");
   EXPECT_EQ(RUN.err.find("[bpftrace]"), std::string::npos) << RUN.err;
 }
 
@@ -996,43 +1019,72 @@ TEST_F(BpfCheckTest, BpftraceCaptureStartsAtTheArmAcknowledgement) {
                                  << RUN.startWait.count() << " ms):\n"
                                  << RUN.outputAtStart << RUN.err;
   EXPECT_EQ(ARMED->pid, static_cast<long>(::getpid()));
-  EXPECT_NE(ARMED->tid, static_cast<long>(::getpid())) << "the arm came from the main thread";
+  const long ARM_THREAD = boundThread(runCopy("Bpf.Window"), "vernier-arm");
+  EXPECT_EQ(ARMED->tid, ARM_THREAD) << "the arm came from another thread than the one bound";
+  EXPECT_NE(ARM_THREAD, static_cast<long>(::getpid())) << "the arm was bound to the main thread";
   EXPECT_GE(RUN.startWait.count(), 1400) << "beforeMeasure() did not wait for the attach";
   ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
   EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
 }
 
-/** @test The run's copy is the script, its pid filled in, then the capture window; -B none */
+/**
+ * @test The run's copy is the script, its pid filled in, then the capture
+ * window bound to this process, the arm thread and the calling thread; the
+ * script itself is left as it was; -B none
+ */
 TEST_F(BpfCheckTest, BpftraceRunCopyEndsWithTheCaptureWindow) {
+  const std::string ORIGINAL = fileText(script_);
   const ReadinessResult R = check("bpftrace", ctx());
   ASSERT_TRUE(R.collectionReady()) << R.report.message;
   const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.Copy");
   ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
   const std::string PID = std::to_string(::getpid());
+  const std::string COPY = runCopy("Bpf.Copy");
+  const long ARM_THREAD = boundThread(COPY, "vernier-arm");
+  ASSERT_GT(ARM_THREAD, 0) << COPY;
+  EXPECT_NE(ARM_THREAD, static_cast<long>(::getpid()));
+  EXPECT_EQ(COPY, "tracepoint:sched:sched_switch /pid == " + PID + "/ { @c = count(); }\n\n" +
+                      vernier::bench::bpftrace_tool::captureWindowProgram(
+                          "bpftrace", static_cast<long>(::getpid()), ARM_THREAD,
+                          vernier::bench::bpftrace_tool::currentThreadId()));
+  EXPECT_EQ(fileText(script_), ORIGINAL) << "the run changed the script it copied";
   const std::string COPY_PATH = captures() + "/Bpf.Copy.bpf/probe_script.tmp.bt";
-  std::ifstream in(COPY_PATH);
-  std::stringstream copy;
-  copy << in.rdbuf();
-  EXPECT_EQ(copy.str(), "tracepoint:sched:sched_switch /pid == " + PID + "/ { @c = count(); }\n\n" +
-                            vernier::bench::bpftrace_tool::captureWindowProgram(
-                                "bpftrace", static_cast<long>(::getpid())));
   EXPECT_EQ(dir_.logLines("bpftrace -q -B none " + COPY_PATH + " pid=").size(), 1U) << dir_.log();
 }
 
-/** @test A capture with sleeping switch-outs in its window and one without are both READY */
-TEST_F(BpfCheckTest, BpftraceCaptureWithOrWithoutSwitchOutsIsReady) {
+/**
+ * @test A capture whose report holds only the capture window's lines is
+ * complete, and says it holds no data of the script's own: a caveat, printed,
+ * not READY and not a zero
+ */
+TEST_F(BpfCheckTest, BpftraceReportOfOnlyTheWindowsLinesIsNoData) {
   const ReadinessResult R = check("bpftrace", ctx());
   ASSERT_TRUE(R.collectionReady()) << R.report.message;
-  for (const char* COUNT : {"0", "7"}) {
-    const WindowRun RUN =
-        runWindowed(R, std::string("Bpf.Count") + COUNT, {{"FAKE_BPFTRACE_RECORDED", COUNT}});
-    ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
-    EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
-    EXPECT_NE(RUN.outcome->report.message.find(std::string(", with ") + COUNT +
-                                               " sleeping switch-outs of its threads"),
-              std::string::npos)
-        << RUN.outcome->report.message;
-  }
+  const WindowRun RUN = runWindowed(R, "Bpf.MarkersOnly", {{"FAKE_WINDOW", "marker-only"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::CAVEAT) << RUN.outcome->report.message;
+  const std::string MESSAGE =
+      "script 'probe_script' captured the measured repeats (its tracer acknowledged their start "
+      "and their end for pid " +
+      std::to_string(::getpid()) +
+      " and flushed its output), but printed no data of its own: its output holds only the "
+      "capture window's lines";
+  EXPECT_EQ(RUN.outcome->report.message, MESSAGE);
+  EXPECT_NE(RUN.err.find("[bpftrace] " + MESSAGE), std::string::npos) << RUN.err;
+  const std::string REPORT = fileText(reportPath("Bpf.MarkersOnly"));
+  EXPECT_NE(REPORT.find("bpftrace armed "), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("bpftrace disarmed "), std::string::npos) << REPORT;
+}
+
+/** @test A zero the script prints itself is data: a complete capture of a zero is READY */
+TEST_F(BpfCheckTest, BpftraceZeroThatTheScriptPrintsIsData) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.Zero", {{"FAKE_BPFTRACE_EXIT", "@c: 0"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
+  EXPECT_NE(fileText(reportPath("Bpf.Zero")).find("@c: 0"), std::string::npos);
+  EXPECT_EQ(RUN.err.find("[bpftrace]"), std::string::npos) << RUN.err;
 }
 
 /**
@@ -1177,18 +1229,400 @@ TEST_F(BpfCheckTest, BpftraceEmptyOutputAfterAFlushedStopIsAFailedCapture) {
                                              reportPath("Bpf.Empty") + " is empty");
 }
 
-/** @test The capture window's program: armed by a named worker thread, closed by another name */
-TEST(BpfWindowTest, ProgramArmsOnAWorkerThreadAndCountsUntilTheStop) {
-  const std::string PROGRAM = vernier::bench::bpftrace_tool::captureWindowProgram("offcpu", 42);
-  for (const char* PART :
-       {"tracepoint:sched:sched_switch {",
-        "if (pid == 42 && (args->prev_state == 1 || args->prev_state == 2)) {",
-        "if (comm == \"vernier-arm\") {", "if (@vernier_window == 0 && tid != 42) {",
-        "printf(\"offcpu armed %d %d\\n\", pid, tid);", "} else if (comm == \"vernier-stop\") {",
-        "printf(\"offcpu disarmed %d %d %d\\n\", pid, tid, @vernier_recorded);",
-        "clear(@vernier_window);", "clear(@vernier_recorded);",
-        "} else if (@vernier_window == 1 && comm != \"vernier-wait\") {", "@vernier_recorded++;"}) {
+/** @test An output without the acknowledgements after the stop is not the capture's */
+TEST_F(BpfCheckTest, BpftraceOutputWithoutTheAcknowledgementsIsNotTheCapture) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.Replaced", {{"FAKE_WINDOW", "replace-output"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script' stopped, but its output at " +
+                reportPath("Bpf.Replaced") +
+                " lacks the capture window's two lines, so it is not the output that "
+                "acknowledged them");
+}
+
+/** @test An arm acknowledged for another process is the wrong target */
+TEST_F(BpfCheckTest, BpftraceArmAcknowledgedForAnotherProcessIsTheWrongTarget) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.WrongPid", {{"FAKE_WINDOW", "wrong-pid"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  const long PID = static_cast<long>(::getpid());
+  const std::string ARM_THREAD =
+      std::to_string(boundThread(runCopy("Bpf.WrongPid"), "vernier-arm"));
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script' acknowledged its arm probe for pid " +
+                std::to_string(PID + 1) + " thread " + ARM_THREAD + ", not for this process, pid " +
+                std::to_string(PID) + ", and the arm thread, " + ARM_THREAD);
+}
+
+/** @test A stop line ahead of the arm line is out of order: no capture, and no wait to the bound */
+TEST_F(BpfCheckTest, BpftraceStopLineBeforeTheArmIsOutOfOrder) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.StopFirst", {{"FAKE_WINDOW", "disarm-first"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script' acknowledged a stop before its arm, for pid " +
+                std::to_string(::getpid()) + " thread " +
+                std::to_string(vernier::bench::bpftrace_tool::currentThreadId()) +
+                ", so its capture window did not cover the measured repeats");
+  EXPECT_LT(RUN.startWait.count(), 4000) << "the out-of-order tracer was waited for to the bound";
+}
+
+/**
+ * @test A stop line that is in the report before the stop is asked for came
+ * too early, even with the right ids: the window did not cover the measured
+ * repeats
+ */
+TEST_F(BpfCheckTest, BpftraceStopLineDuringTheMeasuredRepeatsIsOutOfOrder) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.EarlyStop", {{"FAKE_WINDOW", "early-disarm"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script' acknowledged a stop before the measured repeats "
+            "finished, for pid " +
+                std::to_string(::getpid()) + " thread " +
+                std::to_string(vernier::bench::bpftrace_tool::currentThreadId()) +
+                ", so its capture window did not cover the measured repeats");
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the failed capture";
+    endIfLeft(PID);
+  }
+}
+
+/** @test A report an earlier run left is not read: each launch starts its output afresh */
+TEST_F(BpfCheckTest, BpftraceStaleReportIsNotRead) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  std::filesystem::create_directories(captures() + "/Bpf.Stale.bpf");
+  const std::string PID = std::to_string(::getpid());
+  const std::string STALE = "bpftrace disarmed " + PID + " " +
+                            std::to_string(vernier::bench::bpftrace_tool::currentThreadId()) +
+                            "\nbpftrace armed " + PID + " 1\n";
+  {
+    std::ofstream out(reportPath("Bpf.Stale"));
+    out << STALE;
+  }
+  const WindowRun RUN = runWindowed(R, "Bpf.Stale", {{"FAKE_WINDOW", "no-arm"}}, 300);
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_NE(RUN.outcome->report.message.find(
+                "script 'probe_script' did not acknowledge its arm probe within 300 ms"),
+            std::string::npos)
+      << RUN.outcome->report.message;
+  EXPECT_EQ(fileText(reportPath("Bpf.Stale")).find("bpftrace "), std::string::npos)
+      << "the stale lines outlived the launch";
+}
+
+/**
+ * @test Each selected script's tracer acknowledges for itself: when one never
+ * arms its capture fails, whatever the other did, and when both do each report
+ * holds its own two lines
+ */
+TEST_F(BpfCheckTest, BpftraceEachScriptNeedsItsOwnAcknowledgement) {
+  dir_.writeFile("scripts/second.bt",
+                 "tracepoint:sched:sched_switch /pid == {{PID}}/ { @s = count(); }\n");
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+      requestFor("bpftrace", {"probe_script", "second"}), ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+
+  const WindowRun BOTH = runWindowed(R, "Bpf.Both", {});
+  ASSERT_TRUE(BOTH.outcome.has_value()) << BOTH.err;
+  EXPECT_EQ(BOTH.outcome->cause, ReadinessCause::READY) << BOTH.outcome->report.message;
+  for (const char* STEM : {"probe_script", "second"}) {
+    const std::string REPORT = fileText(reportPath("Bpf.Both", STEM));
+    EXPECT_NE(REPORT.find("bpftrace armed "), std::string::npos) << STEM << ":\n" << REPORT;
+    EXPECT_NE(REPORT.find("bpftrace disarmed "), std::string::npos) << STEM << ":\n" << REPORT;
+  }
+
+  const WindowRun ONE = runWindowed(
+      R, "Bpf.OneArms", {{"FAKE_WINDOW", "no-arm"}, {"FAKE_WINDOW_FOR", "second.tmp.bt"}}, 300);
+  ASSERT_TRUE(ONE.outcome.has_value()) << ONE.err;
+  EXPECT_EQ(ONE.outcome->report.status, EnvReport::Status::Error) << ONE.outcome->report.message;
+  EXPECT_NE(
+      ONE.outcome->report.message.find("script 'second' did not acknowledge its arm probe within"),
+      std::string::npos)
+      << ONE.outcome->report.message;
+  const std::string FIRST = fileText(reportPath("Bpf.OneArms"));
+  EXPECT_NE(FIRST.find("bpftrace disarmed "), std::string::npos) << FIRST;
+  EXPECT_NE(FIRST.find("@c: 1"), std::string::npos) << FIRST;
+  EXPECT_EQ(fileText(reportPath("Bpf.OneArms", "second")).find("bpftrace armed "),
+            std::string::npos);
+
+  // A capture is as good as its worst tracer's: one that printed nothing of
+  // its own makes the whole a caveat, whichever tracer finished first.
+  const WindowRun NO_DATA = runWindowed(
+      R, "Bpf.OneEmpty", {{"FAKE_WINDOW", "marker-only"}, {"FAKE_WINDOW_FOR", "second.tmp.bt"}});
+  ASSERT_TRUE(NO_DATA.outcome.has_value()) << NO_DATA.err;
+  EXPECT_EQ(NO_DATA.outcome->cause, ReadinessCause::CAVEAT) << NO_DATA.outcome->report.message;
+  EXPECT_EQ(NO_DATA.outcome->report.message.rfind("script 'second' captured", 0), 0U)
+      << NO_DATA.outcome->report.message;
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the run";
+    endIfLeft(PID);
+  }
+}
+
+/** @test A tracer that takes a while to print its maps at the stop is waited for */
+TEST_F(BpfCheckTest, BpftraceSlowDrainIsWaitedFor) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(
+      R, "Bpf.SlowDrain",
+      {{"FAKE_WINDOW", "slow-drain"}, {"FAKE_DRAIN_S", "1"}, {"FAKE_BPFTRACE_EXIT", "@c: 5"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
+  EXPECT_NE(fileText(reportPath("Bpf.SlowDrain")).find("@c: 5"), std::string::npos);
+}
+
+/** @test A script of the user's own, given by path, is captured as a bundled one, and left as it
+ * was */
+TEST_F(BpfCheckTest, BpftraceCustomScriptByPathIsCaptured) {
+  dir_.makeDirectory("mine");
+  const std::string CUSTOM =
+      dir_.writeFile("mine/sizes.bt", "// write() sizes\ntracepoint:syscalls:sys_enter_write "
+                                      "/pid == {{PID}}/ { @bytes = hist(args->count); }\n");
+  const std::string ORIGINAL = fileText(CUSTOM);
+  const ReadinessResult R =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {CUSTOM}), ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(
+      R, "Bpf.Custom", {{"FAKE_BPFTRACE_EXIT", "@bytes:\n[4, 8)             1000 |@@@@@@@@|"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::READY) << RUN.outcome->report.message;
+  const std::string REPORT = fileText(reportPath("Bpf.Custom", "sizes"));
+  EXPECT_NE(REPORT.find("bpftrace armed "), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("@bytes:"), std::string::npos) << REPORT;
+  EXPECT_EQ(fileText(CUSTOM), ORIGINAL) << "the run changed the script it copied";
+  std::string filledIn = ORIGINAL;
+  filledIn.replace(filledIn.find("{{PID}}"), 7, std::to_string(::getpid()));
+  EXPECT_EQ(runCopy("Bpf.Custom", "sizes").rfind(filledIn + "\n", 0), 0U)
+      << "the run's copy does not start with the script";
+}
+
+/**
+ * @test A kernel whose bpftrace refuses the sched_switch tracepoint the window
+ * needs is named as the window's dependency when the script does not use it
+ */
+TEST_F(BpfCheckTest, BpftraceWindowsOwnTracepointRefusedIsNamed) {
+  dir_.writeFile("scripts/writes.bt",
+                 "tracepoint:syscalls:sys_enter_write /pid == {{PID}}/ { @w = count(); }\n");
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+      requestFor("bpftrace", {"writes"}), ctx({{"FAKE_BPFTRACE_MODE", "no-sched-switch"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNSUPPORTED) << R.report.message;
+  EXPECT_EQ(R.report.message,
+            "unsupported: script 'writes': stdin:5:1-30: ERROR: tracepoint not found: "
+            "sched:sched_switch; the capture window the run appends to every script needs "
+            "tracepoint:sched:sched_switch, which bpftrace refused here");
+  const ReadinessResult OWN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "no-sched-switch"}}));
+  EXPECT_EQ(OWN.report.message.find("capture window"), std::string::npos)
+      << "a script that uses sched_switch itself is refused for its own probe: "
+      << OWN.report.message;
+}
+
+/**
+ * @test A script that uses a name the capture window reserves is refused
+ * before anything runs; the same names in comments, and other names, are not
+ * uses
+ */
+TEST_F(BpfCheckTest, BpftraceScriptUsingAReservedNameIsRefused) {
+  struct Case {
+    const char* name;
+    const char* text;
+    const char* uses;
+  };
+  for (const Case& c :
+       {Case{"window_map", "tracepoint:sched:sched_switch { @vernier_window = 1; }\n",
+             "the map @vernier_window"},
+        Case{"prefix_map", "tracepoint:sched:sched_switch { @vernier_mine[tid] = count(); }\n",
+             "the map @vernier_mine"},
+        Case{"arm_text",
+             "tracepoint:sched:sched_switch { printf(\"bpftrace armed %d %d\\n\", pid, tid); }\n",
+             "the text 'bpftrace armed'"},
+        Case{"stop_text", "tracepoint:sched:sched_switch { printf(\"bpftrace disarmed\\n\"); }\n",
+             "the text 'bpftrace disarmed'"}}) {
+    const std::string PATH = dir_.writeFile(std::string("scripts/") + c.name + ".bt", c.text);
+    const ReadinessResult R =
+        ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {c.name}), ctx());
+    EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION) << c.name << ": " << R.report.message;
+    EXPECT_EQ(R.report.message, std::string("configuration: bpftrace script '") + c.name + "' at " +
+                                    PATH + " uses " + c.uses +
+                                    ", which the capture window the run appends reserves");
+  }
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+
+  dir_.writeFile("scripts/mentions.bt",
+                 "// @vernier_window and \"bpftrace armed\" in a comment\n/* @vernier_x */\n"
+                 "tracepoint:sched:sched_switch /pid == {{PID}}/ { @vernier = count(); "
+                 "printf(\"armed\\n\"); }\n");
+  const ReadinessResult MENTIONS =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"mentions"}), ctx());
+  EXPECT_TRUE(MENTIONS.collectionReady()) << MENTIONS.report.message;
+}
+
+/** @test A script with an iterator probe is unsupported, before anything runs */
+TEST_F(BpfCheckTest, BpftraceIteratorScriptIsUnsupported) {
+  for (const auto& [NAME, TEXT, PROBE] :
+       {std::tuple<std::string, std::string, std::string>{
+            "iter_task", "iter:task { printf(\"%s\\n\", ctx->task->comm); }\n", "iter:task"},
+        std::tuple<std::string, std::string, std::string>{
+            "it_alias", "BEGIN { }\nit:task_file /ctx->task != 0/ { @n = count(); }\n",
+            "it:task_file"}}) {
+    const std::string PATH = dir_.writeFile("scripts/" + NAME + ".bt", TEXT);
+    const ReadinessResult R =
+        ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {NAME}), ctx());
+    EXPECT_EQ(R.cause, ReadinessCause::UNSUPPORTED) << NAME << ": " << R.report.message;
+    EXPECT_EQ(R.report.message, "unsupported: bpftrace script '" + NAME + "' at " + PATH +
+                                    " has an iterator probe (" + PROBE +
+                                    "), which bpftrace runs only as a script's single probe, so "
+                                    "the run cannot append the capture window that times its "
+                                    "capture");
+  }
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+
+  dir_.writeFile("scripts/iter_mentioned.bt",
+                 "// iter:task would run alone\ntracepoint:sched:sched_switch /pid == {{PID}}/ "
+                 "{ printf(\"iter:task\\n\"); }\n");
+  const ReadinessResult MENTIONED =
+      ProfilerRegistry::instance().checkRequest(requestFor("bpftrace", {"iter_mentioned"}), ctx());
+  EXPECT_TRUE(MENTIONED.collectionReady()) << MENTIONED.report.message;
+}
+
+/**
+ * @test Measured repeats that end on another thread than the one they started
+ * on cannot close the window, whose stop is bound to that thread: a failed
+ * capture, and no tracer left
+ */
+TEST_F(BpfCheckTest, BpftraceCaptureEndingOnAnotherThreadFails) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  auto plan =
+      std::make_shared<BpftracePlan>(*std::dynamic_pointer_cast<const BpftracePlan>(R.plan));
+  plan->disarmWaitMs = 300;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "bpftrace";
+  cfg.artifactRoot = captures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  StderrCapture err;
+  BpftraceProfiler profiler(cfg, "Bpf.OtherThread", plan);
+  profiler.beforeMeasure();
+  long other = -1;
+  std::thread([&] {
+    other = vernier::bench::bpftrace_tool::currentThreadId();
+    profiler.afterMeasure(vernier::bench::Stats{});
+  }).join();
+  ASSERT_TRUE(profiler.captureOutcome().has_value()) << err.text();
+  EXPECT_EQ(profiler.captureOutcome()->report.message,
+            "unusable: script 'probe_script': the measured repeats ended on thread " +
+                std::to_string(other) + ", not on thread " +
+                std::to_string(vernier::bench::bpftrace_tool::currentThreadId()) +
+                ", where they started and which the capture window's stop names, so the stop "
+                "cannot be acknowledged");
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the failed capture";
+    endIfLeft(PID);
+  }
+}
+
+/**
+ * @test A thread of the benchmark that takes the stop's name during the
+ * measured repeats does not close the window: the stop is bound to the thread
+ * that runs them
+ */
+TEST_F(BpfCheckTest, BpftraceBenchmarkThreadWithTheStopsNameIsNotTheStop) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "bpftrace";
+  cfg.artifactRoot = captures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  StderrCapture err;
+  BpftraceProfiler profiler(cfg, "Bpf.NameTaken",
+                            std::dynamic_pointer_cast<const BpftracePlan>(R.plan));
+  profiler.beforeMeasure();
+  std::thread([] {
+    const vernier::bench::bpftrace_tool::ThreadNameScope NAMED(
+        vernier::bench::bpftrace_tool::STOP_THREAD);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }).join();
+  profiler.afterMeasure(vernier::bench::Stats{});
+  ASSERT_TRUE(profiler.captureOutcome().has_value()) << err.text();
+  EXPECT_EQ(profiler.captureOutcome()->cause, ReadinessCause::READY)
+      << profiler.captureOutcome()->report.message;
+}
+
+/**
+ * @test The thread that waits for the window gets its own name back, and the
+ * arm thread is gone, whether the capture succeeds or fails
+ */
+TEST_F(BpfCheckTest, BpftraceWaitsGiveTheThreadItsNameBack) {
+  const auto NAME = [] {
+    std::ifstream comm("/proc/thread-self/comm");
+    std::string name;
+    std::getline(comm, name);
+    return name;
+  };
+  // A joined thread leaves /proc/self/task a moment after pthread_join()
+  // returns (the kernel wakes the joiner before it releases the task), so the
+  // count is read until it is zero, for at most two seconds.
+  const auto ARM_THREADS = [] {
+    const auto COUNT = [] {
+      int named = 0;
+      for (const auto& task : std::filesystem::directory_iterator("/proc/self/task")) {
+        std::ifstream comm(task.path() / "comm");
+        std::string name;
+        std::getline(comm, name);
+        named += name == "vernier-arm" ? 1 : 0;
+      }
+      return named;
+    };
+    const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    int named = COUNT();
+    while (named > 0 && std::chrono::steady_clock::now() < UNTIL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      named = COUNT();
+    }
+    return named;
+  };
+  const std::string BEFORE = NAME();
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  int i = 0;
+  for (const char* MODE : {"", "no-arm", "no-disarm", "early-disarm", "end-before-arm"}) {
+    const WindowRun RUN =
+        runWindowed(R, "Bpf.Name" + std::to_string(i++), {{"FAKE_WINDOW", MODE}}, 300, 300);
+    ASSERT_TRUE(RUN.outcome.has_value()) << MODE << ": " << RUN.err;
+    EXPECT_EQ(NAME(), BEFORE) << "after a capture in mode '" << MODE << "'";
+    EXPECT_EQ(ARM_THREADS(), 0) << "an arm thread outlived a capture in mode '" << MODE << "'";
+  }
+}
+
+/**
+ * @test The capture window's program is bound to the process, the arm thread
+ * and the stopping thread, disarms once, and counts nothing
+ */
+TEST(BpfWindowTest, ProgramIsBoundToTheProcessAndItsTwoThreads) {
+  const std::string PROGRAM =
+      vernier::bench::bpftrace_tool::captureWindowProgram("offcpu", 42, 43, 44);
+  for (const char* PART : {"tracepoint:sched:sched_switch {",
+                           "if (pid == 42 && (args->prev_state == 1 || args->prev_state == 2)) {",
+                           "if (tid == 43 && comm == \"vernier-arm\") {",
+                           "if (@vernier_window == 0) {\n        @vernier_window = 1;\n"
+                           "        printf(\"offcpu armed %d %d\\n\", pid, tid);",
+                           "} else if (tid == 44 && comm == \"vernier-stop\") {",
+                           "if (@vernier_window == 1) {\n        @vernier_window = 2;\n"
+                           "        printf(\"offcpu disarmed %d %d\\n\", pid, tid);\n"
+                           "        clear(@vernier_window);"}) {
     EXPECT_NE(PROGRAM.find(PART), std::string::npos) << PART << "\n" << PROGRAM;
+  }
+  for (const char* ABSENT : {"@vernier_recorded", "vernier-wait", "tid != ", "++"}) {
+    EXPECT_EQ(PROGRAM.find(ABSENT), std::string::npos) << ABSENT << "\n" << PROGRAM;
   }
 }
 
@@ -1199,26 +1633,29 @@ TEST(BpfWindowTest, AcknowledgementsReadFromTextAndJson) {
   ASSERT_TRUE(ARMED.has_value());
   EXPECT_EQ(ARMED->pid, 12);
   EXPECT_EQ(ARMED->tid, 34);
-  EXPECT_EQ(ARMED->recorded, -1);
   const auto JSON =
       tool::parseArmAck(R"({"type": "printf", "data": "bpftrace armed 12 34\n"})", "bpftrace");
   ASSERT_TRUE(JSON.has_value());
   EXPECT_EQ(JSON->tid, 34);
-  const auto DISARMED = tool::parseDisarmAck("bpftrace disarmed 12 12 5", "bpftrace");
+  const auto DISARMED = tool::parseDisarmAck("bpftrace disarmed 12 12", "bpftrace");
   ASSERT_TRUE(DISARMED.has_value());
   EXPECT_EQ(DISARMED->tid, 12);
-  EXPECT_EQ(DISARMED->recorded, 5);
+  const auto COUNTED = tool::parseDisarmAck("offcpu disarmed 12 13 5", "offcpu");
+  ASSERT_TRUE(COUNTED.has_value()) << "what follows the ids is a backend's own";
+  EXPECT_EQ(COUNTED->tid, 13);
   EXPECT_FALSE(tool::parseArmAck("offcpu armed 12 34", "bpftrace").has_value());
   EXPECT_FALSE(tool::parseArmAck("xbpftrace armed 12 34", "bpftrace").has_value());
   EXPECT_FALSE(tool::parseArmAck("bpftrace armed 12", "bpftrace").has_value());
   EXPECT_FALSE(tool::parseArmAck("bpftrace armed a 34", "bpftrace").has_value());
-  EXPECT_FALSE(tool::parseArmAck("bpftrace disarmed 12 34 5", "bpftrace").has_value());
-  EXPECT_FALSE(tool::parseDisarmAck("bpftrace disarmed 12 34", "bpftrace").has_value());
+  EXPECT_FALSE(tool::parseArmAck("bpftrace disarmed 12 34", "bpftrace").has_value());
+  EXPECT_FALSE(tool::parseDisarmAck("bpftrace armed 12 34", "bpftrace").has_value());
+  EXPECT_FALSE(tool::parseDisarmAck("bpftrace disarmed 12", "bpftrace").has_value());
   EXPECT_FALSE(tool::parseArmAck("bpftrace armed 1234567890123456789 1", "bpftrace").has_value())
       << "more digits than an id holds";
 }
 
-/** @test The watch reads a line once it is complete, and says when the file is gone */
+/** @test The watch reads a line once it is complete, keeps the order, and says when the file is
+ * gone */
 TEST(BpfWindowTest, WatchReadsLinesAsTheyComplete) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
@@ -1228,15 +1665,69 @@ TEST(BpfWindowTest, WatchReadsLinesAsTheyComplete) {
   EXPECT_FALSE(watch.armed().has_value()) << "a line not yet complete";
   {
     std::ofstream more(PATH, std::ios::app);
-    more << "8\nbpftrace disarmed 7 7 3\n";
+    more << "8\nbpftrace disarmed 7 7\n";
   }
   EXPECT_EQ(watch.poll(), 0);
   ASSERT_TRUE(watch.armed().has_value());
   EXPECT_EQ(watch.armed()->tid, 8);
   ASSERT_TRUE(watch.disarmed().has_value());
-  EXPECT_EQ(watch.disarmed()->recorded, 3);
+  EXPECT_EQ(watch.disarmed()->tid, 7);
+  EXPECT_FALSE(watch.disarmedBeforeArmed());
   std::filesystem::remove(PATH);
   EXPECT_EQ(watch.poll(), ENOENT);
+
+  const std::string REVERSED =
+      dir.writeFile("reversed.text", "bpftrace disarmed 7 7\nbpftrace armed 7 8\n");
+  vernier::bench::bpftrace_tool::WindowWatch backwards(REVERSED, "bpftrace");
+  EXPECT_EQ(backwards.poll(), 0);
+  EXPECT_TRUE(backwards.armed().has_value());
+  EXPECT_TRUE(backwards.disarmedBeforeArmed()) << "a stop line ahead of the arm line";
+}
+
+/** @test The window's own lines: its acknowledgements and its maps; everything else is the script's
+ */
+TEST(BpfWindowTest, WindowLinesAreTheAcknowledgementsAndTheReservedMaps) {
+  namespace tool = vernier::bench::bpftrace_tool;
+  for (const char* LINE : {"bpftrace armed 1 2", "bpftrace disarmed 1 1", "@vernier_window: 2",
+                           R"({"type": "printf", "data": "bpftrace armed 1 2\n"})",
+                           R"({"type": "map", "data": {"@vernier_window": 2}})"}) {
+    EXPECT_TRUE(tool::isWindowLine(LINE, "bpftrace")) << LINE;
+  }
+  for (const char* LINE : {"@c: 1", "@c: 0", "[0]   12 |@@@@|", "offcpu armed 1 2", "",
+                           R"({"type": "printf", "data": "hello\n"})", "@vernier: 3"}) {
+    EXPECT_FALSE(tool::isWindowLine(LINE, "bpftrace")) << LINE;
+  }
+}
+
+/** @test The reserved names are read from a script's code and strings, not from its comments */
+TEST(BpfWindowTest, ReservedNamesAreReadFromCodeNotComments) {
+  namespace tool = vernier::bench::bpftrace_tool;
+  EXPECT_EQ(tool::reservedNameIn("k:f { @vernier_window = 1; }", "bpftrace"),
+            "the map @vernier_window");
+  EXPECT_EQ(tool::reservedNameIn("k:f { @vernier_2[tid] = 1; }", "bpftrace"), "the map @vernier_2");
+  EXPECT_EQ(tool::reservedNameIn("k:f { printf(\"x bpftrace armed %d\\n\", 1); }", "bpftrace"),
+            "the text 'bpftrace armed'");
+  EXPECT_EQ(tool::reservedNameIn("k:f { printf(\"bpftrace disarmed\"); }", "bpftrace"),
+            "the text 'bpftrace disarmed'");
+  EXPECT_EQ(tool::reservedNameIn("k:f { printf(\"offcpu armed\"); }", "offcpu"),
+            "the text 'offcpu armed'");
+  EXPECT_EQ(tool::reservedNameIn("// @vernier_window\n/* \"bpftrace armed\" */\n"
+                                 "k:f { @vernier = 1; printf(\"armed \\\"q\\\"\"); }",
+                                 "bpftrace"),
+            "");
+  EXPECT_EQ(tool::reservedNameIn("k:f { printf(\"@vernier_window\"); }", "bpftrace"), "")
+      << "a string naming a map is not the map";
+}
+
+/** @test Iterator probes are found by their name or alias where probes are declared */
+TEST(BpfWindowTest, IteratorProbesAreFound) {
+  namespace tool = vernier::bench::bpftrace_tool;
+  EXPECT_EQ(tool::iteratorProbeIn("iter:task { }"), "iter:task");
+  EXPECT_EQ(tool::iteratorProbeIn("BEGIN { }\n\nit:task_file /ctx->task/ { }"), "it:task_file");
+  EXPECT_EQ(tool::iteratorProbeIn("iter:task_vma,iter:task { }"), "iter:task_vma");
+  EXPECT_EQ(tool::iteratorProbeIn("tracepoint:sched:sched_switch { $it = 1; }"), "");
+  EXPECT_EQ(tool::iteratorProbeIn("// iter:task\nk:f { printf(\"iter:task\"); }"), "");
+  EXPECT_EQ(tool::iteratorProbeIn("kprobe:iter_next { }"), "") << "a function named iter_...";
 }
 
 /** @test The waits' names: a thread named for a scope gets its name back after it */

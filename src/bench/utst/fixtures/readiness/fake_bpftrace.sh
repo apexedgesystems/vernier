@@ -21,24 +21,41 @@
 #                launch: a program without an interval probe
 #   eperm        exit 1 at once with bpftrace's message for a non-root user
 #   unsupported  exit 1 at once with bpftrace's message for a missing tracepoint
+#   no-sched-switch
+#                like unsupported, for the sched_switch tracepoint
 #   broken       exit 1 at once with a message of no known kind
 #
 # A program that holds the capture window the backends append (a printf of
-# "<label> armed %d %d" in a program filtered on "pid == <target>") is
-# answered as bpftrace answers it, once attached: when a thread of the target
-# other than its main thread is named vernier-arm, the fake prints "<label>
-# armed <target> <tid>"; after that, when one is named vernier-stop, "<label>
-# disarmed <target> <tid> <n>", n being FAKE_BPFTRACE_RECORDED (default 0). On
-# SIGINT it then prints three empty lines, as bpftrace prints its maps, and
-# exits 0. FAKE_WINDOW changes the answer:
+# "<label> armed %d %d" in a program filtered on "pid == <target>", whose arm
+# and stop name their threads as "tid == <id> && comm == ...") is answered as
+# bpftrace answers it, once attached: when thread <arm id> of the target is
+# named vernier-arm, the fake prints "<label> armed <target> <arm id>"; after
+# that, when thread <stop id> is named vernier-stop, "<label> disarmed
+# <target> <stop id>". On SIGINT it then prints three empty lines and
+# FAKE_BPFTRACE_EXIT (default "@c: 1"), as bpftrace prints its maps, and exits
+# 0. A program that binds no thread ids is answered for the first thread of
+# the target, other than its main thread, named vernier-arm, and the first
+# named vernier-stop (its main thread's id where a mode prints a stop line
+# before any thread has that name), and a stop line whose printf takes a count
+# too gets a count of 0. FAKE_WINDOW changes the answer, for every
+# tracer, or, with FAKE_WINDOW_FOR set, only for one whose script path
+# contains that text:
 #   end-before-arm exit 0 at once, acknowledging nothing
 #   no-arm         never acknowledge the arm
 #   wrong-arm      acknowledge it with the main thread's id for the thread's
+#   wrong-pid      acknowledge it with a pid one above the target's
+#   disarm-first   print a stop line, then acknowledge the arm
 #   end-after-arm  exit 0 right after acknowledging the arm
+#   early-disarm   print the stop line right after the arm line, before the
+#                  stop's thread takes its name, and never again
 #   no-disarm      never acknowledge the stop
 #   wrong-disarm   acknowledge the stop with a thread id one above the thread's
+#   marker-only    on SIGINT, print the three empty lines only: no data
+#   slow-drain     on SIGINT, wait FAKE_DRAIN_S seconds (default 1) first
 #   remove-output  on SIGINT, delete the output file, then exit 0
 #   empty-output   on SIGINT, empty the output file, then exit 0
+#   replace-output on SIGINT, write the output file anew with FAKE_BPFTRACE_EXIT
+#                  alone, then exit 0
 # Every invocation is recorded in FAKE_LOG with the fake's pid.
 
 PATH=/usr/bin:/bin
@@ -58,6 +75,7 @@ if [ "${1:-}" = "--version" ]; then
 fi
 
 program=""
+script_path=""
 inline=no
 target=""
 while [ $# -gt 0 ]; do
@@ -76,6 +94,7 @@ while [ $# -gt 0 ]; do
   *)
     if [ -z "$program" ] && [ -f "$1" ]; then
       program=$(cat "$1")
+      script_path=$1
     elif [ "$inline" = yes ]; then
       target=$1
     fi
@@ -91,6 +110,10 @@ eperm)
   ;;
 unsupported)
   echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
+  exit 1
+  ;;
+no-sched-switch)
+  echo "stdin:5:1-30: ERROR: tracepoint not found: sched:sched_switch" >&2
   exit 1
   ;;
 broken)
@@ -131,9 +154,12 @@ if [ "$mode" = "slow-attach" ]; then
   sleep "${FAKE_ATTACH_S:-3}"
 fi
 
-# The capture window: its label and the process it watches.
+# The capture window: its label, the process it watches and the threads that
+# arm and stop it.
 label=$(printf '%s\n' "$program" | sed -n 's/.*printf("\([A-Za-z0-9_-]*\) armed %d %d.*/\1/p' | head -n 1)
 watched=$(printf '%s\n' "$program" | sed -n 's/.*if (pid == \([0-9][0-9]*\) && (args->prev_state.*/\1/p' | head -n 1)
+arm_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-arm").*/\1/p' | head -n 1)
+stop_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-stop").*/\1/p' | head -n 1)
 
 if [ -z "$label" ] || [ -z "$watched" ]; then
   # bpftrace's exit() on the target's sched_process_exit: a launch ends with
@@ -153,8 +179,15 @@ fi
 tail -s 0.1 -f /dev/null --pid=$$ &
 tail -s 0.1 -f /dev/null --pid=$$ &
 
-# The thread of the watched process named $1, other than its main thread
-# when $2 is "worker"; empty when there is none.
+# True when thread $1 of the watched process is named $2.
+thread_is_named() {
+  name=""
+  read -r name 2>/dev/null <"/proc/$watched/task/$1/comm"
+  [ "$name" = "$2" ]
+}
+
+# The thread of the watched process named $1, other than its main thread when
+# $2 is "worker"; empty when there is none. For programs that bind no ids.
 thread_named() {
   for task in /proc/"$watched"/task/*; do
     tid=${task##*/}
@@ -170,6 +203,29 @@ thread_named() {
   done
 }
 
+# The thread that arms ($1 arm) or stops ($1 stop) the window now; empty when
+# none does yet.
+window_thread() {
+  if [ "$1" = arm ]; then
+    if [ -n "$arm_tid" ]; then
+      thread_is_named "$arm_tid" vernier-arm && printf '%s\n' "$arm_tid"
+    else
+      thread_named vernier-arm worker
+    fi
+  elif [ -n "$stop_tid" ]; then
+    thread_is_named "$stop_tid" vernier-stop && printf '%s\n' "$stop_tid"
+  else
+    thread_named vernier-stop any
+  fi
+}
+early_stop_tid=${stop_tid:-$watched}
+
+# The stop line as the program prints it: with a count when its printf has one.
+stop_count=""
+if printf '%s\n' "$program" | grep -q 'disarmed %d %d %d'; then
+  stop_count=" 0"
+fi
+
 # The output file, for the modes that remove or empty it: only a regular
 # file, never a device such as a probe's /dev/null.
 output=$(readlink /proc/$$/fd/1)
@@ -177,11 +233,24 @@ if [ ! -f "$output" ]; then
   output=""
 fi
 window=${FAKE_WINDOW:-}
+if [ -n "${FAKE_WINDOW_FOR:-}" ]; then
+  case "$script_path" in
+  *"$FAKE_WINDOW_FOR"*) ;;
+  *) window="" ;;
+  esac
+fi
 on_interrupt() {
   case "$window" in
   remove-output) [ -n "$output" ] && rm -f "$output" ;;
   empty-output) [ -n "$output" ] && : >"$output" ;;
-  *) printf '\n\n\n' ;;
+  replace-output) [ -n "$output" ] && printf '%s\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}" >"$output" ;;
+  marker-only) printf '\n\n\n' ;;
+  *)
+    if [ "$window" = slow-drain ]; then
+      sleep "${FAKE_DRAIN_S:-1}"
+    fi
+    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+    ;;
   esac
   exit 0
 }
@@ -198,24 +267,33 @@ armed=no
 disarmed=no
 while :; do
   if [ "$armed" = no ] && [ "$window" != no-arm ]; then
-    tid=$(thread_named vernier-arm worker)
+    tid=$(window_thread arm)
     if [ -n "$tid" ]; then
-      if [ "$window" = wrong-arm ]; then
-        tid=$watched
-      fi
-      printf '%s armed %s %s\n' "$label" "$watched" "$tid"
+      pid_shown=$watched
+      tid_shown=$tid
+      case "$window" in
+      wrong-arm) tid_shown=$watched ;;
+      wrong-pid) pid_shown=$((watched + 1)) ;;
+      disarm-first) printf '%s disarmed %s %s%s\n' "$label" "$watched" "$early_stop_tid" "$stop_count" ;;
+      esac
+      printf '%s armed %s %s\n' "$label" "$pid_shown" "$tid_shown"
       armed=yes
       if [ "$window" = end-after-arm ]; then
         exit 0
       fi
+      if [ "$window" = early-disarm ]; then
+        printf '%s disarmed %s %s%s\n' "$label" "$watched" "$early_stop_tid" "$stop_count"
+        disarmed=yes
+      fi
     fi
   elif [ "$armed" = yes ] && [ "$disarmed" = no ] && [ "$window" != no-disarm ]; then
-    tid=$(thread_named vernier-stop any)
+    tid=$(window_thread stop)
     if [ -n "$tid" ]; then
+      tid_shown=$tid
       if [ "$window" = wrong-disarm ]; then
-        tid=$((tid + 1))
+        tid_shown=$((tid + 1))
       fi
-      printf '%s disarmed %s %s %s\n' "$label" "$watched" "$tid" "${FAKE_BPFTRACE_RECORDED:-0}"
+      printf '%s disarmed %s %s%s\n' "$label" "$watched" "$tid_shown" "$stop_count"
       disarmed=yes
     fi
   fi
