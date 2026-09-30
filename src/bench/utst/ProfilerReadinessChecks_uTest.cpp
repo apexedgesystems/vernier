@@ -733,6 +733,19 @@ std::string offCpuFixture(const std::string& name) {
   return std::string{VERNIER_READINESS_FIXTURE_DIR} + "/" + name;
 }
 
+/** @brief @p text as a regular expression that matches it literally. */
+std::string literal(const std::string& text) {
+  static const std::regex SPECIAL(R"([.^$|()\[\]{}*+?\\])");
+  return std::regex_replace(text, SPECIAL, R"(\$&)");
+}
+
+/** @brief What the check says of its arm witness, the arm thread's id left open. */
+std::string witnessed() {
+  return literal(", and a copy with unbuffered output armed on this process's arm thread (pid " +
+                 std::to_string(::getpid()) + ", thread ") +
+         "[0-9]+\\)";
+}
+
 } // namespace
 
 /**
@@ -743,10 +756,14 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
   installSudoAndKill();
   const ReadinessResult R = check("offcpu", ctx({{"PERF_BPF_SUDO", "1"}}));
   EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_EQ(R.report.message, "the off-CPU script, with a 5 s self-exit added, stayed running for "
-                              "the 1500 ms start grace as the current user and stopped on SIGINT "
-                              "(probe with " +
-                                  bpftrace_ + "); not checked: the run's capture");
+  EXPECT_TRUE(std::regex_match(
+      R.report.message,
+      std::regex(literal("the off-CPU script, with a 5 s self-exit added, stayed running for the "
+                         "1500 ms start grace as the current user and stopped on SIGINT (probe "
+                         "with " +
+                         bpftrace_ + ")") +
+                 witnessed() + literal("; not checked: the run's capture"))))
+      << R.report.message;
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
   ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
@@ -754,6 +771,11 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
       << CALLS.front().program;
   EXPECT_EQ(CALLS.front().target, ::getpid());
   EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+  const std::vector<InlineCall> WITNESS = inlineCalls(dir_, "bpftrace -B none");
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_EQ(WITNESS.front().program, CALLS.front().program);
+  EXPECT_EQ(WITNESS.front().target, ::getpid());
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
   const auto PLAN = std::dynamic_pointer_cast<const OffCpuPlan>(R.plan);
   ASSERT_NE(PLAN, nullptr);
   EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
@@ -762,19 +784,24 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
 /**
  * @test offcpu with BENCH_SUDO goes through sudo. sudo refusing the probe, a
  * command the run never runs, is unverified and names both commands; the
- * request stays runnable.
+ * request stays runnable, and the check does not try its second copy, which
+ * the grant would refuse alike.
  */
 TEST_F(BpfCheckTest, OffCpuSudoRoute) {
   installSudoAndKill();
   const ReadinessResult OK = check("offcpu", ctx({{"BENCH_SUDO", "yes"}}));
   EXPECT_EQ(OK.report.status, EnvReport::Status::Ok) << OK.report.message;
-  EXPECT_EQ(OK.report.message,
-            "the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start "
-            "grace through sudo -n (BENCH_SUDO=yes) and stopped on SIGINT through sudo -n kill "
-            "(probe with " +
-                bpftrace_ + "); not checked: the grant for the run's own command (" + bpftrace_ +
-                " -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through "
-                "sudo, and the run's capture");
+  EXPECT_TRUE(std::regex_match(
+      OK.report.message,
+      std::regex(literal("the off-CPU script, with a 5 s self-exit added, stayed running for the "
+                         "1500 ms start grace through sudo -n (BENCH_SUDO=yes) and stopped on "
+                         "SIGINT through sudo -n kill (probe with " +
+                         bpftrace_ + ")") +
+                 witnessed() +
+                 literal("; not checked: the grant for the run's own command (" + bpftrace_ +
+                         " -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL "
+                         "through sudo, and the run's capture"))))
+      << OK.report.message;
   EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_).size(), 1U) << dir_.log();
   const ReadinessResult REFUSED =
       check("offcpu", ctx({{"BENCH_SUDO", "yes"}, {"FAKE_SUDO_DENY", "-e"}}));
@@ -786,6 +813,10 @@ TEST_F(BpfCheckTest, OffCpuSudoRoute) {
                 ": sudo: a password is required; the run executes " + bpftrace_ +
                 " -B none -e <the off-CPU script> <benchmark pid> instead, which only the run can "
                 "try");
+  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_ + " -B none").size(), 1U)
+      << "the check's copy runs for the first check only, not after the grant refused the "
+         "probe\n"
+      << dir_.log();
 }
 
 /**
@@ -805,13 +836,18 @@ TEST_F(BpfCheckTest, OffCpuProbeIsTheRunsScriptWithASelfExit) {
             std::string::npos)
       << ERR;
   const std::vector<InlineCall> PROBES = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
-  const std::vector<InlineCall> RUNS = inlineCalls(dir_, "sudo -n -- " + bpftrace_ + " -B none");
+  const std::vector<InlineCall> LAUNCHES =
+      inlineCalls(dir_, "sudo -n -- " + bpftrace_ + " -B none");
   ASSERT_EQ(PROBES.size(), 1U) << dir_.log();
-  ASSERT_EQ(RUNS.size(), 1U) << dir_.log();
-  EXPECT_EQ(PROBES[0].program, RUNS[0].program + "\ninterval:s:5 { exit(); }");
-  EXPECT_EQ(RUNS[0].program.find("interval"), std::string::npos) << RUNS[0].program;
+  ASSERT_EQ(LAUNCHES.size(), 2U) << "the check's copy and the run\n" << dir_.log();
+  const InlineCall& WITNESS = LAUNCHES[0];
+  const InlineCall& RUN = LAUNCHES[1];
+  EXPECT_EQ(WITNESS.program, PROBES[0].program);
+  EXPECT_EQ(PROBES[0].program, RUN.program + "\ninterval:s:5 { exit(); }");
+  EXPECT_EQ(RUN.program.find("interval"), std::string::npos) << RUN.program;
   EXPECT_EQ(PROBES[0].target, ::getpid());
-  EXPECT_EQ(RUNS[0].target, ::getpid());
+  EXPECT_EQ(WITNESS.target, ::getpid());
+  EXPECT_EQ(RUN.target, ::getpid());
 }
 
 /**
@@ -968,7 +1004,7 @@ TEST_F(BpfCheckTest, OffCpuExitProbeMatchesTheMainThreadOnly) {
   ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
   (void)runPlanned("offcpu", R, "OffCpu.ExitProbe");
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace -B none");
-  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  ASSERT_EQ(CALLS.size(), 2U) << "the check's copy and the run\n" << dir_.log();
   const InlineCall& RUN = CALLS.back();
   EXPECT_EQ(RUN.target, ::getpid());
   const std::regex EXIT_PROBE("tracepoint:sched:sched_process_exit /([^/]*)/");
@@ -993,7 +1029,7 @@ TEST_F(BpfCheckTest, OffCpuCountsSleepingSwitchOutsOnly) {
   ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
   (void)runPlanned("offcpu", R, "OffCpu.SleepsOnly");
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace -B none");
-  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  ASSERT_EQ(CALLS.size(), 2U) << "the check's copy and the run\n" << dir_.log();
   const std::string& PROGRAM = CALLS.back().program;
   std::size_t uses = 0;
   for (std::size_t at = PROGRAM.find("prev_state"); at != std::string::npos;
@@ -1442,7 +1478,7 @@ TEST_F(OffCpuCaptureTest, CallingThreadKeepsItsName) {
 TEST_F(OffCpuCaptureTest, ArmsOnAWorkerThreadAndDisarmsAtTheStop) {
   (void)capture(decided(), "OffCpu.Script");
   const std::vector<InlineCall> RUNS = inlineCalls(dir_, "bpftrace -B none");
-  ASSERT_EQ(RUNS.size(), 1U) << dir_.log();
+  ASSERT_EQ(RUNS.size(), 2U) << "the check's copy and the run\n" << dir_.log();
   const std::string& P = RUNS.back().program;
   const auto AT = [&P](const std::string& text) { return P.find(text); };
   ASSERT_NE(AT("if (pid == $1 && (args->prev_state == 1 || args->prev_state == 2)) {"),
@@ -1471,6 +1507,115 @@ TEST_F(OffCpuCaptureTest, ArmsOnAWorkerThreadAndDisarmsAtTheStop) {
     ++starts;
   }
   EXPECT_EQ(starts, 5U) << "no start is read or written outside the armed window\n" << P;
+}
+
+/**
+ * @test The check sees this process through the script itself: a copy with
+ * unbuffered output arms on a thread of this process, not its main thread,
+ * and the ready message gives both ids; the copy does not outlive the check.
+ */
+TEST_F(OffCpuCaptureTest, CheckSeesThisProcessThroughTheArmProbe) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  std::smatch ids;
+  ASSERT_TRUE(std::regex_search(R.report.message, ids,
+                                std::regex("armed on this process's arm thread \\(pid ([0-9]+), "
+                                           "thread ([0-9]+)\\)")))
+      << R.report.message;
+  EXPECT_EQ(std::stol(ids[1].str()), ::getpid());
+  EXPECT_NE(std::stol(ids[2].str()), ::getpid()) << "the arm thread is not the main thread";
+  const std::vector<InlineCall> WITNESS = inlineCalls(dir_, "bpftrace -B none");
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_NE(WITNESS.front().program.find("printf(\"offcpu armed %d %d\\n\", pid, tid);"),
+            std::string::npos)
+      << WITNESS.front().program;
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
+}
+
+/**
+ * @test Without the arm acknowledgement the check refuses the request,
+ * whatever the attach probe showed; in a PID namespace other than the
+ * initial one it names the namespace. The test reads which before checking.
+ * The fake's copy ignores its own self-exit, so the check's bound, and not
+ * the fake's clock, ends the wait.
+ */
+TEST_F(OffCpuCaptureTest, CheckWithoutAnArmAckIsRefused) {
+  const bool INITIAL = ownPidNamespaceLink() == "pid:[4026531836]";
+  const ReadinessResult R =
+      check("offcpu", ctx({{"FAKE_OFFCPU", "no-arm"}, {"FAKE_BPFTRACE_MODE", "ignore-exit"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  const std::string DETAIL = "the off-CPU script ran as the current user but did not acknowledge "
+                             "its arm probe within 4000 ms";
+  if (INITIAL) {
+    EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+    EXPECT_EQ(R.report.message, "unusable: " + DETAIL);
+    EXPECT_EQ(R.report.hint, "bpftrace did not see this process's arm thread go to sleep; run the "
+                             "off-CPU script by hand with " +
+                                 bpftrace_ + " to see why.");
+  } else {
+    EXPECT_EQ(R.cause, ReadinessCause::UNSUPPORTED);
+    EXPECT_EQ(R.report.message, "unsupported: " + DETAIL + "; " +
+                                    vernier::bench::offCpuPidNamespaceNote(ownPidNamespaceLink()));
+    EXPECT_EQ(R.report.hint,
+              "Run the benchmark on the host, or in a container started with --pid=host.");
+  }
+  const std::vector<InlineCall> WITNESS = inlineCalls(dir_, "bpftrace -B none");
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
+}
+
+/** @test An arm acknowledged for another thread refuses the request too, naming both. */
+TEST_F(OffCpuCaptureTest, CheckAckForAnotherThreadIsRefused) {
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_OFFCPU", "wrong-arm"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  const std::string PID = std::to_string(::getpid());
+  EXPECT_NE(R.report.message.find("the off-CPU script armed for pid " + PID + " thread " + PID +
+                                  ", not for this process's arm thread (pid " + PID + " thread "),
+            std::string::npos)
+      << R.report.message;
+}
+
+/**
+ * @test An arm acknowledged for the arm thread's id under another pid is
+ * refused as well: the thread id alone does not identify this process.
+ */
+TEST_F(OffCpuCaptureTest, CheckAckForAnotherProcessIsRefused) {
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_OFFCPU", "foreign-arm"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  std::smatch ids;
+  ASSERT_TRUE(std::regex_search(
+      R.report.message, ids,
+      std::regex("the off-CPU script armed for pid 1 thread ([0-9]+), not for this process's arm "
+                 "thread \\(pid " +
+                 std::to_string(::getpid()) + " thread ([0-9]+)\\)")))
+      << R.report.message;
+  EXPECT_EQ(ids[1].str(), ids[2].str()) << "the acknowledged thread is the arm thread";
+}
+
+/**
+ * @test A grant that allows the probe's command but refuses the copy's
+ * `-B none` form leaves the request unverified, as a refusal of the probe
+ * does, naming the refused command: the run's own command decides.
+ */
+TEST_F(OffCpuCaptureTest, CheckCopyRefusedByTheGrantIsUnverified) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "-B none"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  EXPECT_TRUE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "unverified: sudo -n refused the probe command " + bpftrace_ +
+                " -B none -e <the off-CPU script with a 5 s self-exit> " +
+                std::to_string(::getpid()) + ": sudo: a password is required; the run executes " +
+                bpftrace_ +
+                " -B none -e <the off-CPU script> <benchmark pid> instead, which only the run can "
+                "try");
+  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_).size(), 1U) << dir_.log();
+  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_ + " -B none").size(), 1U) << dir_.log();
+  EXPECT_TRUE(inlineCalls(dir_, "bpftrace -B none").empty()) << "sudo ran the refused copy";
 }
 
 /** @test The report names a PID namespace other than the initial one, and nothing otherwise. */

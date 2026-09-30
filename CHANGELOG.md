@@ -663,6 +663,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the tracer runs as `bpftrace -B none -e ...`, which a sudoers grant that
   pins arguments must allow, and the thread names `vernier-arm`,
   `vernier-wait` and `vernier-stop` are reserved.
+- **offcpu refuses a benchmark whose threads bpftrace cannot see** -- in a
+  PID namespace of its own, such as a container's, bpftrace numbers the
+  benchmark's threads differently, and the doctor still said `[OK]` while the
+  capture missed every worker. The check now runs the script once more and
+  requires its acknowledgement from a thread of the benchmark, and without it
+  refuses the request, naming the namespace. Run such a benchmark on the host
+  or in a container started with `--pid=host`.
 
 ## v1.0.3 - 2026-06-28
 

@@ -38,8 +38,14 @@
  * whose stop is refused ends by that self-exit, and the check waits for it
  * and reaps it. The added interval makes the probe a command the run never
  * runs, so a grant's refusal of it is unverified and the run's start decides.
- * The profiler launches and stops with exactly the tools and route it
- * verified (OffCpuPlan).
+ * The check then runs a second copy with unbuffered output while a thread of
+ * this process named vernier-arm sleeps, and requires its arm
+ * acknowledgement with this process's pid and that thread's id: without it
+ * the request is refused, naming a PID namespace other than the initial one.
+ * A grant's refusal of the second copy is unverified, as for the first, and
+ * the second is not tried when the grant refused the first. The profiler
+ * launches and stops with exactly the tools and route it verified
+ * (OffCpuPlan).
  *
  * Output: `<testName>.offcpu/offcpu.txt` (the tracer's acknowledgements and
  * its map dump) and `offcpu.err.txt` (bpftrace's messages). Each capture ends
@@ -64,9 +70,9 @@
  *  - Host PID view only. bpftrace in a PID namespace of its own does not
  *    number this process's threads as the process does (0.20 reports the
  *    host's ids there, 0.23.0 to 0.24.1 read pid and tid swapped), so the
- *    tracer never arms and the run reports that, naming the namespace. Run
- *    such a benchmark on the host, or in a container started with
- *    --pid=host.
+ *    tracer never arms: the check refuses the request, naming the namespace,
+ *    and so would the run. Run such a benchmark on the host, or in a
+ *    container started with --pid=host.
  *  - The sched tracepoints need tracefs (`/sys/kernel/tracing`). The default
  *    dev container does not mount it, so there the check reports the
  *    tracepoint as unsupported.

@@ -462,6 +462,112 @@ std::string offCpuPidNamespaceNote(const std::string& namespaceLink) {
          INITIAL_PID_NAMESPACE + "), and offcpu traces only from the host's PID view";
 }
 
+namespace {
+
+#ifdef __linux__
+/**
+ * @brief How long the check waits for its copy of the script to arm: less
+ * than the copy's self-exit, which counts from its attach and would
+ * otherwise end it first on a tracer that attaches at once.
+ */
+constexpr int CHECK_ARM_WAIT_MS = PROBE_SELF_EXIT_S * 1000 - 1000;
+
+/**
+ * @brief The check's witness: a copy of the probe script with unbuffered
+ * output, through @p route, while a thread of this process named for it
+ * sleeps. The context is a snapshot of this process, so the thread belongs
+ * to the script's target, the context's pid.
+ * @return The Error that stops the request, a Warning the check reports, or
+ *         nullopt with @p seen saying what the tracer acknowledged.
+ */
+std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const ReadinessContext& ctx,
+                                          const std::string& scratchDir,
+                                          const std::string& runCommand, std::string& seen) {
+  const long PID = static_cast<long>(ctx.self());
+  std::vector<std::string> argv = route.command();
+  const std::vector<std::string> ARGS = {"-B", "none", "-e", probeScript(), std::to_string(PID)};
+  argv.insert(argv.end(), ARGS.begin(), ARGS.end());
+  const std::string COMMAND = route.bpftrace + " -B none -e <the off-CPU script with a " +
+                              std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " +
+                              std::to_string(PID);
+  const std::string OUT = scratchDir + "/witness.out";
+  const std::string ERR = scratchDir + "/witness.err";
+  OwnedHelper tracer(
+      route.stopPolicy(2000, 1000, 1000, std::make_shared<const ReadinessContext>(ctx)));
+  const auto STARTED_AT = std::chrono::steady_clock::now();
+  const HelperStart START = tracer.start(argv, OUT, ERR, 0, &ctx);
+  if (!START.started) {
+    return readinessResult(ReadinessCause::UNUSABLE, std::string{WHAT} + ": " + START.errorTail,
+                           "Check that " + argv.front() + " can be executed.");
+  }
+  OutputLines output(OUT);
+  AckWait armed;
+  long armTid = 0;
+  std::string threadError;
+  {
+    const ThreadNameScope WAITING(WAIT_THREAD_NAME);
+    try {
+      const ArmThread ARM;
+      armed = waitForAck(output, tracer, ARMED_LINE, false, CHECK_ARM_WAIT_MS);
+      armTid = ARM.id();
+    } catch (const std::system_error& error) {
+      threadError = error.what();
+    }
+  }
+  const HelperStopResult STOP = tracer.stop();
+  if (STOP.stillAlive) {
+    // The stop could not end it; its own self-exit will, as for the attach probe.
+    const auto UNTIL =
+        STARTED_AT + std::chrono::milliseconds(PROBE_SELF_EXIT_S * 1000 +
+                                               bpftrace_tool::PROBE_SELF_EXIT_SLACK_MS);
+    while (tracer.running() && std::chrono::steady_clock::now() < UNTIL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+  }
+  if (!threadError.empty()) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           std::string{WHAT} +
+                               ": the thread that arms the tracer could not start: " + threadError,
+                           "");
+  }
+  if (armed.state == AckState::ENDED) {
+    std::string text = readFile(ERR).text;
+    if (outputTail(text).empty()) {
+      text = "it ended with " + statusText(STOP.waitStatus) + " and printed nothing on stderr";
+    }
+    return bpftrace_tool::classifyAttachFailure(route, WHAT, COMMAND, text, ctx, runCommand);
+  }
+  if (armed.state == AckState::TIMED_OUT) {
+    return notSeen(std::string{WHAT} + " ran " + route.describe() +
+                       " but did not acknowledge its arm probe within " +
+                       std::to_string(CHECK_ARM_WAIT_MS) + " ms",
+                   "bpftrace did not see this process's arm thread go to sleep; run the "
+                   "off-CPU script by hand with " +
+                       route.bpftrace + " to see why.");
+  }
+  if (armed.ack.pid != PID || armed.ack.tid != armTid) {
+    return notSeen(std::string{WHAT} + " armed for pid " + std::to_string(armed.ack.pid) +
+                       " thread " + std::to_string(armed.ack.tid) +
+                       ", not for this process's arm thread (pid " + std::to_string(PID) +
+                       " thread " + std::to_string(armTid) + ")",
+                   "bpftrace numbers this process's threads differently from the process "
+                   "itself; offcpu traces only from the host's PID view.");
+  }
+  if (tracer.running()) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           "the check's copy of the script, tracer " +
+                               std::to_string(tracer.pid()) +
+                               ", still runs past its stop and its self-exit",
+                           "Stop it by hand, then check the bpftrace build.");
+  }
+  seen = "a copy with unbuffered output armed on this process's arm thread (pid " +
+         std::to_string(PID) + ", thread " + std::to_string(armTid) + ")";
+  return std::nullopt;
+}
+#endif
+
+} // namespace
+
 /* ----------------------------- Readiness ----------------------------- */
 
 ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
@@ -497,11 +603,28 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   if (verdict && verdict->report.status == EnvReport::Status::Error) {
     return *verdict;
   }
+  // The capture's own evidence that bpftrace sees this process's threads
+  // under the ids the process knows: a copy of the script arms on a thread
+  // of this process. Not tried when the grant refused the probe, which it
+  // would refuse alike.
+  std::string seen;
+  if (!verdict || verdict->cause != ReadinessCause::UNVERIFIED) {
+    auto witness = witnessArm(plan->route, ctx, SCRATCH.path(), RUN_COMMAND, seen);
+    if (witness && witness->report.status == EnvReport::Status::Error) {
+      return *witness;
+    }
+    if (witness && !verdict) {
+      verdict = std::move(witness);
+    }
+  }
   std::string message =
       std::string{WHAT} + ", with a " + std::to_string(PROBE_SELF_EXIT_S) +
       " s self-exit added, stayed running for the " + std::to_string(START_GRACE_MS) +
       " ms start grace " + plan->route.describe() + " and stopped on SIGINT" +
       (SUDO ? " through sudo -n kill" : "") + " (probe with " + plan->route.bpftrace + ")";
+  if (!seen.empty()) {
+    message += ", and " + seen;
+  }
   if (plan->route.privilege.route == PrivilegeRoute::ALREADY_ROOT && plan->route.privilege.optIn) {
     message += "; running as root; BENCH_SUDO not needed";
   }

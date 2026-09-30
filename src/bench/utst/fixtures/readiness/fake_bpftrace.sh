@@ -132,6 +132,7 @@ fi
 # FAKE_OFFCPU changes one step:
 #   no-arm         never acknowledges the arm
 #   wrong-arm      acknowledges it for the main thread, not the arm thread
+#   foreign-arm    acknowledges it for the arm thread with another pid (1)
 #   end-after-arm  prints its maps and exits 0 right after the arm
 #   no-disarm      never acknowledges the stop
 #   remove-output  removes its output file once it has printed its maps
@@ -191,10 +192,13 @@ if [ -n "$label" ]; then
       tid=${task##*/}
       if [ "$state" = arming ] && [ "$name" = vernier-arm ] && [ "$tid" != "$target" ] &&
         [ "$window" != no-arm ]; then
+        ack_pid=$target
         if [ "$window" = wrong-arm ]; then
           tid=$target
+        elif [ "$window" = foreign-arm ]; then
+          ack_pid=1
         fi
-        printf '%s armed %s %s\n' "$label" "$target" "$tid"
+        printf '%s armed %s %s\n' "$label" "$ack_pid" "$tid"
         state=armed
         if [ "$window" = end-after-arm ]; then
           finish
