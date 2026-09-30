@@ -370,6 +370,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helgrind fails the analysis stage, naming the reader. **Action needed:** run
   these profiles through `bench run --profile <tool>` or the printed valgrind
   command.
+- **A valgrind profile writes into an output folder holding `%`** --
+  valgrind reads `%p`, `%q{VAR}` and `%%` in the values of `--log-file=`,
+  `--massif-out-file=` and `--callgrind-out-file=`, so with
+  `--profile-output-dir 'out%p'` it wrote to a folder named after its process
+  id, which did not exist, or refused the option, and the run failed.
+  `bench run` doubles each `%` of the folder in those options, as it does in
+  compute-sanitizer's `--log-file`, and the output lands in the folder as
+  named.
 - **`bench run --profile compute-sanitizer` fails when the tool reports
   errors** -- the tool's default exit status is 0, so a benchmark whose kernels
   it reported as faulty passed, and an output folder holding `%` broke its log

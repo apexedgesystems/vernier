@@ -47,12 +47,16 @@ route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	nsight	ncu	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 #
-# escape   <--profile>  <--profile-output-dir>  <the --log-file value the route writes>
-# (compute-sanitizer expands %p, %q{VAR} and %% in the value and refuses any
-# other '%': each '%' of the folder is doubled; the report lands in the folder
-# as named)
-escape	compute-sanitizer	out%p	out%%p/my_test.compute-sanitizer/sanitizer.log
-escape	compute-sanitizer	a%%b%x	a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
+# escape   <--profile>  <--profile-output-dir>  <output option>  <its value in the route>
+# (valgrind's output options and compute-sanitizer's --log-file expand %p,
+# %q{VAR} and %% in the value and refuse any other '%': each '%' of the
+# folder is doubled; the output lands in the folder as named)
+escape	compute-sanitizer	out%p	--log-file	out%%p/my_test.compute-sanitizer/sanitizer.log
+escape	compute-sanitizer	a%%b%x	--log-file	a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
+escape	callgrind	out%p	--callgrind-out-file	out%%p/my_test.callgrind/callgrind.out
+escape	massif	out%q{HOME}	--massif-out-file	out%%q{HOME}/my_test.massif/massif.out
+escape	memcheck	a%%b%x	--log-file	a%%%%b%%x/my_test.memcheck/memcheck.log
+escape	helgrind	out%p	--log-file	out%%p/my_test.helgrind/helgrind.log
 #
 # unwrapped   <--profile>  (the benchmark runs itself; --profile-args reach it untouched)
 unwrapped	perf

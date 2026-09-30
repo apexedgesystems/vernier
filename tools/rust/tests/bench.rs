@@ -1731,7 +1731,10 @@ fn run_reports_the_benchmark_exit_status() {
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
 /// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
 /// and `callgrind_annotate` one line naming its profile (`FAKE_ANNOTATE=fail`
-/// fails instead). compute-sanitizer is `SANITIZER_STAND_IN`.
+/// fails instead). valgrind reads its output option's value as valgrind does
+/// (valgrind 3.18.1, recorded runs): `%%` is one `%`, `%p` its process id,
+/// and any other `%` is refused with status 1. compute-sanitizer is
+/// `SANITIZER_STAND_IN`.
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
@@ -1813,6 +1816,23 @@ for a in "$@"; do
   esac
   prev="$a"
 done
+if [ "{name}" = valgrind ] && [ -n "$out" ]; then
+  rest="$out"
+  out=""
+  while [ -n "$rest" ]; do
+    case "$rest" in
+      *%*)
+        out="$out${{rest%%\%*}}"
+        rest="${{rest#*%}}"
+        case "$rest" in
+          %*) out="$out%"; rest="${{rest#%}}" ;;
+          p*) out="$out$$"; rest="${{rest#p}}" ;;
+          *) echo "==$$== Expected 'p' or 'q' or '%' after '%'" >&2; exit 1 ;;
+        esac ;;
+      *) out="$out$rest"; rest="" ;;
+    esac
+  done
+fi
 if [ -n "$out" ]; then
   if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
 fi
@@ -2681,6 +2701,42 @@ fn run_compute_sanitizer_log_path_with_percent() {
         ),
         "{stdout}"
     );
+}
+
+/// @test An output folder holding '%' reaches valgrind with each '%' doubled
+/// in its output option, for each valgrind route, and the output lands in
+/// the folder as named.
+#[test]
+fn run_valgrind_output_folder_with_percent() {
+    for (tool, option, file) in [
+        ("callgrind", "--callgrind-out-file=", "callgrind.out"),
+        ("massif", "--massif-out-file=", "massif.out"),
+        ("memcheck", "--log-file=", "memcheck.log"),
+        ("helgrind", "--log-file=", "helgrind.log"),
+    ] {
+        for (folder, spelled) in [("out%p", "out%%p"), ("a%x", "a%%x")] {
+            let rig = route_rig(&["valgrind"]);
+            let (code, stdout, err, log) = run_rig_env(
+                &rig,
+                &["--profile", tool, "--profile-output-dir", folder],
+                &[],
+            );
+            assert_eq!(code, 0, "{tool} {folder}: {err}");
+            assert!(
+                log.contains(&format!("{option}{spelled}/fake_bench.{tool}/{file} ")),
+                "{tool} {folder}: {log}"
+            );
+            let output = format!("{folder}/fake_bench.{tool}/{file}");
+            assert!(
+                rig.dir.path().join(&output).is_file(),
+                "{tool} {folder}: {stdout}{err}"
+            );
+            assert!(
+                stdout.contains(&format!("[bench] {tool} wrote {output} (")),
+                "{tool} {folder}: {stdout}"
+            );
+        }
+    }
 }
 
 /* ----------------------------- Doctor ----------------------------- */

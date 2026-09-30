@@ -641,6 +641,9 @@ fn route_for(
         .to_string();
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     let d = dir.display().to_string();
+    // The folder as valgrind's and compute-sanitizer's output options read
+    // it: each '%' doubled.
+    let escaped = escape_percent(&d);
     let ncu = |d: &str| -> Vec<String> {
         vec![
             "-o".into(),
@@ -657,7 +660,7 @@ fn route_for(
             "valgrind",
             vec![
                 "--tool=callgrind".into(),
-                format!("--callgrind-out-file={d}/callgrind.out"),
+                format!("--callgrind-out-file={escaped}/callgrind.out"),
             ],
             &[&["callgrind.out"]],
         ),
@@ -676,7 +679,7 @@ fn route_for(
             if has("stacks") {
                 a.push("--stacks=yes".into());
             }
-            a.push(format!("--massif-out-file={d}/massif.out"));
+            a.push(format!("--massif-out-file={escaped}/massif.out"));
             ("valgrind", a, &[&["massif.out"]])
         }
         "memcheck" => {
@@ -688,7 +691,7 @@ fn route_for(
             if has("track-origins") {
                 a.push("--track-origins=yes".into());
             }
-            a.push(format!("--log-file={d}/memcheck.log"));
+            a.push(format!("--log-file={escaped}/memcheck.log"));
             ("valgrind", a, &[&["memcheck.log"]])
         }
         "helgrind" => (
@@ -700,7 +703,7 @@ fn route_for(
                     "--tool=helgrind"
                 }
                 .into(),
-                format!("--log-file={d}/helgrind.log"),
+                format!("--log-file={escaped}/helgrind.log"),
             ],
             &[&["helgrind.log"]],
         ),
@@ -725,7 +728,7 @@ fn route_for(
                     "--error-exitcode".into(),
                     TOOL_FINDINGS_EXIT_CODE.to_string(),
                     "--log-file".into(),
-                    format!("{}/sanitizer.log", escape_percent(&d)),
+                    format!("{escaped}/sanitizer.log"),
                 ],
                 &[&["sanitizer.log"]],
             )
@@ -992,9 +995,10 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// compute-sanitizer's `--log-file` value for @p path: the tool expands `%p`,
-/// `%q{VAR}` and `%%` in it and refuses any other `%`, so each `%` of the
-/// path is doubled.
+/// @p path as an output option of valgrind (`--log-file=`,
+/// `--massif-out-file=`, `--callgrind-out-file=`) or compute-sanitizer
+/// (`--log-file`) must spell it: both expand `%p`, `%q{VAR}` and `%%` in the
+/// value and refuse any other `%`, so each `%` of the path is doubled.
 fn escape_percent(path: &str) -> String {
     path.replace('%', "%%")
 }
@@ -1429,14 +1433,24 @@ mod tests {
                 "{row:?}: {text}"
             );
         }
-        for row in table_rows("escape") {
+        let escapes = table_rows("escape");
+        assert!(escapes.len() >= 6, "the table lost its escape rows");
+        for row in escapes {
             let tool = canonical_backend(&row[1]);
             let route = route_for(tool, None, bin, Some(Path::new(&row[2])))
                 .unwrap_or_else(|e| panic!("{row:?} refused: {e}"))
                 .unwrap_or_else(|| panic!("{row:?} has no route"));
-            let at = route.args.iter().position(|a| a == "--log-file");
-            let value = at.and_then(|i| route.args.get(i + 1));
-            assert_eq!(value, Some(&row[3]), "{row:?}: {:?}", route.args);
+            // The option's value: the next argument, or after its '='.
+            let option = &row[3];
+            let joined = format!("{option}=");
+            let value = route.args.iter().enumerate().find_map(|(i, a)| {
+                if a == option {
+                    route.args.get(i + 1).cloned()
+                } else {
+                    a.strip_prefix(&joined).map(str::to_string)
+                }
+            });
+            assert_eq!(value.as_ref(), Some(&row[4]), "{row:?}: {:?}", route.args);
             assert_eq!(
                 route.dir,
                 Path::new(&row[2]).join(format!("my_test.{tool}")),
@@ -1473,8 +1487,7 @@ mod tests {
         }
     }
 
-    /// @test compute-sanitizer's --log-file value doubles every '%' and
-    /// nothing else.
+    /// @test An output option's value doubles every '%' and nothing else.
     #[test]
     fn escape_percent_doubles_each_percent() {
         assert_eq!(escape_percent("out/a.b"), "out/a.b");
