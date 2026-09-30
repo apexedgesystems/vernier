@@ -692,6 +692,16 @@ Three things check what this page shows, and all fail loudly:
   sudo chown -R "$(id -u):$(id -g)" build
   ```
 
+  A run that fails keeps the check's temporary directory,
+  `vernier-demo-gpu03-` followed by six random characters, with ncu's CSV and
+  the demo's output in it. Run as root, the check leaves it under `/tmp`,
+  owned by root, and the `chown` of `build` above does not reach it. Read it
+  as root, then remove it:
+
+  ```bash
+  sudo rm -rf /tmp/vernier-demo-gpu03-*
+  ```
+
 - `TestDemoTranspose`
   ([`03_SharedMemoryOpt_uTest.cu`](../gpu/utst/03_SharedMemoryOpt_uTest.cu)),
   under the `demo` label, holds the three kernels to a CPU transpose at seven

@@ -132,25 +132,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   names change, so CSVs captured from it before this release do not join with
   newer ones.
 - **Demo 03 (GPU shared memory) reports its tiles to the harness and checks
-  its answers** -- `BenchDemo_Gpu_03_SharedMemoryOpt` hands `withLaunchConfig()`
-  the static shared memory its two tiled transpose kernels declare (on the
-  reference rig the 1,024-thread block, not the tile, limits occupancy, so the
-  `occupancy` column does not change), names its padded kernel
-  `transposeSharedPadded`, and each of its three tests checks the transpose it
-  measured instead of a calls-per-second floor; unit tests registered with
-  `ctest` under the `demo` label hold the three kernels to a CPU transpose and
-  the declared bytes to the kernels, and a check under the `demo` and `ncu`
-  labels runs the demo under Nsight Compute, where its counters are readable,
-  and fails unless the conflicting tile's column reads take 32 wavefronts per
-  shared-load instruction and the padded tile's one. Its walkthrough,
-  `src/bench/demo/docs/12_SHARED_MEMORY_OPT.md`, is rewritten from a Release run
-  on the documented Jetson AGX Thor rig, reading that counter from a
-  hand-typed `ncu` command because `bench run --profile ncu` collects ncu's
-  default sections only; that run's CSV is committed at
-  `src/bench/demo/reference/thor/12_shared_memory_opt.csv`. The test
-  `SharedMemoryOpt.SharedConflictFree` is renamed
-  `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured from the demo
-  before this release does not join with newer ones.
+  its answers** -- each of its tests checks the transpose it measured, and a
+  check registered with `ctest` under the `demo` and `ncu` labels counts its
+  bank conflicts with Nsight Compute. Walkthrough 12 is rewritten from a Release
+  run on the documented Jetson AGX Thor rig, whose CSV is committed as its
+  reference. The test `SharedMemoryOpt.SharedConflictFree` is renamed
+  `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured before this
+  release does not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
