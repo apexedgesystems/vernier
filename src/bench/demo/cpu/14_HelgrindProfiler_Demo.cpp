@@ -1,149 +1,111 @@
 /**
  * @file 14_HelgrindProfiler_Demo.cpp
- * @brief Demo 14: Valgrind Helgrind / DRD thread-error detector -- find the race.
+ * @brief Demo 14: helgrind -- a data race a check of the answer cannot see
  *
- * Helgrind is a correctness tool for threaded code, run alongside benchmarks
- * to prove a parallel optimization is actually safe. It detects data races,
- * lock-ordering violations, and misuse of the POSIX threads API, and pins each
- * one to the two conflicting source lines.
- *
- * Two tests:
- *   Slow/Buggy: RacyCounter   -- threads increment a shared unguarded long
- *   Fast/Safe:  AtomicCounter -- same workload via std::atomic, race-free
- *
- * Story: the unsynchronized increment looks fine and even "works" at low
- * thread counts, but Helgrind flags the read/write race with the two stacks
- * that collide. The fix (std::atomic) is reported clean -- and is also faster
- * than a mutex would be.
+ * Threads add the length of the shared join example's result to one shared
+ * total, two ways:
+ *  1. LockedTotal takes a mutex for each addition and measures the calls with
+ *     contentionRun, on the threads --threads asks for; one CSV row
+ *  2. RacyTotal adds without the mutex, on four threads of its own; it runs
+ *     only under valgrind and skips itself anywhere else
  *
  * Usage:
  *   @code{.sh}
- *   # Buggy run (expect: "Possible data race ... during write of size 8"):
- *   valgrind --tool=helgrind \
- *       --log-file=Helgrind.RacyCounter.helgrind/helgrind.log \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_14_HelgrindProfiler \
- *       --profile helgrind --cycles 5 --gtest_filter='Helgrind.RacyCounter'
+ *   # Measure the locked version on four threads
+ *   ./BenchDemo_14_HelgrindProfiler --threads 4 --target-time 50ms --repeats 10 --csv run.csv
  *
- *   # Clean run (expect: no race reported):
- *   valgrind --tool=helgrind \
- *       --log-file=Helgrind.AtomicCounter.helgrind/helgrind.log \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_14_HelgrindProfiler \
- *       --profile helgrind --cycles 5 --gtest_filter='Helgrind.AtomicCounter'
+ *   # Find the race: helgrind's log lands in
+ *   # bench-out/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log
+ *   bench run ./BenchDemo_14_HelgrindProfiler --profile helgrind -- \
+ *     --gtest_filter=Helgrind.RacyTotal
  *
- *   # DRD is the alternate detector; vernier selects it via --profile-args drd:
- *   valgrind --tool=drd \
- *       --log-file=Helgrind.RacyCounter.helgrind/drd.log \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_14_HelgrindProfiler \
- *       --profile helgrind --profile-args drd --cycles 5 \
- *       --gtest_filter='Helgrind.RacyCounter'
+ *   # Read it
+ *   cat bench-out/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log
  *   @endcode
  *
- * Helgrind/DRD slow execution ~20-100x; use --cycles 5 (or fewer) so the
- * threads still actually overlap but the run stays usable.
+ * What helgrind reports for this binary is checked apart from it, by
+ * utst/14_HelgrindProfiler_uTest.cpp.
  *
- * @see docs/20_HELGRIND_PROFILER.md for the step-by-step walkthrough.
+ * @see docs/20_HELGRIND_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
 
-#include <atomic>
+#include <cstddef>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/demo/cpu/14_HelgrindProfiler_Racy.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-static constexpr int NUM_THREADS = 4;
-static constexpr int LOOPS_PER_THREAD = 2000;
+namespace demo = vernier::bench::demo;
+namespace racy = vernier::bench::demo::helgrind_demo;
 
-/**
- * @test Slow/Buggy: several threads increment a shared unsynchronized long.
- *
- * `sharedCounter += 1` is a read-modify-write with no synchronization, so two
- * threads can read the same value and lose an update. Helgrind reports
- * "Possible data race during write of size 8" with the two colliding stacks,
- * both pointing at the increment line below.
- *
- * Do not copy; this is here so helgrind has a genuine race to find. The test
- * still asserts callsPerSecond > 1 so the benchmark completes -- the race
- * corrupts the count but does not crash.
- */
-PERF_THROUGHPUT(Helgrind, RacyCounter) {
-  UB_PERF_GUARD(perf);
+/* ----------------------------- Constants ----------------------------- */
 
-  long sharedCounter = 0;
+/// Parts per join, the size demo 01 measures.
+static constexpr std::size_t PART_COUNT = 1000;
 
-  auto worker = [&] {
-    for (int i = 0; i < LOOPS_PER_THREAD; ++i) {
-      // Intentional data race: unsynchronized read-modify-write on a value
-      // shared across threads. Helgrind/DRD flags this exact line.
-      sharedCounter += 1;
-    }
+/// Fixed seed: every run joins the same words.
+static constexpr unsigned PART_SEED = 42;
+
+static constexpr char SEPARATOR = ',';
+
+/// Threads RacyTotal starts, each adding once.
+static constexpr std::size_t RACY_THREADS = 4;
+
+/// What RacyTotal prints when it skips: the race is helgrind's to find.
+static constexpr const char* RACY_SKIP_REASON =
+    "this case makes a data race for helgrind to find, so it runs only under valgrind: run this "
+    "binary under `valgrind --tool=helgrind`, or through `bench run --profile helgrind`";
+
+/* ----------------------------- Tests ----------------------------- */
+
+/** @test Threads add joined lengths to one total, each addition under a mutex. */
+PERF_CONTENTION(Helgrind, LockedTotal) {
+  PERF_GUARD(perf);
+
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  std::mutex totalMutex;
+  std::size_t total = 0;
+  std::size_t calls = 0;
+  const auto addJoinedLength = [&] {
+    std::lock_guard<std::mutex> lock(totalMutex);
+    total += demo::joinV1(PARTS, SEPARATOR).size();
+    ++calls;
   };
 
-  perf.warmup([&] {
-    std::vector<std::thread> threads;
-    for (int t = 0; t < NUM_THREADS; ++t)
-      threads.emplace_back(worker);
-    for (auto& th : threads)
-      th.join();
-  });
-
-  volatile long sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        std::vector<std::thread> threads;
-        for (int t = 0; t < NUM_THREADS; ++t)
-          threads.emplace_back(worker);
-        for (auto& th : threads)
-          th.join();
-        sink = sharedCounter;
-      },
-      "racy_counter");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  perf.warmup(addJoinedLength);
+  perf.contentionRun(addJoinedLength, "locked_total");
+  EXPECT_EQ(total, calls * demo::joinedSize(PARTS));
 }
 
 /**
- * @test Fast/Safe: same workload, std::atomic counter eliminates the race.
+ * @test Four threads add joined lengths to one total with no lock. Runs only
+ *       under valgrind.
  *
- * The read-modify-write is now a single atomic operation; there is no window
- * for two threads to clobber each other. Helgrind reports no data race for
- * this test, and the atomic is cheaper than the mutex alternative.
+ * Measures nothing: under valgrind a timing means nothing, and a fixed number
+ * of additions is what the total is checked against. Anywhere else the case
+ * skips itself and says how to run it.
  */
-PERF_THROUGHPUT(Helgrind, AtomicCounter) {
-  UB_PERF_GUARD(perf);
+PERF_TEST(Helgrind, RacyTotal) {
+  if (!vernier::bench::profiler_env::isRunningUnderValgrind()) {
+    GTEST_SKIP() << RACY_SKIP_REASON;
+  }
 
-  std::atomic<long> sharedCounter{0};
-
-  auto worker = [&] {
-    for (int i = 0; i < LOOPS_PER_THREAD; ++i) {
-      sharedCounter.fetch_add(1, std::memory_order_relaxed);
-    }
-  };
-
-  perf.warmup([&] {
-    std::vector<std::thread> threads;
-    for (int t = 0; t < NUM_THREADS; ++t)
-      threads.emplace_back(worker);
-    for (auto& th : threads)
-      th.join();
-  });
-
-  volatile long sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        std::vector<std::thread> threads;
-        for (int t = 0; t < NUM_THREADS; ++t)
-          threads.emplace_back(worker);
-        for (auto& th : threads)
-          th.join();
-        sink = sharedCounter.load(std::memory_order_relaxed);
-      },
-      "atomic_counter");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  std::size_t total = 0;
+  std::vector<std::thread> threads;
+  for (std::size_t t = 0; t < RACY_THREADS; ++t) {
+    threads.emplace_back([&] { racy::addJoinedLength(total, PARTS, SEPARATOR); });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(total, RACY_THREADS * demo::joinedSize(PARTS));
 }
 
 PERF_MAIN()
