@@ -162,6 +162,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
+- **Demo 06 measures threads sharing the join example** --
+  `ThreadScaling.CoarseLock` and `ThreadScaling.NoSharing` time the shared
+  `join` example called from several threads, under one lock and with a total
+  per thread, and demo 06's walkthrough is rewritten for them. They replace
+  `MutexContention`, `AtomicLockFree` and `SingleThreadBaseline`, so older
+  demo 06 CSVs do not join with newer ones, and `incrementMutex` and
+  `incrementAtomic` are removed from `helpers/DemoWorkloads.hpp`.
+- **Demo 14 (helgrind) shows a data race beside its locked fix** -- helgrind
+  names the line where threads add the shared `join` example's result to one
+  total without a lock and reports nothing for the version that takes a mutex,
+  which walkthrough 20 measures: holding the lock across the join, four
+  threads are no faster than one. The demo's test names change, so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -305,6 +318,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **`contentionRun`'s start gate stays out of helgrind's reports** -- the
+  gate that releases a contention test's threads together spins on two atomic
+  flags, which helgrind reported as data races whenever it checked a contention
+  test. A libbench built where valgrind's `helgrind.h` is installed asks
+  helgrind to leave them unchecked, so a race-free test reports nothing; one
+  built without the header, or with `NVALGRIND`, still reports them.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
