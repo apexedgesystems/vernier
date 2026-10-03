@@ -48,8 +48,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Demo 13 (NVTX) is a GPU demo on the shared SAXPY example** --
   `BenchDemo_Gpu_05_NvtxAnnotation`, built with the GPU demos, times the
   example's `G1` as it is and the same call in three named NVTX ranges,
-  `copy_in`, `kernel` and `copy_out`, each of which waits for its work. It
-  replaces `BenchDemo_10_NvtxAnnotation`, whose test `Nvtx.PhasedWorkload` is
+  `copy_in`, `kernel` and `copy_out`, each of which waits for its work. A check
+  registered with `ctest` under the `demo` and `nsight` labels runs both tests
+  under Nsight Systems and fails unless every measured call's three ranges lie
+  in order inside the test's own range, each around its own copies or kernel.
+  It replaces `BenchDemo_10_NvtxAnnotation`, whose test `Nvtx.PhasedWorkload` is
   gone, so CSVs captured from that demo before this release do not join with
   newer ones.
 - **The GPU harness's CUPTI collector stands down only inside an Nsight session

@@ -236,7 +236,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (1)
+# Demo Effect Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -268,6 +268,33 @@ set_tests_properties(
   Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
 )
+
+# Demo 05's check runs the GPU demo under Nsight Systems, so it exists only where
+# the GPU demos are built; its tool's label is nsight. It links the CUDA runtime
+# for one question decided before anything runs: whether a device is there.
+if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
+  vernier_add_gtest(
+    TARGET
+    TestDemoNvtxRanges
+    SOURCES
+    gpu/utst/05_NvtxAnnotation_Ranges_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    nsight
+  )
+  target_compile_definitions(
+    TestDemoNvtxRanges
+    PRIVATE VERNIER_DEMO_GPU_05_BINARY="$<TARGET_FILE:BenchDemo_Gpu_05_NvtxAnnotation>"
+  )
+  add_dependencies(TestDemoNvtxRanges BenchDemo_Gpu_05_NvtxAnnotation)
+  set_tests_properties(
+    NvtxRanges.RecordedByNsightSystems
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] NvtxRanges\\.RecordedByNsightSystems"
+  )
+endif ()
 
 # ------------------------------------------------------------------------------
 # Demo Helper Tests
