@@ -73,23 +73,22 @@ how to compare two runs.
 
 ## 2. CPU Demos
 
-| #   | Demo                  | Concept                                        | Slow Path                                                   | Fast Path                                    | Walkthrough                                               |
-| --- | --------------------- | ---------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------- |
-| 01  | Basic Workflow        | Measure-export-analyze cycle                   | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)         |
-| 02  | perf Profiler         | Hardware counters: instructions, branch misses | join V0 (copy per part); filter with a branch, random input | join V1 (reserve, append); filter branchless | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)           |
-| 03  | gperftools Profiler   | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
-| 04  | Cache-Friendly Layout | AoS vs SoA data transformation                 | 128B struct (81% waste)                                     | Separate arrays (100% use)                   | [04_CACHE_FRIENDLY.md](docs/04_CACHE_FRIENDLY.md)         |
-| 06  | Thread Scaling        | Lock contention analysis                       | Mutex-protected counter                                     | Atomic relaxed counter                       | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
-| 07  | Callgrind Profiler    | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
-| 08  | RAPL Profiler         | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
-| 09  | bpftrace Profiler     | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
-| 10  | NVTX Annotation       | Timeline labeling for Nsight                   | Single opaque region                                        | Per-phase named ranges                       | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
-| 11  | Massif Profiler       | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
-| 12  | Memcheck Profiler     | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
-| 13  | Off-CPU Profiler      | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
-| 14  | Helgrind Profiler     | Data-race / thread-error detection             | Unguarded shared counter                                    | std::atomic counter                          | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
-| 15  | Heaptrack Profiler    | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
-| 16  | jemalloc Profiler     | Sampled allocation hotspots                    | Per-iter string churn                                       | Reserved + reused string                     | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
+| #   | Demo                | Concept                                        | Slow Path                                                   | Fast Path                                    | Walkthrough                                               |
+| --- | ------------------- | ---------------------------------------------- | ----------------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------- |
+| 01  | Basic Workflow      | Measure-export-analyze cycle                   | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md)         |
+| 02  | perf Profiler       | Hardware counters: instructions, branch misses | join V0 (copy per part); filter with a branch, random input | join V1 (reserve, append); filter branchless | [02_PERF_PROFILER.md](docs/02_PERF_PROFILER.md)           |
+| 03  | gperftools Profiler | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
+| 06  | Thread Scaling      | What a call costs while other threads make it  | join, one lock held for the whole call                      | join, a total per thread                     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
+| 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
+| 08  | RAPL Profiler       | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
+| 09  | bpftrace Profiler   | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
+| 10  | NVTX Annotation     | Timeline labeling for Nsight                   | Single opaque region                                        | Per-phase named ranges                       | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
+| 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
+| 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
+| 13  | Off-CPU Profiler    | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
+| 14  | Helgrind Profiler   | Data races, and the lock that fixes one        | join length added to one total, no lock (a race)            | the same under a mutex (correct, serialized) | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
+| 15  | Heaptrack Profiler  | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
+| 16  | jemalloc Profiler   | Sampled allocation hotspots                    | Per-iter string churn                                       | Reserved + reused string                     | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
 
 The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
 filenames carry their own sequential number across CPU + GPU.
@@ -100,17 +99,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                             | Slow Path               | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | ----------------------------------- | ----------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost | CPU loop over 1M floats | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Memory coalescing analysis          | Strided global reads    | Sequential global reads                     | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding          | Naive global transpose  | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels            | Deliberate OOB write    | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                   | Walkthrough                                               |
+| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block   | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demo 01 measures the shared SAXPY example (see
-[Shared Examples](#shared-examples)); the other three carry their own kernels.
+Demos 01 and 02 measure the shared SAXPY example (see
+[Shared Examples](#shared-examples)); the other two carry their own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -134,7 +133,7 @@ docker compose run --rm -T dev bash -c '
 # Export results to CSV and analyze
 docker compose run --rm -T dev bash -c '
   cd build/native-linux-debug
-  ./bin/ptests/BenchDemo_04_CacheFriendly --csv results.csv
+  ./bin/ptests/BenchDemo_01_BasicWorkflow --csv results.csv
   source .env
   bench summary results.csv
 '
@@ -175,8 +174,6 @@ slow/fast workload pairs used across demos:
 
 | Category    | Slow               | Fast               | Used In |
 | ----------- | ------------------ | ------------------ | ------- |
-| Cache       | AoS position sum   | SoA position sum   | Demo 04 |
-| Contention  | Mutex increment    | Atomic increment   | Demo 06 |
 | Dot product | Naive (dependency) | std::inner_product | Demo 08 |
 
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
@@ -191,11 +188,11 @@ registered under the `demo` label (`ctest --test-dir build -L demo`). The
 first is [examples/join](examples/join/inc/Join.hpp), and the table below names
 the demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                              |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 07, 09, 12, 14, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demo 10                              |
+| Example                                  | Versions                                                                                                                                           | Used In                                  |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 09, 12, 14, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                  |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                             |
 
 The saxpy example and its tests are built only where the GPU demos are.
 
@@ -208,41 +205,40 @@ Walkthroughs are numbered by their file name in `docs/`.
 **Getting started:**
 
 1. [01](docs/01_BASIC_WORKFLOW.md) -- the measure, export, compare workflow
-2. [04](docs/04_CACHE_FRIENDLY.md) -- a data-layout optimization (AoS to SoA)
 
 **Profiling tools:**
 
-3. [02](docs/02_PERF_PROFILER.md) -- hardware counters with perf: instructions, then branch misses
-4. [03](docs/03_GPERF_PROFILER.md) -- function-level hotspots with gperftools
-5. [07](docs/07_CALLGRIND_PROFILER.md) -- exact instruction counts with Callgrind
+2. [02](docs/02_PERF_PROFILER.md) -- hardware counters with perf: instructions, then branch misses
+3. [03](docs/03_GPERF_PROFILER.md) -- function-level hotspots with gperftools
+4. [07](docs/07_CALLGRIND_PROFILER.md) -- exact instruction counts with Callgrind
 
 **Branches and threads:**
 
-6. [02, second example](docs/02_PERF_PROFILER.md#the-second-example-a-filter) -- branch prediction and branchless code
-7. [06](docs/06_THREAD_SCALING.md) -- contention between threads
-8. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
-9. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind / DRD
+5. [02, second example](docs/02_PERF_PROFILER.md#the-second-example-a-filter) -- branch prediction and branchless code
+6. [06](docs/06_THREAD_SCALING.md) -- contention between threads, measured with `contentionRun()`
+7. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
+8. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind
 
 **Memory:**
 
-10. [21](docs/21_HEAPTRACK_PROFILER.md) -- ranked allocation sites with heaptrack
-11. [14](docs/14_MASSIF_PROFILER.md) -- heap size over time with Massif
-12. [15](docs/15_MEMCHECK_PROFILER.md) -- leaks and invalid access with Memcheck
-13. [22](docs/22_JEMALLOC_PROFILER.md) -- sampled allocation profiling with jemalloc
+9. [21](docs/21_HEAPTRACK_PROFILER.md) -- ranked allocation sites with heaptrack
+10. [14](docs/14_MASSIF_PROFILER.md) -- heap size over time with Massif
+11. [15](docs/15_MEMCHECK_PROFILER.md) -- leaks and invalid access with Memcheck
+12. [22](docs/22_JEMALLOC_PROFILER.md) -- sampled allocation profiling with jemalloc
 
 **System and energy:**
 
-14. [09](docs/09_BPFTRACE_PROFILER.md) -- system calls and wakeups traced with bpftrace, then a script of your own
-15. [08](docs/08_RAPL_PROFILER.md) -- energy with Intel RAPL
+13. [09](docs/09_BPFTRACE_PROFILER.md) -- system calls and wakeups traced with bpftrace, then a script of your own
+14. [08](docs/08_RAPL_PROFILER.md) -- energy with Intel RAPL
 
 **GPU (requires an NVIDIA GPU):**
 
-16. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
-17. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
-18. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
-19. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
-20. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
-21. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
+15. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
+16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
+17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
+18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
+19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
+20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
 
 ---
 

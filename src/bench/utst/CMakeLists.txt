@@ -47,11 +47,40 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (1 file)
+# Host Test on a Stand-in CUPTI (1)
 # ------------------------------------------------------------------------------
-# What the GPU harness measures and publishes. They run a kernel, so they need
-# both the CUDA toolkit (to build) and a device (to run; they skip without
-# one) and exist only where libbench_cuda does.
+# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
+# every configuration, CPU-only included, checks that the collector applies the
+# CUPTI decision before it registers: a setting that stands it down, or one that
+# is rejected, registers nothing. It links bench, which defines what the
+# decision is built from: the shared Boolean parser, the readiness context and
+# the report formatter.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchCuptiDecision
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorDecision_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(
+  TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+
+# ------------------------------------------------------------------------------
+# GPU Unit Tests (2 files)
+# ------------------------------------------------------------------------------
+# TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
+# kernel, so they need the CUDA toolkit (to build) and a device (to run; they
+# skip without one). TestBenchNsight: the Nsight backend, which lives in
+# libbench_cuda but makes no CUDA call, so it needs the toolkit and no device.
+# Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -67,6 +96,18 @@ if (TARGET bench_cuda)
     benchmarking
     gpu
     TIMING_ALL
+  )
+  vernier_add_gtest(
+    TARGET
+    TestBenchNsight
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsight_uTest.cpp"
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    benchmarking
+    gpu
   )
 endif ()
 
@@ -273,3 +314,42 @@ if (TARGET CallgrindWindowProbeStartupFault)
       "${_fault_skips}"
   )
 endif ()
+
+# ------------------------------------------------------------------------------
+# Start Gate Under Helgrind (1 program)
+# ------------------------------------------------------------------------------
+# contentionRun's start gate spins on two atomic flags, which helgrind cannot
+# see as synchronisation; the gate marks them unchecked where valgrind's
+# helgrind.h is available. The program runs itself under helgrind on two probe
+# cases: workers that add under a mutex must report no error, workers that add
+# without one must still report their race. It learns a build it cannot run
+# under valgrind from the build's SANITIZER setting. The racy probe skips
+# itself outside valgrind, and CTest reports that as skipped; each skip
+# expression names its own test, whose failure messages quote the probe runs.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestStartGateHelgrind
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+  helgrind
+)
+
+if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
+  target_compile_definitions(TestStartGateHelgrind PRIVATE START_GATE_SANITIZER="${SANITIZER}")
+endif ()
+
+foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateReportsNothing
+                          StartGateHelgrindTest.WorkerRaceIsStillReported
+)
+  string(REPLACE "." "\\." _start_gate_pattern "${_start_gate_test}")
+  set_tests_properties(
+    ${_start_gate_test} PROPERTIES SKIP_REGULAR_EXPRESSION
+                                   "\\[  SKIPPED \\] ${_start_gate_pattern}"
+  )
+endforeach ()

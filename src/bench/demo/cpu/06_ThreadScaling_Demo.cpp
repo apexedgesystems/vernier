@@ -1,126 +1,65 @@
 /**
  * @file 06_ThreadScaling_Demo.cpp
- * @brief Demo 06: Lock contention vs lock-free optimization
+ * @brief Demo 06: what a call costs while other threads make the same call
  *
- * Demonstrates the framework's contentionRun() API for multi-threaded
- * benchmarking. Shows how mutex contention destroys throughput and how
- * atomic operations restore scalability.
+ * Threads join the shared example's words and add the joined length to one
+ * total, two ways (06_ThreadScaling_Totals.hpp), one CSV row each:
+ *  1. CoarseLock: one lock, held for the whole call, so the joins take turns
+ *  2. NoSharing: each thread adds to a total of its own and hands it over
+ *     once, when the thread ends
+ * contentionRun() starts --threads threads that make the call at the same
+ * time; each row records how many.
  *
- * Slow: Mutex-protected counter (threads serialize on lock)
- * Fast: Atomic counter with relaxed ordering (true parallelism)
- *
- * Usage:
+ * Usage (a core for each thread, and one for the thread that starts them):
  *   @code{.sh}
- *   # Run with 4 threads
- *   ./BenchDemo_06_ThreadScaling --threads 4 --csv results.csv
+ *   # One thread
+ *   taskset -c 2,3 ./BenchDemo_06_ThreadScaling --threads 1 --repeats 10 --csv one.csv
  *
- *   # Compare scaling: 2 vs 4 vs 8 threads
- *   ./BenchDemo_06_ThreadScaling --threads 2 --csv t2.csv
- *   ./BenchDemo_06_ThreadScaling --threads 4 --csv t4.csv
- *   ./BenchDemo_06_ThreadScaling --threads 8 --csv t8.csv
+ *   # Three threads
+ *   taskset -c 0-3 ./BenchDemo_06_ThreadScaling --threads 3 --repeats 10 --csv three.csv
  *   @endcode
  *
- * @see docs/06_THREAD_SCALING.md for step-by-step walkthrough
+ * That both versions reach the same total is checked apart from the demo, by
+ * utst/06_ThreadScaling_uTest.cpp.
+ *
+ * @see docs/06_THREAD_SCALING.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
-#include <atomic>
-#include <cstdint>
-#include <mutex>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
+#include "src/bench/demo/cpu/06_ThreadScaling_Totals.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
 
-/* ----------------------------- Constants ----------------------------- */
-
-static constexpr int OPS_PER_WORKER = 10000;
+using vernier::bench::demo::thread_scaling_demo::addToThreadTotal;
+using vernier::bench::demo::thread_scaling_demo::addUnderCoarseLock;
+using vernier::bench::demo::thread_scaling_demo::PART_COUNT;
+using vernier::bench::demo::thread_scaling_demo::PART_SEED;
+using vernier::bench::demo::thread_scaling_demo::SharedTotal;
 
 /* ----------------------------- Tests ----------------------------- */
 
-/**
- * @test Slow: Mutex-protected counter under contention.
- *
- * Uses contentionRun() to spawn N worker threads, each incrementing
- * a shared counter through a mutex. As thread count increases, threads
- * spend more time waiting for the lock than doing useful work.
- *
- * This is the classic "lock contention" anti-pattern.
- */
-PERF_CONTENTION(ThreadScaling, MutexContention) {
-  UB_PERF_GUARD(perf);
+/** @test Threads add joined lengths to one total, holding its lock for the whole call. */
+PERF_CONTENTION(ThreadScaling, CoarseLock) {
+  PERF_GUARD(perf);
 
-  std::mutex mtx;
-  std::uint64_t counter = 0;
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  SharedTotal total;
 
-  perf.warmup([&] {
-    counter = 0;
-    demo::incrementMutex(mtx, counter, OPS_PER_WORKER);
-  });
-
-  auto result = perf.contentionRun([&] { demo::incrementMutex(mtx, counter, OPS_PER_WORKER); },
-                                   "mutex_increment");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
+  perf.warmup([&] { addUnderCoarseLock(total, PARTS); });
+  perf.contentionRun([&] { addUnderCoarseLock(total, PARTS); }, "coarse_lock");
 }
 
-/**
- * @test Fast: Atomic counter under contention (lock-free).
- *
- * Uses contentionRun() with atomic operations. Each thread can
- * increment without waiting for a lock. Relaxed memory ordering
- * allows maximum hardware parallelism.
- *
- * Expected improvement: 5-20x depending on thread count and
- * hardware CAS implementation.
- */
-PERF_CONTENTION(ThreadScaling, AtomicLockFree) {
-  UB_PERF_GUARD(perf);
+/** @test Threads add joined lengths to totals of their own, sharing nothing while they run. */
+PERF_CONTENTION(ThreadScaling, NoSharing) {
+  PERF_GUARD(perf);
 
-  std::atomic<std::uint64_t> counter{0};
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
 
-  perf.warmup([&] {
-    counter.store(0, std::memory_order_relaxed);
-    demo::incrementAtomic(counter, OPS_PER_WORKER);
-  });
-
-  auto result = perf.contentionRun([&] { demo::incrementAtomic(counter, OPS_PER_WORKER); },
-                                   "atomic_increment");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-}
-
-/**
- * @test Single-threaded baseline for comparison.
- *
- * Runs the atomic version with 1 thread to establish the
- * uncontended baseline. Compare with multi-threaded results
- * to calculate scaling efficiency.
- */
-PERF_THROUGHPUT(ThreadScaling, SingleThreadBaseline) {
-  UB_PERF_GUARD(perf);
-
-  std::atomic<std::uint64_t> counter{0};
-
-  perf.warmup([&] {
-    counter.store(0, std::memory_order_relaxed);
-    demo::incrementAtomic(counter, OPS_PER_WORKER);
-  });
-
-  volatile std::uint64_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        counter.store(0, std::memory_order_relaxed);
-        demo::incrementAtomic(counter, OPS_PER_WORKER);
-        sink = counter.load(std::memory_order_relaxed);
-      },
-      "single_thread_baseline");
-
-  EXPECT_GT(result.callsPerSecond, 10.0);
-
-  (void)sink;
+  perf.warmup([&] { addToThreadTotal(PARTS); });
+  perf.contentionRun([&] { addToThreadTotal(PARTS); }, "no_sharing");
 }
 
 PERF_MAIN()
