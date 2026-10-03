@@ -34,6 +34,8 @@ set(CPP_SOURCES
     "${SRC_DIR}/ValgrindTool.cpp"
     "${SRC_DIR}/ProfilerOffCpu.cpp"
     "${SRC_DIR}/ProfilerRocprof.cpp"
+    "${SRC_DIR}/ProfilerNsightChecks.cpp"
+    "${SRC_DIR}/ProfilerComputeSanitizerChecks.cpp"
     "${SRC_DIR}/ProfilerHeaptrack.cpp"
     "${SRC_DIR}/ProfilerJemalloc.cpp"
 )

@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 
+#include "src/bench/inc/ProfilerComputeSanitizerChecks.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
@@ -50,23 +51,16 @@ bool detectUnderSanitizer() {
   return found;
 }
 
-std::string sanitizerToolFromArgs(const std::string& profileArgs) {
-  static const char* const TOOLS[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
-  for (const char* tool : TOOLS) {
-    if (profileArgs.find(tool) != std::string::npos) {
-      return tool;
-    }
-  }
-  return "memcheck"; // default
-}
-
 } // namespace
 
 /* ----------------------- ComputeSanitizerProfiler ----------------------- */
 
 ComputeSanitizerProfiler::ComputeSanitizerProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  sanitizerTool_ = sanitizerToolFromArgs(cfg_.profileArgs);
+  // The tool, by the readiness check's own parser. The registry refuses a
+  // request holding a word the parser does not take before it builds this;
+  // built directly, the tool named decides (memcheck when none is).
+  (void)parseSanitizerTool(cfg_.profileArgs, sanitizerTool_);
   runningUnderSanitizer_ = detectUnderSanitizer();
 
   artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
@@ -98,16 +92,6 @@ void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {
   // it is wrapping the binary. When not wrapped, this backend is a no-op.
 }
 
-/* ----------------------------- Env check ----------------------------- */
-
-EnvReport checkComputeSanitizerEnvironment() {
-  if (!isComputeSanitizerOnPath()) {
-    return EnvReport{EnvReport::Status::Error, "compute-sanitizer not found on PATH",
-                     "Install the CUDA toolkit; compute-sanitizer ships with it."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "compute-sanitizer available", ""};
-}
-
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeComputeSanitizerProfiler(const PerfConfig& cfg,
@@ -118,10 +102,28 @@ std::unique_ptr<Profiler> makeComputeSanitizerProfiler(const PerfConfig& cfg,
   return std::make_unique<ComputeSanitizerProfiler>(cfg, testName);
 }
 
+namespace {
+
+/** @brief The backend for a request the readiness check let collect. */
+std::unique_ptr<Profiler> makePlannedComputeSanitizerProfiler(const PerfConfig& cfg,
+                                                              const std::string& testName,
+                                                              const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::make_unique<ComputeSanitizerProfiler>(cfg, testName);
+}
+
+} // namespace
+
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND("compute-sanitizer",
-                                  ::vernier::bench::makeComputeSanitizerProfiler,
-                                  ::vernier::bench::checkComputeSanitizerEnvironment,
-                                  "Install CUDA toolkit; compute-sanitizer ships with it.")
+// The check is libbench's (ProfilerComputeSanitizerChecks.cpp), which
+// registers it with a passive profiler; this registration replaces that one
+// with the backend in every build that has it.
+VERNIER_REGISTER_READINESS_BACKEND("compute-sanitizer",
+                                   ::vernier::bench::checkComputeSanitizerRequest,
+                                   ::vernier::bench::makePlannedComputeSanitizerProfiler,
+                                   "Install the CUDA toolkit; compute-sanitizer ships with it.",
+                                   "NV_SANITIZER_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH")

@@ -28,9 +28,11 @@
  *   compute-sanitizer --tool=memcheck \
  *       ./MyTest --profile compute-sanitizer --cycles 5 --gtest_filter='Gpu.Kernel'
  *
- * The backend itself sets up the artifact directory, prints the invocation
- * hint when the binary is run unwrapped, and stamps the chosen tool into
- * the CSV profile metadata for downstream correlation.
+ * Whether compute-sanitizer started the process is the readiness check's
+ * decision (ProfilerComputeSanitizerChecks.hpp): a run it did not start fails
+ * with the wrap command, and no backend is built. The backend sets up the
+ * artifact directory and stamps the chosen tool into the CSV profile
+ * metadata; built directly outside the tool, it prints the invocation hint.
  */
 
 #include <memory>

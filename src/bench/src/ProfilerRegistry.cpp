@@ -190,6 +190,18 @@ void ProfilerRegistry::registerReadinessBackend(std::string name, ReadinessCheck
   ++generation_;
 }
 
+bool ProfilerRegistry::registerReadinessBackendIfAbsent(std::string name, ReadinessCheck check,
+                                                        PlannedFactory factory,
+                                                        std::string unavailableHint,
+                                                        std::vector<std::string> contextKeys) {
+  if (backends_.count(name) != 0) {
+    return false;
+  }
+  registerReadinessBackend(std::move(name), std::move(check), std::move(factory),
+                           std::move(unavailableHint), std::move(contextKeys));
+  return true;
+}
+
 bool ProfilerRegistry::unregisterBackend(const std::string& name) {
   const bool REMOVED = backends_.erase(name) > 0;
   if (REMOVED) {

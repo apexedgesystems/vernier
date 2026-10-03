@@ -71,6 +71,7 @@ set(_readiness_cli_cases
     PerfDeniedMatchesDoctor
     PerfStartFailureFails
     MetadataBeforeTheProfiledWindow
+    GpuNamesOnACpuBuild
     GperfAnalyzerFoundIsRun
     GperfAnalyzerMissingIsAnalysisError
     GperfAnalyzerBrokenIsAnalysisError

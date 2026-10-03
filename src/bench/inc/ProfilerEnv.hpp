@@ -121,6 +121,73 @@ inline bool isRunningUnderValgrind() {
   return found;
 }
 
+/* ----------------------------- computeSanitizerSession ----------------------------- */
+
+/**
+ * @brief True when Compute Sanitizer started the process @p ctx describes.
+ *
+ * compute-sanitizer cannot attach to a running process, so a session exists
+ * only when the tool started this one. `bench run --profile
+ * compute-sanitizer` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by
+ * hand is recognised from what the tool exports to the process it starts:
+ * NV_SANITIZER_INJECTION_PORT_BASE, as exported by compute-sanitizer 2025.3
+ * and 2025.4, or CUDA_INJECTION64_PATH naming its collection library, the
+ * injection variable a toolkit may use instead. A name in a path decides
+ * nothing: the process's own binary or a directory may be called after the
+ * tool. Reads only the snapshot.
+ */
+inline bool computeSanitizerSession(const ReadinessContext& ctx) {
+  if (ctx.get("VERNIER_EXTERNAL_WRAP").value_or("") == "compute-sanitizer") {
+    return true;
+  }
+  if (ctx.get("NV_SANITIZER_INJECTION_PORT_BASE")) {
+    return true;
+  }
+  const std::string INJECTION = ctx.get("CUDA_INJECTION64_PATH").value_or("");
+  const std::size_t SLASH = INJECTION.rfind('/');
+  const std::string_view FILE = SLASH == std::string::npos
+                                    ? std::string_view{INJECTION}
+                                    : std::string_view{INJECTION}.substr(SLASH + 1);
+  return FILE == "libsanitizer-collection.so";
+}
+
+/** @brief computeSanitizerSession() on a snapshot of this process, taken now. */
+inline bool computeSanitizerSession() {
+  return computeSanitizerSession(ReadinessContext::capture());
+}
+
+/**
+ * @brief True when @p mapsText, the text of a /proc/<pid>/maps, shows one of
+ * compute-sanitizer's own libraries mapped into the process.
+ *
+ * Those are libsanitizer-collection.so and libsanitizer-public.so, matched as
+ * the file name at the end of a line (compute-sanitizer 2025.3 and 2025.4
+ * map both). The bare word "sanitizer" would also match a binary or a
+ * directory named after the tool, and the launcher libraries the tool maps
+ * beside its own (libTreeLauncher*, libInterceptorInjectionTarget) ship with
+ * Nsight too, so neither decides.
+ */
+inline bool mapsShowComputeSanitizer(std::string_view mapsText) {
+  std::size_t from = 0;
+  while (from < mapsText.size()) {
+    std::size_t end = mapsText.find('\n', from);
+    if (end == std::string_view::npos) {
+      end = mapsText.size();
+    }
+    const std::string_view LINE = mapsText.substr(from, end - from);
+    from = end + 1;
+    const std::size_t SLASH = LINE.rfind('/');
+    if (SLASH == std::string_view::npos) {
+      continue;
+    }
+    const std::string_view FILE = LINE.substr(SLASH + 1);
+    if (FILE == "libsanitizer-collection.so" || FILE == "libsanitizer-public.so") {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* ----------------------------- externalWrapTool ----------------------------- */
 
 /**
@@ -144,15 +211,16 @@ inline std::string externalWrapTool() {
  *
  * Neither nsys nor ncu can attach to a process that is already running, so a
  * session exists only when the tool started this process. `bench run --profile
- * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by hand is
- * recognised from the variables each tool exports to the process it starts:
+ * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP; its nsight wrap is nsys,
+ * or ncu for nsight's compute mode. A wrap typed by hand is recognised from
+ * the variables each tool exports to the process it starts:
  * NSYS_PROFILING_SESSION_ID (nsys) and NV_NSIGHT_INJECTION_PORT_BASE (ncu),
  * as exported by nsys 2025.3 and ncu 2025.3. Reads only the snapshot.
  */
 inline std::string nsightSessionTool(const ReadinessContext& ctx) {
   const std::string WRAP = ctx.get("VERNIER_EXTERNAL_WRAP").value_or("");
   if (WRAP == "nsight" || WRAP == "nsys") {
-    return "nsys";
+    return ctx.get("NV_NSIGHT_INJECTION_PORT_BASE") ? "ncu" : "nsys";
   }
   if (WRAP == "ncu") {
     return "ncu";

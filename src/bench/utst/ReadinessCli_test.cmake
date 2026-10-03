@@ -924,6 +924,74 @@ elseif (CASE STREQUAL "MetadataBeforeTheProfiledWindow")
     expect_owned_and_gone("run (${_name})")
   endforeach ()
 
+elseif (CASE STREQUAL "GpuNamesOnACpuBuild")
+  # The fixture is built without CUDA and knows nsight, ncu and
+  # compute-sanitizer: the doctor reports each by its own tool, a run the tool
+  # did not start fails with the command that captures it and starts nothing,
+  # and a run under bench run's wrap is profiled by a passive profiler that
+  # names the tool and the wrap's folder.
+  fake(fake_nvidia_tool.sh nsys)
+  fake(fake_nvidia_tool.sh ncu)
+  fake(fake_nvidia_tool.sh compute-sanitizer)
+  run(doctor --profile-check-json)
+  foreach (_name nsight ncu compute-sanitizer)
+    if (doctor_OUT
+        MATCHES
+        "\"name\": \"${_name}\", \"status\": \"([a-z]+)\", \"message\": \"unverified: ${WORK_DIR}/bin/"
+    )
+      expect_eq("${CMAKE_MATCH_1}" "warn" "${_name} inventory status")
+    else ()
+      string(APPEND _problems "\n  no unverified inventory row for ${_name}")
+    endif ()
+  endforeach ()
+  file(REMOVE "${_log}")
+  run(run --profile nsight ${_quick})
+  expect_eq("${run_RC}" "4" "unwrapped run exit status")
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'nsight': missing: nsight collects only when nsys starts the process, and nsys did not start this one\n   Wrap it: nsys profile -o ./profile -t cuda,nvtx --force-overwrite true <this-binary> --profile nsight [...]; or run it with bench run --profile nsight, which wraps it and writes the summary reports.\n"
+    "unwrapped run notice"
+  )
+  expect_has(
+    "${run_ERR}" "[profile] --profile nsight failed; the run exits with status 4:\n"
+    "run-end report"
+  )
+  read_log(_text)
+  expect_eq("${_text}" "" "fake log (a run starts no tool)")
+  file(GLOB _folders "${WORK_DIR}/*.nsight")
+  expect_eq("${_folders}" "" "folders an unwrapped run made")
+  set(_wrap_dir "${WORK_DIR}/bench-out/ReadinessFixtureTarget.nsight")
+  list(APPEND _env VERNIER_EXTERNAL_WRAP=nsight "VERNIER_EXTERNAL_WRAP_DIR=${_wrap_dir}")
+  run(wrapped --profile nsight --csv wrapped.csv ${_quick})
+  expect_eq("${wrapped_RC}" "0" "wrapped run exit status")
+  expect_has(
+    "${wrapped_ERR}" "[WARN] Profiler 'nsight': unverified: nsys started this process"
+    "wrapped run notice"
+  )
+  set(_named 0)
+  if (EXISTS "${WORK_DIR}/wrapped.csv")
+    file(STRINGS "${WORK_DIR}/wrapped.csv" _lines)
+    list(GET _lines 0 _header)
+    string(REPLACE "," ";" _columns "${_header}")
+    list(FIND _columns "profileTool" _tool_at)
+    list(FIND _columns "profileDir" _dir_at)
+    list(REMOVE_AT _lines 0)
+    foreach (_line IN LISTS _lines)
+      string(REPLACE "," ";" _cells "${_line}")
+      list(GET _cells 0 _test)
+      list(GET _cells ${_tool_at} _tool)
+      list(GET _cells ${_dir_at} _dir)
+      if (_test MATCHES "Bare$")
+        expect_eq("${_tool}" "" "profileTool of the bare case")
+      else ()
+        expect_eq("${_tool}" "nsight" "profileTool of ${_test}")
+        expect_eq("${_dir}" "${_wrap_dir}" "profileDir of ${_test}")
+        math(EXPR _named "${_named} + 1")
+      endif ()
+    endforeach ()
+  endif ()
+  expect_eq("${_named}" "2" "CSV rows naming the passive profiler")
+
 elseif (CASE MATCHES "^Gperf")
   # gperf cases need gperftools compiled into libbench.
   run(inventory --profile-check-json)

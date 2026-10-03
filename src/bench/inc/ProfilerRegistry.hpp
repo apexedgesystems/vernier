@@ -105,6 +105,19 @@ public:
                                 std::vector<std::string> contextKeys = {});
 
   /**
+   * @brief registerReadinessBackend(), unless @p name is registered already.
+   *
+   * For a default that a fuller library replaces: libbench registers the
+   * Nsight and Compute Sanitizer checks this way with a passive profiler, and
+   * the CUDA library registers them with its own profilers, which then win
+   * whichever library initializes first.
+   * @return True when this call registered the backend.
+   */
+  bool registerReadinessBackendIfAbsent(std::string name, ReadinessCheck check,
+                                        PlannedFactory factory, std::string unavailableHint,
+                                        std::vector<std::string> contextKeys = {});
+
+  /**
    * @brief Remove a registration; true when there was one.
    *
    * Startup-only, like registration; for tests and for plugins that unload.
@@ -312,6 +325,16 @@ struct ReadinessRegistrar {
   }
 };
 
+/** @brief RAII registrar for VERNIER_REGISTER_READINESS_FALLBACK. */
+struct ReadinessFallbackRegistrar {
+  ReadinessFallbackRegistrar(std::string name, ReadinessCheck check, PlannedFactory factory,
+                             std::string hint, std::vector<std::string> contextKeys) {
+    (void)ProfilerRegistry::instance().registerReadinessBackendIfAbsent(
+        std::move(name), std::move(check), std::move(factory), std::move(hint),
+        std::move(contextKeys));
+  }
+};
+
 } // namespace detail
 
 /**
@@ -359,6 +382,18 @@ struct ReadinessRegistrar {
   const ::vernier::bench::detail::ReadinessRegistrar VERNIER_REG_CONCAT(UB_READINESS_REGISTRAR_,   \
                                                                         __LINE__){                 \
       (NAME), (CHECK), (FACTORY), (HINT), std::vector<std::string>{__VA_ARGS__}};                  \
+  }
+
+/**
+ * @brief VERNIER_REGISTER_READINESS_BACKEND for a default: registered unless
+ * a backend of that name already is, and replaced by a later
+ * VERNIER_REGISTER_READINESS_BACKEND of the same name.
+ */
+#define VERNIER_REGISTER_READINESS_FALLBACK(NAME, CHECK, FACTORY, HINT, ...)                       \
+  namespace {                                                                                      \
+  const ::vernier::bench::detail::ReadinessFallbackRegistrar                                       \
+      VERNIER_REG_CONCAT(UB_READINESS_FALLBACK_, __LINE__){(NAME), (CHECK), (FACTORY), (HINT),     \
+                                                           std::vector<std::string>{__VA_ARGS__}}; \
   }
 
 } // namespace bench

@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (17 files)
+# Sources (18 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -28,6 +28,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuChecks_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -75,13 +76,14 @@ target_include_directories(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (2 files)
+# GPU Unit Tests (3 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
-# skip without one). TestBenchNsight: the Nsight backend, which lives in
-# libbench_cuda but makes no CUDA call, so it needs the toolkit and no device.
-# Both exist only where libbench_cuda does.
+# skip without one). TestBenchNsight: the Nsight backend, and the backends the
+# registry builds for the GPU names once libbench_cuda's registrations replace
+# libbench's; they live in libbench_cuda but make no CUDA call, so they need
+# the toolkit and no device. Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -103,6 +105,7 @@ if (TARGET bench_cuda)
     TestBenchNsight
     SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsight_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuRegistration_uTest.cpp"
     LINK
     bench
     bench_cuda

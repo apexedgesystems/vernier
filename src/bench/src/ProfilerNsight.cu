@@ -11,11 +11,13 @@
 #include "src/bench/inc/ProfilerNsight.hpp"
 
 #include <cstdio>
-#include <cstdlib>
+#include <memory>
 #include <string>
 
 #include "src/bench/inc/Nvtx.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/inc/ProfilerNsightChecks.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
 namespace bench {
@@ -55,19 +57,11 @@ NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, suffix);
 
-  if (cfg_.profileTool == "ncu") {
-    // First-class Nsight Compute (--profile ncu). Replay stays the same
-    // --profile-args opt-in as the nsight spelling.
-    const bool REPLAY = cfg_.profileArgs.find("replay") != std::string::npos;
-    mode_ = REPLAY ? NsightMode::ComputeReplay : NsightMode::Compute;
-  } else if (cfg_.profileArgs.find("replay") != std::string::npos) {
-    mode_ = NsightMode::ComputeReplay;
-  } else if (cfg_.profileArgs.find("ncu") != std::string::npos ||
-             cfg_.profileArgs.find("compute") != std::string::npos) {
-    mode_ = NsightMode::Compute;
-  } else {
-    mode_ = NsightMode::Systems;
-  }
+  // The mode, by the readiness check's own parser: --profile ncu is Nsight
+  // Compute, and replay stays the same --profile-args opt-in for both names.
+  // The registry refuses a request holding a word the parser does not take
+  // before it builds a profiler; built directly, the other words decide.
+  (void)parseNsightMode(cfg_.profileTool == "ncu" ? "ncu" : "nsight", cfg_.profileArgs, mode_);
 
   // Once per test: the session that owns the capture, or the command that
   // would capture this run.
@@ -161,56 +155,36 @@ std::unique_ptr<Profiler> makeNsightProfiler(const PerfConfig& cfg, const std::s
 namespace vernier {
 namespace bench {
 
-EnvReport checkNsightEnvironment() {
-  const bool nsys = std::system("command -v nsys >/dev/null 2>&1") == 0;
-  const bool ncu = std::system("command -v ncu  >/dev/null 2>&1") == 0;
-  if (!nsys && !ncu) {
-    return EnvReport{EnvReport::Status::Error, "neither nsys nor ncu found on PATH",
-                     "Install CUDA toolkit + Nsight (devtools repo on Ubuntu)."};
+namespace {
+
+/** @brief The Nsight backend for a request the readiness check let collect. */
+std::unique_ptr<Profiler> makePlannedNsightProfiler(const PerfConfig& cfg,
+                                                    const std::string& testName,
+                                                    const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
   }
-  if (!nsys) {
-    return EnvReport{EnvReport::Status::Warning, "ncu present but nsys missing",
-                     "Install nsight-systems-cli for timeline profiling."};
-  }
-  if (!ncu) {
-    return EnvReport{EnvReport::Status::Warning, "nsys present but ncu missing",
-                     "Install nsight-compute for kernel analysis."};
-  }
-  // Both present; under a Docker PID namespace attach-by-pid is unreliable, so
-  // wrap nsys/ncu externally around the binary.
-  if (std::system("grep -q docker /proc/1/cgroup 2>/dev/null") == 0) {
-    return EnvReport{
-        EnvReport::Status::Warning, "nsys + ncu available; running in Docker (PID namespace)",
-        "Wrap nsys/ncu externally around the binary (attach-by-pid is unreliable here)."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "nsys + ncu available", ""};
+  return std::make_unique<NsightProfiler>(cfg, testName);
 }
 
-EnvReport checkNcuEnvironment() {
-  if (std::system("command -v ncu >/dev/null 2>&1") != 0) {
-    return EnvReport{EnvReport::Status::Error, "ncu not found on PATH",
-                     "Install nsight-compute (CUDA toolkit devtools repo on Ubuntu)."};
-  }
-  if (profiler_env::isInContainer()) {
-    return EnvReport{EnvReport::Status::Warning,
-                     "ncu available; running in a container (PID namespace)",
-                     "Use bench run --profile ncu (wraps ncu around the binary automatically)."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "ncu available", ""};
-}
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "nsight", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNsightEnvironment,
-    "Install NVIDIA Nsight tools (nsys/ncu) and ensure a CUDA-capable GPU is visible.")
+// The checks are libbench's (ProfilerNsightChecks.cpp), which registers them
+// with a passive profiler; these registrations replace that one with the
+// Nsight backend in every build that has it.
+VERNIER_REGISTER_READINESS_BACKEND("nsight", ::vernier::bench::checkNsightRequest,
+                                   ::vernier::bench::makePlannedNsightProfiler,
+                                   "Install NVIDIA Nsight Systems (nsys) or Nsight Compute "
+                                   "(ncu), the tool the mode needs.",
+                                   "NSYS_PROFILING_SESSION_ID", "NV_NSIGHT_INJECTION_PORT_BASE")
 
-// Nsight Compute as its own first-class name: same backend implementation,
-// constructor selects Compute mode from the tool name. Kernel replay's rich
-// metrics inherently need many launches, so it remains a separate pass from
-// single-launch timing (--profile-args replay) -- the flag is still the one
-// entry point.
-VERNIER_REGISTER_PROFILER_BACKEND(
-    "ncu", ::vernier::bench::makeNsightProfiler, ::vernier::bench::checkNcuEnvironment,
-    "Install NVIDIA Nsight Compute (ncu) and ensure a CUDA-capable GPU is visible.")
+// Nsight Compute as its own first-class name: the same backend, whose mode
+// the tool name selects. Kernel replay's metrics need many launches, so it
+// stays a pass of its own (--profile-args replay).
+VERNIER_REGISTER_READINESS_BACKEND("ncu", ::vernier::bench::checkNsightRequest,
+                                   ::vernier::bench::makePlannedNsightProfiler,
+                                   "Install NVIDIA Nsight Compute (ncu).",
+                                   "NSYS_PROFILING_SESSION_ID", "NV_NSIGHT_INJECTION_PORT_BASE")

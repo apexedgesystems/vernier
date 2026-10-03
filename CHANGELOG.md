@@ -438,6 +438,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench run` doubles each `%` of the folder in those options, as it does in
   compute-sanitizer's `--log-file`, and the output lands in the folder as
   named.
+- **Nsight and Compute Sanitizer requests are checked in every build, and fail
+  unwrapped** -- the doctor reported nsys and ncu by presence (both needed
+  whatever the mode, with a Docker warning) and compute-sanitizer the same
+  way, a run without the tool around the process passed uncaptured, and a
+  build without CUDA did not know these names. The doctor runs the selected
+  mode's own tool with `--version` and reports the request `unverified`, a run
+  that tool started proceeds `unverified`, and one it did not start fails
+  (exit status 4) printing the command that captures it, in builds with and
+  without CUDA. **Action needed:** run these profiles through
+  `bench run --profile <tool>` or the printed command; a build without CUDA
+  checks `--profile nsight`, `ncu` and `compute-sanitizer` as a CUDA build
+  does instead of treating them as unknown profilers.
 - **`bench run --profile heaptrack` refuses an output folder holding `%h` or
   `%p`** -- heaptrack replaces both in its `-o` value, with the host name and
   its process id, and has no escape for them, so
@@ -803,11 +815,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
 - **`--profile nsight` and `--profile ncu` no longer try to attach** -- nsys
-  and ncu capture only a process they start, so the backend starts no tool;
-  outside an nsys or ncu session it prints, once per test, the command that
-  captures the run. Start the benchmark under
-  `bench run --profile nsight|ncu`, which also writes nsys's summary reports, or
-  under the printed command; a run without either captures nothing.
+  and ncu capture only a process they start, so the backend starts no tool.
+  Start the benchmark under `bench run --profile nsight|ncu`, which also writes
+  nsys's summary reports, or under the command a run without a session prints
+  when it fails.
 - **A GPU test's profiler window closes when its measurement ends** -- every
   `PerfGpuCase` measurement, `cpuBaseline()` included, runs the profiler's
   before and after hooks around that measurement alone, so a test's NVTX range
