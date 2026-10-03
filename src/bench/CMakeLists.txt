@@ -156,12 +156,15 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
   # switch CuptiCollector.cu builds its collection on: 1 with the library
   # linked, 0 otherwise (VERNIER_USE_CUPTI off, or no CUPTI in the toolkit).
   # The header alone decides nothing: cupti.h sits in the toolkit's main
-  # include directory whether or not the library is there.
+  # include directory whether or not the library is there. BENCH_CUDA_HAS_CUPTI
+  # carries the same decision to the demo directory's checks.
   if (VERNIER_USE_CUPTI AND TARGET CUDA::cupti)
     target_link_libraries(${LIB_NAME}_cuda PRIVATE CUDA::cupti)
     target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=1)
+    set(BENCH_CUDA_HAS_CUPTI TRUE)
   else ()
     target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=0)
+    set(BENCH_CUDA_HAS_CUPTI FALSE)
   endif ()
 endif ()
 
