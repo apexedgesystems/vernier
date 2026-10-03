@@ -104,7 +104,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (11)
+# Demos Built on a Shared Example (12)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -136,6 +136,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_12_MemcheckProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_13_OffCpuProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -331,6 +335,44 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+)
+
+# ------------------------------------------------------------------------------
+# Demo 13's Checks Run by CTest
+# ------------------------------------------------------------------------------
+# How long demo 13's threads wait is measured on the rig and not registered.
+# What the machine's load cannot change is: run through contentionRun() as the
+# demo runs them, both versions reach the same total; and what decides the
+# traced check, read from captures the rig made. The traced check runs the demo
+# binary under --profile offcpu, also under the bpftrace label, alone and
+# bounded; it skips where offcpu cannot trace (no bpftrace, no sudo, a PID
+# namespace of its own, or the run's own refusal, quoted). The skip expression
+# names the check: its failure messages quote the demo's output.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoOffCpu
+  SOURCES
+  cpu/utst/13_OffCpuProfiler_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
+)
+target_compile_definitions(
+  TestDemoOffCpu PRIVATE VERNIER_DEMO_13_BINARY="$<TARGET_FILE:BenchDemo_13_OffCpuProfiler>"
+)
+add_dependencies(TestDemoOffCpu BenchDemo_13_OffCpuProfiler)
+set_property(
+  TEST OffCpu.CapturesTheLockWait
+  APPEND
+  PROPERTY LABELS bpftrace
+)
+set_tests_properties(
+  OffCpu.CapturesTheLockWait PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 SKIP_REGULAR_EXPRESSION
+                                        "\\[  SKIPPED \\] OffCpu\\.CapturesTheLockWait"
 )
 
 # ------------------------------------------------------------------------------

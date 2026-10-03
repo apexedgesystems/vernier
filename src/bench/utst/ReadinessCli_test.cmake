@@ -560,12 +560,15 @@ elseif (CASE STREQUAL "BpfRunReportsRefusedStop")
 
 elseif (CASE STREQUAL "OffcpuCurrentUserRun")
   bpf_fakes()
+  list(APPEND _env "FAKE_BPFTRACE_OUTPUT=${FIXTURES}/offcpu_dump.txt")
   run(run --profile offcpu ${_quick})
   expect_eq("${run_RC}" "0" "run exit status")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
-  count_of(_launches "${_text}" "bpftrace -e ")
-  expect_eq("${_launches}" "3" "offcpu attaches (the probe and two launches)")
+  count_of(_probes "${_text}" "bpftrace -e ")
+  expect_eq("${_probes}" "1" "offcpu attach probes")
+  count_of(_launches "${_text}" "bpftrace -B none -e ")
+  expect_eq("${_launches}" "3" "offcpu launches (the check's copy and one per case)")
   count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
   expect_eq("${_written}" "2" "stacks written, once per case")
   if (NOT EXISTS "${WORK_DIR}/ReadinessFixture.First.offcpu/offcpu.err.txt")
@@ -578,7 +581,9 @@ elseif (CASE STREQUAL "OffcpuRunAllowedProbeRefused")
   # the check's probe and allows the run's own command: the doctor warns
   # (unverified), and the run starts, stops and writes its stacks.
   bpf_fakes()
-  list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=interval:)
+  list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=interval:
+       "FAKE_BPFTRACE_OUTPUT=${FIXTURES}/offcpu_dump.txt"
+  )
   selected_row(row --profile offcpu)
   expect_eq("${row_STATUS}" "warn" "selected status")
   expect_has(
