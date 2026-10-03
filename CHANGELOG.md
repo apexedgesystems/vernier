@@ -712,14 +712,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
-- **Walkthrough 15's memcheck check skips only where valgrind could not check
-  the demo** -- where an assertion in valgrind 3.18.1's ELF debug-information
-  reader stops it before the demo binary starts (GCC 11.4 Debug builds linked
-  by mold), `Memcheck.FindsTheOffByOne` skips and quotes valgrind's line
-  instead of failing. It checks the write's frame and the block's allocation
-  frame each for its function and line, and where valgrind cannot read the
-  demo binary's symbols only a frame left unnamed in that binary goes
-  unchecked, so a wrong frame beside an unnamed one fails instead of skipping.
+- **The memcheck and helgrind walkthroughs' checks skip only where valgrind
+  could not check the demo** -- where an assertion in valgrind 3.18.1's ELF
+  debug-information reader stops it before the demo binary starts (GCC 11.4
+  Debug builds linked by mold), `Memcheck.FindsTheOffByOne`,
+  `Helgrind.FindsTheRace` and `Helgrind.LockedTotalReportsNothing` skip and
+  quote valgrind's line instead of failing. The memcheck check checks the
+  write's frame and the block's allocation frame each for its function and
+  line, and where valgrind cannot read the demo binary's symbols only a frame
+  left unnamed in that binary goes unchecked, so a wrong frame beside an
+  unnamed one fails instead of skipping.
 
 ## v1.0.3 - 2026-06-28
 
