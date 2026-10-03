@@ -53,6 +53,9 @@ struct PerfRow {
   int cycles{};
   int repeats{};
   int warmup{};
+  /// Threads that made the measured CPU calls: contentionRun()'s workers, 1 for
+  /// measured() and throughputLoop(). A GPU row records 1, the host thread that
+  /// drove it; a multi-GPU row's devices are its deviceCount.
   int threads{};
   int msgBytes{};
   bool console{};

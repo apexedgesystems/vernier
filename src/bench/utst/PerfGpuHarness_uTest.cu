@@ -425,6 +425,38 @@ TEST_F(PerfGpuHarnessTest, RowCarriesTheStabilityVerdict) {
   EXPECT_DOUBLE_EQ(ROW.stats.cv, RESULT.stats.cpuStats.cv);
 }
 
+/* ----------------------------- Rows ----------------------------- */
+
+/** @test A CPU baseline runs on the calling thread: its row records one thread at --threads 4 */
+TEST_F(PerfGpuHarnessTest, BaselineRowRecordsOneThread) {
+  ub::PerfConfig cfg = cfg_;
+  cfg.threads = 4;
+  ub::PerfGpuCase perf{uniqueSuite("GpuRowThreads") + ".CpuBaseline", cfg};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+
+  (void)perf.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+
+  EXPECT_EQ(lastRow().threads, 1);
+}
+
+/** @test A kernel row keeps the one host thread that drove it at --threads 4 */
+TEST_F(PerfGpuHarnessTest, KernelRowRecordsOneHostThread) {
+  SaxpyFixtureData data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.threads = 4;
+  ub::PerfGpuCase perf{uniqueSuite("GpuRowThreads") + ".Kernel", cfg};
+  perf.cudaWarmup(data.launch());
+
+  (void)perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_EQ(lastRow().threads, 1);
+}
+
 /* ----------------------------- Profiler Hooks ----------------------------- */
 
 namespace {

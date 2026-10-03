@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include <atomic>
 #include <fstream>
 #include <map>
 #include <sstream>
@@ -167,6 +168,52 @@ TEST_F(CsvListenerTest, RowKeepsCalibratedCycles) {
 TEST_F(CsvListenerTest, NoRowWithoutResult) {
   const std::map<std::string, std::string> cols = emitAndRead();
   EXPECT_TRUE(cols.empty());
+}
+
+/* ----------------------------- Thread Count Tests ----------------------------- */
+
+/**
+ * @test Writes one thread for throughputLoop() and measured(), whose calls run
+ *       on the calling thread, however many threads the case is configured for
+ */
+TEST_F(CsvListenerTest, SingleThreadRowRecordsOneThread) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  ASSERT_EQ(caseCfg.threads, 4);
+
+  int calls = 0;
+  PerfCase loop{"Listener.SingleThreadLoop", caseCfg};
+  (void)loop.throughputLoop([&] { ++calls; });
+  EXPECT_EQ(calls, caseCfg.cycles * caseCfg.repeats);
+  std::map<std::string, std::string> cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "1") << "throughputLoop() row";
+
+  calls = 0;
+  PerfCase body{"Listener.SingleThreadMeasured", caseCfg};
+  (void)body.measured([&] { ++calls; });
+  EXPECT_EQ(calls, caseCfg.repeats);
+  cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "1") << "measured() row";
+}
+
+/** @test Writes the number of workers contentionRun() started, each making every call */
+TEST_F(CsvListenerTest, ContentionRowRecordsItsWorkers) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  ASSERT_EQ(caseCfg.threads, 4);
+
+  std::atomic<int> calls{0};
+  PerfCase perf{"Listener.Contention", caseCfg};
+  (void)perf.contentionRun([&] { calls.fetch_add(1, std::memory_order_relaxed); });
+  EXPECT_EQ(calls.load(), caseCfg.threads * caseCfg.cycles * caseCfg.repeats);
+
+  const std::map<std::string, std::string> cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "4");
 }
 
 /* ----------------------------- Row Width Tests ----------------------------- */

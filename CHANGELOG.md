@@ -700,6 +700,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
+- **A single-thread measurement's row records one thread** -- the `threads`
+  column of a `measured()` or `throughputLoop()` row, a GPU case's CPU baseline
+  included, is 1 whatever `--threads` says, since only the calling thread runs
+  it; a `contentionRun()` row keeps the number of workers it started, and GPU
+  kernel rows stay at 1.
 
 ## v1.0.3 - 2026-06-28
 
