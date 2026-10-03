@@ -16,13 +16,10 @@
 #ifndef VERNIER_DEMO_WORKLOADS_HPP
 #define VERNIER_DEMO_WORKLOADS_HPP
 
-#include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <mutex>
 #include <numeric>
 #include <random>
 #include <vector>
@@ -42,101 +39,6 @@ inline std::vector<double> makeRandomDoubles(std::size_t count, std::uint32_t se
     x = dist(rng);
   }
   return v;
-}
-
-/* ----------------------------- AoS vs SoA ----------------------------- */
-
-/** @brief Array-of-Structs particle (cache-unfriendly: 128 bytes per particle). */
-struct ParticleAoS {
-  double x, y, z;
-  double vx, vy, vz;
-  double mass;
-  double padding[9]; // Inflate to 128 bytes (2 cache lines)
-};
-
-static_assert(sizeof(ParticleAoS) == 128, "ParticleAoS must be 128 bytes");
-
-inline std::vector<ParticleAoS> makeParticlesAoS(std::size_t count, std::uint32_t seed = 42) {
-  std::vector<ParticleAoS> v(count);
-  std::mt19937_64 rng(seed);
-  std::uniform_real_distribution<double> dist(-1.0, 1.0);
-  for (auto& p : v) {
-    p.x = dist(rng);
-    p.y = dist(rng);
-    p.z = dist(rng);
-    p.vx = dist(rng);
-    p.vy = dist(rng);
-    p.vz = dist(rng);
-    p.mass = 1.0;
-    std::memset(p.padding, 0, sizeof(p.padding));
-  }
-  return v;
-}
-
-/** @brief Struct-of-Arrays particle data (cache-friendly: sequential access). */
-struct ParticleSoA {
-  std::vector<double> x, y, z;
-  std::vector<double> vx, vy, vz;
-  std::vector<double> mass;
-};
-
-inline ParticleSoA makeParticlesSoA(std::size_t count, std::uint32_t seed = 42) {
-  ParticleSoA soa;
-  soa.x.resize(count);
-  soa.y.resize(count);
-  soa.z.resize(count);
-  soa.vx.resize(count);
-  soa.vy.resize(count);
-  soa.vz.resize(count);
-  soa.mass.resize(count, 1.0);
-  std::mt19937_64 rng(seed);
-  std::uniform_real_distribution<double> dist(-1.0, 1.0);
-  for (std::size_t i = 0; i < count; ++i) {
-    soa.x[i] = dist(rng);
-    soa.y[i] = dist(rng);
-    soa.z[i] = dist(rng);
-    soa.vx[i] = dist(rng);
-    soa.vy[i] = dist(rng);
-    soa.vz[i] = dist(rng);
-  }
-  return soa;
-}
-
-/* ----------------------------- Cache Workloads ----------------------------- */
-
-/** @brief Slow: Sum positions from AoS layout (128B stride, poor spatial locality). */
-inline double sumPositionsAoS(const std::vector<ParticleAoS>& particles) {
-  double sum = 0.0;
-  for (const auto& p : particles) {
-    sum += p.x + p.y + p.z;
-  }
-  return sum;
-}
-
-/** @brief Fast: Sum positions from SoA layout (sequential doubles, excellent locality). */
-inline double sumPositionsSoA(const ParticleSoA& particles, std::size_t count) {
-  double sum = 0.0;
-  for (std::size_t i = 0; i < count; ++i) {
-    sum += particles.x[i] + particles.y[i] + particles.z[i];
-  }
-  return sum;
-}
-
-/* ----------------------------- Contention Workloads ----------------------------- */
-
-/** @brief Slow: Mutex-protected counter increment. */
-inline void incrementMutex(std::mutex& mtx, std::uint64_t& counter, int iterations) {
-  for (int i = 0; i < iterations; ++i) {
-    std::lock_guard<std::mutex> lock(mtx);
-    ++counter;
-  }
-}
-
-/** @brief Fast: Atomic counter increment (lock-free). */
-inline void incrementAtomic(std::atomic<std::uint64_t>& counter, int iterations) {
-  for (int i = 0; i < iterations; ++i) {
-    counter.fetch_add(1, std::memory_order_relaxed);
-  }
 }
 
 /* ----------------------------- Dot Product Workloads ----------------------------- */

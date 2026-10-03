@@ -5,13 +5,19 @@
 
 #include "src/bench/inc/ProfilerGperf.hpp"
 
-#include <atomic>
+#include "src/bench/inc/ProfilerRegistry.hpp"
+
+#include <unistd.h>
 
 #include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 // Only include gperftools headers if available
 #if UB_HAS_GPERF_CPU
@@ -49,39 +55,202 @@ bool detectDwarfV5Warning() {
   return false;
 }
 
+/** @brief The analyzers --profile-analyze may run, in the order they are tried. */
+constexpr const char* ANALYZERS[] = {"google-pprof", "pprof"};
+
+/** @brief Bound on the analyzer's --help probe. */
+constexpr int ANALYZER_PROBE_TIMEOUT_MS = 10000;
+
+// Used only by the analysis, which exists only where CPU profiling does.
+#if UB_HAS_GPERF_CPU && defined(__linux__)
+/** @brief Bound on one analyzer run; symbolizing a large binary takes a while. */
+constexpr int ANALYZER_TIMEOUT_MS = 120000;
+
+/** @brief The first @p lines lines of @p text. */
+std::string firstLines(const std::string& text, std::size_t lines) {
+  std::istringstream in(text);
+  std::string line;
+  std::string out;
+  for (std::size_t i = 0; i < lines && std::getline(in, line); ++i) {
+    out += line + "\n";
+  }
+  return out;
+}
+#endif
+
+/** @brief What the capture holds, for messages: "cpu", "heap" or "cpu and heap". */
+std::string capturedModes(const GperfModes& modes) {
+  if (modes.cpu && modes.heap) {
+    return "cpu and heap";
+  }
+  return modes.cpu ? "cpu" : "heap";
+}
+
 } // namespace
+
+/* ----------------------------- Readiness ----------------------------- */
+
+GperfModes parseGperfModes(const std::string& profileArgs) {
+  // Simple substring match, as the flag has always been read.
+  const auto HAS = [&](const char* key) { return profileArgs.find(key) != std::string::npos; };
+  GperfModes modes;
+  modes.cpu = profileArgs.empty() || HAS("cpu") || HAS("both");
+  modes.heap = HAS("heap") || HAS("both");
+  return modes;
+}
+
+ReadinessResult checkGperfRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
+  auto plan = std::make_shared<GperfPlan>();
+  plan->modes = parseGperfModes(request.profileArgs);
+  plan->analyze = request.analyze;
+
+  constexpr bool CPU_BUILT = UB_HAS_GPERF_CPU != 0;
+  constexpr bool HEAP_BUILT = UB_HAS_GPERF_HEAP != 0;
+  if (!CPU_BUILT && !HEAP_BUILT) {
+    return readinessResult(ReadinessCause::MISSING,
+                           "gperftools headers were not present when libbench was built",
+                           "apt install libgperftools-dev (or equivalent), then rebuild.");
+  }
+  if (plan->modes.heap && !HEAP_BUILT) {
+    return readinessResult(ReadinessCause::UNSUPPORTED,
+                           "heap profiling is not compiled in: it needs tcmalloc, which replaces "
+                           "the process allocator and is therefore opt-in",
+                           "Reconfigure with -DVERNIER_LINK_TCMALLOC=ON and rebuild; CPU "
+                           "profiling (--profile-args cpu) needs no change.");
+  }
+  if (plan->modes.cpu && !CPU_BUILT) {
+    return readinessResult(ReadinessCause::MISSING,
+                           "CPU profiling is not compiled in (gperftools/profiler.h was absent)",
+                           "apt install libgperftools-dev (or equivalent), then rebuild.");
+  }
+
+  const std::string MODES = capturedModes(plan->modes);
+  const GperfAnalysis ANALYSIS = decideGperfAnalysis(plan->modes, plan->analyze, ctx);
+  plan->analyzer = ANALYSIS.analyzer;
+  plan->analysisReady = plan->analyze && plan->modes.cpu && !ANALYSIS.error;
+
+  ReadinessResult result;
+  if (ANALYSIS.error) {
+    // The promised analysis cannot run; the capture still can, and is kept.
+    result = *ANALYSIS.error;
+    plan->analysisSkipped = plan->analyzer.empty() ? std::string{"no google-pprof or pprof on PATH"}
+                                                   : plan->analyzer + " does not run";
+  } else {
+    std::string message =
+        "gperftools profiles " + MODES + (HEAP_BUILT ? " (built: cpu, heap)" : " (built: cpu)");
+    if (plan->analysisReady) {
+      message += "; --profile-analyze runs " + plan->analyzer;
+    } else if (!plan->analyzer.empty()) {
+      message += "; analyzer " + plan->analyzer;
+    } else {
+      message += "; no analyzer on PATH (only --profile-analyze needs one)";
+    }
+    result = readinessResult(ReadinessCause::READY, std::move(message), "");
+  }
+  result.plan = std::move(plan);
+  return result;
+}
+
+GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
+                                  const ReadinessContext& ctx) {
+  GperfAnalysis analysis;
+  // The analyzer: the first candidate found on PATH, and nothing else.
+  std::string notExecutable;
+  for (const char* NAME : ANALYZERS) {
+    const auto FOUND = resolveExecutable(NAME, ctx);
+    if (FOUND && FOUND->executable) {
+      analysis.analyzer = FOUND->path;
+      break;
+    }
+    if (FOUND && notExecutable.empty()) {
+      notExecutable = FOUND->path;
+    }
+  }
+  if (!analyze || !modes.cpu) {
+    return analysis; // no analysis promised: the analyzer is only named
+  }
+  const std::string KEPT =
+      "; the " + capturedModes(modes) + " capture still runs and cpu.prof is kept";
+  if (analysis.analyzer.empty()) {
+    analysis.error = readinessResult(
+        ReadinessCause::MISSING,
+        "--profile-analyze needs google-pprof or pprof, and neither is on PATH" +
+            (notExecutable.empty() ? std::string{}
+                                   : " as an executable (" + notExecutable + " is not one)") +
+            KEPT,
+        "Install an analyzer (google-pprof from gperftools, or Go's pprof), or drop "
+        "--profile-analyze.",
+        ReadinessStage::ANALYSIS);
+    return analysis;
+  }
+  // The analyzer runs: both google-pprof and Go's pprof answer --help.
+  const ProbeResult HELP =
+      runBoundedProbe({analysis.analyzer, "--help"}, ANALYZER_PROBE_TIMEOUT_MS, ctx);
+  if (!HELP.succeeded()) {
+    const std::string TAIL = outputTail(HELP.output);
+    analysis.error = readinessResult(
+        ReadinessCause::UNUSABLE,
+        "--profile-analyze would run " + analysis.analyzer + ", which does not run: --help " +
+            HELP.describe() + (TAIL.empty() ? std::string{} : ": " + TAIL) + KEPT,
+        "Repair or reinstall that analyzer, put a working google-pprof or pprof first on PATH, "
+        "or drop --profile-analyze.",
+        ReadinessStage::ANALYSIS);
+  }
+  return analysis;
+}
 
 /* ----------------------------- GperfProfiler Methods ----------------------------- */
 
+namespace {
+
+std::shared_ptr<const GperfPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const GperfPlan>(result.plan);
+}
+
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "gperf";
+  return checkGperfRequest(request, CTX);
+}
+
+} // namespace
+
 GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
+  const ReadinessResult DECISION = decideNow(cfg_);
+  plan_ = readyPlan(DECISION);
+  if (!plan_) {
+    // A rejected request leaves no folder behind.
+    std::fprintf(stderr, "[gperf] not started: %s\n", DECISION.report.message.c_str());
+    if (!DECISION.report.hint.empty()) {
+      std::fprintf(stderr, "[gperf] %s\n", DECISION.report.hint.c_str());
+    }
+    return;
+  }
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
+  applyPlan();
+}
 
-  // Parse mode from profileArgs (simple substring contains)
-  std::string args = cfg_.profileArgs;
-  auto containsKey = [&](const char* k) {
-    return args.find(k) != std::string::npos ||
-           args.find(std::string(k) + "=1") != std::string::npos;
-  };
-
-  wantCpu_ = (args.empty() || containsKey("cpu") || containsKey("both"));
-  wantHeap_ = (containsKey("heap") || containsKey("both"));
-
-#if !UB_HAS_GPERF_CPU
-  wantCpu_ = false;
-#endif
-#if !UB_HAS_GPERF_HEAP
-  // Once per process: every test constructs its own profiler.
-  static std::atomic<bool> heapExplained{false};
-  if (wantHeap_ && !heapExplained.exchange(true)) {
-    std::fprintf(stderr,
-                 "\n[gperf] heap profiling is not compiled in: it needs tcmalloc, which replaces\n"
-                 "[gperf] the process allocator and is therefore opt-in. Reconfigure with\n"
-                 "[gperf] -DVERNIER_LINK_TCMALLOC=ON and rebuild. Heap mode skipped.\n\n");
+GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName,
+                             std::shared_ptr<const GperfPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+  if (plan_) {
+    artifactDir_ =
+        profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "gperf");
+    applyPlan();
   }
-  wantHeap_ = false;
-#endif
+}
+
+void GperfProfiler::applyPlan() {
+  // The check refused modes that are not compiled in; the guards keep a
+  // hand-made plan from naming one.
+  wantCpu_ = plan_->modes.cpu && UB_HAS_GPERF_CPU != 0;
+  wantHeap_ = plan_->modes.heap && UB_HAS_GPERF_HEAP != 0;
 
   // DWARF v5 warning (once per process)
   static std::atomic<bool> warned{false};
@@ -127,7 +296,7 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
     ProfilerFlush();
     ProfilerStop();
 
-    // Auto-analyze: run pprof and print top functions
+    // Auto-analyze: run the analyzer the check found and print top functions
     if (cfg_.profileAnalyze && !cpuPath_.empty()) {
       runPprofAnalysis();
     }
@@ -147,22 +316,17 @@ void GperfProfiler::runPprofAnalysis() const {
 // Only ever called from the UB_HAS_GPERF_CPU branch of afterMeasure();
 // the body must compile out with it because cpuPath_ exists only there.
 #if UB_HAS_GPERF_CPU && defined(__linux__)
-  // Check if pprof/google-pprof is available
-  bool hasPprof = (std::system("command -v google-pprof >/dev/null 2>&1") == 0);
-  if (!hasPprof) {
-    hasPprof = (std::system("command -v pprof >/dev/null 2>&1") == 0);
-  }
-
-  if (!hasPprof) {
-    std::fprintf(stderr,
-                 "\n[INFO] --profile-analyze: google-pprof not found. Install gperftools.\n"
-                 "   Profile saved to: %s\n"
-                 "   Manual analysis: google-pprof --text <binary> %s\n\n",
-                 cpuPath_.c_str(), cpuPath_.c_str());
+  if (!plan_ || !plan_->analysisReady) {
+    // Reported when the profiler was created: the analysis cannot run.
+    const std::string WHY = (plan_ && !plan_->analysisSkipped.empty())
+                                ? plan_->analysisSkipped
+                                : std::string{"no analyzer was selected"};
+    std::fprintf(stderr, "[gperf] analysis skipped: %s; raw profile kept at %s\n", WHY.c_str(),
+                 cpuPath_.c_str());
     return;
   }
 
-  // Get the path to our own binary from /proc/self/exe
+  // The binary to symbolize: this process's own executable.
   std::array<char, 4096> exePath{};
   ssize_t len = ::readlink("/proc/self/exe", exePath.data(), exePath.size() - 1);
   if (len <= 0) {
@@ -170,61 +334,74 @@ void GperfProfiler::runPprofAnalysis() const {
     return;
   }
   exePath[static_cast<std::size_t>(len)] = '\0';
+  const std::string EXE{exePath.data()};
+  const ReadinessContext CTX = ReadinessContext::capture();
+
+  // Runs one view with the resolved analyzer, directly (no shell, no head),
+  // prints its first lines, and reports a failure without touching the raw
+  // profile. Returns false on failure.
+  const auto VIEW = [&](const std::vector<std::string>& args, std::size_t lines) {
+    std::vector<std::string> argv{plan_->analyzer};
+    argv.insert(argv.end(), args.begin(), args.end());
+    argv.push_back(EXE);
+    argv.push_back(cpuPath_);
+    const ProbeResult RUN = runBoundedProbe(argv, ANALYZER_TIMEOUT_MS, CTX, ProbeStreams::SEPARATE);
+    if (!RUN.succeeded()) {
+      const std::string TAIL = outputTail(RUN.errorOutput);
+      std::fprintf(stderr, "[gperf] %s failed: %s%s%s; raw profile kept at %s\n",
+                   plan_->analyzer.c_str(), RUN.describe().c_str(), TAIL.empty() ? "" : ": ",
+                   TAIL.c_str(), cpuPath_.c_str());
+      return false;
+    }
+    const std::string REPORT = firstLines(RUN.output, lines);
+    // google-pprof prints nothing at all for a profile without samples.
+    std::fputs(REPORT.empty() ? "(the analyzer printed no report; a very short run may hold no "
+                                "samples)\n"
+                              : REPORT.c_str(),
+               stdout);
+    return true;
+  };
 
   std::printf("\n=== gperftools Auto-Analysis (top 15 by cumulative) ===\n");
-  std::printf("Profile: %s\n\n", cpuPath_.c_str());
-
-  // Run pprof --text --cum (cumulative view, most useful for finding hotspots)
-  std::string cmd = "google-pprof --text --cum --lines '" + std::string(exePath.data()) + "' '" +
-                    cpuPath_ + "' 2>/dev/null | head -20";
-  [[maybe_unused]] int rc = std::system(cmd.c_str());
-
+  std::printf("Profile: %s\nAnalyzer: %s\n\n", cpuPath_.c_str(), plan_->analyzer.c_str());
+  // Cumulative view: the most useful for finding hotspots.
+  if (!VIEW({"--text", "--cum", "--lines"}, 20)) {
+    return;
+  }
   std::printf("\n--- Self time (top 10) ---\n\n");
-
-  cmd = "google-pprof --text --lines '" + std::string(exePath.data()) + "' '" + cpuPath_ +
-        "' 2>/dev/null | head -15";
-  rc = std::system(cmd.c_str());
-
+  (void)VIEW({"--text", "--lines"}, 15);
   std::printf("\n");
+  std::fflush(stdout);
 #endif
 }
 
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName) {
-#if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
-  // Only create if at least one mode is compiled in
-  return std::make_unique<GperfProfiler>(cfg, testName);
-#else
-  (void)cfg;
-  (void)testName;
-  return std::unique_ptr<Profiler>{}; // unsupported at build time -> let factory fall back to no-op
-#endif
+  auto plan = readyPlan(decideNow(cfg));
+  if (!plan) {
+    return nullptr; // not compiled in, or an unsupported mode -> the factory falls back to no-op
+  }
+  return std::make_unique<GperfProfiler>(cfg, testName, std::move(plan));
 }
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedGperfProfiler(const PerfConfig& cfg,
+                                                   const std::string& testName,
+                                                   const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<GperfProfiler>(cfg, testName, std::move(plan));
+}
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-namespace vernier {
-namespace bench {
-
-EnvReport checkGperfEnvironment() {
-#if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
-  std::string msg = "gperftools linked:";
-  if (UB_HAS_GPERF_CPU)
-    msg += " cpu";
-  if (UB_HAS_GPERF_HEAP)
-    msg += " heap";
-  return EnvReport{EnvReport::Status::Ok, std::move(msg), ""};
-#else
-  return EnvReport{EnvReport::Status::Error, "gperftools headers not present at build time",
-                   "apt install libgperftools-dev (or equivalent) then rebuild."};
-#endif
-}
-
-} // namespace bench
-} // namespace vernier
-
-VERNIER_REGISTER_PROFILER_BACKEND("gperf", ::vernier::bench::makeGperfProfiler,
-                                  ::vernier::bench::checkGperfEnvironment,
-                                  "Install libgperftools-dev and rebuild.")
+VERNIER_REGISTER_READINESS_BACKEND("gperf", ::vernier::bench::checkGperfRequest,
+                                   ::vernier::bench::makePlannedGperfProfiler,
+                                   "Install libgperftools-dev and rebuild.")

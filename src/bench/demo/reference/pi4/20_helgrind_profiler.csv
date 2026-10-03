@@ -1,0 +1,2 @@
+test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
+Helgrind.LockedTotal,2507,10,1,4,64,0,0,INFO,22.096,21.2374,22.7761,22.9273,22.9425,21.077,22.9442,22.0157,0.606033,0.0275273,45257.1,1,0.1,2026-09-28T05:50:10Z,unknown,pi4,aarch64
