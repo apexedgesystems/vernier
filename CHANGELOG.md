@@ -721,6 +721,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   up its NVML device by the CUDA device ordinal, which names another GPU where
   NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
   hides them; it looks the device up by the CUDA device's UUID.
+- **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
+  path it could not open (in a missing directory, a directory, an empty path)
+  wrote no rows, said nothing and exited 0. It exits 2 before any test runs,
+  with `[csv] cannot write --csv '<path>': <reason>` on stderr, so a script
+  that relied on exit 0 from such a run sees 2.
 
 ## v1.0.3 - 2026-06-28
 
