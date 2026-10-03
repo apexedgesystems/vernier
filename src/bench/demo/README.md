@@ -237,7 +237,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 
 15. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
 16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
-17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
+17. [13](docs/13_NVTX_ANNOTATION.md) -- named NVTX ranges: where a call's time goes on an Nsight Systems timeline
 18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
 19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
 20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
