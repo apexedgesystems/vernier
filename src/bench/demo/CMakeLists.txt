@@ -280,7 +280,10 @@ vernier_add_gtest(
   memcheck
 )
 target_compile_definitions(
-  TestDemoMemcheck PRIVATE VERNIER_DEMO_12_BINARY="$<TARGET_FILE:BenchDemo_12_MemcheckProfiler>"
+  TestDemoMemcheck
+  PRIVATE
+    VERNIER_DEMO_12_BINARY="$<TARGET_FILE:BenchDemo_12_MemcheckProfiler>"
+    VERNIER_DEMO_12_OFF_BY_ONE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/cpu/12_MemcheckProfiler_OffByOne.cpp"
 )
 add_dependencies(TestDemoMemcheck BenchDemo_12_MemcheckProfiler)
 set_tests_properties(
