@@ -597,8 +597,9 @@ fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
 /// The route of a request for canonical backend @p tool with its
 /// `--profile-args`, or `None` for the profiles the benchmark runs itself
 /// (perf, gperf, rapl, bpftrace, offcpu), jemalloc's environment wrap and
-/// rocprof. A word the tool does not take, a combination it cannot run and a
-/// mode `bench run` does not wrap are refused, naming what is accepted.
+/// rocprof. A word the tool does not take, a combination it cannot run, a
+/// mode `bench run` does not wrap and an output folder the tool would
+/// rewrite (heaptrack's %h and %p) are refused, naming what is accepted.
 /// Creates nothing.
 fn route_for(
     tool: &str,
@@ -708,11 +709,25 @@ fn route_for(
             &[&["helgrind.log"]],
         ),
         // heaptrack appends the suffix of the compression it was built with.
-        "heaptrack" => (
-            "heaptrack",
-            vec!["-o".into(), format!("{d}/run")],
-            &[&["run.zst", "run.gz"]],
-        ),
+        // It replaces %h and %p in its -o value with the host name and its
+        // process id and has no escape for them, so a folder holding either
+        // is refused; any other '%' reaches it as it is.
+        "heaptrack" => {
+            let held: Vec<&str> = ["%h", "%p"].into_iter().filter(|m| d.contains(m)).collect();
+            if !held.is_empty() {
+                return refuse(format!(
+                    "heaptrack replaces %h (the host name) and %p (its process id) in its -o \
+                     value and has no escape for them, so it cannot write into {d}, which holds \
+                     {}; choose a --profile-output-dir without %h or %p",
+                    held.join(" and ")
+                ));
+            }
+            (
+                "heaptrack",
+                vec!["-o".into(), format!("{d}/run")],
+                &[&["run.zst", "run.gz"]],
+            )
+        }
         "compute-sanitizer" => {
             if words.len() > 1 {
                 return refuse(format!(
@@ -1457,6 +1472,23 @@ mod tests {
                 route.dir,
                 Path::new(&row[3]).join(format!("my_test.{tool}")),
                 "{row:?}: the folder keeps its own name"
+            );
+        }
+        let folder_refusals = table_rows("refuse-folder");
+        assert!(
+            folder_refusals.len() >= 2,
+            "the table lost its folder refusals"
+        );
+        for row in folder_refusals {
+            let tool = canonical_backend(&row[1]);
+            let err = route_for(tool, None, bin, Some(Path::new(&row[2])))
+                .expect_err(&format!("{row:?} was accepted"));
+            assert!(matches!(err, Error::InvalidArgs(_)), "{row:?}: {err:?}");
+            let text = err.to_string();
+            assert!(text.contains(&row[3]), "{row:?}: {text}");
+            assert!(
+                text.contains(&format!("{}/my_test.{tool}", row[2])),
+                "{row:?}: the refusal names the folder: {text}"
             );
         }
         let exits = table_rows("exit");

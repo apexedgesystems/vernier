@@ -389,6 +389,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench run` doubles each `%` of the folder in those options, as it does in
   compute-sanitizer's `--log-file`, and the output lands in the folder as
   named.
+- **`bench run --profile heaptrack` refuses an output folder holding `%h` or
+  `%p`** -- heaptrack replaces both in its `-o` value, with the host name and
+  its process id, and has no escape for them, so
+  `--profile-output-dir 'out%p'` sent the trace to `out<pid>/` and the run
+  failed at completion. `bench run` refuses such a folder before anything
+  starts, naming it, and passes any other `%` to heaptrack as it is.
+  **Action needed:** give heaptrack an output folder without `%h` or `%p`.
 - **`bench run --profile compute-sanitizer` fails when the tool reports
   errors** -- the tool's default exit status is 0, so a benchmark whose kernels
   it reported as faulty passed, and an output folder holding `%` broke its log

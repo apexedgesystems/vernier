@@ -1845,6 +1845,25 @@ if [ "$macros" = yes ]; then
     esac
   fi
 fi
+# heaptrack replaces %h and %p in -o with the host name and its process id,
+# with no escape, and creates the folders the result names, as its script does.
+if [ "{name}" = heaptrack ] && [ -n "$out" ]; then
+  rest="$out"
+  out=""
+  while :; do
+    case "$rest" in
+      *%[hp]*)
+        pre="${{rest%%\%[hp]*}}"
+        rest="${{rest#"$pre"}}"
+        case "$rest" in
+          %h*) out="$out${{pre}}stand-in-host"; rest="${{rest#%h}}" ;;
+          *) out="$out$pre$$"; rest="${{rest#%p}}" ;;
+        esac ;;
+      *) out="$out$rest"; break ;;
+    esac
+  done
+  /bin/mkdir -p "${{out%/*}}"
+fi
 if [ -n "$out" ]; then
   if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
 fi
@@ -2807,6 +2826,60 @@ fn run_nsight_output_folder_with_percent() {
             );
         }
     }
+}
+
+/// @test heaptrack replaces %h and %p in -o and has no escape for them: an
+/// output folder holding either is refused before anything starts or is
+/// created, naming the folder, and one holding any other '%' reaches
+/// heaptrack as it is and gets the trace.
+#[test]
+fn run_heaptrack_output_folder_with_percent() {
+    for (folder, held) in [("out%h", "%h"), ("out%p", "%p")] {
+        let rig = route_rig(&["heaptrack"]);
+        let (code, err, log) = run_rig(
+            &rig,
+            &["--profile", "heaptrack", "--profile-output-dir", folder],
+        );
+        assert_eq!(code, 1, "{folder}: {err}");
+        assert!(
+            err.contains(&format!(
+                "Error: invalid arguments: --profile heaptrack: heaptrack replaces %h (the host \
+                 name) and %p (its process id) in its -o value and has no escape for them, so \
+                 it cannot write into {folder}/fake_bench.heaptrack, which holds {held}; choose \
+                 a --profile-output-dir without %h or %p"
+            )),
+            "{folder}: {err}"
+        );
+        assert_eq!(log, "", "{folder}: nothing may start");
+        let created: Vec<_> = std::fs::read_dir(rig.dir.path())
+            .expect("the rig's folder")
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n != "tools" && n != "fake_bench")
+            .collect();
+        assert!(
+            created.is_empty(),
+            "{folder}: nothing may be created: {created:?}"
+        );
+    }
+    let rig = route_rig(&["heaptrack"]);
+    let folder = "a%%b%x";
+    let (code, stdout, err, log) = run_rig_env(
+        &rig,
+        &["--profile", "heaptrack", "--profile-output-dir", folder],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        log.contains(&format!(" -o {folder}/fake_bench.heaptrack/run ")),
+        "{log}"
+    );
+    let output = format!("{folder}/fake_bench.heaptrack/run.gz");
+    assert!(rig.dir.path().join(&output).is_file(), "{stdout}{err}");
+    assert!(
+        stdout.contains(&format!("[bench] heaptrack wrote {output} (")),
+        "{stdout}"
+    );
 }
 
 /* ----------------------------- Doctor ----------------------------- */
