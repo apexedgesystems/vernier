@@ -296,15 +296,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   missing, does not run or fails on the profile is reported, and the capture
   and its `cpu.prof` are kept.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
-  harness's CUPTI collector checks every CUPTI call. A collector that cannot
-  collect (a build without CUPTI, or CUPTI refusing its callbacks or its kernel
-  records) is named once per process, with the `cupti*` columns it leaves
-  empty; a measured window whose records CUPTI dropped, failed to flush or did
-  not record leaves that row's `cupti*` cells empty, where a partial window
-  used to fill them, and the run names the test. The collector now asks for
-  `KERNEL` records only: CUPTI refused the `CONCURRENT_KERNEL` records it also
-  asked for, every time, so what it records is unchanged. `CuptiCollector`
-  gains `unavailableReason()` and `windowProblem()`.
+  harness checks every CUPTI and NVML call: the `cupti*` cells come only from a
+  measured window whose kernel records CUPTI delivered in full, the NVML cells
+  (`smClockMHz`, `throttling`, `powerDrawW`, `powerLimitW`, `temperatureC`,
+  `temperatureDeltaC`) only from readings NVML reported, and stderr names what
+  is missing and the cells it leaves empty. `smClockMHz` and `throttling` read
+  0 where nothing was sampled (in builds without NVML, and on the documented
+  Jetson AGX Thor rig, whose NVML answers `Not Supported` to each of these
+  readings) and are now empty, so a consumer parsing those columns as numbers
+  must accept an empty cell; `CuptiCollector` gains `unavailableReason()` and
+  `windowProblem()`.
 
 ### Fixed
 

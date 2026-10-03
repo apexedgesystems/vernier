@@ -89,6 +89,47 @@ target_include_directories(TestBenchCuptiAbsent BEFORE PRIVATE "${PROJECT_SOURCE
 target_compile_definitions(TestBenchCuptiAbsent PRIVATE COMPAT_CUPTI_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
+# Host Tests of the NVML Readings (2)
+# ------------------------------------------------------------------------------
+# The GPU harness's NVML readings (src/bench/src/NvmlTelemetry.hpp), compiled
+# into each test, so every configuration, CPU-only included, checks them.
+# TestBenchNvmlTelemetry builds them with NVML, against a scripted stand-in for
+# the NVML calls they make (fake_nvml/): a cell is filled only from readings
+# NVML reported, and the statement names the rest. TestBenchNvmlAbsent builds
+# them as a GPU build without NVML does (COMPAT_NVML_AVAILABLE=0): they compile
+# without any nvml.h and say the build has no NVML.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchNvmlTelemetry
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/NvmlTelemetry_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(
+  TestBenchNvmlTelemetry BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_nvml"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+target_compile_definitions(TestBenchNvmlTelemetry PRIVATE COMPAT_NVML_AVAILABLE=1)
+
+vernier_add_gtest(
+  TARGET
+  TestBenchNvmlAbsent
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/NvmlTelemetryAbsent_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(TestBenchNvmlAbsent BEFORE PRIVATE "${PROJECT_SOURCE_DIR}")
+target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
+
+# ------------------------------------------------------------------------------
 # GPU Unit Tests (2 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a

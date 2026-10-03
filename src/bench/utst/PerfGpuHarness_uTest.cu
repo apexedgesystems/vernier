@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -857,5 +858,114 @@ TEST_F(PerfGpuHarnessDeathTest, ACollectorThatCannotCollectIsStatedOnce) {
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(reportCuptiStatements(cfg_, STATEMENT), ::testing::ExitedWithCode(0), EXPECTED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/* ----------------------------- NVML Cells ----------------------------- */
+
+namespace {
+
+/** @brief True when @p line names @p column as a whole word. */
+bool namesColumn(const std::string& line, const std::string& column) {
+  const auto WORD = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; };
+  for (std::size_t at = line.find(column); at != std::string::npos;
+       at = line.find(column, at + 1)) {
+    const std::size_t END = at + column.size();
+    if ((at == 0 || !WORD(line[at - 1])) && (END == line.size() || !WORD(line[END]))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief True when @p text ends with @p tail. */
+bool endsWith(const std::string& text, const std::string& tail) {
+  return text.size() >= tail.size() &&
+         text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+/**
+ * @brief True when @p text has a "[gpu] ... stay empty." (or "stays empty.")
+ *        line naming @p column.
+ */
+bool statedEmpty(const std::string& text, const std::string& column) {
+  std::size_t from = 0;
+  while (from < text.size()) {
+    std::size_t end = text.find('\n', from);
+    if (end == std::string::npos) {
+      end = text.size();
+    }
+    const std::string LINE = text.substr(from, end - from);
+    const bool STATEMENT = LINE.rfind("[gpu] ", 0) == 0 &&
+                           (endsWith(LINE, " stay empty.") || endsWith(LINE, " stays empty."));
+    if (STATEMENT && namesColumn(LINE, column)) {
+      return true;
+    }
+    from = end + 1;
+  }
+  return false;
+}
+
+/**
+ * @brief Measures the kernel in a case of this process and writes to stderr
+ *        what is wrong with the row's NVML cells, then exits 0: a cell that is
+ *        0 where 0 is not a reading, an empty cell no statement names, or a
+ *        named cell that is filled.
+ */
+[[noreturn]] void reportNvmlCells(const ub::PerfConfig& cfg) {
+  std::optional<ub::PerfRow> row;
+  std::string captured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    ub::PerfGpuCase perf{uniqueSuite("GpuNvmlCells") + ".Kernel", cfg};
+    perf.cudaWarmup(data.launch());
+    static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+    row = ub::PerfRegistry::instance().take();
+    captured = capture.text();
+  }
+  std::vector<std::string> problems;
+  if (!row.has_value()) {
+    problems.emplace_back("no row");
+  } else {
+    const auto CHECK = [&](const char* column, bool filled, bool zero) {
+      const bool STATED = statedEmpty(captured, column);
+      if (filled && zero) {
+        problems.push_back(std::string(column) + " is 0");
+      }
+      if (filled && STATED) {
+        problems.push_back(std::string(column) + " is filled and stated empty");
+      }
+      if (!filled && !STATED) {
+        problems.push_back(std::string(column) + " is empty and unstated");
+      }
+    };
+    CHECK("smClockMHz", row->smClockMHz.has_value(), row->smClockMHz.value_or(1) == 0);
+    CHECK("throttling", row->throttling.has_value(), false);
+    CHECK("powerDrawW", row->powerDrawW.has_value(), row->powerDrawW.value_or(1.0) == 0.0);
+    CHECK("powerLimitW", row->powerLimitW.has_value(), row->powerLimitW.value_or(1.0) == 0.0);
+    CHECK("temperatureC", row->temperatureC.has_value(), row->temperatureC.value_or(1) == 0);
+    CHECK("temperatureDeltaC", row->temperatureDeltaC.has_value(), false);
+  }
+  std::string summary;
+  for (const std::string& p : problems) {
+    summary += (summary.empty() ? "" : "; ") + p;
+  }
+  std::fprintf(stderr, "nvml cell problems: %s\n", summary.empty() ? "none" : summary.c_str());
+  std::exit(0);
+}
+
+} // namespace
+
+/**
+ * @test A kernel row's NVML cells are readings or stated empty: none is 0
+ *       where 0 is not a reading, every empty one is named by a statement of
+ *       the run, and no named one is filled
+ */
+TEST_F(PerfGpuHarnessDeathTest, NvmlCellsAreReadingsOrStatedEmpty) {
+  // A fresh process, so this run's once-per-process statements are its own.
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportNvmlCells(cfg_), ::testing::ExitedWithCode(0), "nvml cell problems: none");
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }

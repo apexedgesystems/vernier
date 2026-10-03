@@ -81,11 +81,13 @@ struct PerfRow {
   std::optional<double> speedupVsCpu;
   std::optional<double> memBandwidthGBs;
   std::optional<double> occupancy;
+
+  // NVML samples at a kernel measurement's start and end (multi-GPU rows carry
+  // none). Each cell is empty unless NVML reported every reading it needs, and
+  // the run names the readings it did not report.
   std::optional<int> smClockMHz;
   std::optional<bool> throttling;
-
-  // Power + thermal (NVML; non-empty when capture is enabled)
-  std::optional<double> powerDrawW;  ///< Avg power draw across the measured window (W)
+  std::optional<double> powerDrawW;  ///< Mean of the power draw sampled at both ends (W)
   std::optional<double> powerLimitW; ///< Configured power limit (W)
   std::optional<int> temperatureC;   ///< End-of-measure GPU core temperature (C)
   std::optional<int>

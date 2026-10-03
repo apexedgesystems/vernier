@@ -87,6 +87,10 @@ struct OccupancyMetrics {
 
 /**
  * @brief Clock speed monitoring (throttling detection).
+ *
+ * NVML samples at the measured window's start and end. A field is 0 where NVML
+ * reported nothing; the CSV cells built from these fields are then empty and
+ * the run names the readings NVML did not report.
  */
 struct ClockSpeedProfile {
   int smClockMHzStart{};
@@ -113,7 +117,8 @@ struct ClockSpeedProfile {
  * these alongside kernel time lets `bench compare` flag the difference without
  * a separate run of `bench gpu-monitor`.
  *
- * All fields are zero when NVML is unavailable or the sample failed.
+ * A field is zero where NVML is unavailable or did not report the reading;
+ * the CSV cells built from these fields are then empty and the run says why.
  */
 struct PowerThermalProfile {
   double powerDrawWStart{}; ///< Instantaneous power draw at measure start (W)

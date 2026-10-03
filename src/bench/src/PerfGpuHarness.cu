@@ -11,20 +11,18 @@
 #include "src/bench/inc/PerfUtils.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/src/NvmlTelemetry.hpp"
 
 #include <cuda_runtime.h>
 #include <algorithm>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
 #include <cstdio>
 #include <thread>
-
-#if COMPAT_NVML_AVAILABLE
-#include <nvml.h>
-#endif
 
 namespace vernier {
 namespace bench {
@@ -276,26 +274,13 @@ public:
 
     queryDeviceInfo();
 
-#if COMPAT_NVML_AVAILABLE
-    if (gpuCfg_.captureClockSpeeds) {
-      if (nvmlInit() == NVML_SUCCESS) {
-        nvmlDeviceGetHandleByIndex(gpuCfg_.deviceId, &nvmlDevice_);
-        nvmlInitialized_ = true;
-      }
-    }
-#endif
+    nvml_.emplace(gpuCfg_.captureClockSpeeds, static_cast<unsigned>(gpuCfg_.deviceId));
   }
 
   ~PerfGpuCaseImpl() {
     cudaEventDestroy(eventStart_);
     cudaEventDestroy(eventStop_);
     cudaStreamDestroy(stream_);
-
-#if COMPAT_NVML_AVAILABLE
-    if (nvmlInitialized_) {
-      nvmlShutdown();
-    }
-#endif
   }
 
   PerfGpuCaseImpl(const PerfGpuCaseImpl&) = delete;
@@ -361,12 +346,9 @@ public:
     d2hTimes.reserve(cpuCfg_.repeats);
     totalTimes.reserve(cpuCfg_.repeats);
 
-    ClockSpeedProfile clocks{};
-    PowerThermalProfile powerThermal{};
-    if (gpuCfg_.captureClockSpeeds) {
-      captureClockSpeed(clocks, true);
-      capturePowerThermal(powerThermal, true);
-    }
+    // NVML readings at the window's start and end; each one checked.
+    nvml_telemetry::WindowReadings nvmlReadings;
+    nvml_->readStart(nvmlReadings);
 
     // Start in-process kernel metrics. Off when this case yielded to an
     // nsys/ncu session or to the explicit override (cuptiYields_, decided
@@ -448,9 +430,18 @@ public:
       trackUnifiedMemory(umProfile, umBefore, umAfter, totalManagedBytes);
     }
 
-    if (gpuCfg_.captureClockSpeeds) {
-      captureClockSpeed(clocks, false);
-      capturePowerThermal(powerThermal, false);
+    nvml_->readEnd(nvmlReadings);
+    ClockSpeedProfile clocks{};
+    PowerThermalProfile powerThermal{};
+    nvml_telemetry::fillProfiles(nvmlReadings, clocks, powerThermal);
+    // NVML cells nothing was read for are stated once per process: every
+    // cell, for a session that samples nothing, or the readings NVML did not
+    // report and the cells they leave empty.
+    const std::string NVML_STATEMENT =
+        nvml_->ready() ? nvml_telemetry::missingReadingsStatement(nvmlReadings)
+                       : nvml_telemetry::absenceStatement(nvml_->unavailableReason());
+    if (!NVML_STATEMENT.empty()) {
+      stateOnce(NVML_STATEMENT);
     }
 
     // Drain CUPTI activity buffers and aggregate before publishing the result.
@@ -523,9 +514,9 @@ public:
     const std::string LABEL_STR = "[" + testName_ + "]";
     printStatsWithHints(LABEL_STR.c_str(), totalStats, result.callsPerSecond, cpuCfg_, IS_STABLE);
 
-    if (clocks.isThrottling()) {
-      std::fprintf(stderr, "Warning: GPU throttling detected (%d -> %d MHz)\n",
-                   clocks.smClockMHzStart, clocks.smClockMHzEnd);
+    const std::string THROTTLING = nvml_telemetry::throttlingWarning(nvmlReadings);
+    if (!THROTTLING.empty()) {
+      std::fprintf(stderr, "%s\n", THROTTLING.c_str());
     }
 
     if (!hasLaunchConfig) {
@@ -555,7 +546,7 @@ public:
       }
     }
 
-    publishResult(result);
+    publishResult(result, nvml_telemetry::cellsOf(nvmlReadings));
 
     // After publishResult(): the hook stamps profileTool/profileDir onto the
     // row just published.
@@ -746,82 +737,6 @@ private:
 #endif
   }
 
-  void captureClockSpeed(ClockSpeedProfile& clocks, bool isStart) {
-#if COMPAT_NVML_AVAILABLE
-    if (!nvmlInitialized_)
-      return;
-
-    unsigned int smClock = 0, memClock = 0;
-    if (nvmlDeviceGetClockInfo(nvmlDevice_, NVML_CLOCK_SM, &smClock) == NVML_SUCCESS) {
-      if (isStart) {
-        clocks.smClockMHzStart = static_cast<int>(smClock);
-      } else {
-        clocks.smClockMHzEnd = static_cast<int>(smClock);
-      }
-    }
-
-    if (nvmlDeviceGetClockInfo(nvmlDevice_, NVML_CLOCK_MEM, &memClock) == NVML_SUCCESS) {
-      if (isStart) {
-        clocks.memClockMHzStart = static_cast<int>(memClock);
-      } else {
-        clocks.memClockMHzEnd = static_cast<int>(memClock);
-      }
-    }
-
-    if (isStart) {
-      unsigned int boostClock = 0;
-      if (nvmlDeviceGetMaxClockInfo(nvmlDevice_, NVML_CLOCK_SM, &boostClock) == NVML_SUCCESS) {
-        clocks.boostClockMHz = static_cast<int>(boostClock);
-      }
-    }
-#else
-    (void)clocks;
-    (void)isStart;
-#endif
-  }
-
-  void capturePowerThermal(PowerThermalProfile& pt, bool isStart) {
-#if COMPAT_NVML_AVAILABLE
-    if (!nvmlInitialized_)
-      return;
-
-    // Power: NVML reports milliwatts.
-    unsigned int powerMw = 0;
-    if (nvmlDeviceGetPowerUsage(nvmlDevice_, &powerMw) == NVML_SUCCESS) {
-      const double watts = static_cast<double>(powerMw) / 1000.0;
-      if (isStart)
-        pt.powerDrawWStart = watts;
-      else
-        pt.powerDrawWEnd = watts;
-    }
-
-    // Temperature: NVML reports degrees Celsius for the GPU core. Newer NVML
-    // deprecates nvmlDeviceGetTemperature for a versioned variant that is not
-    // present on all supported drivers, so keep the classic call (works
-    // everywhere we target) and silence the deprecation locally.
-    unsigned int tempC = 0;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-    if (nvmlDeviceGetTemperature(nvmlDevice_, NVML_TEMPERATURE_GPU, &tempC) == NVML_SUCCESS) {
-#pragma GCC diagnostic pop
-      if (isStart)
-        pt.temperatureCStart = static_cast<int>(tempC);
-      else
-        pt.temperatureCEnd = static_cast<int>(tempC);
-    }
-
-    if (isStart) {
-      unsigned int limitMw = 0;
-      if (nvmlDeviceGetPowerManagementLimit(nvmlDevice_, &limitMw) == NVML_SUCCESS) {
-        pt.powerLimitW = static_cast<double>(limitMw) / 1000.0;
-      }
-    }
-#else
-    (void)pt;
-    (void)isStart;
-#endif
-  }
-
   void enablePeerToPeer(int deviceCount) {
     for (int i = 0; i < deviceCount; ++i) {
       cudaSetDevice(i);
@@ -885,7 +800,7 @@ private:
     return profile;
   }
 
-  void publishResult(const PerfGpuResult& result) {
+  void publishResult(const PerfGpuResult& result, const nvml_telemetry::Cells& nvml) {
     // The row builder the CPU path uses: the config, metadata and stability
     // columns of a GPU row are then the same columns, filled the same way,
     // and the CSV `stable` verdict is the one the console printed.
@@ -906,21 +821,13 @@ private:
     }
     row.memBandwidthGBs = result.stats.transfers.bandwidthGBs();
     row.occupancy = result.stats.occupancy.achievedOccupancy;
-    row.smClockMHz = result.stats.clocks.smClockMHzEnd;
-    row.throttling = result.stats.clocks.isThrottling();
-
-    // Populate power + thermal only when we actually sampled non-zero values.
-    const auto& pt = result.stats.powerThermal;
-    if (pt.powerDrawWStart > 0.0 || pt.powerDrawWEnd > 0.0) {
-      row.powerDrawW = pt.avgPowerDrawW();
-    }
-    if (pt.powerLimitW > 0.0) {
-      row.powerLimitW = pt.powerLimitW;
-    }
-    if (pt.temperatureCStart > 0 || pt.temperatureCEnd > 0) {
-      row.temperatureC = pt.temperatureCEnd;
-      row.temperatureDeltaC = pt.temperatureDeltaC();
-    }
+    // The NVML cells, each from the readings NVML reported (empty otherwise).
+    row.smClockMHz = nvml.smClockMHz;
+    row.throttling = nvml.throttling;
+    row.powerDrawW = nvml.powerDrawW;
+    row.powerLimitW = nvml.powerLimitW;
+    row.temperatureC = nvml.temperatureC;
+    row.temperatureDeltaC = nvml.temperatureDeltaC;
 
     // CUPTI columns are only populated when at least one launch was captured;
     // otherwise the CSV cells stay empty rather than reporting zeros.
@@ -996,10 +903,9 @@ private:
   /// (non-owning; set by the PerfGpuCase constructor).
   const PerfGpuCase* owner_ = nullptr;
 
-#if COMPAT_NVML_AVAILABLE
-  nvmlDevice_t nvmlDevice_{};
-  bool nvmlInitialized_ = false;
-#endif
+  // NVML opened for this case's device (or the reason it samples nothing);
+  // set at the end of the constructor.
+  std::optional<nvml_telemetry::Session> nvml_;
 
   // Whether this case's CUPTI collection stands down (profiler_env::
   // cuptiMustYield(): an nsys/ncu session, or the explicit override). Decided
