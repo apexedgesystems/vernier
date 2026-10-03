@@ -299,12 +299,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   harness checks every CUPTI and NVML call: the `cupti*` cells come only from a
   measured window whose kernel records CUPTI delivered in full, the NVML cells
   (`smClockMHz`, `throttling`, `powerDrawW`, `powerLimitW`, `temperatureC`,
-  `temperatureDeltaC`) only from readings NVML reported, and stderr names what
-  is missing and the cells it leaves empty. `smClockMHz` and `throttling` read
-  0 where nothing was sampled (in builds without NVML, and on the documented
-  Jetson AGX Thor rig, whose NVML answers `Not Supported` to each of these
-  readings) and are now empty, so a consumer parsing those columns as numbers
-  must accept an empty cell; `CuptiCollector` gains `unavailableReason()` and
+  `temperatureDeltaC`) only from readings NVML reported, `occupancy` (the
+  harness's estimate from the launch shape, not a measured occupancy) only for
+  a launch configuration and `memBandwidthGBs` only for declared transfers, and
+  stderr names what is missing and the cells it leaves empty. `smClockMHz` and
+  `throttling` (without NVML, or where NVML answers `Not Supported`, as on the
+  documented Jetson AGX Thor rig), `occupancy` (without a launch configuration)
+  and `memBandwidthGBs` (for a test that declares no transfer) read 0 and are
+  now empty, so a consumer parsing those columns as numbers must accept an
+  empty cell; `CuptiCollector` gains `unavailableReason()` and
   `windowProblem()`.
 
 ### Fixed

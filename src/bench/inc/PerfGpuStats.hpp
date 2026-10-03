@@ -72,14 +72,23 @@ struct MemoryTransferProfile {
 /* ----------------------------- Occupancy & Clocks ----------------------------- */
 
 /**
- * @brief Kernel occupancy metrics.
+ * @brief The harness's occupancy estimate for a launch configuration.
+ *
+ * Filled only for a kernel measured with withLaunchConfig(); all zero
+ * otherwise. The estimate counts the SM's thread and block limits and the
+ * shared memory the launch configuration declares, not registers or static
+ * shared memory, and is not a measurement: Nsight Compute measures the
+ * occupancy a kernel achieves.
  */
 struct OccupancyMetrics {
-  int blockSize{};            ///< Threads per block used
-  int gridSize{};             ///< Blocks per grid used
-  int activeWarpsPerSM{};     ///< Active warps per SM (from occupancy calc)
-  int maxWarpsPerSM{};        ///< Max possible warps per SM
-  double achievedOccupancy{}; ///< Fraction of max occupancy achieved [0.0-1.0]
+  int blockSize{};        ///< Threads per block used
+  int gridSize{};         ///< Blocks per grid used
+  int activeWarpsPerSM{}; ///< Warps per SM the launch shape can keep resident (estimated)
+  int maxWarpsPerSM{};    ///< Max possible warps per SM
+  /// The estimate, activeWarpsPerSM over maxWarpsPerSM [0.0-1.0], published as
+  /// the CSV's `occupancy` cell. Despite the name, not a measured achieved
+  /// occupancy.
+  double achievedOccupancy{};
 
   enum class LimitingFactor { Unknown, Registers, SharedMemory, Warps, BlockSize };
   LimitingFactor limitingFactor = LimitingFactor::Unknown;

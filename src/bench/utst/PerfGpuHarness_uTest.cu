@@ -403,9 +403,11 @@ TEST_F(PerfGpuHarnessTest, AmbiguousSuiteBaselineIsReportedOncePerSuite) {
     captured = capture.text();
   }
 
+  // The report itself is counted: other lines of the run name the suite's tests.
+  const std::string REPORT = "suite " + SUITE + " measures a CPU baseline";
   std::size_t mentions = 0;
-  for (std::size_t at = captured.find(SUITE); at != std::string::npos;
-       at = captured.find(SUITE, at + SUITE.size())) {
+  for (std::size_t at = captured.find(REPORT); at != std::string::npos;
+       at = captured.find(REPORT, at + REPORT.size())) {
     ++mentions;
   }
   EXPECT_EQ(mentions, 1U) << "stderr said:\n" << captured;
@@ -987,4 +989,113 @@ TEST_F(PerfGpuHarnessTest, NvmlFindsTheCudaDeviceByItsUuid) {
     GTEST_SKIP() << REASON;
   }
   EXPECT_TRUE(SESSION.ready()) << UUID << ": " << REASON;
+}
+
+/* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
+
+namespace {
+
+/// The launch shape the tests' saxpyKernel launch uses.
+const dim3 GRID((ELEMENTS + BLOCK - 1) / BLOCK);
+const dim3 BLOCK_DIM(BLOCK);
+
+/** @brief The line the run writes for @p testName's measurement without a launch configuration. */
+std::string noLaunchConfigLine(const std::string& testName) {
+  return "[gpu] " + testName +
+         " declares no launch configuration (.withLaunchConfig(grid, block)), so its occupancy "
+         "stays empty.";
+}
+
+} // namespace
+
+/**
+ * @test The bandwidth cell is the declared transfers' rate, and a kernel-only
+ *       row has none: a rate over no bytes is not a measurement
+ */
+TEST_F(PerfGpuHarnessTest, BandwidthCellOnlyWhenBytesMoved) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuBandwidth") + ".Kernel", cfg_};
+  perf.cudaWarmup(data.launch());
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+  const ub::PerfRow KERNEL_ONLY = lastRow();
+  EXPECT_FALSE(KERNEL_ONLY.memBandwidthGBs.has_value())
+      << "a kernel-only row's bandwidth cell holds " << KERNEL_ONLY.memBandwidthGBs.value_or(-1.0);
+
+  const ub::PerfGpuResult MOVED =
+      perf.cudaKernel(data.launch(), "saxpy")
+          .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+          .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+          .measure();
+  const ub::PerfRow TRANSFERRING = lastRow();
+  ASSERT_EQ(MOVED.stats.transfers.h2dBytes + MOVED.stats.transfers.d2hBytes,
+            2 * SaxpyFixtureData::bytes());
+  ASSERT_TRUE(TRANSFERRING.memBandwidthGBs.has_value());
+  EXPECT_DOUBLE_EQ(*TRANSFERRING.memBandwidthGBs, MOVED.stats.transfers.bandwidthGBs());
+}
+
+/**
+ * @test A row without a launch configuration has no occupancy cell and the run
+ *       names its test; with one, the cell is the harness's estimate, the warps
+ *       the shape keeps resident over the SM's maximum
+ */
+TEST_F(PerfGpuHarnessTest, OccupancyCellOnlyWithALaunchConfiguration) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuOccupancy") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  perf.cudaWarmup(data.launch());
+
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow WITHOUT = lastRow();
+  EXPECT_FALSE(WITHOUT.occupancy.has_value())
+      << "the occupancy cell holds " << WITHOUT.occupancy.value_or(-1.0);
+  EXPECT_NE(captured.find(noLaunchConfigLine(NAME)), std::string::npos) << "stderr said:\n"
+                                                                        << captured;
+
+  const ub::PerfGpuResult WITH =
+      perf.cudaKernel(data.launch(), "saxpy").withLaunchConfig(GRID, BLOCK_DIM).measure();
+  const ub::PerfRow ROW = lastRow();
+  const ub::OccupancyMetrics& OCC = WITH.stats.occupancy;
+  ASSERT_EQ(OCC.blockSize, BLOCK);
+  ASSERT_GT(OCC.maxWarpsPerSM, 0);
+  ASSERT_TRUE(ROW.occupancy.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, OCC.achievedOccupancy);
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, static_cast<double>(OCC.activeWarpsPerSM) / OCC.maxWarpsPerSM);
+}
+
+/**
+ * @test The multi-GPU row follows the same rule: no occupancy cell without a
+ *       launch configuration, with the run naming its test, and the estimate
+ *       with one
+ */
+TEST_F(PerfGpuHarnessTest, MultiGpuOccupancyCellOnlyWithALaunchConfiguration) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuMultiOccupancy") + ".MultiGpu";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  const auto ON_DEVICE = [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); };
+
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernelMultiGpu(1, ON_DEVICE).measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow WITHOUT = lastRow();
+  EXPECT_FALSE(WITHOUT.occupancy.has_value())
+      << "the occupancy cell holds " << WITHOUT.occupancy.value_or(-1.0);
+  EXPECT_NE(captured.find(noLaunchConfigLine(NAME)), std::string::npos) << "stderr said:\n"
+                                                                        << captured;
+
+  const ub::MultiGpuResult WITH =
+      perf.cudaKernelMultiGpu(1, ON_DEVICE).withLaunchConfig(GRID, BLOCK_DIM).measure();
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_EQ(WITH.perDevice.size(), 1U);
+  ASSERT_TRUE(ROW.occupancy.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, WITH.perDevice[0].stats.occupancy.achievedOccupancy);
 }

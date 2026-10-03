@@ -44,6 +44,12 @@ namespace bench {
 // ============================================================================
 // Occupancy calculation helper
 // ============================================================================
+// The harness's occupancy estimate, not a measurement: the warps the launch
+// shape can keep resident on an SM, limited by the SM's thread and block
+// limits and by the shared memory the launch configuration declares, over the
+// SM's maximum warps. Registers and static shared memory are not counted.
+// Nsight Compute measures the occupancy a kernel achieves.
+// ============================================================================
 
 void calculateOccupancy(OccupancyMetrics& occ, dim3 grid, dim3 block, size_t sharedMemBytes,
                         const cudaDeviceProp& prop) {
@@ -519,10 +525,13 @@ public:
       std::fprintf(stderr, "%s\n", THROTTLING.c_str());
     }
 
+    // The estimate needs the launch shape, which a kernel passed as a callable
+    // does not reveal.
     if (!hasLaunchConfig) {
-      std::fprintf(
-          stderr,
-          "Hint: Occupancy is 0%% - add .withLaunchConfig(grid, block) for accurate metrics\n");
+      std::fprintf(stderr,
+                   "[gpu] %s declares no launch configuration (.withLaunchConfig(grid, block)), "
+                   "so its occupancy stays empty.\n",
+                   testName_.c_str());
     }
 
     if (result.stats.unifiedMemory.has_value()) {
@@ -666,6 +675,13 @@ public:
     }
 
     result.aggregatedStats.multiGpu = mgpu;
+
+    if (!hasLaunchConfig) {
+      std::fprintf(stderr,
+                   "[gpu] %s declares no launch configuration (.withLaunchConfig(grid, block)), "
+                   "so its occupancy stays empty.\n",
+                   testName_.c_str());
+    }
 
     std::printf("\n=== Multi-GPU Results ===\n");
     std::printf("Devices: %d\n", deviceCount);
@@ -819,8 +835,17 @@ private:
     if (result.speedupVsCpu > 0.0) {
       row.speedupVsCpu = result.speedupVsCpu;
     }
-    row.memBandwidthGBs = result.stats.transfers.bandwidthGBs();
-    row.occupancy = result.stats.occupancy.achievedOccupancy;
+    // A rate needs bytes moved over a measured time: a test that declares no
+    // transfer has no bandwidth cell rather than a 0.
+    const MemoryTransferProfile& XFER = result.stats.transfers;
+    if (XFER.h2dBytes + XFER.d2hBytes > 0 && XFER.h2dTimeUs + XFER.d2hTimeUs > 0.0) {
+      row.memBandwidthGBs = XFER.bandwidthGBs();
+    }
+    // calculateOccupancy() sets the block size; without a launch configuration
+    // there is no estimate and the cell stays empty.
+    if (result.stats.occupancy.blockSize > 0) {
+      row.occupancy = result.stats.occupancy.achievedOccupancy;
+    }
     // The NVML cells, each from the readings NVML reported (empty otherwise).
     row.smClockMHz = nvml.smClockMHz;
     row.throttling = nvml.throttling;
@@ -873,7 +898,9 @@ private:
     if (result.totalSpeedupVsCpu > 0.0) {
       row.speedupVsCpu = result.totalSpeedupVsCpu;
     }
-    row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
+    if (firstDev.stats.occupancy.blockSize > 0) {
+      row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
+    }
 
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;

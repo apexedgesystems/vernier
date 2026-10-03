@@ -79,6 +79,9 @@ struct PerfRow {
   std::optional<size_t> h2dBytes;
   std::optional<size_t> d2hBytes;
   std::optional<double> speedupVsCpu;
+  // The declared transfers' bytes over their time (empty when a test declares
+  // none) and the harness's occupancy estimate (empty without a launch
+  // configuration; not a measured occupancy).
   std::optional<double> memBandwidthGBs;
   std::optional<double> occupancy;
 
