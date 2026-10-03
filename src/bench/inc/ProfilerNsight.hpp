@@ -5,36 +5,37 @@
  * @brief NVIDIA Nsight profiler backend for GPU benchmarking.
  *
  * Behavior:
- *  - Nsight Systems (nsys): Attaches to running process via `-p <pid>` for timeline profiling
- *  - Nsight Compute (ncu): Attaches to running process for kernel analysis (limited support)
- *  - Kernel replay mode: Automatic metrics collection with detailed analysis
- *  - Artifacts written to `<artifactRoot>/<Suite.Case>.nsight/`
- *  - Integrates automatically via GPU profiler hooks
+ *  - Nsight Systems (nsys) and Nsight Compute (ncu) record a process only when
+ *    they start it: neither can attach to one that is already running. This
+ *    backend never starts either tool.
+ *  - Under an nsys or ncu session (`bench run --profile nsight|ncu`, or a
+ *    wrap typed by hand) the backend stays passive and says which tool owns
+ *    the capture.
+ *  - Without a session it prints the command that captures this run for the
+ *    selected mode, and the measurement proceeds unprofiled.
+ *  - Each measured window is marked with an NVTX range named after the test.
+ *  - Artifact folder: `<artifactRoot>/<Suite.Case>.nsight/` (`.ncu/` for
+ *    --profile ncu), or the runner's folder under `bench run`.
  *
  * Usage:
  *  @code{.cpp}
  *  PERF_GPU_TEST(MyKernel, Benchmark) {
- *    UB_PERF_GPU_GUARD(perf);
- *    ub::attachGpuProfilerHooks(perf, perf.cpuConfig());
+ *    PERF_GPU_GUARD(perf); // attaches the profiler hooks
  *    // ... test code ...
  *  }
  *  @endcode
  *
  *  Then run with:
- *    --profile nsight                          # Nsight Systems (timeline)
- *    --profile ncu                             # Nsight Compute (kernel analysis)
- *    --profile ncu --profile-args "replay"     # Kernel replay with metrics
- *    --profile nsight --profile-args "replay"  # Same replay via the nsight name
+ *    bench run <binary> --profile nsight       # Nsight Systems (timeline)
+ *    bench run <binary> --profile ncu          # Nsight Compute (kernel analysis)
+ *    --profile nsight --profile-args compute   # Compute mode via the nsight name
+ *    --profile ncu --profile-args replay       # Compute with the replay metric list
  *
  * Notes:
  *  - Both names dispatch to this backend; "ncu" forces Compute mode.
- *  - Under bench run the wrap happens externally (nsys profile / ncu around
- *    the binary) and the backend stays passive (VERNIER_EXTERNAL_WRAP);
- *    direct binary invocation attaches by pid outside containers.
- *  - Kernel replay collects rich per-kernel metrics via many launches, so it
- *    is inherently a separate pass from single-launch timing.
- *  - Requires NVIDIA Nsight tools to be installed
- *  - Safe no-op when tools unavailable
+ *  - Nsight Compute replays every kernel launch several times: keep the
+ *    launch count small (--cycles 3 --repeats 1).
+ *  - Requires NVIDIA Nsight tools to be installed.
  */
 
 #include <filesystem>
@@ -57,15 +58,15 @@ namespace bench {
  * @brief Nsight profiler mode selection.
  */
 enum class NsightMode {
-  Systems,      ///< Nsight Systems (nsys) - timeline profiling (default, auto-attaches)
-  Compute,      ///< Nsight Compute (ncu) - kernel analysis (limited attach support)
-  ComputeReplay ///< Kernel replay with detailed metrics
+  Systems,      ///< Nsight Systems (nsys) - timeline profiling (default)
+  Compute,      ///< Nsight Compute (ncu) - kernel analysis
+  ComputeReplay ///< Nsight Compute with the ReplayMetrics list
 };
 
 /* ----------------------------- ReplayMetrics ----------------------------- */
 
 /**
- * @brief Kernel replay metrics configuration.
+ * @brief The metrics the replay mode's ncu command collects.
  */
 struct ReplayMetrics {
   bool collectOccupancy = true;
@@ -126,26 +127,20 @@ public:
   void afterMeasure(const Stats& s) override;
 
 private:
-  bool isNsysAvailable() const;
-  bool isNcuAvailable() const;
-  void launchNsys();
-  void launchNcu();
-  void launchNcuReplay();
-  void stopProfiler();
-  void parseReplayMetrics();
-  void extractNsysStats(); ///< Auto-run `nsys stats --report ...` on the .nsys-rep
+  /// The command that captures this run in the selected mode, for a run no
+  /// Nsight tool started.
+  void printWrapCommand() const;
+  void popRange() noexcept;
 
   PerfConfig cfg_{};
   std::string testName_;
   std::string artifactDir_;
   NsightMode mode_ = NsightMode::Systems;
-  pid_t childPid_ = -1;
 
   ReplayMetrics replayMetrics_{};
-  bool useReplayMode_ = false;
 
-  // True when an NVTX range has been pushed by beforeMeasure(); ensures
-  // afterMeasure() pops it once even if launch failed earlier.
+  // True while the NVTX range pushed by beforeMeasure() is open, so it is
+  // popped exactly once, by afterMeasure() or by the destructor.
   bool nvtxRangePush_ = false;
 };
 

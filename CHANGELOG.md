@@ -36,6 +36,26 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
   test names change, so CSVs captured from it before this release do not join
   with newer ones.
+- **Demo 02 (Nsight) measures the shared SAXPY example** --
+  `BenchDemo_Gpu_02_NsightProfiler` times the example's `G0` and `G1` versions
+  and the kernel in each version's launch shape, and its walkthrough,
+  `src/bench/demo/docs/11_NSIGHT_PROFILER.md`, is rewritten from runs on the
+  documented Jetson AGX Thor rig, with the reference CSV at
+  `src/bench/demo/reference/thor/11_nsight_profiler.csv`. The tests are renamed
+  (`NsightProfiler.G0`, `G1`, `KernelOneThreadPerBlock`,
+  `Kernel256ThreadsPerBlock`, `LaunchShapeSpeedup`), so capture a new baseline:
+  demo 02 CSVs from earlier releases do not join with newer ones.
+- **The GPU harness's CUPTI collector stands down only inside an Nsight session
+  or on request** -- it stands down when nsys or ncu started the process
+  (`bench run --profile nsight|ncu`, or a wrap typed by hand, recognised from
+  `NSYS_PROFILING_SESSION_ID` or `NV_NSIGHT_INJECTION_PORT_BASE`) or when
+  `VERNIER_DISABLE_CUPTI` is true, and a `--profile` value alone no longer turns
+  it off. `VERNIER_DISABLE_CUPTI` reads `1`, `true`, `yes` or `on` as true and
+  `0`, `false`, `no`, `off` or an empty value as false, in any letter case, and
+  false does not override a session; any other value is a configuration error
+  (building a GPU case or a `CuptiCollector` throws `std::invalid_argument`).
+  With an Nsight version that does not export those session variables, set
+  `VERNIER_DISABLE_CUPTI=1` when wrapping.
 - **Demo 03 profiles the shared join example and checks what the profile
   says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
   `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
@@ -118,6 +138,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   into demo 02 as the filter example, and its standalone executable,
   `BenchDemo_05_BranchOptimization`, is removed. Demo 02's cases are renamed,
   so its CSVs need fresh baselines, and demo 05's CSVs have no successor.
+- **Demo 04 (cache-friendly layout) removed** -- `BenchDemo_04_CacheFriendly`
+  and its walkthrough, `src/bench/demo/docs/04_CACHE_FRIENDLY.md`, are gone,
+  and the particle workloads only it used (`ParticleAoS`, `ParticleSoA` and
+  their helpers) leave `helpers/DemoWorkloads.hpp`. Its CSVs have no successor.
 - **Demo 12 (memcheck) measures the shared `join` example and carries a bug
   for memcheck to find** -- `BenchDemo_12_MemcheckProfiler` measures `joinV0`
   and `joinV1`, one version per test, instead of a workload written for the
@@ -131,6 +155,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `src/bench/demo/reference/pi4/15_memcheck_profiler.csv`. The demo's test
   names change, so CSVs captured from it before this release do not join with
   newer ones.
+- **Demo 06 measures threads sharing the join example** --
+  `ThreadScaling.CoarseLock` and `ThreadScaling.NoSharing` time the shared
+  `join` example called from several threads, under one lock and with a total
+  per thread, and demo 06's walkthrough is rewritten for them. They replace
+  `MutexContention`, `AtomicLockFree` and `SingleThreadBaseline`, so older
+  demo 06 CSVs do not join with newer ones, and `incrementMutex` and
+  `incrementAtomic` are removed from `helpers/DemoWorkloads.hpp`.
+- **Demo 14 (helgrind) shows a data race beside its locked fix** -- helgrind
+  names the line where threads add the shared `join` example's result to one
+  total without a lock and reports nothing for the version that takes a mutex,
+  which walkthrough 20 measures: holding the lock across the join, four
+  threads are no faster than one. The demo's test names change, so CSVs
+  captured from it before this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -441,6 +478,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `sanitizer.log`, nsight report files, `kernel_profile.ncu-rep` or
   `jeprof.*.heap` from `<binary>.<tool>/` before it starts: copy them first to
   keep them.
+- **`contentionRun`'s start gate stays out of helgrind's reports** -- the
+  gate that releases a contention test's threads together spins on two atomic
+  flags, which helgrind reported as data races whenever it checked a contention
+  test. A libbench built where valgrind's `helgrind.h` is installed asks
+  helgrind to leave them unchecked, so a race-free test reports nothing; one
+  built without the header, or with `NVALGRIND`, still reports them.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
@@ -759,6 +802,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   against, the `speedupVsCpu` column held `0.000000`, which reads as a
   measured slowdown of infinity. The cell is empty instead, as the other GPU
   columns are when they have no value.
+- **`--profile nsight` and `--profile ncu` no longer try to attach** -- nsys
+  and ncu capture only a process they start, so the backend starts no tool;
+  outside an nsys or ncu session it prints, once per test, the command that
+  captures the run. Start the benchmark under
+  `bench run --profile nsight|ncu`, which also writes nsys's summary reports, or
+  under the printed command; a run without either captures nothing.
+- **A GPU test's profiler window closes when its measurement ends** -- every
+  `PerfGpuCase` measurement, `cpuBaseline()` included, runs the profiler's
+  before and after hooks around that measurement alone, so a test's NVTX range
+  no longer runs into the next test and GPU rows name the profiler and its
+  folder. The hooks run when a measurement starts and ends, not when a kernel
+  builder is created; the timed window is unchanged.
 - **`bench compare` fails instead of certifying a comparison it cannot make**
   -- two runs with no test name in common printed `No common tests to
   compare.` and exited 0, so a CI job that compared the wrong pair of files,
@@ -809,6 +864,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
+- **The Jetson AGX Thor rig procedure leaves the board as it found it** --
+  `RIG_THOR_AGX.md`'s measurement script restores GPU persistence mode to its
+  state before the run (`jetson_clocks` turns it on and its `--restore` leaves
+  it on), attempts each restoration even when another fails, reports every
+  failure and keeps the saved clock state, and exits with the measurement's own
+  status when that failed, otherwise nonzero if a restoration did. The rig
+  document also describes the board's two bands of end-to-end GPU time and why
+  its build makes no Python tools.
+- **`nsight-parse` reads the reports `bench run` leaves, and fails when it
+  cannot** -- it imports Nsight Compute reports with `ncu --import` and reads
+  the Nsight Systems summaries from its own export of each report; its CSV is
+  its own format, which `bench summary`, `bench compare` and `bench-plot` do
+  not accept. It exits 1, naming the input, when a requested input could not be
+  read, still writing the rows it did read (a summary with no data is only a
+  warning), so a script that relied on exit 0 after a failed read now sees 1.
 
 ## v1.0.3 - 2026-06-28
 
