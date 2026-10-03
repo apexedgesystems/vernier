@@ -369,3 +369,42 @@ if (TARGET CallgrindWindowProbeStartupFault)
       "${_fault_skips}"
   )
 endif ()
+
+# ------------------------------------------------------------------------------
+# Start Gate Under Helgrind (1 program)
+# ------------------------------------------------------------------------------
+# contentionRun's start gate spins on two atomic flags, which helgrind cannot
+# see as synchronisation; the gate marks them unchecked where valgrind's
+# helgrind.h is available. The program runs itself under helgrind on two probe
+# cases: workers that add under a mutex must report no error, workers that add
+# without one must still report their race. It learns a build it cannot run
+# under valgrind from the build's SANITIZER setting. The racy probe skips
+# itself outside valgrind, and CTest reports that as skipped; each skip
+# expression names its own test, whose failure messages quote the probe runs.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestStartGateHelgrind
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+  helgrind
+)
+
+if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
+  target_compile_definitions(TestStartGateHelgrind PRIVATE START_GATE_SANITIZER="${SANITIZER}")
+endif ()
+
+foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateReportsNothing
+                          StartGateHelgrindTest.WorkerRaceIsStillReported
+)
+  string(REPLACE "." "\\." _start_gate_pattern "${_start_gate_test}")
+  set_tests_properties(
+    ${_start_gate_test} PROPERTIES SKIP_REGULAR_EXPRESSION
+                                   "\\[  SKIPPED \\] ${_start_gate_pattern}"
+  )
+endforeach ()
