@@ -705,6 +705,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   included, is 1 whatever `--threads` says, since only the calling thread runs
   it; a `contentionRun()` row keeps the number of workers it started, and GPU
   kernel rows stay at 1.
+- **A test name with a comma, a quote or a line break stays one CSV cell** --
+  the CSV writer encloses such a name in double quotes and doubles each quote
+  inside it, as CSV specifies, so `bench summary`, `bench compare` and pandas
+  read the row whole; other names, and every other cell, are written as they
+  were.
 
 ## v1.0.3 - 2026-06-28
 
