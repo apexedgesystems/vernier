@@ -34,8 +34,9 @@
  * picks, and also has to move when an exported signature changes, which this
  * check cannot see. BENCH_ABI_VERSION is compared inside the process and is
  * what catches a layout change that leaves both the size and the file name
- * alone. Raise both for a layout change; the numbers do not have to agree,
- * and they do not today.
+ * alone. Raise both for a layout change, except while no release has shipped
+ * the current SONAME: every library built under it runs this check, so the
+ * version alone stops a mismatched pair. The numbers do not have to agree.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -53,10 +54,11 @@ namespace bench {
 /* ----------------------------- Constants ----------------------------- */
 
 /// Version of the layout shared with the bench libraries. Raise it for every
-/// change to the members of PerfConfig, Stats, PerfGpuConfig or of a struct the
-/// libraries hand back (GpuStats, PerfGpuResult, MultiGpuResult, PerfRow):
-/// added (also at the end), removed, reordered or retyped.
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 1;
+/// change to the members of PerfConfig, Stats, PerfGpuConfig, of a struct the
+/// libraries hand back (GpuStats, PerfGpuResult, MultiGpuResult, PerfRow) or of
+/// the PerfRegistry both sides publish rows through: added (also at the end),
+/// removed, reordered or retyped.
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 2;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;

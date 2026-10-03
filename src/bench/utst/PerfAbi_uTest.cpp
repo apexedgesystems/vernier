@@ -87,7 +87,7 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 } // namespace
 
 // The tables and bindings below describe this version and no other.
-static_assert(BENCH_ABI_VERSION == 1,
+static_assert(BENCH_ABI_VERSION == 2,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 

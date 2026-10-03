@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfCsv.hpp"
@@ -29,9 +30,12 @@ namespace bench {
 namespace detail {
 
 /**
- * @brief GoogleTest listener that appends one CSV row per finished test.
+ * @brief GoogleTest listener that appends one CSV row per completed
+ * measurement of each finished test.
  *
- * Takes the row the test left in PerfRegistry and writes it as recorded.
+ * Takes every row the test published in PerfRegistry, named by the registry
+ * (a case that measured more than once has a row per measurement, named
+ * `<case>/<label>`), and writes them as recorded, in completion order.
  * The config columns are the case's own (a --target-time case's calibrated
  * cycles, a per-case thread count), which can differ from the process-wide
  * config; the harness that built the row is the only authority on them.
@@ -55,20 +59,23 @@ public:
   }
 
   void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    // The test's rows leave the registry whether or not the file opened, so
+    // none of them waits into the next test.
+    std::vector<PerfRow> rows = PerfRegistry::instance().takeAll();
     if (!out_) {
       return;
     }
 
-    if (auto row = PerfRegistry::instance().take()) {
+    for (PerfRow& row : rows) {
       // Clear profile metadata if not including profile columns
       if (!includeProfile_) {
-        row->profileTool.reset();
-        row->profileDir.reset();
+        row.profileTool.reset();
+        row.profileDir.reset();
       }
 
       // The header's own flags, so the row has the header's column count
       // whatever this particular row carries.
-      writeCsvRow(out_, *row, includeProfile_, /*includeMetadata=*/true, includeGpu_);
+      writeCsvRow(out_, row, includeProfile_, /*includeMetadata=*/true, includeGpu_);
     }
   }
 
@@ -169,24 +176,51 @@ inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries) {
                stableCount, unstableCount);
 }
 
+/* ----------------------------- SummaryListener ----------------------------- */
+
+namespace detail {
+
+/**
+ * @brief GoogleTest listener that prints the end-of-run summary table.
+ *
+ * When no CSV listener takes each test's rows (no --csv), this one takes them
+ * at the test's end instead, which gives the table's entries the rows' names
+ * and keeps no more than one test's rows waiting in the registry.
+ *
+ * @note NOT RT-safe (console I/O, heap allocation).
+ */
+class SummaryListener : public ::testing::EmptyTestEventListener {
+public:
+  explicit SummaryListener(bool takeRows) : takeRows_(takeRows) {}
+
+  void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    if (takeRows_) {
+      static_cast<void>(PerfRegistry::instance().takeAll());
+    }
+  }
+
+  void OnTestProgramEnd(const ::testing::UnitTest& /*ut*/) override {
+    const auto& ENTRIES = PerfRegistry::instance().summary();
+    if (ENTRIES.size() >= 2) {
+      printSummaryTable(ENTRIES);
+    }
+  }
+
+private:
+  bool takeRows_{false};
+};
+
+} // namespace detail
+
 inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest* ut = nullptr) {
   if (!ut) {
     ut = ::testing::UnitTest::GetInstance();
   }
 
-  // Always install summary listener (prints end-of-run table)
-  class SummaryListener : public ::testing::EmptyTestEventListener {
-  public:
-    void OnTestProgramEnd(const ::testing::UnitTest& /*ut*/) override {
-      const auto& ENTRIES = PerfRegistry::instance().summary();
-      if (ENTRIES.size() >= 2) {
-        printSummaryTable(ENTRIES);
-      }
-    }
-  };
-
+  // Always install the summary listener (end-of-run table); it takes each
+  // test's rows itself only when no CSV listener will.
   auto& listeners = ut->listeners();
-  listeners.Append(new SummaryListener());
+  listeners.Append(new detail::SummaryListener(/*takeRows=*/!cfg.csv));
 
   // CSV listener (only if --csv provided)
   if (!cfg.csv) {

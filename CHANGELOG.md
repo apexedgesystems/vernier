@@ -710,6 +710,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   inside it, as CSV specifies, so `bench summary`, `bench compare` and pandas
   read the row whole; other names, and every other cell, are written as they
   were.
+- **Each completed measurement is its own CSV row** -- a test that measured
+  more than once wrote only its last measurement (a size sweep, or a
+  single-thread run then a contention run, kept one row); every measurement
+  now writes its own row, with its own config and profiler identity, and a test
+  that measures once keeps its name. The rows of a case measured more than once
+  in a test are named `<case>/<label>`, with `#n` after a label that is empty
+  or repeats, in the CSV and the end-of-run table; such a case still has one
+  profiler artifact folder, so a backend that writes each capture under a fixed
+  file name keeps only the last one. **Migration:** a baseline recorded from
+  such a test has one row under the case's bare name, which
+  `bench compare --fail-on-regression` reports missing (and the
+  `<case>/<label>` rows new) until the baseline is recorded again; rebuild
+  benchmarks against these headers, since `BENCH_ABI_VERSION` is now 2 and a
+  bench library built from earlier headers stops the run with the ABI mismatch
+  message.
 
 ## v1.0.3 - 2026-06-28
 
