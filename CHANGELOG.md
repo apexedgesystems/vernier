@@ -712,6 +712,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
+- **A single-thread measurement's row records one thread** -- a `measured()` or
+  `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
+  `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
+  number of workers it started.
+- **A test name with a comma, a quote or a line break stays one CSV cell** --
+  the CSV writer quotes such a name and doubles each quote inside it, so
+  `bench summary`, `bench compare` and pandas read the row whole.
+- **Each completed measurement is its own CSV row** -- a test that measured
+  more than once wrote only its last measurement; now every completed
+  measurement writes its own row, a case measured more than once in a test
+  names its rows `<case>/<label>` (with `#n` after an empty or repeated label),
+  and a test that measures once keeps its name. **Migration:** re-record a
+  baseline taken from a test that measured more than once, since
+  `bench compare --fail-on-regression` reports its single old row missing, and
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 2).
+- **The end-of-run table counts rows and tests apart** -- when a test published
+  more than one row the footer reads like
+  `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
+  counts being rows; when every test published one row it is unchanged.
 
 ## v1.0.3 - 2026-06-28
 
