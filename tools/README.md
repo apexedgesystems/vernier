@@ -298,7 +298,18 @@ naming the input and its cause, and the rows of the reports that were read are
 written all the same. A summary with no data, such as the kernel summary of a
 report with no kernel, is a warning. A `--csv` that names one of the reports is
 refused before anything is read. SIGINT or SIGTERM stops the tool and every
-process it started, removes the private export and writes nothing.
+process it started, removes the private export and writes nothing. On the
+Jetson AGX Thor rig (nsys 2025.3.2, ncu 2025.3.1), a directory with one good
+report and a truncated copy of an Nsight Compute report:
+
+```bash
+bench nsight-parse parse mixed/ --csv mixed.csv   # exits 1
+```
+
+```
+[nsight-parse] error: ncu --import failed for mixed/damaged.ncu-rep: exit status 1: ==ERROR== An unexpected incompatibility with this Nsight Compute version occurred. Try opening the file with the same tool version it was created with.
+[nsight-parse] wrote 13 rows to mixed.csv
+```
 
 ### init / config-validate - Project Defaults
 
