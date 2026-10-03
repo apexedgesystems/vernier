@@ -43,6 +43,8 @@ using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
 using vernier::bench::PerfRow;
+using vernier::bench::PerfSummaryEntry;
+using vernier::bench::printSummaryTable;
 using vernier::bench::Profiler;
 using vernier::bench::ProfilerRegistry;
 using vernier::bench::ReadinessCause;
@@ -438,6 +440,52 @@ TEST_F(CsvListenerTest, ProfilerIdentityStaysWithItsMeasurement) {
   for (const auto& row : rows) {
     EXPECT_EQ(row.at("profileTool"), "rows-fixture") << row.at("test");
   }
+}
+
+/* ----------------------------- Summary Table Tests ----------------------------- */
+
+namespace {
+
+/** @brief The table printSummaryTable() prints for @p entries and @p tests. */
+std::string summaryTable(const std::vector<PerfSummaryEntry>& entries, std::size_t tests) {
+  ::testing::internal::CaptureStdout();
+  printSummaryTable(entries, tests);
+  std::fflush(stdout);
+  return ::testing::internal::GetCapturedStdout();
+}
+
+/** @brief The last line of @p text, without its line break. */
+std::string lastLine(const std::string& text) {
+  const std::string body = text.substr(0, text.find_last_not_of('\n') + 1);
+  return body.substr(body.find_last_of('\n') + 1);
+}
+
+PerfSummaryEntry summaryEntry(const std::string& name, bool stable) {
+  return PerfSummaryEntry{name, 1.5, stable ? 0.01 : 0.4, 1e6, stable, 0.05};
+}
+
+} // namespace
+
+/** @test Keeps the footer of one row per test byte for byte */
+TEST(PrintSummaryTableTest, FooterIsUnchangedWhenEachTestPublishedOneRow) {
+  const std::vector<PerfSummaryEntry> entries = {summaryEntry("Suite.First", true),
+                                                 summaryEntry("Suite.Second", false)};
+
+  const std::string table = summaryTable(entries, 2);
+
+  EXPECT_EQ(lastLine(table), "2 tests | 1 stable | 1 unstable");
+  EXPECT_EQ(table, summaryTable(entries, 0)) << "a caller that passes no test count";
+}
+
+/** @test Names rows and tests when a test published more than one row */
+TEST(PrintSummaryTableTest, FooterNamesRowsAndTestsWhenATestPublishedSeveral) {
+  const std::vector<PerfSummaryEntry> entries = {
+      summaryEntry("Suite.Sweep/64", true), summaryEntry("Suite.Sweep/256", true),
+      summaryEntry("Suite.Sweep/1024", false), summaryEntry("Suite.Other", true),
+      summaryEntry("Suite.Last", true)};
+
+  EXPECT_EQ(lastLine(summaryTable(entries, 3)), "5 rows from 3 tests | 4 stable | 1 unstable");
+  EXPECT_EQ(lastLine(summaryTable(entries, 1)), "5 rows from 1 test | 4 stable | 1 unstable");
 }
 
 /* ----------------------------- Row Width Tests ----------------------------- */

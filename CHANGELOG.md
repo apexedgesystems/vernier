@@ -725,6 +725,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   benchmarks against these headers, since `BENCH_ABI_VERSION` is now 2 and a
   bench library built from earlier headers stops the run with the ABI mismatch
   message.
+- **The end-of-run table counts rows and tests apart** -- when a test published
+  more than one row the footer reads like
+  `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
+  counts being rows; when every test published one row it is unchanged.
 
 ## v1.0.3 - 2026-06-28
 

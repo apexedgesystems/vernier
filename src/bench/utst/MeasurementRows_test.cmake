@@ -7,9 +7,11 @@
 # Publication: at --threads 4 the CSV holds one row per completed measurement,
 # named as the registry names a test's rows, each with its own measurement's
 # median and its case's config; the end-of-run table shows the same names,
-# with and without --csv; --gtest_repeat writes each repetition's rows once; a
-# measurement that throws publishes nothing; under --target-time each case's
-# row carries the cycles of its own calibration.
+# with and without --csv, and its footer counts the rows and the tests that
+# published them (one row per test keeps the "<n> tests" line); --gtest_repeat
+# writes each repetition's rows once; a measurement that throws publishes
+# nothing; under --target-time each case's row carries the cycles of its own
+# calibration.
 #
 # CliAgreement: `bench summary` and `bench compare` read the same names, and a
 # baseline written one row per test (the last measurement under the case name)
@@ -61,6 +63,9 @@ foreach (_entry IN LISTS _expected)
   list(APPEND _tests "${_field}")
 endforeach ()
 list(LENGTH _names _expected_rows)
+set(_measuring_tests ${_tests})
+list(REMOVE_DUPLICATES _measuring_tests)
+list(LENGTH _measuring_tests _expected_tests)
 
 # Record a problem unless <actual> equals <expected>.
 function (expect_eq actual expected what)
@@ -249,6 +254,47 @@ function (table_names out text)
   )
 endfunction ()
 
+# The end-of-run table printed in <text>: sets <prefix>_FOOTER (its last line)
+# and <prefix>_EXPECT, the footer its rows call for: "<rows> rows from <tests>
+# tests | ..." when rows outnumber the <tests> given, "<rows> tests | ..."
+# when they do not, the stable and unstable counts being the rows the table
+# marks OK and UNSTABLE.
+function (table_footer prefix text tests)
+  set(_footer "")
+  set(_rows 0)
+  set(_stable 0)
+  set(_unstable 0)
+  string(FIND "${text}" "Median (us)" _at)
+  if (NOT _at EQUAL -1)
+    string(SUBSTRING "${text}" ${_at} -1 _table)
+    string(REGEX MATCHALL "  (OK|UNSTABLE)\n" _marks "${_table}")
+    foreach (_mark IN LISTS _marks)
+      math(EXPR _rows "${_rows} + 1")
+      if (_mark MATCHES "UNSTABLE")
+        math(EXPR _unstable "${_unstable} + 1")
+      else ()
+        math(EXPR _stable "${_stable} + 1")
+      endif ()
+    endforeach ()
+    if (_table MATCHES "\n([0-9][^\n]* unstable)\n")
+      set(_footer "${CMAKE_MATCH_1}")
+    endif ()
+  endif ()
+  if (tests LESS _rows)
+    set(_expect "${_rows} rows from ${tests} tests | ${_stable} stable | ${_unstable} unstable")
+  else ()
+    set(_expect "${_rows} tests | ${_stable} stable | ${_unstable} unstable")
+  endif ()
+  set(${prefix}_FOOTER
+      "${_footer}"
+      PARENT_SCOPE
+  )
+  set(${prefix}_EXPECT
+      "${_expect}"
+      PARENT_SCOPE
+  )
+endfunction ()
+
 # The JSON array at <path...> in <json>: its string elements, or with
 # MEMBER=<name> set before the call, that member of each element.
 function (json_list out json)
@@ -325,18 +371,33 @@ if (CASE STREQUAL "Publication")
 
   table_names(_table "${csv_OUT}")
   expect_eq("${_table}" "${rows_NAMES}" "end-of-run table names against the CSV")
+  # The footer counts the rows and the tests that published them.
+  table_footer(_footer "${csv_OUT}" ${_expected_tests})
+  expect_eq("${_footer_FOOTER}" "${_footer_EXPECT}" "end-of-run table footer")
 
   # Two repetitions: each writes its own rows once.
   run(repeat "${PROBE}" ${_common} --gtest_repeat=2 --csv "${WORK_DIR}/repeat.csv")
   expect_eq("${repeat_RC}" "0" "probe exit status (--gtest_repeat=2)")
   read_csv(repeat "${WORK_DIR}/repeat.csv")
   expect_eq("${repeat_NAMES}" "${_names};${_names}" "CSV row names, two repetitions")
+  math(EXPR _repeated_tests "2 * ${_expected_tests}")
+  table_footer(_footer "${repeat_OUT}" ${_repeated_tests})
+  expect_eq("${_footer_FOOTER}" "${_footer_EXPECT}" "end-of-run table footer, two repetitions")
 
   # Without --csv the table still names every row.
   run(plain "${PROBE}" ${_common})
   expect_eq("${plain_RC}" "0" "probe exit status (no --csv)")
   table_names(_table "${plain_OUT}")
   expect_eq("${_table}" "${_names}" "end-of-run table names without --csv")
+  table_footer(_footer "${plain_OUT}" ${_expected_tests})
+  expect_eq("${_footer_FOOTER}" "${_footer_EXPECT}" "end-of-run table footer without --csv")
+
+  # Two tests of one row each: the footer is the one-row-per-test line.
+  run(single "${PROBE}" ${_common} --gtest_filter=Rows.OneMeasurement:Rows.SecondMeasurementThrows)
+  expect_eq("${single_RC}" "0" "probe exit status (one row per test)")
+  table_footer(_footer "${single_OUT}" 2)
+  expect_eq("${_footer_FOOTER}" "${_footer_EXPECT}" "end-of-run table footer, one row per test")
+  expect_has("${_footer_EXPECT}" "2 tests | " "the one-row-per-test footer's form")
 
   # --target-time: each separately named case calibrates its own cycles.
   run(target

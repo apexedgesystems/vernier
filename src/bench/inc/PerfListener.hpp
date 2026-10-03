@@ -93,20 +93,30 @@ private:
 /**
  * @brief Print end-of-run summary table from accumulated results.
  *
- * Format:
+ * Format, when every test published one row:
  * @code
- * ================================ BENCHMARK SUMMARY ================================
- * Test                                       Median (us)   CV%     Calls/s   Status
- * -----------------------------------------------------------------------------------
- * CoreFeatures.BasicThroughput                    0.034    4.2%      29.4M   OK
- * CoreFeatures.WarmupStabilization                0.089   12.3%      11.2M   UNSTABLE
- * -----------------------------------------------------------------------------------
+ * ==================================================================================
+ * Test                               Median (us)     CV%     Calls/s  Status
+ * ----------------------------------------------------------------------------------
+ * CoreFeatures.BasicThroughput             0.034    4.2%       29.4M  OK
+ * CoreFeatures.WarmupStabilization         0.089   12.3%       11.2M  UNSTABLE
+ * ----------------------------------------------------------------------------------
  * 2 tests | 1 stable | 1 unstable
  * @endcode
  *
+ * When a test published more than one row the footer names both counts, and
+ * the stable and unstable counts are rows:
+ * @code
+ * 3 rows from 2 tests | 2 stable | 1 unstable
+ * @endcode
+ *
+ * @param entries One entry per published row.
+ * @param tests   Tests that published the entries. When it is at least 1 and
+ *                smaller than the number of entries the footer names both
+ *                counts; otherwise it counts one test per row.
  * @note NOT RT-safe (console I/O, heap allocation).
  */
-inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries) {
+inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries, std::size_t tests = 0) {
   if (entries.empty()) {
     return;
   }
@@ -172,8 +182,14 @@ inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries) {
   for (int i = 0; i < TOTAL_WIDTH; ++i) {
     std::fputc('-', stdout);
   }
-  std::fprintf(stdout, "\n%d tests | %d stable | %d unstable\n", static_cast<int>(entries.size()),
-               stableCount, unstableCount);
+  if (tests > 0 && tests < entries.size()) {
+    std::fprintf(stdout, "\n%d rows from %d test%s | %d stable | %d unstable\n",
+                 static_cast<int>(entries.size()), static_cast<int>(tests), (tests == 1) ? "" : "s",
+                 stableCount, unstableCount);
+  } else {
+    std::fprintf(stdout, "\n%d tests | %d stable | %d unstable\n", static_cast<int>(entries.size()),
+                 stableCount, unstableCount);
+  }
 }
 
 /* ----------------------------- SummaryListener ----------------------------- */
@@ -183,9 +199,10 @@ namespace detail {
 /**
  * @brief GoogleTest listener that prints the end-of-run summary table.
  *
- * When no CSV listener takes each test's rows (no --csv), this one takes them
- * at the test's end instead, which gives the table's entries the rows' names
- * and keeps no more than one test's rows waiting in the registry.
+ * It counts the tests that published rows, for the table's footer. When no CSV
+ * listener takes each test's rows (no --csv), this one takes them at the
+ * test's end instead, which gives the table's entries the rows' names and
+ * keeps no more than one test's rows waiting in the registry.
  *
  * @note NOT RT-safe (console I/O, heap allocation).
  */
@@ -193,7 +210,15 @@ class SummaryListener : public ::testing::EmptyTestEventListener {
 public:
   explicit SummaryListener(bool takeRows) : takeRows_(takeRows) {}
 
+  void OnTestStart(const ::testing::TestInfo& /*info*/) override {
+    rowsAtTestStart_ = PerfRegistry::instance().summary().size();
+  }
+
   void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    // A test counts once in the footer however many rows it published.
+    if (PerfRegistry::instance().summary().size() > rowsAtTestStart_) {
+      ++testsWithRows_;
+    }
     if (takeRows_) {
       static_cast<void>(PerfRegistry::instance().takeAll());
     }
@@ -202,12 +227,14 @@ public:
   void OnTestProgramEnd(const ::testing::UnitTest& /*ut*/) override {
     const auto& ENTRIES = PerfRegistry::instance().summary();
     if (ENTRIES.size() >= 2) {
-      printSummaryTable(ENTRIES);
+      printSummaryTable(ENTRIES, testsWithRows_);
     }
   }
 
 private:
   bool takeRows_{false};
+  std::size_t rowsAtTestStart_{0};
+  std::size_t testsWithRows_{0};
 };
 
 } // namespace detail
