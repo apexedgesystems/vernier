@@ -178,6 +178,45 @@ target_include_directories(
 )
 
 # ------------------------------------------------------------------------------
+# Walkthrough 19's Column Check (1)
+# ------------------------------------------------------------------------------
+# TestDemoKernelColumns runs demo 02's two kernel cases with --csv and holds
+# each GPU column of their rows to its source: CUDA events, the harness's
+# occupancy estimate, CUPTI's records (BENCH_CUDA_HAS_CUPTI says whether the
+# build collects them) and NVML's readings, every cell the run cannot fill
+# empty and stated. It compiles the SAXPY example's kernel source into itself
+# to read the kernel's compiled resource use, so it links no example library.
+# Built where the GPU demos are, under the demo and gpu labels; it compares no
+# timing. The skip expression names the check, as the memcheck check's does.
+# ------------------------------------------------------------------------------
+
+if (TARGET BenchDemo_Gpu_02_NsightProfiler)
+  vernier_add_gtest(
+    TARGET
+    TestDemoKernelColumns
+    SOURCES
+    gpu/utst/02_NsightProfiler_KernelColumns_uTest.cpp
+    gpu/utst/02_NsightProfiler_KernelColumns_Kernel.cu
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    demo
+    gpu
+  )
+  target_compile_definitions(
+    TestDemoKernelColumns
+    PRIVATE VERNIER_DEMO_02_BINARY="$<TARGET_FILE:BenchDemo_Gpu_02_NsightProfiler>"
+            VERNIER_DEMO_02_HAS_CUPTI=$<BOOL:${BENCH_CUDA_HAS_CUPTI}>
+  )
+  add_dependencies(TestDemoKernelColumns BenchDemo_Gpu_02_NsightProfiler)
+  set_tests_properties(
+    KernelColumns.MatchTheirSources PROPERTIES SKIP_REGULAR_EXPRESSION
+                                               "\\[  SKIPPED \\] KernelColumns\\.MatchTheirSources"
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
 # Demo Effect Guards Run by CTest (3)
 # ------------------------------------------------------------------------------
 # Demos are ptests: built, not registered with CTest. A guard that checks what
