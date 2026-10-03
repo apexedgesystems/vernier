@@ -7,15 +7,17 @@ performance, not by default in CI.
 ## Requirements
 
 - Linux with eBPF support and `bpftrace` installed
-- Privileges to attach the scripts' tracepoints. `bpftrace` runs as the current
-  user unless you opt in, which works as root or with `CAP_BPF` and
-  `CAP_PERFMON`. `BENCH_SUDO=1` runs it, and the `kill` that stops it, through
-  `sudo -n`; the sudoers grant must allow `bpftrace` with the run's script
-  arguments and `kill` with `-2`, `-15` and `-9`. `PERF_BPF_SUDO` is a
-  deprecated alias honoured by the `bpftrace` backend only: a valid
-  `BENCH_SUDO` wins when both are set, and an invalid alias is then ignored
-  with a warning; an invalid `BENCH_SUDO`, or an invalid alias on its own, is
-  a configuration error.
+- Root, to attach the scripts' tracepoints: bpftrace refuses every other
+  effective user, whatever its capabilities ("bpftrace currently only supports
+  running as the root user."; checked in the source of 0.14.0, 0.20.2 and
+  0.23.2). The backend runs `bpftrace` as the current user, which works when
+  the benchmark runs as root. Otherwise `BENCH_SUDO=1` runs it, and the `kill`
+  that stops it, through `sudo -n`; the sudoers grant must allow `bpftrace`
+  with the run's script arguments and `kill` with `-2`, `-15` and `-9`.
+  `PERF_BPF_SUDO` is a deprecated alias honoured by the `bpftrace` backend
+  only: a valid `BENCH_SUDO` wins when both are set, and an invalid alias is
+  then ignored with a warning; an invalid `BENCH_SUDO`, or an invalid alias on
+  its own, is a configuration error.
 - `--profile-check --profile bpftrace --bpf <scripts>` runs a copy of each
   selected script, with the capture window (below, bound to no thread, so it
   never arms) and a 5 s self-exit added, through that route for a second and

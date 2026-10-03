@@ -139,7 +139,7 @@ std::string optInRemedy(const BpftraceRoute& route, const ReadinessContext& ctx)
     killPath = (KILL && KILL->executable) ? KILL->path : std::string{"kill"};
   }
   return "Set BENCH_SUDO=1 with a scoped sudoers grant for " + route.bpftrace + " and " + killPath +
-         ", run with CAP_BPF and CAP_PERFMON, or run as root.";
+         ", or run as root.";
 }
 
 std::string grantRemedy(const BpftraceRoute& route, const ReadinessContext& ctx) {
@@ -178,8 +178,7 @@ std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
                              std::string{HELPER} + " is not on PATH; " + route.privilege.source +
                                  " runs bpftrace through sudo -n and stops it with sudo -n kill",
                              std::string{"Install "} + HELPER +
-                                 ", or unset BENCH_SUDO and run with CAP_BPF and CAP_PERFMON "
-                                 "or as root.");
+                                 ", or unset BENCH_SUDO and run as root.");
     }
     (std::string{HELPER} == "sudo" ? route.sudo : route.kill) = FOUND->path;
   }
@@ -222,7 +221,7 @@ ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::str
       return readinessResult(ReadinessCause::DENIED,
                              "sudo -n failed for " + commandLine + ": " + LINE,
                              "sudo cannot run commands as root here, whatever the grant; unset "
-                             "BENCH_SUDO and run with CAP_BPF and CAP_PERFMON, or run as root.");
+                             "BENCH_SUDO and run as root.");
     }
   }
   if (containsAny(stderrText, {"only supports running as the root user", "Operation not permitted",
@@ -237,9 +236,9 @@ ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::str
   if (containsAny(stderrText, {"tracepoint not found", "probe not found", "not supported",
                                "No such file or directory", "does not exist"})) {
     return readinessResult(ReadinessCause::UNSUPPORTED, what + ": " + LINE,
-                           "The kernel lacks a probe the script uses, or tracefs is not mounted "
-                           "(mount -t tracefs tracefs /sys/kernel/tracing); select a script "
-                           "whose probes exist here.");
+                           "The kernel lacks a probe the script uses (bpftrace's message names "
+                           "it), or tracefs is not mounted: mount -t tracefs tracefs "
+                           "/sys/kernel/tracing.");
   }
   return readinessResult(ReadinessCause::UNUSABLE, what + " did not stay attached: " + LINE,
                          "Run the script by hand with " + route.bpftrace + " to see why.");

@@ -534,7 +534,7 @@ TEST(BpftraceReportTest, CannotTraceHereQuotesTheNotice) {
       "[FAIL] Profiler 'bpftrace': denied: script 'write_latency' could not attach as the current "
       "user: ERROR: bpftrace currently only supports running as the root user.\n"
       "   Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, "
-      "run with CAP_BPF and CAP_PERFMON, or run as root.\n"
+      "or run as root.\n"
       "   Falling back to no-op (measurements will proceed without profiling).\n";
   const std::string OUTPUT = "[ RUN      ] BpftraceProfiler.WritePerLine\n\n" + NOTICE +
                              "\n[BpftraceProfiler.WritePerLine]  530.1 us/call\n";

@@ -285,6 +285,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **bpftrace's hints offer only what works** -- a current user that bpftrace
+  refused, or a `BENCH_SUDO` run missing `sudo` or `kill`, was offered
+  `CAP_BPF` and `CAP_PERFMON`, which bpftrace refuses too (0.14.0, 0.20.2 and
+  0.23.2 run only as root); the hints offer root, directly or through
+  `BENCH_SUDO=1` and a scoped sudoers grant. The hint for a probe the kernel
+  lacks, shared with the offcpu backend, points at the probe bpftrace names and
+  at the tracefs mount, not at another script, which the offcpu backend does
+  not have.
 - **bpftrace measures only once its tracer shows that it sees the benchmark**
   -- the backend waited a fixed second for each tracer to attach, so on a busy
   machine the measured repeats could run before it had, and the empty report

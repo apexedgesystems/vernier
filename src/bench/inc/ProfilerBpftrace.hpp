@@ -149,14 +149,19 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
  * @p runCommand is empty (the refused command is the run's own), and
  * UNVERIFIED, naming both commands, when @p runCommand says how the run's
  * differing command reads. Any other sudo failure is DENIED whatever the
- * arguments.
+ * arguments. Its hints hold for every caller, the bpftrace backend's scripts
+ * and the offcpu backend's one script alike.
  */
 ReadinessResult classifyAttachFailure(const BpftraceRoute& route, const std::string& what,
                                       const std::string& commandLine, const std::string& stderrText,
                                       const ReadinessContext& ctx,
                                       const std::string& runCommand = {});
 
-/** @brief How to get access without elevation or with a scoped grant. */
+/**
+ * @brief How to get access: root, directly or through a scoped grant.
+ *        bpftrace (0.14.0, 0.20.2 and 0.23.2 checked) refuses every effective
+ *        user but root, whatever its capabilities.
+ */
 std::string optInRemedy(const BpftraceRoute& route, const ReadinessContext& ctx);
 
 /** @brief What a scoped sudoers grant must allow. */

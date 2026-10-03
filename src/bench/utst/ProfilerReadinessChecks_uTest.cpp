@@ -65,6 +65,15 @@ using vernier::bench::test::StderrCapture;
 
 namespace {
 
+/**
+ * @brief The hint for a probe bpftrace could not find. The bpftrace and
+ *        offcpu backends share it, so it holds for both: offcpu runs one
+ *        embedded script, with no other to select.
+ */
+const std::string UNSUPPORTED_PROBE_HINT =
+    "The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not "
+    "mounted: mount -t tracefs tracefs /sys/kernel/tracing.";
+
 /** @brief A request for @p backend with @p scripts, as the doctor's selected row asks it. */
 ReadinessRequest requestFor(const std::string& backend, std::vector<std::string> scripts = {}) {
   ReadinessRequest request;
@@ -429,7 +438,12 @@ TEST_F(BpfCheckTest, BpftraceCurrentUserAttaches) {
   EXPECT_EQ(dir_.logLines("bpftrace -q ").size(), 1U) << dir_.log();
 }
 
-/** @test A current user bpftrace refuses is denied, with the ways to get access. */
+/**
+ * @test A current user bpftrace refuses is denied, with the ways to get access
+ * that work: root, directly or through a scoped grant. bpftrace refuses every
+ * effective user but root whatever its capabilities, so no capability is
+ * offered.
+ */
 TEST_F(BpfCheckTest, BpftraceCurrentUserDenied) {
   installSudoAndKill();
   const ReadinessResult R = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
@@ -439,8 +453,7 @@ TEST_F(BpfCheckTest, BpftraceCurrentUserDenied) {
             "denied: script 'probe_script' could not attach as the current user: ERROR: bpftrace "
             "currently only supports running as the root user.");
   EXPECT_EQ(R.report.hint, "Set BENCH_SUDO=1 with a scoped sudoers grant for " + bpftrace_ +
-                               " and " + kill_ +
-                               ", run with CAP_BPF and CAP_PERFMON, or run as root.");
+                               " and " + kill_ + ", or run as root.");
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << "no opt-in, no sudo\n" << dir_.log();
 }
 
@@ -575,7 +588,7 @@ TEST_F(BpfCheckTest, BpftraceSudoItselfFailingIsDenied) {
   EXPECT_EQ(R.report.message,
             "denied: sudo -n failed for " + bpftrace_ + " -q -B none " + COPY + ": " + NNP);
   EXPECT_EQ(R.report.hint, "sudo cannot run commands as root here, whatever the grant; unset "
-                           "BENCH_SUDO and run with CAP_BPF and CAP_PERFMON, or run as root.");
+                           "BENCH_SUDO and run as root.");
 }
 
 /** @test bpftrace refused although sudo ran it as root is denied, with the root remedy. */
@@ -686,7 +699,7 @@ TEST_F(BpfCheckTest, BpftraceIgnoredInterruptIsCaveat) {
   EXPECT_TRUE(R.collectionReady());
 }
 
-/** @test The sudo route needs sudo and kill on PATH. */
+/** @test The sudo route needs sudo and kill on PATH; without them, root is the other way. */
 TEST_F(BpfCheckTest, BpftraceSudoRouteNeedsItsHelpers) {
   const ReadinessResult NO_SUDO = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
   EXPECT_EQ(NO_SUDO.cause, ReadinessCause::MISSING_HELPER);
@@ -695,11 +708,13 @@ TEST_F(BpfCheckTest, BpftraceSudoRouteNeedsItsHelpers) {
                                          0),
             0U)
       << NO_SUDO.report.message;
+  EXPECT_EQ(NO_SUDO.report.hint, "Install sudo, or unset BENCH_SUDO and run as root.");
   dir_.install("fake_sudo.sh", "sudo");
   const ReadinessResult NO_KILL = check("bpftrace", ctx({{"BENCH_SUDO", "1"}}));
   EXPECT_EQ(NO_KILL.cause, ReadinessCause::MISSING_HELPER);
   EXPECT_EQ(NO_KILL.report.message.rfind("missing helper: kill is not on PATH", 0), 0U)
       << NO_KILL.report.message;
+  EXPECT_EQ(NO_KILL.report.hint, "Install kill, or unset BENCH_SUDO and run as root.");
   EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << "nothing runs before the route is complete";
 }
 
@@ -768,6 +783,7 @@ TEST_F(BpfCheckTest, BpftraceAttachErrorsKeepTheirCause) {
   EXPECT_EQ(UNSUPPORTED.cause, ReadinessCause::UNSUPPORTED);
   EXPECT_EQ(UNSUPPORTED.report.message, "unsupported: script 'probe_script': stdin:1:1-36: ERROR: "
                                         "tracepoint not found: syscalls:sys_enter_write");
+  EXPECT_EQ(UNSUPPORTED.report.hint, UNSUPPORTED_PROBE_HINT);
   const ReadinessResult BROKEN = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "broken"}}));
   EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
   EXPECT_EQ(BROKEN.report.message, "unusable: script 'probe_script' did not stay attached: fake "
@@ -1874,6 +1890,25 @@ TEST_F(BpfCheckTest, OffCpuSudoRoute) {
                 " -e <the off-CPU script with a 5 s self-exit> " + std::to_string(::getpid()) +
                 ": sudo: a password is required; the run executes " + bpftrace_ +
                 " -e <the off-CPU script> <benchmark pid> instead, which only the run can try");
+}
+
+/**
+ * @test The off-CPU script shares bpftrace's attach hints, and they hold for
+ * it: a missing probe names no script to select (offcpu runs one embedded
+ * script), and a current user bpftrace refuses is offered root, directly or
+ * through a scoped grant, not a capability bpftrace refuses as well.
+ */
+TEST_F(BpfCheckTest, OffCpuAttachFailureHintsHoldForIt) {
+  installSudoAndKill();
+  const ReadinessResult UNSUPPORTED = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  EXPECT_EQ(UNSUPPORTED.cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(UNSUPPORTED.report.message, "unsupported: the off-CPU script: stdin:1:1-36: ERROR: "
+                                        "tracepoint not found: syscalls:sys_enter_write");
+  EXPECT_EQ(UNSUPPORTED.report.hint, UNSUPPORTED_PROBE_HINT);
+  const ReadinessResult DENIED = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "eperm"}}));
+  EXPECT_EQ(DENIED.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(DENIED.report.hint, "Set BENCH_SUDO=1 with a scoped sudoers grant for " + bpftrace_ +
+                                    " and " + kill_ + ", or run as root.");
 }
 
 /**
