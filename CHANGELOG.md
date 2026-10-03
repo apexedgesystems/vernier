@@ -700,31 +700,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
-- **A single-thread measurement's row records one thread** -- the `threads`
-  column of a `measured()` or `throughputLoop()` row, a GPU case's CPU baseline
-  included, is 1 whatever `--threads` says, since only the calling thread runs
-  it; a `contentionRun()` row keeps the number of workers it started, and GPU
-  kernel rows stay at 1.
+- **A single-thread measurement's row records one thread** -- a `measured()` or
+  `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
+  `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
+  number of workers it started.
 - **A test name with a comma, a quote or a line break stays one CSV cell** --
-  the CSV writer encloses such a name in double quotes and doubles each quote
-  inside it, as CSV specifies, so `bench summary`, `bench compare` and pandas
-  read the row whole; other names, and every other cell, are written as they
-  were.
+  the CSV writer quotes such a name and doubles each quote inside it, so
+  `bench summary`, `bench compare` and pandas read the row whole.
 - **Each completed measurement is its own CSV row** -- a test that measured
-  more than once wrote only its last measurement (a size sweep, or a
-  single-thread run then a contention run, kept one row); every measurement
-  now writes its own row, with its own config and profiler identity, and a test
-  that measures once keeps its name. The rows of a case measured more than once
-  in a test are named `<case>/<label>`, with `#n` after a label that is empty
-  or repeats, in the CSV and the end-of-run table; such a case still has one
-  profiler artifact folder, so a backend that writes each capture under a fixed
-  file name keeps only the last one. **Migration:** a baseline recorded from
-  such a test has one row under the case's bare name, which
-  `bench compare --fail-on-regression` reports missing (and the
-  `<case>/<label>` rows new) until the baseline is recorded again; rebuild
-  benchmarks against these headers, since `BENCH_ABI_VERSION` is now 2 and a
-  bench library built from earlier headers stops the run with the ABI mismatch
-  message.
+  more than once wrote only its last measurement; now every completed
+  measurement writes its own row, a case measured more than once in a test
+  names its rows `<case>/<label>` (with `#n` after an empty or repeated label),
+  and a test that measures once keeps its name. **Migration:** re-record a
+  baseline taken from a test that measured more than once, since
+  `bench compare --fail-on-regression` reports its single old row missing, and
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 2).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
