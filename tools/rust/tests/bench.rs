@@ -1917,6 +1917,21 @@ fn run_nsys_alias_wraps_like_nsight() {
     }
 }
 
+/// @test An explicit --profile-test-timeout 0 reaches the benchmark as 0 (the
+/// watchdog off); an omitted one is not forwarded, so the binary decides.
+#[test]
+fn run_forwards_an_explicit_zero_timeout() {
+    let rig = route_rig(&[]);
+    let (code, err, _) = run_rig(&rig, &["--profile", "perf", "--profile-test-timeout", "0"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(&rig, &["--profile", "perf"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --profile perf --profile-test-timeout 0\nbench wrap= --profile perf\n"
+    );
+}
+
 /// @test massif's modes reach valgrind.
 #[test]
 fn run_massif_modes_reach_valgrind() {

@@ -152,8 +152,9 @@ enum Command {
         #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 
-        /// Per-test profiler watchdog timeout in seconds (passed to the
-        /// binary as --profile-test-timeout)
+        /// Per-test profiler watchdog timeout in seconds, passed to the binary
+        /// as --profile-test-timeout: 0 turns the watchdog off; omitted, the
+        /// binary uses 300 under --profile
         #[arg(long)]
         profile_test_timeout: Option<u32>,
 

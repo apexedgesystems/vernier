@@ -9,11 +9,14 @@
 
 #include "src/bench/inc/PerfHarness.hpp"
 
+#include "src/bench/inc/PerfConfig.hpp"
+
 #include <gtest/gtest.h>
 
 #include <csignal>
 
 #include <string>
+#include <vector>
 
 namespace perf_watchdog = vernier::bench::perf_watchdog;
 
@@ -66,6 +69,48 @@ TEST_F(PerfWatchdogTest, DisarmCancelsPendingAlarm) {
   perf_watchdog::disarm();
   EXPECT_FALSE(perf_watchdog::g_armed.load());
   EXPECT_EQ(::alarm(0), 0U) << "an alarm was still pending after disarm()";
+
+  // arm() installs a process-wide handler; hand the signal back as found.
+  ASSERT_EQ(::sigaction(SIGALRM, &previous, nullptr), 0);
+}
+
+namespace {
+
+/** @brief Whether the watchdog was armed while a measured loop of a case parsed from @p flags ran.
+ */
+bool armedDuringMeasure(std::vector<const char*> flags) {
+  std::vector<std::string> storage{"prog"};
+  storage.insert(storage.end(), flags.begin(), flags.end());
+  std::vector<char*> argv;
+  for (std::string& arg : storage) {
+    argv.push_back(arg.data());
+  }
+  int argc = static_cast<int>(argv.size());
+  vernier::bench::PerfConfig cfg;
+  vernier::bench::parsePerfFlags(cfg, &argc, argv.data());
+  cfg.cycles = 1;
+  cfg.repeats = 1;
+  vernier::bench::PerfCase perf{"Watchdog.Case", cfg};
+  bool armed = false;
+  perf.measured([&] { armed = perf_watchdog::g_armed.load(); });
+  EXPECT_FALSE(perf_watchdog::g_armed.load()) << "the loop left the watchdog armed";
+  return armed;
+}
+
+} // namespace
+
+/**
+ * @test An explicit --profile-test-timeout 0 under --profile arms nothing; the
+ * omitted flag (300 s) and a given one arm the watchdog for the measured loop.
+ */
+TEST_F(PerfWatchdogTest, ExplicitZeroDoesNotArm) {
+  struct sigaction previous{};
+  ASSERT_EQ(::sigaction(SIGALRM, nullptr, &previous), 0);
+
+  EXPECT_FALSE(armedDuringMeasure({"--profile", "perf", "--profile-test-timeout", "0"}));
+  EXPECT_TRUE(armedDuringMeasure({"--profile", "perf"}));
+  EXPECT_TRUE(armedDuringMeasure({"--profile", "perf", "--profile-test-timeout", "30"}));
+  EXPECT_FALSE(armedDuringMeasure({"--profile-test-timeout", "30"})) << "armed without --profile";
 
   // arm() installs a process-wide handler; hand the signal back as found.
   ASSERT_EQ(::sigaction(SIGALRM, &previous, nullptr), 0);

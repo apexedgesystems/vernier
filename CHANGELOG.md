@@ -370,6 +370,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   helgrind fails the analysis stage, naming the reader. **Action needed:** run
   these profiles through `bench run --profile <tool>` or the printed valgrind
   command.
+- **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
+  `0`, a negative value and a non-number all meant the 300 s default, so the
+  watchdog could not be switched off, and a value such as `-1`, `abc` or `30s`
+  was taken without a word. `PerfConfig::profileTestTimeoutSecs` defaults to
+  -1, "not given", which `--profile` turns into 300; `0` switches the watchdog
+  off, and a value that is not a whole number of seconds from 0 stops the run
+  before any test with exit status 2. **Action needed:** a benchmark whose
+  source sets `profileTestTimeoutSecs = 0` to mean the default runs without
+  the watchdog under `--profile`; leave the field alone or set 300. A binary
+  built before this release reads `bench run --profile-test-timeout 0` as 300.
 - **A valgrind profile writes into an output folder holding `%`** --
   valgrind reads `%p`, `%q{VAR}` and `%%` in the values of `--log-file=`,
   `--massif-out-file=` and `--callgrind-out-file=`, so with

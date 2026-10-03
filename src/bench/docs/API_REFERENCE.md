@@ -197,7 +197,7 @@ struct PerfConfig {
   std::string artifactRoot;            // Profiler artifact directory
   int profileFrequency = 10000;        // Rate asked of gperf; set too late to take effect (see ProfilerGperf)
   bool profileAnalyze = false;         // Auto-run analysis after profiling
-  int profileTestTimeoutSecs = 0;      // Watchdog seconds per measured()/throughputLoop() loop under --profile (0 means 300); contentionRun() and GPU runs are not covered
+  int profileTestTimeoutSecs = -1;     // Watchdog seconds per measured()/throughputLoop() loop under --profile: -1 not given (300 under --profile), 0 off; contentionRun() and GPU runs are not covered
 
   bool quickMode = false;              // Apply reduced cycles/repeats
 
@@ -787,7 +787,7 @@ time; no `--profile` flag required.
 | `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                     |
 | `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                         |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
-| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 means 300. `contentionRun()` and GPU measurements are not covered                                                                           |
+| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off, and a value that is not a whole number from 0 exits 2. `contentionRun()` and GPU measurements are not covered                 |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |
 | `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
 | `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |

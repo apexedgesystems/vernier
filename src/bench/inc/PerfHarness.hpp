@@ -508,8 +508,8 @@ public:
     auto lastProgressTime = MEASURE_START;
     bool showedProgress = false;
 
-    // Arm the per-test watchdog only when profiling AND the user has a
-    // non-zero timeout. SIGALRM is the cleanest way to abort a hung fn():
+    // Arm the per-test watchdog only when profiling AND the timeout is above
+    // zero (0 turns it off). SIGALRM is the cleanest way to abort a hung fn():
     // drain-loop / blocking-recv tests cannot be interrupted from the
     // measured() thread itself because fn() holds the CPU.
     const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
