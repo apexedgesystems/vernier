@@ -278,8 +278,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   profiled. An unknown profiler, a request that cannot collect (no artifact
   folder, an empty `profileTool` in the CSV) and a requested analysis that
   cannot run or fails (the capture is kept) are listed again when the run
-  ends, and `PERF_MAIN()` and `PERF_GPU_MAIN()` then exit with status 4 if the
-  tests passed; unprofiled runs and `--profile cupti` exit as before.
+  ends, and `PERF_MAIN()`, `PERF_GPU_MAIN()` and the GPU benchmark
+  `BenchmarkGPU_PTEST` then exit with status 4 if the tests passed; unprofiled
+  runs and `--profile cupti` exit as before.
   **Action needed:** a CI job that passed without its requested
   profile now fails, and a benchmark with its own `main()` passes the result
   of `RUN_ALL_TESTS()` to `vernier::bench::ProfilerRegistry::finishRun()` as
