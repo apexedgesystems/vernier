@@ -722,6 +722,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   line, and where valgrind cannot read the demo binary's symbols only a frame
   left unnamed in that binary goes unchecked, so a wrong frame beside an
   unnamed one fails instead of skipping.
+- **Walkthrough 07's callgrind checks skip on valgrind's reader assertion only
+  before the program started** -- `JoinInstructionCounts.UnderCallgrind`, the
+  callgrind window tests and their two startup-fault controls skipped on any
+  assertion of valgrind's debug-information reader, wherever valgrind printed
+  it. They skip on it only where it stopped valgrind before the program
+  started, read as the memcheck and helgrind checks read it, and fail
+  otherwise.
 
 ## v1.0.3 - 2026-06-28
 

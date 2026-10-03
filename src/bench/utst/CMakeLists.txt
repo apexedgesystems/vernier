@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (15 files)
+# Sources (16 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -26,6 +26,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ValgrindReaderAssertion_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -185,6 +186,20 @@ include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 
 # ------------------------------------------------------------------------------
+# Valgrind Reader Assertion Program (1)
+# ------------------------------------------------------------------------------
+# ValgrindReaderAssertion.hpp's reading as a program, for the callgrind window
+# tests' driver, which is written in CMake: valgrind's line when an assertion
+# in its debug-information reader stopped it before the program started, with
+# the evidence a C++ check asks of it. A test fixture, never installed.
+# ------------------------------------------------------------------------------
+
+vernier_add_app(
+  NAME ValgrindReaderAssertionCli SRC "${CMAKE_CURRENT_LIST_DIR}/ValgrindReaderAssertionCli.cpp"
+  NO_INSTALL NO_UPX
+)
+
+# ------------------------------------------------------------------------------
 # Callgrind Window Probe (2 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
@@ -218,7 +233,8 @@ if (TARGET CallgrindWindowProbe)
     add_test(
       NAME CallgrindWindow${_case}Test
       COMMAND
-        "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe> -DCASE=${_mode}
+        "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe>
+        -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=${_mode}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_${_mode}
         -DPROBE_SANITIZER=${_probe_sanitizer} -P
         "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
@@ -250,6 +266,26 @@ add_test(
 set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;callgrind")
 
 # ------------------------------------------------------------------------------
+# Callgrind Window Probe, Reader Assertion (1 test)
+# ------------------------------------------------------------------------------
+# The window tests' driver against a stand-in valgrind that prints its reader's
+# assertion: where valgrind stopped before the probe started, the driver must
+# skip quoting the line; after a line of the probe's, or with an exit status
+# for a signal, it must fail. Needs neither valgrind nor the probe.
+# ------------------------------------------------------------------------------
+
+add_test(
+  NAME CallgrindWindowReaderAssertionTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DDRIVER=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake
+    -DFAKE=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowReaderAssertion_fake_valgrind.sh
+    -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli>
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_reader_assertion -P
+    "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowReaderAssertion_test.cmake"
+)
+set_tests_properties(CallgrindWindowReaderAssertionTest PROPERTIES LABELS "benchmarking;callgrind")
+
+# ------------------------------------------------------------------------------
 # Callgrind Window Probe, Startup Fault (1 test)
 # ------------------------------------------------------------------------------
 # The probe with StartupFaultUnderValgrind.cpp linked in: it runs plainly, and
@@ -277,7 +313,8 @@ if (TARGET CallgrindWindowProbeStartupFault)
   add_test(
     NAME CallgrindWindowStartupFaultTest
     COMMAND
-      "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbeStartupFault> -DCASE=hint
+      "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbeStartupFault>
+      -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=hint
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_startup_fault
       -DPROBE_SANITIZER=${_probe_sanitizer} -P
       "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
@@ -289,12 +326,14 @@ if (TARGET CallgrindWindowProbeStartupFault)
   # not pass it. It skips only on evidence that is not the driver's wording:
   # "valgrind is not installed", decided before anything runs; valgrind's own
   # words when it stops reading debug information, which the driver prints as
-  # valgrind wrote them; and, in a build with the address sanitizer only, the
-  # driver's skip for that build.
+  # valgrind wrote them, its reader's assertion only where the driver's skip
+  # quotes it ("It printed:"), which READER allows only with the evidence that
+  # valgrind stopped before the probe started; and, in a build with the
+  # address sanitizer only, the driver's skip for that build.
   set(_fault_skips
       "-- SKIPPED: valgrind is not installed"
       "Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-      "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
+      "It printed:\nvalgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
   )
   if (_probe_sanitizer STREQUAL "asan")
     list(APPEND _fault_skips

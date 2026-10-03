@@ -13,11 +13,16 @@
  * each frame the check requires says: at the statement it must name, unnamed
  * in a binary valgrind could not read the symbols of, or wrong. These are the
  * helpers it does that with; demo 14's helgrind check reads its frames with
- * the same ones. 12_MemcheckProfiler_uTest.cpp keeps what the check asserts
- * and when it skips.
+ * the same ones. Whether an assertion of valgrind's reader stopped it before
+ * the program started, and valgrind's line helpers, are the shared test
+ * helper's (src/bench/utst/ValgrindReaderAssertion.hpp).
+ * 12_MemcheckProfiler_uTest.cpp keeps what the check asserts and when it
+ * skips.
  *
  * Test support for 12_MemcheckProfiler_uTest.cpp; not part of the demo.
  */
+
+#include "src/bench/utst/ValgrindReaderAssertion.hpp"
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -46,6 +51,12 @@ namespace demo {
 namespace memcheck_check {
 
 namespace fs = std::filesystem;
+
+// valgrind's text is read by the shared test helper (ValgrindReaderAssertion.hpp),
+// so every check reads its lines and its reader's assertion by one rule; these
+// are its names here.
+using vernier::bench::test::endsWith;
+using vernier::bench::test::payload;
 
 /* ----------------------------- Child Runs ----------------------------- */
 
@@ -263,10 +274,14 @@ inline std::string debugInfoGiveUp(const std::string& text) {
   return text.substr(FROM, (TO == std::string::npos ? text.size() : TO) - FROM);
 }
 
-/// True when @p text ends with @p suffix.
-inline bool endsWith(const std::string& text, const std::string& suffix) {
-  return text.size() >= suffix.size() &&
-         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+/// The shared reader (ValgrindReaderAssertion.hpp) on a run of this check,
+/// whose log is a file of its own: valgrind's line when an assertion in its ELF
+/// debug-information reader stopped it before the program started, as it
+/// printed it; empty for any other outcome.
+inline std::string readerAssertionBeforeStart(const ChildExit& end, const std::string& output,
+                                              const std::string& log) {
+  return vernier::bench::test::readerAssertionBeforeStart(end.how == ChildExit::How::Signaled,
+                                                          output, log);
 }
 
 /// valgrind's own lines, as its log has them, when it could not read
@@ -317,82 +332,6 @@ struct ReportedError {
   std::string kind; ///< Its first line, for instance "Invalid write of size 1"
   std::string text; ///< The whole entry, without valgrind's "==pid==" prefix
 };
-
-/// A log line without its "==pid== " prefix; the line itself when it has none.
-inline std::string payload(const std::string& line) {
-  if (line.size() > 2 && line[0] == '=' && line[1] == '=') {
-    const std::size_t END = line.find("== ", 2);
-    if (END != std::string::npos) {
-      return line.substr(END + 3);
-    }
-    if (line.compare(line.size() - 2, 2, "==") == 0) {
-      return "";
-    }
-  }
-  return line;
-}
-
-/// An assertion of valgrind's ELF debug-information reader, on either side of
-/// the source line number valgrind prints: valgrind 3.18.1 fails it at
-/// readelf.c:2478 while it reads a GCC 11.4 Debug binary that mold linked.
-inline constexpr const char* READER_ASSERTION_PREFIX = "valgrind: m_debuginfo/readelf.c:";
-inline constexpr const char* READER_ASSERTION_SUFFIX =
-    " (vgModuleLocal_read_elf_debug_info): Assertion 'di->bss_svma + di->bss_size == svma' "
-    "failed.";
-
-/**
- * @brief valgrind's own line when that assertion stopped it before the
- *        program started, as it printed it; empty for any other outcome.
- *
- * Taken only with the evidence that the program never ran, as valgrind 3.18.1
- * ended when it did not: the program wrote nothing (@p output is empty); in
- * valgrind's @p log the line stands alone, with only blank lines between it
- * and valgrind's opening lines, which end with "Parent PID:", and only blank
- * lines after it; and valgrind was killed by a signal (@p end). Once the
- * program has run, valgrind prints its crash report after the same line and
- * exits with status 1: not taken, nor is the program's own assertion, another
- * of valgrind's, or the same text anywhere else. A skip quotes the line, so
- * what it rests on is valgrind's text, not the check's.
- */
-inline std::string readerAssertionBeforeStart(const ChildExit& end, const std::string& output,
-                                              const std::string& log) {
-  if (!output.empty() || end.how != ChildExit::How::Signaled) {
-    return "";
-  }
-  std::vector<std::string> lines;
-  std::istringstream in(log);
-  std::string line;
-  while (std::getline(in, line)) {
-    lines.push_back(line);
-  }
-  // The log's last line that is not blank is the assertion...
-  std::size_t at = lines.size();
-  while (at > 0 && payload(lines[at - 1]).empty()) {
-    --at;
-  }
-  if (at == 0) {
-    return "";
-  }
-  const std::string& ASSERTION = lines[at - 1];
-  const std::string PREFIX = READER_ASSERTION_PREFIX;
-  const std::string SUFFIX = READER_ASSERTION_SUFFIX;
-  if (ASSERTION.size() <= PREFIX.size() + SUFFIX.size() || ASSERTION.rfind(PREFIX, 0) != 0 ||
-      !endsWith(ASSERTION, SUFFIX) ||
-      ASSERTION.substr(PREFIX.size(), ASSERTION.size() - PREFIX.size() - SUFFIX.size())
-              .find_first_not_of("0123456789") != std::string::npos) {
-    return "";
-  }
-  // ...and the last one before it ends valgrind's opening lines
-  std::size_t before = at - 1;
-  while (before > 0 && payload(lines[before - 1]).empty()) {
-    --before;
-  }
-  if (before == 0 || lines[before - 1].rfind("==", 0) != 0 ||
-      payload(lines[before - 1]).rfind("Parent PID: ", 0) != 0) {
-    return "";
-  }
-  return ASSERTION;
-}
 
 /// The log's ERROR SUMMARY totals (the last such line, which valgrind prints
 /// again after the error list).
