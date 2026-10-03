@@ -111,6 +111,43 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
+# Nsight Range Test (1)
+# ------------------------------------------------------------------------------
+# TestBenchNsightRange: the Nsight backend's NVTX range opens and closes with
+# each measurement the guard makes, kernel, baseline, multi-GPU and CPU alike.
+# It records the ranges through NvtxRangeRecorder, a stand-in NVTX tool built as
+# a shared library of its own, which the test names in NVTX_INJECTION64_PATH
+# before anything calls NVTX, as Nsight Systems names its own. Built where
+# libbench_cuda and the toolkit's nvtx3 headers are: without the headers the
+# backend's push and pop compile to nothing, and there is no range to record.
+# Its GPU cases skip without a device.
+# ------------------------------------------------------------------------------
+
+if (TARGET bench_cuda AND TARGET CUDA::nvtx3)
+  add_library(NvtxRangeRecorder SHARED "${CMAKE_CURRENT_SOURCE_DIR}/NvtxRangeRecorder.cpp")
+  target_include_directories(NvtxRangeRecorder PRIVATE "${PROJECT_SOURCE_DIR}")
+  target_link_libraries(NvtxRangeRecorder PRIVATE CUDA::nvtx3)
+
+  vernier_add_gtest(
+    TARGET
+    TestBenchNsightRange
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsightRange_uTest.cu"
+    LINK
+    bench
+    bench_cuda
+    NvtxRangeRecorder
+    LABELS
+    benchmarking
+    gpu
+    nsight
+  )
+  target_compile_definitions(
+    TestBenchNsightRange PRIVATE VERNIER_NVTX_RECORDER_PATH="$<TARGET_FILE:NvtxRangeRecorder>"
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
 # Consumer Warning Check
 # ------------------------------------------------------------------------------
 # Compiles a consumer-style benchmark file against the public headers with

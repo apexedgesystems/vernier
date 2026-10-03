@@ -36,7 +36,6 @@ set(CPU_DEMOS
     07_CallgrindProfiler
     08_RaplProfiler
     09_BpftraceProfiler
-    10_NvtxAnnotation
     11_MassifProfiler
     12_MemcheckProfiler
     13_OffCpuProfiler
@@ -86,7 +85,7 @@ set_source_files_properties(cpu/14_HelgrindProfiler_Racy.cpp PROPERTIES COMPILE_
 
 if (TARGET bench_cuda)
   set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt
-                04_ComputeSanitizerProfiler
+                04_ComputeSanitizerProfiler 05_NvtxAnnotation
   )
 
   foreach (DEMO ${GPU_DEMOS})
@@ -104,7 +103,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (11)
+# Demos Built on a Shared Example (12)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -150,6 +149,7 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
   target_link_libraries(BenchDemo_Gpu_02_NsightProfiler PRIVATE demo_example_saxpy)
+  target_link_libraries(BenchDemo_Gpu_05_NvtxAnnotation PRIVATE demo_example_saxpy)
   # Demo 02's guard timing, in a source of its own so the host test below builds it.
   target_sources(BenchDemo_Gpu_02_NsightProfiler PRIVATE gpu/02_NsightProfiler_Timing.cpp)
 endif ()
@@ -255,7 +255,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (2)
+# Demo Effect Checks Run by CTest (3)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -312,6 +312,33 @@ foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothin
     ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
   )
 endforeach ()
+
+# Demo 05's check runs the GPU demo under Nsight Systems, so it exists only where
+# the GPU demos are built; its tool's label is nsight. It links the CUDA runtime
+# for one question decided before anything runs: whether a device is there.
+if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
+  vernier_add_gtest(
+    TARGET
+    TestDemoNvtxRanges
+    SOURCES
+    gpu/utst/05_NvtxAnnotation_Ranges_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    nsight
+  )
+  target_compile_definitions(
+    TestDemoNvtxRanges
+    PRIVATE VERNIER_DEMO_GPU_05_BINARY="$<TARGET_FILE:BenchDemo_Gpu_05_NvtxAnnotation>"
+  )
+  add_dependencies(TestDemoNvtxRanges BenchDemo_Gpu_05_NvtxAnnotation)
+  set_tests_properties(
+    NvtxRanges.RecordedByNsightSystems
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] NvtxRanges\\.RecordedByNsightSystems"
+  )
+endif ()
 
 # ------------------------------------------------------------------------------
 # Demo 06's Totals Check Run by CTest
