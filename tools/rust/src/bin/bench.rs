@@ -41,7 +41,7 @@
 //! leaves stdout empty, while `run --analyze` preserves run output already
 //! emitted.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 use clap::{Parser, Subcommand};
 use vernier_rust_tools::bench::{self, Error, SortColumn};
@@ -244,6 +244,13 @@ enum Command {
         dir: PathBuf,
     },
 
+    /// Read saved Nsight reports into one CSV (not a benchmark CSV)
+    #[command(name = bench::nsight_report::COMMAND)]
+    NsightReport {
+        #[command(subcommand)]
+        action: NsightAction,
+    },
+
     /// Scaffold a .bench.yaml at the project root with sensible defaults
     Init {
         /// Path to write (default: .bench.yaml in the current directory)
@@ -321,6 +328,30 @@ enum GpuMonitorAction {
         /// Output as JSON instead of table
         #[arg(long)]
         json: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum NsightAction {
+    /// Read Nsight Systems and Nsight Compute reports into one CSV
+    #[command(name = bench::nsight_report::ACTION, long_about = bench::nsight_report::LONG_HELP)]
+    Parse {
+        /// .nsys-rep and .ncu-rep reports, or directories searched for both
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+
+        /// The CSV to write; written even when no report could be read
+        #[arg(long)]
+        csv: PathBuf,
+
+        /// Seconds one nsys or ncu command may run before it and every process
+        /// it started are stopped
+        #[arg(
+            long,
+            default_value_t = bench::nsight_report::DEFAULT_TIMEOUT_SECS,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        timeout: u64,
     },
 }
 
@@ -579,6 +610,20 @@ fn run(args: Args) -> Result<(), Error> {
             let report = bench::workflow::profile_summarize(&dir)?;
             bench::workflow::print_summary(&report);
         }
+
+        Command::NsightReport {
+            action:
+                NsightAction::Parse {
+                    inputs,
+                    csv,
+                    timeout,
+                },
+        } => match bench::nsight_report::run(&inputs, &csv, Duration::from_secs(timeout))? {
+            bench::nsight_report::RunEnd::AllRead => {}
+            // Each unread input is already named on stderr.
+            bench::nsight_report::RunEnd::SomeUnread => std::process::exit(1),
+            bench::nsight_report::RunEnd::Interrupted(signal) => signal.end_process(),
+        },
 
         Command::Init { path, force } => {
             bench::config::write_template(&path, force)?;

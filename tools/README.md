@@ -56,8 +56,9 @@ unless `BUILD_DIR` names another build directory:
 
 ## 2. bench (Rust)
 
-Single binary with 14 subcommands for benchmarking analysis, profiling
-orchestration, GPU environment management, and project setup.
+Single binary with 15 subcommands for benchmarking analysis, profiling
+orchestration, profiler report extraction, GPU environment management, and
+project setup.
 
 ### summary - Display Results
 
@@ -226,6 +227,79 @@ Walks an artifact root and reports per-tool file counts + total bytes.
 ```bash
 bench profile-summarize bench-out/
 ```
+
+### nsight-parse - Nsight Reports as CSV
+
+Reads saved Nsight Systems (`.nsys-rep`) and Nsight Compute (`.ncu-rep`)
+reports into one CSV of its own. It needs `nsys` on `PATH` for Systems reports
+and `ncu` for Compute reports, and nothing else.
+
+```bash
+bench nsight-parse parse run.nsys-rep --csv summaries.csv   # one report
+bench nsight-parse parse bench-out/ --csv combined.csv      # every report under a directory
+```
+
+**Options:**
+
+| Flag                | Description                                                                                     | Default  |
+| ------------------- | ----------------------------------------------------------------------------------------------- | -------- |
+| `--csv FILE`        | The CSV to write; written even when no report could be read                                     | required |
+| `--timeout SECONDS` | How long one `nsys` or `ncu` command may run before it and every process it started are stopped | 600      |
+
+**How it reads a report.** A directory stands for every `.nsys-rep` under it,
+then every `.ncu-rep`, each sorted by path.
+
+- `.nsys-rep`: `nsys export --type sqlite` once, into a private temporary
+  directory removed afterwards, then
+  `nsys stats --report <summary> --format csv` on that export for
+  `cuda_gpu_kern_sum`, `cuda_api_sum`, `cuda_gpu_mem_size_sum` and
+  `cuda_gpu_mem_time_sum`. Nothing is written beside the report: the export
+  `bench run --profile nsight` leaves there is neither used nor changed (a
+  plain `nsys stats` on such a report can refuse it: "Existing SQLite export
+  found ... older than input file").
+- `.ncu-rep`: `ncu --import <report> --csv --print-summary per-kernel`.
+
+`bench run --profile nsight` writes the same four summaries as text beside the
+report it made, for reading; this command reads saved reports into one CSV,
+for other tools.
+
+**What it writes.** For an `.nsys-rep`, one row per row of the four summaries:
+one per kernel name, one per CUDA call name, one per kind of copy, not one per
+launch. The columns are `source` (`nsys`), `report` (the summary), `kernel` (its
+`Name`; empty for the copy summaries, which name the row in `Operation`),
+`instances` (`Instances` or `Num Calls`; empty for the copy summaries, which
+count in `Count`), `time_total_ns`, `time_avg_ns`, `time_pct`, then every other
+column the summaries print, under their own names (`Med (ns)`, `Min (ns)`,
+`Max (ns)`, `StdDev (ns)`, `Count`, `Total (MB)` and so on), in alphabetical
+order. For a report of walkthrough 11's `G0` test, 13 rows:
+
+```
+source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,Avg (MB),Count,Max (MB),Max (ns),Med (MB),Med (ns),Min (MB),Min (ns),Operation,StdDev (MB),StdDev (ns),Total (MB)
+nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,178481856,2925932.1,100.0,,,,3774688,,2890848.0,,2852032,,,149253.5,
+nsys,cuda_api_sum,cudaMemcpy,183,199253613,1088817.6,58.5,,,,3841722,,131481.0,,46630,,,1397635.5,
+...
+```
+
+For an `.ncu-rep`, one row per launch shape, section and metric (88 for
+walkthrough 11's two kernel shapes): `source` (`ncu`), `report` (`per_kernel`),
+`kernel`, then ncu's own columns in snake case (`block_size`, `grid_size`,
+`invocations`, `section_name`, `metric_name`, `metric_unit`, `minimum`,
+`maximum`, `average` and the process columns). Lines end in CRLF. A CSV built
+from several reports has no column naming the report a row came from.
+
+It is not a benchmark CSV: `bench summary`, `bench compare` and `bench-plot`
+need `test`, `wallMedian`, `wallCV` and `callsPerSecond` columns and refuse it
+(`missing required column 'test'`, `Missing required columns`). Read it with a
+CSV tool.
+
+**Exit status.** 0 when every requested input was read; 1 when any was not: a
+tool failed, is missing or ran past `--timeout`, an input is not a report or is
+empty, or a directory holds none. Each failure is an error line on stderr
+naming the input and its cause, and the rows of the reports that were read are
+written all the same. A summary with no data, such as the kernel summary of a
+report with no kernel, is a warning. A `--csv` that names one of the reports is
+refused before anything is read. SIGINT or SIGTERM stops the tool and every
+process it started, removes the private export and writes nothing.
 
 ### init / config-validate - Project Defaults
 

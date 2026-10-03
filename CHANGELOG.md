@@ -308,6 +308,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pprof`-only installation printed empty analysis). An analyzer that is
   missing, does not run or fails on the profile is reported, and the capture
   and its `cpu.prof` are kept.
+- **`bench nsight-parse parse` reads Nsight reports into CSV** -- the `bench`
+  CLI reads `.nsys-rep` and `.ncu-rep` reports into the same CSV, exit status
+  and messages as the Python `nsight-parse parse`, needing only `nsys` and
+  `ncu`; `--timeout` bounds each tool command (600 s by default).
 
 ### Fixed
 
