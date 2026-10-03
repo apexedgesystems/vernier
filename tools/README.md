@@ -265,9 +265,12 @@ printed; a missing or failing `callgrind_annotate` fails the run as
 **compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
 tool ends with status 5 when it reports errors, whatever the benchmark itself
 returned, and otherwise with the benchmark's own status. `bench run` reads
-this run's `sanitizer.log` to tell them apart. Errors counted by its `ERROR
-SUMMARY` line fail the run, and the count printed is that line's; with no
-errors counted, the status is the benchmark's own, 5 included. A report that
+this run's `sanitizer.log` to tell them apart. Errors counted by its summary
+fail the run, and the count printed is the summary's: the `ERROR SUMMARY`
+line of memcheck, synccheck and initcheck, or racecheck's `RACECHECK SUMMARY:
+H hazards displayed (E errors, W warnings)`, whose errors count and whose
+warnings do not. With no errors counted, the status is the benchmark's own,
+5 included. A report that
 holds only the tool's own `Error:` line fails the run as `collection:`, a
 missing report or one without its summary as `completion:`, and nothing is
 counted.

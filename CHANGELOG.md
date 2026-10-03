@@ -459,8 +459,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   errors** -- the tool's default exit status is 0, so a benchmark whose kernels
   it reported as faulty passed, and an output folder holding `%` broke its log
   path. `bench run` passes `--error-exitcode 5`, counts the errors from this
-  run's report, fails naming the report, and leaves the benchmark its own
-  status when the report counts none. **Action needed:** a job that passed
+  run's report (racecheck's errors from its own summary, not its warnings),
+  fails naming the report, and leaves the benchmark its own status when the
+  report counts none. **Action needed:** a job that passed
   with sanitizer findings now fails; a manual wrap passes `--error-exitcode`
   itself.
 - **`bench profile-all` fails when a profiler fails** -- it printed a failed

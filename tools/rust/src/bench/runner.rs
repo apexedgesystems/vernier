@@ -1019,19 +1019,42 @@ fn escape_percent(path: &str) -> String {
     path.replace('%', "%%")
 }
 
-/// The error count of a compute-sanitizer report: its last `ERROR SUMMARY: N
-/// error(s)` line, or `None` when it has none (a report cut short, or a tool
-/// that stopped before summarizing).
+/// The error count of a compute-sanitizer report, from its last summary line:
+/// `ERROR SUMMARY: N error(s)` (memcheck, synccheck, initcheck), or
+/// racecheck's `RACECHECK SUMMARY: H hazard(s) displayed (E error(s), W
+/// warning(s))`, whose errors count and whose warnings do not. `None` when the
+/// report has neither in that form (a report cut short, or a tool that stopped
+/// before summarizing): nothing is counted from a line read any other way.
 fn sanitizer_error_count(report: &str) -> Option<u64> {
     report.lines().rev().find_map(|line| {
-        let rest = line.split_once("ERROR SUMMARY:")?.1.trim();
-        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        let count = rest[..digits].parse().ok()?;
-        rest[digits..]
-            .trim_start()
-            .starts_with("error")
-            .then_some(count)
+        if let Some((_, rest)) = line.split_once("RACECHECK SUMMARY:") {
+            return racecheck_errors(rest);
+        }
+        leading_count(line.split_once("ERROR SUMMARY:")?.1, "error")
     })
+}
+
+/// N of "N <noun>" or "N <noun>s" at the start of @p text (after spaces).
+fn leading_count(text: &str, noun: &str) -> Option<u64> {
+    let text = text.trim_start();
+    let digits = text.len() - text.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let count = text[..digits].parse().ok()?;
+    text[digits..]
+        .trim_start()
+        .starts_with(noun)
+        .then_some(count)
+}
+
+/// E of racecheck's summary after its label, "H hazard(s) displayed (E
+/// error(s), W warning(s))"; `None` for any other form.
+fn racecheck_errors(summary: &str) -> Option<u64> {
+    let (hazards, rest) = summary.split_once('(')?;
+    leading_count(hazards, "hazard")?;
+    let (counts, _) = rest.split_once(')')?;
+    let mut parts = counts.split(',');
+    let errors = leading_count(parts.next()?, "error")?;
+    leading_count(parts.next()?, "warning")?;
+    parts.next().is_none().then_some(errors)
 }
 
 /// The first line of @p report holding @p text, without the tool's
@@ -1499,8 +1522,10 @@ mod tests {
         assert_eq!(exits[1][2], TOOL_FINDINGS_EXIT_CODE.to_string());
     }
 
-    /// @test A report's error count comes from its last summary line, and a
-    /// report without one has no count.
+    /// @test A report's error count comes from its last summary line, in
+    /// memcheck's, synccheck's and initcheck's form or in racecheck's (whose
+    /// warnings do not count), and a report without one, or with a summary in
+    /// any other form, has no count.
     #[test]
     fn sanitizer_error_count_reads_the_summary() {
         let head = "========= COMPUTE-SANITIZER\n";
@@ -1511,6 +1536,31 @@ mod tests {
             ("========= Invalid __global__ write of size 4 bytes\n", None),
             ("========= ERROR SUMMARY: many errors\n", None),
             ("========= ERROR SUMMARY: 3 warnings\n", None),
+            (
+                "========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)\n",
+                Some(0),
+            ),
+            (
+                "========= RACECHECK SUMMARY: 1 hazard displayed (1 error, 0 warnings)\n",
+                Some(1),
+            ),
+            (
+                "========= RACECHECK SUMMARY: 3 hazards displayed (0 errors, 3 warnings)\n",
+                Some(0),
+            ),
+            ("========= RACECHECK SUMMARY: 2 hazards displayed\n", None),
+            (
+                "========= RACECHECK SUMMARY: 2 hazards displayed (2 errors)\n",
+                None,
+            ),
+            (
+                "========= RACECHECK SUMMARY: some hazards displayed (2 errors, 0 warnings)\n",
+                None,
+            ),
+            (
+                "========= RACECHECK SUMMARY: 2 hazards displayed (2 warnings, 0 errors)\n",
+                None,
+            ),
             ("", None),
         ] {
             assert_eq!(

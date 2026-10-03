@@ -1778,6 +1778,12 @@ case "${FAKE_SANITIZER:-clean}" in
     report "Error: process didn't terminate successfully" 'Target application returned an error' \
       'ERROR SUMMARY: 0 errors'
     exit 9 ;;
+  race-clean) report 'RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)'; exit 0 ;;
+  race-findings)
+    report 'Error: Race reported between Write access at k(int *, int)+0x70' \
+      '    and Write access at k(int *, int)+0x70 [63 hazards]' '' \
+      'RACECHECK SUMMARY: 1 hazard displayed (1 error, 0 warnings)'
+    exit "$ec" ;;
   startup) report 'Error: Target application terminated before first instrumented API call'; exit 255 ;;
   truncated) report 'Invalid __global__ write of size 4 bytes'; exit "${FAKE_SANITIZER_EXIT:-5}" ;;
   no-report) exit 5 ;;
@@ -2602,6 +2608,44 @@ fn run_compute_sanitizer_clean() {
 #[test]
 fn run_compute_sanitizer_findings() {
     let (code, _, err, _) = run_sanitizer("findings", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: compute-sanitizer reported 1 error in the benchmark; the report is \
+             {SANITIZER_REPORT} (the tool exited with status 5)\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test racecheck summarizes in words of its own: a clean racecheck run
+/// passes, and one with a reported hazard fails with the summary's error
+/// count, as the other tools' runs do.
+#[test]
+fn run_compute_sanitizer_racecheck() {
+    let run = |scenario: &str| {
+        let rig = route_rig(&["compute-sanitizer"]);
+        run_rig_env(
+            &rig,
+            &[
+                "--profile",
+                "compute-sanitizer",
+                "--profile-args",
+                "racecheck",
+            ],
+            &[("FAKE_SANITIZER", scenario)],
+        )
+    };
+    let (code, stdout, err, log) = run("race-clean");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        stdout.contains(&format!(
+            "[bench] compute-sanitizer wrote {SANITIZER_REPORT} ("
+        )),
+        "{stdout}"
+    );
+    assert!(log.contains("--tool=racecheck --error-exitcode 5"), "{log}");
+    let (code, _, err, _) = run("race-findings");
     assert_eq!(code, 1, "{err}");
     assert!(
         err.ends_with(&format!(
