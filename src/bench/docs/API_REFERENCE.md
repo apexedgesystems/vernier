@@ -259,7 +259,20 @@ Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 
 ```cpp
 void attachProfilerHooks(PerfCase& perf, const PerfConfig& cfg);
+PerfCase makePerfCaseWithProfiler(std::string testName, const PerfConfig& cfg);
 ```
+
+`--profile` profiles the cases that create a profiler: `PERF_GUARD` does it
+for its case, `attachProfilerHooks()` for a `PerfCase` you construct, and
+`makePerfCaseWithProfiler()` constructs the case and attaches it (on the GPU,
+`PERF_GPU_GUARD` and `attachGpuProfilerHooks()`). A bare `PerfCase`, or one
+built with `PERF_GUARD_NOPROFILE`, gets none, so the backend does nothing
+around its measured phase;
+a tool that runs the whole process still records it. The request is checked
+when the profiler is created: one that cannot run fails the run (exit status
+4 when the tests pass), and a run in which no case created a profiler ends
+with a notice that nothing was profiled. See the
+[advanced guide](ADVANCED_GUIDE.md#attachprofilerhooks-function).
 
 **Supported profilers** (each self-registers via the backend registry):
 
@@ -273,7 +286,7 @@ CPU:
 - `massif` - valgrind massif (heap usage timeline, ~20x overhead)
 - `memcheck` - valgrind memcheck (memory errors and leaks)
 - `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
-- `offcpu` - bpftrace finish_task_switch (where threads spend blocked time)
+- `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
 - `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
 - `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
 
@@ -281,6 +294,7 @@ GPU:
 
 - `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
   canonical nsys stats reports)
+- `ncu` - NVIDIA Nsight Compute (per-kernel analysis)
 - `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
   / synccheck / initcheck)
 - `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
@@ -298,8 +312,7 @@ Adjacent in-process instrumentation:
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  PERF_GUARD(perf);
-  ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
+  PERF_GUARD(perf);  // creates the case and attaches the --profile profiler
 
   perf.warmup([&]{ /* ... */ });
   auto result = perf.throughputLoop([&]{ /* ... */ }, "op");
@@ -619,15 +632,16 @@ BPF-based kernel tracing.
 
 **Features:**
 
-- Off-CPU analysis
 - Syscall tracing
 - Custom probe points
+- Off-CPU time has a backend of its own, `offcpu`
 
 **Usage:**
 
 ```bash
-# Requires root or CAP_BPF capability
-sudo ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
+# bpftrace runs only as root: run the benchmark as root, or set BENCH_SUDO=1
+# with a sudoers grant for bpftrace and kill, which runs only the tracer as root
+BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
 ```
 
 ### ProfilerRAPL
@@ -661,9 +675,13 @@ NVIDIA Nsight Compute integration.
 **Usage:**
 
 ```bash
-# Requires NVIDIA driver with profiling support
-./MyGpuTest_PTEST --profile nsight --gtest_filter="*Kernel"
+# nsys and ncu record a process only when they start it: bench run starts the
+# benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
+bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
 ```
+
+Run directly with `--profile nsight`, without a tool around it, the run fails
+(exit status 4 when the tests pass) and prints the command that captures it.
 
 ---
 

@@ -320,6 +320,19 @@ requirement: rebuild it against this vernier, or drop `--profile`.
 `bench validate <binary>` shows the same default-mode rows as an advisory
 report that never fails on them.
 
+**What the doctor runs, and what it costs.** To say whether each profiler can
+run here, the doctor starts most of the tools once, one after another: each
+valgrind tool and heaptrack on `/bin/true`, a short `perf stat` of its own
+process, the bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu
+and compute-sanitizer. On the [Raspberry Pi 4 rig](../src/bench/docs/rigs/RIG_PI4.md),
+`bench doctor build/bin/ptests/BenchmarkCPU_PTEST` took 3.95 to 3.96 s, and
+8.52 to 8.59 s with `BENCH_SUDO=1`, under which the bpftrace and off-CPU
+probes attach and run (five runs each, on core 3 with the governor at
+performance). In the project's development container on an x86-64 laptop, as
+its non-root user, it took 1.06 to 1.23 s (five runs, unpinned). Other
+machines and runs can land outside these ranges. A benchmark run checks only
+its own request.
+
 ### profile-all - Iterate Every Profiler
 
 Run a benchmark under each profiler in sequence, dropping artifacts under
@@ -381,7 +394,12 @@ bench gpu-topo --json
 ### Registered Profiler Backends
 
 `--profile X` dispatches to whichever backend self-registered under name `X`.
-The `doctor` command lists all of them with their environment readiness.
+The `doctor` command lists all of them with whether each can run here, and
+checks a given `--profile` request by its own mode. The backends whose tool
+records the whole process (`callgrind`, `massif`, `memcheck`, `helgrind`,
+`heaptrack`, `nsight`, `ncu`, `compute-sanitizer`, `rocprof`) collect only in a
+process that tool started: `bench run` starts it for all but `rocprof`, and a
+run started without it fails with the command that would start it.
 
 | Backend             | Layer | Wraps                                             |
 | ------------------- | ----- | ------------------------------------------------- |
@@ -393,10 +411,11 @@ The `doctor` command lists all of them with their environment readiness.
 | `massif`            | CPU   | valgrind massif (heap timeline, ~20x)             |
 | `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                |
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, lock order)  |
-| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)      |
+| `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)       |
 | `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |
 | `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)    |
+| `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)       |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init) |
 | `rocprof`           | GPU   | AMD ROCm rocprof                                  |
 
