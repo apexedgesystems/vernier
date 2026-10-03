@@ -3,7 +3,7 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-24 (UTC), written for the Vernier 1.0.4 release; captured
+**Captured:** 2026-09-29 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
 `bench 1.0.3`
 
@@ -24,12 +24,13 @@ records where the program was: the instruction it was running and the chain of
 calls that led there. Afterwards `google-pprof` counts the samples per
 function. A function that holds 60% of the samples was running about 60% of the
 time, give or take: with about two hundred samples a share is not exact, and
-the ten profiles of V1 taken by step 1's command in this session put `joinV1`'s
-own share anywhere from 53% to 65%.
+ten profiles of V1 taken in this session put `joinV1`'s own share anywhere from
+55.5% to 64.0%.
 
 At that rate the profiler costs little. Over five alternating runs of each
-version on this rig, the profiled medians averaged 0.4% (V0) and 1.4% (V1)
-above the unprofiled ones, while the unprofiled V0 runs alone spread over 4.6%.
+version on this rig, the profiled medians averaged 1.0% (V0) and 0.9% (V1)
+above the unprofiled ones, while the unprofiled runs alone spread over 2.7%
+(V0) and 5.1% (V1).
 
 It is not the tool for exact counts of instructions or calls (Callgrind), for
 hardware events such as cache misses (perf), or for counting allocations
@@ -91,9 +92,9 @@ its caller would have no row of its own in the report.
 The demo, [`cpu/03_GperfProfiler_Demo.cpp`](../cpu/03_GperfProfiler_Demo.cpp),
 runs each version over the same 1,000 words in a test of its own,
 `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each; those are
-the tests `--profile gperf` wraps below. A third test,
-`GperfProfiler.ProfileAttribution`, profiles both versions itself and fails if
-the profile stops saying what this page says; see
+the tests `--profile gperf` wraps below. That is the whole demo: it measures,
+and the profiler reads it. The check that the profile keeps saying what this
+page says is a performance test of its own beside the example; see
 [What Keeps This Page True](#what-keeps-this-page-true).
 
 ## Step 1: Measure
@@ -107,44 +108,35 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_03_GperfProfiler \
 Captured output:
 
 ```
-[==========] Running 3 tests from 1 test suite.
+[==========] Running 2 tests from 1 test suite.
 [----------] Global test environment set-up.
-[----------] 3 tests from GperfProfiler
+[----------] 2 tests from GperfProfiler
 [ RUN      ] GperfProfiler.JoinV0
-[target-time] 50.000 ms -> cycles=50 (calibrated 999.5000 us/call, batch of 2)
-[GperfProfiler.JoinV0]  970.270 us/call  CV=0.1%  ~1.0K calls/s  (p10=969.934 p90=972.436 sd=1.292)
-[       OK ] GperfProfiler.JoinV0 (494 ms)
+[target-time] 50.000 ms -> cycles=46 (calibrated 1084.0000 us/call, batch of 1)
+[GperfProfiler.JoinV0]  1004.489 us/call  CV=0.3%  ~996 calls/s  (p10=1000.502 p90=1006.850 sd=2.567)
+[       OK ] GperfProfiler.JoinV0 (469 ms)
 [ RUN      ] GperfProfiler.JoinV1
-[target-time] 50.000 ms -> cycles=2507 (calibrated 19.9375 us/call, batch of 64)
-[GperfProfiler.JoinV1]  20.913 us/call  CV=1.3%  ~47.8K calls/s  (p10=20.396 p90=20.948 sd=0.268)
-[       OK ] GperfProfiler.JoinV1 (524 ms)
-[ RUN      ] GperfProfiler.ProfileAttribution
-PROFILE: interrupts/evictions/bytes = 201/88/20680
-PROFILE: interrupts/evictions/bytes = 200/105/14984
-[GperfProfiler.ProfileAttribution]  V0: 201 samples, joinV0 7.5% self, 97.0% total
-[GperfProfiler.ProfileAttribution]  V1: 200 samples, joinV1 58.0% self, 97.5% total
-[       OK ] GperfProfiler.ProfileAttribution (5758 ms)
-[----------] 3 tests from GperfProfiler (6777 ms total)
+[target-time] 50.000 ms -> cycles=2517 (calibrated 19.8594 us/call, batch of 64)
+[GperfProfiler.JoinV1]  19.654 us/call  CV=1.7%  ~50.9K calls/s  (p10=18.892 p90=19.815 sd=0.332)
+[       OK ] GperfProfiler.JoinV1 (494 ms)
+[----------] 2 tests from GperfProfiler (964 ms total)
 
 [----------] Global test environment tear-down
-[==========] 3 tests from 1 test suite ran. (6777 ms total)
-[  PASSED  ] 3 tests.
+[==========] 2 tests from 1 test suite ran. (964 ms total)
+[  PASSED  ] 2 tests.
 
 ======================================================================
 Test                   Median (us)     CV%     Calls/s  Status
 ----------------------------------------------------------------------
-GperfProfiler.JoinV0       970.270    0.1%        1.0K  OK
-GperfProfiler.JoinV1        20.913    1.3%       47.8K  OK
+GperfProfiler.JoinV0      1004.489    0.3%         996  OK
+GperfProfiler.JoinV1        19.654    1.7%       50.9K  OK
 ----------------------------------------------------------------------
 2 tests | 2 stable | 0 unstable
 ```
 
-`joinV0` takes 970.3 us per call and `joinV1` 20.9 us, 46 times less, and each
-median is steady within its run (CV 0.1% and 1.3%). The third test's two lines
-come from profiles it took itself: in V0's, `joinV0` is on the stack of 97.0% of
-the samples while its own code holds only 7.5%; in V1's, `joinV1`'s own code
-holds 58.0%. The next three steps take one profile per version by hand and read
-it.
+`joinV0` takes 1004.5 us per call and `joinV1` 19.7 us, 51 times less, and each
+median is steady within its run (CV 0.3% and 1.7%). The next three steps take
+one profile per version and read it.
 
 ## Step 2: Profile the Slow Version
 
@@ -162,26 +154,26 @@ Note: Google Test filter = GperfProfiler.JoinV0
 [----------] Global test environment set-up.
 [----------] 1 test from GperfProfiler
 [ RUN      ] GperfProfiler.JoinV0
-[target-time] 200.000 ms -> cycles=191 (calibrated 1042.5000 us/call, batch of 2)
-PROFILE: interrupts/evictions/bytes = 185/16/9856
-[GperfProfiler.JoinV0]  970.770 us/call  CV=0.1%  ~1.0K calls/s  (p10=970.088 p90=971.548 sd=0.775)
-[       OK ] GperfProfiler.JoinV0 (1875 ms)
-[----------] 1 test from GperfProfiler (1875 ms total)
+[target-time] 200.000 ms -> cycles=203 (calibrated 982.0000 us/call, batch of 2)
+PROFILE: interrupts/evictions/bytes = 196/23/11488
+[GperfProfiler.JoinV0]  969.766 us/call  CV=0.2%  ~1.0K calls/s  (p10=968.965 p90=973.921 sd=1.969)
+[       OK ] GperfProfiler.JoinV0 (1990 ms)
+[----------] 1 test from GperfProfiler (1990 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (1875 ms total)
+[==========] 1 test from 1 test suite ran. (1990 ms total)
 [  PASSED  ] 1 test.
 ```
 
 `bench run` starts the binary with `--profile gperf`, as its `Running:` line
 shows; gperftools runs inside the benchmark's own process, so nothing wraps it.
-The `PROFILE:` line is gperftools reporting as it stops: 185 samples. The
+The `PROFILE:` line is gperftools reporting as it stops: 196 samples. The
 profile is `GperfProfiler.JoinV0.gperf/cpu.prof`, under the directory
 `bench run` ran from.
 
-185 samples for 191 calls x 10 repeats x 970.77 us = 1.85 s of measured time is
-100 per second, and the profile says so itself: the fourth number in its header
-is the sampling period, in microseconds.
+196 samples for 203 calls x 10 repeats x 969.766 us = 1.97 s of measured time
+is 100 per second, and the profile says so itself: the fourth number in its
+header is the sampling period, in microseconds.
 
 ```bash
 od -A d -t d8 -N 40 GperfProfiler.JoinV0.gperf/cpu.prof
@@ -200,34 +192,44 @@ od -A d -t d8 -N 40 GperfProfiler.JoinV0.gperf/cpu.prof
 google-pprof --text ./build/bin/ptests/BenchDemo_03_GperfProfiler GperfProfiler.JoinV0.gperf/cpu.prof
 ```
 
-Captured output, cut after the last function with samples of its own. The rows
-below the cut have none: `_int_free`, whose 15 samples are all in the free-path
-rows above, and the chain of callers that led to `joinV0`, from
-`std::_Function_handler::_M_invoke` out to `_start`:
+Captured output, cut after the last function with samples of its own. The
+rows below that have none of their own, only samples in what they called:
+`_int_free`, whose samples are in the free-path rows above, the chain of
+callers out to `_start`, and more `(inline)` rows. Two of them are kept:
 
 ```
 Using local file ./build/bin/ptests/BenchDemo_03_GperfProfiler.
 Using local file GperfProfiler.JoinV0.gperf/cpu.prof.
-Total: 185 samples
-     132  71.4%  71.4%      132  71.4% __memcpy_generic
-      17   9.2%  80.5%       18   9.7% _int_malloc
-       4   2.2%  82.7%        5   2.7% _int_free_create_chunk
-       4   2.2%  84.9%       10   5.4% _int_free_merge_chunk
-       4   2.2%  87.0%      181  97.8% vernier::bench::demo::joinV0
-       3   1.6%  88.6%        3   1.6% _init
-       3   1.6%  90.3%        3   1.6% _int_free_chunk
-       3   1.6%  91.9%        3   1.6% unlink_chunk
-       2   1.1%  93.0%        2   1.1% __GI___libc_free
-       2   1.1%  94.1%       21  11.4% __GI___libc_malloc
-       2   1.1%  95.1%        2   1.1% _int_free_maybe_consolidate
-       2   1.1%  96.2%        2   1.1% checked_request2size
-       2   1.1%  97.3%        2   1.1% tcache_available
-       1   0.5%  97.8%       28  15.1% operator new@@GLIBCXX_3.4
-       1   0.5%  98.4%        1   0.5% std::__once_callable@@GLIBCXX_3.4.11
-       1   0.5%  98.9%        1   0.5% tag_new_usable
-       1   0.5%  99.5%        1   0.5% tcache_get_n
-       1   0.5% 100.0%        1   0.5% tcache_try_malloc
+Total: 196 samples
+     127  64.8%  64.8%      127  64.8% __memcpy_generic
+      17   8.7%  73.5%       20  10.2% _int_malloc
+       8   4.1%  77.6%        8   4.1% _int_free_create_chunk
+       5   2.6%  80.1%       15   7.7% _int_free_merge_chunk
+       4   2.0%  82.1%        4   2.0% tcache_try_malloc
+       4   2.0%  84.2%        4   2.0% unlink_chunk
+       3   1.5%  85.7%       24  12.2% __GI___libc_malloc
+       3   1.5%  87.2%        3   1.5% _int_free_chunk
+       3   1.5%  88.8%        3   1.5% std::__cxx11::basic_string::_M_data (inline)
+       3   1.5%  90.3%      130  66.3% std::char_traits::copy (inline)
+       2   1.0%  91.3%        2   1.0% _init
+       2   1.0%  92.3%        2   1.0% alloc_perturb
+       2   1.0%  93.4%        2   1.0% std::__once_callable@@GLIBCXX_3.4.11
+       2   1.0%  94.4%        2   1.0% tag_at
+       1   0.5%  94.9%        1   0.5% __GI___libc_free
+       1   0.5%  95.4%        1   0.5% _int_free_maybe_consolidate
+       1   0.5%  95.9%        1   0.5% arena_for_chunk
+       1   0.5%  96.4%        1   0.5% checked_request2size
+       1   0.5%  96.9%       33  16.8% operator new@@GLIBCXX_3.4
+       1   0.5%  97.4%        1   0.5% std::__cxx11::basic_string::_Alloc_hider::_Alloc_hider (inline)
+       1   0.5%  98.0%        1   0.5% std::__cxx11::basic_string::_M_is_local (inline)
+       1   0.5%  98.5%        1   0.5% std::__cxx11::basic_string::operator= (inline)
+       1   0.5%  99.0%        1   0.5% std::char_traits::assign (inline)
+       1   0.5%  99.5%        1   0.5% tcache_free
+       1   0.5% 100.0%        1   0.5% tcache_get_n
 ...
+       0   0.0% 100.0%      181  92.3% std::operator+ (inline)
+...
+       0   0.0% 100.0%      192  98.0% vernier::bench::demo::joinV0
 ```
 
 Each row is one function. `flat` counts the samples taken while that
@@ -236,27 +238,40 @@ total; `sum%` adds up `flat%` down the list; `cum` and `cum%` count the samples
 taken while the function was running itself or anything it had called. The rows
 are sorted by `flat`.
 
+A row marked `(inline)` is code the compiler copied into the function that
+calls it. The join example is compiled with line tables (`-g`), which
+walkthroughs 07 and 14 need to name its source lines, and from them pprof tells
+the copied code apart and gives it a row under the name it has in the source.
+Its samples are still the calling function's machine code. So
+`vernier::bench::demo::joinV0` has no samples in its own row, while the six
+`(inline)` rows with samples, the string code the compiler placed inside it
+(`basic_string::_M_data`, `char_traits::copy` and the others), hold 10:
+`joinV0`'s machine code holds 10 of the 196 samples, 5.1%.
+
 Read it from the function you wrote:
 
-- `vernier::bench::demo::joinV0` holds 4 samples of its own (2.2%) and is on the
-  stack of 181 (97.8%). Nearly all of V0's time is spent in calls that
-  `joinV0` makes, not in its loop.
+- `vernier::bench::demo::joinV0` is on the stack of 192 samples (98.0%), and
+  its machine code holds 10 (5.1%). Nearly all of V0's time is spent in
+  calls that `joinV0` makes, not in its loop.
 - The top row is the C library's `memcpy` (`__memcpy_generic` on this rig), at
-  71.4%: copying. `out + part` copies everything joined so far, once per part.
+  64.8%: copying. `out + part` copies everything joined so far, once per part.
 - Most of the other rows are the allocator: `operator new` and the C library's
-  `malloc` internals under it (`operator new`'s `cum` is 15.1%), and the free
+  `malloc` internals under it (`operator new`'s `cum` is 16.8%), and the free
   path (`__GI___libc_free`, the `_int_free` rows, `unlink_chunk`). The
-  allocator's rows hold 45 samples between them, 24%: two temporary strings
+  allocator's rows hold 55 samples between them, 28.1%: two temporary strings
   are made and thrown away for every part.
+- The `(inline)` rows without samples of their own say which part of the
+  source led there: `std::operator+ (inline)` is on the stack of 92.3% of the
+  samples, the `out + part + sep` of `joinV0`'s loop.
 
 So the profile names the function to change, and says what its time goes on:
-copying and allocating, about three to one.
+copying and allocating, about two to one.
 
-Two rows are not functions. `_init` (1.6%) is the last name before the binary's
+Two rows are not functions. `_init` (1.0%) is the last name before the binary's
 procedure linkage table, the stubs through which it calls into the C library,
-and pprof gives a sample the nearest name below its address. The one sample in
-`std::__once_callable`, a variable in the C++ library, is the same stand-in for
-code there that has no name of its own.
+and pprof gives a sample the nearest name below its address. The two samples
+in `std::__once_callable`, a variable in the C++ library, are the same
+stand-in for code there that has no name of its own.
 
 ## Step 4: Confirm the Fix
 
@@ -273,53 +288,126 @@ Captured output of the first command:
 ```
 Running: taskset -c 3 ./build/bin/ptests/BenchDemo_03_GperfProfiler --profile gperf --gtest_filter=GperfProfiler.JoinV1 --target-time 200ms --repeats 10
 ...
-[target-time] 200.000 ms -> cycles=10007 (calibrated 19.9844 us/call, batch of 64)
-PROFILE: interrupts/evictions/bytes = 209/81/14128
-[GperfProfiler.JoinV1]  20.938 us/call  CV=2.0%  ~47.8K calls/s  (p10=20.419 p90=21.485 sd=0.417)
+[target-time] 200.000 ms -> cycles=9523 (calibrated 21.0000 us/call, batch of 64)
+PROFILE: interrupts/evictions/bytes = 201/64/11800
+[GperfProfiler.JoinV1]  21.272 us/call  CV=1.1%  ~47.0K calls/s  (p10=20.826 p90=21.428 sd=0.232)
 ...
 ```
 
-And of the second, cut the same way:
+And of the second, cut after the last function with samples of its own:
 
 ```
 Using local file ./build/bin/ptests/BenchDemo_03_GperfProfiler.
 Using local file GperfProfiler.JoinV1.gperf/cpu.prof.
-Total: 209 samples
-     128  61.2%  61.2%      203  97.1% vernier::bench::demo::joinV1
-      73  34.9%  96.2%       73  34.9% __memcpy_generic
-       5   2.4%  98.6%        5   2.4% _init
-       2   1.0%  99.5%        2   1.0% _int_malloc
-       1   0.5% 100.0%        1   0.5% _int_free_merge_chunk
+Total: 201 samples
+      67  33.3%  33.3%       67  33.3% __memcpy_generic
+      38  18.9%  52.2%       38  18.9% std::__cxx11::basic_string::_M_data (inline)
+      28  13.9%  66.2%       28  13.9% std::__cxx11::basic_string::size (inline)
+      19   9.5%  75.6%       19   9.5% std::char_traits::assign (inline)
+      15   7.5%  83.1%       38  18.9% std::__cxx11::basic_string::capacity (inline)
+       8   4.0%  87.1%      193  96.0% vernier::bench::demo::joinV1
+       7   3.5%  90.5%        7   3.5% _init
+       7   3.5%  94.0%       74  36.8% std::char_traits::copy (inline)
+       5   2.5%  96.5%        5   2.5% std::__cxx11::basic_string::_M_length (inline)
+       4   2.0%  98.5%      121  60.2% std::__cxx11::basic_string::_M_append (inline)
+       1   0.5%  99.0%        1   0.5% __GI___libc_free
+       1   0.5%  99.5%        2   1.0% __GI___libc_malloc
+       1   0.5% 100.0%        1   0.5% _int_malloc
 ...
 ```
 
-The report moved the way the timing did. `joinV1`'s own loop holds most of the
-samples, 61.2%; `memcpy` holds 34.9%, now copying each part once, into place;
-and the allocator is down to 3 samples, 1.4%, for one allocation and one free
-per call.
+The report moved the way the timing did. `joinV1`'s own row holds 8 samples,
+4.0%, and the `(inline)` rows inside it hold 116 more (`basic_string::_M_data`,
+`size`, `char_traits::assign`, `capacity` and the rest): its machine code holds
+124 of the 201 samples, 61.7%, and it is on the stack of 96.0%. `memcpy` holds
+33.3%, now copying each part once, into place, and the allocator is down to 3
+samples, 1.5%, for one allocation and one free per call.
+
+Which `(inline)` rows belong to which function, the stacks say. `--stacks`
+lists every sampled call stack with its sample count, innermost frame first,
+and names that frame after the function whose machine code the sample hit,
+with the source line of the code inlined there:
+
+```bash
+google-pprof --text --stacks ./build/bin/ptests/BenchDemo_03_GperfProfiler GperfProfiler.JoinV1.gperf/cpu.prof
+```
+
+Captured output, cut to its first stack, and that to the frames in the
+benchmark:
+
+```
+Using local file ./build/bin/ptests/BenchDemo_03_GperfProfiler.
+Using local file GperfProfiler.JoinV1.gperf/cpu.prof.
+Total: 201 samples
+Stacks:
+
+7        (000000558bc93e0c) .../Join.cpp:39:vernier::bench::demo::joinV1
+         (000000558bc8621f) 03_GperfProfiler_Demo.cpp:0:std::_Function_handler::_M_invoke
+         (000000558bc87fbb) ??:0:std::_Function_handler::_M_invoke
+         (000000558bc8ce33) ??:0:vernier::bench::PerfCase::measured
+         (000000558bc87877) ??:0:GperfProfiler_JoinV1_Test::TestBody
+         ...
+```
+
+Seven samples caught code compiled from line 39, `out += part;`, inside
+`joinV1`. Counted this way, 124 of the 201 samples have `joinV1` as their
+innermost frame: the 61.7% above.
 
 The percentages are shares of each run's own time, so to compare two runs,
-multiply by the time per call: V0 spent about 690 us of its 970.77 us per call
-in `memcpy` (71.4%), V1 about 7.3 us of its 20.938 us (34.9%).
+multiply by the time per call: V0 spent about 628 us of its 969.8 us per call
+in `memcpy` (64.8%), V1 about 7.1 us of its 21.3 us (33.3%).
+
+## Profiling Your Own Code
+
+1. Give the function a test of its own, shaped like the demo's, so that
+   `--gtest_filter` can select it alone.
+2. Profile that test:
+
+   ```bash
+   bench run ./build/bin/ptests/<YourBenchmark> --profile gperf -- \
+     --gtest_filter=<Suite.Case> --target-time 200ms --repeats 10
+   ```
+
+   Two seconds of measured calls is about 200 samples at the default rate.
+
+3. Read it:
+
+   ```bash
+   google-pprof --text ./build/bin/ptests/<YourBenchmark> <Suite.Case>.gperf/cpu.prof
+   ```
+
+   Find your function's row: `cum` says how much of the time was spent in it
+   or below it, `flat` how much in its own code. A large `cum` over a small
+   `flat` means the time is in what it calls, and the rows above it say what.
+
+4. A function the compiler inlined into its caller has no row; its samples
+   count as the caller's. The example's two versions are declared
+   `[[gnu::noinline]]` so that each keeps its row. And when your code carries
+   line tables, code inlined into your function gets `(inline)` rows of its
+   own: the function's machine code is its row plus those, and `--stacks`
+   shows which rows are whose.
 
 ## What Should Reproduce
 
-| Reading                  | On this rig                                                                                    | Elsewhere                                                                             |
-| ------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| V1 against V0            | 46x faster here; 43.6x to 49.6x over ten runs                                                  | tens of times faster in an optimized build; 30x to 33x on x86                         |
-| `joinV0` in V0's profile | 2.2% own, 97.8% on the stack; 2.0% to 9.0% and 96.5% to 100.0% in the ten runs' own profiles   | should match: 1% to 5% and 95% to 100% on x86                                         |
-| `joinV1` in V1's profile | 61.2% own, 97.1% on the stack; 53.0% to 65.0% and 94.5% to 98.5% in the ten runs' own profiles | a large own share: 56% to 82% on x86                                                  |
-| the rest of V0's samples | `memcpy` 71.4%, the allocator 24%                                                              | the same kinds of function; their names depend on the C library and its debug symbols |
-| sampling rate            | 100 per second of CPU time                                                                     | the same default                                                                      |
-| absolute times           | V0 970.3 and V1 20.9 us/call; 923.1 to 997.7 and 20.0 to 21.7 over ten runs                    | will differ                                                                           |
+| Reading                  | On this rig                                                                              | Elsewhere                                                                                                              |
+| ------------------------ | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| V1 against V0            | 51x faster here; 44.0x to 51.1x over twelve runs                                         | tens of times faster in an optimized build; 38.5x to 38.9x on x86                                                      |
+| `joinV0` in V0's profile | 5.1% own, 98.0% on the stack; 2.5% to 6.0% and 98.0% to 99.5% in the check's ten runs    | should match: 1.0% to 6.5% and 97.0% to 100.0% on x86                                                                  |
+| `joinV1` in V1's profile | 61.7% own, 96.0% on the stack; 55.5% to 64.0% and 95.5% to 99.0% in the check's ten runs | a large own share: 67.0% to 86.5% on x86, lower on its efficiency cores (67.0% to 76.5%) than on its performance cores |
+| the rest of V0's samples | `memcpy` 64.8%, the allocator 28.1%                                                      | the same kinds of function; their names depend on the C library and its debug symbols                                  |
+| sampling rate            | 100 per second of CPU time                                                               | the same default                                                                                                       |
+| absolute times           | V0 1004.5 and V1 19.7 us/call; 932.9 to 1032.0 and 19.7 to 21.3 over twelve runs         | will differ                                                                                                            |
 
-The ten runs are step 1's command run ten times in one session, the reference
-capture among them; each carries its own profiles, from
-`GperfProfiler.ProfileAttribution`. The x86 figures come from an x86 laptop
-(clang 21, gperftools 2.15, Release) that was busy with other work, so its
-timings are noisier than the rig's: the ratio from five runs of step 1's
-command, the profile shares from nine runs of the profile test, those five
-among them.
+"Own" is the function's machine code, its row and the `(inline)` rows inside
+it, counted from the stacks as step 4 does. The twelve runs are step 1's
+command run in one session on this rig, the reference capture and the page's
+run among them; the check's ten runs are `GperfProfiler.ProfileAttribution`
+run ten times in the same session. Those ranges describe those runs; they are
+not a bound a run has to meet, and another run can land outside them. The x86
+figures come from an x86 laptop with performance and efficiency cores (clang 21,
+gperftools 2.15, Release) that was busy with other work: the ratio from five
+runs of step 1's command on a performance core, the profile shares from ten
+runs of the check on each kind of core.
 
 ## If It Does Not Match
 
@@ -327,11 +415,17 @@ among them.
   report.** Without the C library's debug symbols, pprof knows only the names
   the library exports, and gives each sample the nearest one below its address.
   With `libc6-dbg`'s files hidden, this rig's V0 profile from step 3 showed
-  `__xpg_strerror_r@@GLIBC_2.17` at 71.4%, the row that is `__memcpy_generic`
-  above, and the allocator as `__default_morecore`, `malloc` and
-  `timer_settime`. The `joinV0` row did not change, because the benchmark's own
-  names are in its binary. Install the C library's debug symbols (`libc6-dbg`
-  on Debian) and read the same profile again.
+  `__xpg_strerror_r@@GLIBC_2.17` at 64.8%, the row that is `__memcpy_generic`
+  above, and the allocator as `__default_morecore`, `timer_settime`, `malloc`
+  and `__libc_free`. The `joinV0` row and the `(inline)` rows did not change,
+  because the benchmark's own names are in its binary. Install the C library's
+  debug symbols (`libc6-dbg` on Debian) and read the same profile again.
+- **No `(inline)` rows, and `joinV1`'s own row holds most of V1's samples.**
+  The join example was built without its line tables, or stripped. The machine
+  code is the same and so is the split between the functions; the report only
+  folds the inlined code into its caller's row. On x86, a build of the example
+  without `-g` put 74.7% to 79.4% of V1's samples in `joinV1`'s row, with no
+  `(inline)` rows.
 - **`GperfProfiler.ProfileAttribution` is skipped.** "gperf backend
   unavailable: gperftools headers not present at build time" means Vernier was
   built without gperftools: install its development package, reconfigure and
@@ -370,39 +464,81 @@ this page ships in (`bench 1.0.3`):
 ```
 Test                      Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 --------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-GperfProfiler.JoinV0     937.24500     970.27000   +33.02500     +3.5%      0.0%      0.1%  neutral
-GperfProfiler.JoinV1      21.01740      20.91320    -0.10420     -0.5%      1.3%      1.3%  neutral
+GperfProfiler.JoinV0     942.18300    1004.49000   +62.30700     +6.6%      0.2%      0.3%  REGRESSION
+GperfProfiler.JoinV1      19.77560      19.65380    -0.12180     -0.6%      0.3%      1.7%  neutral
 
-  2 neutral
+  1 regression(s)  1 neutral
 
   Labels compare the median change against the 5.0% threshold.
   They describe the difference between two runs, not a significance test;
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference was captured by the same binary seconds before step 1. V0 came
-out 3.5% slower than the reference and V1 0.5% faster, and both rows are
-labelled neutral because both medians moved by less than the 5% threshold.
-`Base CV` and `Cand CV` are each run's spread across its own repeats. Over the
-ten runs of step 1's command in this session, V0's median ranged from 923.1 to
-997.7 us/call and V1's from 20.0 to 21.7 us/call, 8.1% each, with nothing
-changed, which is more than either run's CV says. What should hold is the ratio
-between the two rows, and the profile of each version.
+The reference was captured by the same binary seconds before step 1, and
+nothing changed between the two runs, yet V0's row is labelled `REGRESSION`:
+its median came out 6.6% above the reference's, past the 5% threshold the
+labels are drawn at, while V1's moved 0.6% and is `neutral`. `Base CV` and
+`Cand CV` are each run's spread across its own repeats. Over the twelve runs of
+step 1's command in this session, V0's median ranged from 932.9 to 1032.0
+us/call, 10.6%, and V1's from 19.7 to 21.3 us/call, 8.6%, with nothing
+changed, which is more than either run's CV says; V0's median is the noisiest
+reading on this page. The CSVs' `hostname` column records the name visible to
+the process that captured each: this reference was captured in a UTS
+namespace named `pi4` on the same rig, so it records `pi4`, while the rig's
+ordinary captures, step 1's `run1.csv` among them, record `raspberrypi`. What
+should hold is the ratio between the two rows, and the profile of each
+version.
 
 ## What Keeps This Page True
 
 Two things run against this example, and both fail loudly:
 
-- `GperfProfiler.ProfileAttribution`, in the demo binary, profiles each version
-  for two seconds of CPU time through the same backend as `--profile gperf`,
-  and reads the profiles with `google-pprof --text`, as steps 2 to 4 do. It
-  fails if either function is on the stack of fewer than 80% of its version's
-  samples (the profile no longer names it, which is what happens to a function
-  the optimizer copies into its caller), if `joinV0`'s own code holds more than
-  a quarter of V0's samples, or if `joinV1`'s own code holds less than a quarter
-  of V1's. On this rig it fails when `joinV0` is made to reserve like `joinV1`
-  (its own code then holds 57.5% of V0's samples), and when both versions are
-  forced inline (neither name appears).
+- `GperfProfiler.ProfileAttribution` profiles each version for two seconds of
+  CPU time through the same backend as `--profile gperf`, and reads the
+  profiles with `google-pprof --text --stacks`, counting a sample as a
+  function's own when its stack's innermost frame is that function, as step 4
+  does. It fails if either function is on the stack of fewer than 80% of its
+  version's samples (the profile no longer names it, which is what happens to
+  a function the optimizer copies into its caller), if `joinV0`'s own code
+  holds more than a quarter of V0's samples, or if `joinV1`'s own code holds
+  less than a quarter of V1's. It is a performance test beside the join
+  example,
+  [`JoinProfileAttribution_pTest.cpp`](../examples/join/utst/JoinProfileAttribution_pTest.cpp),
+  built as `JoinProfileAttribution`; a profile's shares are samples, so it is
+  not registered with `ctest`, and it is run on the rig by hand:
+
+  ```bash
+  taskset -c 3 ./build/bin/ptests/JoinProfileAttribution
+  ```
+
+  Captured on this rig:
+
+  ```
+  [==========] Running 1 test from 1 test suite.
+  [----------] Global test environment set-up.
+  [----------] 1 test from GperfProfiler
+  [ RUN      ] GperfProfiler.ProfileAttribution
+  PROFILE: interrupts/evictions/bytes = 201/74/18544
+  PROFILE: interrupts/evictions/bytes = 200/110/16000
+  [GperfProfiler.ProfileAttribution]  V0: 201 samples, joinV0 3.0% self, 98.5% total
+  [GperfProfiler.ProfileAttribution]  V1: 200 samples, joinV1 60.5% self, 98.0% total
+  [       OK ] GperfProfiler.ProfileAttribution (6024 ms)
+  [----------] 1 test from GperfProfiler (6024 ms total)
+
+  [----------] Global test environment tear-down
+  [==========] 1 test from 1 test suite ran. (6024 ms total)
+  [  PASSED  ] 1 test.
+  ```
+
+  In ten runs in this session it passed every time, with the shares in the
+  table above. It fails when `joinV0` is made to reserve like `joinV1` (its
+  own code then holds 55.0% of V0's samples), when `joinV1` copies like
+  `joinV0` (4.5% of V1's), and when both versions are forced inline (neither
+  name appears). It reads the stacks because the flat column moves with the
+  line tables: profiled the same way and read from `google-pprof --text`'s
+  flat column, `joinV1`'s share was 5.0% to 11.0% in ten runs in this session,
+  the rest sitting in the `(inline)` rows of step 3.
+
 - The example's unit tests hold both versions to the same answers and are
   registered with `ctest` under the `demo` label, beside the other shared
   examples' tests, so ordinary CI runs them:
@@ -417,9 +553,9 @@ Two things run against this example, and both fail loudly:
   every input size the example's tests use.
 
 This repository has no continuous-integration lane on the reference board, so
-nothing runs the demo itself automatically. Before a release it is run on the
-rig by hand, with the command in step 1, and the reference CSV is re-captured
-when the numbers move.
+nothing runs the demo or its check automatically. Before a release they are
+run on the rig by hand, with the commands above, and the reference CSV is
+re-captured when the numbers move.
 
 ## See Also
 

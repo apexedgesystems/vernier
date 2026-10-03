@@ -1,16 +1,17 @@
-#ifndef VERNIER_DEMO_GPERFPROFILER_CHECK_HPP
-#define VERNIER_DEMO_GPERFPROFILER_CHECK_HPP
+#ifndef VERNIER_DEMO_JOIN_GPERFPROFILES_HPP
+#define VERNIER_DEMO_JOIN_GPERFPROFILES_HPP
 /**
- * @file 03_GperfProfiler_Check.hpp
- * @brief Demo 03's profile check: profile a call through the gperf backend,
- *        then read one function's share of the profile with google-pprof.
+ * @file GperfProfiles.hpp
+ * @brief The profiling plumbing of JoinProfileAttribution: profile a call
+ *        through the gperf backend, then read one function's share of the
+ *        profile with google-pprof.
  *
- * Private to BenchDemo_03_GperfProfiler; its GperfProfiler.ProfileAttribution
- * test is the only user. The plumbing lives here (a scratch directory, the
- * profiled loop, the pprof call and its parsing) so that the demo file shows
- * the benchmarks and what the test asserts.
+ * Test support, private to JoinProfileAttribution_pTest.cpp. The plumbing
+ * lives here (a scratch directory, the profiled loop, the pprof call and its
+ * parsing); the check keeps what it asserts and when it skips.
  */
 
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -39,9 +40,10 @@ inline constexpr int CALLS_PER_CLOCK_READ = 16;
 
 /* ----------------------------- FunctionShare ----------------------------- */
 
-/// One function's share of a profile, as `google-pprof --text` reports it.
+/// One function's share of a profile, read from its sampled stacks.
 struct FunctionShare {
   long samples = 0;          ///< Samples in the whole profile
+  long stackSamples = 0;     ///< Samples in the stacks read; equals samples
   double selfPercent = 0.0;  ///< Samples taken in the function's own code
   double totalPercent = 0.0; ///< Samples taken in it or in anything it called
 };
@@ -57,7 +59,7 @@ public:
     if (ec) {
       return;
     }
-    std::string pattern = (TMP / "vernier-demo03-XXXXXX").string();
+    std::string pattern = (TMP / "vernier-join-gperf-XXXXXX").string();
     if (::mkdtemp(pattern.data()) != nullptr) {
       path_ = pattern;
     }
@@ -116,6 +118,30 @@ inline bool isFunctionOrClone(const std::string& name, const std::string& functi
   return name == function || name.compare(0, CLONE_PREFIX.size(), CLONE_PREFIX) == 0;
 }
 
+/**
+ * The function a `--stacks` frame names: what follows `(address) file:line:`.
+ * The file and line come first and function names hold colons, so the name
+ * starts after the first colon-delimited run of digits.
+ */
+inline std::string frameFunction(const std::string& frame) {
+  const std::size_t AFTER_ADDRESS = frame.find(") ");
+  if (AFTER_ADDRESS == std::string::npos) {
+    return {};
+  }
+  const std::string LOCATED = frame.substr(AFTER_ADDRESS + 2);
+  for (std::size_t colon = LOCATED.find(':'); colon != std::string::npos;
+       colon = LOCATED.find(':', colon + 1)) {
+    std::size_t end = colon + 1;
+    while (end < LOCATED.size() && std::isdigit(static_cast<unsigned char>(LOCATED[end])) != 0) {
+      ++end;
+    }
+    if (end > colon + 1 && end < LOCATED.size() && LOCATED[end] == ':') {
+      return LOCATED.substr(end + 1);
+    }
+  }
+  return {};
+}
+
 } // namespace internal
 
 /* ----------------------------- API ----------------------------- */
@@ -149,50 +175,95 @@ inline std::string profileWithGperf(const std::string& root, const std::string& 
 }
 
 /**
- * @brief Read @p profile with `google-pprof --text`, the command the
- *        walkthrough uses, and return @p function's share of it, its clones
- *        included.
+ * @brief Read @p profile with `google-pprof --text --stacks` and return
+ *        @p function's share of it, its clones included.
  *
- * Lines have the form `flat flat% sum% cum cum% name`, after a
- * `Total: N samples` line.
+ * A sample is the function's own when the instruction it caught is part of
+ * the function's machine code: its stack's innermost frame, which pprof names
+ * after the function holding that instruction, with the source line of
+ * whatever the compiler inlined there. --text's flat column is not used: when
+ * the binary carries debug information, pprof gives every callee inlined into
+ * the function a row of its own, marked "(inline)", and moves its samples out
+ * of the function's flat count, so the same code would read differently from
+ * one build to the next.
+ *
+ * The report opens with a `Total: N samples` line and a `Stacks:` line, then
+ * lists the stacks: one block per stack, separated by blank lines, with
+ * `count (address) file:line:function` for the innermost frame, the count in
+ * the first column, and an indented `(address) file:line:function` for each
+ * caller after it. --text's table follows the stacks and is not read.
  */
 inline FunctionShare readShare(const std::string& profile, const std::string& function) {
   FunctionShare share;
-  const std::string CMD = "google-pprof --text " + internal::shellQuoted(internal::selfExePath()) +
-                          " " + internal::shellQuoted(profile) + " 2>/dev/null";
+  const std::string CMD = "google-pprof --text --stacks " +
+                          internal::shellQuoted(internal::selfExePath()) + " " +
+                          internal::shellQuoted(profile) + " 2>/dev/null";
   std::FILE* pipe = ::popen(CMD.c_str(), "r");
   if (pipe == nullptr) {
     return share;
   }
 
-  std::array<char, 1024> line{};
-  while (std::fgets(line.data(), static_cast<int>(line.size()), pipe) != nullptr) {
-    long flat = 0;
-    long cum = 0;
-    double flatPct = 0.0;
-    double sumPct = 0.0;
-    double cumPct = 0.0;
-    int nameAt = 0;
-    if (std::sscanf(line.data(), "Total: %ld samples", &share.samples) == 1) {
+  long own = 0;
+  long onStack = 0;
+  long count = 0;       // samples of the stack being read
+  bool inStack = false; // its innermost frame has been read
+  bool inStacks = false;
+  bool pastStacks = false;
+  bool matched = false; // some frame of the stack is the function
+  const auto END_STACK = [&] {
+    if (inStack && matched) {
+      onStack += count;
+    }
+    inStack = false;
+    matched = false;
+  };
+
+  char* raw = nullptr;
+  std::size_t capacity = 0;
+  while (::getline(&raw, &capacity, pipe) != -1) {
+    std::string line(raw);
+    while (!line.empty() && (line.back() == '\n' || line.back() == ' ')) {
+      line.pop_back();
+    }
+    if (!inStacks) {
+      if (std::sscanf(line.c_str(), "Total: %ld samples", &share.samples) == 1) {
+        continue;
+      }
+      inStacks = (line == "Stacks:");
       continue;
     }
-    if (std::sscanf(line.data(), " %ld %lf%% %lf%% %ld %lf%% %n", &flat, &flatPct, &sumPct, &cum,
-                    &cumPct, &nameAt) < 5 ||
-        nameAt == 0) {
+    if (pastStacks) {
+      continue; // read to the end, so pprof never waits on a full pipe
+    }
+    if (line.empty()) {
+      END_STACK();
       continue;
     }
-    std::string name(line.data() + nameAt);
-    while (!name.empty() && (name.back() == '\n' || name.back() == ' ')) {
-      name.pop_back();
+    const bool INNERMOST = std::isdigit(static_cast<unsigned char>(line[0])) != 0;
+    const std::size_t FIRST = line.find_first_not_of(' ');
+    if (!INNERMOST && line[FIRST] != '(') {
+      END_STACK();
+      pastStacks = true;
+      continue;
     }
-    // A function and its copies are never on one stack together, so their
-    // shares add.
-    if (internal::isFunctionOrClone(name, function)) {
-      share.selfPercent += flatPct;
-      share.totalPercent += cumPct;
+    const bool IS_FUNCTION = internal::isFunctionOrClone(internal::frameFunction(line), function);
+    if (INNERMOST) {
+      END_STACK();
+      count = std::strtol(line.c_str(), nullptr, 10);
+      inStack = true;
+      share.stackSamples += count;
+      own += IS_FUNCTION ? count : 0;
     }
+    matched = matched || IS_FUNCTION;
   }
+  END_STACK();
+  std::free(raw);
   ::pclose(pipe);
+
+  if (share.samples > 0) {
+    share.selfPercent = 100.0 * static_cast<double>(own) / static_cast<double>(share.samples);
+    share.totalPercent = 100.0 * static_cast<double>(onStack) / static_cast<double>(share.samples);
+  }
   return share;
 }
 
@@ -201,4 +272,4 @@ inline FunctionShare readShare(const std::string& profile, const std::string& fu
 } // namespace bench
 } // namespace vernier
 
-#endif // VERNIER_DEMO_GPERFPROFILER_CHECK_HPP
+#endif // VERNIER_DEMO_JOIN_GPERFPROFILES_HPP
