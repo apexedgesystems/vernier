@@ -55,8 +55,10 @@ the copy bpftrace ran, with the PID filled in and the capture window appended;
 `<name>.out.text` (or `<name>.out.json` with `PERF_BPF_FMT=json`), what bpftrace
 printed: the capture window's two lines, then the maps at its exit; and
 `<name>.err.txt`, its error output. The files stay whatever the capture's
-outcome. Two selected scripts whose file names match would overwrite each
-other's files, so such a request is refused before anything runs.
+outcome. A request refused before the run (no privileges, a script not found,
+a probe the kernel lacks) starts no tracer and writes no capture folder. Two
+selected scripts whose file names match would overwrite each other's files, so
+such a request is refused before anything runs.
 
 ## The capture window
 
@@ -156,15 +158,31 @@ Each script ends itself when the traced process's main thread exits
 (`sched_process_exit` filtered on `tid == {{PID}}`), so a trace of a threaded test
 lasts through its workers' exits; the backend stops it with SIGINT once the
 measured repeats finish. A tracer that ends before then, by its own `exit()`, is
-reported, and the capture counts as incomplete.
+reported, and the capture counts as incomplete; one that ends within the
+check's first second is refused before the run ("did not stay attached").
 
-Run manually (example): replace `{{PID}}` with the PID to trace (1234 here), then run
-the copy. The histogram prints when bpftrace exits (Ctrl-C).
+Run manually: replace every `{{PID}}` with the process to trace, then run the
+copy. For a benchmark already running (PID 1234 here), the trace starts once
+bpftrace has attached and ends at Ctrl-C or when the benchmark's main thread
+exits; the maps print then.
 
 ```bash
-sed 's/{{PID}}/1234/' src/bench/bpf/write_latency.bt > /tmp/write_latency.bt
+sed 's/{{PID}}/1234/g' src/bench/bpf/write_latency.bt > /tmp/write_latency.bt
 sudo bpftrace -q /tmp/write_latency.bt
 ```
+
+Or let bpftrace start the benchmark with `-c`, and use its `cpid`, the PID of
+the command it starts: the trace then covers the whole process, warm-up and
+test framework included, and ends with it; the benchmark runs as root, as
+bpftrace does.
+
+```bash
+sed 's/{{PID}}/cpid/g' src/bench/bpf/write_latency.bt > /tmp/write_latency.bt
+sudo bpftrace -q -c './build/bin/ptests/<Binary> --gtest_filter=<Suite.Case>' /tmp/write_latency.bt
+```
+
+Neither has the capture window: nothing marks the measured repeats, so the maps
+hold everything the probes saw while bpftrace ran.
 
 ## PID namespaces
 
