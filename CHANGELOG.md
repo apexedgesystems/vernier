@@ -309,6 +309,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now empty, so a consumer parsing those columns as numbers must accept an
   empty cell; `CuptiCollector` gains `unavailableReason()` and
   `windowProblem()`.
+- **Walkthrough 19 reads the GPU columns of a kernel test's row** --
+  `src/bench/demo/docs/19_CUPTI_KERNEL_METRICS.md` is rewritten from runs of
+  demo 02's two kernel tests on the documented Jetson AGX Thor rig: what each
+  column holds and where it comes from (CUDA events, CUPTI's launch records,
+  the harness's occupancy estimate, NVML's samples), with the reference CSV at
+  `src/bench/demo/reference/thor/19_cupti_kernel_metrics.csv`. A check
+  registered with `ctest` under the `demo` label, `TestDemoKernelColumns`,
+  holds each column of those rows to its source.
 
 ### Fixed
 
