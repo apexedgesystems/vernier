@@ -587,10 +587,11 @@ perf script -i MyComponent.Throughput.perf/perf.data > profile.txt
 branch-misses and cache-misses. `perf.data` is written only when
 `--profile-args` starts with `record`; the rest of the string goes to
 `perf record` (`-g` samples call stacks). The backend starts perf just before
-the measured phase and gives it 200 ms to attach; perf can take longer to start
-sampling, so a measured phase of a few milliseconds may leave `perf.data`
-without samples. `--target-time 250ms` sizes the cycles so that each of the ten
-default repeats runs for roughly that long.
+the measured phase, which begins once perf answers that its counters are on (a
+`ping` on perf's `--control` fifo, waited for up to 5 s), so the phase is
+profiled from its first iteration. A measured phase of a few milliseconds still
+holds few samples; `--target-time 250ms` sizes the cycles so that each of the
+ten default repeats runs for roughly that long.
 
 **Common patterns to look for:**
 

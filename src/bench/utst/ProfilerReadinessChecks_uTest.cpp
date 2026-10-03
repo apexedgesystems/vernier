@@ -1117,15 +1117,16 @@ TEST_F(PerfCheckTest, LaunchKeepsPunctuationInPaths) {
     EXPECT_EQ(TEXT.find("Syntax error"), std::string::npos) << TEXT;
     EXPECT_EQ(TEXT.find("not found"), std::string::npos) << TEXT;
   }
+  // The checked perf answers on --control, so each launch ends with its fifos.
   EXPECT_EQ(dir_.logLines("perf " + PERF +
                           " stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses "
                           "-p " +
-                          PID + " pid=")
+                          PID + " --control fifo:")
                 .size(),
             1U)
       << dir_.log();
   EXPECT_EQ(dir_.logLines("perf " + PERF + " record -g -p " + PID + " -o " + ROOT +
-                          "/Perf.Record.perf/perf.data pid=")
+                          "/Perf.Record.perf/perf.data --control fifo:")
                 .size(),
             1U)
       << dir_.log();

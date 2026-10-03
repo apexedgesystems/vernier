@@ -6,13 +6,18 @@
 #   ok           --version works; `stat ... --timeout N` prints counts; any
 #                other invocation (a run's launch) runs until SIGINT and then
 #                writes what perf writes: stat's counts to stderr, or record's
-#                data file (-o) and its "Captured and wrote" line
+#                data file (-o) and its "Captured and wrote" line. Given
+#                `--control fifo:<ctl>,<ack>`, it reads the ping waiting in
+#                <ctl> and answers "ack" in <ack>, as perf does once it counts
 #   broken       --version fails the way a wrapper without the kernel's build does
 #   denied       stat fails with the kernel's counter-access message
 #   unsupported  stat counts, but one event is <not supported>
+#   no-control   --control is an unknown option, as for a perf without it
+#   no-ack       takes --control and never answers on it
 # and, for a run's launch only:
+#   slow-ack     answers the ping 2 s after it starts
 #   exit-early   fails at once with an error message
-#   exit-soon    exits (status 3) half a second after starting, logging
+#   exit-soon    exits (status 3) half a second after it answers, logging
 #                "perf exited pid=<pid>" to FAKE_LOG first
 #   slow-stop    writes its output 2 s after SIGINT
 #   ignore-int   ignores SIGINT; SIGTERM ends it without output
@@ -38,11 +43,39 @@ if [ "${1:-}" = "--version" ]; then
 fi
 
 probe=no
+ctl=""
+ack=""
+prev=""
 for arg in "$@"; do
   if [ "$arg" = "--timeout" ]; then
     probe=yes
   fi
+  if [ "$prev" = "--control" ]; then
+    spec=${arg#fifo:}
+    ctl=${spec%%,*}
+    ack=${spec#*,}
+  fi
+  prev=$arg
 done
+
+if [ -n "$ctl" ] && [ "$mode" = "no-control" ]; then
+  echo "  Error: unknown option \`control'" >&2
+  echo "" >&2
+  echo " Usage: perf stat [<options>] [<command>]" >&2
+  exit 129
+fi
+
+# Read the ping waiting in the control fifo and answer it, as perf does from
+# its main loop once its counters are on. Both fifos are opened read-write,
+# so neither open waits.
+answer() {
+  if [ -n "$ctl" ] && [ "$mode" != "no-ack" ]; then
+    exec 5<>"$ctl" 6<>"$ack"
+    if read -r cmd <&5 && [ "$cmd" = "ping" ]; then
+      printf 'ack\n' >&6
+    fi
+  fi
+}
 
 if [ "${1:-}" = "stat" ] && [ "$probe" = "yes" ]; then
   case "$mode" in
@@ -53,12 +86,14 @@ if [ "${1:-}" = "stat" ] && [ "$probe" = "yes" ]; then
     exit 255
     ;;
   unsupported)
+    answer
     printf '%s\n' "66055,,cpu-cycles,60563,100.00,," "51605,,instructions,57709,100.00,," \
       "9805,,branches,55840,100.00,," "355,,branch-misses,52953,100.00,," \
       "<not supported>,,cache-misses,0,100.00,," >&2
     exit 0
     ;;
   *)
+    answer
     printf '%s\n' "66055,,cpu-cycles,60563,100.00,," "51605,,instructions,57709,100.00,," \
       "9805,,branches,55840,100.00,," "355,,branch-misses,52953,100.00,," \
       "670,,cache-misses,49528,100.00,," >&2
@@ -76,14 +111,6 @@ fi
 if [ "$mode" = "exit-early" ]; then
   echo "Error: failed to open counters: No such process" >&2
   exit 1
-fi
-if [ "$mode" = "exit-soon" ]; then
-  sleep 0.5
-  echo "Error: the target process exited" >&2
-  if [ -n "${FAKE_LOG:-}" ]; then
-    printf 'perf exited pid=%s\n' "$$" >>"$FAKE_LOG"
-  fi
-  exit 3
 fi
 out=""
 prev=""
@@ -125,6 +152,8 @@ on_int() {
   exit 130
 }
 
+# The signals are handled before the answer: the measured phase, and so the
+# stop, may follow it at once.
 case "$mode" in
 hang) trap '' INT TERM ;;
 ignore-int)
@@ -133,6 +162,18 @@ ignore-int)
   ;;
 *) trap on_int INT ;;
 esac
+if [ "$mode" = "slow-ack" ]; then
+  sleep 2
+fi
+answer
+if [ "$mode" = "exit-soon" ]; then
+  sleep 0.5
+  echo "Error: the target process exited" >&2
+  if [ -n "${FAKE_LOG:-}" ]; then
+    printf 'perf exited pid=%s\n' "$$" >>"$FAKE_LOG"
+  fi
+  exit 3
+fi
 # Wait in one-second steps: a trapped signal interrupts `wait` at once, and a
 # SIGKILL leaves no sleep behind for more than a second.
 while :; do

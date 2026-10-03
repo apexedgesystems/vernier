@@ -6,7 +6,8 @@
  * A fake perf (fixtures/readiness/fake_perf.sh) stands in for the tool, and
  * FAKE_PERF_MODE selects how the run's perf behaves. Each test builds the
  * profiler from a plan that names the fake, runs one measured window and
- * reads what the run recorded as failed and what perf left in the folder.
+ * reads what the run recorded as failed and what perf left in the folder; the
+ * check's tests ask checkPerfRequest about the same fake.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -17,7 +18,10 @@
 
 #include <gtest/gtest.h>
 
+#include <csignal>
+
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -28,12 +32,17 @@
 
 namespace {
 
+using vernier::bench::checkPerfRequest;
 using vernier::bench::parsePerfMode;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfPlan;
 using vernier::bench::PerfStatProfiler;
 using vernier::bench::ProfileFailure;
 using vernier::bench::ProfilerRegistry;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessRequest;
+using vernier::bench::ReadinessResult;
+using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
@@ -57,20 +66,25 @@ protected:
 
   void TearDown() override { ProfilerRegistry::instance().resetFailures(); }
 
-  /** @brief What a window left: the failures recorded and the artifact folder. */
+  /** @brief What a window left: the failures recorded, the folder, how long the start took. */
   struct Window {
     std::vector<ProfileFailure> failures;
     std::string folder;
+    std::chrono::steady_clock::duration startTook{};
   };
 
   /**
    * @brief Run one window with the fake in @p mode and @p args; when
    * @p afterExit, the stop waits for the fake to report its own exit first.
+   * @p answersPing is what the check found: the launch then waits for perf's
+   * answer on its control fifo, else the fixed grace.
    */
-  Window window(const std::string& mode, const std::string& args = "", bool afterExit = false) {
+  Window window(const std::string& mode, const std::string& args = "", bool afterExit = false,
+                bool answersPing = true) {
     auto plan = std::make_shared<PerfPlan>();
     plan->perf = perf_;
     plan->mode = parsePerfMode(args);
+    plan->answersPing = answersPing;
     PerfConfig cfg;
     cfg.profileTool = "perf";
     cfg.profileArgs = args;
@@ -82,7 +96,9 @@ protected:
     {
       PerfStatProfiler profiler(cfg, "Perf.Life", plan);
       out.folder = profiler.artifactDir();
+      const auto START = std::chrono::steady_clock::now();
       profiler.beforeMeasure();
+      out.startTook = std::chrono::steady_clock::now() - START;
       if (afterExit) {
         // The fake logs its exit itself: no timing is assumed.
         for (int i = 0; i < 500 && dir_.logLines("perf exited").empty(); ++i) {
@@ -94,6 +110,27 @@ protected:
     }
     out.failures = ProfilerRegistry::instance().failures();
     return out;
+  }
+
+  /** @brief The check's decision about the fake in @p mode, for @p args. */
+  ReadinessResult check(const std::string& mode, const std::string& args = "") const {
+    ReadinessRequest request;
+    request.backend = "perf";
+    request.profileArgs = args;
+    request.scope = ReadinessScope::PREFLIGHT;
+    return checkPerfRequest(request, dir_.context({{"FAKE_PERF_MODE", mode}}, 0));
+  }
+
+  /** @brief True when no process of a "pid=" in the fake's log is still alive. */
+  bool fakesGone() const {
+    for (const std::string& line : dir_.logLines("perf ")) {
+      const std::size_t AT = line.rfind(" pid=");
+      if (AT != std::string::npos &&
+          ::kill(static_cast<pid_t>(std::atol(line.c_str() + AT + 5)), 0) == 0) {
+        return false;
+      }
+    }
+    return true;
   }
 
   FakeToolDir dir_;
@@ -182,4 +219,111 @@ TEST_F(PerfLifecycleTest, RecordNeedsItsConfirmedData) {
             "completion: missing: " + BAD.folder +
                 "/perf.data was not written: perf: Error: the fake perf could not read its "
                 "counters");
+}
+
+/* ----------------------------- Start Handshake ----------------------------- */
+
+/**
+ * @test The measured phase starts once perf answers on its control fifo: with
+ * a perf that answers 2 s after it starts, beforeMeasure() returns after at
+ * least 2 s (a lower bound, which load cannot pass falsely), and nothing fails.
+ */
+TEST_F(PerfLifecycleTest, MeasuredPhaseWaitsForTheAck) {
+  const Window W = window("slow-ack");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_GE(W.startTook, std::chrono::milliseconds(2000));
+  EXPECT_EQ(dir_.logLines("perf " + perf_ + " stat -e " + vernier::bench::PERF_STAT_EVENTS +
+                          " -p " + std::to_string(::getpid()) + " --control fifo:")
+                .size(),
+            1U)
+      << dir_.log();
+}
+
+/**
+ * @test A perf that never answers on its control fifo fails the request at
+ * the collection stage once the wait's bound has passed, and is stopped.
+ */
+TEST_F(PerfLifecycleTest, NoAckFailsTheRequest) {
+  const Window W = window("no-ack");
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.stage, ReadinessStage::COLLECTION);
+  EXPECT_EQ(W.failures[0].result.report.message,
+            "unusable: perf did not answer on its --control fifo within 5 s, so it was not known "
+            "to be counting; it was stopped, and this case is not profiled");
+  EXPECT_GE(W.startTook, std::chrono::milliseconds(PerfStatProfiler::PERF_ACK_WAIT_MS));
+  EXPECT_TRUE(fakesGone()) << dir_.log();
+}
+
+/**
+ * @test A perf the check found not answering is started without --control,
+ * after the fixed grace, and its capture is kept as before.
+ */
+TEST_F(PerfLifecycleTest, NoControlKeepsTheFixedWait) {
+  const Window W = window("ok", "", /*afterExit=*/false, /*answersPing=*/false);
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_GE(W.startTook, std::chrono::milliseconds(PerfStatProfiler::PERF_START_GRACE_MS));
+  const auto LAUNCH = dir_.logLines("perf " + perf_ + " stat -e ");
+  ASSERT_EQ(LAUNCH.size(), 1U) << dir_.log();
+  EXPECT_EQ(LAUNCH[0].find("--control"), std::string::npos) << LAUNCH[0];
+  EXPECT_NE(readText(W.folder + "/stat.txt").find("Performance counter stats"), std::string::npos);
+}
+
+/** @test perf mem keeps the fixed grace, also with a perf that answers. */
+TEST_F(PerfLifecycleTest, MemKeepsTheFixedStart) {
+  const Window W = window("ok", "mem");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  const auto LAUNCH = dir_.logLines("perf " + perf_ + " mem record ");
+  ASSERT_EQ(LAUNCH.size(), 1U) << dir_.log();
+  EXPECT_EQ(LAUNCH[0].find("--control"), std::string::npos) << LAUNCH[0];
+}
+
+/**
+ * @test The check's access probe finds whether perf answers a ping: one that
+ * does is ready and planned for the wait; one that does not answer, or does
+ * not take --control (the probe then runs again without it), is a caveat
+ * naming the fixed start, and its plan keeps the fixed grace.
+ */
+TEST_F(PerfLifecycleTest, CheckLearnsWhetherPerfAnswers) {
+  const ReadinessResult ANSWERS = check("ok");
+  EXPECT_EQ(ANSWERS.cause, ReadinessCause::READY) << ANSWERS.report.message;
+  const auto ANSWERS_PLAN = std::dynamic_pointer_cast<const PerfPlan>(ANSWERS.plan);
+  ASSERT_NE(ANSWERS_PLAN, nullptr);
+  EXPECT_TRUE(ANSWERS_PLAN->answersPing);
+
+  const ReadinessResult SILENT = check("no-ack");
+  EXPECT_EQ(SILENT.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(SILENT.report.message,
+            "perf stat counts this process, but " + perf_ +
+                " did not answer a ping on its --control fifo, so the measured phase starts "
+                "after a fixed 200 ms instead of once perf is counting");
+  const auto SILENT_PLAN = std::dynamic_pointer_cast<const PerfPlan>(SILENT.plan);
+  ASSERT_NE(SILENT_PLAN, nullptr);
+  EXPECT_FALSE(SILENT_PLAN->answersPing);
+
+  const std::string PROBE = "perf " + perf_ + " stat -x, -e " + vernier::bench::PERF_STAT_EVENTS +
+                            " -p " + std::to_string(::getpid()) + " --timeout 100";
+  const std::size_t PROBES_BEFORE = dir_.logLines(PROBE).size();
+  const ReadinessResult OLD = check("no-control");
+  EXPECT_EQ(OLD.cause, ReadinessCause::CAVEAT);
+  EXPECT_EQ(OLD.report.message,
+            "perf stat counts this process, but " + perf_ +
+                " does not take --control, so the measured phase starts after a fixed 200 ms "
+                "instead of once perf is counting");
+  const auto OLD_PLAN = std::dynamic_pointer_cast<const PerfPlan>(OLD.plan);
+  ASSERT_NE(OLD_PLAN, nullptr);
+  EXPECT_FALSE(OLD_PLAN->answersPing);
+  const auto PROBES = dir_.logLines(PROBE);
+  ASSERT_EQ(PROBES.size(), PROBES_BEFORE + 2) << dir_.log();
+  EXPECT_NE(PROBES[PROBES_BEFORE].find(" --control fifo:"), std::string::npos) << PROBES.back();
+  EXPECT_EQ(PROBES.back().find("--control"), std::string::npos) << PROBES.back();
+
+  EXPECT_EQ(check("no-ack", "record -g").report.message,
+            "unverified: perf stat counts this process; perf record itself is not probed before "
+            "the run; " +
+                perf_ +
+                " did not answer a ping on its --control fifo, so the measured phase starts after "
+                "a fixed 200 ms");
+  EXPECT_EQ(check("ok", "mem").report.message,
+            "unverified: perf stat counts this process; perf mem itself is not probed before the "
+            "run, and the measured phase starts after a fixed 200 ms");
 }

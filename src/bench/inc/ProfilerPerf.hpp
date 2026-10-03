@@ -12,6 +12,11 @@
  *    `perf mem record` and `perf c2c record`.
  *  - Only the measured window is profiled: perf starts in beforeMeasure() and is
  *    stopped in afterMeasure(), which returns once perf has finished writing.
+ *  - The measured phase starts once perf answers a `ping` on its `--control`
+ *    fifo, which it does from its main loop after its counters are on
+ *    (bounded at PERF_ACK_WAIT_MS; no answer fails the request). `perf mem`,
+ *    and a perf the check found not answering, start after a fixed
+ *    PERF_START_GRACE_MS instead.
  *  - perf runs as this process's own child (OwnedHelper): a perf that ends
  *    before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
  *    leaves no counts (stat) or no data (record, mem, c2c) is reported through
@@ -19,8 +24,10 @@
  *
  * Readiness (checkPerfRequest): perf is resolved on PATH, `perf --version`
  * must run, and a bounded `perf stat` on this process must open the counters
- * as this user; that access, not the perf_event_paranoid value, decides.
- * The profiler launches the absolute path that check verified (PerfPlan).
+ * as this user; that access, not the perf_event_paranoid value, decides. The
+ * same probe sends a `ping` on a `--control` fifo, and a perf that does not
+ * answer it is a caveat. The profiler launches the absolute path that check
+ * verified (PerfPlan).
  *
  * Notes:
  *  - Linux-only. Safe no-op on other platforms (compile-time guard).
@@ -55,6 +62,7 @@ inline constexpr const char* PERF_STAT_EVENTS =
 struct PerfPlan final : ReadinessPlan {
   std::string perf; ///< Absolute path of the perf that ran the probes.
   PerfMode mode = PerfMode::STAT;
+  bool answersPing = false; ///< The probe's perf answered a `ping` on its `--control` fifo.
 };
 
 /**
@@ -100,7 +108,10 @@ public:
   /** @brief How long perf may take to write its output after SIGINT. */
   static constexpr int PERF_WRITE_WAIT_MS = 5000;
 
-  /** @brief How long perf is given to start counting before the measured phase. */
+  /** @brief How long the measured phase waits for perf to answer that it is counting. */
+  static constexpr int PERF_ACK_WAIT_MS = 5000;
+
+  /** @brief The fixed start for a perf that cannot answer on `--control`, and for `perf mem`. */
   static constexpr int PERF_START_GRACE_MS = 200;
 
 private:

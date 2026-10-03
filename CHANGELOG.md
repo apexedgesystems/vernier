@@ -380,6 +380,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source sets `profileTestTimeoutSecs = 0` to mean the default runs without
   the watchdog under `--profile`; leave the field alone or set 300. A binary
   built before this release reads `bench run --profile-test-timeout 0` as 300.
+- **`--profile perf` starts the measured phase once perf is counting** -- the
+  backend gave perf a fixed 200 ms to attach, and `perf record` can take far
+  longer to start sampling, so the start of the measured phase, or all of a
+  short one, went unprofiled. The phase begins once perf answers a `ping` on
+  its `--control` fifo, which it does with its counters on (waited for up to
+  5 s, after which the request fails); a perf without `--control`, which the
+  doctor's perf row reports, and `perf mem` keep the fixed 200 ms.
 - **A profiled run takes its metadata before any profiler starts** -- the
   run's metadata, whose first capture runs `git describe`, was taken when the
   first measured case's row was built, after its measured loop and before its

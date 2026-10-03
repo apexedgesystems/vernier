@@ -19,8 +19,16 @@
 #include <vector>
 
 #ifdef __linux__
+#include <algorithm>
+#include <array>
+#include <cerrno>
+#include <chrono>
 #include <csignal>
+#include <fcntl.h>
 #include <filesystem>
+#include <functional>
+#include <poll.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -127,6 +135,112 @@ std::string paranoidNote(const ReadinessContext& ctx) {
   return "; kernel.perf_event_paranoid=" + std::to_string(paranoid) +
          " limits this user to user-space events";
 }
+
+/** @brief How the wait for perf's answer on its control fifo ended. */
+enum class AckWait : std::uint8_t { ACKED, ENDED, TIMED_OUT };
+
+/**
+ * @brief A private pair of fifos for perf's `--control`: perf reads commands
+ * from the first and answers "ack" on the second, from its main loop once its
+ * counters are on. Both are opened here read-write and non-blocking, so no
+ * open waits for perf, and the "ping" written at open waits in the fifo until
+ * perf reads it. The pair is removed on close(); perf keeps its own
+ * descriptors.
+ */
+class ControlFifos {
+public:
+  ControlFifos() = default;
+  ~ControlFifos() { close(); }
+  ControlFifos(const ControlFifos&) = delete;
+  ControlFifos& operator=(const ControlFifos&) = delete;
+  ControlFifos(ControlFifos&&) = delete;
+  ControlFifos& operator=(ControlFifos&&) = delete;
+
+  /** @brief Make the pair and write "ping"; "" on success, else why not. */
+  std::string openWithPing() {
+    std::error_code ec;
+    const std::filesystem::path BASE = std::filesystem::temp_directory_path(ec);
+    if (ec) {
+      return "no temporary directory: " + ec.message();
+    }
+    std::string pattern = (BASE / "vernier_perf_XXXXXX").string();
+    if (::mkdtemp(pattern.data()) == nullptr) {
+      return "cannot create a folder in " + BASE.string() + ": " + std::strerror(errno);
+    }
+    dir_ = pattern;
+    for (const char* name : {"/ctl", "/ack"}) {
+      if (::mkfifo((dir_ + name).c_str(), 0600) != 0) {
+        return "cannot create " + dir_ + name + ": " + std::strerror(errno);
+      }
+    }
+    ctl_ = ::open((dir_ + "/ctl").c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    ack_ = ::open((dir_ + "/ack").c_str(), O_RDWR | O_NONBLOCK | O_CLOEXEC);
+    if (ctl_ < 0 || ack_ < 0) {
+      return "cannot open the fifos in " + dir_ + ": " + std::strerror(errno);
+    }
+    constexpr char PING[] = "ping\n";
+    if (::write(ctl_, PING, sizeof(PING) - 1) != static_cast<ssize_t>(sizeof(PING) - 1)) {
+      return "cannot write to " + dir_ + "/ctl: " + std::strerror(errno);
+    }
+    return {};
+  }
+
+  /** @brief perf's `--control` value for the pair. */
+  [[nodiscard]] std::string option() const { return "fifo:" + dir_ + "/ctl," + dir_ + "/ack"; }
+
+  /** @brief True once perf's "ack" is in the answer fifo; reads without waiting. */
+  bool acked() {
+    std::array<char, 64> buf{};
+    ssize_t n = 0;
+    while ((n = ::read(ack_, buf.data(), buf.size())) > 0) {
+      answer_.append(buf.data(), static_cast<std::size_t>(n));
+    }
+    return answer_.find("ack\n") != std::string::npos;
+  }
+
+  /**
+   * @brief Wait up to @p ms for perf's "ack", asking @p alive between polls;
+   * an answer perf gave before it ended still counts.
+   */
+  AckWait awaitAck(int ms, const std::function<bool()>& alive) {
+    using Clock = std::chrono::steady_clock;
+    const auto DEADLINE = Clock::now() + std::chrono::milliseconds(ms);
+    while (!acked()) {
+      if (!alive()) {
+        return acked() ? AckWait::ACKED : AckWait::ENDED;
+      }
+      const auto LEFT =
+          std::chrono::duration_cast<std::chrono::milliseconds>(DEADLINE - Clock::now()).count();
+      if (LEFT <= 0) {
+        return AckWait::TIMED_OUT;
+      }
+      pollfd answer{ack_, POLLIN, 0};
+      (void)::poll(&answer, 1, static_cast<int>(std::min<std::int64_t>(LEFT, 20)));
+    }
+    return AckWait::ACKED;
+  }
+
+  /** @brief Close and remove the pair; perf's own descriptors stay open. */
+  void close() {
+    for (int* fd : {&ctl_, &ack_}) {
+      if (*fd >= 0) {
+        ::close(*fd);
+        *fd = -1;
+      }
+    }
+    if (!dir_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove_all(dir_, ec);
+      dir_.clear();
+    }
+  }
+
+private:
+  std::string dir_;
+  std::string answer_;
+  int ctl_ = -1;
+  int ack_ = -1;
+};
 #endif
 
 } // namespace
@@ -173,11 +287,33 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
   }
 
   // Effective access, not the sysctl: count this process for 100 ms as this
-  // user. Root, CAP_PERFMON and container policy all show up here.
+  // user. Root, CAP_PERFMON and container policy all show up here. The probe
+  // also finds whether this perf answers a ping on a --control fifo, which
+  // the launch waits for before the measured phase.
   const std::string SELF = std::to_string(static_cast<long>(ctx.self()));
-  const ProbeResult ACCESS = runBoundedProbe(
-      {plan->perf, "stat", "-x,", "-e", PERF_STAT_EVENTS, "-p", SELF, "--timeout", "100"}, 5000,
-      ctx);
+  const std::vector<std::string> PROBE = {plan->perf, "stat", "-x,",       "-e", PERF_STAT_EVENTS,
+                                          "-p",       SELF,   "--timeout", "100"};
+  ControlFifos control;
+  const std::string FIFO_PROBLEM = control.openWithPing();
+  std::string noAnswer; // Why the launch cannot wait for perf's answer; "" when it can.
+  ProbeResult ACCESS;
+  if (FIFO_PROBLEM.empty()) {
+    std::vector<std::string> withControl = PROBE;
+    withControl.insert(withControl.end(), {"--control", control.option()});
+    ACCESS = runBoundedProbe(withControl, 5000, ctx);
+    if (!ACCESS.succeeded() &&
+        ACCESS.output.find("unknown option `control'") != std::string::npos) {
+      noAnswer = plan->perf + " does not take --control";
+      ACCESS = runBoundedProbe(PROBE, 5000, ctx);
+    } else if (ACCESS.succeeded() && !control.acked()) {
+      noAnswer = plan->perf + " did not answer a ping on its --control fifo";
+    }
+  } else {
+    noAnswer = "no --control fifo could be made (" + FIFO_PROBLEM + ")";
+    ACCESS = runBoundedProbe(PROBE, 5000, ctx);
+  }
+  control.close();
+  plan->answersPing = noAnswer.empty();
   if (!ACCESS.succeeded()) {
     if (containsAny(ACCESS.output, {"Access to performance monitoring", "Permission denied",
                                     "Operation not permitted", "No permission"})) {
@@ -197,18 +333,29 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
 
   const std::string UNSUPPORTED = unsupportedEvents(ACCESS.output);
   const std::string NOTE = paranoidNote(ctx);
+  const std::string FIXED_START = "the measured phase starts after a fixed " +
+                                  std::to_string(PerfStatProfiler::PERF_START_GRACE_MS) + " ms";
   ReadinessResult result;
   if (plan->mode != PerfMode::STAT) {
-    result =
-        readinessResult(ReadinessCause::UNVERIFIED,
-                        std::string{"perf stat counts this process; perf "} + modeName(plan->mode) +
-                            " itself is not probed before the run" + NOTE,
-                        "");
-  } else if (!UNSUPPORTED.empty()) {
+    std::string message = std::string{"perf stat counts this process; perf "} +
+                          modeName(plan->mode) + " itself is not probed before the run";
+    if (plan->mode == PerfMode::MEM) {
+      message += ", and " + FIXED_START;
+    } else if (!noAnswer.empty()) {
+      message += "; " + noAnswer + ", so " + FIXED_START;
+    }
+    result = readinessResult(ReadinessCause::UNVERIFIED, message + NOTE, "");
+  } else if (!UNSUPPORTED.empty() || !noAnswer.empty()) {
+    std::string caveats;
+    if (!UNSUPPORTED.empty()) {
+      caveats = UNSUPPORTED + " <not supported> here; those columns stay empty";
+    }
+    if (!noAnswer.empty()) {
+      caveats += (caveats.empty() ? "" : "; and ") + noAnswer + ", so " + FIXED_START +
+                 " instead of once perf is counting";
+    }
     result = readinessResult(ReadinessCause::CAVEAT,
-                             "perf stat counts this process, but " + UNSUPPORTED +
-                                 " <not supported> here; those columns stay empty" + NOTE,
-                             "");
+                             "perf stat counts this process, but " + caveats + NOTE, "");
   } else {
     result = readinessResult(ReadinessCause::READY,
                              std::string{"perf stat counted "} + PERF_STAT_EVENTS +
@@ -378,13 +525,27 @@ void PerfStatProfiler::beforeMeasure() {
     errPath = statPath_;
   }
 
+  // With a perf that answers on --control, the measured phase starts once
+  // perf has answered the ping, which it does after its counters are on; a
+  // perf that cannot answer, and perf mem, get a fixed grace instead.
+  const bool HANDSHAKE = plan_->answersPing && plan_->mode != PerfMode::MEM;
+  ControlFifos control;
+  if (HANDSHAKE) {
+    const std::string PROBLEM = control.openWithPing();
+    if (!PROBLEM.empty()) {
+      fail(ReadinessCause::UNUSABLE, "perf's --control fifos could not be made: " + PROBLEM,
+           ReadinessStage::COLLECTION);
+      return;
+    }
+    cmd += " --control " + shellQuote(control.option());
+  }
+
   // `exec` makes perf this process's own child, so the stop can wait for it.
-  // The start grace covers perf attaching before the measured phase.
   HelperStopPolicy policy;
   policy.interruptWaitMs = PERF_WRITE_WAIT_MS;
   helper_ = OwnedHelper(policy);
-  const HelperStart START =
-      helper_.start({"/bin/sh", "-c", "exec " + cmd}, "", errPath, PERF_START_GRACE_MS);
+  const HelperStart START = helper_.start({"/bin/sh", "-c", "exec " + cmd}, "", errPath,
+                                          HANDSHAKE ? 0 : PERF_START_GRACE_MS);
   if (!START.started) {
     fail(ReadinessCause::UNUSABLE, "perf could not be started: " + START.errorTail,
          ReadinessStage::COLLECTION);
@@ -396,6 +557,28 @@ void PerfStatProfiler::beforeMeasure() {
              ") before the measured phase: " + perfSaid(errPath),
          ReadinessStage::COLLECTION);
     return;
+  }
+  if (HANDSHAKE) {
+    const AckWait WAIT = control.awaitAck(PERF_ACK_WAIT_MS, [this] { return helper_.running(); });
+    control.close();
+    if (WAIT == AckWait::ENDED) {
+      const HelperStopResult GONE = helper_.stop();
+      fail(ReadinessCause::UNUSABLE,
+           "perf ended (" + waitStatusText(GONE.waitStatus) +
+               ") before the measured phase: " + perfSaid(errPath),
+           ReadinessStage::COLLECTION);
+      return;
+    }
+    if (WAIT == AckWait::TIMED_OUT) {
+      (void)helper_.stop();
+      fail(ReadinessCause::UNUSABLE,
+           "perf did not answer on its --control fifo within " +
+               std::to_string(PERF_ACK_WAIT_MS / 1000) +
+               " s, so it was not known to be counting; it was stopped, and this case is not "
+               "profiled",
+           ReadinessStage::COLLECTION);
+      return;
+    }
   }
   started_ = true;
 #endif

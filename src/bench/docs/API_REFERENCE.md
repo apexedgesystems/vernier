@@ -549,9 +549,14 @@ benchmark process for the measured phase only; `--profile-args` picks the mode:
 # Writes: MyComponent.Throughput.perf/perf.data
 ```
 
-perf needs time to attach before it samples, and the backend gives it 200 ms; a
-measured phase of a few milliseconds can leave `perf.data` without samples,
-which `--target-time` (or more `--cycles`) avoids.
+The measured phase starts once perf answers a `ping` on its `--control` fifo,
+which perf does from its main loop with its counters on, so the phase is
+profiled from its first iteration however long perf takes to start
+(`perf record` takes longer than `perf stat`). The wait is bounded at 5 s: a
+perf that has not answered by then is stopped and the request fails. A perf
+without `--control`, which the doctor's perf row reports, and `perf mem` start
+after a fixed 200 ms instead. A measured phase of a few milliseconds holds few
+samples, which `--target-time` (or more `--cycles`) avoids.
 
 **Analysis** (of a `record` run):
 
