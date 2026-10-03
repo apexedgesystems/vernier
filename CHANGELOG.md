@@ -380,6 +380,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source sets `profileTestTimeoutSecs = 0` to mean the default runs without
   the watchdog under `--profile`; leave the field alone or set 300. A binary
   built before this release reads `bench run --profile-test-timeout 0` as 300.
+- **A profiled run takes its metadata before any profiler starts** -- the
+  run's metadata, whose first capture runs `git describe`, was taken when the
+  first measured case's row was built, after its measured loop and before its
+  profiler stopped, so `git` ran inside the first case's profile. It is taken
+  when the first profiler is created, before any profiler starts.
 - **A valgrind, nsys or ncu profile writes into an output folder holding
   `%`** -- valgrind reads `%p`, `%q{VAR}` and `%%` in the values of
   `--log-file=`, `--massif-out-file=` and `--callgrind-out-file=`, and nsys

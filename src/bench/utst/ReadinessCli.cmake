@@ -70,6 +70,7 @@ set(_readiness_cli_cases
     PerfBrokenNeverLaunched
     PerfDeniedMatchesDoctor
     PerfStartFailureFails
+    MetadataBeforeTheProfiledWindow
     GperfAnalyzerFoundIsRun
     GperfAnalyzerMissingIsAnalysisError
     GperfAnalyzerBrokenIsAnalysisError

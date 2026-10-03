@@ -895,6 +895,35 @@ elseif (CASE STREQUAL "PerfStartFailureFails")
     )
   endforeach ()
 
+elseif (CASE STREQUAL "MetadataBeforeTheProfiledWindow")
+  # The run's metadata (git describe) is taken when the first profiler is
+  # created, so git runs once and before perf is first launched, for the
+  # fixture and for a benchmark with its own main().
+  fake(fake_perf.sh perf)
+  fake(fake_git.sh git)
+  foreach (_target "${TARGET}" "${CUSTOM_TARGET}")
+    get_filename_component(_name "${_target}" NAME)
+    set(TARGET "${_target}")
+    file(REMOVE "${_log}")
+    run(run --profile perf ${_quick})
+    expect_eq("${run_RC}" "0" "run exit status (${_name})")
+    read_log(_text)
+    count_of(_describes "${_text}" "git describe ")
+    expect_eq("${_describes}" "1" "git describe runs (${_name})")
+    string(FIND "${_text}" "git describe " _git)
+    string(
+      FIND "${_text}"
+           "perf ${WORK_DIR}/bin/perf stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses -p "
+           _launch
+    )
+    if (_launch EQUAL -1)
+      string(APPEND _problems "\n  perf was not launched (${_name})")
+    elseif (_git EQUAL -1 OR _git GREATER _launch)
+      string(APPEND _problems "\n  git describe ran after perf was launched (${_name})")
+    endif ()
+    expect_owned_and_gone("run (${_name})")
+  endforeach ()
+
 elseif (CASE MATCHES "^Gperf")
   # gperf cases need gperftools compiled into libbench.
   run(inventory --profile-check-json)
