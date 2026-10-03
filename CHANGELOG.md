@@ -169,14 +169,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   threads are no faster than one. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
 - **Demo 13 (offcpu) measures the shared `join` example between threads** --
-  `OffCpu.CoarseLock` adds joined lengths to one total under one lock held for
-  the whole call and `OffCpu.NoSharing` keeps a total per thread, and
-  walkthrough 16 (`src/bench/demo/docs/16_OFFCPU_PROFILER.md`, reference CSV
-  `src/bench/demo/reference/pi4/16_offcpu_profiler.csv`) reads where each
-  version's threads sleep, and for how long, from captures on the documented
-  Raspberry Pi 4 rig. Its test names change (`MutexCounter` and
-  `AtomicCounter` are gone), so CSVs captured from it before this release do
-  not join with newer ones.
+  under one lock held for the whole call and with nothing shared, and
+  walkthrough 16 and its reference CSV come from captures on the documented
+  Raspberry Pi 4 rig. Its test names change, so CSVs captured from it before
+  this release do not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -721,34 +717,21 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
-- **offcpu traces a threaded test to the end** -- the trace ended when any
-  thread of the benchmark exited, so a `contentionRun()` test, which starts
-  new threads for every repeat, was traced only until its first worker
-  finished. It ends when the benchmark's main thread exits.
+- **offcpu traces a threaded test to the end** -- the trace ended when the
+  first of the benchmark's threads exited; it ends when its main thread exits.
 - **offcpu counts only threads that go to sleep** -- a thread preempted
-  inside the kernel, or exiting, was counted as blocked, adding rows under
-  whatever code it was running and an empty-stack row per exiting thread.
-  Only sleeping threads count, and each time runs until the thread runs
-  again, so it includes the wait for a CPU after the wakeup. Counts and times
-  from earlier captures include those rows and do not compare with new ones.
-- **offcpu reports whether each capture is valid** -- `stacks written` was
-  printed whenever the tracer stopped, even for a trace that ended early,
-  recorded nothing of the benchmark or left an unreadable dump. The tracer
-  records only between two acknowledgements it prints on seeing the
-  benchmark's own threads sleep, and the run prints `stacks written` only for
-  a capture confirmed from start to stop, a line of its own when no thread
-  slept, and an error otherwise. `offcpu.txt` gains the `offcpu armed` and
-  `offcpu disarmed` lines and loses the backend's own start and stop waits,
-  the tracer runs as `bpftrace -B none -e ...`, which a sudoers grant that
-  pins arguments must allow, and the thread names `vernier-arm`,
-  `vernier-wait` and `vernier-stop` are reserved.
+  inside the kernel, or exiting, was counted as blocked, so counts and times
+  from earlier captures do not compare with new ones.
+- **offcpu reports whether each capture is valid** -- `stacks written` is
+  printed only for a capture the tracer confirmed from its start to its stop.
+  The tracer runs as `bpftrace -B none -e ...`, which a sudoers grant that
+  pins arguments must allow, the thread names `vernier-arm`, `vernier-wait`
+  and `vernier-stop` are reserved, and `offcpu.txt` gains the `offcpu armed`
+  and `offcpu disarmed` lines.
 - **offcpu refuses a benchmark whose threads bpftrace cannot see** -- in a
-  PID namespace of its own, such as a container's, bpftrace numbers the
-  benchmark's threads differently, and the doctor still said `[OK]` while the
-  capture missed every worker. The check now runs the script once more and
-  requires its acknowledgement from a thread of the benchmark, and without it
-  refuses the request, naming the namespace. Run such a benchmark on the host
-  or in a container started with `--pid=host`.
+  PID namespace of its own, such as a container's, the request is refused,
+  naming the namespace. Run such a benchmark on the host or in a container
+  started with `--pid=host`.
 
 ## v1.0.3 - 2026-06-28
 
