@@ -4,7 +4,8 @@
  *
  * These need a CUDA device: they run a small kernel through the public
  * PerfGpuCase API and check the result and the row the harness leaves in
- * PerfRegistry. Without a device every test skips.
+ * PerfRegistry, and one opens the harness's private NVML helper for the device
+ * as the harness does. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -29,6 +30,7 @@
 #include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/src/NvmlTelemetry.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -968,4 +970,21 @@ TEST_F(PerfGpuHarnessDeathTest, NvmlCellsAreReadingsOrStatedEmpty) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(reportNvmlCells(cfg_), ::testing::ExitedWithCode(0), "nvml cell problems: none");
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test NVML, where this build has it and it initializes, finds the CUDA
+ *       device by the UUID the harness looks it up by
+ */
+TEST_F(PerfGpuHarnessTest, NvmlFindsTheCudaDeviceByItsUuid) {
+  // Device 0: the one the harness measures on unless --gpu-device says otherwise.
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
+  const std::string UUID = ub::nvml_telemetry::uuidText(prop.uuid.bytes);
+  const ub::nvml_telemetry::Session SESSION(true, UUID);
+  const std::string& REASON = SESSION.unavailableReason();
+  if (COMPAT_NVML_AVAILABLE == 0 || REASON.rfind("NVML did not initialize", 0) == 0) {
+    GTEST_SKIP() << REASON;
+  }
+  EXPECT_TRUE(SESSION.ready()) << UUID << ": " << REASON;
 }

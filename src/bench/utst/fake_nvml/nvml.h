@@ -6,11 +6,14 @@
  *
  * Only for TestBenchNvmlTelemetry: it lets the real NvmlTelemetry.hpp be
  * compiled and run on a machine without NVML. A test lists the devices NVML
- * numbers and, for each reading of each device, what the first call and
- * every later call answer (a window's start and its end), and the stand-in
- * counts initialisations and shutdowns. Result codes and texts are NVML's.
+ * numbers, each with its UUID, and, for each reading of each device, what the
+ * first call and every later call answer (a window's start and its end), and
+ * the stand-in counts initialisations and shutdowns. Result codes and texts
+ * are NVML's.
  */
 
+#include <cstring>
+#include <string>
 #include <vector>
 
 /* ----------------------------- Types ----------------------------- */
@@ -54,8 +57,9 @@ struct Script {
   Answer next() { return (calls++ == 0) ? first : later; }
 };
 
-/** @brief One device NVML numbers, with its readings. */
+/** @brief One device NVML numbers, with its UUID and its readings. */
 struct Device {
+  std::string uuid;    ///< As NVML spells it: "GPU-" and 8-4-4-4-12 hex digits
   Script smClock;      ///< MHz
   Script memClock;     ///< MHz
   Script maxSmClock;   ///< MHz
@@ -109,13 +113,14 @@ inline nvmlReturn_t nvmlShutdown() {
   return NVML_SUCCESS;
 }
 
-inline nvmlReturn_t nvmlDeviceGetHandleByIndex(unsigned index, nvmlDevice_t* device) {
-  std::vector<fake_nvml::Device>& devices = fake_nvml::behaviour().devices;
-  if (index >= devices.size()) {
-    return NVML_ERROR_INVALID_ARGUMENT;
+inline nvmlReturn_t nvmlDeviceGetHandleByUUID(const char* uuid, nvmlDevice_t* device) {
+  for (fake_nvml::Device& d : fake_nvml::behaviour().devices) {
+    if (std::strcmp(d.uuid.c_str(), uuid) == 0) {
+      *device = &d;
+      return NVML_SUCCESS;
+    }
   }
-  *device = &devices[index];
-  return NVML_SUCCESS;
+  return NVML_ERROR_NOT_FOUND;
 }
 
 namespace fake_nvml {

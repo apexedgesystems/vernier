@@ -22,9 +22,16 @@ using vernier::bench::nvml_telemetry::cellsOf;
 using vernier::bench::nvml_telemetry::Session;
 using vernier::bench::nvml_telemetry::WindowReadings;
 
+namespace {
+
+/// A device UUID as NVML spells it; this build never looks it up.
+constexpr const char* ANY_UUID = "GPU-11111111-2222-3333-4444-555555555555";
+
+} // namespace
+
 /** @test The session is never ready and says the build has no NVML */
 TEST(NvmlTelemetryAbsent, SaysTheBuildHasNoNvml) {
-  const Session SESSION(true, 0);
+  const Session SESSION(true, ANY_UUID);
   EXPECT_FALSE(SESSION.ready());
   EXPECT_EQ(SESSION.unavailableReason(), "this build has no NVML");
   EXPECT_EQ(absenceStatement(SESSION.unavailableReason()),
@@ -34,7 +41,7 @@ TEST(NvmlTelemetryAbsent, SaysTheBuildHasNoNvml) {
 
 /** @test A window reads nothing, so every cell is empty */
 TEST(NvmlTelemetryAbsent, FillsNoCell) {
-  const Session SESSION(true, 0);
+  const Session SESSION(true, ANY_UUID);
   WindowReadings w;
   SESSION.readStart(w);
   SESSION.readEnd(w);
@@ -49,7 +56,7 @@ TEST(NvmlTelemetryAbsent, FillsNoCell) {
 
 /** @test With capture off, that is the reason, in this build too */
 TEST(NvmlTelemetryAbsent, CaptureOffIsStillTheReason) {
-  const Session SESSION(false, 0);
+  const Session SESSION(false, ANY_UUID);
   EXPECT_EQ(SESSION.unavailableReason(),
             "clock and power capture is off (PerfGpuConfig::captureClockSpeeds)");
 }

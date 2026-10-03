@@ -714,6 +714,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   first case on an undefined `nvmlInit_v2`. The calls are compiled only when
   NVML was found, and `-DVERNIER_USE_NVML=OFF` (a new option, on by default)
   builds without it.
+- **NVML readings come from the GPU the test runs on** -- the GPU harness looked
+  up its NVML device by the CUDA device ordinal, which names another GPU where
+  NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
+  hides them; it looks the device up by the CUDA device's UUID.
 
 ## v1.0.3 - 2026-06-28
 

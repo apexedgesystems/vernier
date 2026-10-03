@@ -16,6 +16,7 @@
 #include <gtest/gtest.h>
 
 #include <string>
+#include <vector>
 
 namespace fn = fake_nvml;
 using vernier::bench::ClockSpeedProfile;
@@ -27,11 +28,16 @@ using vernier::bench::nvml_telemetry::fillProfiles;
 using vernier::bench::nvml_telemetry::missingReadingsStatement;
 using vernier::bench::nvml_telemetry::Session;
 using vernier::bench::nvml_telemetry::throttlingWarning;
+using vernier::bench::nvml_telemetry::uuidText;
 using vernier::bench::nvml_telemetry::WindowReadings;
 
 namespace {
 
 constexpr fn::Answer NOT_SUPPORTED{NVML_ERROR_NOT_SUPPORTED, 0};
+
+/// The UUIDs of the two devices the tests script.
+constexpr const char* REPORTING_UUID = "GPU-11111111-2222-3333-4444-555555555555";
+constexpr const char* SILENT_UUID = "GPU-66666666-7777-8888-9999-000000000000";
 
 /** @brief A result that is @p first at a window's start and @p later at its end. */
 fn::Script startThenEnd(fn::Answer first, fn::Answer later) { return fn::Script{first, later, 0}; }
@@ -42,6 +48,7 @@ fn::Script startThenEnd(fn::Answer first, fn::Answer later) { return fn::Script{
  */
 fn::Device reportingDevice() {
   fn::Device d;
+  d.uuid = REPORTING_UUID;
   d.smClock = startThenEnd({NVML_SUCCESS, 1800}, {NVML_SUCCESS, 1700});
   d.memClock = fn::Script::always({NVML_SUCCESS, 7001});
   d.maxSmClock = fn::Script::always({NVML_SUCCESS, 2000});
@@ -54,6 +61,7 @@ fn::Device reportingDevice() {
 /** @brief A device that answers "Not Supported" to every reading. */
 fn::Device silentDevice() {
   fn::Device d;
+  d.uuid = SILENT_UUID;
   d.smClock = fn::Script::always(NOT_SUPPORTED);
   d.memClock = fn::Script::always(NOT_SUPPORTED);
   d.maxSmClock = fn::Script::always(NOT_SUPPORTED);
@@ -63,10 +71,10 @@ fn::Device silentDevice() {
   return d;
 }
 
-/** @brief One measured window's readings from device 0. */
+/** @brief One measured window's readings from @p device, the only one NVML numbers. */
 WindowReadings windowOf(const fn::Device& device) {
   fn::behaviour().devices = {device};
-  const Session SESSION(true, 0);
+  const Session SESSION(true, device.uuid);
   EXPECT_TRUE(SESSION.ready()) << SESSION.unavailableReason();
   WindowReadings w;
   SESSION.readStart(w);
@@ -252,7 +260,7 @@ TEST_F(NvmlTelemetry, InitFailureIsTheReason) {
   fn::behaviour().initResult = NVML_ERROR_DRIVER_NOT_LOADED;
   fn::behaviour().devices = {reportingDevice()};
   {
-    const Session SESSION(true, 0);
+    const Session SESSION(true, REPORTING_UUID);
     EXPECT_FALSE(SESSION.ready());
     EXPECT_EQ(SESSION.unavailableReason(), "NVML did not initialize (Driver Not Loaded)");
     WindowReadings w;
@@ -265,13 +273,15 @@ TEST_F(NvmlTelemetry, InitFailureIsTheReason) {
   EXPECT_EQ(fn::calls().shutdowns, 0);
 }
 
-/** @test No device at the index is the reason; NVML, which did initialize, is shut down. */
-TEST_F(NvmlTelemetry, NoDeviceAtTheIndexIsTheReason) {
+/** @test No device with the UUID is the reason; NVML, which did initialize, is shut down */
+TEST_F(NvmlTelemetry, NoDeviceWithTheUuidIsTheReason) {
   fn::behaviour().devices = {reportingDevice()};
   {
-    const Session SESSION(true, 1);
+    const Session SESSION(true, SILENT_UUID);
     EXPECT_FALSE(SESSION.ready());
-    EXPECT_EQ(SESSION.unavailableReason(), "NVML found no device at index 1 (Invalid Argument)");
+    EXPECT_EQ(SESSION.unavailableReason(),
+              std::string("NVML found no device with the CUDA device's UUID ") + SILENT_UUID +
+                  " (Not Found)");
   }
   EXPECT_EQ(fn::calls().inits, 1);
   EXPECT_EQ(fn::calls().shutdowns, 1);
@@ -281,7 +291,7 @@ TEST_F(NvmlTelemetry, NoDeviceAtTheIndexIsTheReason) {
 TEST_F(NvmlTelemetry, AReadySessionShutsNvmlDownOnce) {
   fn::behaviour().devices = {reportingDevice()};
   {
-    const Session SESSION(true, 0);
+    const Session SESSION(true, REPORTING_UUID);
     EXPECT_TRUE(SESSION.ready());
     EXPECT_TRUE(SESSION.unavailableReason().empty()) << SESSION.unavailableReason();
   }
@@ -292,11 +302,48 @@ TEST_F(NvmlTelemetry, AReadySessionShutsNvmlDownOnce) {
 /** @test With capture off NVML is not opened, and that is the reason. */
 TEST_F(NvmlTelemetry, CaptureOffOpensNothing) {
   {
-    const Session SESSION(false, 0);
+    const Session SESSION(false, REPORTING_UUID);
     EXPECT_FALSE(SESSION.ready());
     EXPECT_EQ(SESSION.unavailableReason(),
               "clock and power capture is off (PerfGpuConfig::captureClockSpeeds)");
   }
   EXPECT_EQ(fn::calls().inits, 0);
   EXPECT_EQ(fn::calls().shutdowns, 0);
+}
+
+/**
+ * @test The session reads the device with the CUDA device's UUID wherever NVML
+ *       numbers it: second of two (the order CUDA_VISIBLE_DEVICES=1 leaves CUDA
+ *       ordinal 0 at), and first
+ */
+TEST_F(NvmlTelemetry, TheDeviceIsTheOneWithTheCudaDevicesUuid) {
+  for (const bool REPORTING_SECOND : {true, false}) {
+    fn::reset();
+    fn::behaviour().devices = REPORTING_SECOND
+                                  ? std::vector<fn::Device>{silentDevice(), reportingDevice()}
+                                  : std::vector<fn::Device>{reportingDevice(), silentDevice()};
+    const Session SESSION(true, REPORTING_UUID);
+    ASSERT_TRUE(SESSION.ready()) << SESSION.unavailableReason();
+    WindowReadings w;
+    SESSION.readStart(w);
+    SESSION.readEnd(w);
+    EXPECT_EQ(cellsOf(w).smClockMHz, 1700)
+        << "reporting device numbered second: " << REPORTING_SECOND;
+    EXPECT_EQ(cellsOf(w).powerLimitW, 150.0)
+        << "reporting device numbered second: " << REPORTING_SECOND;
+    EXPECT_EQ(missingReadingsStatement(w), "");
+  }
+}
+
+/* ----------------------------- UUID ----------------------------- */
+
+/**
+ * @test A CUDA UUID is spelt as NVML spells it: "GPU-", then every byte, from
+ *       0x80 up too, as two lower-case hex digits, grouped 8-4-4-4-12
+ */
+TEST(NvmlTelemetryUuid, IsNvmlsSpelling) {
+  const unsigned char BYTES[16] = {0x00, 0x01, 0x7f, 0x80, 0x9a, 0xbc, 0xde, 0xf0,
+                                   0x12, 0x34, 0x56, 0x78, 0xff, 0xfe, 0x0a, 0xa0};
+  EXPECT_EQ(uuidText(reinterpret_cast<const char*>(BYTES)),
+            "GPU-00017f80-9abc-def0-1234-5678fffe0aa0");
 }

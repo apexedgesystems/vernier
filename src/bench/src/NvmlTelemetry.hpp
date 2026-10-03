@@ -17,11 +17,16 @@
  * GPU may answer "Not Supported" to every one the harness takes. A cell is
  * filled only from readings NVML reported, so no cell carries a zero that
  * nothing measured.
+ *
+ * NVML numbers devices its own way, and CUDA_VISIBLE_DEVICES renumbers and
+ * hides them for CUDA only, so a CUDA ordinal is not an NVML index. A session
+ * finds its device by the CUDA device's UUID, which both name the same way.
  */
 
 #include "src/bench/inc/PerfGpuStats.hpp"
 
 #include <cstddef>
+#include <cstdio>
 #include <iterator>
 #include <optional>
 #include <string>
@@ -231,6 +236,21 @@ inline std::string missingReadingsStatement(const WindowReadings& w) {
 /* ----------------------------- Session ----------------------------- */
 
 /**
+ * @brief A CUDA device's UUID as NVML spells it: "GPU-" and the 16 bytes in
+ *        lower-case hex, grouped 8-4-4-4-12.
+ * @param bytes The 16 bytes of cudaDeviceProp::uuid.
+ */
+inline std::string uuidText(const char* bytes) {
+  char text[41];
+  const auto* b = reinterpret_cast<const unsigned char*>(bytes);
+  std::snprintf(text, sizeof(text),
+                "GPU-%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", b[0],
+                b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
+                b[14], b[15]);
+  return text;
+}
+
+/**
  * @brief NVML opened for one device, for the life of a GPU test case.
  *
  * Opening checks each step and keeps the reason when it cannot sample; each
@@ -241,9 +261,9 @@ public:
   /**
    * @param capture false when the harness was asked not to sample
    *        (PerfGpuConfig::captureClockSpeeds): NVML is not opened.
-   * @param index The device's NVML index.
+   * @param uuid The CUDA device's UUID, as uuidText() spells it.
    */
-  Session(bool capture, unsigned index) {
+  Session(bool capture, const std::string& uuid) {
     if (!capture) {
       reason_ = "clock and power capture is off (PerfGpuConfig::captureClockSpeeds)";
       return;
@@ -255,14 +275,15 @@ public:
       return;
     }
     initialized_ = true;
-    const nvmlReturn_t FOUND = nvmlDeviceGetHandleByIndex(index, &device_);
+    const nvmlReturn_t FOUND = nvmlDeviceGetHandleByUUID(uuid.c_str(), &device_);
     if (FOUND != NVML_SUCCESS) {
-      reason_ = "NVML found no device at index " + std::to_string(index) + " (" + text(FOUND) + ")";
+      reason_ =
+          "NVML found no device with the CUDA device's UUID " + uuid + " (" + text(FOUND) + ")";
       return;
     }
     ready_ = true;
 #else
-    (void)index;
+    (void)uuid;
     reason_ = "this build has no NVML";
 #endif
   }

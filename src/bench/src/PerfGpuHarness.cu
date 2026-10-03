@@ -274,7 +274,7 @@ public:
 
     queryDeviceInfo();
 
-    nvml_.emplace(gpuCfg_.captureClockSpeeds, static_cast<unsigned>(gpuCfg_.deviceId));
+    nvml_.emplace(gpuCfg_.captureClockSpeeds, nvml_telemetry::uuidText(deviceProp_.uuid.bytes));
   }
 
   ~PerfGpuCaseImpl() {
@@ -903,8 +903,9 @@ private:
   /// (non-owning; set by the PerfGpuCase constructor).
   const PerfGpuCase* owner_ = nullptr;
 
-  // NVML opened for this case's device (or the reason it samples nothing);
-  // set at the end of the constructor.
+  // NVML opened for this case's device, found by its UUID (or the reason it
+  // samples nothing); set at the end of the constructor, once the device's
+  // properties are read.
   std::optional<nvml_telemetry::Session> nvml_;
 
   // Whether this case's CUPTI collection stands down (profiler_env::
