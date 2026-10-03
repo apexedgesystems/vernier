@@ -1816,7 +1816,11 @@ for a in "$@"; do
   esac
   prev="$a"
 done
-if [ "{name}" = valgrind ] && [ -n "$out" ]; then
+# valgrind, nsys and ncu read '%' in their output option as the tools do:
+# '%%' is one '%' and '%p' the process id, except that ncu refuses a macro
+# in the folder part; nsys that cannot create its report says so and exits 0.
+case "{name}" in valgrind | nsys | ncu) [ -n "$out" ] && macros=yes ;; esac
+if [ "$macros" = yes ]; then
   rest="$out"
   out=""
   while [ -n "$rest" ]; do
@@ -1824,14 +1828,22 @@ if [ "{name}" = valgrind ] && [ -n "$out" ]; then
       *%*)
         out="$out${{rest%%\%*}}"
         rest="${{rest#*%}}"
-        case "$rest" in
-          %*) out="$out%"; rest="${{rest#%}}" ;;
-          p*) out="$out$$"; rest="${{rest#p}}" ;;
-          *) echo "==$$== Expected 'p' or 'q' or '%' after '%'" >&2; exit 1 ;;
+        case "{name}:$rest" in
+          "{name}:%"*) out="$out%"; rest="${{rest#%}}" ;;
+          ncu:*) echo "==ERROR== Macro '%${{rest%"${{rest#?}}"}}' can only be used in the file name and not in the file path." >&2; exit 1 ;;
+          "{name}:p"*) out="$out$$"; rest="${{rest#p}}" ;;
+          valgrind:*) echo "==$$== Expected 'p' or 'q' or '%' after '%'" >&2; exit 1 ;;
+          *) echo "{name}: this stand-in reads only %p and %% in its output option" >&2; exit 1 ;;
         esac ;;
       *) out="$out$rest"; rest="" ;;
     esac
   done
+  if [ ! -d "${{out%/*}}" ]; then
+    case "{name}" in
+      nsys) echo "Failed to create '$out': No such file or directory." >&2; exit 0 ;;
+      ncu) echo "==ERROR== Unable to write to file $out." >&2; exit 1 ;;
+    esac
+  fi
 fi
 if [ -n "$out" ]; then
   if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
@@ -2749,6 +2761,49 @@ fn run_valgrind_output_folder_with_percent() {
             assert!(
                 stdout.contains(&format!("[bench] {tool} wrote {output} (")),
                 "{tool} {folder}: {stdout}"
+            );
+        }
+    }
+}
+
+/// @test An output folder holding '%' reaches nsys and ncu with each '%'
+/// doubled in -o, for nsight's nsys route (also spelled nsys), its compute
+/// mode and the ncu route, and the report lands in the folder as named.
+#[test]
+fn run_nsight_output_folder_with_percent() {
+    for (profile, mode, tool, file) in [
+        ("nsight", None, "nsight", "profile.nsys-rep"),
+        ("nsys", None, "nsight", "profile.nsys-rep"),
+        (
+            "nsight",
+            Some("compute"),
+            "nsight",
+            "kernel_profile.ncu-rep",
+        ),
+        ("ncu", None, "ncu", "kernel_profile.ncu-rep"),
+    ] {
+        for (folder, spelled) in [("out%p", "out%%p"), ("a%%b", "a%%%%b")] {
+            let rig = route_rig(&["nsys", "ncu"]);
+            let mut args = vec!["--profile", profile, "--profile-output-dir", folder];
+            if let Some(mode) = mode {
+                args.extend(["--profile-args", mode]);
+            }
+            let what = format!("{profile} {mode:?} {folder}");
+            let (code, stdout, err, log) = run_rig_env(&rig, &args, &[]);
+            assert_eq!(code, 0, "{what}: {err}");
+            let stem = file.split('.').next().unwrap_or_default();
+            assert!(
+                log.contains(&format!(" -o {spelled}/fake_bench.{tool}/{stem} ")),
+                "{what}: {log}"
+            );
+            let output = format!("{folder}/fake_bench.{tool}/{file}");
+            assert!(
+                rig.dir.path().join(&output).is_file(),
+                "{what}: {stdout}{err}"
+            );
+            assert!(
+                stdout.contains(&format!("[bench] {tool} wrote {output} (")),
+                "{what}: {stdout}"
             );
         }
     }

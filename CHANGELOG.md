@@ -380,11 +380,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   source sets `profileTestTimeoutSecs = 0` to mean the default runs without
   the watchdog under `--profile`; leave the field alone or set 300. A binary
   built before this release reads `bench run --profile-test-timeout 0` as 300.
-- **A valgrind profile writes into an output folder holding `%`** --
-  valgrind reads `%p`, `%q{VAR}` and `%%` in the values of `--log-file=`,
-  `--massif-out-file=` and `--callgrind-out-file=`, so with
-  `--profile-output-dir 'out%p'` it wrote to a folder named after its process
-  id, which did not exist, or refused the option, and the run failed.
+- **A valgrind, nsys or ncu profile writes into an output folder holding
+  `%`** -- valgrind reads `%p`, `%q{VAR}` and `%%` in the values of
+  `--log-file=`, `--massif-out-file=` and `--callgrind-out-file=`, and nsys
+  and ncu in `-o`, so with `--profile-output-dir 'out%p'` the tool looked for
+  a folder named after its process id (nsys then wrote its report into a
+  temporary folder of its own) or refused the option, and the run failed.
   `bench run` doubles each `%` of the folder in those options, as it does in
   compute-sanitizer's `--log-file`, and the output lands in the folder as
   named.

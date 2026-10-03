@@ -641,8 +641,8 @@ fn route_for(
         .to_string();
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     let d = dir.display().to_string();
-    // The folder as valgrind's and compute-sanitizer's output options read
-    // it: each '%' doubled.
+    // The folder as the tools' output options read it (valgrind's,
+    // compute-sanitizer's, and the -o of nsys and ncu): each '%' doubled.
     let escaped = escape_percent(&d);
     let ncu = |d: &str| -> Vec<String> {
         vec![
@@ -735,7 +735,7 @@ fn route_for(
         }
         // nsight's compute mode is ncu's route, into nsight's folder.
         "nsight" if has("compute") || has("ncu") => {
-            ("ncu", ncu(&d), &[&["kernel_profile.ncu-rep"]])
+            ("ncu", ncu(&escaped), &[&["kernel_profile.ncu-rep"]])
         }
         // nsys records the whole process; the benchmark's backend stays
         // passive (VERNIER_EXTERNAL_WRAP) and the summaries are extracted
@@ -746,7 +746,7 @@ fn route_for(
             vec![
                 "profile".into(),
                 "-o".into(),
-                format!("{d}/profile"),
+                format!("{escaped}/profile"),
                 "-t".into(),
                 "cuda,nvtx".into(),
                 "--force-overwrite".into(),
@@ -754,7 +754,7 @@ fn route_for(
             ],
             &[&["profile.nsys-rep"]],
         ),
-        "ncu" => ("ncu", ncu(&d), &[&["kernel_profile.ncu-rep"]]),
+        "ncu" => ("ncu", ncu(&escaped), &[&["kernel_profile.ncu-rep"]]),
         _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
     args.push(bin);
@@ -996,9 +996,10 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
 }
 
 /// @p path as an output option of valgrind (`--log-file=`,
-/// `--massif-out-file=`, `--callgrind-out-file=`) or compute-sanitizer
-/// (`--log-file`) must spell it: both expand `%p`, `%q{VAR}` and `%%` in the
-/// value and refuse any other `%`, so each `%` of the path is doubled.
+/// `--massif-out-file=`, `--callgrind-out-file=`), compute-sanitizer
+/// (`--log-file`), nsys or ncu (`-o`) must spell it: each tool reads a `%`
+/// in the value as the start of a macro (`%p`, `%q{VAR}`, ...) and `%%` as
+/// one `%`, so each `%` of the path is doubled.
 fn escape_percent(path: &str) -> String {
     path.replace('%', "%%")
 }
@@ -1434,14 +1435,15 @@ mod tests {
             );
         }
         let escapes = table_rows("escape");
-        assert!(escapes.len() >= 6, "the table lost its escape rows");
+        assert!(escapes.len() >= 10, "the table lost its escape rows");
         for row in escapes {
             let tool = canonical_backend(&row[1]);
-            let route = route_for(tool, None, bin, Some(Path::new(&row[2])))
+            let args = (!row[2].is_empty()).then_some(row[2].as_str());
+            let route = route_for(tool, args, bin, Some(Path::new(&row[3])))
                 .unwrap_or_else(|e| panic!("{row:?} refused: {e}"))
                 .unwrap_or_else(|| panic!("{row:?} has no route"));
             // The option's value: the next argument, or after its '='.
-            let option = &row[3];
+            let option = &row[4];
             let joined = format!("{option}=");
             let value = route.args.iter().enumerate().find_map(|(i, a)| {
                 if a == option {
@@ -1450,10 +1452,10 @@ mod tests {
                     a.strip_prefix(&joined).map(str::to_string)
                 }
             });
-            assert_eq!(value.as_ref(), Some(&row[4]), "{row:?}: {:?}", route.args);
+            assert_eq!(value.as_ref(), Some(&row[5]), "{row:?}: {:?}", route.args);
             assert_eq!(
                 route.dir,
-                Path::new(&row[2]).join(format!("my_test.{tool}")),
+                Path::new(&row[3]).join(format!("my_test.{tool}")),
                 "{row:?}: the folder keeps its own name"
             );
         }

@@ -246,7 +246,10 @@ the same wrap left: `callgrind.out`, `massif.out`, `memcheck.log`,
 `kernel_profile.ncu-rep` (ncu, and nsight's compute mode) and
 `jeprof.*.heap` (jemalloc), each removal printed as `[bench] removed <file>
 from a previous run`. Nothing else in the folder, and nothing outside it, is
-removed. After the benchmark exits 0, the file must exist and hold
+removed. valgrind, compute-sanitizer, nsys and ncu read a `%` in an output
+option as the start of a macro (`%p`, `%q{VAR}`), so `bench run` writes the
+folder there with each `%` doubled, and the output lands in the folder as
+named. After the benchmark exits 0, the file must exist and hold
 something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
 For nsight, a `nsys stats` summary that fails fails the run as `analysis:`,
@@ -264,8 +267,7 @@ SUMMARY` line fail the run, and the count printed is that line's; with no
 errors counted, the status is the benchmark's own, 5 included. A report that
 holds only the tool's own `Error:` line fails the run as `collection:`, a
 missing report or one without its summary as `completion:`, and nothing is
-counted. The `--log-file` value has each `%` of the folder doubled, since the
-tool reads `%p`, `%q{VAR}` and `%%` in it as macros.
+counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 
