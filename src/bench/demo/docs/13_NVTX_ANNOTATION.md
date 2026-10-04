@@ -32,8 +32,10 @@ for the GPU to start the first copy, and the host copying y back out.
   or `ncu`, receives the calls, and without one they do nothing.
 - **A range belongs to the host thread.** It opens when the thread pushes and
   closes when it pops. A CUDA copy or kernel launch returns once it is queued,
-  so a range around those calls alone holds the queueing and none of the GPU's
-  work. To hold the work, the code waits for it before the range closes.
+  so a range around those calls alone is only sure to hold the queueing: the
+  GPU may run some or all of the work while the range is open, but nothing
+  makes the work finish before the range closes. To hold the work, the code
+  waits for it before the range closes.
 - **It labels; it does not measure.** Nsight Systems records the ranges and
   `nsys stats` reports them. The timings on this page still come from the
   benchmark.
@@ -209,16 +211,20 @@ nsys stats --force-export=true --report nvtx_pushpop_sum bench-out/BenchDemo_Gpu
 
 One range, the test's, 61.37 ms long (`nsys` writes each name as
 `domain:name`, and the demo's ranges are in the default domain, which has no
-name). The summaries `bench run` wrote beside the report count what happened
-inside it: three `cudaMemcpyAsync`, one launch and one `cudaStreamSynchronize`
-a call (183, 61 and 61 in `cuda_api_sum.txt`, warmup included); the kernel took
-22.5 us on the GPU by its median (`cuda_gpu_kern_sum.txt`) and each 4.19 MB
-copy about 15.5 us (`cuda_gpu_mem_time_sum.txt`). Matched call by call in the
-report, as in Step 4, the GPU's four operations add up to about 70 us of each
-882 us call. Each call's wait, `cudaStreamSynchronize`, lasts 281 us by its
-median; after it returns, about 572 us pass, with no CUDA call and nothing on
-the GPU, before the next call queues its first copy, and the GPU starts that
-copy about 216 us after it was queued.
+name). It holds the 60 measured calls. The summaries `bench run` wrote beside
+the report cover the whole process instead: all 61 calls, the warmup's
+included, and the setup and teardown around them, such as the `cudaMalloc`
+and `cudaFree` calls. By them a call makes three `cudaMemcpyAsync`, one launch
+and one `cudaStreamSynchronize` (183, 61 and 61 in `cuda_api_sum.txt`), and
+over the 61 calls the kernel took 22.5 us on the GPU by its median
+(`cuda_gpu_kern_sum.txt`) and each 4.19 MB copy about 15.5 us
+(`cuda_gpu_mem_time_sum.txt`). What happened inside the range comes from the
+report's traces: matched call by call, as in Step 4, the GPU's four operations
+add up to about 70 us of each 882 us call. Each call's wait,
+`cudaStreamSynchronize`, lasts 281 us by its median; after it returns, about
+572 us pass, with no CUDA call and nothing on the GPU, before the next call
+queues its first copy, and the GPU starts that copy about 216 us after it was
+queued.
 
 The CUDA trace does not say what the host does in those 572 us. Nsight Systems
 also samples the CPU by default on this rig, and all 36 samples it took of the
@@ -301,8 +307,8 @@ nsys stats --force-export=true --report nvtx_pushpop_trace bench-out/BenchDemo_G
   `copy_out`, in that order, each closed before the next opens, with `ParentId`
   4 and a `--:` in `NameTree` for their depth.
 
-`cuda_api_sum.txt` counts the extra waits: 183 `cudaStreamSynchronize`, three
-a call.
+`cuda_api_sum.txt`, which covers the whole process, counts the extra waits:
+183 `cudaStreamSynchronize`, three for each of the 61 calls.
 
 ## Step 4: Read the Ranges
 
@@ -406,9 +412,10 @@ Another run of unchanged code can land outside every range on this page.
   `BENCH_NVTX_SCOPE` and the test's range compile to nothing, and the demo still
   runs and passes. The check below skips in such a build and says why.
 - **A range that holds none of its GPU work.** A range closes when the host
-  pops it; without the wait at the end of a phase, the range closes before the
-  GPU runs the phase's work. With the `kernel` phase's wait removed, the check
-  reports every call, the first as:
+  pops it; without the wait at the end of a phase, nothing keeps it open until
+  the GPU has run the phase's work, and it can close first. With the `kernel`
+  phase's wait removed, the check reported all eight calls of one run, the
+  first as:
 
   ```
   call 0, range kernel holds 0 kernel(s), 0 copy(ies) to the device, 0 copy(ies) back, 0 other

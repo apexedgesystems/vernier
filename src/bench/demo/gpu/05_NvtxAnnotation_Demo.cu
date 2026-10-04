@@ -13,10 +13,11 @@
  *    phase in a named range: copy_in, kernel, copy_out.
  *
  * A range is opened and closed by the host thread, and a CUDA copy or launch
- * returns once it is queued. A range around those calls alone would hold the
- * queueing and none of the GPU's work, so each phase waits for its stream
- * before its range closes. The waits are what let the timeline show the
- * phases; they cost G1Phases two more waits a call than G1.
+ * returns once it is queued. A range around those calls alone would only be
+ * sure to hold the queueing: the GPU might run some or all of the work while
+ * it is open, but nothing would make the work finish inside it. So each phase
+ * waits for its stream before its range closes. The waits are what let the
+ * timeline show the phases; they cost G1Phases two more waits a call than G1.
  *
  * Workload: y = a*x + y over 1M floats
  * ([examples/saxpy](../examples/saxpy/inc/Saxpy.hpp)).
