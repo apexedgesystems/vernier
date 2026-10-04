@@ -268,6 +268,27 @@ TEST_F(PerfLifecycleTest, NoControlKeepsTheFixedWait) {
   EXPECT_NE(readText(W.folder + "/stat.txt").find("Performance counter stats"), std::string::npos);
 }
 
+/**
+ * @test Without the handshake (a perf the check found not answering, and
+ * perf mem) a perf that ends at its start fails the capture before the
+ * measured phase, at the collection stage, with its words: the start's grace
+ * sees it gone (the fake ends within milliseconds; the grace is 200 ms).
+ */
+TEST_F(PerfLifecycleTest, EarlyExitWithoutTheHandshakeFails) {
+  const std::string SAID = "unusable: perf ended (exit status 1) before the measured phase: perf: "
+                           "Error: failed to open counters: No such process";
+  const Window SILENT = window("exit-early", "", /*afterExit=*/false, /*answersPing=*/false);
+  ASSERT_EQ(SILENT.failures.size(), 1U);
+  EXPECT_EQ(SILENT.failures[0].result.stage, ReadinessStage::COLLECTION);
+  EXPECT_EQ(SILENT.failures[0].result.report.message, SAID);
+  ProfilerRegistry::instance().resetFailures();
+  const Window MEM = window("exit-early", "mem");
+  ASSERT_EQ(MEM.failures.size(), 1U);
+  EXPECT_EQ(MEM.failures[0].result.stage, ReadinessStage::COLLECTION);
+  EXPECT_EQ(MEM.failures[0].result.report.message, SAID);
+  EXPECT_EQ(dir_.log().find("--control"), std::string::npos) << dir_.log();
+}
+
 /** @test perf mem keeps the fixed grace, also with a perf that answers. */
 TEST_F(PerfLifecycleTest, MemKeepsTheFixedStart) {
   const Window W = window("ok", "mem");
