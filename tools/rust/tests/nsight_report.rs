@@ -116,6 +116,18 @@ struct Case {
     dir: tempfile::TempDir,
 }
 
+/// The action one signal has when a test starts `bench`, set by the test
+/// whatever this test process inherited: a run keeps a signal that is
+/// ignored when it starts ignored, and a test run can start with signals
+/// ignored (a background job of a shell without job control, `nohup`).
+#[derive(Debug, Clone, Copy)]
+enum Start {
+    /// The signal, by its name for `kill -s`, at its default action.
+    Default(&'static str),
+    /// The signal ignored.
+    Ignoring(&'static str),
+}
+
 /// The directory holding the fake `nsys` and `ncu`, written once for the whole
 /// test process before any test starts a process. A script written while
 /// another thread forks can be held open for writing in that child until it
@@ -179,21 +191,23 @@ impl Case {
 
     /// `bench` with @p args, run from `work/` with only the fakes on PATH.
     fn command(&self, args: &[&str]) -> Command {
-        self.command_via(&[], args)
+        self.command_from(Command::new(env!("CARGO_BIN_EXE_bench")), args)
     }
 
-    /// The same, started through @p via: a program and its arguments, which
-    /// then run `bench` and its arguments.
-    fn command_via(&self, via: &[&str], args: &[&str]) -> Command {
-        let bench = env!("CARGO_BIN_EXE_bench");
-        let mut cmd = match via.split_first() {
-            Some((program, before)) => {
-                let mut cmd = Command::new(program);
-                cmd.args(before).arg(bench);
-                cmd
-            }
-            None => Command::new(bench),
+    /// The same, started by GNU env (coreutils 8.31 or later) with one
+    /// signal's action set as @p start says.
+    fn command_with(&self, start: Start, args: &[&str]) -> Command {
+        let option = match start {
+            Start::Default(signal) => format!("--default-signal={signal}"),
+            Start::Ignoring(signal) => format!("--ignore-signal={signal}"),
         };
+        let mut env = Command::new(which("env"));
+        env.arg(option).arg(env!("CARGO_BIN_EXE_bench"));
+        self.command_from(env, args)
+    }
+
+    /// @p cmd with @p args, in this case's directories and environment.
+    fn command_from(&self, mut cmd: Command, args: &[&str]) -> Command {
         cmd.args(args)
             .current_dir(self.path("work"))
             .env("PATH", fakes())
@@ -912,14 +926,17 @@ fn timeout_removes_the_private_export() {
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
 }
 
-/// Start a run on a slow export, send it @p signal once its tool runs, and
-/// check that the tool, the private export and the CSV are all gone and that
-/// the run ended by that signal.
-fn interrupted_run_cleans_up(signal: &str, number: i32, name: &str) {
+/// Start a run on a slow export with @p signal at its default action, send it
+/// that signal once its tool runs, and check that the tool, the private
+/// export and the CSV are all gone and that the run ended by that signal.
+fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: &str) {
     let case = Case::new();
     case.report("slow.nsys-rep");
     let mut child = case
-        .command(&[COMMAND, "slow.nsys-rep", "--csv", "out.csv"])
+        .command_with(
+            Start::Default(signal),
+            &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -975,15 +992,16 @@ fn sighup_cleans_up() {
     interrupted_run_cleans_up("HUP", 1, "SIGHUP");
 }
 
-/// @test A run started with SIGHUP ignored, as nohup starts one, keeps
-/// ignoring it: the tool runs on until --timeout stops it.
-#[test]
-fn ignored_hangup_stays_ignored() {
+/// Start a run on a slow export with @p signal ignored, send it that signal
+/// once its tool runs, and check that the run kept ignoring it: --timeout
+/// still stops the tool and what it started, the private export is removed,
+/// and the run fails by its deadline, not by the signal.
+fn ignored_signal_stays_ignored(signal: &'static str) {
     let case = Case::new();
     case.report("slow.nsys-rep");
     let mut child = case
-        .command_via(
-            &["/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "sh"],
+        .command_with(
+            Start::Ignoring(signal),
             &[
                 COMMAND,
                 "slow.nsys-rep",
@@ -1000,7 +1018,7 @@ fn ignored_hangup_stays_ignored() {
     let tool = case.tool_pid();
     let _guard = Guard(vec![tool]);
 
-    send_signal(child.id(), "HUP");
+    send_signal(child.id(), signal);
 
     let status = wait_for_exit(&mut child, Duration::from_secs(30));
     let out = child.wait_with_output().expect("output");
@@ -1013,6 +1031,22 @@ fn ignored_hangup_stays_ignored() {
         )
     );
     assert!(ended(tool), "the tool's own process {tool} still runs");
+    assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
+}
+
+/// @test A run started with SIGHUP ignored, as nohup starts one, keeps
+/// ignoring it: the tool runs on until --timeout stops it.
+#[test]
+fn ignored_hangup_stays_ignored() {
+    ignored_signal_stays_ignored("HUP");
+}
+
+/// @test A run started with SIGINT ignored, as a shell without job control
+/// starts a background command, keeps ignoring it: the tool runs on until
+/// --timeout stops it with what it started.
+#[test]
+fn ignored_interrupt_stays_ignored() {
+    ignored_signal_stays_ignored("INT");
 }
 
 /// @test A tool that ends while a process it started keeps its output open is
@@ -1052,14 +1086,17 @@ fn signal_while_a_leftover_holds_the_output_ends_at_once() {
     let case = Case::new();
     case.report("leftover.ncu-rep");
     let mut child = case
-        .command(&[
-            COMMAND,
-            "leftover.ncu-rep",
-            "--csv",
-            "out.csv",
-            "--timeout",
-            "30",
-        ])
+        .command_with(
+            Start::Default("TERM"),
+            &[
+                COMMAND,
+                "leftover.ncu-rep",
+                "--csv",
+                "out.csv",
+                "--timeout",
+                "30",
+            ],
+        )
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -1115,15 +1152,10 @@ fn process_left_by_a_finished_tool_is_stopped() {
 fn ignored_child_signal_does_not_hide_the_tools_end() {
     let case = Case::new();
     case.report("leftover.ncu-rep");
-    let perl = which("perl");
     let run = {
         let out = case
-            .command_via(
-                &[
-                    perl.to_str().expect("perl path"),
-                    "-e",
-                    "$SIG{CHLD} = 'IGNORE'; exec @ARGV or die $!",
-                ],
+            .command_with(
+                Start::Ignoring("CHLD"),
                 &[
                     COMMAND,
                     "leftover.ncu-rep",
