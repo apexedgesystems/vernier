@@ -7,8 +7,8 @@
  *  - The fixture (MEASUREMENT_ROWS_PROBE) prints "[rows-probe] median=<m>
  *    cycles=<c> msgBytes=<b>" after each completed measurement, in the CSV
  *    writer's number format, so each row is tied to its own measurement.
- *  - Each run's CSV and streams stay in publication/ under the working
- *    directory.
+ *  - Each run's CSV and streams go to a private temporary directory, removed
+ *    when the test passes and kept, its path printed, when it fails.
  *  - What bench summary and bench compare read from the same CSV is
  *    MeasurementRows.CliAgreement's, a test of the CLI's own suite.
  */
@@ -16,6 +16,7 @@
 #include <sys/wait.h>
 
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
 
 #include <filesystem>
@@ -26,6 +27,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -243,9 +245,10 @@ std::vector<std::vector<std::string>> matches(const std::string& text, const cha
 
 /** @test Publishes a row per completed measurement, with its own values, as the table names it */
 TEST(MeasurementRows, Publication) {
-  const fs::path dir = fs::current_path() / "publication";
-  fs::remove_all(dir);
-  fs::create_directories(dir);
+  std::string dirTemplate =
+      (fs::temp_directory_path() / "vernier-measurement-rows-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(dirTemplate.data()), nullptr) << "cannot create a temporary directory";
+  const fs::path dir = dirTemplate;
   std::vector<std::string> names;
   std::set<std::string> tests;
   for (const ExpectedRow& row : EXPECTED_ROWS) {
@@ -323,4 +326,11 @@ TEST(MeasurementRows, Publication) {
   for (std::size_t i = 0; i < calibrations.size() && i < targetRows.size(); ++i) {
     EXPECT_EQ(cellOf(targetRows[i], "cycles"), calibrations[i][0]) << names[i];
   }
+
+  if (HasFailure()) {
+    std::printf("the fixture's runs are kept in %s\n", dir.c_str());
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(dir, ec);
 }

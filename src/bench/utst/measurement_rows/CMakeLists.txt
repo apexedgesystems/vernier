@@ -51,8 +51,6 @@ vernier_add_gtest(
   LABELS
   benchmarking
   rows
-  WORKING_DIR
-  "${CMAKE_CURRENT_BINARY_DIR}"
 )
 target_compile_definitions(
   TestMeasurementRows PRIVATE MEASUREMENT_ROWS_PROBE="$<TARGET_FILE:MeasurementRowsProbe>"
