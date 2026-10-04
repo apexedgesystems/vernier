@@ -28,7 +28,7 @@
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/demo/examples/join/inc/Join.hpp"
-#include "src/bench/demo/examples/join/utst/GperfProfiles.hpp"
+#include "src/bench/demo/examples/join/ptst/GperfProfiles.hpp"
 
 namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;

@@ -503,7 +503,7 @@ Two things run against this example, and both fail loudly:
   holds more than a quarter of V0's samples, or if `joinV1`'s own code holds
   less than a quarter of V1's. It is a performance test beside the join
   example,
-  [`JoinProfileAttribution_pTest.cpp`](../examples/join/utst/JoinProfileAttribution_pTest.cpp),
+  [`JoinProfileAttribution_pTest.cpp`](../examples/join/ptst/JoinProfileAttribution_pTest.cpp),
   built as `JoinProfileAttribution`; a profile's shares are samples, so it is
   not registered with `ctest`, and it is run on the rig by hand:
 

@@ -3,9 +3,10 @@
 #
 # Small pieces of code the walkthroughs measure. Each example is a directory
 # <name>/{inc,src,utst}: one library the demos link, and unit tests that hold
-# its versions to the same answers. Examples are teaching material: they are
-# built with the demos and are never installed or exported, so they use plain
-# add_library rather than vernier_add_library.
+# its versions to the same answers; join's performance tests are in its ptst.
+# Examples are teaching material: they are built with the demos and are never
+# installed or exported, so they use plain add_library rather than
+# vernier_add_library.
 #
 # Libraries:
 #   demo_example_join    - join a list of strings with a separator, two ways
@@ -210,7 +211,7 @@ vernier_add_gtest(
 # ------------------------------------------------------------------------------
 
 vernier_add_ptest(
-  TARGET JoinSpeedup SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinSpeedup_pTest.cpp" LINK
+  TARGET JoinSpeedup SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/join/ptst/JoinSpeedup_pTest.cpp" LINK
   demo_example_join
 )
 
@@ -223,5 +224,5 @@ vernier_add_ptest(
 
 vernier_add_ptest(
   TARGET JoinProfileAttribution SOURCES
-  "${CMAKE_CURRENT_SOURCE_DIR}/join/utst/JoinProfileAttribution_pTest.cpp" LINK demo_example_join
+  "${CMAKE_CURRENT_SOURCE_DIR}/join/ptst/JoinProfileAttribution_pTest.cpp" LINK demo_example_join
 )

@@ -344,7 +344,7 @@ Two things run against this example, and both fail loudly:
   an optimizer, a library change or an edit to the example ever erases the
   effect, it fails instead of the demo quietly demonstrating nothing. It is a
   performance test beside the join example,
-  [`JoinSpeedup_pTest.cpp`](../examples/join/utst/JoinSpeedup_pTest.cpp),
+  [`JoinSpeedup_pTest.cpp`](../examples/join/ptst/JoinSpeedup_pTest.cpp),
   built as `JoinSpeedup`: comparing the two versions needs both timings in one
   test, which the demo's one row per test does not give. A timing belongs to
   the machine that takes it, so it is not registered with `ctest`; it is run

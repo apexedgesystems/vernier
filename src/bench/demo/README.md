@@ -183,9 +183,11 @@ and dependency chains), and designed to show measurable differences.
 Code a walkthrough teaches from lives in its own directory beside these
 helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
 and unit tests that hold the example's versions to the same answers,
-registered under the `demo` label (`ctest --test-dir build -L demo`). The
-first is [examples/join](examples/join/inc/Join.hpp), and the table below names
-the demos that use each example.
+registered under the `demo` label (`ctest --test-dir build -L demo`). An
+example's performance tests, run by hand on the rig and never registered, are
+in its `ptst` directory. The first is
+[examples/join](examples/join/inc/Join.hpp), and the table below names the
+demos that use each example.
 
 | Example                                  | Versions                                                                                                                                           | Used In                              |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
