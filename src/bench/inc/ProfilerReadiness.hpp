@@ -367,6 +367,18 @@ enum class ProbeStreams : std::uint8_t {
  */
 [[nodiscard]] std::string outputTail(const std::string& text, std::size_t maxLines = 2);
 
+namespace detail {
+
+/**
+ * @brief @p word as one POSIX shell word: unchanged when every character is
+ * safe (letters, digits and `_@%+=:,./-`), otherwise in single quotes with
+ * each quote written as '\''. For the commands the backends run through
+ * `/bin/sh -c` and the ones they print for a user to run.
+ */
+[[nodiscard]] std::string shellQuote(const std::string& word);
+
+} // namespace detail
+
 /**
  * @brief A private directory for one decision's probe files, removed on destruction.
  *

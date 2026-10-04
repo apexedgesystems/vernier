@@ -758,6 +758,24 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   return result;
 }
 
+std::string detail::shellQuote(const std::string& word) {
+  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "0123456789_@%+=:,./-";
+  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
+    return word;
+  }
+  std::string quoted = "'";
+  for (const char C : word) {
+    if (C == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += C;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
 std::string outputTail(const std::string& text, std::size_t maxLines) {
   constexpr std::size_t MAX_LINE = 300;
   std::vector<std::string> lines;

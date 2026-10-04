@@ -377,19 +377,7 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
 namespace {
 
 #ifdef __linux__
-/** @brief @p text as one POSIX sh word: single-quoted, each ' written as '\''. */
-std::string shellQuote(const std::string& text) {
-  std::string out = "'";
-  for (const char CH : text) {
-    if (CH == '\'') {
-      out += "'\\''";
-    } else {
-      out += CH;
-    }
-  }
-  out += "'";
-  return out;
-}
+using detail::shellQuote;
 #endif
 
 std::shared_ptr<const PerfPlan> readyPlan(const ReadinessResult& result) {

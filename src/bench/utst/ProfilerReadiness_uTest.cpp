@@ -623,6 +623,29 @@ TEST(ReadinessProbes, SeparateStreams) {
   EXPECT_EQ(APART.errorOutput, "to stderr\n");
 }
 
+/**
+ * @test One shell word: a safe word as it is, any other single-quoted with a
+ * quote written as '\''; and /bin/sh reads every quoted word back as it was.
+ */
+TEST(ReadinessShellQuote, OneWordTheShellReadsBack) {
+  using vernier::bench::detail::shellQuote;
+  EXPECT_EQ(shellQuote("/usr/bin/perf"), "/usr/bin/perf");
+  EXPECT_EQ(shellQuote("fifo:/tmp/ctl,/tmp/ack"), "fifo:/tmp/ctl,/tmp/ack");
+  EXPECT_EQ(shellQuote("a b"), "'a b'");
+  EXPECT_EQ(shellQuote("it's"), "'it'\\''s'");
+  EXPECT_EQ(shellQuote(""), "''");
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessContext CTX = dir.context();
+  for (const std::string WORD :
+       {"plain", "two words", "it's", "$HOME;`id`", "a\\b*?[c]", "\"q\" & <r>", "", "x'y'z"}) {
+    const ProbeResult READ = runBoundedProbe({"/bin/sh", "-c", "printf '%s' " + shellQuote(WORD)},
+                                             5000, CTX, ProbeStreams::SEPARATE);
+    EXPECT_TRUE(READ.succeeded()) << WORD << ": " << READ.describe();
+    EXPECT_EQ(READ.output, WORD) << shellQuote(WORD);
+  }
+}
+
 /** @test Output beyond the limit is dropped, and the probe still ends. */
 TEST(ReadinessProbes, OutputIsBounded) {
   FakeToolDir dir;

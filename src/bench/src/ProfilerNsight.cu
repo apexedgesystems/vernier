@@ -17,36 +17,13 @@
 #include "src/bench/inc/Nvtx.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerNsightChecks.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
 namespace bench {
 
-namespace {
-
-/**
- * @brief @p word as one POSIX shell word: unchanged when every character is
- * safe, otherwise in single quotes with each quote written as '\''.
- */
-std::string shellQuote(const std::string& word) {
-  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                      "0123456789_@%+=:,./-";
-  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
-    return word;
-  }
-  std::string quoted = "'";
-  for (const char C : word) {
-    if (C == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += C;
-    }
-  }
-  quoted += "'";
-  return quoted;
-}
-
-} // namespace
+using detail::shellQuote;
 
 NsightProfiler::NsightProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
