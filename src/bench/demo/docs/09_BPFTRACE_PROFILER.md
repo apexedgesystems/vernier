@@ -97,8 +97,8 @@ and every backend's default mode, cut here as `...`:
 ...
 ```
 
-The check ran a copy of the script through `sudo -n` for a second and stopped
-it. Its copy lives in a temporary directory, so it could not try the run's own
+The check ran a copy of the script through `sudo -n` until it had attached, a
+second at least, and stopped it. Its copy lives in a temporary directory, so it could not try the run's own
 command, which names the capture folder: with a grant scoped to fixed
 arguments, the run's start shows whether the grant allows that command.
 

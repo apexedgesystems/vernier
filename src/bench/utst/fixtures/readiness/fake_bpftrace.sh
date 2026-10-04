@@ -21,9 +21,26 @@
 #                launch: a program without an interval probe
 #   eperm        exit 1 at once with bpftrace's message for a non-root user
 #   unsupported  exit 1 at once with bpftrace's message for a missing tracepoint
+#   late-unsupported
+#                like unsupported, but FAKE_FAIL_AFTER_S seconds (default 1.5)
+#                after the start: a tracer still compiling when the start
+#                grace ends. bpftrace sets its SIGINT handler only once it has
+#                compiled, so SIGINT ends it before then, or does nothing with
+#                FAKE_INT=ignore (SIGINT ignored by its parent, as in a
+#                background job of a script)
+#   silent-status
+#                like ok, but exit 3 on SIGINT with nothing on stderr
+#   int-error    like ok, but on SIGINT print unsupported's message and exit 1
 #   no-sched-switch
 #                like unsupported, for the sched_switch tracepoint
 #   broken       exit 1 at once with a message of no known kind
+#
+# A program with a probe "interval:ms:N { printf("<line>\n"); }" (a
+# readiness probe's attach line) prints <line> once attached, as bpftrace
+# prints its programs' output only once it has attached every probe. A
+# tracer still starting, or attaching (slow-attach), ends at once on SIGINT,
+# as bpftrace does before it sets its handler; once attached it ends on
+# SIGINT with status 0.
 #
 # A program that holds the capture window the backends append (a printf of
 # "<label> armed %d %d" in a program filtered on "pid == <target>", whose arm
@@ -122,6 +139,16 @@ broken)
   ;;
 esac
 
+# Sleep $1 seconds in short naps: a shell takes a signal only once the
+# command it runs ends, and a tracer still starting ends on SIGINT at once.
+nap() {
+  naps=$(awk -v s="$1" 'BEGIN { printf "%d", s * 20 }')
+  while [ "$naps" -gt 0 ]; do
+    sleep 0.05
+    naps=$((naps - 1))
+  done
+}
+
 # Run as long as the program would by itself.
 limit=30
 seconds=$(printf '%s\n' "$program" | sed -n 's/.*interval:s:\([0-9][0-9]*\).*/\1/p' | head -n 1)
@@ -150,9 +177,6 @@ if [ "$mode" = "ignore-int-run" ] && [ "$run_launch" = yes ]; then
   trap '' INT
   int_ignored=yes
 fi
-if [ "$mode" = "slow-attach" ]; then
-  sleep "${FAKE_ATTACH_S:-3}"
-fi
 
 # The capture window: its label, the process it watches and the threads that
 # arm and stop it.
@@ -160,11 +184,21 @@ label=$(printf '%s\n' "$program" | sed -n 's/.*printf("\([A-Za-z0-9_-]*\) armed 
 watched=$(printf '%s\n' "$program" | sed -n 's/.*if (pid == \([0-9][0-9]*\) && (args->prev_state.*/\1/p' | head -n 1)
 arm_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-arm").*/\1/p' | head -n 1)
 stop_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-stop").*/\1/p' | head -n 1)
-
+has_window=yes
 if [ -z "$label" ] || [ -z "$watched" ]; then
+  has_window=no
+fi
+
+# A readiness probe's attach line.
+attach_line=$(printf '%s\n' "$program" | sed -n 's/^interval:ms:[0-9][0-9]* { printf("\([^"\\]*\)\\n"); }$/\1/p' | head -n 1)
+
+if [ "$has_window" = no ] && [ "$run_launch" = yes ]; then
+  if [ "$mode" = "slow-attach" ]; then
+    sleep "${FAKE_ATTACH_S:-3}"
+  fi
   # bpftrace's exit() on the target's sched_process_exit: a launch ends with
-  # its target. A probe's self-exit ends it first, whatever its target does.
-  if [ "$run_launch" = yes ] && [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+  # its target.
+  if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
     printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
     exec tail -s 0.1 -f /dev/null --pid="$target"
   fi
@@ -173,11 +207,23 @@ fi
 
 # On the sudo route the backend signals the only child of the process it
 # started, when there is exactly one (sudo's monitor keeps the tool as its
-# only child). This fake is sudo and tool in one process, and its loop starts
-# short-lived children; two children that live as long as it does keep that
-# choice on the fake itself.
-tail -s 0.1 -f /dev/null --pid=$$ &
-tail -s 0.1 -f /dev/null --pid=$$ &
+# only child). This fake is sudo and tool in one process, and its naps and
+# its loop start short-lived children; two children that live as long as it
+# does keep that choice on the fake itself. They hold none of its output.
+tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
+tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
+
+if [ "$mode" = "late-unsupported" ]; then
+  if [ "${FAKE_INT:-}" = ignore ]; then
+    trap '' INT
+  fi
+  nap "${FAKE_FAIL_AFTER_S:-1.5}"
+  echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
+  exit 1
+fi
+if [ "$mode" = "slow-attach" ]; then
+  nap "${FAKE_ATTACH_S:-3}"
+fi
 
 # True when thread $1 of the watched process is named $2.
 thread_is_named() {
@@ -227,7 +273,7 @@ if printf '%s\n' "$program" | grep -q 'disarmed %d %d %d'; then
 fi
 
 # The output file, for the modes that remove or empty it: only a regular
-# file, never a device such as a probe's /dev/null.
+# file, never a device such as /dev/null.
 output=$(readlink /proc/$$/fd/1)
 if [ ! -f "$output" ]; then
   output=""
@@ -240,6 +286,13 @@ if [ -n "${FAKE_WINDOW_FOR:-}" ]; then
   esac
 fi
 on_interrupt() {
+  case "$mode" in
+  silent-status) exit 3 ;;
+  int-error)
+    echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
+    exit 1
+    ;;
+  esac
   case "$window" in
   remove-output) [ -n "$output" ] && rm -f "$output" ;;
   empty-output) [ -n "$output" ] && : >"$output" ;;
@@ -261,12 +314,17 @@ fi
 if [ "$window" = end-before-arm ]; then
   exit 0
 fi
+if [ -n "$attach_line" ]; then
+  printf '%s\n' "$attach_line"
+fi
 limit_ms=$(printf '%s\n' "$limit" | awk '{ printf "%d", $1 * 1000 }')
 started=$(date +%s%N)
 armed=no
 disarmed=no
 while :; do
-  if [ "$armed" = no ] && [ "$window" != no-arm ]; then
+  if [ "$has_window" = no ]; then
+    : # nothing to acknowledge: a probe of a script the backend adds no window to
+  elif [ "$armed" = no ] && [ "$window" != no-arm ]; then
     tid=$(window_thread arm)
     if [ -n "$tid" ]; then
       pid_shown=$watched

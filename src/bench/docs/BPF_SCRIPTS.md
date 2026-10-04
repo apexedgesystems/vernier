@@ -20,9 +20,13 @@ performance, not by default in CI.
   its own, is a configuration error.
 - `--profile-check --profile bpftrace --bpf <scripts>` runs a copy of each
   selected script, with the capture window (below, bound to no thread, so it
-  never arms) and a 5 s self-exit added, through that route for a second and
-  stops it, and reports what failed; a run
-  makes the same decision before its first case. The copy lives in a private
+  never arms), a line it prints once bpftrace has attached it and a 5 s
+  self-exit added, through that route until the line shows, a second at
+  least, then stops it and reports what failed; a run makes the same decision
+  before its first case. How the copy ended decides: one that ends before the
+  stop, or with an error after it, is reported as a copy that fails at its
+  start, and one still starting 5 s after its start (on a busy machine) is
+  stopped and reported as `unverified`. The copy lives in a private
   temporary directory, while the run's own copy lives in its capture folder, so
   the check cannot try the run's exact command: with `BENCH_SUDO=1`, a grant
   that refuses the check's copy is reported as `unverified` rather than denied,

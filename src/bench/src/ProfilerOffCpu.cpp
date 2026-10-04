@@ -69,13 +69,14 @@ std::string commandLine(const BpftraceRoute& route, long pid) {
 constexpr int PROBE_SELF_EXIT_S = 5;
 
 /**
- * @brief The readiness probe's script: the launch's, plus an interval probe
- * that ends it by itself. A tracer whose stop is refused so ends within the
- * bound whatever it traces; the check waits for that and reaps it.
+ * @brief The readiness probe's script: the launch's, plus the attach line
+ * the check waits for and an interval probe that ends it by itself. A tracer
+ * whose stop is refused so ends within the bound whatever it traces; the
+ * check waits for that and reaps it.
  */
 std::string probeScript() {
-  return std::string{OFFCPU_SCRIPT} + "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) +
-         " { exit(); }\n";
+  return std::string{OFFCPU_SCRIPT} + bpftrace_tool::attachLineProgram() +
+         "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
 }
 #endif
 
@@ -108,19 +109,22 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
   }
-  // The launch's script, with a self-exit added, through the route for the
-  // run's start grace, on this process; stopped with the run's first stop
-  // signal. The added interval makes it a command the run never runs, so a
-  // grant's refusal of it is unverified, and it bounds a tracer whose stop is
-  // refused: the check waits for that end and reaps it.
+  // The launch's script, with an attach line and a self-exit added, through
+  // the route until it has attached, the run's start grace at least, on this
+  // process; stopped with the run's first stop signal. -B none brings the
+  // attach line out as it is printed. The additions make it a command the run
+  // never runs, so a grant's refusal of it is unverified, and the self-exit
+  // bounds a tracer whose stop is refused: the check waits for that end and
+  // reaps it.
   const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const std::string SELF = std::to_string(static_cast<long>(ctx.self()));
   const std::string RUN_COMMAND = plan->route.bpftrace + " -e <the off-CPU script> <benchmark pid>";
   const ProbeScratch SCRATCH(ctx);
   bpftrace_tool::AttachProbe probe;
-  probe.toolArgs = {"-e", probeScript(), SELF};
+  probe.toolArgs = {"-B", "none", "-e", probeScript(), SELF};
   probe.what = WHAT;
-  probe.commandLine = plan->route.bpftrace + " -e <the off-CPU script with a " +
+  probe.commandLine = plan->route.bpftrace +
+                      " -B none -e <the off-CPU script with an attach line and a " +
                       std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " + SELF;
   probe.runCommand = RUN_COMMAND;
   probe.graceMs = START_GRACE_MS;

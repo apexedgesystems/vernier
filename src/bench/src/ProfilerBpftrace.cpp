@@ -130,7 +130,53 @@ const char* signalName(int sig) {
   }
 }
 
+/** @brief How a process with wait status @p waitStatus ended: "exited with status 3". */
+std::string endedWith(int waitStatus) {
+  if (WIFEXITED(waitStatus)) {
+    return "exited with status " + std::to_string(WEXITSTATUS(waitStatus));
+  }
+  if (WIFSIGNALED(waitStatus)) {
+    return "ended on signal " + std::to_string(WTERMSIG(waitStatus));
+  }
+  return "ended with wait status " + std::to_string(waitStatus);
+}
+
+/** @brief The whole of the file at @p path; empty when it cannot be read. */
+std::string fileText(const std::string& path) {
+  std::ifstream in(path);
+  std::stringstream text;
+  text << in.rdbuf();
+  return text.str();
+}
+
+/** @brief True when @p text holds more than white space. */
+bool saysSomething(const std::string& text) {
+  return text.find_first_not_of(" \t\r\n") != std::string::npos;
+}
+
+/**
+ * @brief Wait while @p helper runs, up to @p until, for the probe output at
+ * @p outPath to hold PROBE_ATTACH_LINE; true when it does.
+ */
+bool waitForAttachLine(OwnedHelper& helper, const std::string& outPath,
+                       std::chrono::steady_clock::time_point until) {
+  while (true) {
+    if (fileText(outPath).find(PROBE_ATTACH_LINE) != std::string::npos) {
+      return true;
+    }
+    if (!helper.running() || std::chrono::steady_clock::now() >= until) {
+      // One last look: the line may have come just before the end.
+      return fileText(outPath).find(PROBE_ATTACH_LINE) != std::string::npos;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+}
+
 } // namespace
+
+std::string attachLineProgram() {
+  return std::string{"interval:ms:100 { printf(\""} + PROBE_ATTACH_LINE + "\\n\"); }\n";
+}
 
 std::string optInRemedy(const BpftraceRoute& route, const ReadinessContext& ctx) {
   std::string killPath = route.kill;
@@ -250,12 +296,20 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   std::vector<std::string> argv = route.command();
   argv.insert(argv.end(), probe.toolArgs.begin(), probe.toolArgs.end());
   const std::string& what = probe.what;
+  if (scratchDir.empty()) {
+    return readinessResult(ReadinessCause::UNVERIFIED,
+                           what + ": the check has no temporary directory for the probe "
+                                  "tracer's output, so it cannot see the tracer attach; only "
+                                  "the run can show whether it attaches",
+                           "Point TMPDIR at a writable directory, or make /tmp writable.");
+  }
+  const std::string OUT_PATH = scratchDir + "/attach.out";
+  const std::string ERR_PATH = scratchDir + "/attach.err";
 
   OwnedHelper helper(
       route.stopPolicy(2000, 1000, 1000, std::make_shared<const ReadinessContext>(ctx)));
   const auto STARTED_AT = std::chrono::steady_clock::now();
-  const HelperStart START = helper.start(
-      argv, "", scratchDir.empty() ? "" : scratchDir + "/attach.err", probe.graceMs, &ctx);
+  const HelperStart START = helper.start(argv, OUT_PATH, ERR_PATH, probe.graceMs, &ctx);
   if (!START.started) {
     return readinessResult(ReadinessCause::UNUSABLE, what + ": " + START.errorTail,
                            "Check that " + argv.front() + " can be executed.");
@@ -264,13 +318,19 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
     return classifyAttachFailure(route, what, probe.commandLine, START.errorTail, ctx,
                                  probe.runCommand);
   }
+  // A busy machine can keep bpftrace compiling or attaching past the grace;
+  // a SIGINT then ends it before it has shown anything, so the stop waits for
+  // the attach line, or the tracer's own end.
+  const bool ATTACHED = waitForAttachLine(
+      helper, OUT_PATH, STARTED_AT + std::chrono::milliseconds(probe.attachWaitMs));
+  const auto STOPPING_AT = std::chrono::steady_clock::now();
   const HelperStopResult STOP = helper.stop();
   std::string lingering;
   if (STOP.stillAlive && probe.selfExitMs > 0) {
     // The stop could not end it; its own self-exit will. Wait for that,
     // bounded, and reap it, so the probe does not outlive the check.
-    const auto UNTIL = STARTED_AT + std::chrono::milliseconds(probe.graceMs + probe.selfExitMs +
-                                                              PROBE_SELF_EXIT_SLACK_MS);
+    const auto UNTIL =
+        STOPPING_AT + std::chrono::milliseconds(probe.selfExitMs + PROBE_SELF_EXIT_SLACK_MS);
     while (helper.running() && std::chrono::steady_clock::now() < UNTIL) {
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
@@ -304,18 +364,41 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
                                " did not stop on SIGINT, SIGTERM or SIGKILL" + lingering,
                            "Stop it by hand, then check the bpftrace build.");
   }
-  if (STOP.wasRunning && STOP.stoppedBy != SIGINT && STOP.stoppedBy != 0) {
+  // How the tracer ended decides, not the signal it ended after: one stopped
+  // by SIGINT exits with status 0 and nothing on stderr (bpftrace 0.14.0,
+  // 0.20.2 and 0.23.2 alike). One that ended before the stop, or with an
+  // error after it, reads as one that ended at its start, so the result does
+  // not depend on how long a busy machine kept it starting.
+  const std::string ERR = fileText(ERR_PATH);
+  if (!STOP.wasRunning || STOP.stoppedBy == 0) {
+    return classifyAttachFailure(route, what, probe.commandLine, ERR, ctx, probe.runCommand);
+  }
+  const bool CLEAN = WIFEXITED(STOP.waitStatus) && WEXITSTATUS(STOP.waitStatus) == 0;
+  if (!CLEAN && saysSomething(ERR)) {
+    return classifyAttachFailure(route, what, probe.commandLine, ERR, ctx, probe.runCommand);
+  }
+  if (!ATTACHED) {
+    return readinessResult(ReadinessCause::UNVERIFIED,
+                           what + ": the probe tracer had not attached " +
+                               std::to_string(probe.attachWaitMs) +
+                               " ms after its start, and the check stopped it; only the run can "
+                               "show whether it attaches",
+                           "bpftrace starts slowly on a busy machine: check again when it is "
+                           "idle.");
+  }
+  if (!CLEAN && STOP.stoppedBy == SIGINT) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           what + ": the probe tracer " + endedWith(STOP.waitStatus) +
+                               " after SIGINT, with nothing on its stderr; a tracer stopped by "
+                               "SIGINT exits with status 0",
+                           "Run the script by hand with " + route.bpftrace + " to see why.");
+  }
+  if (STOP.stoppedBy != SIGINT) {
     return readinessResult(ReadinessCause::CAVEAT,
                            "the probe tracer ignored SIGINT and stopped on " +
                                std::string{signalName(STOP.stoppedBy)} +
                                "; the run's output may be incomplete",
                            "bpftrace prints its maps on SIGINT; check that this build handles it.");
-  }
-  if (!STOP.wasRunning && !(WIFEXITED(STOP.waitStatus) && WEXITSTATUS(STOP.waitStatus) == 0)) {
-    std::ifstream err(scratchDir + "/attach.err");
-    std::stringstream text;
-    text << err.rdbuf();
-    return classifyAttachFailure(route, what, probe.commandLine, text.str(), ctx, probe.runCommand);
   }
   return std::nullopt;
 }
@@ -1351,10 +1434,10 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
   }
 
   // Run a copy of each selected script, with the capture window the run
-  // appends, through the route for a second, and stop it with the run's first
-  // stop signal. The copy also exits by itself, and it lives in a private
-  // directory: the run's own copy goes in a capture folder that does not
-  // exist before the run.
+  // appends, through the route until it has attached, a second at least, and
+  // stop it with the run's first stop signal. The copy also prints its attach
+  // line and exits by itself, and it lives in a private directory: the run's
+  // own copy goes in a capture folder that does not exist before the run.
   const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const ProbeScratch SCRATCH(ctx);
   std::optional<ReadinessResult> caveat;
@@ -1370,6 +1453,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     // The window the run appends, bound to no thread: the probe copy never arms.
     copy += "\n" +
             bpftrace_tool::captureWindowProgram(WINDOW_LABEL, static_cast<long>(ctx.self()), 0, 0);
+    copy += "\n" + bpftrace_tool::attachLineProgram();
     copy += "\ninterval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
     const std::string COPY_PATH = SCRATCH.write("probe" + std::to_string(i) + ".bt", copy);
     if (COPY_PATH.empty()) {

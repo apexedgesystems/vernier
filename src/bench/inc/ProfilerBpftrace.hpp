@@ -103,6 +103,18 @@ std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
 std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
                                                const ReadinessContext& ctx);
 
+/** @brief The line a probe prints once bpftrace has attached it (attachLineProgram()). */
+inline constexpr const char* PROBE_ATTACH_LINE = "vernier probe attached";
+
+/**
+ * @brief The program a probe adds so that the check sees it attach: every
+ * 100 ms it prints PROBE_ATTACH_LINE. bpftrace prints what its programs emit
+ * only once it has attached every probe (see the capture window below), so
+ * the line shows that the probe has attached and reads its output. Run the
+ * probe with -B none, so the line reaches the output as it is printed.
+ */
+std::string attachLineProgram();
+
 /** @brief One attach probe: what runs, how reports name it, and how it relates to the run. */
 struct AttachProbe {
   std::vector<std::string> toolArgs; ///< The arguments after bpftrace.
@@ -114,8 +126,9 @@ struct AttachProbe {
    * refusal of the probe is then unverified.
    */
   std::string runCommand;
-  int graceMs = 1000; ///< How long the probe runs before its stop.
-  int selfExitMs = 0; ///< When the probe's own script ends it after its start; 0: never.
+  int graceMs = 1000;      ///< How long the probe runs before its stop, at least.
+  int attachWaitMs = 5000; ///< How long after its start the stop waits for its attach line.
+  int selfExitMs = 0;      ///< When the probe's own script ends it after its attach; 0: never.
 };
 
 /** @brief How long past its self-exit a probe whose stop failed is waited for. */
@@ -124,17 +137,30 @@ inline constexpr int PROBE_SELF_EXIT_SLACK_MS = 10000;
 /**
  * @brief Run a probe through the route and stop it with the run's first stop signal.
  *
- * Runs route.command() + probe.toolArgs as an owned helper, waits the
- * grace, and stops it with SIGINT through the route (then SIGTERM and
- * SIGKILL if needed). A probe the stop could not end (every signal refused
- * or ignored) ends by its own self-exit: the call waits for that, up to the
- * grace plus selfExitMs plus PROBE_SELF_EXIT_SLACK_MS after the start, and
- * reaps it, so the probe does not outlive the call. Only a probe that
- * outlives even that bound is left, and reported.
- * @return nullopt when it stayed running for the grace and stopped on
- *         SIGINT; otherwise the Error (refused, unsupported, denied,
- *         unusable), or the Warning (it ignored SIGINT, or sudo refused a
- *         probe command that differs from the run's).
+ * Runs route.command() + probe.toolArgs as an owned helper, its output and
+ * error output in files in @p scratchDir. The probe's program must carry
+ * attachLineProgram(). The call waits the grace, then until the probe prints
+ * PROBE_ATTACH_LINE, up to attachWaitMs after its start, and stops it with
+ * SIGINT through the route (then SIGTERM and SIGKILL if needed). bpftrace
+ * takes SIGINT as a stop only once it reads its output: a SIGINT before then
+ * ends a bpftrace that has not set its handler yet, makes 0.23.2 abandon its
+ * attach, or goes unnoticed by 0.14.0 until output arrives.
+ *
+ * How the probe ended decides, not the signal it ended after: one stopped
+ * by SIGINT exits with status 0 and nothing on stderr (0.14.0, 0.20.2 and
+ * 0.23.2). A probe that ended before its stop, or with an error after it, is
+ * read from its stderr as one that exited at its start
+ * (classifyAttachFailure()). A probe the stop could not end (every signal
+ * refused or ignored) ends by its own self-exit: the call waits for that, up
+ * to selfExitMs plus PROBE_SELF_EXIT_SLACK_MS after the stop began, and reaps
+ * it, so the probe does not outlive the call. Only a probe that outlives even
+ * that bound is left, and reported.
+ * @return nullopt when it attached and stopped on SIGINT with status 0;
+ *         otherwise the Error (refused, unsupported, denied, unusable), or
+ *         the Warning (it ignored SIGINT; it had not attached by the bound,
+ *         or @p scratchDir is empty, so only the run can show whether it
+ *         attaches; or sudo refused a probe command that differs from the
+ *         run's).
  */
 std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const AttachProbe& probe,
                                            const ReadinessContext& ctx,

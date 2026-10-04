@@ -577,7 +577,9 @@ elseif (CASE STREQUAL "OffcpuCurrentUserRun")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
   count_of(_launches "${_text}" "bpftrace -e ")
-  expect_eq("${_launches}" "3" "offcpu attaches (the probe and two launches)")
+  expect_eq("${_launches}" "2" "offcpu launches, one per case")
+  count_of(_probes "${_text}" "bpftrace -B none -e ")
+  expect_eq("${_probes}" "1" "offcpu's readiness probe")
   count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
   expect_eq("${_written}" "2" "stacks written, once per case")
   if (NOT EXISTS "${WORK_DIR}/ReadinessFixture.First.offcpu/offcpu.err.txt")
@@ -595,7 +597,7 @@ elseif (CASE STREQUAL "OffcpuRunAllowedProbeRefused")
   expect_eq("${row_STATUS}" "warn" "selected status")
   expect_has(
     "${row_MESSAGE}"
-    "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -e <the off-CPU script with a 5 s self-exit> "
+    "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -B none -e <the off-CPU script with an attach line and a 5 s self-exit> "
     "selected message"
   )
   run(run --profile offcpu ${_quick})

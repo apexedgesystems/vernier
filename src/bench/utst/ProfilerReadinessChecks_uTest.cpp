@@ -74,6 +74,10 @@ const std::string UNSUPPORTED_PROBE_HINT =
     "The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not "
     "mounted: mount -t tracefs tracefs /sys/kernel/tracing.";
 
+/** @brief The program every probe carries so that the check sees it attach. */
+const std::string ATTACH_LINE_PROGRAM =
+    R"BT(interval:ms:100 { printf("vernier probe attached\n"); })BT";
+
 /** @brief A request for @p backend with @p scripts, as the doctor's selected row asks it. */
 ReadinessRequest requestFor(const std::string& backend, std::vector<std::string> scripts = {}) {
   ReadinessRequest request;
@@ -101,31 +105,35 @@ bool gone(pid_t pid) {
   return ::kill(pid, 0) != 0 && errno == ESRCH;
 }
 
-/** @brief One logged `-e <program> <target>` invocation. */
+/** @brief One logged `[<options>] -e <program> <target>` invocation. */
 struct InlineCall {
+  std::string options; ///< What comes before -e ("-B none "), if anything.
   std::string program;
   pid_t target = -1;
   pid_t pid = -1; ///< The fake's pid, where the log line records it.
 };
 
 /**
- * @brief The `<prefix> -e <program> <target>[ pid=<n>]` invocations the log
- * holds, in order. The program spans lines; the line that closes the entry
- * holds only the target and the pid.
+ * @brief The `<prefix> [<options>] -e <program> <target>[ pid=<n>]`
+ * invocations the log holds, in order. The program spans lines; the line that
+ * closes the entry holds only the target and the pid.
  */
 std::vector<InlineCall> inlineCalls(const FakeToolDir& dir, const std::string& prefix) {
   std::vector<InlineCall> calls;
   std::istringstream in(dir.log());
-  const std::string START = prefix + " -e ";
+  const std::string START = prefix + " ";
   std::string line;
   bool open = false;
   InlineCall call;
   while (std::getline(in, line)) {
     if (!open) {
-      if (line.rfind(START, 0) == 0) {
+      const std::size_t E =
+          line.rfind(START, 0) == 0 ? line.find("-e ", START.size()) : std::string::npos;
+      if (E != std::string::npos) {
         open = true;
         call = InlineCall{};
-        call.program = line.substr(START.size());
+        call.options = line.substr(START.size(), E - START.size());
+        call.program = line.substr(E + 3);
       }
       continue;
     }
@@ -788,6 +796,102 @@ TEST_F(BpfCheckTest, BpftraceAttachErrorsKeepTheirCause) {
   EXPECT_EQ(BROKEN.cause, ReadinessCause::UNUSABLE);
   EXPECT_EQ(BROKEN.report.message, "unusable: script 'probe_script' did not stay attached: fake "
                                    "bpftrace: the program could not be loaded");
+}
+
+/**
+ * @test A probe still compiling when the grace ends (a busy machine) is not
+ * stopped before it has attached or ended: one that then fails with
+ * bpftrace's error reads as the same failure at its start, whether SIGINT
+ * would have ended it (bpftrace sets its handler only once it has compiled)
+ * or it takes no SIGINT (ignored by its parent, as in a background job).
+ */
+TEST_F(BpfCheckTest, BpftraceFailureWhileStartingReadsAsAtTheStart) {
+  const ReadinessResult AT_START = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  ASSERT_EQ(AT_START.cause, ReadinessCause::UNSUPPORTED) << AT_START.report.message;
+  for (const char* INT : {"", "ignore"}) {
+    const ReadinessResult LATE =
+        check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "late-unsupported"}, {"FAKE_INT", INT}}));
+    EXPECT_EQ(LATE.report.status, EnvReport::Status::Error)
+        << "FAKE_INT=" << INT << ": " << LATE.report.message;
+    EXPECT_EQ(LATE.cause, AT_START.cause) << "FAKE_INT=" << INT;
+    EXPECT_EQ(LATE.report.message, AT_START.report.message) << "FAKE_INT=" << INT;
+    EXPECT_EQ(LATE.report.hint, AT_START.report.hint) << "FAKE_INT=" << INT;
+  }
+}
+
+/**
+ * @test A probe that attached, then fails with bpftrace's error when stopped,
+ * reads as that failure at its start: its exit status and stderr decide, not
+ * the signal it ended after.
+ */
+TEST_F(BpfCheckTest, BpftraceErrorAfterTheStopReadsAsAtTheStart) {
+  const ReadinessResult AT_START = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  const ReadinessResult AFTER_STOP = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "int-error"}}));
+  EXPECT_EQ(AFTER_STOP.report.status, EnvReport::Status::Error) << AFTER_STOP.report.message;
+  EXPECT_EQ(AFTER_STOP.cause, AT_START.cause);
+  EXPECT_EQ(AFTER_STOP.report.message, AT_START.report.message);
+  EXPECT_EQ(AFTER_STOP.report.hint, AT_START.report.hint);
+}
+
+/** @test A probe that ends after SIGINT with another status and nothing on stderr is not ready */
+TEST_F(BpfCheckTest, BpftraceSilentFailureAfterTheStopIsNotReady) {
+  const ReadinessResult R = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "silent-status"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error) << R.report.message;
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(R.report.message,
+            "unusable: script 'probe_script': the probe tracer exited with status 3 after SIGINT, "
+            "with nothing on its stderr; a tracer stopped by SIGINT exits with status 0");
+  EXPECT_EQ(R.report.hint, "Run the script by hand with " + bpftrace_ + " to see why.");
+}
+
+/** @test A probe that ends on SIGINT as bpftrace does, status 0 and nothing on stderr, is ready */
+TEST_F(BpfCheckTest, BpftraceCleanStopIsReady) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  EXPECT_EQ(R.cause, ReadinessCause::READY);
+}
+
+/**
+ * @test A good probe that takes past the grace to attach (a busy machine) is
+ * stopped only once it prints its attach line, and is ready.
+ */
+TEST_F(BpfCheckTest, BpftraceSlowAttachIsStoppedOnceAttached) {
+  const Watched W =
+      checkWatched("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "slow-attach"}, {"FAKE_ATTACH_S", "2"}}),
+                   std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.report.status, EnvReport::Status::Ok) << W.result.report.message;
+  EXPECT_EQ(W.result.cause, ReadinessCause::READY);
+  EXPECT_GE(W.elapsed, std::chrono::milliseconds(2000)) << "stopped before its attach line";
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the check";
+    endIfLeft(PID);
+  }
+}
+
+/**
+ * @test A probe that has not attached by the bound is stopped and reported
+ * unverified: not ready, since the check did not see it attach, and not
+ * refused, since only the run can show whether it does.
+ */
+TEST_F(BpfCheckTest, BpftraceProbeStillStartingIsUnverified) {
+  const Watched W = checkWatched(
+      "bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "slow-attach"}, {"FAKE_ATTACH_S", "30"}}),
+      std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.cause, ReadinessCause::UNVERIFIED) << W.result.report.message;
+  EXPECT_TRUE(W.result.collectionReady());
+  EXPECT_EQ(W.result.report.message,
+            "unverified: script 'probe_script': the probe tracer had not attached 5000 ms after "
+            "its start, and the check stopped it; only the run can show whether it attaches");
+  EXPECT_EQ(W.result.report.hint,
+            "bpftrace starts slowly on a busy machine: check again when it is idle.");
+  EXPECT_GE(W.elapsed, std::chrono::milliseconds(5000));
+  EXPECT_LT(W.elapsed, std::chrono::milliseconds(5000 + 4000));
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the check";
+    endIfLeft(PID);
+  }
 }
 
 /** @test A missing, non-executable or broken bpftrace, or a missing script, is an error. */
@@ -1855,7 +1959,9 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
   ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
-  EXPECT_NE(CALLS.front().program.find("\ninterval:s:5 { exit(); }"), std::string::npos)
+  EXPECT_EQ(CALLS.front().options, "-B none ");
+  EXPECT_NE(CALLS.front().program.find("\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }"),
+            std::string::npos)
       << CALLS.front().program;
   EXPECT_EQ(CALLS.front().target, ::getpid());
   EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
@@ -1887,8 +1993,9 @@ TEST_F(BpfCheckTest, OffCpuSudoRoute) {
   EXPECT_TRUE(REFUSED.collectionReady());
   EXPECT_EQ(REFUSED.report.message,
             "unverified: sudo -n refused the probe command " + bpftrace_ +
-                " -e <the off-CPU script with a 5 s self-exit> " + std::to_string(::getpid()) +
-                ": sudo: a password is required; the run executes " + bpftrace_ +
+                " -B none -e <the off-CPU script with an attach line and a 5 s self-exit> " +
+                std::to_string(::getpid()) + ": sudo: a password is required; the run executes " +
+                bpftrace_ +
                 " -e <the off-CPU script> <benchmark pid> instead, which only the run can try");
 }
 
@@ -1912,6 +2019,62 @@ TEST_F(BpfCheckTest, OffCpuAttachFailureHintsHoldForIt) {
 }
 
 /**
+ * @test The off-CPU check shares the probe: a tracer still compiling when its
+ * longer grace ends, which then fails with bpftrace's error, reads as the same
+ * failure at its start, whether SIGINT would have ended it or it takes none.
+ */
+TEST_F(BpfCheckTest, OffCpuFailureWhileStartingReadsAsAtTheStart) {
+  const ReadinessResult AT_START = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "unsupported"}}));
+  ASSERT_EQ(AT_START.cause, ReadinessCause::UNSUPPORTED) << AT_START.report.message;
+  for (const char* INT : {"", "ignore"}) {
+    const ReadinessResult LATE = check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "late-unsupported"},
+                                                      {"FAKE_FAIL_AFTER_S", "2"},
+                                                      {"FAKE_INT", INT}}));
+    EXPECT_EQ(LATE.report.status, EnvReport::Status::Error)
+        << "FAKE_INT=" << INT << ": " << LATE.report.message;
+    EXPECT_EQ(LATE.cause, AT_START.cause) << "FAKE_INT=" << INT;
+    EXPECT_EQ(LATE.report.message, AT_START.report.message) << "FAKE_INT=" << INT;
+    EXPECT_EQ(LATE.report.hint, AT_START.report.hint) << "FAKE_INT=" << INT;
+  }
+}
+
+/**
+ * @test Without a temporary directory for the probe's output the check cannot
+ * see the probe attach: it starts no tracer and reports the request
+ * unverified, still runnable.
+ */
+TEST_F(BpfCheckTest, OffCpuWithoutATemporaryDirectoryIsUnverified) {
+  const std::string ABSENT = dir_.path() + "/absent";
+  const ReadinessResult R = check("offcpu", ctx({{"TMPDIR", ABSENT}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  EXPECT_TRUE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "unverified: the off-CPU script: the check has no temporary directory for the probe "
+            "tracer's output, so it cannot see the tracer attach; only the run can show whether "
+            "it attaches");
+  EXPECT_EQ(R.report.hint, "Point TMPDIR at a writable directory, or make /tmp writable.");
+  EXPECT_TRUE(tracerPids(dir_).empty()) << "no tracer may start:\n" << dir_.log();
+}
+
+/**
+ * @test The off-CPU probe, too, is stopped only once it prints its attach
+ * line: a good one that takes past the grace to attach is ready.
+ */
+TEST_F(BpfCheckTest, OffCpuSlowAttachIsStoppedOnceAttached) {
+  const Watched W =
+      checkWatched("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "slow-attach"}, {"FAKE_ATTACH_S", "2.5"}}),
+                   std::chrono::seconds(30));
+  ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
+  EXPECT_EQ(W.result.report.status, EnvReport::Status::Ok) << W.result.report.message;
+  EXPECT_GE(W.elapsed, std::chrono::milliseconds(2500)) << "stopped before its attach line";
+  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(CALLS.front().pid) || exited(CALLS.front().pid))
+      << "the probe tracer outlived the check";
+  endIfLeft(CALLS.front().pid);
+}
+
+/**
  * @test The probe is the launch's own script with the self-exit appended,
  * through the same route and on the same process; the run's has no interval.
  */
@@ -1926,8 +2089,11 @@ TEST_F(BpfCheckTest, OffCpuProbeIsTheRunsScriptWithASelfExit) {
       << ERR;
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
   ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
-  EXPECT_EQ(CALLS[0].program, CALLS[1].program + "\ninterval:s:5 { exit(); }");
+  EXPECT_EQ(CALLS[0].program,
+            CALLS[1].program + "\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }");
   EXPECT_EQ(CALLS[1].program.find("interval"), std::string::npos) << CALLS[1].program;
+  EXPECT_EQ(CALLS[0].options, "-B none ");
+  EXPECT_EQ(CALLS[1].options, "");
   EXPECT_EQ(CALLS[0].target, ::getpid());
   EXPECT_EQ(CALLS[1].target, ::getpid());
 }
@@ -2055,9 +2221,10 @@ TEST_F(BpfCheckTest, OffCpuSudoItselfFailingIsDenied) {
                           "running as root.";
   const ReadinessResult R = check("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_FAIL", NNP}}));
   EXPECT_EQ(R.cause, ReadinessCause::DENIED);
-  EXPECT_EQ(R.report.message, "denied: sudo -n failed for " + bpftrace_ +
-                                  " -e <the off-CPU script with a 5 s self-exit> " +
-                                  std::to_string(::getpid()) + ": " + NNP);
+  EXPECT_EQ(R.report.message,
+            "denied: sudo -n failed for " + bpftrace_ +
+                " -B none -e <the off-CPU script with an attach line and a 5 s self-exit> " +
+                std::to_string(::getpid()) + ": " + NNP);
 }
 
 /** @test offcpu denied as the current user says how to get access. */
