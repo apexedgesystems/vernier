@@ -17,6 +17,8 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #include <cstdint>
 #include <cstdio>
 
@@ -76,8 +78,8 @@ protected:
     global_.minLevel = "INFO";
     setGlobalPerfConfig(&global_);
 
-    path_ =
-        "/tmp/vernier_listener_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) + ".csv";
+    path_ = "/tmp/vernier_listener_" + std::to_string(::getpid()) + "_" +
+            ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".csv";
     (void)PerfRegistry::instance().take();
   }
 
@@ -185,8 +187,8 @@ protected:
   std::string path_;
 
   void SetUp() override {
-    path_ = "/tmp/vernier_gpu_listener_" + std::to_string(reinterpret_cast<std::uintptr_t>(this)) +
-            ".csv";
+    path_ = "/tmp/vernier_gpu_listener_" + std::to_string(::getpid()) + "_" +
+            ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".csv";
     (void)PerfRegistry::instance().take();
   }
 
