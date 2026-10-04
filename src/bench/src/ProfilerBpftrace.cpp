@@ -1400,12 +1400,17 @@ private:
 ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
   auto plan = std::make_shared<BpftracePlan>();
   plan->context = std::make_shared<const ReadinessContext>(ctx);
-  const std::string ENABLE = ctx.get("PERF_BPF").value_or("");
-  std::string enable;
-  for (const char CH : ENABLE) {
-    enable += static_cast<char>(std::tolower(static_cast<unsigned char>(CH)));
+  // PERF_BPF turns tracing on without --profile bpftrace, for a profiler made
+  // directly; read with the grammar of every boolean setting.
+  const std::optional<std::string> ENABLE_RAW = ctx.get("PERF_BPF");
+  const EnvBool ENABLE = parseEnvBool(ENABLE_RAW);
+  if (ENABLE == EnvBool::INVALID) {
+    return readinessResult(ReadinessCause::CONFIGURATION,
+                           "PERF_BPF='" + *ENABLE_RAW + "' is not a boolean",
+                           "Use 1, true, yes or on to trace with bpftrace without --profile "
+                           "bpftrace; 0, false, no, off or an empty value to trace only with it.");
   }
-  plan->envEnabled = enable == "1" || enable == "true";
+  plan->envEnabled = ENABLE == EnvBool::TRUE_VALUE;
   const std::string SCRIPTS_DIR = scriptsDirectory(ctx);
   plan->outputDir = ctx.get("PERF_BPF_OUT").value_or("");
   plan->format = ctx.get("PERF_BPF_FMT").value_or("text");

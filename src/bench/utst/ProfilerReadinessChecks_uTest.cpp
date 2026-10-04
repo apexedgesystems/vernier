@@ -731,6 +731,30 @@ TEST_F(BpfCheckTest, BpftraceSudoRouteNeedsItsHelpers) {
   EXPECT_TRUE(dir_.logLines("bpftrace").empty()) << "nothing runs before the route is complete";
 }
 
+/**
+ * @test PERF_BPF is read with the grammar of every boolean setting: yes or On
+ * turn tracing on without --profile bpftrace, off leaves it off, and any other
+ * value is a configuration error that launches nothing.
+ */
+TEST_F(BpfCheckTest, BpftracePerfBpfIsABooleanSetting) {
+  for (const auto& [VALUE, ON] :
+       std::map<std::string, bool>{{"yes", true}, {"On", true}, {"off", false}}) {
+    const ReadinessResult R = check("bpftrace", ctx({{"PERF_BPF", VALUE}}));
+    ASSERT_TRUE(R.collectionReady()) << "PERF_BPF='" << VALUE << "': " << R.report.message;
+    const auto PLAN = std::dynamic_pointer_cast<const BpftracePlan>(R.plan);
+    ASSERT_NE(PLAN, nullptr);
+    EXPECT_EQ(PLAN->envEnabled, ON) << "PERF_BPF='" << VALUE << "'";
+  }
+  const std::string LOG = dir_.log();
+  const ReadinessResult INVALID = check("bpftrace", ctx({{"PERF_BPF", "maybe"}}));
+  EXPECT_EQ(INVALID.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_EQ(INVALID.report.message, "configuration: PERF_BPF='maybe' is not a boolean");
+  EXPECT_EQ(INVALID.report.hint,
+            "Use 1, true, yes or on to trace with bpftrace without --profile bpftrace; 0, false, "
+            "no, off or an empty value to trace only with it.");
+  EXPECT_EQ(dir_.log(), LOG) << "a configuration error must launch nothing";
+}
+
 /** @test An invalid setting is a configuration error and launches nothing. */
 TEST_F(BpfCheckTest, BpftraceInvalidSettingLaunchesNothing) {
   installSudoAndKill();
