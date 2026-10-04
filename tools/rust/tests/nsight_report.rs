@@ -759,6 +759,54 @@ fn output_that_is_a_report_is_refused() {
     assert_eq!(fs::read_to_string(report).unwrap(), "fake report");
 }
 
+/// @test An output path that is a symbolic link to one of the reports is that
+/// report, and is refused before any tool runs; the report is left as it was.
+#[test]
+fn output_symlinked_to_a_report_is_refused() {
+    let case = Case::new();
+    let report = case.report("run/profile.nsys-rep");
+    std::os::unix::fs::symlink(&report, case.path("work").join("out.csv")).unwrap();
+
+    let run = case.parse(&["run", "--csv", "out.csv"]);
+
+    assert_eq!(run.status.code(), Some(1));
+    assert_eq!(
+        run.stderr,
+        "Error: invalid arguments: --csv out.csv is one of the reports to read; \
+         name another file\n"
+    );
+    assert!(case.calls().is_empty(), "{:?}", case.calls());
+    assert_eq!(fs::read_to_string(report).unwrap(), "fake report");
+}
+
+/// @test An output path that is a hard link to one of the reports is that
+/// report, and is refused before any tool runs, whether the report is named
+/// or found in a directory; the report is left as it was.
+#[test]
+fn output_hard_linked_to_a_report_is_refused() {
+    for input in ["run/profile.ncu-rep", "run"] {
+        let case = Case::new();
+        let report = case.report("run/profile.ncu-rep");
+        fs::hard_link(&report, case.path("work").join("out.csv")).unwrap();
+
+        let run = case.parse(&[input, "--csv", "out.csv"]);
+
+        assert_eq!(run.status.code(), Some(1), "{input}: {}", run.stderr);
+        assert_eq!(
+            run.stderr,
+            "Error: invalid arguments: --csv out.csv is one of the reports to read; \
+             name another file\n",
+            "{input}"
+        );
+        assert!(case.calls().is_empty(), "{input}: {:?}", case.calls());
+        assert_eq!(
+            fs::read_to_string(&report).unwrap(),
+            "fake report",
+            "{input}"
+        );
+    }
+}
+
 /// @test A CSV that cannot be written still leaves every input's line printed
 /// first, then the write's own error, and the run fails.
 #[test]

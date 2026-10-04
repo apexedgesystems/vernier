@@ -6,7 +6,8 @@
 //! entries are searched; a symbolic link to a directory is not followed. Paths
 //! are shown and handed to the tools as given, without `.` components or a
 //! trailing `/`. All the inputs are resolved before any tool runs, so an
-//! output path that is one of the reports is refused before anything is read.
+//! output that is one of the reports, by its own path, a symbolic link or a
+//! hard link, is refused before anything is read or written.
 
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -94,6 +95,21 @@ fn normalized(path: &Path) -> PathBuf {
     } else {
         clean
     }
+}
+
+/// What makes @p path the file it is, through any link: its device and
+/// inode, which a hard link shares and a symbolic link leads to. `None` when
+/// there is no such file.
+#[cfg(unix)]
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    fs::metadata(path).ok().map(|meta| (meta.dev(), meta.ino()))
+}
+
+/// Elsewhere than on Unix, its canonical path.
+#[cfg(not(unix))]
+fn file_id(path: &Path) -> Option<PathBuf> {
+    fs::canonicalize(path).ok()
 }
 
 /// The tool that reads @p path, by its name's ending.
@@ -504,10 +520,12 @@ fn write_csv(rows: &[Row], path: &Path) -> io::Result<()> {
 pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, Error> {
     let interrupts = Interrupts::watch_signals();
     let resolved: Vec<Input> = inputs.iter().map(|input| resolve(input)).collect();
-    if let Ok(target) = fs::canonicalize(csv) {
+    // Before anything is read or written: a CSV written over one of the
+    // reports would destroy it.
+    if let Some(target) = file_id(csv) {
         let reports = resolved.iter().flat_map(|input| &input.reports);
         for (report, _) in reports {
-            if fs::canonicalize(report).is_ok_and(|r| r == target) {
+            if file_id(report).as_ref() == Some(&target) {
                 return Err(Error::InvalidArgs(format!(
                     "--csv {} is one of the reports to read; name another file",
                     normalized(csv).display()
@@ -741,6 +759,30 @@ mod tests {
         assert!(
             input.problems[0].starts_with(&format!("cannot read directory {}: ", locked.display()))
         );
+    }
+
+    /// @test A file's identity is the same through its own path, another
+    /// path to it, a symbolic link and a hard link, and differs for a copy; a
+    /// missing path has none.
+    #[cfg(unix)]
+    #[test]
+    fn file_identity_follows_links() {
+        let dir = tempfile::tempdir().unwrap();
+        let report = dir.path().join("r.ncu-rep");
+        fs::write(&report, "report").unwrap();
+        let hard = dir.path().join("hard.csv");
+        fs::hard_link(&report, &hard).unwrap();
+        let soft = dir.path().join("soft.csv");
+        std::os::unix::fs::symlink(&report, &soft).unwrap();
+        let copy = dir.path().join("copy.csv");
+        fs::copy(&report, &copy).unwrap();
+        let id = file_id(&report);
+        assert!(id.is_some());
+        assert_eq!(file_id(&dir.path().join(".").join("r.ncu-rep")), id);
+        assert_eq!(file_id(&soft), id);
+        assert_eq!(file_id(&hard), id);
+        assert_ne!(file_id(&copy), id);
+        assert_eq!(file_id(&dir.path().join("missing.csv")), None);
     }
 
     /// @test The private directory is this user's alone and goes when removed.

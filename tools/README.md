@@ -297,8 +297,9 @@ output 2 s after it ended, an input is not a report or is empty, or a directory
 holds none. Each failure is an error line on stderr
 naming the input and its cause, and the rows of the reports that were read are
 written all the same. A summary with no data, such as the kernel summary of a
-report with no kernel, is a warning. A `--csv` that names one of the reports is
-refused before anything is read. Each `nsys` or `ncu` command runs in a process
+report with no kernel, is a warning. A `--csv` that is one of the reports, by
+its own path, a symbolic link or a hard link, is refused before anything is
+read. Each `nsys` or `ncu` command runs in a process
 group of its own, and what is left of that group is killed when the command
 ends, however it ends: a process the tool started outlives it only by leaving
 the group. SIGHUP, SIGINT or SIGTERM stops the extraction: the tool's group is
