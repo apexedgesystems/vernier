@@ -364,21 +364,26 @@ set_tests_properties(
 )
 
 # ------------------------------------------------------------------------------
-# GPU Demo Tests and Effect Checks Run by CTest (2)
+# GPU Demo Tests and Effect Checks Run by CTest (3)
 # ------------------------------------------------------------------------------
-# Demo 03's transpose kernels are held to a CPU transpose's answers, and the
-# shared-memory bytes the demo hands the harness to the bytes the kernels
-# declare, by TestDemoTranspose, which compiles the demo's kernels itself and
-# skips without a device. TestDemoBankConflicts runs the demo binary, whose
-# path it is given, under Nsight Compute and reads the counters walkthrough 12
-# reads: a check that counts, so load does not change its answer. It carries
-# the ncu label beside demo; it skips where ncu or a device is absent, where
-# ncu refuses the counters to this user (administrators only on Jetson: run it
-# as root there) and where ncu has no value for a metric, quoting ncu; and its
-# skip expression names its own case, so a child run's GoogleTest lines cannot
-# turn a failure into a skip. Both are registered only where the GPU demos are
-# built.
+# Demo 03's tests. TestDemoBankConflictsReport holds the bank-conflict check's
+# reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
+# GPU, so every configuration runs it, under the check's labels.
+# TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
+# check also ncu) and are built where the GPU demos are. The check's skip
+# expression names its own case, so the demo's GoogleTest lines in its failure
+# output cannot turn a failure into a skip.
 # ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoBankConflictsReport
+  SOURCES
+  gpu/utst/03_SharedMemoryOpt_BankConflictsReport_uTest.cpp
+  LABELS
+  demo
+  ncu
+)
 
 if (TARGET bench_cuda)
   vernier_add_gtest(
