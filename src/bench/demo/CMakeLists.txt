@@ -360,9 +360,13 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
   add_dependencies(TestDemoComputeSanitizer BenchDemo_Gpu_04_ComputeSanitizerProfiler)
   foreach (
     _sanitizer_check
-    ComputeSanitizer.FindsTheUnguardedRead ComputeSanitizer.KernelReportsNothing
-    ComputeSanitizer.PlainRunIsNotWrapped ComputeSanitizer.PlainRunHintShape
-    ComputeSanitizer.HintRunsOnTheFirstRun ComputeSanitizer.UnguardedSkipsOutsideTheTool
+    ComputeSanitizer.FindsTheUnguardedRead
+    ComputeSanitizer.KernelReportsNothing
+    ComputeSanitizer.PlainRunIsNotWrapped
+    ComputeSanitizer.PlainRunHintShape
+    ComputeSanitizer.HintRunsOnTheFirstRun
+    ComputeSanitizer.UnguardedSkipsOutsideTheTool
+    ComputeSanitizer.NamedToolHintRunsThatTool
   )
     string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
     set_tests_properties(

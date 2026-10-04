@@ -480,7 +480,10 @@ carry elsewhere.
 
   The by-hand command makes the folder before the tool opens its log; run
   as printed, it writes the log where it says. A `--log-file` pointed into
-  a folder that does not exist produces no report anywhere.
+  a folder that does not exist produces no report anywhere. With
+  `--profile-args racecheck`, `synccheck` or `initcheck`, the backend prints
+  the by-hand command alone, with that tool: the wrap `bench run` builds
+  runs memcheck.
 
 - **The report names no line, only `saxpyUnguarded(...)+0x...`.** The
   build has no device line information for that source; this tree compiles
@@ -551,11 +554,15 @@ Three things check what this page shows, and all fail loudly:
   `ComputeSanitizer.KernelReportsNothing` fails on any access or error for
   the shared kernel. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
   the plain run to its skip, `ComputeSanitizer.PlainRunIsNotWrapped` the
-  backend to reporting no wrap where there is none, and
+  backend to reporting no wrap where there is none,
   `ComputeSanitizer.PlainRunHintShape` and `ComputeSanitizer.HintRunsOnTheFirstRun`
   the printed by-hand command to its shape and to writing its log where it
-  says, run as printed where its folder does not exist. Six more tests hold
-  the report reading to real report text from both tool versions. They are
+  says, run as printed where its folder does not exist, and
+  `ComputeSanitizer.NamedToolHintRunsThatTool` the hint for racecheck,
+  synccheck and initcheck to the by-hand command alone, which, run as
+  printed against a stand-in that records its arguments, starts
+  compute-sanitizer with the tool named. Six more tests hold the report
+  reading to real report text from both tool versions. They are
   registered with `ctest` under the `demo` and `compute-sanitizer` labels
   wherever the GPU demos are built, and skip only where the tool is not on
   `PATH`, where the CUDA runtime sees no device, or in a build with the

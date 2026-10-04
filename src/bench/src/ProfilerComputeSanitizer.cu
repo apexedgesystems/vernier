@@ -57,26 +57,28 @@ std::string toolArguments(const std::string& tool) {
   return tool == "memcheck" ? std::string() : " --profile-args " + tool;
 }
 
-// What the backend prints when the process is not under the tool: the two
-// ways to check it, `bench run` first, which makes the folder its wrap logs
-// into, then the tool by hand. The tool opens its log before this program
-// starts and drops it silently when the folder is missing, so the by-hand
-// command makes the folder first.
+// What the backend prints when the process is not under the tool: the ways
+// to check it with the tool it was asked for. `bench run --profile
+// compute-sanitizer` wraps the process with memcheck whatever --profile-args
+// says, so it is offered for memcheck only, first, since it makes the folder
+// its wrap logs into; any tool runs by hand. The tool opens its log before
+// this program starts and drops it silently when the folder is missing, so
+// the by-hand command makes the folder first.
 std::string notWrappedHint(const std::string& tool, const std::string& artifactDir) {
-  const std::string ARGS = toolArguments(tool);
+  const char* const ROUTES =
+      tool == "memcheck"
+          ? "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer -- [...]\n"
+            "[compute-sanitizer] or by hand, making the folder first (the tool opens its log "
+            "before this program starts):\n"
+          : "[compute-sanitizer] by hand, making the folder first (the tool opens its log before "
+            "this program starts):\n";
   return "\n[compute-sanitizer] not running under compute-sanitizer: this measurement runs "
-         "unchecked. To check it:\n"
-         "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer" +
-         ARGS +
-         " -- [...]\n"
-         "[compute-sanitizer] or by hand, making the folder first (the tool opens its log before "
-         "this program starts):\n"
-         "[compute-sanitizer]   mkdir -p " +
-         artifactDir + " && compute-sanitizer --tool=" + tool +
-         " --log-file=" + escapePercent(artifactDir) +
+         "unchecked. To check it:\n" +
+         std::string(ROUTES) + "[compute-sanitizer]   mkdir -p " + artifactDir +
+         " && compute-sanitizer --tool=" + tool + " --log-file=" + escapePercent(artifactDir) +
          "/sanitizer.log \\\n"
          "[compute-sanitizer]       <this-binary> --profile compute-sanitizer" +
-         ARGS + " [...]\n\n";
+         toolArguments(tool) + " [...]\n\n";
 }
 
 // What the backend prints when the process is under the tool, which reports
