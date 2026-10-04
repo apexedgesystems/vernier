@@ -3,9 +3,11 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** the [`join`](../examples/join/inc/Join.hpp) example's words (see [Shared Workloads](../README.md#5-shared-workloads)), written out as lines and joined by threads, in a workload private to the demo
-**Captured:** 2026-10-03 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; bpftrace 0.23.2 on Linux 6.18
+**Captured:** 2026-10-03 (UTC); the doctor's rows for a probe the kernel lacks
+and for a script that ends itself, and step 6's script with its opening
+comment as it now reads, 2026-10-04 (UTC); written for the Vernier 1.0.4
+release; captured from the development tree at project version 1.0.3, whose
+CLI reported `bench 1.0.3`; bpftrace 0.23.2 on Linux 6.18
 
 ## Overview
 
@@ -565,8 +567,8 @@ of the size each `write()` asks for, `args->count`, the system call's third
 argument as the `sys_enter_write` tracepoint names it:
 
 ```
-// Histogram of write() sizes (bytes) for a specific PID. {{PID}} is replaced
-// by the backend before the run.
+// Histogram of write() sizes (bytes) for a specific PID, which the backend
+// puts in the filters below.
 tracepoint:syscalls:sys_enter_write /pid == {{PID}}/ {
   @write_bytes = hist(args->count);
 }
@@ -800,8 +802,17 @@ decision the run makes before its first test, and runs no test.
   benchmark's exit, as the bundled ones do; the backend stops it when the
   measured repeats end. A script that ends itself before the check stops its
   copy, once the copy has attached and a second after its start at the
-  earliest, is refused before the run instead, as one that ends itself too soon
-  to be checked.
+  earliest, is refused before the run instead; here one whose `interval:ms:250`
+  probe ends it a quarter of a second after it starts, `--bpf ./ends_soon.bt`:
+
+  ```
+    [FAIL] bpftrace   unusable: script './ends_soon.bt': the probe tracer ended by itself with status 0 after 905 ms, before the check stopped it: the check stops a probe once it has attached, 1000 ms after its start at the earliest, and a script that ends itself sooner cannot be checked
+               Make the script run longer: end it only on the traced process's exit (sched_process_exit filtered on tid == {{PID}}), as the bundled scripts do; the backend stops it when the measured repeats end.
+  ```
+
+  The tracer took most of that time to start: with a busy loop on the doctor's
+  core it started later, outlived the check's stop and read `[OK]`, and only
+  the run can then show that it ends by itself.
 
 - **A `[bpftrace]` line says the script printed no data of its own.** The run
   without `--bpf` traces with `write_latency` and `fsync_latency`, and the
