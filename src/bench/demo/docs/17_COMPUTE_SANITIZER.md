@@ -117,9 +117,11 @@ runs both at 1,048,575 elements, one less than 4,096 blocks of 256 cover,
 so the last block has exactly one thread past the end. `ComputeSanitizer.SaxpyKernel`
 times the shared kernel on its own, as walkthrough 10's kernel-only case
 does, and after the measurement holds the first and the last element to the
-scalar applied once per launch, so a kernel that skipped the last element or
-ran past it fails. It is the demo's one CSV row. The unguarded copy has a case
-of its own that measures nothing:
+scalar applied once per launch, so a kernel that missed either one fails.
+Those two values say nothing of memory past the end, where a stray access
+can leave both right: whether the kernel stays inside its buffers is
+memcheck's to check, as steps 2 to 4 show. It is the demo's one CSV row. The
+unguarded copy has a case of its own that measures nothing:
 
 ```cpp
 PERF_GPU_TEST(ComputeSanitizer, SaxpyUnguarded) {

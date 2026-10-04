@@ -109,13 +109,13 @@ private:
 /* ----------------------------- Tests ----------------------------- */
 
 /**
- * @test The shared kernel on its own: what it costs, and that it computes
- *       every element, its guard included.
+ * @test The shared kernel on its own: what it costs, and that every launch
+ *       reaches both ends of the vectors, its guard included.
  *
  * No transfer is declared, so the wall time is the kernel time. After the
  * measurement the first and the last element hold the scalar applied once
- * per launch, so a kernel that skipped the last element, or ran past it,
- * would not pass.
+ * per launch, so a kernel that missed either would not pass. A stray access
+ * past the end can leave both right: staying in bounds is memcheck's to check.
  */
 PERF_GPU_TEST(ComputeSanitizer, SaxpyKernel) {
   UB_PERF_GPU_GUARD(perf);
@@ -140,8 +140,8 @@ PERF_GPU_TEST(ComputeSanitizer, SaxpyKernel) {
   EXPECT_DOUBLE_EQ(RESULT.transferTimeUs, 0.0);
   EXPECT_DOUBLE_EQ(RESULT.totalTimeUs, RESULT.kernelTimeUs);
 
-  // The effect this case checks: every launch computed a*x + y for every
-  // element, to the tolerance single precision leaves after that many adds.
+  // The effect this case checks: every launch computed a*x + y at both ends,
+  // to the tolerance single precision leaves after that many adds.
   std::vector<float> y(N, 0.0F);
   ASSERT_EQ(cudaMemcpy(y.data(), device.y(), BYTES, cudaMemcpyDeviceToHost), cudaSuccess);
   ASSERT_GT(launches, 0U);
