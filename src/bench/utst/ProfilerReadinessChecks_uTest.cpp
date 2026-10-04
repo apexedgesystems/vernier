@@ -359,14 +359,19 @@ protected:
    * bounded by @p armWaitMs and @p disarmWaitMs, keeping what the report held
    * when the measured repeats would have started.
    */
-  WindowRun runWindowed(const ReadinessResult& decision, const std::string& testName,
-                        const std::map<std::string, std::string>& env,
-                        int armWaitMs = vernier::bench::bpftrace_tool::ARM_WAIT_MS,
-                        int disarmWaitMs = vernier::bench::bpftrace_tool::DISARM_WAIT_MS) const {
+  WindowRun runWindowed(
+      const ReadinessResult& decision, const std::string& testName,
+      const std::map<std::string, std::string>& env,
+      int armWaitMs = vernier::bench::bpftrace_tool::ARM_WAIT_MS,
+      int disarmWaitMs = vernier::bench::bpftrace_tool::DISARM_WAIT_MS,
+      std::optional<vernier::bench::bpftrace_tool::PidNamespaceId> pidNamespace = {}) const {
     auto plan = std::make_shared<BpftracePlan>(
         *std::dynamic_pointer_cast<const BpftracePlan>(decision.plan));
     plan->armWaitMs = armWaitMs;
     plan->disarmWaitMs = disarmWaitMs;
+    if (pidNamespace) {
+      plan->pidNamespace = [NS = *pidNamespace] { return NS; };
+    }
     vernier::bench::PerfConfig cfg;
     cfg.profileTool = "bpftrace";
     cfg.artifactRoot = captures();
@@ -1287,30 +1292,42 @@ TEST_F(BpfCheckTest, BpftraceZeroThatTheScriptPrintsIsData) {
 
 /**
  * @test A tracer that never acknowledges its arm is no capture: an Error when
- * the wait ends, naming the PID namespace where this process runs in one
- * other than the host's (a fact of this process, read before the run).
+ * the wait ends. In the host's PID namespace it says that nothing shows the
+ * tracer sees this process; in another (here this process's namespace read as
+ * one, so both branches run on any machine) it names that namespace and says
+ * where to run instead.
  */
 TEST_F(BpfCheckTest, BpftraceTracerThatNeverArmsIsNoCapture) {
+  using vernier::bench::bpftrace_tool::PidNamespaceId;
   const ReadinessResult R = check("bpftrace", ctx());
   ASSERT_TRUE(R.collectionReady()) << R.report.message;
-  const std::string NAMESPACE = vernier::bench::bpftrace_tool::foreignPidNamespace();
-  const WindowRun RUN = runWindowed(R, "Bpf.NoArm", {{"FAKE_WINDOW", "no-arm"}}, 300);
-  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
   const std::string DETAIL =
       "script 'probe_script' did not acknowledge its arm probe within 300 ms";
-  if (NAMESPACE.empty()) {
-    EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
-    EXPECT_EQ(RUN.outcome->report.message,
-              "unusable: " + DETAIL + ", so nothing shows that it sees this process");
-  } else {
-    EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNSUPPORTED);
-    EXPECT_EQ(RUN.outcome->report.message,
-              "unsupported: " + DETAIL + ": this process runs in PID namespace " + NAMESPACE +
-                  ", not the host's, where bpftrace does not see its threads under the ids it "
-                  "knows");
-  }
-  EXPECT_NE(RUN.err.find("[bpftrace] " + RUN.outcome->report.message), std::string::npos)
-      << RUN.err;
+
+  const WindowRun HOST = runWindowed(R, "Bpf.NoArmHost", {{"FAKE_WINDOW", "no-arm"}}, 300,
+                                     vernier::bench::bpftrace_tool::DISARM_WAIT_MS,
+                                     PidNamespaceId{true, 0xEFFFFFFCUL, "pid:[4026531836]"});
+  ASSERT_TRUE(HOST.outcome.has_value()) << HOST.err;
+  EXPECT_EQ(HOST.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(HOST.outcome->report.message,
+            "unusable: " + DETAIL + ", so nothing shows that it sees this process");
+  EXPECT_NE(HOST.err.find("[bpftrace] " + HOST.outcome->report.message), std::string::npos)
+      << HOST.err;
+
+  const WindowRun FOREIGN = runWindowed(R, "Bpf.NoArmForeign", {{"FAKE_WINDOW", "no-arm"}}, 300,
+                                        vernier::bench::bpftrace_tool::DISARM_WAIT_MS,
+                                        PidNamespaceId{true, 4026532999UL, "pid:[4026532999]"});
+  ASSERT_TRUE(FOREIGN.outcome.has_value()) << FOREIGN.err;
+  EXPECT_EQ(FOREIGN.outcome->cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(FOREIGN.outcome->report.message,
+            "unsupported: " + DETAIL +
+                ": this process runs in PID namespace pid:[4026532999], not the host's, where "
+                "bpftrace does not see its threads under the ids it knows");
+  EXPECT_EQ(FOREIGN.outcome->report.hint,
+            "Run the benchmark on the host, or in a container started with --pid=host.");
+  EXPECT_NE(FOREIGN.err.find("[bpftrace] " + FOREIGN.outcome->report.message), std::string::npos)
+      << FOREIGN.err;
+
   for (const pid_t PID : tracerPids(dir_)) {
     EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the failed capture";
     endIfLeft(PID);
@@ -1348,6 +1365,21 @@ TEST_F(BpfCheckTest, BpftraceStopAcknowledgedForAnotherThreadIsTheWrongTarget) {
             "unusable: script 'probe_script' acknowledged its stop for pid " + PID + " thread " +
                 std::to_string(vernier::bench::bpftrace_tool::currentThreadId() + 1) +
                 ", not for this process, pid " + PID + ", and the stopping thread, " + SELF);
+}
+
+/** @test A stop acknowledged for another process, by the right thread id, is the wrong target */
+TEST_F(BpfCheckTest, BpftraceStopAcknowledgedForAnotherProcessIsTheWrongTarget) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const WindowRun RUN = runWindowed(R, "Bpf.WrongStopPid", {{"FAKE_WINDOW", "wrong-disarm-pid"}});
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  EXPECT_EQ(RUN.outcome->cause, ReadinessCause::UNUSABLE);
+  const long PID = static_cast<long>(::getpid());
+  const std::string SELF = std::to_string(vernier::bench::bpftrace_tool::currentThreadId());
+  EXPECT_EQ(RUN.outcome->report.message,
+            "unusable: script 'probe_script' acknowledged its stop for pid " +
+                std::to_string(PID + 1) + " thread " + SELF + ", not for this process, pid " +
+                std::to_string(PID) + ", and the stopping thread, " + SELF);
 }
 
 /** @test A tracer that ends by itself before it acknowledges its arm is a failed start */
@@ -1956,13 +1988,32 @@ TEST(BpfWindowTest, ArmThreadNamesItself) {
   EXPECT_EQ(name, "vernier-arm");
 }
 
-/** @test Only the host's PID namespace, the kernel's first, is not foreign */
+/**
+ * @test Only the host's PID namespace, the kernel's first (inode 0xEFFFFFFC),
+ * is not foreign: any other is named by its link, or by its inode when the
+ * link was not read; one that could not be read at all is not called foreign.
+ */
 TEST(BpfWindowTest, ForeignPidNamespaceOnlyOutsideTheHosts) {
+  using vernier::bench::bpftrace_tool::foreignPidNamespace;
+  using vernier::bench::bpftrace_tool::PidNamespaceId;
+  EXPECT_EQ(foreignPidNamespace(PidNamespaceId{true, 0xEFFFFFFCUL, "pid:[4026531836]"}), "");
+  EXPECT_EQ(foreignPidNamespace(PidNamespaceId{true, 4026532284UL, "pid:[4026532284]"}),
+            "pid:[4026532284]");
+  EXPECT_EQ(foreignPidNamespace(PidNamespaceId{true, 4026532284UL, ""}), "pid:[4026532284]");
+  EXPECT_EQ(foreignPidNamespace(PidNamespaceId{false, 0, ""}), "");
+}
+
+/** @test This process's PID namespace is read from /proc/self/ns/pid: its inode and its link */
+TEST(BpfWindowTest, PidNamespaceIsReadFromProc) {
   struct stat info{};
   ASSERT_EQ(::stat("/proc/self/ns/pid", &info), 0);
-  const bool HOST = static_cast<unsigned long>(info.st_ino) == 0xEFFFFFFCUL;
-  EXPECT_EQ(vernier::bench::bpftrace_tool::foreignPidNamespace().empty(), HOST)
-      << vernier::bench::bpftrace_tool::foreignPidNamespace();
+  char link[64] = {};
+  ASSERT_GT(::readlink("/proc/self/ns/pid", link, sizeof(link) - 1), 0);
+  const vernier::bench::bpftrace_tool::PidNamespaceId NS =
+      vernier::bench::bpftrace_tool::readPidNamespace();
+  EXPECT_TRUE(NS.read);
+  EXPECT_EQ(NS.inode, static_cast<unsigned long>(info.st_ino));
+  EXPECT_EQ(NS.link, std::string(link));
 }
 
 /** @test An unreadable selected script is rejected before anything runs, and a run leaves no

@@ -153,7 +153,7 @@ measures each version in a test of its own, one CSV row each:
 PERF_IO(BpftraceProfiler, WritePerLine) {
   PERF_GUARD(perf);
 
-  const auto LINES = linesOf(demo::makeParts(PART_COUNT, PART_SEED));
+  const auto LINES = demoLines();
   const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
   ASSERT_GE(FD, 0) << "cannot open /dev/null";
 
@@ -163,14 +163,14 @@ PERF_IO(BpftraceProfiler, WritePerLine) {
 }
 ```
 
-`BpftraceProfiler.WriteBatched` is the same with the joined text and
-`writeBatched()`. `BpftraceProfiler.CoarseLock` and
-`BpftraceProfiler.NoSharing` call their version through `contentionRun()`,
-which starts `--threads` threads and has each make `--cycles` calls per repeat;
-walkthrough 06 explains what its time per call means. `PERF_IO` and
-`PERF_CONTENTION` are GoogleTest's `TEST`, named for what the test measures.
-Nothing in the demo mentions bpftrace: `--profile bpftrace` on the command line
-is all it takes.
+`demoLines()` is the 1,000 lines. `BpftraceProfiler.WriteBatched` is the same
+with `textOf(demoLines())`, the lines end to end, and `writeBatched()`.
+`BpftraceProfiler.CoarseLock` and `BpftraceProfiler.NoSharing` call their
+version through `contentionRun()`, which starts `--threads` threads and has
+each make `--cycles` calls per repeat; walkthrough 06 explains what its time
+per call means. `PERF_IO` and `PERF_CONTENTION` are GoogleTest's `TEST`, named
+for what the test measures. Nothing in the demo mentions bpftrace:
+`--profile bpftrace` on the command line is all it takes.
 
 ## Step 1: Measure
 

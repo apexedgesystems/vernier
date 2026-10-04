@@ -805,19 +805,32 @@ long currentThreadId() noexcept {
 #endif
 }
 
-std::string foreignPidNamespace() {
+PidNamespaceId readPidNamespace() {
   constexpr const char* LINK = "/proc/self/ns/pid";
-  constexpr unsigned long HOST_PID_NAMESPACE_INODE = 0xEFFFFFFCUL;
+  PidNamespaceId ns;
   struct stat info{};
-  if (::stat(LINK, &info) != 0 ||
-      static_cast<unsigned long>(info.st_ino) == HOST_PID_NAMESPACE_INODE) {
-    return "";
+  if (::stat(LINK, &info) != 0) {
+    return ns;
   }
+  ns.read = true;
+  ns.inode = static_cast<unsigned long>(info.st_ino);
   char target[64] = {};
   const ssize_t LENGTH = ::readlink(LINK, target, sizeof(target) - 1);
-  return LENGTH > 0 ? std::string(target, static_cast<std::size_t>(LENGTH))
-                    : "pid:[" + std::to_string(info.st_ino) + "]";
+  if (LENGTH > 0) {
+    ns.link.assign(target, static_cast<std::size_t>(LENGTH));
+  }
+  return ns;
 }
+
+std::string foreignPidNamespace(const PidNamespaceId& ns) {
+  constexpr unsigned long HOST_PID_NAMESPACE_INODE = 0xEFFFFFFCUL;
+  if (!ns.read || ns.inode == HOST_PID_NAMESPACE_INODE) {
+    return "";
+  }
+  return ns.link.empty() ? "pid:[" + std::to_string(ns.inode) + "]" : ns.link;
+}
+
+std::string foreignPidNamespace() { return foreignPidNamespace(readPidNamespace()); }
 
 } // namespace bpftrace_tool
 
@@ -1257,7 +1270,8 @@ private:
   ReadinessResult noArmAcknowledgement() const {
     const std::string DETAIL = what_ + " did not acknowledge its arm probe within " +
                                std::to_string(plan_->armWaitMs) + " ms";
-    const std::string NAMESPACE = bpftrace_tool::foreignPidNamespace();
+    const std::string NAMESPACE = bpftrace_tool::foreignPidNamespace(
+        plan_->pidNamespace ? plan_->pidNamespace() : bpftrace_tool::readPidNamespace());
     if (!NAMESPACE.empty()) {
       return readinessResult(ReadinessCause::UNSUPPORTED,
                              DETAIL + ": this process runs in PID namespace " + NAMESPACE +

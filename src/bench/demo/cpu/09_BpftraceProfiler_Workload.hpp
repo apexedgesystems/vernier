@@ -56,6 +56,27 @@ inline std::vector<std::string> linesOf(const std::vector<std::string>& words) {
   return lines;
 }
 
+/**
+ * @brief The lines both write cases write: linesOf() the join example's
+ *        PART_COUNT words from PART_SEED. WritePerLine writes them one write()
+ *        each, WriteBatched textOf() them with one.
+ * @note NOT RT-safe: allocates.
+ */
+inline std::vector<std::string> demoLines() { return linesOf(makeParts(PART_COUNT, PART_SEED)); }
+
+/**
+ * @brief @p lines end to end, the text WriteBatched writes; for demoLines(),
+ *        joinV1(words, LINE_END).
+ * @note NOT RT-safe: allocates.
+ */
+inline std::string textOf(const std::vector<std::string>& lines) {
+  std::string text;
+  for (const std::string& line : lines) {
+    text += line;
+  }
+  return text;
+}
+
 /* ----------------------------- Writes: One per Line ----------------------------- */
 
 /**

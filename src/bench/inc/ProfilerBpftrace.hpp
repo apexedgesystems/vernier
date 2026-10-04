@@ -394,12 +394,25 @@ bool waitUntil(const std::function<bool()>& done, int boundMs);
 /** @brief The calling thread's id; -1 where the platform has none to give. */
 [[nodiscard]] long currentThreadId() noexcept;
 
+/** @brief A PID namespace as /proc/self/ns/pid shows it. */
+struct PidNamespaceId {
+  bool read = false;       ///< The link could be stat'ed.
+  unsigned long inode = 0; ///< Its inode: the namespace's identity.
+  std::string link;        ///< What it links to ("pid:[4026532284]"); empty if unreadable.
+};
+
+/** @brief This process's PID namespace, read from /proc/self/ns/pid. */
+[[nodiscard]] PidNamespaceId readPidNamespace();
+
 /**
- * @brief What /proc/self/ns/pid links to ("pid:[4026532284]") when this
- *        process runs in a PID namespace other than the host's, whose inode
- *        the kernel fixes at 0xEFFFFFFC (bpftrace makes the same comparison);
- *        empty in the host's, and where the link cannot be read.
+ * @brief What @p ns links to ("pid:[4026532284]") when it is a PID namespace
+ *        other than the host's, whose inode the kernel fixes at 0xEFFFFFFC
+ *        (bpftrace makes the same comparison); "pid:[<inode>]" when the link
+ *        text was not read; empty for the host's, and when @p ns was not read.
  */
+[[nodiscard]] std::string foreignPidNamespace(const PidNamespaceId& ns);
+
+/** @brief foreignPidNamespace() of readPidNamespace(): this process's. */
 [[nodiscard]] std::string foreignPidNamespace();
 
 } // namespace bpftrace_tool
@@ -417,6 +430,9 @@ struct BpftracePlan final : ReadinessPlan {
   std::shared_ptr<const ReadinessContext> context;
   int armWaitMs = bpftrace_tool::ARM_WAIT_MS;       ///< Bound of the wait for every arm.
   int disarmWaitMs = bpftrace_tool::DISARM_WAIT_MS; ///< Bound of the wait for every stop.
+  /// Where a run reads this process's PID namespace when no tracer arms, to
+  /// name a foreign one (a test substitutes it).
+  std::function<bpftrace_tool::PidNamespaceId()> pidNamespace = bpftrace_tool::readPidNamespace;
 };
 
 /**

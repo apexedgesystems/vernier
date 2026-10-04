@@ -70,6 +70,8 @@
 #                  stop's thread takes its name, and never again
 #   no-disarm      never acknowledge the stop
 #   wrong-disarm   acknowledge the stop with a thread id one above the thread's
+#   wrong-disarm-pid
+#                  acknowledge the stop with a pid one above the target's
 #   marker-only    on SIGINT, print the three empty lines only: no data
 #   slow-drain     on SIGINT, wait FAKE_DRAIN_S seconds (default 1) first
 #   remove-output  on SIGINT, delete the output file, then exit 0
@@ -354,11 +356,13 @@ while :; do
   elif [ "$armed" = yes ] && [ "$disarmed" = no ] && [ "$window" != no-disarm ]; then
     tid=$(window_thread stop)
     if [ -n "$tid" ]; then
+      pid_shown=$watched
       tid_shown=$tid
-      if [ "$window" = wrong-disarm ]; then
-        tid_shown=$((tid + 1))
-      fi
-      printf '%s disarmed %s %s%s\n' "$label" "$watched" "$tid_shown" "$stop_count"
+      case "$window" in
+      wrong-disarm) tid_shown=$((tid + 1)) ;;
+      wrong-disarm-pid) pid_shown=$((watched + 1)) ;;
+      esac
+      printf '%s disarmed %s %s%s\n' "$label" "$pid_shown" "$tid_shown" "$stop_count"
       disarmed=yes
     fi
   fi

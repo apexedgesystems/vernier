@@ -50,11 +50,11 @@ namespace demo = vernier::bench::demo;
 
 using vernier::bench::demo::bpftrace_demo::addToThreadTotal;
 using vernier::bench::demo::bpftrace_demo::addUnderCoarseLock;
-using vernier::bench::demo::bpftrace_demo::LINE_END;
-using vernier::bench::demo::bpftrace_demo::linesOf;
+using vernier::bench::demo::bpftrace_demo::demoLines;
 using vernier::bench::demo::bpftrace_demo::PART_COUNT;
 using vernier::bench::demo::bpftrace_demo::PART_SEED;
 using vernier::bench::demo::bpftrace_demo::SharedTotal;
+using vernier::bench::demo::bpftrace_demo::textOf;
 using vernier::bench::demo::bpftrace_demo::writeBatched;
 using vernier::bench::demo::bpftrace_demo::writeEachLine;
 
@@ -64,7 +64,7 @@ using vernier::bench::demo::bpftrace_demo::writeEachLine;
 PERF_IO(BpftraceProfiler, WritePerLine) {
   PERF_GUARD(perf);
 
-  const auto LINES = linesOf(demo::makeParts(PART_COUNT, PART_SEED));
+  const auto LINES = demoLines();
   const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
   ASSERT_GE(FD, 0) << "cannot open /dev/null";
 
@@ -77,7 +77,7 @@ PERF_IO(BpftraceProfiler, WritePerLine) {
 PERF_IO(BpftraceProfiler, WriteBatched) {
   PERF_GUARD(perf);
 
-  const std::string TEXT = demo::joinV1(demo::makeParts(PART_COUNT, PART_SEED), LINE_END);
+  const std::string TEXT = textOf(demoLines());
   const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
   ASSERT_GE(FD, 0) << "cannot open /dev/null";
 

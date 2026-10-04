@@ -56,12 +56,14 @@ using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::demo::bpftrace_demo::addToThreadTotal;
 using vernier::bench::demo::bpftrace_demo::addUnderCoarseLock;
+using vernier::bench::demo::bpftrace_demo::demoLines;
 using vernier::bench::demo::bpftrace_demo::finishedThreadsTotal;
 using vernier::bench::demo::bpftrace_demo::LINE_END;
 using vernier::bench::demo::bpftrace_demo::linesOf;
 using vernier::bench::demo::bpftrace_demo::PART_COUNT;
 using vernier::bench::demo::bpftrace_demo::PART_SEED;
 using vernier::bench::demo::bpftrace_demo::SharedTotal;
+using vernier::bench::demo::bpftrace_demo::textOf;
 using vernier::bench::demo::bpftrace_demo::writeBatched;
 using vernier::bench::demo::bpftrace_demo::writeEachLine;
 
@@ -171,7 +173,7 @@ fs::path scratchDir() {
 
 /** @test The per-line version makes one write() per line, every call */
 TEST(BpftraceWritesTest, PerLineMakesOneWritePerLine) {
-  const auto LINES = linesOf(demo::makeParts(PART_COUNT, PART_SEED));
+  const auto LINES = demoLines();
   const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
   ASSERT_GE(FD, 0) << "cannot open /dev/null";
   const long BEFORE = writeCallsOfThisThread();
@@ -193,7 +195,7 @@ TEST(BpftraceWritesTest, PerLineMakesOneWritePerLine) {
 
 /** @test The batched version makes one write() per call */
 TEST(BpftraceWritesTest, BatchedMakesOneWrite) {
-  const std::string TEXT = demo::joinV1(demo::makeParts(PART_COUNT, PART_SEED), LINE_END);
+  const std::string TEXT = textOf(demoLines());
   const int FD = ::open("/dev/null", O_WRONLY | O_CLOEXEC);
   ASSERT_GE(FD, 0) << "cannot open /dev/null";
   const long BEFORE = writeCallsOfThisThread();
@@ -213,32 +215,41 @@ TEST(BpftraceWritesTest, BatchedMakesOneWrite) {
   EXPECT_EQ(AFTER - BEFORE, static_cast<long>(CALLS));
 }
 
-/** @test Both versions write the same text: every line, in order, end to end */
+/**
+ * @test Both versions write the same bytes, the demo's own: its lines
+ * (demoLines(), the join example's words each with its LINE_END) one write()
+ * each, and its text (textOf() of those lines) with one write(), which is
+ * joinV1(words, LINE_END).
+ */
 TEST(BpftraceWritesTest, BothWriteTheLinesEndToEnd) {
   const auto WORDS = demo::makeParts(PART_COUNT, PART_SEED);
-  const auto LINES = linesOf(WORDS);
-  std::string expected;
+  const auto LINES = demoLines();
+  ASSERT_EQ(LINES, linesOf(WORDS)) << "the demo's lines are not the words' lines";
+  std::string endToEnd;
   for (const std::string& line : LINES) {
-    expected += line;
+    endToEnd += line;
   }
-  ASSERT_EQ(firstDifference(demo::joinV1(WORDS, LINE_END), expected), -1)
-      << "the lines end to end are not joinV1(words, LINE_END)";
+  const std::string TEXT = textOf(demoLines());
+  ASSERT_EQ(firstDifference(TEXT, endToEnd), -1)
+      << "the demo's batched text is not its lines end to end";
+  ASSERT_EQ(firstDifference(TEXT, demo::joinV1(WORDS, LINE_END)), -1)
+      << "the demo's batched text is not joinV1(words, LINE_END)";
 
   std::size_t perLineWritten = 0;
   const std::string PER_LINE =
       throughAPipe([&](int fd) { return writeEachLine(fd, LINES); }, perLineWritten);
   std::size_t batchedWritten = 0;
   const std::string BATCHED =
-      throughAPipe([&](int fd) { return writeBatched(fd, expected); }, batchedWritten);
+      throughAPipe([&](int fd) { return writeBatched(fd, TEXT); }, batchedWritten);
 
-  EXPECT_EQ(firstDifference(PER_LINE, expected), -1)
+  EXPECT_EQ(firstDifference(PER_LINE, endToEnd), -1)
       << "the per-line version's text differs from the lines end to end (it wrote "
-      << PER_LINE.size() << " of " << expected.size() << " bytes)";
-  EXPECT_EQ(firstDifference(BATCHED, expected), -1)
-      << "the batched version's text differs from the lines end to end (it wrote " << BATCHED.size()
-      << " of " << expected.size() << " bytes)";
-  EXPECT_EQ(perLineWritten, expected.size());
-  EXPECT_EQ(batchedWritten, expected.size());
+      << PER_LINE.size() << " of " << endToEnd.size() << " bytes)";
+  EXPECT_EQ(firstDifference(BATCHED, PER_LINE), -1)
+      << "the batched version wrote other bytes than the per-line version (" << BATCHED.size()
+      << " against " << PER_LINE.size() << ")";
+  EXPECT_EQ(perLineWritten, endToEnd.size());
+  EXPECT_EQ(batchedWritten, endToEnd.size());
 }
 
 /* ----------------------------- Totals ----------------------------- */
