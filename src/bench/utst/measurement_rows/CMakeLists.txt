@@ -61,10 +61,12 @@ add_dependencies(TestMeasurementRows MeasurementRowsProbe)
 # CLI Agreement (1 test, where the CLI tools are built)
 # ------------------------------------------------------------------------------
 # A test of the CLI's own suite, run by cargo with the fixture's path: what
-# bench summary and bench compare read from the fixture's CSV. It passes only
-# on that test's pass line, so a missing cargo or fixture, or a test that no
-# longer matches its name, fails it. The nested build's jobs are reserved from
-# ctest's parallel slots.
+# bench summary and bench compare read from the fixture's CSV. Cargo keeps to
+# the lockfile and, where VERNIER_RUST_OFFLINE is set when the test runs, to the
+# crates already fetched, as the tools build does; and it removes nothing from
+# the crate cache it shares with that build. The test passes only on its pass
+# line, so a missing cargo, crate or fixture, or a renamed test, fails it. The
+# nested build's jobs are reserved from ctest's parallel slots.
 # ------------------------------------------------------------------------------
 
 if (VERNIER_BUILD_TOOLS)
@@ -73,19 +75,21 @@ if (VERNIER_BUILD_TOOLS)
   add_test(
     NAME MeasurementRows.CliAgreement
     COMMAND
-      "${CARGO_EXECUTABLE}" test --manifest-path "${PROJECT_SOURCE_DIR}/tools/rust/Cargo.toml"
+      sh -c [=[exec "$0" test --locked ${VERNIER_RUST_OFFLINE:+--offline} "$@"]=]
+      "${CARGO_EXECUTABLE}" --manifest-path "${PROJECT_SOURCE_DIR}/tools/rust/Cargo.toml"
       --target-dir "${CMAKE_BINARY_DIR}/rust-test-target" --jobs ${_rows_cargo_jobs} --test bench
       measurement_rows_cli_agreement -- --ignored --exact
   )
   set_tests_properties(
     MeasurementRows.CliAgreement
-    PROPERTIES LABELS
-               "benchmarking;rows"
-               ENVIRONMENT
-               "MEASUREMENT_ROWS_PROBE=$<TARGET_FILE:MeasurementRowsProbe>"
-               PASS_REGULAR_EXPRESSION
-               "test measurement_rows_cli_agreement \\.\\.\\. ok"
-               PROCESSORS
-               ${_rows_cargo_jobs}
+    PROPERTIES
+      LABELS
+      "benchmarking;rows"
+      ENVIRONMENT
+      "MEASUREMENT_ROWS_PROBE=$<TARGET_FILE:MeasurementRowsProbe>;CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never"
+      PASS_REGULAR_EXPRESSION
+      "test measurement_rows_cli_agreement \\.\\.\\. ok"
+      PROCESSORS
+      ${_rows_cargo_jobs}
   )
 endif ()
