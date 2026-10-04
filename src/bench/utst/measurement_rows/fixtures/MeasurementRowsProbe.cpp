@@ -1,14 +1,15 @@
 /**
  * @file MeasurementRowsProbe.cpp
  * @brief A benchmark whose tests measure in each shape that decides how a
- * test's rows are named, for MeasurementRows_test.cmake.
+ * test's rows are named: the fixture of the measurement-rows checks.
  *
  * After each completed measurement it prints one line to stdout:
  * "[rows-probe] median=<m> cycles=<c> msgBytes=<b>", from that measurement's
- * result and its case, with the number format the CSV writer uses, so the
- * driver can tie every CSV row to the measurement that produced it.
+ * result and its case, with the number format the CSV writer uses, so a check
+ * can tie every CSV row to the measurement that produced it.
  *
- * A test fixture: never installed.
+ * A test fixture with its own PERF_MAIN: never installed, and its Rows.*
+ * cases are never registered; the checks run it as a child.
  */
 
 #include "src/bench/inc/Perf.hpp"
@@ -35,7 +36,7 @@ void spin(int n) {
   }
 }
 
-/** @brief Print the line the driver matches with the measurement's row. */
+/** @brief Print the line a check matches with the measurement's row. */
 void report(const vb::PerfCase& perf, const vb::PerfResult& result) {
   std::cout << "[rows-probe] median=" << result.stats.median << " cycles=" << perf.cycles()
             << " msgBytes=" << perf.config().msgBytes << std::endl;

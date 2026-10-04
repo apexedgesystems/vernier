@@ -185,18 +185,6 @@ include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 
 # ------------------------------------------------------------------------------
-# Measurement Rows Probe (2 tests)
-# ------------------------------------------------------------------------------
-# A benchmark that measures one case several times in a test, separately named
-# cases in one test, single-thread and contention runs, repeated, empty and
-# comma-holding labels and a measurement that throws; the tests check the rows
-# its CSV and end-of-run table show, and that the bench CLI reads the same
-# names.
-# ------------------------------------------------------------------------------
-
-include("${CMAKE_CURRENT_LIST_DIR}/MeasurementRows.cmake")
-
-# ------------------------------------------------------------------------------
 # Callgrind Window Probe (2 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
@@ -363,3 +351,9 @@ foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateR
                                    "\\[  SKIPPED \\] ${_start_gate_pattern}"
   )
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# Subdirectories
+# ------------------------------------------------------------------------------
+
+add_subdirectory(measurement_rows)
