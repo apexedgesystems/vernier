@@ -10,19 +10,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Demo 09 traces writes and lock hand-offs on the shared join example** --
-  `BpftraceProfiler.WritePerLine` writes the example's 1,000 words one
-  `write()` per line against `WriteBatched`'s one `write()`, and `CoarseLock`
-  and `NoSharing` add joined lengths from several threads under one lock or to
-  totals of their own; a check run by `ctest` counts their writes and totals
-  and traces `WritePerLine` where bpftrace can run. Its walkthrough,
-  `src/bench/demo/docs/09_BPFTRACE_PROFILER.md`, is rewritten from a Release
-  run on the documented Raspberry Pi 4 rig with bpftrace 0.23.2, tracing them
-  with the bundled scripts and with a script of the reader's own, and its
-  reference CSV is `src/bench/demo/reference/pi4/09_bpftrace_profiler.csv`.
-  **Action needed:** `ManySmallWrites` and `SingleBatchedWrite` are gone, so
-  CSVs captured from demo 09 before this release do not join with newer ones,
-  and `manySmallWrites()` and `singleBatchedWrite()` leave
-  `helpers/DemoWorkloads.hpp`.
+  its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
+  from a run on the documented Raspberry Pi 4 rig.
+  **Action needed:** its test names change, so demo 09 CSVs from before this
+  release do not join with newer ones, and `manySmallWrites()` and
+  `singleBatchedWrite()` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 07 counts the instructions of the shared join example** --
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts that workload cannot produce. It
@@ -331,44 +323,32 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
-- **bpftrace's hints offer only what works** -- a current user that bpftrace
-  refused, or a `BENCH_SUDO` run missing `sudo` or `kill`, was offered
-  `CAP_BPF` and `CAP_PERFMON`, which bpftrace refuses too (0.14.0, 0.20.2 and
-  0.23.2 run only as root); the hints offer root, directly or through
-  `BENCH_SUDO=1` and a scoped sudoers grant. The hint for a probe the kernel
-  lacks, shared with the offcpu backend, points at the probe bpftrace names and
-  at the tracefs mount, not at another script, which the offcpu backend does
-  not have.
+- **bpftrace's hints offer only what works** -- a user bpftrace refuses is
+  offered root, directly or through `BENCH_SUDO=1` and a scoped sudoers grant,
+  not `CAP_BPF` and `CAP_PERFMON`, which bpftrace refuses too, and the offcpu
+  backend's hint for a probe the kernel lacks no longer suggests another script.
 - **bpftrace measures only once its tracer shows that it sees the benchmark**
-  -- the backend waited a fixed second for each tracer to attach, so on a busy
-  machine the measured repeats could run before it had, and the empty report
-  counted as a clean capture. Each run's copy of a script ends with a short
-  program whose two acknowledgements, bound to the benchmark's process and
-  threads, open and close the measured repeats; a capture without both, with
-  other ids or out of order is reported as failed, and one whose script printed
-  nothing else as holding no data. **Action needed:** the report holds a
-  `bpftrace armed` and a `bpftrace disarmed` line, bpftrace runs with
-  `-B none`, the thread names `vernier-arm`, `vernier-wait` and `vernier-stop`
-  and maps named `@vernier_...` are reserved, and a script with an iterator
-  probe runs only by hand.
+  -- on a busy machine the measured repeats could start before the tracer had
+  attached, and the doctor could pass a script that cannot attach; both now
+  wait for the tracer's own sign that it has (see
+  [the capture window](src/bench/docs/BPF_SCRIPTS.md#the-capture-window)).
+  **Action needed:** a report holds a `bpftrace armed` and a
+  `bpftrace disarmed` line, scripts must leave the thread names `vernier-arm`,
+  `vernier-wait` and `vernier-stop` and maps named `@vernier_...` alone, and a
+  script with an iterator probe runs only by hand.
 - **The bundled bpftrace scripts trace threaded tests to their end** -- they
-  ended when any thread of the traced process exited, so a `contentionRun()`
-  trace stopped after one repeat; they end with the main thread, and a tracer
-  that ends by itself mid-measurement is reported as an incomplete capture.
-  `wakeup_latency.bt` measures from the wake request in the waking thread
-  (`sched_waking`) to the woken thread being switched in, where it missed the
-  wakeups completed on another CPU. **Action needed:** its histograms are not
-  comparable with earlier ones, and scripts copied from these should filter
+  ended when any thread of the traced process exited, and `wakeup_latency.bt`
+  missed wakeups completed on another CPU. **Action needed:** its histograms do
+  not compare with earlier ones, and scripts copied from these should filter
   `sched_process_exit` on `tid == {{PID}}`.
 - **bpftrace finds its scripts from any directory and keeps a run's files in
-  its capture folder** -- bundled scripts are found by absolute path in the
-  source tree the library was built from, `--bpf-scripts DIR` selects another
-  directory by setting `PERF_BPF_SCRIPTS` in the process environment, and `--bpf`
-  takes a script path with or without `.bt`. A script given by path writes its
-  copy and output into the test's capture folder instead of beside itself.
+  its capture folder** -- bundled scripts are found in the source tree the
+  library was built from, `--bpf-scripts DIR` selects another directory, and
+  `--bpf` takes a path with or without `.bt` (see
+  [selecting scripts](src/bench/docs/BPF_SCRIPTS.md#selecting-scripts)).
   **Action needed:** a `--bpf` name containing `/` is a path from the working
-  directory, not from the scripts directory; an installed library whose source
-  tree is gone needs `--bpf-scripts`.
+  directory, and an installed library whose source tree is gone needs
+  `--bpf-scripts`.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
