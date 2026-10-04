@@ -330,14 +330,16 @@ report that never fails on them.
 run here, the doctor starts most of the tools once, one after another: each
 valgrind tool and heaptrack on `/bin/true`, a short `perf stat` of its own
 process, the bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu
-and compute-sanitizer. On the [Raspberry Pi 4 rig](../src/bench/docs/rigs/RIG_PI4.md),
-`bench doctor build/bin/ptests/BenchmarkCPU_PTEST` took 3.95 to 3.96 s, and
-8.52 to 8.59 s with `BENCH_SUDO=1`, under which the bpftrace and off-CPU
-probes attach and run (five runs each, on core 3 with the governor at
-performance). In the project's development container on an x86-64 laptop, as
-its non-root user, it took 1.06 to 1.23 s (five runs, unpinned). Other
-machines and runs can land outside these ranges. A benchmark run checks only
-its own request.
+and compute-sanitizer. Those starts take most of its time, which depends on
+the machine and on the tools installed; no time is promised. One run of this
+release's `bench doctor build/bin/ptests/BenchmarkCPU_PTEST` on each rig,
+timed on core 3 after one untimed run: on the
+[Raspberry Pi 4 rig](../src/bench/docs/rigs/RIG_PI4.md), with the governor at
+performance, 3.96 s, and 8.60 s with `BENCH_SUDO=1`, under which the
+bpftrace and off-CPU probes attach and run; on the
+[Jetson AGX Thor rig](../src/bench/docs/rigs/RIG_THOR_AGX.md), with its clocks
+as found, 1.35 s, and 3.26 s with `BENCH_SUDO=1`. Other runs and machines take
+their own time. A benchmark run checks only its own request.
 
 ### profile-all - Iterate Every Profiler
 
