@@ -335,14 +335,16 @@ enum class ProbeStreams : std::uint8_t {
  *
  * argv[0] is executed as given (a resolved absolute path; no PATH search),
  * with stdin from /dev/null, in its own process group, in the probe
- * environment of @p ctx. When the program ends, whatever its status, or at
- * @p timeoutMs, the whole group is killed, so nothing the probe started runs
- * on after it. The group is signalled before the program is reaped: its pid,
- * the group's id, cannot belong to another process then. Output still in the
- * pipes is read for at most PROBE_DRAIN_MS, and the call returns once the
- * program is reaped and no process of its group runs, or PROBE_REAP_MS later
- * at the most. A process that leaves the group, or that this user may not
- * signal, is beyond its reach. Needs no external helper such as timeout(1).
+ * environment of @p ctx, with SIGINT and SIGTERM at their default action,
+ * unblocked, as OwnedHelper starts its helpers. When the program ends,
+ * whatever its status, or at @p timeoutMs, the whole group is killed, so
+ * nothing the probe started runs on after it. The group is signalled before
+ * the program is reaped: its pid, the group's id, cannot belong to another
+ * process then. Output still in the pipes is read for at most PROBE_DRAIN_MS,
+ * and the call returns once the program is reaped and no process of its group
+ * runs, or PROBE_REAP_MS later at the most. A process that leaves the group,
+ * or that this user may not signal, is beyond its reach. Needs no external
+ * helper such as timeout(1).
  */
 [[nodiscard]] ProbeResult runBoundedProbe(const std::vector<std::string>& argv, int timeoutMs,
                                           const ReadinessContext& ctx,
@@ -433,7 +435,9 @@ struct HelperStopResult {
  *
  * start() forks and executes argv[0] directly (an absolute path, often the
  * resolved sudo), with stdout and stderr opened by the child in files the
- * invoking user owns, and waits the start grace, returning at once if the
+ * invoking user owns, and with SIGINT and SIGTERM at their default action,
+ * unblocked, whatever this process inherited (a background job of a script
+ * ignores SIGINT), and waits the start grace, returning at once if the
  * helper ends. stop() delivers SIGINT, then SIGTERM, then SIGKILL through the
  * policy's route, waiting a bounded time after each and reporting every
  * delivery. Only processes this object started are signalled: its direct

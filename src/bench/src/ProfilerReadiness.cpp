@@ -99,6 +99,25 @@ std::vector<char*> cStrings(std::vector<std::string>& strings) {
   return out;
 }
 
+/**
+ * @brief Give the signals a helper is stopped with, SIGINT and SIGTERM, their
+ * default action, unblocked, whatever this process inherited: a benchmark
+ * started as a background job of a script ignores SIGINT, and a helper would
+ * keep the ignore across exec. Async-signal-safe (used between fork and exec).
+ */
+void defaultStopSignals() {
+  struct sigaction action{};
+  action.sa_handler = SIG_DFL;
+  (void)::sigemptyset(&action.sa_mask);
+  sigset_t stopSignals;
+  (void)::sigemptyset(&stopSignals);
+  for (const int SIGNAL : {SIGINT, SIGTERM}) {
+    (void)::sigaction(SIGNAL, &action, nullptr);
+    (void)::sigaddset(&stopSignals, SIGNAL);
+  }
+  (void)::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr);
+}
+
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);
@@ -584,6 +603,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   }
   if (CHILD == 0) {
     (void)::setpgid(0, 0);
+    defaultStopSignals();
     if (DEV_NULL >= 0) {
       (void)::dup2(DEV_NULL, STDIN_FILENO);
     }
@@ -911,6 +931,9 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     return outcome;
   }
   if (CHILD == 0) {
+    // stop() relies on SIGINT and SIGTERM: the helper takes them at their
+    // default action whatever this process inherited.
+    defaultStopSignals();
     // Capture files are opened here, by the invoking user, before any
     // elevation: they stay the user's whatever the helper runs as.
     const int IN = ::open("/dev/null", O_RDONLY);

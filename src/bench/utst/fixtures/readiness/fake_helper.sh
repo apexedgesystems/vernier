@@ -3,6 +3,7 @@
 # what it does:
 #   exit N       print its arguments, exit with status N
 #   env          print its environment
+#   masks        print its ignored and blocked signal masks (SigIgn, SigBlk)
 #   flood        print more output than a probe keeps
 #   run          run until signalled (at most 30 s)
 #   ignore-int   like run, but ignore SIGINT
@@ -31,6 +32,9 @@ exit)
   ;;
 env)
   env
+  ;;
+masks)
+  grep -E '^Sig(Ign|Blk):' /proc/$$/status
   ;;
 flood)
   yes "flood line ..................................................." | head -c 400000
