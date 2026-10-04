@@ -4,7 +4,9 @@
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) at 20,000 words (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-24, written for the Vernier 1.0.4 release; captured from
-the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`
+the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
+The console output under Letting bench run Do the Wrap comes from 2026-10-03
+(UTC), a later tree at the same version.
 
 ## Overview
 
@@ -41,12 +43,14 @@ followed by those trees.
 start valgrind itself. Run the binary under `valgrind --tool=massif`, as the
 steps below do, or let `bench run --profile massif` build that command
 ([below](#letting-bench-run-do-the-wrap)). Either way massif writes one file
-for the whole process, where `--massif-out-file` says. Run by hand with
-`--profile massif`, the binary also creates a folder for each test it runs in
-the working directory, `Massif.JoinV0.massif/` in step 2. Massif writes there
-only if `--massif-out-file` points into it, which is what the command the
-backend prints does when the binary runs without valgrind; with the commands on
-this page the folder stays empty. `bench run` creates no such folder.
+for the whole process, where `--massif-out-file` says. Run by hand under
+valgrind with `--profile massif`, the binary also creates a folder for each
+test it runs in the working directory, `Massif.JoinV0.massif/` in step 2, which
+massif writes into only if `--massif-out-file` points there; with the commands
+on this page the folder stays empty. Run without valgrind, the binary measures
+as usual but creates no folder, prints the command that runs it under massif
+(`valgrind --tool=massif --massif-out-file=./massif.out <this-binary> --profile massif [...]`)
+and exits with status 4. `bench run` creates no per-test folder.
 
 **Needs:** valgrind, from the rig document's
 [package list](../../docs/rigs/RIG_PI4.md#2-one-time-setup);
@@ -440,29 +444,32 @@ Captured output of the first command:
 
 ```
 Running: valgrind --tool=massif --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
-==35985== Massif, a heap profiler
-==35985== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
-==35985== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==35985== Command: ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
-==35985==
+==156225== Massif, a heap profiler
+==156225== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
+==156225== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==156225== Command: ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
+==156225==
 Note: Google Test filter = Massif.JoinV0
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Massif
 [ RUN      ] Massif.JoinV0
-[Massif.JoinV0]  1009412.000 us/call  CV=0.0%  ~1 calls/s  (p10=1009412.000 p90=1009412.000 sd=0.000)
-[       OK ] Massif.JoinV0 (3181 ms)
-[----------] 1 test from Massif (3186 ms total)
+[Massif.JoinV0]  1031979.000 us/call  CV=0.0%  ~1 calls/s  (p10=1031979.000 p90=1031979.000 sd=0.000)
+[       OK ] Massif.JoinV0 (3336 ms)
+[----------] 1 test from Massif (3342 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (3228 ms total)
+[==========] 1 test from 1 test suite ran. (3387 ms total)
 [  PASSED  ] 1 test.
-==35985==
+==156225==
+[bench] massif wrote bench-out/BenchDemo_11_MassifProfiler.massif/massif.out (48330 bytes)
 ```
 
 `bench run` builds the same wrap and prints it on its first line, without
 `--time-unit=B`, which it has no option to pass: its graph's axis is
-instructions. The peak's owners and their byte counts are the ones in step 2.
+instructions. Its last line comes after valgrind exited: `bench run` checks
+that the profile was written and names its size, and fails the run when it
+was not. The peak's owners and their byte counts are the ones in step 2.
 The profile goes to `bench-out/BenchDemo_11_MassifProfiler.massif/massif.out`,
 one file for the binary, not one per test, and no per-test folder is created
 ([Troubleshooting](../../docs/TROUBLESHOOTING.md#profile-artifacts-land-in-cwd-move-immediately)

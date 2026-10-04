@@ -5,7 +5,11 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-24 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; heaptrack 1.5.0
+`bench 1.0.3`; heaptrack 1.5.0. The console output of steps 2 and 4 and the
+doctor's rows come from 2026-10-03 (UTC), a later tree at the same version,
+whose harness allocates more around the measured calls (203,965 allocations
+in step 2's run, 577 in step 4's); the reports of steps 3 and 4 are the first
+session's.
 
 ## Overview
 
@@ -28,8 +32,8 @@ allocations, and by leaks.
 Its cost is paid per allocation, because each one is recorded with its call
 stack. Code that seldom allocates runs close to full speed; code that
 allocates constantly slows down in proportion. In the run below, `joinV0`
-took 4,038 us per call under heaptrack against 966 us without it, 4.2 times
-as long, and `joinV1` 29.3 us against 19.0 us, 1.5 times. Time the code
+took 4,114 us per call under heaptrack against 966 us without it, 4.3 times
+as long, and `joinV1` 29.65 us against 19.0 us, 1.6 times. Time the code
 without heaptrack, and use heaptrack to count.
 
 It sees only what goes through the malloc family. Memory mapped directly with
@@ -183,34 +187,37 @@ Note: Google Test filter = Heaptrack.JoinV0
 [ RUN      ] Heaptrack.JoinV0
 [heaptrack] wrapping detected; heap profile will be written at process
 [heaptrack] exit. Artifact directory: heaptrack-v0/BenchDemo_15_HeaptrackProfiler.heaptrack
-[Heaptrack.JoinV0]  4038.030 us/call  CV=0.0%  ~248 calls/s  (p10=4038.030 p90=4038.030 sd=0.000)
-[       OK ] Heaptrack.JoinV0 (641 ms)
-[----------] 1 test from Heaptrack (641 ms total)
+[Heaptrack.JoinV0]  4114.030 us/call  CV=0.0%  ~243 calls/s  (p10=4114.030 p90=4114.030 sd=0.000)
+[       OK ] Heaptrack.JoinV0 (647 ms)
+[----------] 1 test from Heaptrack (648 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (644 ms total)
+[==========] 1 test from 1 test suite ran. (651 ms total)
 [  PASSED  ] 1 test.
 heaptrack stats:
-        allocations:            203769
-        leaked allocations:     37
-        temporary allocations:  23
+        allocations:            203965
+        leaked allocations:     107
+        temporary allocations:  30
 Heaptrack finished! Now run the following to investigate the data:
 
   ...
+[bench] heaptrack wrote heaptrack-v0/BenchDemo_15_HeaptrackProfiler.heaptrack/run.zst (57426 bytes)
 ```
 
 The `Running:` line is the command `bench run` built. The benchmark's
 heaptrack backend only reports where the recording goes; heaptrack itself
-prints its totals as the process exits. The recording is the only file the
+prints its totals as the process exits, and the last line is `bench run`'s:
+after heaptrack exited, it checks that the recording was written and names
+its size. The recording is the only file the
 run writes:
 
 ```
 heaptrack-v0/BenchDemo_15_HeaptrackProfiler.heaptrack/run.zst
 ```
 
-`allocations: 203769` counts the whole process: the 102 calls of `joinV0`,
+`allocations: 203965` counts the whole process: the 102 calls of `joinV0`,
 and whatever GoogleTest and the harness allocated around them. The time on
-the result line is one repeat under heaptrack, the 4.2 times from above; it
+the result line is one repeat under heaptrack, the 4.3 times from above; it
 is not a measurement of `joinV0`.
 
 ## Step 3: Read the Report
@@ -300,13 +307,14 @@ heaptrack's totals:
 ```
 Running: heaptrack -o heaptrack-v1/BenchDemo_15_HeaptrackProfiler.heaptrack/run ./build/bin/ptests/BenchDemo_15_HeaptrackProfiler --cycles 100 --repeats 1 --profile heaptrack --profile-output-dir heaptrack-v1 --gtest_filter=Heaptrack.JoinV1
 ...
-[Heaptrack.JoinV1]  29.310 us/call  CV=0.0%  ~34.1K calls/s  (p10=29.310 p90=29.310 sd=0.000)
+[Heaptrack.JoinV1]  29.650 us/call  CV=0.0%  ~33.7K calls/s  (p10=29.650 p90=29.650 sd=0.000)
 ...
 heaptrack stats:
-        allocations:            381
-        leaked allocations:     37
-        temporary allocations:  125
+        allocations:            577
+        leaked allocations:     107
+        temporary allocations:  132
 ...
+[bench] heaptrack wrote heaptrack-v1/BenchDemo_15_HeaptrackProfiler.heaptrack/run.zst (14944 bytes)
 ```
 
 and of the report, with the binary's path cut:
@@ -354,7 +362,7 @@ reading changed the way the timing did, and for the reason the report named.
 | allocations per call, `joinV0` | 1,995, all reported under `joinV0`                                    | 1,995 with GNU libstdc++, in optimized and unoptimized builds; on x86-64 with GCC 11, heaptrack reports them as 997 under `joinV0` and 998 under `_M_mutate` |
 | allocations per call, `joinV1` | 1                                                                     | 1                                                                                                                                                            |
 | `joinV0` / `joinV1` time       | 51x here; 44x to 51x over seven runs                                  | tens of times in an optimized build                                                                                                                          |
-| time under heaptrack           | `joinV0` 4.2x, `joinV1` 1.5x its time without heaptrack               | grows with the allocation rate; depends on the machine                                                                                                       |
+| time under heaptrack           | `joinV0` 4.3x, `joinV1` 1.6x its time without heaptrack               | grows with the allocation rate; depends on the machine                                                                                                       |
 | absolute times                 | 966.1 and 19.0 us/call (935 to 1036 and 19.0 to 21.3 over seven runs) | will differ                                                                                                                                                  |
 
 The allocation counts are the readings to carry elsewhere: they depend on the
@@ -371,14 +379,16 @@ there has two entries, 997 per call under `joinV0` and 998 under
 - **Both versions report a handful of allocations.** tcmalloc is loaded:
   its own `operator new` serves the C++ allocations without calling `malloc`,
   so heaptrack never sees them. On this rig, a build configured with
-  `-DVERNIER_LINK_TCMALLOC=ON` records 19 allocations for either version's
-  whole run, and the benchmark prints a warning before it measures. The
+  `-DVERNIER_LINK_TCMALLOC=ON` records 17 allocations for step 2's whole run
+  of `joinV0`, and the benchmark prints a warning before it measures. The
   doctor names it. `bench doctor ./build/bin/ptests/BenchDemo_15_HeaptrackProfiler`
-  prints `[OK]   heaptrack  heaptrack available` for the default build, which
-  does not link tcmalloc, and this for the build configured with the option:
+  prints
+  `[OK]   heaptrack  heaptrack records /bin/true (probe: /usr/bin/heaptrack -o <private directory>/probe /bin/true, which wrote probe.zst)`
+  for the default build, which does not link tcmalloc, and this for the build
+  configured with the option:
 
   ```
-    [WARN] heaptrack  heaptrack available, but libtcmalloc is loaded: C++ allocations will be missing
+    [WARN] heaptrack  heaptrack records /bin/true, but libtcmalloc is loaded in this process: C++ allocations will be missing from its trace
                Use a build without tcmalloc (-DVERNIER_LINK_TCMALLOC=OFF, the default) and do not preload it.
   ```
 
@@ -391,7 +401,7 @@ there has two entries, 997 per call under `joinV0` and 998 under
   ```
 
   heaptrack is not installed, or not on `PATH`; the doctor reports
-  `[FAIL] heaptrack  heaptrack binary not found on PATH`. Install the package
+  `[FAIL] heaptrack  missing: heaptrack not found on PATH`. Install the package
   from the rig document's one-time setup.
 
 - **The counts do not divide into a whole number per call.** The run made a

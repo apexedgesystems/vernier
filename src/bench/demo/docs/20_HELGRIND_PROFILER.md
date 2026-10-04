@@ -5,7 +5,10 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
 **Captured:** 2026-09-28 (UTC), step 4 and the job section 2026-09-29 (UTC);
 written for the Vernier 1.0.4 release; captured from the development tree at
-project version 1.0.3, whose CLI reported `bench 1.0.3`; valgrind 3.24.0
+project version 1.0.3, whose CLI reported `bench 1.0.3`; valgrind 3.24.0. The
+console output of the two `bench run` steps, the locked step's log, the
+doctor's row and the `--profile-args drd` run come from 2026-10-03 (UTC), a
+later tree at the same version.
 
 ## Overview
 
@@ -81,7 +84,7 @@ the log carries the finding. To fail a job on one, run valgrind yourself
 [`bench doctor`](../../docs/rigs/RIG_PI4.md#6-verify-your-rig) reports it as:
 
 ```
-  [OK]   helgrind   valgrind available (helgrind + drd thread-error detectors ship with it)
+  [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
 ```
 
 Vernier's own start gate stays out of the report when Vernier's library was
@@ -285,12 +288,20 @@ Note: Google Test filter = Helgrind.RacyTotal
 [----------] Global test environment tear-down
 [==========] 1 test from 1 test suite ran. (180 ms total)
 [  PASSED  ] 1 test.
+
+[profile] --profile helgrind: no case that ran was built with the profiler guard; the helgrind wrap still recorded the whole process.
+
+[bench] helgrind wrote helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (7222 bytes)
 ```
 
 The `Running:` line is the wrap `bench run` built. The case ran, because
 under valgrind it does not skip, and it passed: helgrind reports and does not
-stop the program, and the total came out right. `bench run` exited 0. The log
-is the one file in a folder named for the binary and the tool:
+stop the program, and the total came out right. `RacyTotal` measures nothing,
+so the run ends with the `[profile]` line: no case built with the profiler
+guard ran, and the wrap still recorded the whole process. The last line is
+`bench run`'s, after valgrind exited: it checks that the log was written and
+names its size. `bench run` exited 0. The log is the one file in a folder
+named for the binary and the tool:
 
 ```bash
 ls helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind
@@ -450,35 +461,36 @@ Note: Google Test filter = Helgrind.LockedTotal
 [----------] Global test environment set-up.
 [----------] 1 test from Helgrind
 [ RUN      ] Helgrind.LockedTotal
-[Helgrind.LockedTotal]  101823.750 us/call  CV=0.0%  ~10 calls/s  (p10=101823.750 p90=101823.750 sd=0.000)
-[       OK ] Helgrind.LockedTotal (1009 ms)
-[----------] 1 test from Helgrind (1018 ms total)
+[Helgrind.LockedTotal]  166997.750 us/call  CV=0.0%  ~6 calls/s  (p10=166997.750 p90=166997.750 sd=0.000)
+[       OK ] Helgrind.LockedTotal (1651 ms)
+[----------] 1 test from Helgrind (1659 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (1070 ms total)
+[==========] 1 test from 1 test suite ran. (1714 ms total)
 [  PASSED  ] 1 test.
+[bench] helgrind wrote helgrind-locked/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log (743 bytes)
 ```
 
 and of the log:
 
 ```
-==44424== Helgrind, a thread error detector
-==44424== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
-==44424== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==44424== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
-==44424== Parent PID: 44423
-==44424==
-==44424==
-==44424== Use --history-level=approx or =none to gain increased speed, at
-==44424== the cost of reduced accuracy of conflicting-access information
-==44424== For lists of detected and suppressed errors, rerun with: -s
-==44424== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 33 from 7)
+==160566== Helgrind, a thread error detector
+==160566== Copyright (C) 2007-2024, and GNU GPL'd, by OpenWorks LLP et al.
+==160566== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==160566== Command: ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --cycles 2 --repeats 1 --profile helgrind --profile-output-dir helgrind-locked --gtest_filter=Helgrind.LockedTotal --threads 4
+==160566== Parent PID: 160565
+==160566==
+==160566==
+==160566== Use --history-level=approx or =none to gain increased speed, at
+==160566== the cost of reduced accuracy of conflicting-access information
+==160566== For lists of detected and suppressed errors, rerun with: -s
+==160566== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 36 from 8)
 ```
 
 `ERROR SUMMARY: 0 errors from 0 contexts`: four threads made two calls each
 through the mutex, and helgrind found every access to the total ordered by the
 lock. `--cycles 2 --repeats 1` keeps the run short, and two calls per thread
-are enough for the threads to share the total. The result line, 101.8 ms per
+are enough for the threads to share the total. The result line, 167.0 ms per
 call, is what helgrind costs, not how fast the locked version is.
 
 Helgrind did not report Vernier's own start gate either, which
@@ -640,11 +652,12 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   `this binary is built with the address or the thread sanitizer, whose builds valgrind cannot check; run this test in a build without either`,
   and the harness's two helgrind tests with a reason of their own.
 
-- **The log is helgrind's after `--profile-args drd`.** `bench run` wraps
-  with `--tool=helgrind` whatever `--profile-args` holds: with
-  `--profile-args drd`, its `Running:` line and the log were still helgrind's,
-  `Helgrind, a thread error detector`. The backend reads `drd` only for the
-  command it prints when run without valgrind. This page uses helgrind only.
+- **The log is drd's after `--profile-args drd`.** `bench run` wraps with
+  `--tool=drd` then: step 2's command with `--profile-args drd` prints
+  `Running: valgrind --tool=drd --log-file=helgrind-drd/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ...`
+  (with `--profile-output-dir helgrind-drd`), and the log opens with
+  `drd, a thread error detector`; the folder and the file keep helgrind's
+  names. This page uses helgrind only.
 
 ## Check Against the Reference
 

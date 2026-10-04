@@ -9,7 +9,11 @@ reported `bench 1.0.3`. Steps 2, 3 and 4 come from one later session,
 2026-09-29 (UTC), of a later development tree at the same version, with the
 clocks locked as in Step 1. The two `bench compare` outputs were produced from
 the saved CSVs of the runs they show, by the CLI of a later development tree,
-which also reports `bench 1.0.3`.
+which also reports `bench 1.0.3`. The console output of Steps 2 and 4, and the
+two runs quoted first under If It Does Not Match, come from a session of
+2026-10-03 (UTC) on a later development tree at the same version, with Step 1's
+command run just before them and the clocks locked the same way; the reports
+and summaries those steps show are the 2026-09-29 session's.
 
 ## Overview
 
@@ -49,8 +53,9 @@ has to start under the tool. `bench run` does that:
   `ncu --target-processes all` and writes
   `bench-out/<binary>.ncu/kernel_profile.ncu-rep`.
 
-A binary started with `--profile nsight` but without a tool around it prints
-the command that would capture it and runs uncaptured (see
+A binary started with `--profile nsight` but without a tool around it
+captures nothing: its tests run, and the run fails (exit status 4 when they
+pass), printing the command that would capture it (see
 [If It Does Not Match](#if-it-does-not-match)). A wrap typed by hand, such as
 `nsys profile ... <binary> --profile nsight`, works too, but writes only the
 report: run `nsys stats` on it yourself.
@@ -223,25 +228,28 @@ Running: nsys profile -o bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profil
 ...
 [ RUN      ] NsightProfiler.G0
 
-[WARN] Profiler 'nsight': unverified: collection is owned by the nsight wrap; completion is checked at exit
+[WARN] Profiler 'nsight': unverified: nsys started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
 [nsight] this process runs under nsys, which writes the report when the process exits.
-[NsightProfiler.G0]  3567.750 us/call  CV=0.7%  ~280 calls/s  (p10=3564.790 p90=3606.510 sd=23.760)
-[       OK ] NsightProfiler.G0 (371 ms)
+[NsightProfiler.G0]  3366.900 us/call  CV=0.0%  ~297 calls/s  (p10=3366.860 p90=3369.580 sd=1.591)
+[       OK ] NsightProfiler.G0 (354 ms)
 ...
 Generated:
     .../bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep
-[nsight] auto-extracted nsys stats reports into bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight
+[bench] nsight wrote bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep (143478 bytes)
+[nsight] wrote the nsys stats summaries into bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight
 ```
 
 The `[WARN]` line is the harness's readiness report for the profiler request,
-printed once per run: under `bench run`'s wrap the capture belongs to `nsys`,
-so the harness runs no check of its own and reports the request unverified.
-The report and the four summaries are in
-`bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/`. The capture cost little:
-`G0` read 3,568 us a call under `nsys`, 4% more than the 3,423 us Step 1's
-command read just before it, in the same session. The run made 61 calls, one
-warmup and 60 measured.
+printed once per run. The harness sees that `nsys` started the process, from
+what `nsys` puts in its environment, but cannot see from inside the process
+whether `nsys` captured the GPU work, so it reports the request unverified;
+the report is the evidence. After the process exits, `bench run` checks that
+the report was written and names its size, then writes the four summaries
+beside it, in `bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/`. The capture
+cost little: `G0` read 3,367 us a call under `nsys`, against 3,439 us from
+Step 1's command run just before it, in the same session. The run made 61
+calls, one warmup and 60 measured.
 `cuda_api_sum.txt`, the CUDA calls:
 
 ```
@@ -333,9 +341,9 @@ sudo chown -R "$(id -u):$(id -g)" bench-out
 Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler --cycles 3 --repeats 1 --profile ncu --gtest_filter=NsightProfiler.Kernel*
 ...
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
-==PROF== Connected to process 18471 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
+==PROF== Connected to process 92733 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
 
-[WARN] Profiler 'ncu': unverified: collection is owned by the ncu wrap; completion is checked at exit
+[WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
 [nsight] this process runs under ncu, which writes the report when the process exits.
 ==WARNING== Unable to access the following 8 metrics: mcc__cycles_active.avg, mcc__cycles_active.max, mcc__cycles_active.min, mcc__cycles_active.sum, mcc__cycles_elapsed.avg, mcc__cycles_elapsed.max, mcc__cycles_elapsed.min, mcc__cycles_elapsed.sum.
@@ -344,16 +352,20 @@ Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f 
 ...
 [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
 ...
-[NsightProfiler.KernelOneThreadPerBlock]  914810.547 us/call  CV=0.0%  ~1 calls/s  (p10=914810.547 p90=914810.547 sd=0.000)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (21421 ms)
+[NsightProfiler.KernelOneThreadPerBlock]  912121.826 us/call  CV=0.0%  ~1 calls/s  (p10=912121.826 p90=912121.826 sd=0.000)
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (17366 ms)
 ...
-[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12285 ms)
+[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12267 ms)
 ...
 ==PROF== Report: .../bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep
+[bench] ncu wrote bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep (1507892 bytes)
 ```
 
-The `[WARN]` line is Step 2's readiness report, here for `ncu`, which owns
-this capture. The run took 34 seconds for 28 profiled launches, 14 of each
+The `[WARN]` line is Step 2's readiness report, here for `ncu`, which started
+this process; run as root, it reads the counters, and the line names no
+restriction (see [If It Does Not Match](#if-it-does-not-match)). `bench run`
+checks the report after the process exits and names its size. The run took
+30 seconds for 28 profiled launches, 14 of each
 shape (the harness's warmup launches and the three measured ones). The times it prints
 are `ncu`'s replays, not the kernel's: the timings are Step 1's. The eight
 `mcc__` metrics are not readable on this rig; the sections below do not use
@@ -638,31 +650,36 @@ conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
 
 ## If It Does Not Match
 
-- **The run was not captured.** `--profile nsight` without `nsys` around the
-  process captures nothing; the test still runs and passes, and the backend
-  prints the command that would capture it:
+- **The run was not captured, and it failed.** `--profile nsight` without
+  `nsys` around the process captures nothing: the test still runs and passes,
+  and the run then exits with status 4, after the request's line gives the
+  command that would capture it:
 
   ```
-  [nsight] No nsys session: nsys cannot attach to a running process, so this
-  [nsight] run is not captured. Start the binary under nsys:
-  [nsight]   nsys profile -o ./NsightProfiler.G0.nsight/profile -t cuda,nvtx --force-overwrite true \
-  [nsight]       <this-binary> --profile nsight [...]
-  [nsight] or let bench run start it, which also writes the summary reports:
-  [nsight]   bench run <this-binary> --profile nsight -- [...]
+  [FAIL] Profiler 'nsight': missing: nsight collects only when nsys starts the process, and nsys did not start this one
+     Wrap it: nsys profile -o ./profile -t cuda,nvtx --force-overwrite true <this-binary> --profile nsight [...]; or run it with bench run --profile nsight, which wraps it and writes the summary reports.
+     Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
+  ...
+  [profile] --profile nsight failed; the run exits with status 4:
+  [profile]   nsight: missing: nsight collects only when nsys starts the process, and nsys did not start this one
   ```
 
   Start it under `bench run` as Steps 2 and 5 do, or under the printed
-  command. `--profile ncu` without `ncu` prints the same for `ncu`.
+  command. `--profile ncu` without `ncu` fails the same way, naming `ncu`.
 
 - **`ncu` has no permission for the counters.** Run without `sudo`, the tests
-  pass but no kernel is profiled, and `bench run` exits non-zero:
+  pass but no kernel is profiled, and `bench run` exits non-zero. The
+  readiness line names the driver's setting:
 
   ```
+  [WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process; the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params), and this process is not root
+
+  [nsight] this process runs under ncu, which writes the report when the process exits.
   ==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
   ...
   [  PASSED  ] 1 test.
-  ==PROF== Disconnected from process 87873
-  Error: parse error: benchmark exited with code 1
+  ==PROF== Disconnected from process 93083
+  Error: the benchmark exited with status 1
   ```
 
   Run it as Step 4 does, with `sudo env PATH="$PATH"`.
