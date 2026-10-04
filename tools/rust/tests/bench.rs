@@ -1743,9 +1743,10 @@ struct RouteRig {
 
 /// A compute-sanitizer stand-in (bash, for its pattern replacement) that
 /// writes the report `FAKE_SANITIZER` names, in the real tool's words
-/// (compute-sanitizer 2025.4.0, recorded runs), and ends as the tool does:
-/// errors found end with its `--error-exitcode` value (0 without one, the
-/// tool's default), otherwise with the benchmark's own status. It reads its
+/// (compute-sanitizer 2025.4.0, recorded runs; racecheck's warning lines take
+/// the form of its recorded error lines), and ends as the tool does: errors
+/// found end with its `--error-exitcode` value (0 without one, the tool's
+/// default), otherwise with the benchmark's own status. It reads its
 /// `--log-file` value as the tool does: `%%` is one `%`, and any other `%`
 /// is refused, with status 255 and no report.
 const SANITIZER_STAND_IN: &str = r#"#!/bin/bash
@@ -1783,6 +1784,18 @@ case "${FAKE_SANITIZER:-clean}" in
     report 'Error: Race reported between Write access at k(int *, int)+0x70' \
       '    and Write access at k(int *, int)+0x70 [63 hazards]' '' \
       'RACECHECK SUMMARY: 1 hazard displayed (1 error, 0 warnings)'
+    exit "$ec" ;;
+  race-warnings)
+    report 'Warning: Race reported between Read access at k(int *, int)+0x60' \
+      '    and Write access at k(int *, int)+0x70 [2 hazards]' '' \
+      'RACECHECK SUMMARY: 1 hazard displayed (0 errors, 1 warning)'
+    exit 0 ;;
+  race-warnings-findings)
+    report 'Error: Race reported between Write access at k(int *, int)+0x70' \
+      '    and Write access at k(int *, int)+0x70 [63 hazards]' '' \
+      'Warning: Race reported between Read access at k(int *, int)+0x60' \
+      '    and Write access at k(int *, int)+0x70 [2 hazards]' '' \
+      'RACECHECK SUMMARY: 2 hazards displayed (1 error, 1 warning)'
     exit "$ec" ;;
   startup) report 'Error: Target application terminated before first instrumented API call'; exit 255 ;;
   truncated) report 'Invalid __global__ write of size 4 bytes'; exit "${FAKE_SANITIZER_EXIT:-5}" ;;
@@ -2926,6 +2939,44 @@ fn run_compute_sanitizer_racecheck() {
     );
     assert!(log.contains("--tool=racecheck --error-exitcode 5"), "{log}");
     let (code, _, err, _) = run("race-findings");
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: compute-sanitizer reported 1 error in the benchmark; the report is \
+             {SANITIZER_REPORT} (the tool exited with status 5)\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test racecheck's warnings are not errors: a run whose summary counts
+/// warnings and no errors (the tool ending with the benchmark's status) passes;
+/// with one error beside them, the tool ends with the reserved status and the
+/// run fails with the summary's error count alone.
+#[test]
+fn run_compute_sanitizer_racecheck_warnings() {
+    let run = |scenario: &str| {
+        let rig = route_rig(&["compute-sanitizer"]);
+        run_rig_env(
+            &rig,
+            &[
+                "--profile",
+                "compute-sanitizer",
+                "--profile-args",
+                "racecheck",
+            ],
+            &[("FAKE_SANITIZER", scenario)],
+        )
+    };
+    let (code, stdout, err, _) = run("race-warnings");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        stdout.contains(&format!(
+            "[bench] compute-sanitizer wrote {SANITIZER_REPORT} ("
+        )),
+        "{stdout}"
+    );
+    let (code, _, err, _) = run("race-warnings-findings");
     assert_eq!(code, 1, "{err}");
     assert!(
         err.ends_with(&format!(
