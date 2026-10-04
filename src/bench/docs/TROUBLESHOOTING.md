@@ -674,8 +674,8 @@ watch -n 1 nvidia-smi
 **Debug steps:**
 
 ```bash
-# Profile to identify bottleneck
-./MyKernel_GPU_PTEST --profile nsight --gtest_filter="*CpuVsGpu*"
+# Profile to identify bottleneck (bench run starts it under nsys)
+bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*CpuVsGpu*"
 
 # Check all GPU metrics in CSV
 cat results.csv | grep -E "(transfer|occupancy|speedup)"

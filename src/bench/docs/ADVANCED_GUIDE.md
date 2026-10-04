@@ -1079,26 +1079,29 @@ linked at build time; no `--profile` flag required. See
 
 GPU-specific profilers:
 
-| Profiler            | Purpose                                          | Requirements            | Output                                                                          |
-| ------------------- | ------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | CUDA toolkit + nsys/ncu | `profile.nsys-rep` (default), `kernel_replay.ncu-rep` (`--profile-args replay`) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit            | `sanitizer.log`                                                                 |
-| `rocprof`           | AMD ROCm GPU profiler                            | ROCm + rocprof          | `results.{csv,json}`                                                            |
+| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                        |
+| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute`), `kernel_replay.ncu-rep` (the printed replay command) |
+| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                               |
+| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                               |
+
+"Under it" means the process must be started by the tool, as for the CPU
+tools in [Available Profilers](#available-profilers).
 
 **Using Nsight:**
 
 ```bash
-# Profile specific kernel (default Systems mode)
-./test --profile nsight --gtest_filter="*MyKernel"
+# Profile specific kernel (default Systems mode): bench run starts it under nsys
+bench run ./test --profile nsight -- --gtest_filter="*MyKernel"
+# Generates: bench-out/test.nsight/profile.nsys-rep and the nsys stats summaries
 
-# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep
-
-# Kernel deep-dive (Compute replay)
+# Kernel deep-dive (Compute replay): bench run does not wrap a replay. Run the
+# benchmark directly: it fails, printing the ncu --metrics command to run
 ./test --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+# That command writes ./kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu-ui kernel_replay.ncu-rep
 ```
 
 ### GPU Best Practices
