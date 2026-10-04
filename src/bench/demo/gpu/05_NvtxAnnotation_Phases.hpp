@@ -6,8 +6,8 @@
  *        in the order it opens them.
  *
  * The demo names its ranges with these, and its check
- * (utst/05_NvtxAnnotation_Ranges_uTest.cpp) looks for these names in the
- * Nsight Systems report, so the two read one list.
+ * (utst/05_NvtxAnnotation_Check.hpp) looks for these names in the Nsight
+ * Systems report, so the two read one list.
  */
 
 namespace vernier {
