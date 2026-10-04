@@ -308,13 +308,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pprof`-only installation printed empty analysis). An analyzer that is
   missing, does not run or fails on the profile is reported, and the capture
   and its `cpu.prof` are kept.
-- **`bench nsight-parse parse` replaces the Python `nsight-parse`** -- it reads
+- **`bench nsight-parse` replaces the Python `nsight-parse`** -- it reads
   Nsight Compute reports with `ncu --import` and Nsight Systems reports through
   a private export of each into the same CSV of its own, which `bench summary`,
   `bench compare` and `bench-plot` do not accept, and exits 1, naming the input,
   when a requested input could not be read, still writing the rows it did read
   (a summary with no data is a warning; `--timeout` bounds each tool command).
-  Scripts put `bench` in front of `nsight-parse parse`; one that relied on
+  Scripts put `bench` in front and drop the word `parse`; one that relied on
   exit 0 after a failed read now sees 1.
 
 ### Fixed

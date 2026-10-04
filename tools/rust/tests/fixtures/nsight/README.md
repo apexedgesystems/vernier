@@ -4,7 +4,7 @@ What `nsys` and `ncu` printed on the Jetson AGX Thor reference rig (Nsight
 Systems 2025.3.2, Nsight Compute 2025.3.1) for demo 02's reports, the ones
 walkthrough 11 reads. `tests/nsight_report.rs` replays these through fake
 `nsys` and `ncu` executables, and the reader's unit tests parse them, so
-`bench nsight-parse parse` is tested against real output on any machine.
+`bench nsight-parse` is tested against real output on any machine.
 Trailing blanks are removed; nothing else is edited.
 
 | File                                  | Command                                                                                                                                                           |

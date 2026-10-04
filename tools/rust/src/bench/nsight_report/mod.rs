@@ -28,12 +28,9 @@
 /// message lines.
 pub const COMMAND: &str = "nsight-parse";
 
-/// The command's one action: `bench <COMMAND> <ACTION> <inputs> --csv <file>`.
-pub const ACTION: &str = "parse";
-
 /// The nsys summaries Vernier reads from a report: `bench run --profile
 /// nsight` writes them as text beside the report it made, and
-/// `bench nsight-parse parse` reads them into its CSV.
+/// `bench nsight-parse` reads them into its CSV.
 pub const NSYS_SUMMARIES: [&str; 4] = [
     "cuda_gpu_kern_sum",
     "cuda_api_sum",

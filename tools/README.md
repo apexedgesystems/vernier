@@ -234,8 +234,8 @@ reports into one CSV of its own. It needs `nsys` on `PATH` for Systems reports
 and `ncu` for Compute reports, and nothing else.
 
 ```bash
-bench nsight-parse parse run.nsys-rep --csv summaries.csv   # one report
-bench nsight-parse parse bench-out/ --csv combined.csv      # every report under a directory
+bench nsight-parse run.nsys-rep --csv summaries.csv   # one report
+bench nsight-parse bench-out/ --csv combined.csv      # every report under a directory
 ```
 
 **Options:**
@@ -309,7 +309,7 @@ On the Jetson AGX Thor rig (nsys 2025.3.2, ncu 2025.3.1), a directory with one
 good report and a truncated copy of an Nsight Compute report:
 
 ```bash
-bench nsight-parse parse mixed/ --csv mixed.csv   # exits 1
+bench nsight-parse mixed/ --csv mixed.csv   # exits 1
 ```
 
 ```

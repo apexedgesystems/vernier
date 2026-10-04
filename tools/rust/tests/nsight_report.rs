@@ -1,4 +1,4 @@
-//! `bench nsight-parse parse`: the reports it reads, the CSV it writes and the
+//! `bench nsight-parse`: the reports it reads, the CSV it writes and the
 //! failures it reports, against fake `nsys` and `ncu` that replay what the real
 //! tools printed on the reference rig (tests/fixtures/nsight/README.md) and log
 //! every call.
@@ -11,7 +11,7 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime};
 
-use vernier_rust_tools::bench::nsight_report::{ACTION, COMMAND, NSYS_SUMMARIES};
+use vernier_rust_tools::bench::nsight_report::{COMMAND, NSYS_SUMMARIES};
 
 const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/nsight");
 
@@ -216,9 +216,9 @@ impl Case {
         }
     }
 
-    /// `bench nsight-parse parse <args>`.
+    /// `bench nsight-parse <args>`.
     fn parse(&self, args: &[&str]) -> Run {
-        let mut all = vec![COMMAND, ACTION];
+        let mut all = vec![COMMAND];
         all.extend_from_slice(args);
         self.run(&all)
     }
@@ -587,13 +587,7 @@ fn missing_tool_is_an_error() {
     case.report("kernel_profile.ncu-rep");
 
     let run = case.run_with_path(
-        &[
-            COMMAND,
-            ACTION,
-            "kernel_profile.ncu-rep",
-            "--csv",
-            "out.csv",
-        ],
+        &[COMMAND, "kernel_profile.ncu-rep", "--csv", "out.csv"],
         &case.path("empty-bin"),
     );
 
@@ -623,13 +617,7 @@ fn tool_that_cannot_start_is_named() {
     .unwrap();
 
     let run = case.run_with_path(
-        &[
-            COMMAND,
-            ACTION,
-            "kernel_profile.ncu-rep",
-            "--csv",
-            "out.csv",
-        ],
+        &[COMMAND, "kernel_profile.ncu-rep", "--csv", "out.csv"],
         &not_executable,
     );
 
@@ -831,6 +819,28 @@ fn unwritable_csv_is_an_error() {
     assert_eq!(run.stdout, "");
 }
 
+/// @test A line with an action word after the command reads that word as an
+/// input: it is an error of its own, the reports are read all the same, and
+/// the run exits 1.
+#[test]
+fn a_word_after_the_command_is_an_input() {
+    let case = Case::new();
+    case.report("run/profile.nsys-rep");
+
+    let run = case.parse(&["parse", "run/profile.nsys-rep", "--csv", "out.csv"]);
+
+    assert_eq!(run.status.code(), Some(1));
+    assert_eq!(
+        run.stderr,
+        format!("[{COMMAND}] error: no such file or directory: parse\n")
+    );
+    assert_eq!(
+        run.stdout,
+        format!("[{COMMAND}] wrote 13 rows to out.csv\n")
+    );
+    assert_eq!(case.csv("out.csv"), fixture("expected_nsys_summaries.csv"));
+}
+
 /// @test Usage errors exit 2: no input, no --csv, an empty argument, a timeout
 /// of 0.
 #[test]
@@ -909,7 +919,7 @@ fn interrupted_run_cleans_up(signal: &str, number: i32, name: &str) {
     let case = Case::new();
     case.report("slow.nsys-rep");
     let mut child = case
-        .command(&[COMMAND, ACTION, "slow.nsys-rep", "--csv", "out.csv"])
+        .command(&[COMMAND, "slow.nsys-rep", "--csv", "out.csv"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -976,7 +986,6 @@ fn ignored_hangup_stays_ignored() {
             &["/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "sh"],
             &[
                 COMMAND,
-                ACTION,
                 "slow.nsys-rep",
                 "--csv",
                 "out.csv",
@@ -1045,7 +1054,6 @@ fn signal_while_a_leftover_holds_the_output_ends_at_once() {
     let mut child = case
         .command(&[
             COMMAND,
-            ACTION,
             "leftover.ncu-rep",
             "--csv",
             "out.csv",
@@ -1118,7 +1126,6 @@ fn ignored_child_signal_does_not_hide_the_tools_end() {
                 ],
                 &[
                     COMMAND,
-                    ACTION,
                     "leftover.ncu-rep",
                     "--csv",
                     "out.csv",
@@ -1205,13 +1212,15 @@ fn profile_summarize_reads_no_report() {
     assert_eq!(rows[1][..3], ["Bin.nsight", "2", "14"]);
 }
 
-/// @test The help names the inputs, --csv, --timeout and the exit status.
+/// @test The help shows the one-word command with its inputs, --csv and
+/// --timeout, and the exit status.
 #[test]
 fn help_describes_the_command() {
     let case = Case::new();
     let run = case.parse(&["--help"]);
     assert_eq!(run.status.code(), Some(0));
     for needle in [
+        "Usage: bench nsight-parse [OPTIONS] --csv <CSV> <INPUTS>...",
         "--csv <CSV>",
         "--timeout <TIMEOUT>",
         "[default: 600]",

@@ -541,7 +541,7 @@ as ever. `G1` then reads about 0.9 ms a call instead of about 0.65 ms (see
 
 ## The Reports as CSV
 
-`bench nsight-parse parse` turns these reports into one CSV. It exports an
+`bench nsight-parse` turns these reports into one CSV. It exports an
 Nsight Systems report once, to a private temporary file, and reads the four
 summaries from that export with `nsys stats --format csv`; it imports an
 Nsight Compute report with `ncu --import ... --csv --print-summary
@@ -549,12 +549,12 @@ per-kernel`. It is part of the `bench` CLI, so the rig's build has it, and it
 needs only `nsys` and `ncu`. Here it reads the reports of Steps 2 and 4, laid
 out as `bench run` leaves them: in its folders, with the summaries and the
 SQLite export it writes beside the Nsight Systems report. These commands ran on
-this rig on 2026-10-03 (UTC), with the CLI of a later development tree, which
+this rig on 2026-10-04 (UTC), with the CLI of a later development tree, which
 also reports `bench 1.0.3`:
 
 ```bash
-bench nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
-bench nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_metrics.csv
+bench nsight-parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
+bench nsight-parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_metrics.csv
 ```
 
 ```
@@ -588,7 +588,7 @@ ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned lo
 ...
 ```
 
-When a report cannot be read, `bench nsight-parse parse` names it on stderr,
+When a report cannot be read, `bench nsight-parse` names it on stderr,
 still writes the rows it did read, and exits 1 (see the
 [tools README](../../../../tools/README.md#nsight-parse---nsight-reports-as-csv)).
 Its CSV is not a benchmark CSV: the benchmark tools need `test`, `wallMedian`,
