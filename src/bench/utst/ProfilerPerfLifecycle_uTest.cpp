@@ -48,6 +48,17 @@ using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
 
+/** @brief True once process @p pid has ended: a zombie or gone from /proc. */
+bool ended(pid_t pid) {
+  std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+  std::string line;
+  if (!std::getline(stat, line)) {
+    return true;
+  }
+  const std::size_t CLOSE = line.rfind(')');
+  return CLOSE != std::string::npos && line.compare(CLOSE + 1, 3, " Z ") == 0;
+}
+
 std::string readText(const std::string& path) {
   std::ifstream in(path);
   std::stringstream text;
@@ -100,11 +111,21 @@ protected:
       profiler.beforeMeasure();
       out.startTook = std::chrono::steady_clock::now() - START;
       if (afterExit) {
-        // The fake logs its exit itself: no timing is assumed.
+        // The fake logs its exit just before it exits: wait for the line,
+        // then for the process to have ended (a zombie until the stop reaps
+        // it), so that no timing is assumed.
         for (int i = 0; i < 500 && dir_.logLines("perf exited").empty(); ++i) {
           std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
-        EXPECT_FALSE(dir_.logLines("perf exited").empty()) << dir_.log();
+        const std::vector<std::string> EXITED = dir_.logLines("perf exited");
+        EXPECT_FALSE(EXITED.empty()) << dir_.log();
+        if (!EXITED.empty()) {
+          const pid_t FAKE = std::stoi(EXITED.front().substr(EXITED.front().find('=') + 1));
+          for (int i = 0; i < 500 && !ended(FAKE); ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+          }
+          EXPECT_TRUE(ended(FAKE)) << "perf " << FAKE << " logged its exit but still runs";
+        }
       }
       profiler.afterMeasure(vernier::bench::Stats{});
     }
