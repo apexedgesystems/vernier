@@ -181,12 +181,12 @@ and dependency chains), and designed to show measurable differences.
 ### Shared Examples
 
 Code a walkthrough teaches from lives in its own directory beside these
-helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
-and unit tests that hold the example's versions to the same answers,
-registered under the `demo` label (`ctest --test-dir build -L demo`). An
-example's performance tests, run by hand on the rig and never registered, are
-in its `ptst` directory. The first is
-[examples/join](examples/join/inc/Join.hpp), and the table below names the
+helpers, as `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its
+own: a small library the demo links, and unit tests that hold the example's
+versions to the same answers, registered under the `demo` label
+(`ctest --test-dir build -L demo`). An example's performance tests, run by
+hand on the rig and never registered, are in its `ptst` directory. The first
+is [examples/join](examples/join/inc/Join.hpp), and the table below names the
 demos that use each example.
 
 | Example                                  | Versions                                                                                                                                           | Used In                              |
@@ -195,7 +195,8 @@ demos that use each example.
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
 | [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                         |
 
-The saxpy example and its tests are built only where the GPU demos are.
+The saxpy library and its device tests are built only where the GPU demos are;
+its host tests on a stand-in runtime are built everywhere.
 
 ---
 
