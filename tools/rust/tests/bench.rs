@@ -2654,6 +2654,131 @@ fn run_callgrind_analyze_inherited_ignore_stays() {
     assert!(!annotator_running, "the annotator {annotator} still runs");
 }
 
+/* ----------------------------- Run: The Benchmark's Own Path ----------------------------- */
+
+/// A route rig with `mybench` in its working directory, a stand-in benchmark
+/// that logs "local <args>"; with @p impostor, another `mybench` first on
+/// PATH logs "impostor <args>". The local one is executable unless
+/// @p local_executable is false.
+fn bare_name_rig(programs: &[&str], impostor: bool, local_executable: bool) -> RouteRig {
+    let rig = route_rig(programs);
+    let local = rig.dir.path().join("mybench");
+    write_executable(
+        &local,
+        &format!("#!/bin/sh\necho \"local $*\" >> '{}'\n", rig.log.display()),
+    );
+    if !local_executable {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&local, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+    if impostor {
+        write_executable(
+            &rig.dir.path().join("tools/mybench"),
+            &format!(
+                "#!/bin/sh\necho \"impostor $*\" >> '{}'\n",
+                rig.log.display()
+            ),
+        );
+    }
+    rig
+}
+
+/// `bench <command> mybench <args>` in the rig's folder, PATH its stand-ins:
+/// the exit status, stdout, stderr and the stand-ins' log.
+fn run_bare_name(rig: &RouteRig, command: &str, args: &[&str]) -> (i32, String, String, String) {
+    let out = output_of(
+        Command::new(bin())
+            .arg(command)
+            .arg("mybench")
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path()),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test A benchmark named without a directory is the working directory's,
+/// as `bench doctor` reads it: `bench run mybench` starts `./mybench` when
+/// nothing of that name is on PATH, and when another `mybench` is.
+#[test]
+fn run_bare_name_is_the_working_directorys() {
+    for impostor in [false, true] {
+        let rig = bare_name_rig(&[], impostor, true);
+        let (code, stdout, err, log) = run_bare_name(&rig, "run", &["--cycles", "1"]);
+        assert_eq!(code, 0, "impostor {impostor}: {err}");
+        assert!(
+            stdout.contains("Running: ./mybench --cycles 1"),
+            "impostor {impostor}: {stdout}"
+        );
+        assert_eq!(log, "local --cycles 1\n", "impostor {impostor}");
+    }
+}
+
+/// @test The taskset and wrapped routes and `bench profile-all` hand the
+/// tools `./mybench`, which no tool looks up on PATH, with an impostor there.
+#[test]
+fn run_bare_name_reaches_every_route() {
+    let rig = bare_name_rig(&["taskset", "valgrind"], true, true);
+    let (code, _, err, log) = run_bare_name(&rig, "run", &["--taskset", "0"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        log.starts_with("taskset wrap= -c 0 ./mybench"),
+        "taskset: {log}"
+    );
+    let rig = bare_name_rig(&["taskset", "valgrind"], true, true);
+    let (code, _, err, log) = run_bare_name(&rig, "run", &["--profile", "massif"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        log.starts_with("valgrind wrap=massif --tool=massif") && log.contains(" ./mybench "),
+        "wrapped: {log}"
+    );
+    let rig = bare_name_rig(&["taskset", "valgrind"], true, true);
+    let out = rig.dir.path().join("out");
+    let (code, _, err, log) = run_bare_name(
+        &rig,
+        "profile-all",
+        &[
+            "--profilers",
+            "massif",
+            "--out",
+            out.to_str().expect("UTF-8"),
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        log.starts_with("valgrind wrap=massif --tool=massif") && log.contains(" ./mybench "),
+        "profile-all: {log}"
+    );
+    assert!(!log.contains("impostor"), "{log}");
+}
+
+/// @test A working-directory benchmark without an execute bit is refused
+/// before anything starts, naming it; the `mybench` on PATH is not run in
+/// its place.
+#[test]
+fn run_bare_name_not_executable_is_refused() {
+    let rig = bare_name_rig(&[], true, false);
+    let (code, _, err, log) = run_bare_name(&rig, "run", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("invalid arguments: ./mybench is not executable"),
+        "{err}"
+    );
+    assert_eq!(log, "", "something ran: {log}");
+    let (code, _, err, log) = run_bare_name(&rig, "profile-all", &["--profilers", "massif"]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains("invalid arguments: ./mybench is not executable"),
+        "{err}"
+    );
+    assert_eq!(log, "", "something ran: {log}");
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status

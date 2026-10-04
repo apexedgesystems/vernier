@@ -5,7 +5,10 @@
 //! validate, run, doctor, profile-all, profile-summarize, init,
 //! config-validate, gpu-env, gpu-topo, gpu-monitor, gpu-lock, flamegraph.
 
-use std::{fmt, path::PathBuf};
+use std::{
+    fmt,
+    path::{Path, PathBuf},
+};
 
 /* ----------------------------- Error ----------------------------- */
 
@@ -291,9 +294,25 @@ pub fn lookup_in_path(name: &str) -> InPath {
     lookup_in(&search, name)
 }
 
+/// @p binary as the path that starts it: a bare file name becomes
+/// `./<name>`, the working directory's file, which is where `bench doctor`,
+/// `bench validate` and `bench run` find it; started as it is, a bare name
+/// would be looked up on PATH (by the process start, taskset and every
+/// wrapping tool alike).
+pub(crate) fn launch_path(binary: &Path) -> PathBuf {
+    if binary
+        .parent()
+        .is_some_and(|dir| dir.as_os_str().is_empty())
+    {
+        Path::new(".").join(binary)
+    } else {
+        binary.to_path_buf()
+    }
+}
+
 /// Whether @p meta describes a file PATH would run: a regular file with an
 /// execute bit set (on Unix; elsewhere any regular file).
-fn is_executable(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_executable(meta: &std::fs::Metadata) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

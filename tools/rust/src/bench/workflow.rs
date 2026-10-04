@@ -47,10 +47,19 @@ fn candidate_names(name: &str) -> Vec<String> {
 /// Example for a project that builds into `out/<preset>/` with `tests/` only:
 ///   VERNIER_BENCH_BIN_ROOTS=out/* VERNIER_BENCH_BIN_SUBDIRS=tests bench run Foo
 pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
-    // Exact path first: respect any explicit override.
+    // Exact path first: respect any explicit override. A bare name found in
+    // the working directory is that file (`launch_path`), which must be
+    // executable: started as it is, a bare name would run whatever PATH holds.
     let direct = PathBuf::from(name);
     if direct.is_file() {
-        return Ok(direct);
+        let path = super::launch_path(&direct);
+        if !direct.metadata().is_ok_and(|m| super::is_executable(&m)) {
+            return Err(Error::InvalidArgs(format!(
+                "{} is not executable",
+                path.display()
+            )));
+        }
+        return Ok(path);
     }
 
     let candidates = candidate_names(name);
@@ -189,8 +198,9 @@ pub(crate) struct DoctorDocument {
 }
 
 /// @p binary as a path to an existing file, or the error that names it. A
-/// bare file name becomes `./<name>`: it was found in the working directory,
-/// and a bare name would be looked up on PATH when it is started.
+/// bare file name becomes `./<name>` (`launch_path`): it was found in the
+/// working directory, and a bare name would be looked up on PATH when it is
+/// started.
 fn require_binary(binary: &Path) -> Result<PathBuf, Error> {
     if !binary.is_file() {
         return Err(Error::InvalidArgs(format!(
@@ -198,14 +208,7 @@ fn require_binary(binary: &Path) -> Result<PathBuf, Error> {
             binary.display()
         )));
     }
-    if binary
-        .parent()
-        .is_some_and(|dir| dir.as_os_str().is_empty())
-    {
-        Ok(Path::new(".").join(binary))
-    } else {
-        Ok(binary.to_path_buf())
-    }
+    Ok(super::launch_path(binary))
 }
 
 /// Run `<binary> --profile-check-json <args>` with @p env added to its

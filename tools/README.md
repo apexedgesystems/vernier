@@ -187,7 +187,9 @@ Run a benchmark binary with optional CPU pinning and profiling. The binary
 argument can be a full path OR a short name -- the latter auto-resolves
 under `build/*/bin/{ptests,tests,examples}` (override with
 `VERNIER_BENCH_BIN_ROOTS` / `VERNIER_BENCH_BIN_SUBDIRS` for non-CMake
-layouts).
+layouts). A name that is a file in the working directory is that file, as
+`bench doctor` reads it: it starts as `./<name>`, never as a program of that
+name on PATH, and must be executable.
 
 ```bash
 bench run BasicWorkflow                                   # short name auto-resolve

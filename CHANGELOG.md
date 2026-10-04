@@ -366,11 +366,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `bench validate` never fails on its rows, and its JSON has no `fail` status.
 - **A program without an execute bit is not found, and a bare file name is
   the working directory's** -- a program on PATH without an execute bit
-  counted as found, and `bench doctor` and `bench validate` looked a binary
-  named without a directory up on PATH. Such a program is no longer found
-  (`bench run` names such a wrapper before it starts anything), and the two
-  commands start a binary named without a directory from the working
-  directory, where they found it.
+  counted as found, and `bench doctor`, `bench validate`, `bench run` and
+  `bench profile-all` started a binary named without a directory as found
+  on PATH, so `bench run mybench` could run another `mybench` than the one
+  the doctor checked. Such a program is no longer found (`bench run` names
+  such a wrapper before it starts anything), and all four start a binary
+  named without a directory from the working directory (`./mybench`, also
+  under taskset and a wrapping tool), refusing it when it is not
+  executable.
 - **`bench doctor` checks the request a lane runs** -- `--require` judged
   every backend by its default mode, so a lane that ran
   `--profile massif --profile-args pages` could pass the doctor while its
