@@ -24,14 +24,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
 #include <filesystem>
 #include <fstream>
 #include <future>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -154,23 +152,33 @@ OrphanOutcome runOrphanProbe(const FakeToolDir& dir, const std::string& helper,
   return out;
 }
 
-/** @brief Every thread arrives, then all proceed; false when @p count never arrive in time. */
+/**
+ * @brief Every thread arrives, then all proceed; false when @p count never arrive in time.
+ *
+ * Waits by polling an atomic count. A timed std::condition_variable wait calls
+ * pthread_cond_clockwait, which GCC 11's ThreadSanitizer does not intercept: it
+ * sees the waiting thread keep the mutex and reports the next arrival's lock
+ * as a double lock and a data race.
+ */
 class Rendezvous {
 public:
   explicit Rendezvous(int count) : count_(count) {}
 
   bool arriveAndWait(std::chrono::milliseconds timeout) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    ++arrived_;
-    cv_.notify_all();
-    return cv_.wait_for(lock, timeout, [this] { return arrived_ >= count_; });
+    arrived_.fetch_add(1);
+    const auto DEADLINE = std::chrono::steady_clock::now() + timeout;
+    while (arrived_.load() < count_) {
+      if (std::chrono::steady_clock::now() >= DEADLINE) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
   }
 
 private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  int count_;
-  int arrived_ = 0;
+  const int count_;
+  std::atomic<int> arrived_{0};
 };
 
 } // namespace
