@@ -70,6 +70,17 @@ target_sources(BenchDemo_12_MemcheckProfiler PRIVATE cpu/12_MemcheckProfiler_Off
 set_source_files_properties(cpu/12_MemcheckProfiler_OffByOne.cpp PROPERTIES COMPILE_OPTIONS "-g")
 
 # ------------------------------------------------------------------------------
+# Demo 14's Private Sources
+# ------------------------------------------------------------------------------
+# The deliberately racy addition helgrind finds is a source of its own,
+# compiled with debug information whatever the build type, so helgrind's report
+# names the line of the race. Nothing else in the build changes.
+# ------------------------------------------------------------------------------
+
+target_sources(BenchDemo_14_HelgrindProfiler PRIVATE cpu/14_HelgrindProfiler_Racy.cpp)
+set_source_files_properties(cpu/14_HelgrindProfiler_Racy.cpp PROPERTIES COMPILE_OPTIONS "-g")
+
+# ------------------------------------------------------------------------------
 # GPU Demo Sources
 # ------------------------------------------------------------------------------
 
@@ -93,7 +104,7 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (10)
+# Demos Built on a Shared Example (11)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -125,6 +136,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_12_MemcheckProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_14_HelgrindProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -240,7 +255,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (1)
+# Demo Effect Checks Run by CTest (2)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -272,6 +287,31 @@ set_tests_properties(
   Memcheck.FindsTheOffByOne PROPERTIES SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Memcheck\\.FindsTheOffByOne"
 )
+
+vernier_add_gtest(
+  TARGET
+  TestDemoHelgrind
+  SOURCES
+  cpu/utst/14_HelgrindProfiler_uTest.cpp
+  LINK
+  bench
+  demo_helpers
+  LABELS
+  demo
+  helgrind
+)
+target_compile_definitions(
+  TestDemoHelgrind
+  PRIVATE VERNIER_DEMO_14_BINARY="$<TARGET_FILE:BenchDemo_14_HelgrindProfiler>"
+          VERNIER_DEMO_14_RACY_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/cpu/14_HelgrindProfiler_Racy.cpp"
+)
+add_dependencies(TestDemoHelgrind BenchDemo_14_HelgrindProfiler)
+foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothing)
+  string(REPLACE "." "\\." _helgrind_pattern "${_helgrind_check}")
+  set_tests_properties(
+    ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
+  )
+endforeach ()
 
 # ------------------------------------------------------------------------------
 # Demo 06's Totals Check Run by CTest

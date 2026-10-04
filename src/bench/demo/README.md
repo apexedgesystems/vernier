@@ -86,7 +86,7 @@ how to compare two runs.
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
 | 13  | Off-CPU Profiler    | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
-| 14  | Helgrind Profiler   | Data-race / thread-error detection             | Unguarded shared counter                                    | std::atomic counter                          | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
+| 14  | Helgrind Profiler   | Data races, and the lock that fixes one        | join length added to one total, no lock (a race)            | the same under a mutex (correct, serialized) | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
 | 15  | Heaptrack Profiler  | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
 | 16  | jemalloc Profiler   | Sampled allocation hotspots                    | Per-iter string churn                                       | Reserved + reused string                     | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
 
@@ -218,7 +218,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 5. [02, second example](docs/02_PERF_PROFILER.md#the-second-example-a-filter) -- branch prediction and branchless code
 6. [06](docs/06_THREAD_SCALING.md) -- contention between threads, measured with `contentionRun()`
 7. [16](docs/16_OFFCPU_PROFILER.md) -- off-CPU profiling: where threads block
-8. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind / DRD
+8. [20](docs/20_HELGRIND_PROFILER.md) -- data races with Helgrind
 
 **Memory:**
 
