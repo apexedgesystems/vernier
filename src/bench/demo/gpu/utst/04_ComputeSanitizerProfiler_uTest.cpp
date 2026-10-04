@@ -472,6 +472,37 @@ std::vector<std::string> linesOf(const std::string& text) {
   return lines;
 }
 
+/// The hint's by-hand command, run as printed where its folder does not
+/// exist. The demo runs plainly with --profile compute-sanitizer under the
+/// artifact root @p root; the by-hand command is taken from its hint and
+/// filled in, the folder the plain run made is removed, and the command runs
+/// through the shell from @p dir, so whatever a misquoted command creates
+/// stays inside it. The log must exist where the hint says and count no
+/// error, the program must pass, and the shell must exit 0.
+void expectHintRunsAsPrinted(const std::string& demo, const fs::path& dir, const fs::path& root) {
+  const fs::path FOLDER = kernelFolder(root);
+  const std::string OUTPUT = plainProfileRun(demo, root, {}, dir / "plain.txt");
+  const std::string COMMAND = byHandCommand(hintLines(OUTPUT));
+  ASSERT_FALSE(COMMAND.empty()) << "no by-hand command in the hint:\n" << OUTPUT;
+  const std::string FILLED = filledCommand(COMMAND, demo);
+
+  // The plain run made the folder; the hint must work without it.
+  std::error_code ec;
+  fs::remove_all(FOLDER, ec);
+  ASSERT_FALSE(fs::exists(FOLDER)) << "could not remove " << FOLDER;
+  const vg::ChildExit END = shellFrom(dir, "", FILLED, dir / "byhand.txt");
+  const std::string BY_HAND = vg::readText(dir / "byhand.txt");
+  const fs::path LOG = FOLDER / "sanitizer.log";
+  const std::string LOG_TEXT = vg::readText(LOG);
+
+  EXPECT_TRUE(fs::exists(LOG)) << "the hint's command wrote no log where it says (" << LOG << "):\n"
+                               << FILLED << "\n"
+                               << BY_HAND;
+  EXPECT_TRUE(vg::testPassed(BY_HAND, KERNEL_CASE) && vg::oneTestPassed(BY_HAND)) << BY_HAND;
+  EXPECT_EQ(check::errorSummary(LOG_TEXT), 0) << LOG_TEXT;
+  EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << BY_HAND;
+}
+
 } // namespace
 
 /**
@@ -536,10 +567,9 @@ TEST(ComputeSanitizer, PlainRunHintShape) {
  * @test The hint's by-hand command, run as printed where its folder does not
  *       exist, writes the log where it says.
  *
- * Takes the by-hand command from a plain run's hint, fills in the binary and
- * the arguments, removes the folder the plain run created, and runs the
- * command through the shell: the log must exist afterwards and count no
- * error. Skipped where KernelReportsNothing skips.
+ * Under an artifact root in a directory whose name holds a '%', which the
+ * log's name must carry as "%%" for the tool; expectHintRunsAsPrinted() says
+ * what runs and what is checked. Skipped where KernelReportsNothing skips.
  */
 TEST(ComputeSanitizer, HintRunsOnTheFirstRun) {
   const std::string CANNOT = reasonNotToRunAKernel();
@@ -550,34 +580,71 @@ TEST(ComputeSanitizer, HintRunsOnTheFirstRun) {
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
   const fs::path DIR = scratchDirWithPercent();
   ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
-  const fs::path ROOT = DIR / "out";
-  const fs::path FOLDER = kernelFolder(ROOT);
 
-  const std::string OUTPUT = plainProfileRun(DEMO, ROOT, {}, DIR / "plain.txt");
-  const std::string COMMAND = byHandCommand(hintLines(OUTPUT));
-  ASSERT_FALSE(COMMAND.empty()) << "no by-hand command in the hint:\n" << OUTPUT;
-  const std::string FILLED = filledCommand(COMMAND, DEMO);
-
-  // The plain run made the folder; the hint must work without it.
-  std::error_code ec;
-  fs::remove_all(FOLDER, ec);
-  ASSERT_FALSE(fs::exists(FOLDER)) << "could not remove " << FOLDER;
-  const vg::ChildExit END = vg::runLogged({"sh", "-c", FILLED}, DIR / "byhand.txt");
-  const std::string BY_HAND = vg::readText(DIR / "byhand.txt");
-  const fs::path LOG = FOLDER / "sanitizer.log";
-  const std::string LOG_TEXT = vg::readText(LOG);
-
-  EXPECT_TRUE(fs::exists(LOG)) << "the hint's command wrote no log where it says (" << LOG << "):\n"
-                               << FILLED << "\n"
-                               << BY_HAND;
-  EXPECT_TRUE(vg::testPassed(BY_HAND, KERNEL_CASE) && vg::oneTestPassed(BY_HAND)) << BY_HAND;
-  EXPECT_EQ(check::errorSummary(LOG_TEXT), 0) << LOG_TEXT;
-  EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << BY_HAND;
+  expectHintRunsAsPrinted(DEMO, DIR, DIR / "out");
 
   if (HasFailure()) {
     std::printf("the hint's run kept in %s\n", DIR.c_str());
     return;
   }
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+}
+
+/**
+ * @test The same where the artifact root's name holds spaces: the hint
+ *       quotes the folder and the log for the shell, so each stays one
+ *       argument.
+ *
+ * Unquoted, the shell splits both at the spaces: mkdir makes three folders,
+ * none of them the one the hint names, and the tool is given a log name cut
+ * at the first space. Skipped where KernelReportsNothing skips.
+ */
+TEST(ComputeSanitizer, HintRunsWithSpacesInItsPath) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDirWithPercent();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  expectHintRunsAsPrinted(DEMO, DIR, DIR / "out with spaces");
+
+  if (HasFailure()) {
+    std::printf("the hint's run kept in %s\n", DIR.c_str());
+    return;
+  }
+  std::error_code ec;
+  fs::remove_all(DIR, ec);
+}
+
+/**
+ * @test The same where the artifact root's name holds a quote: the hint
+ *       writes it so that the shell reads the folder and the log back whole.
+ *
+ * Unquoted, the quotes in the folder and in the log open and close a string
+ * across the "&&", so the tool's command becomes part of mkdir's arguments
+ * and never runs. Skipped where KernelReportsNothing skips.
+ */
+TEST(ComputeSanitizer, HintRunsWithAQuoteInItsPath) {
+  const std::string CANNOT = reasonNotToRunAKernel();
+  if (!CANNOT.empty()) {
+    GTEST_SKIP() << CANNOT;
+  }
+  const std::string DEMO = demoPath();
+  ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
+  const fs::path DIR = scratchDirWithPercent();
+  ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
+
+  expectHintRunsAsPrinted(DEMO, DIR, DIR / "Bob's output");
+
+  if (HasFailure()) {
+    std::printf("the hint's run kept in %s\n", DIR.c_str());
+    return;
+  }
+  std::error_code ec;
   fs::remove_all(DIR, ec);
 }
 

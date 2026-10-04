@@ -367,6 +367,8 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     ComputeSanitizer.HintRunsOnTheFirstRun
     ComputeSanitizer.UnguardedSkipsOutsideTheTool
     ComputeSanitizer.NamedToolHintRunsThatTool
+    ComputeSanitizer.HintRunsWithSpacesInItsPath
+    ComputeSanitizer.HintRunsWithAQuoteInItsPath
   )
     string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
     set_tests_properties(

@@ -479,8 +479,10 @@ carry elsewhere.
   ```
 
   The by-hand command makes the folder before the tool opens its log; run
-  as printed, it writes the log where it says. A `--log-file` pointed into
-  a folder that does not exist produces no report anywhere. With
+  as printed, it writes the log where it says. Its folder and its log are
+  quoted for the shell where they need it, so a name with a space or a
+  quote in it stays one argument. A `--log-file` pointed into a folder that
+  does not exist produces no report anywhere. With
   `--profile-args racecheck`, `synccheck` or `initcheck`, the backend prints
   the by-hand command alone, with that tool: the wrap `bench run` builds
   runs memcheck.
@@ -557,7 +559,9 @@ Three things check what this page shows, and all fail loudly:
   backend to reporting no wrap where there is none,
   `ComputeSanitizer.PlainRunHintShape` and `ComputeSanitizer.HintRunsOnTheFirstRun`
   the printed by-hand command to its shape and to writing its log where it
-  says, run as printed where its folder does not exist, and
+  says, run as printed where its folder does not exist, also under folders
+  whose names hold spaces (`ComputeSanitizer.HintRunsWithSpacesInItsPath`)
+  or a quote (`ComputeSanitizer.HintRunsWithAQuoteInItsPath`), and
   `ComputeSanitizer.NamedToolHintRunsThatTool` the hint for racecheck,
   synccheck and initcheck to the by-hand command alone, which, run as
   printed against a stand-in that records its arguments, starts

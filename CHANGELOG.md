@@ -329,7 +329,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   it is running under the tool from what the tool exports to the process and
   maps into it, not from a name in a path; the commands it prints run the
   tool `--profile-args` asks for, memcheck by default, and the by-hand one
-  makes the log's folder first.
+  quotes its paths and makes the log's folder first.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

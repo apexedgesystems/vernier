@@ -51,6 +51,27 @@ std::string escapePercent(const std::string& path) {
   return out;
 }
 
+// @p word as one POSIX shell word: unchanged when every character is safe,
+// otherwise in single quotes with each quote written '\'' (the rule the
+// Nsight backend's printed commands follow).
+std::string shellQuote(const std::string& word) {
+  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "0123456789_@%+=:,./-";
+  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
+    return word;
+  }
+  std::string quoted = "'";
+  for (const char C : word) {
+    if (C == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += C;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
 // The mode argument the commands carry: none for memcheck, the default the
 // registry checks; a tool asked for by name is passed on.
 std::string toolArguments(const std::string& tool) {
@@ -63,7 +84,9 @@ std::string toolArguments(const std::string& tool) {
 // says, so it is offered for memcheck only, first, since it makes the folder
 // its wrap logs into; any tool runs by hand. The tool opens its log before
 // this program starts and drops it silently when the folder is missing, so
-// the by-hand command makes the folder first.
+// the by-hand command makes the folder first. The folder and the log are one
+// shell word each, quoted where they need it; the log's '%' is written "%%"
+// for the tool before it is quoted for the shell.
 std::string notWrappedHint(const std::string& tool, const std::string& artifactDir) {
   const char* const ROUTES =
       tool == "memcheck"
@@ -74,9 +97,10 @@ std::string notWrappedHint(const std::string& tool, const std::string& artifactD
             "this program starts):\n";
   return "\n[compute-sanitizer] not running under compute-sanitizer: this measurement runs "
          "unchecked. To check it:\n" +
-         std::string(ROUTES) + "[compute-sanitizer]   mkdir -p " + artifactDir +
-         " && compute-sanitizer --tool=" + tool + " --log-file=" + escapePercent(artifactDir) +
-         "/sanitizer.log \\\n"
+         std::string(ROUTES) + "[compute-sanitizer]   mkdir -p " + shellQuote(artifactDir) +
+         " && compute-sanitizer --tool=" + tool +
+         " --log-file=" + shellQuote(escapePercent(artifactDir) + "/sanitizer.log") +
+         " \\\n"
          "[compute-sanitizer]       <this-binary> --profile compute-sanitizer" +
          toolArguments(tool) + " [...]\n\n";
 }
