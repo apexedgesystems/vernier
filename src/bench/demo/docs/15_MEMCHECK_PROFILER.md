@@ -525,6 +525,19 @@ to carry elsewhere.
   printed for a clang 21 Debug build on an x86-64 laptop. Use a newer
   valgrind, or a build the installed one can read.
 
+- **`Memcheck.FindsTheOffByOne` reports `SKIPPED`, quoting an assertion of
+  valgrind's reader.** valgrind can stop on an assertion in its ELF
+  debug-information reader while it reads the demo binary, before the
+  program's first instruction: for GCC 11.4 Debug builds linked by mold 1.0.3
+  on an x86-64 laptop, with UBSan and without, valgrind 3.18.1 printed
+  `valgrind: m_debuginfo/readelf.c:2478 (vgModuleLocal_read_elf_debug_info): Assertion 'di->bss_svma + di->bss_size == svma' failed.`
+  and was killed by SIGSEGV. The check skips, saying memcheck checked nothing
+  and quoting the line, only when nothing of the run came first: the program
+  wrote nothing, only blank lines stand between valgrind's opening lines and
+  the assertion and after it, and valgrind was killed by a signal. The same
+  line anywhere else fails it. Use a newer valgrind, or a build the installed
+  one can read.
+
 - **Memcheck's report names no function of the binary, only `???`, and
   `Memcheck.FindsTheOffByOne` reports `SKIPPED`, quoting valgrind.** valgrind
   could not read the binary's symbols and said so before the program ran:
@@ -638,22 +651,32 @@ Three things check what this page shows, and all fail loudly:
   exit code for errors, on `Memcheck.JoinOffByOne` and on `Memcheck.JoinV1`,
   and reads the two logs. It fails unless each case it selects runs to its
   end, memcheck reports the write once per call, `0 bytes after a block` the
-  size of the joined string, naming `joinOffByOne` in the write's stack and
-  in the block's, with valgrind exiting with the code it was given; and
-  unless `joinV1`'s log counts no error and valgrind exits 0. It skips only
-  in a build with the address or the thread sanitizer (which valgrind cannot
+  size of the joined string, with the write's own frame in `joinOffByOne` at
+  the line that writes the terminator, `*at = '\0';`, and the frame below
+  valgrind's allocator in the block's stack in `joinOffByOne` at the line
+  that allocates it, `char* buf = new char[total];` (both lines found in the
+  wrong join's source, so an edit that moves one moves what the check looks
+  for), with valgrind exiting with the code it was given; and unless
+  `joinV1`'s log counts no error and valgrind exits 0. It skips only in a
+  build with the address or the thread sanitizer (which valgrind cannot
   check), where valgrind is not installed, where valgrind gives up reading
-  the demo binary, and where valgrind cannot read the demo binary's symbols,
-  once everything but the names has passed; those two skips quote valgrind's
-  own lines, and the last needs the report to agree, with the write's own
-  frame in the demo binary and unnamed. A wrong join made right fails it,
-  whether or not valgrind can read the symbols: with room for the
-  terminator, memcheck reports nothing, and the test says the wrong join has
-  stopped being wrong. Beside it, `MemcheckLogTest` holds the log reading
-  those skips rest on to its cases (a warning about a library, another of
-  valgrind's reasons, a frame valgrind named, a run that crashed). All of
-  them are registered with `ctest` under the `demo` and `memcheck` labels;
-  `ctest --test-dir build -L memcheck` runs them alone.
+  the demo binary, where an assertion in valgrind's debug-information reader
+  stops it before the program starts (the program wrote nothing, only blank
+  lines between valgrind's opening lines and the assertion and after it,
+  valgrind killed by a signal), and where valgrind cannot read the demo
+  binary's symbols, once everything else has passed: it reads each of the two
+  frames on its own and excuses only a frame left unnamed in the demo binary,
+  so a frame valgrind named at another function or line, an unnamed frame in
+  another object or a missing frame fails. The last three skips quote
+  valgrind's own lines. A wrong join made right fails it, whether or not
+  valgrind can read the symbols: with room for the terminator, memcheck
+  reports nothing, and the test says the wrong join has stopped being wrong.
+  Beside it, `MemcheckLogTest` holds the log reading those skips rest on to
+  its cases (a warning about a library, another of valgrind's reasons, the
+  reader's assertion before the program started and after it had, another
+  assertion and the program's own, each frame beside an unnamed one, a run
+  that crashed). All of them are registered with `ctest` under the `demo` and
+  `memcheck` labels; `ctest --test-dir build -L memcheck` runs them alone.
 - The helper's own tests,
   `SkipUnlessUnderValgrindTest.PlainRunSkipsTheProbe` and
   `SkipUnlessUnderValgrindTest.ValgrindRunRunsTheProbe`, run their binary as

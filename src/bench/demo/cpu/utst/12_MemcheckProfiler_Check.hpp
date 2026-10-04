@@ -9,12 +9,20 @@
  * its test start and pass, or did valgrind give up before it ran) and
  * memcheck's log: whether valgrind could read the binary's symbols, the error
  * summary and, from the error list valgrind prints with --show-error-list=yes,
- * each reported error with its count, its address and its stacks. These are
- * the helpers it does that with; 12_MemcheckProfiler_uTest.cpp keeps what the
- * check asserts and when it skips.
+ * each reported error with its count, its address and its stacks, and what
+ * each frame the check requires says: at the statement it must name, unnamed
+ * in a binary valgrind could not read the symbols of, or wrong. These are the
+ * helpers it does that with; demo 14's helgrind check reads its frames with
+ * the same ones. Whether an assertion of valgrind's reader stopped it before
+ * the program started, and valgrind's line helpers, are the shared test
+ * helper's (src/bench/utst/ValgrindReaderAssertion.hpp).
+ * 12_MemcheckProfiler_uTest.cpp keeps what the check asserts and when it
+ * skips.
  *
  * Test support for 12_MemcheckProfiler_uTest.cpp; not part of the demo.
  */
+
+#include "src/bench/utst/ValgrindReaderAssertion.hpp"
 
 #include <fcntl.h>
 #include <spawn.h>
@@ -23,12 +31,14 @@
 
 #include <cerrno>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <ostream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -41,6 +51,12 @@ namespace demo {
 namespace memcheck_check {
 
 namespace fs = std::filesystem;
+
+// valgrind's text is read by the shared test helper (ValgrindReaderAssertion.hpp),
+// so every check reads its lines and its reader's assertion by one rule; these
+// are its names here.
+using vernier::bench::test::endsWith;
+using vernier::bench::test::payload;
 
 /* ----------------------------- Child Runs ----------------------------- */
 
@@ -258,10 +274,14 @@ inline std::string debugInfoGiveUp(const std::string& text) {
   return text.substr(FROM, (TO == std::string::npos ? text.size() : TO) - FROM);
 }
 
-/// True when @p text ends with @p suffix.
-inline bool endsWith(const std::string& text, const std::string& suffix) {
-  return text.size() >= suffix.size() &&
-         text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+/// The shared reader (ValgrindReaderAssertion.hpp) on a run of this check,
+/// whose log is a file of its own: valgrind's line when an assertion in its ELF
+/// debug-information reader stopped it before the program started, as it
+/// printed it; empty for any other outcome.
+inline std::string readerAssertionBeforeStart(const ChildExit& end, const std::string& output,
+                                              const std::string& log) {
+  return vernier::bench::test::readerAssertionBeforeStart(end.how == ChildExit::How::Signaled,
+                                                          output, log);
 }
 
 /// valgrind's own lines, as its log has them, when it could not read
@@ -312,20 +332,6 @@ struct ReportedError {
   std::string kind; ///< Its first line, for instance "Invalid write of size 1"
   std::string text; ///< The whole entry, without valgrind's "==pid==" prefix
 };
-
-/// A log line without its "==pid== " prefix; the line itself when it has none.
-inline std::string payload(const std::string& line) {
-  if (line.size() > 2 && line[0] == '=' && line[1] == '=') {
-    const std::size_t END = line.find("== ", 2);
-    if (END != std::string::npos) {
-      return line.substr(END + 3);
-    }
-    if (line.compare(line.size() - 2, 2, "==") == 0) {
-      return "";
-    }
-  }
-  return line;
-}
 
 /// The log's ERROR SUMMARY totals (the last such line, which valgrind prints
 /// again after the error list).
@@ -432,34 +438,161 @@ inline long blockSize(const ReportedError& error) {
   return numberAfter(error.text, "bytes after a block of size ");
 }
 
-/// The first frame of the error's own stack, the line after its kind; empty
-/// when the entry has none.
-inline std::string ownFrame(const ReportedError& error) {
-  const std::size_t FROM = error.text.find('\n');
-  if (FROM == std::string::npos) {
-    return "";
+/* ----------------------------- Reading a Frame ----------------------------- */
+
+/// @p text with the spaces at its start removed.
+inline std::string trimmedStart(const std::string& text) {
+  const std::size_t FROM = text.find_first_not_of(' ');
+  return FROM == std::string::npos ? "" : text.substr(FROM);
+}
+
+/// True when @p frame is in a function whose name contains @p function, at
+/// @p location ("<file>:<line>"): "at 0x...: ...function... (location)". The
+/// file may carry the directory its debug information records, as clang's
+/// does ("(src/.../<file>:<line>)"); another file or line is not accepted.
+inline bool frameAt(const std::string& frame, const std::string& function,
+                    const std::string& location) {
+  const std::size_t NAME_AT = frame.find(": ");
+  const std::size_t WHERE_AT = frame.rfind(" (");
+  if (NAME_AT == std::string::npos || WHERE_AT == std::string::npos || WHERE_AT < NAME_AT ||
+      frame.back() != ')') {
+    return false;
   }
-  const std::size_t TO = error.text.find('\n', FROM + 1);
-  return error.text.substr(FROM + 1, (TO == std::string::npos ? error.text.size() : TO) - FROM - 1);
+  const std::string NAME = frame.substr(NAME_AT + 2, WHERE_AT - NAME_AT - 2);
+  const std::string WHERE = frame.substr(WHERE_AT + 2, frame.size() - WHERE_AT - 3);
+  const std::string IN_DIRECTORY = "/" + location;
+  const bool AT_LOCATION =
+      WHERE == location ||
+      (WHERE.size() > IN_DIRECTORY.size() &&
+       WHERE.compare(WHERE.size() - IN_DIRECTORY.size(), IN_DIRECTORY.size(), IN_DIRECTORY) == 0);
+  return NAME.find(function) != std::string::npos && AT_LOCATION;
 }
 
-/// True when the error's own frame is in @p binary and unnamed, as valgrind
-/// prints a frame of a file whose symbols it could not read ("at 0x...: ???
-/// (in <binary>)"). A frame valgrind named is false, whatever the name.
-inline bool ownFrameUnnamedIn(const ReportedError& error, const std::string& binary) {
-  return ownFrame(error).find(": ??? (in " + binary + ")") != std::string::npos;
+/// True when @p frame is in @p binary and unnamed, as valgrind prints a frame
+/// of a file whose symbols it could not read ("at 0x...: ??? (in <binary>)").
+inline bool frameUnnamedIn(const std::string& frame, const std::string& binary) {
+  return frame.find(": ??? (in " + binary + ")") != std::string::npos;
 }
 
-/// How many lines of the entry name @p function: the frames of its stacks.
-inline long framesNaming(const ReportedError& error, const std::string& function) {
-  long frames = 0;
-  std::istringstream in(error.text);
+/// What one access's frame says about where the access was made.
+enum class FrameReading : std::uint8_t {
+  AT_STATEMENT,      ///< In the function looked for, at the file and line looked for
+  UNNAMED_IN_BINARY, ///< Unnamed, in a binary valgrind said it could not read symbols of
+  WRONG              ///< Another function, file, line or object, or no frame at all
+};
+
+/// Short name of @p reading, for test output.
+inline const char* toString(FrameReading reading) noexcept {
+  switch (reading) {
+  case FrameReading::AT_STATEMENT:
+    return "at the statement";
+  case FrameReading::UNNAMED_IN_BINARY:
+    return "unnamed in the binary";
+  case FrameReading::WRONG:
+    return "wrong";
+  }
+  return "?";
+}
+
+/// Lets GoogleTest print a FrameReading by name.
+inline std::ostream& operator<<(std::ostream& out, FrameReading reading) {
+  return out << toString(reading);
+}
+
+/**
+ * @brief Reads @p frame against the function and location looked for.
+ *
+ * A frame valgrind could not name is excused only when it is in @p binary and
+ * valgrind said it could not read that binary's symbols (@p symbolsUnreadable);
+ * any other frame that does not name the statement is wrong.
+ */
+inline FrameReading readFrame(const std::string& frame, const std::string& function,
+                              const std::string& location, const std::string& binary,
+                              bool symbolsUnreadable) {
+  if (frameAt(frame, function, location)) {
+    return FrameReading::AT_STATEMENT;
+  }
+  if (symbolsUnreadable && frameUnnamedIn(frame, binary)) {
+    return FrameReading::UNNAMED_IN_BINARY;
+  }
+  return FrameReading::WRONG;
+}
+
+/// The 1-based number of the line of @p source that contains @p statement;
+/// 0 when no line or more than one line does.
+inline std::size_t lineOf(const std::string& source, const std::string& statement) {
+  std::istringstream in(source);
   std::string line;
+  std::size_t number = 0;
+  std::size_t found = 0;
+  std::size_t matches = 0;
   while (std::getline(in, line)) {
-    if (line.find(function) != std::string::npos) {
-      ++frames;
+    ++number;
+    if (line.find(statement) != std::string::npos) {
+      found = number;
+      ++matches;
     }
   }
+  return matches == 1 ? found : 0;
+}
+
+/* ----------------------------- Reading a Write's Frames ----------------------------- */
+
+/// The first frame of the error's own stack, the line after its kind, without
+/// its indent ("at 0x...: <function> (<where>)"); empty when that line is not
+/// a frame.
+inline std::string accessFrame(const ReportedError& error) {
+  std::istringstream in(error.text);
+  std::string line;
+  if (!std::getline(in, line) || !std::getline(in, line)) {
+    return "";
+  }
+  const std::string FRAME = trimmedStart(line);
+  return FRAME.rfind("at 0x", 0) == 0 ? FRAME : "";
+}
+
+/// The frame below valgrind's allocator in the stack of the block the error's
+/// address is described against ("Address 0x... alloc'd"): the program's call
+/// that allocated it, the stack's second frame, without its indent. Empty when
+/// the entry describes no such block or its stack has no second frame.
+inline std::string allocationFrame(const ReportedError& error) {
+  std::istringstream in(error.text);
+  std::string line;
+  bool inStack = false;
+  int frames = 0;
+  while (std::getline(in, line)) {
+    const std::string TEXT = trimmedStart(line);
+    if (!inStack) {
+      inStack = TEXT.rfind("Address 0x", 0) == 0 && endsWith(TEXT, " alloc'd");
+      continue;
+    }
+    if (TEXT.rfind("at 0x", 0) != 0 && TEXT.rfind("by 0x", 0) != 0) {
+      return "";
+    }
+    if (++frames == 2) {
+      return TEXT;
+    }
+  }
+  return "";
+}
+
+/// The readings of the two frames a write's report must name.
+struct WriteFrames {
+  FrameReading write = FrameReading::WRONG;      ///< The write's own first frame
+  FrameReading allocation = FrameReading::WRONG; ///< The call that allocated the block
+};
+
+/// Reads the write's frame at @p writeLocation and the block's allocation
+/// frame at @p allocationLocation, both in @p function, each on its own: the
+/// excuse one frame has never covers the other.
+inline WriteFrames readWriteFrames(const ReportedError& error, const std::string& function,
+                                   const std::string& writeLocation,
+                                   const std::string& allocationLocation, const std::string& binary,
+                                   bool symbolsUnreadable) {
+  WriteFrames frames;
+  frames.write = readFrame(accessFrame(error), function, writeLocation, binary, symbolsUnreadable);
+  frames.allocation =
+      readFrame(allocationFrame(error), function, allocationLocation, binary, symbolsUnreadable);
   return frames;
 }
 
