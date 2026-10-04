@@ -870,45 +870,28 @@ fn annotate_callgrind(profile: &Path, request: &str) -> Result<(), Error> {
     };
     let mut command = Command::new(&annotator);
     command.arg("--auto=yes").arg(profile);
-    let watch = owned_run::Watch::start();
-    let child = owned_run::spawn(&mut command).map_err(|e| {
-        profile_failure(
-            request,
-            "analysis",
-            format!("{} could not be started: {e}{kept}", annotator.display()),
-        )
-    })?;
-    let run = owned_run::finish(child, ANNOTATE_TIMEOUT, watch.flag());
-    drop(watch);
-    let run = run?;
-    if run.left_running > 0 {
-        eprintln!(
-            "[bench] {} exited and left {} of its own running; bench run ended {}",
-            annotator.display(),
-            if run.left_running == 1 {
-                "1 process".to_string()
-            } else {
-                format!("{} processes", run.left_running)
-            },
-            if run.left_running == 1 { "it" } else { "them" }
-        );
-    }
-    let status = match run.ending {
-        owned_run::Ending::Exited(status) => status,
-        owned_run::Ending::TimedOut => {
+    let name = annotator.display().to_string();
+    let (status, out, err) = match run_owned(&mut command, &name, ANNOTATE_TIMEOUT) {
+        Ok(OwnedEnd::Exited(status, out, err)) => (status, out, err),
+        Ok(OwnedEnd::TimedOut) => {
             return Err(profile_failure(
                 request,
                 "analysis",
                 format!(
-                    "{} did not finish within {} s and was stopped{kept}",
-                    annotator.display(),
+                    "{name} did not finish within {} s and was stopped{kept}",
                     ANNOTATE_TIMEOUT.as_secs()
                 ),
             ));
         }
-        owned_run::Ending::Interrupted(signal) => owned_run::end_by(signal),
+        Err(OwnedError::Start(e)) => {
+            return Err(profile_failure(
+                request,
+                "analysis",
+                format!("{name} could not be started: {e}{kept}"),
+            ));
+        }
+        Err(OwnedError::Wait(e)) => return Err(Error::Io(e)),
     };
-    let (out, err) = (run.stdout, run.stderr);
     if !status.success() {
         let tail = err
             .lines()
@@ -937,6 +920,55 @@ fn annotate_callgrind(profile: &Path, request: &str) -> Result<(), Error> {
     }
     println!();
     Ok(())
+}
+
+/// How an owned run of a helper program ended, for its caller.
+enum OwnedEnd {
+    /// It exited: its status, stdout and stderr.
+    Exited(ExitStatus, String, String),
+    /// Its bound passed first; its group was ended.
+    TimedOut,
+}
+
+/// Why an owned run gave no ending.
+enum OwnedError {
+    /// The program could not be started.
+    Start(std::io::Error),
+    /// It could not be waited for.
+    Wait(std::io::Error),
+}
+
+/// Run @p command as an owned run (`owned_run`) bounded by @p bound. What it
+/// leaves running in its process group is ended, and reported under
+/// @p name; a SIGINT, SIGTERM or SIGHUP that bench run receives while it
+/// runs ends the group, and then bench run by that signal. A signal whose
+/// action was not the default when bench run started is left alone.
+fn run_owned(
+    command: &mut Command,
+    name: &str,
+    bound: std::time::Duration,
+) -> Result<OwnedEnd, OwnedError> {
+    let watch = owned_run::Watch::start();
+    let child = owned_run::spawn(command).map_err(OwnedError::Start)?;
+    let run = owned_run::finish(child, bound, watch.flag());
+    drop(watch);
+    let run = run.map_err(OwnedError::Wait)?;
+    if run.left_running > 0 {
+        eprintln!(
+            "[bench] {name} exited and left {} of its own running; bench run ended {}",
+            if run.left_running == 1 {
+                "1 process".to_string()
+            } else {
+                format!("{} processes", run.left_running)
+            },
+            if run.left_running == 1 { "it" } else { "them" }
+        );
+    }
+    match run.ending {
+        owned_run::Ending::Exited(status) => Ok(OwnedEnd::Exited(status, run.stdout, run.stderr)),
+        owned_run::Ending::TimedOut => Ok(OwnedEnd::TimedOut),
+        owned_run::Ending::Interrupted(signal) => owned_run::end_by(signal),
+    }
 }
 
 /// A helper program bench run owns until it returns. The program runs in a
@@ -1288,36 +1320,56 @@ const NSYS_STATS_REPORTS: [&str; 4] = [
     "cuda_gpu_mem_time_sum",
 ];
 
+/// How long one `nsys stats` summary may take.
+const NSYS_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
 /// Extract the four `nsys stats` summaries beside the report of a wrapped
 /// nsight run, one `<report>.txt` each. The report exists (checked before
-/// this runs). An `nsys stats` that fails is an analysis failure naming the
-/// summary, its status and the end of its error output; the report is kept.
+/// this runs). An `nsys stats` that fails, or still runs after
+/// `NSYS_STATS_TIMEOUT`, is an analysis failure naming the summary, its
+/// status and the end of its error output; the report is kept. Each summary
+/// is an owned run (`run_owned`), as the callgrind annotation is.
 fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
     let rep = dir.join("profile.nsys-rep");
     for report in NSYS_STATS_REPORTS {
         let out_path = dir.join(format!("{report}.txt"));
-        let out_file = fs::File::create(&out_path).map_err(|e| {
+        let cannot_write = |e: std::io::Error| {
             Error::Io(std::io::Error::new(
                 e.kind(),
                 format!("cannot write {}: {e}", out_path.display()),
             ))
-        })?;
-        let out = Command::new("nsys")
+        };
+        fs::File::create(&out_path).map_err(cannot_write)?;
+        let mut command = Command::new("nsys");
+        command
             .args(["stats", "--force-export=true", "--report", report])
-            .arg(&rep)
-            .stdin(Stdio::null())
-            .stdout(Stdio::from(out_file))
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| {
-                Error::Io(std::io::Error::new(
+            .arg(&rep);
+        let name = format!("nsys stats --report {report}");
+        let (status, out, err) = match run_owned(&mut command, &name, NSYS_STATS_TIMEOUT) {
+            Ok(OwnedEnd::Exited(status, out, err)) => (status, out, err),
+            Ok(OwnedEnd::TimedOut) => {
+                return Err(profile_failure(
+                    request,
+                    "analysis",
+                    format!(
+                        "{name} did not finish within {} s and was stopped; the report is \
+                         kept at {}",
+                        NSYS_STATS_TIMEOUT.as_secs(),
+                        rep.display()
+                    ),
+                ));
+            }
+            Err(OwnedError::Start(e)) => {
+                return Err(Error::Io(std::io::Error::new(
                     e.kind(),
                     format!("cannot start nsys stats: {e}"),
-                ))
-            })?;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            let tail = stderr
+                )));
+            }
+            Err(OwnedError::Wait(e)) => return Err(Error::Io(e)),
+        };
+        fs::write(&out_path, out).map_err(cannot_write)?;
+        if !status.success() {
+            let tail = err
                 .lines()
                 .rev()
                 .map(str::trim)
@@ -1327,8 +1379,8 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
                 request,
                 "analysis",
                 format!(
-                    "nsys stats --report {report} {}{}{}; the report is kept at {}",
-                    describe_status(out.status),
+                    "{name} {}{}{}; the report is kept at {}",
+                    describe_status(status),
                     if tail.is_empty() { "" } else { ": " },
                     tail,
                     rep.display()

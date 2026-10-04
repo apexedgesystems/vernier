@@ -487,7 +487,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   when it cannot create the folder, removes the previous run's copies of the
   wrap's own files from that folder first, and fails the run when the output
   is missing or empty after exit (`completion:`) or a `nsys stats` summary
-  fails (`analysis:`, the report kept). **Action needed:** a rerun into the
+  fails or runs past 300 s (`analysis:`, the report kept), ending what a
+  summary leaves running in its process group. **Action needed:** a rerun into the
   same `--profile-output-dir` removes the previous `callgrind.out`,
   `massif.out`, `memcheck.log`, `helgrind.log`, `run.zst`/`run.gz`,
   `sanitizer.log`, nsight report files, `kernel_profile.ncu-rep` or

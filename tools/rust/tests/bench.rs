@@ -1731,7 +1731,10 @@ fn run_reports_the_benchmark_exit_status() {
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
 /// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
 /// and `callgrind_annotate` one line naming its profile (`FAKE_ANNOTATE=fail`
-/// fails instead). valgrind reads its output option's value as valgrind does
+/// fails instead). `FAKE_NSYS_STATS=leave`: each `nsys stats` also leaves a
+/// process holding its output, its pid added to `nsys_left.pids`;
+/// `FAKE_NSYS_STATS=wait`: the first one waits on a process it started (pids
+/// in `nsys_stats.pid` and `nsys_started.pid`). valgrind reads its output option's value as valgrind does
 /// (valgrind 3.18.1, recorded runs): `%%` is one `%`, `%p` its process id,
 /// and any other `%` is refused with status 1. compute-sanitizer is
 /// `SANITIZER_STAND_IN`.
@@ -1814,6 +1817,13 @@ fn route_rig(programs: &[&str]) -> RouteRig {
 echo "{name} wrap=$VERNIER_EXTERNAL_WRAP $*" >> '{log}'
 if [ "{name}" = nsys ] && [ "$1" = stats ]; then
   if [ "$FAKE_NSYS_STATS" = fail ]; then echo "fake nsys: cannot export the report" >&2; exit 1; fi
+  if [ "$FAKE_NSYS_STATS" = leave ]; then /bin/sleep 60 & echo $! >> nsys_left.pids; fi
+  if [ "$FAKE_NSYS_STATS" = wait ]; then
+    /bin/sleep 60 &
+    echo $! > nsys_started.pid
+    echo $$ > nsys_stats.pid
+    wait
+  fi
   echo "fake summary"
   exit 0
 fi
@@ -2282,6 +2292,98 @@ fn run_nsight_stats_failure_is_reported() {
         .is_file());
 }
 
+/// @test An `nsys stats` that leaves a process holding its output and exits:
+/// bench run returns at once instead of waiting on it, ends each one itself
+/// (this test only looks at them), says so, and writes every summary.
+#[test]
+fn run_nsight_stats_leaving_a_process() {
+    let rig = route_rig(&["nsys"]);
+    let run = run_rig_bounded(
+        &rig,
+        &["--profile", "nsight"],
+        &[("FAKE_NSYS_STATS", "leave")],
+        Sigint::Default,
+        std::time::Duration::from_secs(30),
+        |_| {},
+    );
+    let pids = std::fs::read_to_string(rig.dir.path().join("nsys_left.pids")).unwrap_or_default();
+    let running: Vec<&str> = pids
+        .lines()
+        .filter(|pid| pid.parse().is_ok_and(still_running))
+        .collect();
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "bench run waited on what nsys stats left: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert_eq!(pids.lines().count(), 4, "{pids}");
+    assert!(running.is_empty(), "still running: {running:?}");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    for report in [
+        "cuda_gpu_kern_sum",
+        "cuda_api_sum",
+        "cuda_gpu_mem_size_sum",
+        "cuda_gpu_mem_time_sum",
+    ] {
+        assert!(
+            run.stderr.contains(&format!(
+                "[bench] nsys stats --report {report} exited and left 1 process of its own \
+                 running; bench run ended it"
+            )),
+            "{}",
+            run.stderr
+        );
+        assert_eq!(
+            std::fs::read_to_string(
+                rig.dir
+                    .path()
+                    .join(format!("bench-out/fake_bench.nsight/{report}.txt"))
+            )
+            .unwrap_or_default(),
+            "fake summary\n",
+            "{report}"
+        );
+    }
+}
+
+/// @test bench run interrupted while `nsys stats` runs (SIGINT sent to bench
+/// run alone, at its default action): nsys stats and the process it started
+/// are ended, and bench run ends by that signal.
+#[test]
+fn run_nsight_stats_interrupted() {
+    let rig = route_rig(&["nsys"]);
+    let stats = rig.dir.path().join("nsys_stats.pid");
+    let run = run_rig_bounded(
+        &rig,
+        &["--profile", "nsight"],
+        &[("FAKE_NSYS_STATS", "wait")],
+        Sigint::Default,
+        std::time::Duration::from_secs(30),
+        |bench| {
+            pid_written(&stats);
+            let out =
+                output_of(Command::new("/bin/sh").args(["-c", &format!("kill -INT {bench}")]));
+            assert!(out.status.success(), "kill -INT {bench} failed");
+        },
+    );
+    let stats = pid_written(&stats);
+    let started = pid_written(&rig.dir.path().join("nsys_started.pid"));
+    let (stats_running, started_running) = (still_running(stats), still_running(started));
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "bench run did not end on SIGINT: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert_eq!(run.signal, Some(2), "{}", run.stderr);
+    assert!(
+        !stats_running && !started_running,
+        "still running: nsys stats {stats} {stats_running}, its process {started} \
+         {started_running}"
+    );
+}
+
 /* ----------------------------- Run: Callgrind Analysis ----------------------------- */
 
 /// @test --profile-analyze, given to bench run or forwarded after `--`,
@@ -2421,13 +2523,14 @@ fn start_with_sigint(command: &mut Command, sigint: Sigint) {
     }
 }
 
-/// `bench run <rig's benchmark> <args>` with PATH set to the rig's stand-ins
-/// and SIGINT's action @p sigint, given @p bound to return; past it, bench run
-/// is killed and the result says so. @p during runs once bench run has
-/// started, with its process id.
+/// `bench run <rig's benchmark> <args>` with PATH set to the rig's stand-ins,
+/// @p env added and SIGINT's action @p sigint, given @p bound to return; past
+/// it, bench run is killed and the result says so. @p during runs once bench
+/// run has started, with its process id.
 fn run_rig_bounded(
     rig: &RouteRig,
     args: &[&str],
+    env: &[(&str, &str)],
     sigint: Sigint,
     bound: std::time::Duration,
     during: impl FnOnce(u32),
@@ -2446,6 +2549,9 @@ fn run_rig_bounded(
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(&out_path).expect("bench stdout file"))
         .stderr(std::fs::File::create(&err_path).expect("bench stderr file"));
+    for (k, v) in env {
+        command.env(k, v);
+    }
     start_with_sigint(&mut command, sigint);
     let started = std::time::Instant::now();
     let mut child = {
@@ -2525,6 +2631,7 @@ fn run_callgrind_analyze_annotator_leaves_a_process() {
     let run = run_rig_bounded(
         &rig,
         &["--profile", "callgrind", "--profile-analyze"],
+        &[],
         Sigint::Default,
         std::time::Duration::from_secs(20),
         |_| {},
@@ -2578,6 +2685,7 @@ fn run_callgrind_analyze_interrupted() {
     let run = run_rig_bounded(
         &rig,
         &["--profile", "callgrind", "--profile-analyze"],
+        &[],
         Sigint::Default,
         std::time::Duration::from_secs(20),
         |bench| {
@@ -2626,6 +2734,7 @@ fn run_callgrind_analyze_inherited_ignore_stays() {
     let run = run_rig_bounded(
         &rig,
         &["--profile", "callgrind", "--profile-analyze"],
+        &[],
         Sigint::Ignored,
         std::time::Duration::from_secs(20),
         |bench| {
