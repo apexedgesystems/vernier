@@ -473,11 +473,16 @@ metadata, so its `gitHash` column reads `unknown`.
   and `copy_out` for each call, in that order, directly inside it, each around
   its own copies or kernel; and the warmup's three phases lie outside both. It
   counts and orders; it compares no durations. It skips, saying why, where
-  `nsys` is not on `PATH`, where there is no CUDA device, in a build without
-  NVTX headers, and where the demo does not start under `nsys`, quoting
-  `nsys`. Beside it, `NsysCsvTest`, `NsysReportTest` (two real reports of the
-  demo, from Nsight Systems 2025.3.2 and 2026.3.1) and `NvtxTraceTest` hold its
-  reading and its judgement to their cases.
+  `nsys` is not on `PATH`, where there is no CUDA device and in a build without
+  NVTX headers, all decided before anything runs, and where `nsys` stops before
+  the demo's tests start because it cannot create its temporary files, quoting
+  `nsys`. Otherwise it fails unless both tests pass under `nsys`, `nsys` exits
+  0 and the report is written, and a failure says how the run ended and where
+  its files are kept. Beside it, `NsysCsvTest`, `NsysReportTest` (two real
+  reports of the demo, from Nsight Systems 2025.3.2 and 2026.3.1),
+  `NvtxTraceTest` and `NsysCaptureTest` (stand-ins for `nsys` that exit early,
+  are killed or stop on their temporary files) hold its reading and its
+  judgement to their cases.
 - `TestBenchNsightRange`
   ([`ProfilerNsightRange_uTest.cu`](../../utst/ProfilerNsightRange_uTest.cu))
   holds the range named after the test to its measurement without `nsys`: a

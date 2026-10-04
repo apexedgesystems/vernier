@@ -19,9 +19,11 @@
  *  - in every call, copy_in holds its two copies to the device, kernel its one
  *    SAXPY kernel and copy_out its copy back, each from start to end.
  * Every count follows from the flags the check passes; nothing compares a
- * duration. The process plumbing is walkthrough 15's
- * (12_MemcheckProfiler_Check.hpp); the reading of nsys's CSV is here. ctest
- * runs it under the demo and nsight labels.
+ * duration. A capture that does not end with both tests passed and a report
+ * fails, unless nsys stops before the tests start, saying it cannot create
+ * its temporary files: that skips, quoting nsys (judgeCapture()). The process
+ * plumbing is walkthrough 15's (12_MemcheckProfiler_Check.hpp); the reading
+ * of nsys's CSV is here. ctest runs it under the demo and nsight labels.
  *
  * Usage:
  *   @code{.sh}
@@ -43,6 +45,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <ostream>
 #include <sstream>
@@ -435,14 +438,22 @@ std::pair<long long, long long> kernelMargins(const std::vector<NvtxRange>& rang
   return {before, after};
 }
 
-/// The check's temporary directory: removed when the test passes or skips,
-/// kept, and named, when it fails.
+/// A run's temporary directory, made under the system's: removed when the
+/// test passes or skips, kept, and named, when it fails.
 class RunDirectory {
 public:
-  explicit RunDirectory(fs::path dir) : dir_(std::move(dir)) {}
+  RunDirectory() {
+    std::string pattern = (fs::temp_directory_path() / "vernier-demo-gpu05-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      dir_ = pattern;
+    }
+  }
   ~RunDirectory() {
+    if (dir_.empty()) {
+      return;
+    }
     if (::testing::Test::HasFailure()) {
-      std::printf("nsys output kept in %s\n", dir_.c_str());
+      std::printf("the run's files are kept in %s\n", dir_.c_str());
       return;
     }
     std::error_code ec;
@@ -451,6 +462,9 @@ public:
   RunDirectory(const RunDirectory&) = delete;
   RunDirectory& operator=(const RunDirectory&) = delete;
 
+  /// False when the directory could not be made.
+  [[nodiscard]] bool made() const { return !dir_.empty(); }
+  [[nodiscard]] const fs::path& path() const { return dir_; }
   [[nodiscard]] fs::path operator/(const char* name) const { return dir_ / name; }
 
 private:
@@ -476,6 +490,159 @@ std::vector<std::string> demoArgs(const std::string& demo, const fs::path& folde
           std::to_string(WARMUP_CALLS)};
 }
 
+/* ----------------------------- The Capture ----------------------------- */
+
+/// The first line of the note nsys prints under a directory it could not
+/// create; the note goes on to name TMPDIR.
+constexpr const char* TMPDIR_NOTE =
+    "NOTE: If you are using a system that does not allow writing to \"/tmp\" or";
+
+/**
+ * @brief nsys's own lines, as it printed them, when it could not create its
+ *        temporary files and stopped without starting the program; empty for
+ *        any other output.
+ *
+ * Two forms: "Failed to create directory "<dir>": <reason>" followed, after a
+ * blank line, by the note nsys prints under it, which points to TMPDIR, and
+ * "Failed to create temporary output file". nsys 2026.3.1 printed the first,
+ * and exited 1 without starting the program, when the directory it keeps in
+ * the temporary directory (nvidia/) was another user's and not writable, or
+ * was a file; and the second when its own directory there (nsys-<user>/) was
+ * another user's.
+ * Not recognised: its warning that the temporary directory is short of space,
+ * after which it goes on, and an exception it printed that names no cause. A
+ * skip quotes these lines, so what it rests on is nsys's text, not the check's.
+ */
+std::string temporaryFilesRefused(const std::string& output) {
+  std::vector<std::string> lines;
+  std::istringstream in(output);
+  std::string line;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    lines.push_back(line);
+  }
+  for (std::size_t i = 0; i < lines.size(); ++i) {
+    if (lines[i] == "Failed to create temporary output file") {
+      return lines[i];
+    }
+    if (lines[i].rfind("Failed to create directory \"", 0) != 0) {
+      continue;
+    }
+    std::size_t note = i + 1;
+    while (note < lines.size() && lines[note].empty()) {
+      ++note;
+    }
+    if (note == lines.size() || lines[note].rfind(TMPDIR_NOTE, 0) != 0) {
+      continue;
+    }
+    std::string quoted = lines[i];
+    for (std::size_t j = i + 1; j < lines.size() && j <= note + 2; ++j) {
+      quoted += "\n" + lines[j];
+      if (lines[j].find("set a different location.") != std::string::npos) {
+        break;
+      }
+    }
+    return quoted;
+  }
+  return "";
+}
+
+/// What the check does with its capture: read the report, skip, or fail.
+struct CaptureVerdict {
+  enum class Action { READ, SKIP, FAIL };
+  Action action = Action::FAIL;
+  std::string message; ///< A skip's quotation of nsys, or a failure's account of the run
+};
+
+/// How a failure names an action.
+void PrintTo(CaptureVerdict::Action action, std::ostream* out) {
+  switch (action) {
+  case CaptureVerdict::Action::READ:
+    *out << "READ";
+    break;
+  case CaptureVerdict::Action::SKIP:
+    *out << "SKIP";
+    break;
+  case CaptureVerdict::Action::FAIL:
+    *out << "FAIL";
+    break;
+  }
+}
+
+/**
+ * @brief The check's verdict on a capture, from how nsys ended (@p end), what
+ *        nsys and the demo printed (@p output) and whether the report exists.
+ *
+ * The report is read only when nsys exited 0, the demo's two tests passed
+ * under it and the report exists. Short of that, the check skips only when
+ * the demo's tests never started and nsys, exiting with a non-zero status,
+ * gave temporaryFilesRefused()'s reason, which the skip quotes. Anything else
+ * fails: an exit or a signal with no such reason, no output, tests that did
+ * not pass, no report. The failure says how nsys ended, what is missing and
+ * where the run's files are, @p dir, which the check keeps when it fails.
+ */
+CaptureVerdict judgeCapture(const check::ChildExit& end, const std::string& output,
+                            bool reportWritten, const fs::path& dir) {
+  const bool STARTED = check::testsStarted(output);
+  const bool PASSED = output.find("[  PASSED  ] 2 tests.") != std::string::npos;
+  if (check::exitedWith(end, 0) && STARTED && PASSED && reportWritten) {
+    return {CaptureVerdict::Action::READ, ""};
+  }
+  if (!STARTED && end.how == check::ChildExit::How::Exited && end.code != 0) {
+    const std::string REFUSED = temporaryFilesRefused(output);
+    if (!REFUSED.empty()) {
+      return {CaptureVerdict::Action::SKIP,
+              "nsys could not create its temporary files and stopped before the demo's tests "
+              "started (nsys " +
+                  check::describe(end) + "). It printed:\n" + REFUSED};
+    }
+  }
+  std::string message = "the capture under nsys did not complete: nsys " + check::describe(end);
+  if (!STARTED) {
+    message += "; the demo's tests never started";
+  } else if (!PASSED) {
+    message += "; the demo's two tests did not both pass";
+  }
+  if (!reportWritten) {
+    message += "; nsys wrote no report";
+  }
+  message += ". The run's files are kept in " + dir.string() + ". ";
+  message += output.empty() ? std::string("The run printed nothing.\n")
+                            : "The run printed:\n" + check::lastLines(output, 40);
+  return {CaptureVerdict::Action::FAIL, message};
+}
+
+/**
+ * @brief Captures the demo's two tests under @p nsys, the tool and any
+ *        arguments before nsys's own ("nsys" for the real one), and returns
+ *        judgeCapture()'s verdict on the run.
+ *
+ * CUDA and NVTX are traced without CPU sampling; the report is
+ * <dir>/capture.nsys-rep, what nsys and the demo print goes to
+ * <dir>/program.txt, and the demo gets demoArgs()'s arguments.
+ */
+CaptureVerdict captureUnderNsys(const std::vector<std::string>& nsys, const std::string& demo,
+                                const fs::path& dir) {
+  std::vector<std::string> args = nsys;
+  const std::vector<std::string> PROFILE = {"profile",
+                                            "-o",
+                                            (dir / "capture").string(),
+                                            "-t",
+                                            "cuda,nvtx",
+                                            "--sample=none",
+                                            "--cpuctxsw=none",
+                                            "--force-overwrite",
+                                            "true"};
+  args.insert(args.end(), PROFILE.begin(), PROFILE.end());
+  const std::vector<std::string> DEMO_ARGS = demoArgs(demo, dir / "folders");
+  args.insert(args.end(), DEMO_ARGS.begin(), DEMO_ARGS.end());
+  const check::ChildExit END = check::runLogged(args, dir / "program.txt");
+  return judgeCapture(END, check::readText(dir / "program.txt"),
+                      fs::exists(dir / "capture.nsys-rep"), dir);
+}
+
 } // namespace
 
 /* ----------------------------- Tests ----------------------------- */
@@ -487,11 +654,13 @@ std::vector<std::string> demoArgs(const std::string& demo, const fs::path& folde
  *
  * Runs the demo's two tests under nsys, reads the report with nsys stats and
  * checks it with assessRanges(). Skipped where nsys is not on PATH, no CUDA
- * device is present, or the build has no NVTX headers, decided before
- * anything runs; and where the demo, which lists its tests on its own, does
- * not start under nsys, quoting nsys's last lines. The demo's two tests must
- * pass under nsys and nsys must exit 0; anything else fails with the run's
- * last lines, and a failing run keeps its files and says where.
+ * device is present, or the build has no NVTX headers, all decided before
+ * anything runs; and where nsys stops before the demo's tests start because
+ * it cannot create its temporary files, quoting nsys (judgeCapture()). The
+ * demo must list its tests on its own, its two tests must pass under nsys,
+ * and nsys must exit 0 and write the report; anything else fails, saying how
+ * the run ended and what it printed, and a failing run keeps its files and
+ * says where.
  */
 TEST(NvtxRanges, RecordedByNsightSystems) {
 #if !VERNIER_NVTX_USABLE
@@ -510,45 +679,25 @@ TEST(NvtxRanges, RecordedByNsightSystems) {
   const std::string DEMO = fs::canonical(DEMO_BINARY, found).string();
   ASSERT_FALSE(found) << "the demo binary is missing: " << DEMO_BINARY;
 
-  std::string dirTemplate = (fs::temp_directory_path() / "vernier-demo-gpu05-XXXXXX").string();
-  ASSERT_NE(::mkdtemp(dirTemplate.data()), nullptr) << "cannot create a temporary directory";
-  const RunDirectory DIR{fs::path(dirTemplate)};
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made()) << "cannot create a temporary directory";
 
-  // The demo starts on its own, so a start that fails under nsys is nsys's.
+  // The demo lists its tests on its own first: a demo that cannot start at
+  // all fails here, as the demo's, before nsys is involved.
   const check::ChildExit LISTED = check::runLogged({DEMO, "--gtest_list_tests"}, DIR / "list.txt");
   const std::string LIST = check::readText(DIR / "list.txt");
   ASSERT_TRUE(check::exitedWith(LISTED, 0) && LIST.find("G1Phases") != std::string::npos)
       << "the demo does not list its tests (it " << check::describe(LISTED) << "):\n"
       << check::lastLines(LIST);
 
-  std::vector<std::string> args = {"nsys",
-                                   "profile",
-                                   "-o",
-                                   (DIR / "capture").string(),
-                                   "-t",
-                                   "cuda,nvtx",
-                                   "--sample=none",
-                                   "--cpuctxsw=none",
-                                   "--force-overwrite",
-                                   "true"};
-  const std::vector<std::string> DEMO_ARGS = demoArgs(DEMO, DIR / "folders");
-  args.insert(args.end(), DEMO_ARGS.begin(), DEMO_ARGS.end());
-  const check::ChildExit END = check::runLogged(args, DIR / "program.txt");
-  const std::string PROGRAM = check::readText(DIR / "program.txt");
-
-  if (!check::testsStarted(PROGRAM)) {
-    GTEST_SKIP() << "the demo starts on its own but not under nsys (nsys " << check::describe(END)
-                 << "). nsys printed:\n"
-                 << check::lastLines(PROGRAM, 8);
+  const CaptureVerdict CAPTURE = captureUnderNsys({"nsys"}, DEMO, DIR.path());
+  if (CAPTURE.action == CaptureVerdict::Action::SKIP) {
+    GTEST_SKIP() << CAPTURE.message;
   }
-  ASSERT_NE(PROGRAM.find("[  PASSED  ] 2 tests."), std::string::npos)
-      << "the demo's two tests did not both pass under nsys:\n"
-      << check::lastLines(PROGRAM, 40);
+  if (CAPTURE.action == CaptureVerdict::Action::FAIL) {
+    FAIL() << CAPTURE.message;
+  }
   const fs::path REPORT = DIR / "capture.nsys-rep";
-  ASSERT_TRUE(check::exitedWith(END, 0)) << "nsys " << check::describe(END) << ":\n"
-                                         << check::lastLines(PROGRAM, 20);
-  ASSERT_TRUE(fs::exists(REPORT)) << "nsys wrote no report at " << REPORT << ":\n"
-                                  << check::lastLines(PROGRAM, 20);
 
   const check::ChildExit STATS = check::runLogged(
       {"nsys", "stats", "--force-export=true", "--report", "nvtx_pushpop_trace", "--report",
@@ -1001,4 +1150,191 @@ TEST(NvtxTraceTest, ReportsATestRangeLeftOpen) {
       assessRanges(t.ranges, t.ops, MEASURED_CALLS, WARMUP_CALLS);
 
   EXPECT_TRUE(mentions(PROBLEMS, "the range before it was still open")) << PROBLEMS.size();
+}
+
+/* ----------------------------- Capture Controls ----------------------------- */
+
+// What RecordedByNsightSystems does with a capture that does not end in a
+// report, checked with stand-ins for nsys: shell scripts run the way the check
+// runs nsys (captureUnderNsys()), given nsys's arguments, in which "$3" is the
+// report's path without its extension. They need neither nsys nor a device.
+
+namespace {
+
+/// GoogleTest's banner and its line for two passed tests.
+constexpr const char* TESTS_PASSED = R"(echo '[==========] Running 2 tests from 1 test suite.'
+echo '[  PASSED  ] 2 tests.'
+)";
+
+/// The lines nsys 2026.3.1 printed for a program that ended before its tests
+/// started, and the report it wrote all the same.
+constexpr const char* NSYS_GENERATED = R"(echo 'Collecting data...'
+echo "Generating '/tmp/nsys-runner/nsys-report-7f78.qdstrm'"
+echo 'Generated:'
+printf '\t%s\n' "$3.nsys-rep"
+: > "$3.nsys-rep"
+)";
+
+/// nsys 2026.3.1's words, blank line included, when /tmp/nvidia was another
+/// user's and not writable: what temporaryFilesRefused() recognises.
+constexpr const char* DIRECTORY_REFUSED =
+    "Failed to create directory \"/tmp/nvidia/nsight_systems\": Permission denied\n"
+    "\n"
+    "NOTE: If you are using a system that does not allow writing to \"/tmp\" or\n"
+    "where the \"/tmp\" directory has limited storage you can use the TMPDIR environment\n"
+    "variable to set a different location.";
+
+/// The check's verdict on a capture by a stand-in for nsys that runs
+/// @p script with /bin/sh, in @p dir.
+CaptureVerdict standInVerdict(const std::string& script, const RunDirectory& dir) {
+  const fs::path STAND_IN = dir / "nsys.sh";
+  {
+    std::ofstream out(STAND_IN);
+    out << script;
+  }
+  return captureUnderNsys({"/bin/sh", STAND_IN.string()}, "BenchDemo_Gpu_05_NvtxAnnotation",
+                          dir.path());
+}
+
+/// A shell script that prints each line of @p text as it is, then exits with
+/// @p status.
+std::string printsThenExits(const std::string& text, int status) {
+  std::string script;
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    script += "echo '" + line + "'\n";
+  }
+  return script + "exit " + std::to_string(status) + "\n";
+}
+
+} // namespace
+
+/** @test A run that started both tests, passed them and wrote its report is read */
+TEST(NsysCaptureTest, ACompleteRunIsRead) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT =
+      standInVerdict(std::string(TESTS_PASSED) + ": > \"$3.nsys-rep\"\n", DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::READ) << VERDICT.message;
+}
+
+/** @test nsys exiting 0 with nothing printed and no report fails, naming the run's files */
+TEST(NsysCaptureTest, ExitZeroWithoutOutputFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict("exit 0\n", DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("nsys exited with status 0; the demo's tests never started; "
+                                 "nsys wrote no report"),
+            std::string::npos)
+      << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("The run printed nothing."), std::string::npos) << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("kept in " + DIR.path().string()), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test An exit before the tests start that nsys gives no reason for fails, quoting the run */
+TEST(NsysCaptureTest, AnUnexplainedExitFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict(std::string(NSYS_GENERATED) + "exit 3\n", DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("nsys exited with status 3; the demo's tests never started."),
+            std::string::npos)
+      << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("The run printed:\nCollecting data...\nGenerating "
+                                 "'/tmp/nsys-runner/nsys-report-7f78.qdstrm'\nGenerated:\n"),
+            std::string::npos)
+      << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("kept in " + DIR.path().string()), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test A program killed by SIGSEGV before its tests start fails: nsys exits 139 (128 + 11) */
+TEST(NsysCaptureTest, AProgramKilledBySignalFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict(std::string(NSYS_GENERATED) + "exit 139\n", DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("nsys exited with status 139; the demo's tests never started."),
+            std::string::npos)
+      << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("kept in " + DIR.path().string()), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test nsys killed by a signal fails (SIGKILL, which leaves no core dump behind) */
+TEST(NsysCaptureTest, NsysKilledBySignalFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict("echo 'Collecting data...'\nkill -KILL $$\n", DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("nsys was killed by signal 9"), std::string::npos)
+      << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("kept in " + DIR.path().string()), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test nsys refusing its temporary directory before the tests start skips, quoting nsys */
+TEST(NsysCaptureTest, TemporaryDirectoryRefusedSkips) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict(printsThenExits(DIRECTORY_REFUSED, 1), DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::SKIP) << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find(DIRECTORY_REFUSED), std::string::npos) << VERDICT.message;
+}
+
+/** @test nsys refusing its temporary output file before the tests start skips, quoting nsys */
+TEST(NsysCaptureTest, TemporaryFileRefusedSkips) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT =
+      standInVerdict(printsThenExits("Failed to create temporary output file", 1), DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::SKIP) << VERDICT.message;
+  EXPECT_NE(VERDICT.message.find("Failed to create temporary output file"), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test nsys's words for its temporary files do not excuse a run whose tests started */
+TEST(NsysCaptureTest, ARefusalAfterTheTestsStartedFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict(
+      printsThenExits(
+          "[==========] Running 2 tests from 1 test suite.\nFailed to create temporary output file",
+          1),
+      DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("the demo's two tests did not both pass"), std::string::npos)
+      << VERDICT.message;
+}
+
+/** @test A run that passed both tests but left no report fails */
+TEST(NsysCaptureTest, AMissingReportFails) {
+  const RunDirectory DIR;
+  ASSERT_TRUE(DIR.made());
+
+  const CaptureVerdict VERDICT = standInVerdict(TESTS_PASSED, DIR);
+
+  EXPECT_EQ(VERDICT.action, CaptureVerdict::Action::FAIL);
+  EXPECT_NE(VERDICT.message.find("nsys exited with status 0; nsys wrote no report."),
+            std::string::npos)
+      << VERDICT.message;
 }
