@@ -340,7 +340,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   exits), so the annotation read a stale or missing file. `bench run` gains
   `--profile-analyze` (also counted when forwarded after `--`) and annotates
   the profile after valgrind exits, failing the run when `callgrind_annotate`
-  is missing or fails. **Action needed:** under a manual
+  is missing, fails or runs past 120 s, and ending what the annotator leaves
+  running in its process group. **Action needed:** under a manual
   `valgrind --tool=callgrind` wrap, run `callgrind_annotate` on the profile
   after the process exits; the benchmark no longer does.
 - **`--profile perf` waits for perf to finish, and fails a capture that did

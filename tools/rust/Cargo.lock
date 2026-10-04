@@ -572,6 +572,7 @@ dependencies = [
  "clap",
  "csv",
  "cuda-sys",
+ "libc",
  "predicates",
  "serde",
  "serde_json",

@@ -259,8 +259,11 @@ For nsight, a `nsys stats` summary that fails fails the run as `analysis:`,
 and the report is kept. With `--profile-analyze` (given to `bench run`, or
 forwarded after `--`), a callgrind run's profile is annotated after valgrind
 has written it: `callgrind_annotate --auto=yes <profile>`, its first 40 lines
-printed; a missing or failing `callgrind_annotate` fails the run as
-`analysis:`, and the profile is kept.
+printed; a missing or failing `callgrind_annotate`, or one still running after
+120 s, fails the run as `analysis:`, and the profile is kept. The annotator
+runs in a process group of its own: a process of that group still running
+when the annotator exits is ended, and `bench run` says so; SIGINT, SIGTERM or
+SIGHUP sent to `bench run` meanwhile ends the group, then `bench run` itself.
 
 **compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
 tool ends with status 5 when it reports errors, whatever the benchmark itself

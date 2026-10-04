@@ -2361,6 +2361,198 @@ fn run_callgrind_analyze_failure() {
     assert!(rig.dir.path().join(profile).is_file());
 }
 
+/// How a bounded `bench run` ended.
+struct BoundedRun {
+    /// False when bench run had not returned within the bound and was killed.
+    returned: bool,
+    elapsed: std::time::Duration,
+    code: Option<i32>,
+    signal: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+/// `bench run <rig's benchmark> <args>` with PATH set to the rig's stand-ins,
+/// given @p bound to return; past it, bench run is killed and the result says
+/// so. @p during runs once bench run has started, with its process id.
+fn run_rig_bounded(
+    rig: &RouteRig,
+    args: &[&str],
+    bound: std::time::Duration,
+    during: impl FnOnce(u32),
+) -> BoundedRun {
+    use std::os::unix::process::ExitStatusExt;
+
+    let out_path = rig.dir.path().join("bench.stdout");
+    let err_path = rig.dir.path().join("bench.stderr");
+    let mut command = Command::new(bin());
+    command
+        .arg("run")
+        .arg(&rig.bench)
+        .args(args)
+        .env("PATH", rig.dir.path().join("tools"))
+        .current_dir(rig.dir.path())
+        .stdin(Stdio::null())
+        .stdout(std::fs::File::create(&out_path).expect("bench stdout file"))
+        .stderr(std::fs::File::create(&err_path).expect("bench stderr file"));
+    let started = std::time::Instant::now();
+    let mut child = {
+        let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
+        command.spawn().expect("spawn bench")
+    };
+    during(child.id());
+    let mut returned = true;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for bench") {
+            break status;
+        }
+        if started.elapsed() >= bound {
+            returned = false;
+            let _ = child.kill();
+            break child.wait().expect("reap bench");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    BoundedRun {
+        returned,
+        elapsed: started.elapsed(),
+        code: status.code(),
+        signal: status.signal(),
+        stdout: std::fs::read_to_string(&out_path).unwrap_or_default(),
+        stderr: std::fs::read_to_string(&err_path).unwrap_or_default(),
+    }
+}
+
+/// Whether process @p pid still runs: listed in /proc and neither a zombie
+/// nor dead. Read only; this file never signals a process a stand-in started.
+fn still_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+    let state = stat
+        .rsplit_once(')')
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .unwrap_or("");
+    !matches!(state, "" | "Z" | "X")
+}
+
+/// The process id a stand-in wrote to @p path, waiting up to 10 s for it.
+fn pid_written(path: &Path) -> u32 {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(pid) = std::fs::read_to_string(path)
+            .ok()
+            .and_then(|text| text.trim().parse().ok())
+        {
+            return pid;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "{} was not written",
+            path.display()
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// @test A callgrind_annotate that starts a process holding its output and
+/// exits: bench run returns at once instead of waiting on that process, ends
+/// it itself (this test only looks at it), prints the annotation and says
+/// what it ended.
+#[test]
+fn run_callgrind_analyze_annotator_leaves_a_process() {
+    let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+    let left = rig.dir.path().join("left.pid");
+    write_executable(
+        &rig.dir.path().join("tools/callgrind_annotate"),
+        &format!(
+            "#!/bin/sh\necho \"fake annotation of $2\"\n/bin/sleep 60 &\necho $! > '{}'\nexit 0\n",
+            left.display()
+        ),
+    );
+    let run = run_rig_bounded(
+        &rig,
+        &["--profile", "callgrind", "--profile-analyze"],
+        std::time::Duration::from_secs(20),
+        |_| {},
+    );
+    let left = pid_written(&left);
+    let left_running = still_running(left);
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "bench run waited on the annotator's process: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert!(
+        !left_running,
+        "the annotator's process {left} still runs after bench run returned"
+    );
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(
+        run.stdout
+            .contains("fake annotation of bench-out/fake_bench.callgrind/callgrind.out"),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains(&format!(
+            "[bench] {} exited and left 1 process of its own running; bench run ended it",
+            rig.dir.path().join("tools/callgrind_annotate").display()
+        )),
+        "{}",
+        run.stderr
+    );
+}
+
+/// @test bench run interrupted while callgrind_annotate runs (SIGINT sent
+/// to bench run alone): the annotator and the process it started are ended
+/// by bench run, which then ends by that signal.
+#[test]
+fn run_callgrind_analyze_interrupted() {
+    let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+    let annotator = rig.dir.path().join("annotator.pid");
+    let started = rig.dir.path().join("started.pid");
+    write_executable(
+        &rig.dir.path().join("tools/callgrind_annotate"),
+        &format!(
+            "#!/bin/sh\n/bin/sleep 60 &\necho $! > '{}'\necho $$ > '{}'\nwait\n",
+            started.display(),
+            annotator.display()
+        ),
+    );
+    let run = run_rig_bounded(
+        &rig,
+        &["--profile", "callgrind", "--profile-analyze"],
+        std::time::Duration::from_secs(20),
+        |bench| {
+            pid_written(&annotator);
+            let out =
+                output_of(Command::new("/bin/sh").args(["-c", &format!("kill -INT {bench}")]));
+            assert!(out.status.success(), "kill -INT {bench} failed");
+        },
+    );
+    let (annotator, started) = (pid_written(&annotator), pid_written(&started));
+    let (annotator_running, started_running) = (still_running(annotator), still_running(started));
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "bench run did not end on SIGINT: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert_eq!(
+        run.signal,
+        Some(2),
+        "bench run did not end by SIGINT: {}",
+        run.stderr
+    );
+    assert!(
+        !annotator_running && !started_running,
+        "still running after bench run ended: annotator {annotator} {annotator_running}, \
+         its process {started} {started_running}"
+    );
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
