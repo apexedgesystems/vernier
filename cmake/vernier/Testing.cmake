@@ -12,6 +12,13 @@ include_guard(GLOBAL)
 # Coverage is automatic: any project library in LINK is instrumented when
 # ENABLE_COVERAGE=ON. Use COVERAGE_FOR only to override auto-detection.
 #
+# NO_REGISTER builds the program as above but registers nothing with CTest: no
+# discovered cases and no coverage run. It is for a process fixture whose cases
+# must run only under a controller, which its owner registers with add_test
+# beside the target; the options that describe registered tests are refused
+# with it. A source that defines main (PERF_MAIN) keeps it: an object's main
+# is linked before GoogleTest's.
+#
 # Arguments:
 #   TARGET          <n>              required
 #   SOURCES         <src...>         required
@@ -23,6 +30,7 @@ include_guard(GLOBAL)
 #   WORKING_DIR     <dir>            optional
 #   RESOURCE_LOCK   <n>              optional
 #   NO_COVERAGE                      optional flag (skip coverage)
+#   NO_REGISTER                      optional flag (build only; owner registers)
 #   TIMING_ALL                       optional flag
 #   TIMING_TESTS    <names...>       optional
 #   TIMING_PATTERNS <regex...>       optional
@@ -35,11 +43,30 @@ function (vernier_add_gtest)
   endif ()
 
   cmake_parse_arguments(
-    GT "TIMING_ALL;NO_COVERAGE"
+    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
     "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
+
+  if (GT_NO_REGISTER)
+    foreach (
+      _opt
+      LABELS
+      WORKING_DIR
+      RESOURCE_LOCK
+      REQUIRES_THREADS
+      TIMING_ALL
+      TIMING_TESTS
+      TIMING_PATTERNS
+    )
+      if (GT_${_opt})
+        message(FATAL_ERROR "vernier_add_gtest(${GT_TARGET}): ${_opt} describes registered tests, "
+                            "and NO_REGISTER registers none: set it on the owner's add_test"
+        )
+      endif ()
+    endforeach ()
+  endif ()
 
   add_executable(${GT_TARGET})
   target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES})
@@ -124,6 +151,11 @@ function (vernier_add_gtest)
         endif ()
       endforeach ()
     endif ()
+  endif ()
+
+  if (GT_NO_REGISTER)
+    message(STATUS "[Test] target=${GT_TARGET} registered by its owner (NO_REGISTER)")
+    return()
   endif ()
 
   # Test discovery

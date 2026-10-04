@@ -135,10 +135,12 @@ target_compile_options(
 )
 
 # ------------------------------------------------------------------------------
-# Build Logic Tests (1)
+# Build Logic Tests (2)
 # ------------------------------------------------------------------------------
-# Script-mode tests of configure logic; they need no toolkit and no GPU, so the
-# CUDA architecture rules are checked on every lane, including CPU-only ones.
+# Script-mode tests of configure logic; they need no toolkit and no GPU, so they
+# run on every lane, including CPU-only ones: the CUDA architecture rules, and
+# what vernier_add_gtest's NO_REGISTER registers (a scratch project is
+# configured with this build's generator and compiler; nothing is built).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
@@ -146,6 +148,16 @@ add_test(NAME CudaArchitecturesResolveTest
                  "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/CudaArchitectures_test.cmake"
 )
 set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")
+
+add_test(
+  NAME AddGtestNoRegisterTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/add_gtest_no_register
+    "-DGENERATOR=${CMAKE_GENERATOR}" -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -P
+    "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/AddGtestNoRegister_test.cmake"
+)
+set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake")
 
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
