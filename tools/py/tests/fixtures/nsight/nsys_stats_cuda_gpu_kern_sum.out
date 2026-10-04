@@ -1,0 +1,4 @@
+Processing [/tmp/nsight_fixture/export/profile.sqlite] with [/opt/nvidia/nsight-systems/2025.3.2/host-linux-armv8/reports/cuda_gpu_kern_sum.py]...
+Time (%),Total Time (ns),Instances,Avg (ns),Med (ns),Min (ns),Max (ns),StdDev (ns),Name
+100.0,178481856,61,2925932.1,2890848.0,2852032,3774688,149253.5,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)"
+

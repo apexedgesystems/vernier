@@ -9,10 +9,13 @@
  * under the tool's own name, and builds a ReadinessContext whose PATH is only
  * that directory, so a check resolves the fakes and nothing else. The fakes
  * set their own PATH for the utilities they use, and append each invocation
- * to the directory's log (FAKE_LOG), which the test reads back.
+ * to the directory's log (FAKE_LOG), which the test reads back. ScopedEnv
+ * (ScopedEnv.hpp), for what a test must set in the live environment, comes
+ * with it.
  */
 
 #include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/utst/ScopedEnv.hpp"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -133,39 +136,6 @@ public:
 private:
   std::string dir_;
   std::string log_;
-};
-
-/* ----------------------------- ScopedEnv ----------------------------- */
-
-/**
- * @brief Sets one process environment variable for a scope and restores it.
- *
- * For tests of what a launch inherits from the live environment; readiness
- * decisions take an explicit context instead.
- */
-class ScopedEnv {
-public:
-  ScopedEnv(const char* name, const std::string& value) : name_(name) {
-    if (const char* old = std::getenv(name)) {
-      old_ = old;
-      hadOld_ = true;
-    }
-    ::setenv(name, value.c_str(), 1);
-  }
-  ~ScopedEnv() {
-    if (hadOld_) {
-      ::setenv(name_.c_str(), old_.c_str(), 1);
-    } else {
-      ::unsetenv(name_.c_str());
-    }
-  }
-  ScopedEnv(const ScopedEnv&) = delete;
-  ScopedEnv& operator=(const ScopedEnv&) = delete;
-
-private:
-  std::string name_;
-  std::string old_;
-  bool hadOld_ = false;
 };
 
 } // namespace test

@@ -1,30 +1,47 @@
 #!/usr/bin/env python3
 """
-nsight_parser.py -- Extract Nsight Systems / Nsight Compute reports into CSV.
+nsight_parser.py -- Read Nsight Systems / Nsight Compute reports into one CSV.
 
-Nsight ships its own renderers (`nsys stats`, `ncu --csv`), but their output
-is verbose and split across one report per metric family. This tool runs the
-canonical extractions and consolidates them into a single tidy CSV the rest
-of the vernier toolchain (bench-plot, bench compare) can consume.
+An .nsys-rep is exported once, to a private temporary SQLite file, and its
+four CUDA summaries are read from that export with `nsys stats --format
+csv`; an export `bench run` left beside the report is neither used nor
+changed. An .ncu-rep is imported with `ncu --import <report> --csv
+--print-summary per-kernel`. What the tools print is written as one CSV of
+its own. That CSV is not a benchmark CSV: bench summary, bench compare and
+bench-plot need test, wallMedian, wallCV and callsPerSecond columns and
+refuse it. Read it with a CSV tool.
 
-Supported inputs:
-    *.nsys-rep      Nsight Systems profile (timeline + kernel timing)
-    *.ncu-rep       Nsight Compute profile (kernel-level hardware metrics)
+Inputs:
+    *.nsys-rep      Nsight Systems report
+    *.ncu-rep       Nsight Compute report
+    a directory     every report under it
 
 Usage:
-    nsight-parse parse run.nsys-rep --csv kernels.csv
-    nsight-parse parse run.ncu-rep  --csv compute.csv
-    nsight-parse parse <dir>/       --csv combined.csv   # all reps in a dir
+    nsight-parse parse run.nsys-rep --csv summaries.csv
+    nsight-parse parse bench-out/   --csv combined.csv
 
-Output schema (one row per kernel instance, columns vary by source):
-    source              "nsys" | "ncu"
-    report              the underlying nsys/ncu report name
-    kernel              demangled kernel name
-    instances           number of launches in this aggregate row (nsys)
-    time_total_ns       total kernel time across instances
-    time_avg_ns         per-instance average
-    time_pct            share of total GPU time
-    ... metric columns ...
+Output, nsys: one row per row of each summary -- per kernel name, per CUDA
+call name, per kind of copy -- not one per launch. Columns:
+    source              "nsys"
+    report              the summary (cuda_gpu_kern_sum, cuda_api_sum, ...)
+    kernel              its Name; empty for the copy summaries (Operation)
+    instances           Instances or Num Calls; empty for the copy summaries
+    time_total_ns       Total Time (ns)
+    time_avg_ns         Avg (ns)
+    time_pct            Time (%)
+    ...                 every other column the summaries print, under its own
+                        name, in alphabetical order
+
+Output, ncu: one row per launch shape, section and metric: source "ncu",
+report "per_kernel", kernel (Kernel Name), then ncu's own columns in snake
+case (block_size, grid_size, invocations, section_name, metric_name,
+metric_unit, minimum, maximum, average, ...).
+
+Exit status: 0 when every requested report was read; 1 when any was not (a
+tool failed or is missing, an input is not a report, a directory holds
+none). Each failure is an error line on stderr, and the rows of the reports
+that were read are written all the same. A summary with no data, such as the
+kernel summary of a report with no kernel, is a warning.
 """
 
 from __future__ import annotations
@@ -34,6 +51,7 @@ import csv
 import io
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -61,6 +79,7 @@ class ParseResult:
 
     rows: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     def write_csv(self, path: Path) -> None:
         """Write rows to `path` as CSV with canonical column order.
@@ -96,58 +115,94 @@ class ParseResult:
 
 
 def parse_paths(paths: Iterable[Path]) -> ParseResult:
-    """Parse one or more Nsight report files (or directories of them)."""
+    """Parse one or more Nsight report files (or directories of them).
+
+    Every input that cannot be read, and every tool command that fails, is
+    an entry in ``errors``; the rows of the reports that were read are kept.
+    """
     result = ParseResult()
-    files = list(_iter_inputs(paths))
-    if not files:
-        result.warnings.append("no .nsys-rep / .ncu-rep files found in inputs")
-        return result
-    for f in files:
+    for f in _iter_inputs(paths, result):
         if f.suffix == ".nsys-rep":
             _parse_nsys(f, result)
-        elif f.suffix == ".ncu-rep":
+        else:
             _parse_ncu(f, result)
     return result
 
 
-def _iter_inputs(paths: Iterable[Path]) -> Iterable[Path]:
+def _iter_inputs(paths: Iterable[Path], result: ParseResult) -> Iterable[Path]:
     for p in paths:
         if p.is_dir():
-            yield from sorted(p.glob("**/*.nsys-rep"))
-            yield from sorted(p.glob("**/*.ncu-rep"))
+            found = sorted(p.glob("**/*.nsys-rep")) + sorted(p.glob("**/*.ncu-rep"))
+            if not found:
+                result.errors.append(f"no .nsys-rep or .ncu-rep file under {p}")
+            yield from found
         elif p.suffix in {".nsys-rep", ".ncu-rep"} and p.is_file():
             yield p
+        else:
+            result.errors.append(f"not an .nsys-rep, an .ncu-rep or a directory: {p}")
 
 
 # =============================== Nsight Systems ==============================
 
 
 def _parse_nsys(path: Path, result: ParseResult) -> None:
-    """Run nsys stats on each canonical report and append the rows."""
-    for report in NSYS_REPORTS:
-        text = _run(["nsys", "stats", "--report", report, "--format", "csv", str(path)])
-        if text is None:
-            result.warnings.append(f"nsys stats --report {report} failed for {path.name}")
-            continue
-        for row in _iter_csv_after_header(text):
-            row.setdefault("kernel", row.pop("Name", row.pop("Range", "")))
-            row.setdefault("instances", row.pop("Instances", row.pop("Num Calls", "")))
-            row.setdefault("time_total_ns", row.pop("Total Time (ns)", ""))
-            row.setdefault("time_avg_ns", row.pop("Avg (ns)", ""))
-            row.setdefault("time_pct", row.pop("Time (%)", ""))
-            result.rows.append({"source": "nsys", "report": report, **row})
+    """Export the report once to a fresh SQLite file, then read each summary from it.
+
+    The export goes to a private temporary directory, never beside the
+    report: an export `bench run` already left there can be refused by
+    `nsys stats` ("older than input file"), and the report's folder is not
+    ours to change.
+    """
+    with tempfile.TemporaryDirectory(prefix="nsight-parse-") as tmp:
+        export = Path(tmp) / (path.stem + ".sqlite")
+        run = _run(
+            [
+                "nsys",
+                "export",
+                "--type",
+                "sqlite",
+                "--force-overwrite",
+                "true",
+                "-o",
+                str(export),
+                str(path),
+            ]
+        )
+        if not run.ok or not export.is_file():
+            result.errors.append(f"nsys export failed for {path}: {run.detail}")
+            return
+        for report in NSYS_REPORTS:
+            run = _run(["nsys", "stats", "--report", report, "--format", "csv", str(export)])
+            if not run.ok:
+                result.errors.append(
+                    f"nsys stats --report {report} failed for {path}: {run.detail}"
+                )
+                continue
+            rows = list(_iter_csv_after_header(run.stdout))
+            if not rows:
+                result.warnings.append(f"{report} has no rows for {path}: {run.detail}")
+            for row in rows:
+                row.setdefault("kernel", row.pop("Name", row.pop("Range", "")))
+                row.setdefault("instances", row.pop("Instances", row.pop("Num Calls", "")))
+                row.setdefault("time_total_ns", row.pop("Total Time (ns)", ""))
+                row.setdefault("time_avg_ns", row.pop("Avg (ns)", ""))
+                row.setdefault("time_pct", row.pop("Time (%)", ""))
+                result.rows.append({"source": "nsys", "report": report, **row})
 
 
 # =============================== Nsight Compute ==============================
 
 
 def _parse_ncu(path: Path, result: ParseResult) -> None:
-    """Run ncu --csv summary; one row per kernel, columns are metrics."""
-    text = _run(["ncu", "--csv", "--print-summary", "per-kernel", str(path)])
-    if text is None:
-        result.warnings.append(f"ncu --csv failed for {path.name}")
+    """Import the saved report: one row per launch shape, section and metric."""
+    run = _run(["ncu", "--import", str(path), "--csv", "--print-summary", "per-kernel"])
+    if not run.ok:
+        result.errors.append(f"ncu --import failed for {path}: {run.detail}")
         return
-    for row in _iter_csv_after_header(text):
+    rows = list(_iter_csv_after_header(run.stdout))
+    if not rows:
+        result.warnings.append(f"no kernel in {path}: {run.detail}")
+    for row in rows:
         result.rows.append(
             {
                 "source": "ncu",
@@ -167,15 +222,42 @@ def _clean_key(s: str) -> str:
 
 # =============================== Subprocess Helpers ==========================
 
+#: Seconds one nsys or ncu command may take; exporting a large report is slow.
+TOOL_TIMEOUT_S = 600
 
-def _run(cmd: list[str]) -> str | None:
+
+@dataclass
+class _Run:
+    """What one tool command did: whether it succeeded, its output, and a one-line detail."""
+
+    ok: bool
+    stdout: str = ""
+    detail: str = ""  # why it failed, or the last line it printed
+
+
+def _last_line(*texts: str) -> str:
+    for text in texts:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        if lines:
+            return lines[-1]
+    return "no output"
+
+
+def _run(cmd: list[str]) -> _Run:
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, check=False)
-    except (subprocess.TimeoutExpired, FileNotFoundError):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout
+        done = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=TOOL_TIMEOUT_S, check=False
+        )
+    except FileNotFoundError:
+        return _Run(ok=False, detail=f"{cmd[0]} not found on PATH")
+    except subprocess.TimeoutExpired:
+        return _Run(ok=False, detail=f"{cmd[0]} did not finish within {TOOL_TIMEOUT_S} s")
+    if done.returncode != 0:
+        return _Run(
+            ok=False,
+            detail=f"exit status {done.returncode}: {_last_line(done.stderr, done.stdout)}",
+        )
+    return _Run(ok=True, stdout=done.stdout, detail=_last_line(done.stdout, done.stderr))
 
 
 def _iter_csv_after_header(text: str) -> Iterable[dict]:
@@ -212,9 +294,11 @@ def main(argv: list[str] | None = None) -> int:
         result = parse_paths(args.inputs)
         result.write_csv(args.csv)
         for w in result.warnings:
-            print(f"[nsight-parse] {w}", file=sys.stderr)
+            print(f"[nsight-parse] warning: {w}", file=sys.stderr)
+        for e in result.errors:
+            print(f"[nsight-parse] error: {e}", file=sys.stderr)
         print(f"[nsight-parse] wrote {len(result.rows)} rows to {args.csv}")
-        return 0
+        return 1 if result.errors else 0
     return 2
 
 
