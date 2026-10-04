@@ -679,13 +679,15 @@ Three things check what this page shows, and all fail loudly:
   the naive kernel; one request per warp in the tiled kernels; 32 wavefronts
   per request for the tiled kernel and its counter at least 30 per request;
   one wavefront per request for the padded kernel and its counter below 2%
-  of the tiled kernel's. A kernel the report names no launch of fails it. It
-  skips where `ncu` is not on `PATH` or no CUDA device is present, and where
-  ncu refuses the counters or has no value for a metric, quoting ncu's own
-  line. It is registered with `ctest` under the `demo` and `ncu` labels, so
-  an ordinary test run includes it. On this rig the counters are for
-  administrators, so as your user `ctest --test-dir build -L demo` reports it
-  skipped, quoting the refusal; to run it:
+  of the tiled kernel's. A kernel the report names no launch of fails it, and
+  so does a padded launch whose counter the report leaves out or gives as
+  other than a whole number. It skips where `ncu` is not on `PATH` or no CUDA
+  device is present, and where ncu refuses the counters or has no value for a
+  metric, quoting ncu's own line. It is registered with `ctest` under the
+  `demo` and `ncu` labels, so an ordinary test run includes it. On this rig
+  the counters are for administrators, so as your user
+  `ctest --test-dir build -L demo` reports it skipped, quoting the refusal;
+  to run it:
 
   ```bash
   sudo env PATH="$PATH" ctest --test-dir build -L ncu

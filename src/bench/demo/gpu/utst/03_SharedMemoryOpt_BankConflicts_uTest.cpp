@@ -12,7 +12,8 @@
  * 32 wavefronts per instruction and the padded tile's one, and ncu's
  * bank-conflict counter reads accordingly. The process plumbing is
  * walkthrough 15's (12_MemcheckProfiler_Check.hpp); the reading of ncu's
- * CSV is here. ctest runs it under the demo and ncu labels.
+ * CSV and the verdict on its readings are here, each with tests that need
+ * no GPU. ctest runs it under the demo and ncu labels.
  *
  * Usage:
  *   @code{.sh}
@@ -26,6 +27,7 @@
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <cuda_runtime.h>
+#include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
 
 #include <cstdio>
@@ -250,16 +252,87 @@ std::string ncuLineWith(const std::string& text, const char* marker) {
   return "";
 }
 
-/// One kernel's launches, in one line, for the check's output and messages.
-std::string describeLaunches(const std::map<long, LaunchMetrics>& launches) {
+/// One kernel's launches, in one line, for the check's output: "no launch"
+/// where the readings name none.
+std::string describeLaunches(const Readings& readings, const char* kernel) {
+  const auto FOUND = readings.find(kernel);
+  if (FOUND == readings.end() || FOUND->second.empty()) {
+    return "no launch";
+  }
   std::string out;
-  for (const auto& entry : launches) {
+  for (const auto& entry : FOUND->second) {
     const LaunchMetrics& m = entry.second;
     out += (out.empty() ? "" : "; ") + std::to_string(m.instructions) + " loads, " +
            std::to_string(m.wavefronts) + " wavefronts, " + std::to_string(m.conflicts) +
            " conflicts";
   }
   return out;
+}
+
+/* ----------------------------- The Verdict ----------------------------- */
+
+/**
+ * @brief Holds every launch in @p readings to the counts walkthrough 12
+ *        gives, each departure a failure of the running test.
+ *
+ * Every kernel has a launch; the naive kernel executes no shared-load
+ * instruction and reports no wavefront and no conflict; each tiled kernel
+ * executes one shared-load instruction per warp of the launch; the
+ * conflicting kernel's SASS-level wavefronts are exactly TILE_DIM times its
+ * instructions and its L1TEX counter at least TILE_DIM - 2 times them; the
+ * padded kernel's wavefronts equal its instructions, and its counter is
+ * read and stays below MAX_PADDED_CONFLICT_SHARE of the conflicting
+ * kernel's smallest reading.
+ *
+ * A reading the report lacks, or gives as other than a whole number, is -1
+ * (readReport). Each exact count and the floor fail it; the padded kernel's
+ * ceiling would pass it, so that counter must be read before the ceiling
+ * applies.
+ */
+void expectWalkthroughCounts(const Readings& readings) {
+  for (const char* kernel : {NAIVE, CONFLICT, PADDED}) {
+    ASSERT_TRUE(readings.count(kernel) != 0 && !readings.at(kernel).empty())
+        << "ncu's report names no launch of " << kernel;
+  }
+
+  for (const auto& [id, m] : readings.at(NAIVE)) {
+    EXPECT_EQ(m.instructions, 0) << NAIVE << " launch " << id << " loads from shared memory";
+    EXPECT_EQ(m.wavefronts, 0) << NAIVE << " launch " << id;
+    EXPECT_EQ(m.conflicts, 0) << NAIVE << " launch " << id << " reports bank conflicts";
+  }
+
+  long fewestConflicts = -1;
+  for (const auto& [id, m] : readings.at(CONFLICT)) {
+    EXPECT_EQ(m.instructions, WARPS_PER_LAUNCH)
+        << CONFLICT << " launch " << id << " does not load one tile column per warp";
+    EXPECT_EQ(m.wavefronts, CONFLICTED_WAVEFRONTS_PER_LOAD * m.instructions)
+        << CONFLICT << " launch " << id << ": its column reads no longer take " << sm::TILE_DIM
+        << " wavefronts each, so the tile no longer conflicts";
+    EXPECT_GE(m.conflicts, MIN_CONFLICTS_PER_CONFLICTED_LOAD * m.instructions)
+        << CONFLICT << " launch " << id << ": ncu counts fewer bank conflicts than a "
+        << sm::TILE_DIM << "-way conflict makes";
+    if (fewestConflicts < 0 || m.conflicts < fewestConflicts) {
+      fewestConflicts = m.conflicts;
+    }
+  }
+
+  for (const auto& [id, m] : readings.at(PADDED)) {
+    EXPECT_EQ(m.instructions, WARPS_PER_LAUNCH)
+        << PADDED << " launch " << id << " does not load one tile column per warp";
+    EXPECT_EQ(m.wavefronts, m.instructions)
+        << PADDED << " launch " << id << ": its column reads take more than one wavefront "
+        << "each, so the padding no longer spreads them over the banks";
+    if (m.conflicts < 0) {
+      ADD_FAILURE() << PADDED << " launch " << id << ": ncu's report has no count of "
+                    << METRIC_CONFLICTS << " for it (no row, or a value that is not a whole "
+                    << "number), so nothing shows the padding took the conflicts away";
+      continue;
+    }
+    EXPECT_LT(static_cast<double>(m.conflicts),
+              MAX_PADDED_CONFLICT_SHARE * static_cast<double>(fewestConflicts))
+        << PADDED << " launch " << id << ": ncu's counter is not far below the conflicting "
+        << "kernel's " << fewestConflicts;
+  }
 }
 
 } // namespace
@@ -273,13 +346,14 @@ std::string describeLaunches(const std::map<long, LaunchMetrics>& launches) {
  *
  * Runs the demo binary under ncu with the three metrics on the fewest
  * launches the harness makes (one warmup and one measured launch per kernel,
- * after the harness's own first), reads ncu's CSV, and checks every launch:
- * the naive kernel executes no shared-load instruction and reports no
- * conflict; the tiled kernels execute one shared-load instruction per warp
- * of the launch; the conflicting kernel's SASS-level wavefronts are exactly
- * TILE_DIM times its instructions and its L1TEX counter at least
- * TILE_DIM - 2 times them; the padded kernel's wavefronts equal its
- * instructions and its counter stays below 2% of the conflicting kernel's
+ * after the harness's own first), reads ncu's CSV, and checks every launch
+ * (expectWalkthroughCounts): the naive kernel executes no shared-load
+ * instruction and reports no conflict; the tiled kernels execute one
+ * shared-load instruction per warp of the launch; the conflicting kernel's
+ * SASS-level wavefronts are exactly TILE_DIM times its instructions and its
+ * L1TEX counter at least TILE_DIM - 2 times them; the padded kernel's
+ * wavefronts equal its instructions and its counter, which the report must
+ * give as a whole number, stays below 2% of the conflicting kernel's
  * smallest reading. A kernel the report names no launch of fails the check.
  *
  * Skipped where ncu is not on PATH or no CUDA device is present, decided
@@ -360,48 +434,12 @@ TEST(BankConflicts, CountedByNsightCompute) {
                  << REPORT.unavailableRow;
   }
   const Readings& READINGS = REPORT.readings;
-  for (const char* kernel : {NAIVE, CONFLICT, PADDED}) {
-    ASSERT_TRUE(READINGS.count(kernel) != 0 && !READINGS.at(kernel).empty())
-        << "ncu's report names no launch of " << kernel << " (log " << CSV << ")";
-  }
   std::printf("[BankConflicts.CountedByNsightCompute]  per launch: naive %s | conflicting %s | "
               "padded %s\n",
-              describeLaunches(READINGS.at(NAIVE)).c_str(),
-              describeLaunches(READINGS.at(CONFLICT)).c_str(),
-              describeLaunches(READINGS.at(PADDED)).c_str());
-
-  for (const auto& [id, m] : READINGS.at(NAIVE)) {
-    EXPECT_EQ(m.instructions, 0) << NAIVE << " launch " << id << " loads from shared memory";
-    EXPECT_EQ(m.wavefronts, 0) << NAIVE << " launch " << id;
-    EXPECT_EQ(m.conflicts, 0) << NAIVE << " launch " << id << " reports bank conflicts";
-  }
-
-  long fewestConflicts = -1;
-  for (const auto& [id, m] : READINGS.at(CONFLICT)) {
-    EXPECT_EQ(m.instructions, WARPS_PER_LAUNCH)
-        << CONFLICT << " launch " << id << " does not load one tile column per warp";
-    EXPECT_EQ(m.wavefronts, CONFLICTED_WAVEFRONTS_PER_LOAD * m.instructions)
-        << CONFLICT << " launch " << id << ": its column reads no longer take " << sm::TILE_DIM
-        << " wavefronts each, so the tile no longer conflicts";
-    EXPECT_GE(m.conflicts, MIN_CONFLICTS_PER_CONFLICTED_LOAD * m.instructions)
-        << CONFLICT << " launch " << id << ": ncu counts fewer bank conflicts than a "
-        << sm::TILE_DIM << "-way conflict makes";
-    if (fewestConflicts < 0 || m.conflicts < fewestConflicts) {
-      fewestConflicts = m.conflicts;
-    }
-  }
-
-  for (const auto& [id, m] : READINGS.at(PADDED)) {
-    EXPECT_EQ(m.instructions, WARPS_PER_LAUNCH)
-        << PADDED << " launch " << id << " does not load one tile column per warp";
-    EXPECT_EQ(m.wavefronts, m.instructions)
-        << PADDED << " launch " << id << ": its column reads take more than one wavefront "
-        << "each, so the padding no longer spreads them over the banks";
-    EXPECT_LT(static_cast<double>(m.conflicts),
-              MAX_PADDED_CONFLICT_SHARE * static_cast<double>(fewestConflicts))
-        << PADDED << " launch " << id << ": ncu's counter is not far below the conflicting "
-        << "kernel's " << fewestConflicts;
-  }
+              describeLaunches(READINGS, NAIVE).c_str(),
+              describeLaunches(READINGS, CONFLICT).c_str(),
+              describeLaunches(READINGS, PADDED).c_str());
+  expectWalkthroughCounts(READINGS);
 
   if (HasFailure()) {
     std::printf("ncu output kept in %s\n", DIR.c_str());
@@ -545,4 +583,77 @@ TEST(NcuCsvTest, FindsTheRefusalAsPrinted) {
 
   EXPECT_EQ(ncuLineWith(LOG, NCU_NO_PERMISSION), REFUSAL);
   EXPECT_TRUE(ncuLineWith(std::string(HEADER) + "\n", NCU_NO_PERMISSION).empty());
+}
+
+/* ----------------------------- Verdict Tests ----------------------------- */
+
+// What CountedByNsightCompute decides once it has read ncu's CSV, with no GPU
+// and no ncu: expectWalkthroughCounts on the check's nine launches as one run
+// on the reference rig read them (ncu 2025.3.1, as root), with the padded
+// kernel's last bank-conflict reading left out, malformed or zero.
+
+namespace {
+
+/// ncu's CSV for the check's three launches of each kernel: every reading as
+/// that run printed it but the padded kernel's last bank-conflict reading,
+/// which is @p paddedConflicts; nullptr leaves its row out.
+std::string reportWithPaddedConflicts(const char* paddedConflicts) {
+  std::string csv = std::string(HEADER) + "\n";
+  long id = 0; // ncu numbers the launches in order: three of each kernel
+  for (; id < 3; ++id) {
+    csv += row(id, NAIVE, METRIC_CONFLICTS, "0") + row(id, NAIVE, METRIC_INSTRUCTIONS, "0") +
+           row(id, NAIVE, METRIC_WAVEFRONTS, "0");
+  }
+  for (const char* conflicts : {"1,016,843", "1,016,845", "1,016,890"}) {
+    csv += row(id, CONFLICT, METRIC_CONFLICTS, conflicts) +
+           row(id, CONFLICT, METRIC_INSTRUCTIONS, "32,768") +
+           row(id, CONFLICT, METRIC_WAVEFRONTS, "1,048,576");
+    ++id;
+  }
+  for (const char* conflicts : {"337", "380", paddedConflicts}) {
+    if (conflicts != nullptr) {
+      csv += row(id, PADDED, METRIC_CONFLICTS, conflicts);
+    }
+    csv += row(id, PADDED, METRIC_INSTRUCTIONS, "32,768") +
+           row(id, PADDED, METRIC_WAVEFRONTS, "32,768");
+    ++id;
+  }
+  return csv;
+}
+
+/// The verdict's words when the padded kernel's last launch has no count.
+std::string noCountForTheLastPaddedLaunch() {
+  return std::string(PADDED) + " launch 8: ncu's report has no count of " + METRIC_CONFLICTS +
+         " for it";
+}
+
+} // namespace
+
+/** @test A padded launch whose bank-conflict row the report leaves out fails the verdict */
+TEST(BankConflictsVerdictTest, FailsAPaddedLaunchWithoutItsConflictRow) {
+  const Report REPORT = readReport(reportWithPaddedConflicts(nullptr));
+  ASSERT_TRUE(REPORT.unavailableRow.empty()); // nothing the check would skip on
+  ASSERT_EQ(REPORT.readings.at(PADDED).at(8).conflicts, -1);
+
+  EXPECT_NONFATAL_FAILURE(expectWalkthroughCounts(REPORT.readings),
+                          noCountForTheLastPaddedLaunch());
+}
+
+/** @test A padded bank-conflict reading that is not a whole number fails the verdict */
+TEST(BankConflictsVerdictTest, FailsAPaddedConflictReadingThatIsNotACount) {
+  const Report REPORT = readReport(reportWithPaddedConflicts("376.00"));
+  ASSERT_TRUE(REPORT.unavailableRow.empty());
+  ASSERT_EQ(REPORT.readings.at(PADDED).at(8).conflicts, -1);
+
+  EXPECT_NONFATAL_FAILURE(expectWalkthroughCounts(REPORT.readings),
+                          noCountForTheLastPaddedLaunch());
+}
+
+/** @test A padded bank-conflict count of zero is a reading, and passes the verdict */
+TEST(BankConflictsVerdictTest, PassesAPaddedConflictCountOfZero) {
+  const Report REPORT = readReport(reportWithPaddedConflicts("0"));
+  ASSERT_TRUE(REPORT.unavailableRow.empty());
+  ASSERT_EQ(REPORT.readings.at(PADDED).at(8).conflicts, 0);
+
+  expectWalkthroughCounts(REPORT.readings);
 }
