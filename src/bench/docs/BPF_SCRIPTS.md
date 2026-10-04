@@ -124,15 +124,23 @@ than the one they started on. A report that holds nothing but the two lines is
 a complete capture whose script printed no data of its own: the run says so
 with a `[bpftrace]` line, and the capture counts as a caveat, not as a zero.
 
-The thread names `vernier-arm`, `vernier-wait` and `vernier-stop` are reserved
-for the backend's own threads: a benchmark thread must not take them. A script
-must not use a map whose name starts with `@vernier_`, nor print
-`bpftrace armed` or `bpftrace disarmed`: the check refuses such a script
-before anything runs. A script with an iterator probe (`iter:`) cannot take
-the program, since bpftrace runs an iterator probe only as a script's single
-probe; the check reports it unsupported, and such a script runs by hand. The
-program needs the `sched:sched_switch` tracepoint; where bpftrace refuses it,
-the check says so.
+What a script must leave alone: maps whose names start with `@vernier_`, and
+the lines `bpftrace armed` and `bpftrace disarmed`, which it must not print;
+the check refuses such a script before anything runs. Nothing else in a script
+is reserved: it may test thread names, these included. A script with an
+iterator probe (`iter:`) cannot take the program, since bpftrace runs an
+iterator probe only as a script's single probe; the check reports it
+unsupported, and such a script runs by hand. The program needs the
+`sched:sched_switch` tracepoint; where bpftrace refuses it, the check says so.
+
+What a benchmark must leave alone: the backend names its arm thread
+`vernier-arm`, and the thread that runs the test `vernier-wait` while it waits
+for the arm line and `vernier-stop` while it waits for the stop line; the
+program binds each name to that thread's id, so another thread of the
+benchmark may carry one of the names. The thread that runs the measured
+repeats must not be named `vernier-stop` while they run: a sleep of it would
+print the stop line before the stop was asked for, and the capture is reported
+as failed.
 
 ## Scripts
 

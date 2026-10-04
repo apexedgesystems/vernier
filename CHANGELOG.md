@@ -333,9 +333,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wait for the tracer's own sign that it has (see
   [the capture window](src/bench/docs/BPF_SCRIPTS.md#the-capture-window)).
   **Action needed:** a report holds a `bpftrace armed` and a
-  `bpftrace disarmed` line, scripts must leave the thread names `vernier-arm`,
-  `vernier-wait` and `vernier-stop` and maps named `@vernier_...` alone, and a
-  script with an iterator probe runs only by hand.
+  `bpftrace disarmed` line; a script must not use maps named `@vernier_...` or
+  print those two lines (the check refuses it), and one with an iterator probe
+  runs only by hand; a benchmark must not name the thread that runs its
+  measured repeats `vernier-stop`.
 - **The bundled bpftrace scripts trace threaded tests to their end** -- they
   ended when any thread of the traced process exited, and `wakeup_latency.bt`
   missed wakeups completed on another CPU. **Action needed:** its histograms do
@@ -349,6 +350,15 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   **Action needed:** a `--bpf` name containing `/` is a path from the working
   directory, and an installed library whose source tree is gone needs
   `--bpf-scripts`.
+- **Profiler helpers stop on SIGINT when the benchmark runs in the
+  background** -- a benchmark started as a background job of a script ignores
+  SIGINT, and the tracers and probes it started inherited the ignore, so one
+  stopped before it had set its own handler ignored the stop; each helper now
+  starts with SIGINT and SIGTERM at their default action.
+- **`PERF_BPF` reads like every other boolean setting** -- `yes` and `on` turn
+  it on, where they left it off, and a value that is no boolean is a
+  configuration error instead of off. **Action needed:** fix an invalid
+  `PERF_BPF` value; the check refuses it.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
