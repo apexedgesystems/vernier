@@ -314,6 +314,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `pprof`-only installation printed empty analysis). An analyzer that is
   missing, does not run or fails on the profile is reported, and the capture
   and its `cpu.prof` are kept.
+- **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
+  harness fills the `cupti*` cells only from complete CUPTI records, the NVML
+  cells only from readings NVML reported, `occupancy` (an estimate from the
+  launch shape, not a measured occupancy) only for a declared launch
+  configuration and `memBandwidthGBs` only for declared transfers, and names on
+  stderr what is missing. `smClockMHz`, `throttling`, `occupancy` and
+  `memBandwidthGBs`, which read 0 when nothing was measured, are now empty, so
+  a consumer parsing them as numbers must accept an empty cell;
+  `CuptiCollector` gains `unavailableReason()` and `windowProblem()`.
+- **Walkthrough 19 reads the GPU columns of a kernel test's row** --
+  `src/bench/demo/docs/19_CUPTI_KERNEL_METRICS.md` is rewritten from runs of
+  demo 02's two kernel tests on the documented Jetson AGX Thor rig: what each
+  GPU column holds and where it comes from, with the reference CSV at
+  `src/bench/demo/reference/thor/19_cupti_kernel_metrics.csv`.
 
 ### Fixed
 
@@ -754,6 +768,25 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   not accept. It exits 1, naming the input, when a requested input could not be
   read, still writing the rows it did read (a summary with no data is only a
   warning), so a script that relied on exit 0 after a failed read now sees 1.
+- **A GPU build without CUPTI compiles** -- with `-DVERNIER_USE_CUPTI=OFF` (a
+  new option, on by default) or a CUDA toolkit without CUPTI, the GPU harness's
+  CUPTI collector builds as a no-op and the `cupti*` CSV cells stay empty. The
+  collector keys on what the build linked, not on whether `cupti.h` exists, so
+  a toolkit that has the header without the library builds too.
+- **A GPU build without NVML runs** -- a build that did not find NVML compiled
+  the harness's NVML calls without linking NVML, so every GPU test died at its
+  first case on an undefined `nvmlInit_v2`. The calls are compiled only when
+  NVML was found, and `-DVERNIER_USE_NVML=OFF` (a new option, on by default)
+  builds without it.
+- **NVML readings come from the GPU the test runs on** -- the GPU harness looked
+  up its NVML device by the CUDA device ordinal, which names another GPU where
+  NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
+  hides them; it looks the device up by the CUDA device's UUID.
+- **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
+  path it could not open (in a missing directory, a directory, an empty path)
+  wrote no rows, said nothing and exited 0. It exits 2 before any test runs,
+  with `[csv] cannot write --csv '<path>': <reason>` on stderr, so a script
+  that relied on exit 0 from such a run sees 2.
 
 ## v1.0.3 - 2026-06-28
 
