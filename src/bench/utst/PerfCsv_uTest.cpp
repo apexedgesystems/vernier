@@ -10,6 +10,8 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -25,7 +27,8 @@ namespace {
 class CsvCapture {
 public:
   CsvCapture()
-      : path_("/tmp/test_csv_" + std::to_string(reinterpret_cast<uintptr_t>(this)) + ".csv") {
+      : path_("/tmp/test_csv_" + std::to_string(::getpid()) + "_" +
+              ::testing::UnitTest::GetInstance()->current_test_info()->name() + ".csv") {
     ofs_.open(path_);
   }
 
