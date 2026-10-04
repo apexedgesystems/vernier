@@ -894,8 +894,11 @@ TEST(ReadinessOwnedHelper, AllDeliveriesRefusedLeavesItReportedAlive) {
   EXPECT_FALSE(helper.running());
 }
 
-/** @test On the sudo route the single child under the direct child is the one signalled. */
-TEST(ReadinessOwnedHelper, SudoRouteTargetsTheOnlyGrandchild) {
+/**
+ * @test sudo that executed the tool in its own process: the tool is the one
+ * signalled, not the one child the tool has of its own.
+ */
+TEST(ReadinessOwnedHelper, SudoRouteSignalsAToolSudoExecutedNotItsChild) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
   const std::string SUDO = dir.install("fake_sudo.sh", "sudo");
@@ -908,15 +911,55 @@ TEST(ReadinessOwnedHelper, SudoRouteTargetsTheOnlyGrandchild) {
   policy.context = ctx;
   OwnedHelper helper(policy);
   ASSERT_TRUE(helper.start({SUDO, "-n", "--", HELPER, "parent"}, "", "", 400, ctx.get()).running());
-  const std::vector<std::string> CHILDREN = dir.logLines("helper child pid=");
-  ASSERT_EQ(CHILDREN.size(), 1U) << dir.log();
-  const std::string GRANDCHILD = CHILDREN.front().substr(CHILDREN.front().find('=') + 1);
+  const pid_t TOOL = helper.pid();
+  ASSERT_EQ(dir.logLines("helper child pid=").size(), 1U) << dir.log();
   const HelperStopResult STOP = helper.stop();
   killLoggedChildren(dir);
   EXPECT_TRUE(STOP.reaped);
+  EXPECT_EQ(STOP.stoppedBy, SIGINT);
   ASSERT_FALSE(STOP.deliveries.empty());
   for (const auto& delivery : STOP.deliveries) {
-    EXPECT_EQ(std::to_string(delivery.target), GRANDCHILD) << delivery.command;
+    EXPECT_EQ(delivery.target, TOOL) << delivery.command;
+  }
+}
+
+/**
+ * @test sudo that stays the tool's parent, directly or through a monitor of
+ * its own (also named sudo): the tool below is the one signalled, and the
+ * stop ends it.
+ */
+TEST(ReadinessOwnedHelper, SudoRouteSignalsTheToolBelowSudo) {
+  for (const char* stays : {"child", "monitor"}) {
+    FakeToolDir dir;
+    ASSERT_TRUE(dir.ok());
+    const std::string SUDO = dir.install("fake_sudo.sh", "sudo");
+    const std::string KILL = dir.install("fake_kill.sh", "kill");
+    const std::string HELPER = dir.install("fake_helper.sh", "helper");
+    auto ctx = std::make_shared<const ReadinessContext>(dir.context({{"FAKE_SUDO_STAYS", stays}}));
+    HelperStopPolicy policy = quickPolicy(PrivilegeRoute::SCOPED_SUDO);
+    policy.sudoPath = SUDO;
+    policy.killPath = KILL;
+    policy.context = ctx;
+    OwnedHelper helper(policy);
+    ASSERT_TRUE(helper.start({SUDO, "-n", "--", HELPER, "run"}, "", "", 400, ctx.get()).running())
+        << stays;
+    const std::vector<std::string> STARTED = dir.logLines("helper run pid=");
+    ASSERT_EQ(STARTED.size(), 1U) << stays << ": " << dir.log();
+    const pid_t TOOL =
+        static_cast<pid_t>(std::stoi(STARTED.front().substr(STARTED.front().find('=') + 1)));
+    ASSERT_NE(TOOL, helper.pid()) << stays;
+    const HelperStopResult STOP = helper.stop();
+    const bool TOOL_ENDED = ::kill(TOOL, 0) != 0;
+    if (!TOOL_ENDED) {
+      (void)::kill(TOOL, SIGKILL); // this test started it, through the fake
+    }
+    EXPECT_TRUE(STOP.reaped) << stays;
+    EXPECT_EQ(STOP.stoppedBy, SIGINT) << stays;
+    ASSERT_FALSE(STOP.deliveries.empty()) << stays;
+    for (const auto& delivery : STOP.deliveries) {
+      EXPECT_EQ(delivery.target, TOOL) << stays << ": " << delivery.command;
+    }
+    EXPECT_TRUE(TOOL_ENDED) << stays << ": the tool outlived the stop";
   }
 }
 

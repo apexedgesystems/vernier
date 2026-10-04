@@ -9,6 +9,11 @@
 # match answers the way `sudo -n` answers without a grant. FAKE_SUDO_FAIL,
 # when set, is printed for every command instead, which then fails: sudo
 # itself cannot run (for example its "no new privileges" refusal).
+# FAKE_SUDO_STAYS says how the command runs: unset, executed in this process,
+# as sudo can; "child", started as this process's child, which waits for it,
+# as sudo usually runs it; "monitor", below a monitor process of this one,
+# also named sudo, as sudo runs it with use_pty. A command started in the
+# background gets SIGINT's default action, as sudo's command does.
 
 if [ -n "${FAKE_LOG:-}" ]; then
   printf 'sudo %s\n' "$*" >>"$FAKE_LOG"
@@ -47,4 +52,19 @@ if [ -n "${FAKE_SUDO_DENY:-}" ]; then
   done
   IFS=$saved_ifs
 fi
+case "${FAKE_SUDO_STAYS:-}" in
+child)
+  /usr/bin/env --default-signal=INT "$@" &
+  wait $!
+  exit $?
+  ;;
+monitor)
+  (
+    /usr/bin/env --default-signal=INT "$@" &
+    wait $!
+  ) &
+  wait $!
+  exit $?
+  ;;
+esac
 exec "$@"

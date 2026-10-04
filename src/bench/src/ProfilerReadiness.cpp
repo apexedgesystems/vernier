@@ -895,6 +895,42 @@ bool waitGone(pid_t child, bool& reaped, int& waitStatus, int ms) {
   return true;
 }
 
+/**
+ * @brief The command name of process @p pid as the kernel keeps it (its
+ * executable's file name, at most 15 characters), or "" when unreadable.
+ */
+std::string processName(pid_t pid) {
+  std::ifstream in("/proc/" + std::to_string(pid) + "/comm");
+  std::string name;
+  std::getline(in, name);
+  return name;
+}
+
+/**
+ * @brief The process that runs the tool sudo was asked to run, from
+ * @p started, the process this helper started with @p sudoPath.
+ *
+ * sudo either stays the tool's parent (it forks the tool, sometimes with a
+ * monitor process of its own between them, which is also named sudo) or
+ * executes the tool in its own process. The command name tells them apart:
+ * while a process is still sudo and has exactly one child, the tool is
+ * below it; a process that is not sudo is the tool, and its own child is
+ * never taken for it. An unreadable name, or a sudo with no child or
+ * several, ends the walk there.
+ */
+pid_t toolUnderSudo(pid_t started, const std::string& sudoPath) {
+  const std::string SUDO_NAME = std::filesystem::path(sudoPath).filename().string().substr(0, 15);
+  pid_t target = started;
+  for (int depth = 0; depth < 3 && processName(target) == SUDO_NAME; ++depth) {
+    const std::vector<pid_t> CHILDREN = childProcesses(target);
+    if (CHILDREN.size() != 1) {
+      break;
+    }
+    target = CHILDREN.front();
+  }
+  return target;
+}
+
 } // namespace
 
 bool OwnedHelper::running() { return child_ > 0 && !tryReap(child_, reaped_, waitStatus_); }
@@ -1078,12 +1114,7 @@ HelperStopResult OwnedHelper::stop() {
     delivery.target = child_;
     if (policy_.route == PrivilegeRoute::SCOPED_SUDO) {
 #ifdef __linux__
-      // sudo may keep a monitor process between itself and the tool: the
-      // tool is then the monitor's only child.
-      const std::vector<pid_t> CHILDREN = childProcesses(child_);
-      if (CHILDREN.size() == 1) {
-        delivery.target = CHILDREN.front();
-      }
+      delivery.target = toolUnderSudo(child_, policy_.sudoPath);
 #endif
       const std::vector<std::string> ARGV = {policy_.sudoPath,
                                              "-n",

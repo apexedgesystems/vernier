@@ -464,9 +464,12 @@ struct HelperStopResult {
  * helper ends. stop() delivers SIGINT, then SIGTERM, then SIGKILL through the
  * policy's route, waiting a bounded time after each and reporting every
  * delivery. Only processes this object started are signalled: its direct
- * child while that is not yet reaped, or, on the sudo route, the single child
- * listed under it (sudo may keep a monitor process between the two). An
- * empty or ambiguous list falls back to the direct child.
+ * child while that is not yet reaped, or, on the sudo route, the process that
+ * runs the tool: below the direct child while that is still sudo (by its
+ * command name) with exactly one child, through a monitor sudo may keep
+ * between itself and the tool; the direct child itself once sudo has
+ * executed the tool in it, whatever children the tool has. A sudo with no
+ * child or several is signalled itself.
  */
 class OwnedHelper {
 public:
