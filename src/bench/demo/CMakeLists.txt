@@ -276,7 +276,7 @@ if (TARGET JoinInstructionCountsStartupFault)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (3)
+# Demo Effect Checks Run by CTest (4)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -284,7 +284,9 @@ endif ()
 # under the demo label and the tool's, so ordinary test runs include it and
 # never the demo's timing cases. The skip expression names the check: its
 # failure messages quote the child runs' output, whose own GoogleTest lines
-# must not turn a failure into a skip.
+# must not turn a failure into a skip. A GPU demo's check keeps its report
+# reading, which needs no CUDA, in a second program named after it with
+# Report, built in every configuration under the same labels.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -377,6 +379,16 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     )
   endforeach ()
 endif ()
+
+vernier_add_gtest(
+  TARGET
+  TestDemoComputeSanitizerReport
+  SOURCES
+  gpu/utst/04_ComputeSanitizerProfiler_Report_uTest.cpp
+  LABELS
+  demo
+  compute-sanitizer
+)
 
 # ------------------------------------------------------------------------------
 # Demo 06's Totals Check Run by CTest

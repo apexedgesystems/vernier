@@ -567,13 +567,16 @@ Three things check what this page shows, and all fail loudly:
   `ComputeSanitizer.NamedToolHintRunsThatTool` the hint for racecheck,
   synccheck and initcheck to the by-hand command alone, which, run as
   printed against a stand-in that records its arguments, starts
-  compute-sanitizer with the tool named. Six more tests hold the report
-  reading to real report text from both tool versions. They are
-  registered with `ctest` under the `demo` and `compute-sanitizer` labels
-  wherever the GPU demos are built, and skip only where the tool is not on
-  `PATH`, where the CUDA runtime sees no device, or in a build with the
-  address or the thread sanitizer, in which the demo does not run, saying
-  which:
+  compute-sanitizer with the tool named. These are registered with `ctest`
+  under the `demo` and `compute-sanitizer` labels wherever the GPU demos are
+  built, and skip only where the tool is not on `PATH`, where the CUDA
+  runtime sees no device, or in a build with the address or the thread
+  sanitizer, in which the demo does not run, saying which. Six more tests,
+  in `TestDemoComputeSanitizerReport`
+  ([`04_ComputeSanitizerProfiler_Report_uTest.cpp`](../gpu/utst/04_ComputeSanitizerProfiler_Report_uTest.cpp)),
+  hold the report reading to real report text from both tool versions; they
+  need neither the tool nor CUDA, so every build runs them, under the same
+  labels:
 
   ```bash
   ctest --test-dir build -L compute-sanitizer

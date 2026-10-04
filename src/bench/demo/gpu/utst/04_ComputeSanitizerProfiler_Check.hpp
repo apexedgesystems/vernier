@@ -11,9 +11,11 @@
  * the child, reading its files and GoogleTest's lines are walkthrough 15's
  * check support (12_MemcheckProfiler_Check.hpp), used as it is;
  * 04_ComputeSanitizerProfiler_uTest.cpp keeps what the checks assert and
- * when they skip.
+ * when they skip. Nothing here needs CUDA, so
+ * 04_ComputeSanitizerProfiler_Report_uTest.cpp tests the report reading in
+ * every build.
  *
- * Test support for 04_ComputeSanitizerProfiler_uTest.cpp; not part of the demo.
+ * Test support for those two programs; not part of the demo.
  */
 
 #include "src/bench/demo/cpu/utst/12_MemcheckProfiler_Check.hpp"
@@ -263,6 +265,11 @@ inline bool frameAt(const std::string& frame, const std::string& function,
        WHERE.compare(WHERE.size() - IN_DIRECTORY.size(), IN_DIRECTORY.size(), IN_DIRECTORY) == 0);
   return NAME.find(function) != std::string::npos && AT_LOCATION;
 }
+
+/// The unguarded statement, as the unguarded source has it: the report must
+/// name its line. The check finds that line in the source, so an edit that
+/// moves the statement moves the expectation.
+inline constexpr const char* UNGUARDED_STATEMENT = "y[I] = a * x[I] + y[I];";
 
 /// The 1-based number of the line of @p source that contains @p statement;
 /// 0 when no line or more than one line does.
