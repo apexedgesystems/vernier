@@ -1212,6 +1212,45 @@ TEST_F(BpfCheckTest, BpftraceRunCopyEndsWithTheCaptureWindow) {
 }
 
 /**
+ * @test A run copy of each bundled script reads right: its filters hold this
+ * process's pid, and its comments, which name no placeholder, are the
+ * script's own, word for word, so none reads as a pid "replaced" before the
+ * run.
+ */
+TEST_F(BpfCheckTest, BundledScriptRunCopiesKeepTheirComments) {
+  const std::vector<std::string> NAMES{"cpu_migrations", "fsync_latency", "wakeup_latency",
+                                       "write_latency"};
+  const std::string BUNDLED = VERNIER_BUNDLED_BPF_DIR;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
+      requestFor("bpftrace", NAMES), dir_.context({{"PERF_BPF_SCRIPTS", BUNDLED}}));
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const BpftraceRun RUN = runPlannedBpftrace(R, "Bpf.Bundled");
+  ASSERT_TRUE(RUN.outcome.has_value()) << RUN.err;
+  const std::string PID = std::to_string(::getpid());
+  const auto COMMENTS = [](const std::string& text) {
+    std::vector<std::string> lines;
+    std::istringstream in(text);
+    for (std::string line; std::getline(in, line);) {
+      if (line.rfind("//", 0) == 0) {
+        lines.push_back(line);
+      }
+    }
+    return lines;
+  };
+  for (const std::string& NAME : NAMES) {
+    const std::string COPY = runCopy("Bpf.Bundled", NAME);
+    ASSERT_FALSE(COPY.empty()) << NAME << ": no run copy";
+    const std::vector<std::string> OWN = COMMENTS(fileText(BUNDLED + "/" + NAME + ".bt"));
+    std::vector<std::string> copied = COMMENTS(COPY);
+    ASSERT_GE(copied.size(), OWN.size()) << NAME;
+    copied.resize(OWN.size()); // the capture window's own comment follows the script's
+    EXPECT_EQ(copied, OWN) << NAME;
+    EXPECT_EQ(COPY.find("{{PID}}"), std::string::npos) << NAME;
+    EXPECT_NE(COPY.find("== " + PID + "/"), std::string::npos) << NAME;
+  }
+}
+
+/**
  * @test A capture whose report holds only the capture window's lines is
  * complete, and says it holds no data of the script's own: a caveat, printed,
  * not READY and not a zero

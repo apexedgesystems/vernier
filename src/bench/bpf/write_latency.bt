@@ -1,5 +1,5 @@
 // Histogram of write() latency (us) for a specific PID.
-// {{PID}} is replaced by the BpfRunner before execution.
+// The bpftrace backend puts the traced process's PID in the filters below.
 //
 // Rides the syscalls tracepoints (stable ABI, arch-neutral) rather than
 // arch-prefixed kprobes like __x64_sys_write, which do not exist on

@@ -4,7 +4,7 @@
 // and for wakeups of its main thread. The interval includes the wakeup's
 // trip to the woken thread's CPU and any wait for that CPU; under a lock it
 // is not the time a thread waited for the lock.
-// {{PID}} is replaced by the BpfRunner before execution.
+// The bpftrace backend puts the traced process's PID in the filters below.
 //
 // sched_waking runs in the waking thread; sched_wakeup can run on the
 // woken thread's CPU, outside the process that asked for the wakeup.
