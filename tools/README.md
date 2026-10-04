@@ -240,10 +240,10 @@ bench nsight-parse parse bench-out/ --csv combined.csv      # every report under
 
 **Options:**
 
-| Flag                | Description                                                                                     | Default  |
-| ------------------- | ----------------------------------------------------------------------------------------------- | -------- |
-| `--csv FILE`        | The CSV to write; written even when no report could be read                                     | required |
-| `--timeout SECONDS` | How long one `nsys` or `ncu` command may run before it and every process it started are stopped | 600      |
+| Flag                | Description                                                                                               | Default  |
+| ------------------- | --------------------------------------------------------------------------------------------------------- | -------- |
+| `--csv FILE`        | The CSV to write; written even when no report could be read                                               | required |
+| `--timeout SECONDS` | How long one `nsys` or `ncu` command may run before it and every process in its process group are stopped | 600      |
 
 **How it reads a report.** A directory stands for every `.nsys-rep` under it,
 then every `.ncu-rep`, each sorted by path.
@@ -292,15 +292,20 @@ need `test`, `wallMedian`, `wallCV` and `callsPerSecond` columns and refuse it
 CSV tool.
 
 **Exit status.** 0 when every requested input was read; 1 when any was not: a
-tool failed, is missing or ran past `--timeout`, an input is not a report or is
-empty, or a directory holds none. Each failure is an error line on stderr
+tool failed, is missing, ran past `--timeout` or left a process holding its
+output 2 s after it ended, an input is not a report or is empty, or a directory
+holds none. Each failure is an error line on stderr
 naming the input and its cause, and the rows of the reports that were read are
 written all the same. A summary with no data, such as the kernel summary of a
 report with no kernel, is a warning. A `--csv` that names one of the reports is
-refused before anything is read. SIGINT or SIGTERM stops the tool and every
-process it started, removes the private export and writes nothing. On the
-Jetson AGX Thor rig (nsys 2025.3.2, ncu 2025.3.1), a directory with one good
-report and a truncated copy of an Nsight Compute report:
+refused before anything is read. Each `nsys` or `ncu` command runs in a process
+group of its own, and what is left of that group is killed when the command
+ends, however it ends: a process the tool started outlives it only by leaving
+the group. SIGHUP, SIGINT or SIGTERM stops the extraction: the tool's group is
+killed, the private export removed and nothing written, and `bench` ends by
+that signal; a signal ignored when it starts, as under `nohup`, stays ignored.
+On the Jetson AGX Thor rig (nsys 2025.3.2, ncu 2025.3.1), a directory with one
+good report and a truncated copy of an Nsight Compute report:
 
 ```bash
 bench nsight-parse parse mixed/ --csv mixed.csv   # exits 1

@@ -16,7 +16,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use super::exec::{run_tool, Interrupt, Interrupts, ToolRun};
+use super::exec::{run_tool, Interrupt, Interrupts, ToolRun, DRAIN};
 use super::parse::{self, Row};
 use super::{COMMAND, NSYS_SUMMARIES};
 use crate::bench::Error;
@@ -198,11 +198,13 @@ fn cause(tool: &str, run: &ToolRun, timeout: Duration) -> String {
         }
         ToolRun::NotFound => format!("{tool} not found on PATH"),
         ToolRun::NotStarted(e) => format!("{tool} could not be started: {e}"),
-        ToolRun::WaitFailed(e) => format!("{tool} could not be waited for and was stopped: {e}"),
+        ToolRun::WaitFailed(e) => format!("{tool} could not be waited for: {e}"),
         ToolRun::TimedOut => format!("{tool} did not finish within {secs} s and was stopped"),
-        ToolRun::OutputHeldOpen => {
-            format!("{tool} ended, but a process it started kept its output open past {secs} s")
-        }
+        ToolRun::OutputHeldOpen => format!(
+            "{tool} ended, but a process it started still held its output {} s later \
+             and was stopped",
+            DRAIN.as_secs()
+        ),
         ToolRun::Interrupted(signal) => format!("stopped by {signal}"),
     }
 }
@@ -495,9 +497,10 @@ fn write_csv(rows: &[Row], path: &Path) -> io::Result<()> {
 
 /// The command: read @p inputs, each tool command bounded by @p timeout, and
 /// write their rows to @p csv. Warnings and errors go to stderr, one line
-/// each, then the count of rows written to stdout. While it runs, SIGINT and
-/// SIGTERM stop it: the tool is stopped, its private directory removed, and
-/// nothing written.
+/// each, then the count of rows written to stdout. While it runs, SIGHUP,
+/// SIGINT and SIGTERM stop it, unless the process started with that signal
+/// ignored: the tool's process group is killed, its private directory
+/// removed, and nothing written.
 pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, Error> {
     let interrupts = Interrupts::watch_signals();
     let resolved: Vec<Input> = inputs.iter().map(|input| resolve(input)).collect();

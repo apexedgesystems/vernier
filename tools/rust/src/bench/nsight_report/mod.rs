@@ -61,9 +61,10 @@ launch shape, section and metric, with source, report, kernel, instances,
 time_total_ns, time_avg_ns and time_pct first, then the tools' own columns.
 
 Exit status: 0 when every requested input was read; 1 when any was not (a tool
-failed, is missing or ran past --timeout, an input is not a report or is empty,
-a directory holds none), with each failure named on stderr and the rows that
-were read written all the same. A summary with no data is only a warning.";
+failed, is missing, ran past --timeout or left a process holding its output, an
+input is not a report or is empty, a directory holds none), with each failure
+named on stderr and the rows that were read written all the same. A summary
+with no data is only a warning.";
 
 /* ----------------------------- Modules ----------------------------- */
 

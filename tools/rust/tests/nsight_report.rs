@@ -75,7 +75,10 @@ exit 2
 
 /// ncu as the reference rig's printed it: it fails without `--import` and on a
 /// report named "damaged"; for one named "slow" it starts a long `sleep` under
-/// itself and waits, as the launcher on PATH runs the real binary.
+/// itself and waits, as the launcher on PATH runs the real binary. For one
+/// named "leftover" it starts a long `sleep` that keeps its outputs and exits
+/// at once, writing its own pid too; for one named "detached" it starts one
+/// with its outputs elsewhere and then prints the recorded import.
 const FAKE_NCU: &str = r#"#!/bin/sh
 echo "ncu $*" >> "$NSIGHT_FAKE_LOG"
 rep=""
@@ -91,6 +94,8 @@ if [ -z "$rep" ]; then
 fi
 case "$rep" in *damaged*) "$CAT" "$NSIGHT_FIXTURES/ncu_import_damaged.out"; exit 1 ;; esac
 case "$rep" in *slow*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; wait; exit 0 ;; esac
+case "$rep" in *leftover*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; echo $$ > "$NSIGHT_FAKE_LAUNCHER"; exit 0 ;; esac
+case "$rep" in *detached*) "$SLEEP" 30 > /dev/null 2>&1 & echo $! > "$NSIGHT_FAKE_PIDS" ;; esac
 "$CAT" "$NSIGHT_FIXTURES/ncu_import_per_kernel.out"
 exit 0
 "#;
@@ -105,7 +110,8 @@ struct Run {
 }
 
 /// A scratch area for one test: the temporary directory `bench` is given in
-/// `tmp/`, the working directory `work/`, and the fakes' call log and pid file.
+/// `tmp/`, the working directory `work/`, and the fakes' call log and pid
+/// files.
 struct Case {
     dir: tempfile::TempDir,
 }
@@ -173,13 +179,28 @@ impl Case {
 
     /// `bench` with @p args, run from `work/` with only the fakes on PATH.
     fn command(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_bench"));
+        self.command_via(&[], args)
+    }
+
+    /// The same, started through @p via: a program and its arguments, which
+    /// then run `bench` and its arguments.
+    fn command_via(&self, via: &[&str], args: &[&str]) -> Command {
+        let bench = env!("CARGO_BIN_EXE_bench");
+        let mut cmd = match via.split_first() {
+            Some((program, before)) => {
+                let mut cmd = Command::new(program);
+                cmd.args(before).arg(bench);
+                cmd
+            }
+            None => Command::new(bench),
+        };
         cmd.args(args)
             .current_dir(self.path("work"))
             .env("PATH", fakes())
             .env("TMPDIR", self.path("tmp"))
             .env("NSIGHT_FAKE_LOG", self.path("calls.log"))
             .env("NSIGHT_FAKE_PIDS", self.path("tool.pid"))
+            .env("NSIGHT_FAKE_LAUNCHER", self.path("launcher.pid"))
             .env("NSIGHT_FIXTURES", FIXTURES)
             .env("CAT", which("cat"))
             .env("SLEEP", which("sleep"));
@@ -221,40 +242,43 @@ impl Case {
         fs::read(self.path("work").join(name)).expect("the CSV")
     }
 
-    /// The pid of the `sleep` a slow fake started, once it has started.
+    /// The pid of the `sleep` a fake started, once it has started.
     fn tool_pid(&self) -> u32 {
+        self.pid_in("tool.pid")
+    }
+
+    /// The pid of the fake that started a "leftover" `sleep`, once written.
+    fn launcher_pid(&self) -> u32 {
+        self.pid_in("launcher.pid")
+    }
+
+    fn pid_in(&self, name: &str) -> u32 {
         let until = Instant::now() + Duration::from_secs(20);
         loop {
-            if let Some(pid) = fs::read_to_string(self.path("tool.pid"))
+            if let Some(pid) = fs::read_to_string(self.path(name))
                 .ok()
                 .and_then(|text| text.trim().parse().ok())
             {
                 return pid;
             }
-            assert!(
-                Instant::now() < until,
-                "the slow fake never started its tool"
-            );
+            assert!(Instant::now() < until, "the fake never wrote {name}");
             std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
 
-/// Whether @p pid has ended: gone, or a zombie no one has reaped yet.
+/// Whether @p pid has ended: gone, or a zombie no one has reaped yet, within
+/// 5 s.
 fn ended(pid: u32) -> bool {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
-        let state = fs::read_to_string(format!("/proc/{pid}/stat"))
-            .ok()
-            .and_then(|stat| {
-                let after = &stat[stat.rfind(')')? + 1..];
-                after.split_whitespace().next().map(str::to_string)
-            });
-        match state.as_deref() {
-            None | Some("Z") | Some("X") => return true,
-            _ if Instant::now() >= until => return false,
-            _ => std::thread::sleep(Duration::from_millis(20)),
+        if ended_now(pid) {
+            return true;
         }
+        if Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
@@ -274,6 +298,46 @@ fn end(pid: u32) {
         .arg("-c")
         .arg(format!("kill -s KILL {pid}"))
         .status();
+}
+
+/// Processes a test started, ended when the test ends, after its assertions,
+/// if they still run then. It ends nothing a test checks.
+struct Guard(Vec<u32>);
+
+impl Drop for Guard {
+    fn drop(&mut self) {
+        for &pid in &self.0 {
+            if !ended_now(pid) {
+                end(pid);
+            }
+        }
+    }
+}
+
+/// Whether @p pid is gone or a zombie, without waiting.
+fn ended_now(pid: u32) -> bool {
+    let state = fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| {
+            let after = &stat[stat.rfind(')')? + 1..];
+            after.split_whitespace().next().map(str::to_string)
+        });
+    matches!(state.as_deref(), None | Some("Z") | Some("X"))
+}
+
+/// Wait at most @p within for @p child to exit.
+fn wait_for_exit(child: &mut std::process::Child, within: Duration) -> ExitStatus {
+    let until = Instant::now() + within;
+    loop {
+        if let Some(status) = child.try_wait().expect("wait") {
+            return status;
+        }
+        if Instant::now() >= until {
+            let _ = child.kill();
+            panic!("bench did not end within {within:?}");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 /// The export path an `nsys export` call wrote to.
@@ -844,6 +908,199 @@ fn sigint_cleans_up() {
 #[test]
 fn sigterm_cleans_up() {
     interrupted_run_cleans_up("TERM", 15, "SIGTERM");
+}
+
+/// @test SIGHUP, which a terminal's hangup sends to bench and not to the
+/// tool's own process group, does the same and ends the run by SIGHUP.
+#[test]
+fn sighup_cleans_up() {
+    interrupted_run_cleans_up("HUP", 1, "SIGHUP");
+}
+
+/// @test A run started with SIGHUP ignored, as nohup starts one, keeps
+/// ignoring it: the tool runs on until --timeout stops it.
+#[test]
+fn ignored_hangup_stays_ignored() {
+    let case = Case::new();
+    case.report("slow.nsys-rep");
+    let mut child = case
+        .command_via(
+            &["/bin/sh", "-c", "trap '' HUP; exec \"$@\"", "sh"],
+            &[
+                COMMAND,
+                ACTION,
+                "slow.nsys-rep",
+                "--csv",
+                "out.csv",
+                "--timeout",
+                "2",
+            ],
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bench");
+    let tool = case.tool_pid();
+    let _guard = Guard(vec![tool]);
+
+    send_signal(child.id(), "HUP");
+
+    let status = wait_for_exit(&mut child, Duration::from_secs(30));
+    let out = child.wait_with_output().expect("output");
+    assert_eq!(status.code(), Some(1), "{status:?}");
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!(
+            "[{COMMAND}] error: nsys export failed for slow.nsys-rep: nsys did not finish \
+             within 2 s and was stopped\n"
+        )
+    );
+    assert!(ended(tool), "the tool's own process {tool} still runs");
+}
+
+/// @test A tool that ends while a process it started keeps its output open is
+/// a failed read 2 s later, however far off --timeout, and that process is
+/// stopped before the run returns.
+#[test]
+fn leftover_holding_the_output_is_stopped() {
+    let case = Case::new();
+    case.report("leftover.ncu-rep");
+    let started = Instant::now();
+
+    let run = case.parse(&["leftover.ncu-rep", "--csv", "out.csv", "--timeout", "30"]);
+
+    let took = started.elapsed();
+    let leftover = case.tool_pid();
+    let _guard = Guard(vec![leftover]);
+    assert_eq!(run.status.code(), Some(1));
+    assert_eq!(
+        run.stderr,
+        format!(
+            "[{COMMAND}] error: ncu --import failed for leftover.ncu-rep: ncu ended, but a \
+             process it started still held its output 2 s later and was stopped\n"
+        )
+    );
+    assert!(took < Duration::from_secs(10), "{took:?}");
+    assert!(
+        ended(leftover),
+        "the process the tool left {leftover} still runs"
+    );
+}
+
+/// @test A signal that arrives after the tool ended, while a process it
+/// started still holds its output, ends the run at once: that process is
+/// stopped, nothing is written, and the run ends by the signal.
+#[test]
+fn signal_while_a_leftover_holds_the_output_ends_at_once() {
+    let case = Case::new();
+    case.report("leftover.ncu-rep");
+    let mut child = case
+        .command(&[
+            COMMAND,
+            ACTION,
+            "leftover.ncu-rep",
+            "--csv",
+            "out.csv",
+            "--timeout",
+            "30",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn bench");
+    let leftover = case.tool_pid();
+    let _guard = Guard(vec![leftover]);
+    let tool = case.launcher_pid();
+    assert!(ended(tool), "the tool {tool} never ended");
+    // The run is now waiting for the output the leftover holds.
+    std::thread::sleep(Duration::from_millis(200));
+
+    let signalled = Instant::now();
+    send_signal(child.id(), "TERM");
+
+    let status = wait_for_exit(&mut child, Duration::from_secs(40));
+    let took = signalled.elapsed();
+    let out = child.wait_with_output().expect("output");
+    assert_eq!(status.signal(), Some(15), "{status:?}");
+    assert!(took < Duration::from_secs(1), "{took:?} after SIGTERM");
+    assert!(
+        ended(leftover),
+        "the process the tool left {leftover} still runs"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stderr),
+        format!("[{COMMAND}] stopped by SIGTERM; nothing was written\n")
+    );
+    assert!(!case.path("work").join("out.csv").exists());
+}
+
+/// @test A tool that leaves a process running with its output elsewhere still
+/// gives its rows, and that process is stopped before the run returns.
+#[test]
+fn process_left_by_a_finished_tool_is_stopped() {
+    let case = Case::new();
+    case.report("detached.ncu-rep");
+
+    let run = case.parse(&["detached.ncu-rep", "--csv", "ncu.csv"]);
+
+    let leftover = case.tool_pid();
+    let _guard = Guard(vec![leftover]);
+    assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
+    assert_eq!(case.csv("ncu.csv"), fixture("expected_ncu_metrics.csv"));
+    assert!(
+        ended(leftover),
+        "the process the tool left {leftover} still runs"
+    );
+}
+
+/// @test A run started with SIGCHLD ignored, which would have the kernel reap
+/// the tool unseen, still sees the tool end and stops what it left.
+#[test]
+fn ignored_child_signal_does_not_hide_the_tools_end() {
+    let case = Case::new();
+    case.report("leftover.ncu-rep");
+    let perl = which("perl");
+    let run = {
+        let out = case
+            .command_via(
+                &[
+                    perl.to_str().expect("perl path"),
+                    "-e",
+                    "$SIG{CHLD} = 'IGNORE'; exec @ARGV or die $!",
+                ],
+                &[
+                    COMMAND,
+                    ACTION,
+                    "leftover.ncu-rep",
+                    "--csv",
+                    "out.csv",
+                    "--timeout",
+                    "1",
+                ],
+            )
+            .output()
+            .expect("run bench");
+        Run {
+            status: out.status,
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        }
+    };
+
+    let leftover = case.tool_pid();
+    let _guard = Guard(vec![leftover]);
+    assert_eq!(run.status.code(), Some(1), "{}", run.stderr);
+    assert_eq!(
+        run.stderr,
+        format!(
+            "[{COMMAND}] error: ncu --import failed for leftover.ncu-rep: ncu ended, but a \
+             process it started still held its output 2 s later and was stopped\n"
+        )
+    );
+    assert!(
+        ended(leftover),
+        "the process the tool left {leftover} still runs"
+    );
 }
 
 /* ----------------------------- Not a benchmark CSV ----------------------------- */

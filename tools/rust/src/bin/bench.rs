@@ -345,7 +345,7 @@ enum NsightAction {
         csv: PathBuf,
 
         /// Seconds one nsys or ncu command may run before it and every process
-        /// it started are stopped
+        /// in its process group are stopped
         #[arg(
             long,
             default_value_t = bench::nsight_report::DEFAULT_TIMEOUT_SECS,
