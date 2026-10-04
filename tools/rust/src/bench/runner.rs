@@ -2148,9 +2148,10 @@ mod tests {
         );
         let outside = written_pid(&outside);
         let outside_runs = still_runs(outside);
-        // This test started that process, through the script, and ends it.
+        // This test started that process, through the script, and ends it,
+        // with SIGKILL: the process keeps an ignored SIGTERM it inherited.
         let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill {outside}")])
+            .args(["-c", &format!("kill -KILL {outside}")])
             .status();
         assert!(
             took < std::time::Duration::from_secs(5),

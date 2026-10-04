@@ -2372,12 +2372,50 @@ struct BoundedRun {
     stderr: String,
 }
 
-/// `bench run <rig's benchmark> <args>` with PATH set to the rig's stand-ins,
-/// given @p bound to return; past it, bench run is killed and the result says
-/// so. @p during runs once bench run has started, with its process id.
+/// The SIGINT action a bounded run's `bench run` starts with. A child keeps
+/// an ignored action across exec, so without this the test would run bench
+/// with whatever this test process inherited: a background job of a
+/// non-interactive shell starts with SIGINT ignored.
+#[derive(Clone, Copy)]
+enum Sigint {
+    /// The default action: the signal ends the process.
+    Default,
+    /// Ignored, as such a background job starts.
+    Ignored,
+}
+
+/// Give SIGINT the action @p sigint in the process @p command starts.
+fn start_with_sigint(command: &mut Command, sigint: Sigint) {
+    use std::os::unix::process::CommandExt;
+
+    let handler = match sigint {
+        Sigint::Default => libc::SIG_DFL,
+        Sigint::Ignored => libc::SIG_IGN,
+    };
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only sigaction, which is async-signal-safe; a zeroed sigaction is a
+    // valid value of the type, given the default or the ignore handler.
+    unsafe {
+        command.pre_exec(move || {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = handler;
+            if libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut()) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// `bench run <rig's benchmark> <args>` with PATH set to the rig's stand-ins
+/// and SIGINT's action @p sigint, given @p bound to return; past it, bench run
+/// is killed and the result says so. @p during runs once bench run has
+/// started, with its process id.
 fn run_rig_bounded(
     rig: &RouteRig,
     args: &[&str],
+    sigint: Sigint,
     bound: std::time::Duration,
     during: impl FnOnce(u32),
 ) -> BoundedRun {
@@ -2395,6 +2433,7 @@ fn run_rig_bounded(
         .stdin(Stdio::null())
         .stdout(std::fs::File::create(&out_path).expect("bench stdout file"))
         .stderr(std::fs::File::create(&err_path).expect("bench stderr file"));
+    start_with_sigint(&mut command, sigint);
     let started = std::time::Instant::now();
     let mut child = {
         let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
@@ -2473,6 +2512,7 @@ fn run_callgrind_analyze_annotator_leaves_a_process() {
     let run = run_rig_bounded(
         &rig,
         &["--profile", "callgrind", "--profile-analyze"],
+        Sigint::Default,
         std::time::Duration::from_secs(20),
         |_| {},
     );
@@ -2506,7 +2546,8 @@ fn run_callgrind_analyze_annotator_leaves_a_process() {
 }
 
 /// @test bench run interrupted while callgrind_annotate runs (SIGINT sent
-/// to bench run alone): the annotator and the process it started are ended
+/// to bench run alone, which starts with SIGINT's default action whatever
+/// this test inherited): the annotator and the process it started are ended
 /// by bench run, which then ends by that signal.
 #[test]
 fn run_callgrind_analyze_interrupted() {
@@ -2524,6 +2565,7 @@ fn run_callgrind_analyze_interrupted() {
     let run = run_rig_bounded(
         &rig,
         &["--profile", "callgrind", "--profile-analyze"],
+        Sigint::Default,
         std::time::Duration::from_secs(20),
         |bench| {
             pid_written(&annotator);
@@ -2551,6 +2593,52 @@ fn run_callgrind_analyze_interrupted() {
         "still running after bench run ended: annotator {annotator} {annotator_running}, \
          its process {started} {started_running}"
     );
+}
+
+/// @test bench run started with SIGINT ignored, as a background job of a
+/// non-interactive shell starts, leaves it ignored: SIGINT sent while
+/// callgrind_annotate runs does not end the run, and the annotation ends by
+/// itself, well within its bound, and is printed.
+#[test]
+fn run_callgrind_analyze_inherited_ignore_stays() {
+    let rig = route_rig(&["valgrind", "callgrind_annotate"]);
+    let annotator = rig.dir.path().join("annotator.pid");
+    write_executable(
+        &rig.dir.path().join("tools/callgrind_annotate"),
+        &format!(
+            "#!/bin/sh\necho $$ > '{}'\n/bin/sleep 2\necho \"fake annotation of $2\"\nexit 0\n",
+            annotator.display()
+        ),
+    );
+    let run = run_rig_bounded(
+        &rig,
+        &["--profile", "callgrind", "--profile-analyze"],
+        Sigint::Ignored,
+        std::time::Duration::from_secs(20),
+        |bench| {
+            pid_written(&annotator);
+            let out =
+                output_of(Command::new("/bin/sh").args(["-c", &format!("kill -INT {bench}")]));
+            assert!(out.status.success(), "kill -INT {bench} failed");
+        },
+    );
+    let annotator = pid_written(&annotator);
+    let annotator_running = still_running(annotator);
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "the annotation did not end within its time: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert_eq!(run.signal, None, "an ignored SIGINT ended bench run");
+    assert_eq!(run.code, Some(0), "{}", run.stderr);
+    assert!(
+        run.stdout
+            .contains("fake annotation of bench-out/fake_bench.callgrind/callgrind.out"),
+        "{}",
+        run.stdout
+    );
+    assert!(!annotator_running, "the annotator {annotator} still runs");
 }
 
 /* ----------------------------- Profile-all ----------------------------- */
