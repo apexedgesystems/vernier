@@ -23,10 +23,11 @@ performance, not by default in CI.
   never arms), a line it prints once bpftrace has attached it and a 5 s
   self-exit added, through that route until the line shows, a second at
   least, then stops it and reports what failed; a run makes the same decision
-  before its first case. How the copy ended decides: one that ends before the
-  stop, or with an error after it, is reported as a copy that fails at its
-  start, and one still starting 5 s after its start (on a busy machine) is
-  stopped and reported as `unverified`. The copy lives in a private
+  before its first case. How the copy ended decides: one that ends by itself
+  before the stop is refused, one that ends with an error, before the stop or
+  after it, is reported as a copy that fails at its start, and one still
+  starting 5 s after its start (on a busy machine) is stopped and reported as
+  `unverified`. The copy lives in a private
   temporary directory, while the run's own copy lives in its capture folder, so
   the check cannot try the run's exact command: with `BENCH_SUDO=1`, a grant
   that refuses the check's copy is reported as `unverified` rather than denied,
@@ -162,8 +163,10 @@ Each script ends itself when the traced process's main thread exits
 (`sched_process_exit` filtered on `tid == {{PID}}`), so a trace of a threaded test
 lasts through its workers' exits; the backend stops it with SIGINT once the
 measured repeats finish. A tracer that ends before then, by its own `exit()`, is
-reported, and the capture counts as incomplete; one that ends within the
-check's first second is refused before the run ("did not stay attached").
+reported, and the capture counts as incomplete; one that ends before the check
+stops its copy, once the copy has attached and a second after its start at the
+earliest, is refused before the run, as a script that ends itself too soon to
+be checked.
 
 Run manually: replace every `{{PID}}` with the process to trace, then run the
 copy. For a benchmark already running (PID 1234 here), the trace starts once

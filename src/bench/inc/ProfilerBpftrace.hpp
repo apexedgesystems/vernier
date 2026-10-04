@@ -126,6 +126,12 @@ struct AttachProbe {
    * refusal of the probe is then unverified.
    */
   std::string runCommand;
+  /**
+   * What the reader changes when the probe ends by itself, status 0, before
+   * its stop (a script that exits that soon); empty when the reader cannot
+   * change the script, and the hint says to run it by hand.
+   */
+  std::string selfEndRemedy;
   int graceMs = 1000;      ///< How long the probe runs before its stop, at least.
   int attachWaitMs = 5000; ///< How long after its start the stop waits for its attach line.
   int selfExitMs = 0;      ///< When the probe's own script ends it after its attach; 0: never.
@@ -148,8 +154,10 @@ inline constexpr int PROBE_SELF_EXIT_SLACK_MS = 10000;
  *
  * How the probe ended decides, not the signal it ended after: one stopped
  * by SIGINT exits with status 0 and nothing on stderr (0.14.0, 0.20.2 and
- * 0.23.2). A probe that ended before its stop, or with an error after it, is
- * read from its stderr as one that exited at its start
+ * 0.23.2). A probe that ended by itself with status 0 before its stop is
+ * refused as one that ended itself after so many ms, with selfEndRemedy as
+ * its hint. One that ended otherwise before its stop, or with an error after
+ * it, is read from its stderr as one that exited at its start
  * (classifyAttachFailure()). A probe the stop could not end (every signal
  * refused or ignored) ends by its own self-exit: the call waits for that, up
  * to selfExitMs plus PROBE_SELF_EXIT_SLACK_MS after the stop began, and reaps

@@ -28,6 +28,9 @@
 #                compiled, so SIGINT ends it before then, or does nothing with
 #                FAKE_INT=ignore (SIGINT ignored by its parent, as in a
 #                background job of a script)
+#   end-early    exit 0 FAKE_END_AFTER_S seconds (default 0.3) after the start,
+#                printing nothing: a script whose own exit() comes before the
+#                check stops it
 #   silent-status
 #                like ok, but exit 3 on SIGINT with nothing on stderr
 #   int-error    like ok, but on SIGINT print unsupported's message and exit 1
@@ -220,6 +223,10 @@ if [ "$mode" = "late-unsupported" ]; then
   nap "${FAKE_FAIL_AFTER_S:-1.5}"
   echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
   exit 1
+fi
+if [ "$mode" = "end-early" ]; then
+  nap "${FAKE_END_AFTER_S:-0.3}"
+  exit 0
 fi
 if [ "$mode" = "slow-attach" ]; then
   nap "${FAKE_ATTACH_S:-3}"

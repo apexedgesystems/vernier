@@ -172,6 +172,33 @@ bool waitForAttachLine(OwnedHelper& helper, const std::string& outPath,
   }
 }
 
+/** @brief True when @p waitStatus is an exit with status 0. */
+bool exitedCleanly(int waitStatus) { return WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0; }
+
+/** @brief Milliseconds from @p from to @p to. */
+long long msBetween(std::chrono::steady_clock::time_point from,
+                    std::chrono::steady_clock::time_point to) {
+  return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
+
+/**
+ * @brief The refusal of a probe that ended by itself with status 0, @p ms
+ * after its start, before the check stopped it: its script exits too soon
+ * for the check, and would end before the measured repeats do.
+ */
+ReadinessResult endedByItself(const BpftraceRoute& route, const AttachProbe& probe, long long ms) {
+  return readinessResult(
+      ReadinessCause::UNUSABLE,
+      probe.what + ": the probe tracer ended by itself with status 0 after " + std::to_string(ms) +
+          " ms, before the check stopped it: the check stops a probe once it has attached, " +
+          std::to_string(probe.graceMs) +
+          " ms after its start at the earliest, and a script that ends itself sooner cannot be "
+          "checked",
+      probe.selfEndRemedy.empty()
+          ? "Run the script by hand with " + route.bpftrace + " to see why it ends."
+          : probe.selfEndRemedy);
+}
+
 } // namespace
 
 std::string attachLineProgram() {
@@ -315,6 +342,9 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
                            "Check that " + argv.front() + " can be executed.");
   }
   if (START.exitedEarly) {
+    if (exitedCleanly(START.waitStatus)) {
+      return endedByItself(route, probe, msBetween(STARTED_AT, std::chrono::steady_clock::now()));
+    }
     return classifyAttachFailure(route, what, probe.commandLine, START.errorTail, ctx,
                                  probe.runCommand);
   }
@@ -370,10 +400,13 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   // error after it, reads as one that ended at its start, so the result does
   // not depend on how long a busy machine kept it starting.
   const std::string ERR = fileText(ERR_PATH);
+  const bool CLEAN = exitedCleanly(STOP.waitStatus);
   if (!STOP.wasRunning || STOP.stoppedBy == 0) {
+    if (CLEAN) {
+      return endedByItself(route, probe, msBetween(STARTED_AT, STOPPING_AT));
+    }
     return classifyAttachFailure(route, what, probe.commandLine, ERR, ctx, probe.runCommand);
   }
-  const bool CLEAN = WIFEXITED(STOP.waitStatus) && WEXITSTATUS(STOP.waitStatus) == 0;
   if (!CLEAN && saysSomething(ERR)) {
     return classifyAttachFailure(route, what, probe.commandLine, ERR, ctx, probe.runCommand);
   }
@@ -1471,6 +1504,9 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
     probe.what = "script '" + plan->scripts[i] + "'";
     probe.commandLine = commandLineOf(plan->route.bpftrace, probe.toolArgs);
     probe.runCommand = RUN_COMMAND;
+    probe.selfEndRemedy = "Make the script run longer: end it only on the traced process's exit "
+                          "(sched_process_exit filtered on tid == {{PID}}), as the bundled "
+                          "scripts do; the backend stops it when the measured repeats end.";
     probe.graceMs = PROBE_RUN_MS;
     probe.selfExitMs = PROBE_SELF_EXIT_S * 1000;
     auto verdict = bpftrace_tool::probeAttach(plan->route, probe, ctx, SCRATCH.path());

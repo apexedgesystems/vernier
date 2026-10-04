@@ -798,8 +798,10 @@ decision the run makes before its first test, and runs no test.
 
   Its report holds the arm line and no stop line. End a script only on the
   benchmark's exit, as the bundled ones do; the backend stops it when the
-  measured repeats end. A script that ends within the check's first second is
-  refused before the run instead, as one that `did not stay attached`.
+  measured repeats end. A script that ends itself before the check stops its
+  copy, once the copy has attached and a second after its start at the
+  earliest, is refused before the run instead, as one that ends itself too soon
+  to be checked.
 
 - **A `[bpftrace]` line says the script printed no data of its own.** The run
   without `--bpf` traces with `write_latency` and `fsync_latency`, and the

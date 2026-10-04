@@ -870,6 +870,45 @@ TEST_F(BpfCheckTest, BpftraceSlowAttachIsStoppedOnceAttached) {
 }
 
 /**
+ * @test A script that ends itself, status 0, before the check stops its copy
+ * is refused, and the row says what happened: how soon the tracer ended, that
+ * the check had not stopped it yet, and how to make the script run long
+ * enough. It reads so whether the end comes within the grace or while the
+ * check waits for the attach.
+ */
+TEST_F(BpfCheckTest, BpftraceScriptEndingItselfSoonIsRefused) {
+  const std::regex MESSAGE(
+      "unusable: script 'probe_script': the probe tracer ended by itself with status 0 after "
+      "([0-9]+) ms, before the check stopped it: the check stops a probe once it has attached, "
+      "1000 ms after its start at the earliest, and a script that ends itself sooner cannot be "
+      "checked");
+  // The stand-in ends 0.05 s after its start (within the grace, however busy
+  // the machine), or 1.6 s after it (while the check waits for the attach).
+  // The time named is when the check saw the end: not before it, and not
+  // past the attach bound, after which the check would have stopped it.
+  struct Case {
+    const char* afterS;
+    long long fromMs;
+  };
+  for (const Case& c : {Case{"0.05", 50}, Case{"1.6", 1600}}) {
+    const ReadinessResult R = check(
+        "bpftrace", ctx({{"FAKE_BPFTRACE_MODE", "end-early"}, {"FAKE_END_AFTER_S", c.afterS}}));
+    EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE) << c.afterS << " s: " << R.report.message;
+    std::smatch match;
+    ASSERT_TRUE(std::regex_match(R.report.message, match, MESSAGE))
+        << c.afterS << " s: " << R.report.message;
+    const long long MS = std::stoll(match[1].str());
+    EXPECT_GE(MS, c.fromMs) << c.afterS << " s";
+    EXPECT_LE(MS, 5100) << c.afterS << " s";
+    EXPECT_EQ(R.report.hint,
+              "Make the script run longer: end it only on the traced process's exit "
+              "(sched_process_exit filtered on tid == {{PID}}), as the bundled scripts do; the "
+              "backend stops it when the measured repeats end.")
+        << c.afterS << " s";
+  }
+}
+
+/**
  * @test A probe that has not attached by the bound is stopped and reported
  * unverified: not ready, since the check did not see it attach, and not
  * refused, since only the run can show whether it does.
@@ -2036,6 +2075,27 @@ TEST_F(BpfCheckTest, OffCpuFailureWhileStartingReadsAsAtTheStart) {
     EXPECT_EQ(LATE.report.message, AT_START.report.message) << "FAKE_INT=" << INT;
     EXPECT_EQ(LATE.report.hint, AT_START.report.hint) << "FAKE_INT=" << INT;
   }
+}
+
+/**
+ * @test The off-CPU probe ending itself before its stop is refused the same
+ * way; its script is the backend's own, so the hint is to run it by hand.
+ */
+TEST_F(BpfCheckTest, OffCpuProbeEndingItselfSoonIsRefused) {
+  const ReadinessResult R =
+      check("offcpu", ctx({{"FAKE_BPFTRACE_MODE", "end-early"}, {"FAKE_END_AFTER_S", "0.05"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE) << R.report.message;
+  std::smatch match;
+  ASSERT_TRUE(std::regex_match(
+      R.report.message, match,
+      std::regex("unusable: the off-CPU script: the probe tracer ended by itself with status 0 "
+                 "after ([0-9]+) ms, before the check stopped it: the check stops a probe "
+                 "once it has attached, 1500 ms after its start at the earliest, and a "
+                 "script that ends itself sooner cannot be checked")))
+      << R.report.message;
+  EXPECT_GE(std::stoll(match[1].str()), 50);
+  EXPECT_LE(std::stoll(match[1].str()), 5100);
+  EXPECT_EQ(R.report.hint, "Run the script by hand with " + bpftrace_ + " to see why it ends.");
 }
 
 /**
