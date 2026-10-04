@@ -7,8 +7,8 @@
  * stop() to populate the aggregate metrics. Every CUPTI call's result is
  * checked: a refusal to register, or to switch kernel records on or off,
  * leaves the collector unavailable with the reason; a failed flush, dropped
- * records or no record at all leave the window without stats, with the
- * problem named.
+ * records, records CUPTI could not read or no record at all leave the window
+ * without stats, with the problem named.
  */
 
 #include "src/bench/inc/CuptiCollector.hpp"
@@ -89,6 +89,7 @@ struct Aggregator {
   std::vector<KernelRecord> records;
   std::size_t dropped{0};                  ///< Records CUPTI dropped in this window
   CUptiResult droppedCount{CUPTI_SUCCESS}; ///< The first failed count of them, if any
+  CUptiResult walkError{CUPTI_SUCCESS};    ///< The first error that ended a buffer's walk early
   bool enabled{false};
 
   /** @brief Adds one reading of CUPTI's dropped-record count (call with mtx held). */
@@ -100,6 +101,13 @@ struct Aggregator {
       return;
     }
     dropped += n;
+  }
+
+  /** @brief Keeps the first error that left a buffer's records unread (call with mtx held). */
+  void noteWalkError(CUptiResult ended) {
+    if (walkError == CUPTI_SUCCESS) {
+      walkError = ended;
+    }
   }
 };
 
@@ -170,6 +178,14 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
       agg.records.push_back(std::move(r));
     }
   } while (status == CUPTI_SUCCESS);
+
+  // CUPTI ends a buffer's records with CUPTI_ERROR_MAX_LIMIT_REACHED. Any
+  // other error (CUPTI_ERROR_INVALID_KIND for an incomplete or invalid
+  // record) leaves the rest of the buffer unread, so the window's records are
+  // not complete, whatever was read before it.
+  if (status != CUPTI_SUCCESS && status != CUPTI_ERROR_MAX_LIMIT_REACHED) {
+    agg.noteWalkError(status);
+  }
 
   std::free(buffer);
 }
@@ -246,6 +262,7 @@ void CuptiCollector::start() {
     aggregator().records.clear();
     aggregator().dropped = 0;
     aggregator().droppedCount = CUPTI_SUCCESS;
+    aggregator().walkError = CUPTI_SUCCESS;
     aggregator().enabled = true;
   }
   // KERNEL records only: with KERNEL on, CUPTI refuses CONCURRENT_KERNEL
@@ -284,6 +301,7 @@ void CuptiCollector::stop() {
   std::vector<KernelRecord> snapshot;
   std::size_t dropped = 0;
   CUptiResult droppedCount = CUPTI_SUCCESS;
+  CUptiResult walkError = CUPTI_SUCCESS;
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().noteDropped(COUNTED, droppedUnbuffered);
@@ -292,6 +310,7 @@ void CuptiCollector::stop() {
     aggregator().records.clear();
     dropped = aggregator().dropped;
     droppedCount = aggregator().droppedCount;
+    walkError = aggregator().walkError;
   }
 
   // Kernel records still on would arrive between windows and be read into
@@ -313,6 +332,9 @@ void CuptiCollector::stop() {
   } else if (dropped > 0) {
     impl_->windowProblem = "CUPTI dropped " + std::to_string(dropped) +
                            (dropped == 1 ? " activity record" : " activity records");
+  } else if (walkError != CUPTI_SUCCESS) {
+    impl_->windowProblem =
+        "CUPTI could not read all of its activity records (" + resultName(walkError) + ")";
   } else if (snapshot.empty()) {
     impl_->windowProblem = "CUPTI recorded no kernel launch";
   }
@@ -362,6 +384,7 @@ void CuptiCollector::reset() {
     aggregator().records.clear();
     aggregator().dropped = 0;
     aggregator().droppedCount = CUPTI_SUCCESS;
+    aggregator().walkError = CUPTI_SUCCESS;
   }
 #endif
   stats_ = {};

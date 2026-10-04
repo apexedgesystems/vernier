@@ -10,7 +10,9 @@
  * answers each call with the result a test sets. A flush delivers the kernel
  * records and the dropped-record count a test sets, through the buffer
  * callbacks the collector registered, as CUPTI does; dropped records can also
- * be left to reach no buffer, as when CUPTI had none to hand over.
+ * be left to reach no buffer, as when CUPTI had none to hand over. A walk of a
+ * buffer's records ends at the buffer's end, or with the error a test sets
+ * after the records it lets through.
  */
 
 #include <stddef.h>
@@ -31,6 +33,7 @@ using CUptiResult = int;
 constexpr CUptiResult CUPTI_SUCCESS = 0;
 constexpr CUptiResult CUPTI_ERROR_MAX_LIMIT_REACHED = 1; ///< No further record in a buffer
 constexpr CUptiResult CUPTI_ERROR_NOT_COMPATIBLE = 2;
+constexpr CUptiResult CUPTI_ERROR_INVALID_KIND = 3; ///< An incomplete or invalid record
 constexpr CUptiResult CUPTI_ERROR_UNKNOWN = 999;
 using CUcontext = void*;
 
@@ -65,6 +68,7 @@ struct Calls {
   int disables = 0;                        ///< cuptiActivityDisable
   int flushes = 0;                         ///< cuptiActivityFlushAll
   std::vector<CUpti_ActivityKind> enabled; ///< Kinds asked of cuptiActivityEnable, in order
+  std::vector<CUptiResult> walkEnds;       ///< cuptiActivityGetNextRecord answers with no record
 };
 
 /** @brief How the stand-in answers; every call succeeds and delivers nothing by default. */
@@ -79,6 +83,8 @@ struct Behaviour {
   int32_t staticSharedMemory = 0;                 ///< Every delivered record's static bytes
   size_t droppedPerFlush = 0;                     ///< Records one flush reports as dropped
   bool dropsReachABuffer = true;                  ///< false: dropped records come with no buffer
+  CUptiResult nextRecordResult = CUPTI_SUCCESS;   ///< A walk's error after readableRecords, if set
+  size_t readableRecords = 0;                     ///< Records a walk hands over before that error
 };
 
 /** @brief The buffer callbacks the collector registered. */
@@ -178,16 +184,31 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
   }
   return b.flushResult;
 }
-/** @brief Walks the records a flush wrote: the first when @p record is null, then each next. */
+/**
+ * @brief Walks the records a flush wrote: the first when @p record is null, then
+ *        each next, and CUPTI_ERROR_MAX_LIMIT_REACHED past the last. With a
+ *        nextRecordResult set, the walk answers it instead, with no record, once
+ *        it has handed over readableRecords records. Each answer without a
+ *        record is counted.
+ */
 inline CUptiResult cuptiActivityGetNextRecord(uint8_t* buffer, size_t validSize,
                                               CUpti_Activity** record) {
+  const fake_cupti::Behaviour& b = fake_cupti::behaviour();
   const size_t NEXT = (*record == nullptr)
                           ? 0
                           : static_cast<size_t>(reinterpret_cast<uint8_t*>(*record) - buffer) +
                                 sizeof(CUpti_ActivityKernel9);
-  if (buffer == nullptr || NEXT + sizeof(CUpti_ActivityKernel9) > validSize) {
+  CUptiResult answer = CUPTI_SUCCESS;
+  if (b.nextRecordResult != CUPTI_SUCCESS &&
+      NEXT / sizeof(CUpti_ActivityKernel9) >= b.readableRecords) {
+    answer = b.nextRecordResult;
+  } else if (buffer == nullptr || NEXT + sizeof(CUpti_ActivityKernel9) > validSize) {
+    answer = CUPTI_ERROR_MAX_LIMIT_REACHED;
+  }
+  if (answer != CUPTI_SUCCESS) {
     *record = nullptr;
-    return CUPTI_ERROR_MAX_LIMIT_REACHED;
+    fake_cupti::calls().walkEnds.push_back(answer);
+    return answer;
   }
   *record = reinterpret_cast<CUpti_Activity*>(buffer + NEXT);
   return CUPTI_SUCCESS;
@@ -208,6 +229,9 @@ inline CUptiResult cuptiGetResultString(CUptiResult result, const char** text) {
     return CUPTI_SUCCESS;
   case CUPTI_ERROR_NOT_COMPATIBLE:
     *text = "CUPTI_ERROR_NOT_COMPATIBLE";
+    return CUPTI_SUCCESS;
+  case CUPTI_ERROR_INVALID_KIND:
+    *text = "CUPTI_ERROR_INVALID_KIND";
     return CUPTI_SUCCESS;
   case CUPTI_ERROR_UNKNOWN:
     *text = "CUPTI_ERROR_UNKNOWN";

@@ -115,8 +115,10 @@ public:
   /**
    * @return What kept the last start/stop window's records from being
    *         complete, as a phrase a message can quote (the flush failed; CUPTI
-   *         dropped records or could not count them; CUPTI recorded no kernel
-   *         launch). stats() is empty for such a window. Empty when the
+   *         dropped records or could not count them; CUPTI could not read all
+   *         of its records, with its error's name; CUPTI recorded no kernel
+   *         launch). stats() is empty for such a window; a problem does not
+   *         end collection (isAvailable() lists what does). Empty when the
    *         window's records are complete, or when the collector did not
    *         collect (see unavailableReason()).
    */

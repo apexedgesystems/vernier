@@ -356,3 +356,86 @@ TEST_F(CuptiCollectorDecision, AStoodDownCollectorSaysWhy) {
   const ScopedEnv SETTING("VERNIER_DISABLE_CUPTI", "1");
   EXPECT_EQ(CuptiCollector(false).unavailableReason(), STOOD_DOWN);
 }
+
+/* ----------------------------- Record Walk ----------------------------- */
+
+namespace {
+
+/// What a window reports when a walk of its records ends in CUPTI_ERROR_INVALID_KIND.
+constexpr const char* INVALID_KIND_PROBLEM =
+    "CUPTI could not read all of its activity records (CUPTI_ERROR_INVALID_KIND)";
+
+/** @brief A buffer's walk hands over @p readable records, then answers CUPTI_ERROR_INVALID_KIND. */
+void failWalkAfter(std::size_t readable) {
+  fake_cupti::behaviour().readableRecords = readable;
+  fake_cupti::behaviour().nextRecordResult = CUPTI_ERROR_INVALID_KIND;
+}
+
+} // namespace
+
+/**
+ * @test Control: a walk CUPTI ends at the buffer's end
+ *       (CUPTI_ERROR_MAX_LIMIT_REACHED) has read every record, and the window
+ *       counts them all
+ */
+TEST_F(CuptiCollectorDecision, AWalkToTheBuffersEndCountsEveryRecord) {
+  deliverLaunches();
+  CuptiCollector collector;
+  window(collector);
+  EXPECT_EQ(fake_cupti::calls().walkEnds, std::vector<CUptiResult>{CUPTI_ERROR_MAX_LIMIT_REACHED});
+  EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
+  EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_EQ(collector.stats().registersMedian, REGISTERS);
+}
+
+/**
+ * @test A walk that fails after a valid record leaves the window without stats,
+ *       so nothing of the record read before the failure is published (the
+ *       harness leaves the cupti* cells of a window without launches empty),
+ *       and names CUPTI's answer; the collector stays available
+ */
+TEST_F(CuptiCollectorDecision, AWalkThatFailsAfterARecordEmptiesTheWindow) {
+  deliverLaunches();
+  failWalkAfter(1);
+  CuptiCollector collector;
+  window(collector);
+  ASSERT_EQ(fake_cupti::calls().walkEnds, std::vector<CUptiResult>{CUPTI_ERROR_INVALID_KIND});
+  EXPECT_EQ(collector.windowProblem(), INVALID_KIND_PROBLEM);
+  EXPECT_EQ(collector.stats().kernelLaunches, 0U);
+  EXPECT_EQ(collector.stats().registersMedian, 0U);
+  EXPECT_EQ(collector.stats().registersMax, 0U);
+  EXPECT_EQ(collector.stats().staticSmemBytes, 0U);
+  EXPECT_EQ(collector.stats().dynamicSmemBytes, 0U);
+  EXPECT_TRUE(collector.stats().firstKernelName.empty()) << collector.stats().firstKernelName;
+  EXPECT_TRUE(collector.isAvailable()) << "a window that failed is not a collector that cannot";
+  EXPECT_TRUE(collector.unavailableReason().empty()) << collector.unavailableReason();
+}
+
+/** @test A walk that fails at its first record says so, not that the window had no launch. */
+TEST_F(CuptiCollectorDecision, AWalkThatFailsAtTheFirstRecordSaysSo) {
+  deliverLaunches();
+  failWalkAfter(0);
+  CuptiCollector collector;
+  window(collector);
+  EXPECT_EQ(collector.windowProblem(), INVALID_KIND_PROBLEM);
+  EXPECT_EQ(collector.stats().kernelLaunches, 0U);
+}
+
+/**
+ * @test Control: a window after one whose walk failed is judged on its own
+ *       records; the failure ended that window, not collection
+ */
+TEST_F(CuptiCollectorDecision, AWindowAfterAFailedWalkCountsAgain) {
+  deliverLaunches();
+  failWalkAfter(1);
+  CuptiCollector collector;
+  window(collector);
+  ASSERT_EQ(fake_cupti::calls().walkEnds, std::vector<CUptiResult>{CUPTI_ERROR_INVALID_KIND});
+
+  fake_cupti::behaviour().nextRecordResult = CUPTI_SUCCESS;
+  window(collector);
+  EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
+  EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_TRUE(collector.isAvailable());
+  EXPECT_EQ(fake_cupti::calls().enables, 2) << "the second window switches kernel records on again";
+}
