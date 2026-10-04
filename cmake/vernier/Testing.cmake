@@ -17,7 +17,8 @@ include_guard(GLOBAL)
 # must run only under a controller, which its owner registers with add_test
 # beside the target; the options that describe registered tests are refused
 # with it. A source that defines main (PERF_MAIN) keeps it: an object's main
-# is linked before GoogleTest's.
+# is linked before GoogleTest's. vernier_add_test_program builds a program with
+# no GoogleTest in it through this same path.
 #
 # Arguments:
 #   TARGET          <n>              required
@@ -42,8 +43,9 @@ function (vernier_add_gtest)
     return()
   endif ()
 
+  # _PLAIN_PROGRAM is vernier_add_test_program's: no GoogleTest is linked.
   cmake_parse_arguments(
-    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER"
+    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
     "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
   )
@@ -61,8 +63,8 @@ function (vernier_add_gtest)
       TIMING_PATTERNS
     )
       if (GT_${_opt})
-        message(FATAL_ERROR "vernier_add_gtest(${GT_TARGET}): ${_opt} describes registered tests, "
-                            "and NO_REGISTER registers none: set it on the owner's add_test"
+        message(FATAL_ERROR "${GT_TARGET}: ${_opt} describes registered tests, and ${GT_TARGET} "
+                            "registers none: set it on the owner's add_test"
         )
       endif ()
     endforeach ()
@@ -84,17 +86,21 @@ function (vernier_add_gtest)
   endif ()
 
   # GTest linkage
-  if (NOT TARGET GTest::gtest_main)
-    find_package(GTest QUIET CONFIG)
+  set(_gtest_libs "")
+  if (NOT GT__PLAIN_PROGRAM)
     if (NOT TARGET GTest::gtest_main)
-      find_package(GTest QUIET)
+      find_package(GTest QUIET CONFIG)
+      if (NOT TARGET GTest::gtest_main)
+        find_package(GTest QUIET)
+      endif ()
+      if (NOT TARGET GTest::gtest_main)
+        message(FATAL_ERROR "vernier_add_gtest: GTest::gtest_main not found")
+      endif ()
     endif ()
-    if (NOT TARGET GTest::gtest_main)
-      message(FATAL_ERROR "vernier_add_gtest: GTest::gtest_main not found")
-    endif ()
+    set(_gtest_libs GTest::gtest_main GTest::gmock)
   endif ()
 
-  target_link_libraries(${GT_TARGET} PRIVATE GTest::gtest_main GTest::gmock ${GT_LINK})
+  target_link_libraries(${GT_TARGET} PRIVATE ${_gtest_libs} ${GT_LINK})
 
   set_target_properties(
     ${GT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests"
@@ -154,7 +160,11 @@ function (vernier_add_gtest)
   endif ()
 
   if (GT_NO_REGISTER)
-    message(STATUS "[Test] target=${GT_TARGET} registered by its owner (NO_REGISTER)")
+    set(_kind "NO_REGISTER")
+    if (GT__PLAIN_PROGRAM)
+      set(_kind "test program, no GoogleTest")
+    endif ()
+    message(STATUS "[Test] target=${GT_TARGET} registered by its owner (${_kind})")
     return()
   endif ()
 
@@ -275,6 +285,30 @@ function (vernier_add_gtest)
   message(STATUS "[Test] target=${GT_TARGET} tests=${_disc_len} timed=${_timed_len} "
                  "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg}"
   )
+endfunction ()
+
+# ------------------------------------------------------------------------------
+# vernier_add_test_program(...)
+#
+# Add a private program that tests run but that is not a GoogleTest program: a
+# process fixture or helper with a main of its own, run by a controller that
+# its owner registers with add_test beside the target. It is built by
+# vernier_add_gtest with NO_REGISTER, without GoogleTest: placed in bin/tests,
+# under the same coverage policy, nothing installed, exported or compressed,
+# and nothing registered; the options that describe registered tests are
+# refused.
+#
+# Arguments:
+#   TARGET          <n>              required
+#   SOURCES         <src...>         required
+#   CUDA            <cu...>          optional
+#   LINK            <libs...>        optional
+#   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
+#   INC             <dir>            optional
+#   NO_COVERAGE                      optional flag (skip coverage)
+# ------------------------------------------------------------------------------
+function (vernier_add_test_program)
+  vernier_add_gtest(${ARGN} NO_REGISTER _PLAIN_PROGRAM)
 endfunction ()
 
 # ------------------------------------------------------------------------------
