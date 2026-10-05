@@ -120,6 +120,13 @@ vernier_nvtx_enable(${LIB_NAME})
 # ------------------------------------------------------------------------------
 
 if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
+  # NVML samples GPU clocks, power and temperature for the harness's CSV.
+  # COMPAT_NVML_AVAILABLE is 1 when it is found and linked, 0 otherwise
+  # (vernier_nvml_enable), and 0 with VERNIER_USE_NVML off, which skips it.
+  set(_bench_cuda_nvml "")
+  if (NOT VERNIER_USE_NVML)
+    set(_bench_cuda_nvml NO_NVML)
+  endif ()
   vernier_add_library_cuda(
     NAME
     ${LIB_NAME}_cuda
@@ -131,7 +138,11 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
     ${CUDA_SOURCES}
     ABI_VERSION
     ${BENCH_ABI_SOVERSION}
+    ${_bench_cuda_nvml}
   )
+  if (NOT VERNIER_USE_NVML)
+    target_compile_definitions(${LIB_NAME}_cuda PUBLIC COMPAT_NVML_AVAILABLE=0)
+  endif ()
   vernier_standard_optins(${LIB_NAME}_cuda)
 
   # bench_cuda links bench for its symbols and so also receives bench's
@@ -141,12 +152,20 @@ if (CUDAToolkit_FOUND AND CMAKE_CUDA_COMPILER)
   target_link_options(${LIB_NAME}_cuda PRIVATE "LINKER:--as-needed")
 
   # CUPTI is the CUDA Profiling Tools Interface. find_package(CUDAToolkit)
-  # exposes it as the CUDA::cupti imported target on any system layout
-  # (legacy /usr/local/cuda/extras/CUPTI/ or modern targets/<arch>/), so we
-  # never need a path string here. When the target is missing on older
-  # toolkits, CuptiCollector compiles to a no-op via __has_include.
-  if (TARGET CUDA::cupti)
+  # creates the CUDA::cupti imported target, on any system layout, only when
+  # it finds both cupti.h and the library. COMPAT_CUPTI_AVAILABLE is the one
+  # switch CuptiCollector.cu builds its collection on: 1 with the library
+  # linked, 0 otherwise (VERNIER_USE_CUPTI off, or no CUPTI in the toolkit).
+  # The header alone decides nothing: cupti.h sits in the toolkit's main
+  # include directory whether or not the library is there. BENCH_CUDA_HAS_CUPTI
+  # carries the same decision to the demo directory's checks.
+  if (VERNIER_USE_CUPTI AND TARGET CUDA::cupti)
     target_link_libraries(${LIB_NAME}_cuda PRIVATE CUDA::cupti)
+    target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=1)
+    set(BENCH_CUDA_HAS_CUPTI TRUE)
+  else ()
+    target_compile_definitions(${LIB_NAME}_cuda PRIVATE COMPAT_CUPTI_AVAILABLE=0)
+    set(BENCH_CUDA_HAS_CUPTI FALSE)
   endif ()
 endif ()
 

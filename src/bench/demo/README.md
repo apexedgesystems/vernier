@@ -111,10 +111,10 @@ Demos 01 and 02 measure the shared SAXPY example (see
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
-| Profiler        | Wraps                                   | When to use                                             | Walkthrough                                                   |
-| --------------- | --------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------- |
-| rocprof (AMD)   | AMD GPU + HIP kernels                   | Wraps an AMD GPU run; not validated on AMD hardware     | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
-| CUPTI (in-proc) | Tests timed with the GPU kernel builder | Per-kernel launch count, register and shared-memory use | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
+| Profiler                 | Wraps                      | When to use                                                       | Walkthrough                                                   |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)            | AMD GPU + HIP kernels      | Wraps an AMD GPU run; not validated on AMD hardware               | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI and NVML (in-proc) | Demo 02's two kernel tests | What each GPU column of a kernel test's row holds, and its source | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -193,7 +193,7 @@ demos that use each example.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 12, 14, 21 |
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                         |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 19                     |
 
 The saxpy library and its device tests are built only where the GPU demos are;
 its host tests on a stand-in runtime are built everywhere.
@@ -238,7 +238,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 15. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
 16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
 17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
-18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
+18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- the GPU columns of a kernel test, and where each comes from
 19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
 20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
 
