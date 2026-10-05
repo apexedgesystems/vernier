@@ -415,15 +415,6 @@ fn jemalloc_preloadable() -> bool {
         .unwrap_or(false)
 }
 
-/// The four canonical nsys stats reports, matching what the C++ backend
-/// extracts for attach-mode runs (ProfilerNsight.cu).
-const NSYS_STATS_REPORTS: [&str; 4] = [
-    "cuda_gpu_kern_sum",
-    "cuda_api_sum",
-    "cuda_gpu_mem_size_sum",
-    "cuda_gpu_mem_time_sum",
-];
-
 /// Extract the canonical `nsys stats` reports beside a wrapped run's
 /// .nsys-rep. Best-effort: a missing report file (nsys produced nothing)
 /// or a failing nsys invocation prints a notice rather than erroring the
@@ -437,7 +428,7 @@ fn extract_nsys_stats(dir: &Path) {
         );
         return;
     }
-    for report in NSYS_STATS_REPORTS {
+    for report in super::nsight_report::NSYS_SUMMARIES {
         let out_path = dir.join(format!("{report}.txt"));
         let Ok(out_file) = fs::File::create(&out_path) else {
             continue;
