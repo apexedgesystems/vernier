@@ -330,6 +330,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   demo 02's two kernel tests on the documented Jetson AGX Thor rig: what each
   GPU column holds and where it comes from, with the reference CSV at
   `src/bench/demo/reference/thor/19_cupti_kernel_metrics.csv`.
+- **`bench nsight-parse` replaces the Python `nsight-parse`** -- it reads
+  Nsight Compute reports with `ncu --import` and Nsight Systems reports through
+  a private export of each into the same CSV of its own, which `bench summary`,
+  `bench compare` and `bench-plot` do not accept, and exits 1, naming the input,
+  when a requested input could not be read, still writing the rows it did read
+  (a summary with no data is a warning; `--timeout` bounds each tool command).
+  Scripts put `bench` in front and drop the word `parse`; one that relied on
+  exit 0 after a failed read now sees 1.
 
 ### Fixed
 
@@ -727,13 +735,6 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   status when that failed, otherwise nonzero if a restoration did. The rig
   document also describes the board's two bands of end-to-end GPU time and why
   its build makes no Python tools.
-- **`nsight-parse` reads the reports `bench run` leaves, and fails when it
-  cannot** -- it imports Nsight Compute reports with `ncu --import` and reads
-  the Nsight Systems summaries from its own export of each report; its CSV is
-  its own format, which `bench summary`, `bench compare` and `bench-plot` do
-  not accept. It exits 1, naming the input, when a requested input could not be
-  read, still writing the rows it did read (a summary with no data is only a
-  warning), so a script that relied on exit 0 after a failed read now sees 1.
 - **A GPU build without CUPTI compiles** -- with `-DVERNIER_USE_CUPTI=OFF` (a
   new option, on by default) or a CUDA toolkit without CUPTI, the GPU harness's
   CUPTI collector builds as a no-op and the `cupti*` CSV cells stay empty. The
