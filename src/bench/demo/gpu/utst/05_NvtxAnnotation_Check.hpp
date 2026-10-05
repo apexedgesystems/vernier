@@ -12,7 +12,10 @@
  * plumbing is walkthrough 15's (12_MemcheckProfiler_Check.hpp); the range
  * names are the demo's own (05_NvtxAnnotation_Phases.hpp).
  *
- * Test support for 05_NvtxAnnotation_Ranges_uTest.cpp; not part of the demo.
+ * Test support for the check (05_NvtxAnnotation_Ranges_uTest.cpp, built where
+ * the GPU demos are) and for its tests, which need neither nsys nor a device
+ * (05_NvtxAnnotation_RangesReport_uTest.cpp, built in every configuration);
+ * not part of the demo.
  */
 
 #include "src/bench/demo/cpu/utst/12_MemcheckProfiler_Check.hpp"

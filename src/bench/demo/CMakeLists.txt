@@ -316,6 +316,19 @@ endforeach ()
 # Demo 05's check runs the GPU demo under Nsight Systems, so it exists only where
 # the GPU demos are built; its tool's label is nsight. It links the CUDA runtime
 # for one question decided before anything runs: whether a device is there.
+# What it reads and decides with needs neither, so the tests of that code are a
+# program of their own, built in every configuration.
+vernier_add_gtest(
+  TARGET
+  TestDemoNvtxRangesReport
+  SOURCES
+  gpu/utst/05_NvtxAnnotation_RangesReport_uTest.cpp
+  INC
+  "${PROJECT_SOURCE_DIR}"
+  LABELS
+  demo
+  nsight
+)
 if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
   vernier_add_gtest(
     TARGET
