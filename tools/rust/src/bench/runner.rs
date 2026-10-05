@@ -1312,14 +1312,6 @@ mod owned_run {
     }
 }
 
-/// The four summaries extracted from a wrapped nsight run's report.
-const NSYS_STATS_REPORTS: [&str; 4] = [
-    "cuda_gpu_kern_sum",
-    "cuda_api_sum",
-    "cuda_gpu_mem_size_sum",
-    "cuda_gpu_mem_time_sum",
-];
-
 /// How long one `nsys stats` summary may take.
 const NSYS_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
@@ -1331,7 +1323,7 @@ const NSYS_STATS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 /// is an owned run (`run_owned`), as the callgrind annotation is.
 fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
     let rep = dir.join("profile.nsys-rep");
-    for report in NSYS_STATS_REPORTS {
+    for report in super::nsight_report::NSYS_SUMMARIES {
         let out_path = dir.join(format!("{report}.txt"));
         let cannot_write = |e: std::io::Error| {
             Error::Io(std::io::Error::new(

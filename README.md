@@ -212,11 +212,10 @@ puts them on `PATH`. `make tools-rust` and `make tools-py` rebuild only the
 tools, in `build/native-linux-debug` unless `BUILD_DIR` names another build
 directory.
 
-| Tool           | Language | Purpose                                                                                                                                                    |
-| -------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `bench`        | Rust     | Analysis, comparison, validation, run, doctor, profile-all, profile-summarize, init, config-validate, gpu-env, gpu-lock, gpu-monitor, gpu-topo, flamegraph |
-| `bench-plot`   | Python   | Visualization (plots, dashboards, charts)                                                                                                                  |
-| `nsight-parse` | Python   | Turn `.nsys-rep` / `.ncu-rep` reports into a tidy CSV                                                                                                      |
+| Tool         | Language | Purpose                                                                                                                                                                  |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `bench`      | Rust     | Analysis, comparison, validation, run, doctor, profile-all, profile-summarize, nsight-parse, init, config-validate, gpu-env, gpu-lock, gpu-monitor, gpu-topo, flamegraph |
+| `bench-plot` | Python   | Visualization (plots, dashboards, charts)                                                                                                                                |
 
 ### Registered profiler backends
 
@@ -296,7 +295,7 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 - jemalloc with `prof` enabled (`jemalloc` backend; LD_PRELOAD)
 - ROCm + rocprof (AMD GPU profiling via the `rocprof` backend)
 - Rust toolchain (for `bench` CLI tool)
-- Python 3.10+ with Poetry (for `bench-plot` and `nsight-parse` CLI tools)
+- Python 3.10+ with Poetry (for the `bench-plot` CLI tool)
 
 ---
 
@@ -361,7 +360,7 @@ vernier/
       docs/                   MONITOR_GUIDE.md
   tools/
     rust/                     bench CLI (Rust) -- analysis, doctor, run, gpu-*
-    py/                       bench-plot, nsight-parse CLIs (Python)
+    py/                       bench-plot CLI (Python)
 ```
 
 ---

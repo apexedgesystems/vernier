@@ -2,7 +2,7 @@
 //!
 //! This module provides the non-plotting analysis functionality for the Vernier
 //! benchmarking framework, backing the `bench` subcommands: summary, compare,
-//! validate, run, doctor, profile-all, profile-summarize, init,
+//! validate, run, doctor, profile-all, profile-summarize, nsight-parse, init,
 //! config-validate, gpu-env, gpu-topo, gpu-monitor, gpu-lock, flamegraph.
 
 use std::{
@@ -366,6 +366,7 @@ pub mod gpu_env;
 pub mod gpu_lock;
 pub mod gpu_monitor;
 pub mod gpu_topo;
+pub mod nsight_report;
 pub mod report;
 pub mod runner;
 pub mod stats;

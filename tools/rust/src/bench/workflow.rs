@@ -545,7 +545,7 @@ pub struct SummarizedTool {
 /// Walk an artifact directory produced by profile-all (or per-test runs) and
 /// report what each profiler produced. This is intentionally a coarse summary
 /// -- the per-tool analyzers (callgrind_annotate, pprof, nsys stats,
-/// nsight-parse) remain the source of truth for the actual numbers.
+/// bench nsight-parse) remain the source of truth for the actual numbers.
 pub fn profile_summarize(root: &Path) -> Result<Vec<SummarizedTool>, Error> {
     if !root.is_dir() {
         return Err(Error::InvalidArgs(format!(

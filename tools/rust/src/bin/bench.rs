@@ -41,7 +41,7 @@
 //! leaves stdout empty, while `run --analyze` preserves run output already
 //! emitted.
 
-use std::{path::PathBuf, process::ExitCode};
+use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 use clap::{Parser, Subcommand};
 use vernier_rust_tools::bench::{self, Error, SortColumn};
@@ -272,6 +272,27 @@ enum Command {
     ProfileSummarize {
         /// Directory containing per-tool subdirectories (e.g. bench-out/)
         dir: PathBuf,
+    },
+
+    /// Read saved Nsight reports into one CSV (not a benchmark CSV)
+    #[command(name = bench::nsight_report::COMMAND, long_about = bench::nsight_report::LONG_HELP)]
+    NsightReport {
+        /// .nsys-rep and .ncu-rep reports, or directories searched for both
+        #[arg(required = true)]
+        inputs: Vec<PathBuf>,
+
+        /// The CSV to write; written even when no report could be read
+        #[arg(long)]
+        csv: PathBuf,
+
+        /// Seconds one nsys or ncu command may run before it and every process
+        /// in its process group are stopped
+        #[arg(
+            long,
+            default_value_t = bench::nsight_report::DEFAULT_TIMEOUT_SECS,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        timeout: u64,
     },
 
     /// Scaffold a .bench.yaml at the project root with sensible defaults
@@ -626,6 +647,17 @@ fn run(args: Args) -> Result<(), Error> {
             let report = bench::workflow::profile_summarize(&dir)?;
             bench::workflow::print_summary(&report);
         }
+
+        Command::NsightReport {
+            inputs,
+            csv,
+            timeout,
+        } => match bench::nsight_report::run(&inputs, &csv, Duration::from_secs(timeout))? {
+            bench::nsight_report::RunEnd::AllRead => {}
+            // Each unread input is already named on stderr.
+            bench::nsight_report::RunEnd::SomeUnread => std::process::exit(1),
+            bench::nsight_report::RunEnd::Interrupted(signal) => signal.end_process(),
+        },
 
         Command::Init { path, force } => {
             bench::config::write_template(&path, force)?;
