@@ -1,21 +1,23 @@
 /**
  * @file GpuSharedMemory_pTest.cu
- * @brief Shared memory performance and optimization validation
+ * @brief Shared memory usage: a tiled transpose and a block reduction
  *
- * This test suite validates GPU shared memory usage, bank conflicts,
- * and the performance benefits of shared memory optimization.
+ * This test suite measures a matrix transpose with and without a shared-memory
+ * tile, and a reduction in shared memory, and checks every result.
  *
  * Features tested:
  *  - Global memory baseline (no shared memory)
- *  - Shared memory optimization benefits
- *  - Bank conflict detection and impact
- *  - Conflict-free shared memory access patterns
+ *  - Shared memory transpose through a padded static tile
+ *  - Reduction in shared memory
  *
  * Expected behavior:
- *  - Shared memory shows significant speedup over global memory
- *  - Bank conflicts reduce performance
- *  - Conflict-free access achieves best performance
- *  - Matrix transpose demonstrates shared memory benefits
+ *  - Both transposes match the CPU's transpose element by element
+ *  - Every block of the reduction sums its inputs exactly
+ *  - The two transposes' rows show what the tile changes on the GPU at hand;
+ *    no case asserts by how much
+ *
+ * Bank conflicts, and the padding that avoids them in the tile, are the
+ * subject of walkthrough 12 (src/bench/demo/docs/12_SHARED_MEMORY_OPT.md).
  *
  * Usage:
  *   @code{.sh}
@@ -31,8 +33,6 @@
  * Performance expectations:
  *  - Runtime: ~12 seconds total
  *  - Pass rate: 100% with CUDA GPU
- *  - Shared memory: 2-10x faster than global memory
- *  - Conflict-free: Best performance
  *
  * @see PerfGpuCase
  * @see OccupancyMetrics
@@ -86,36 +86,6 @@ __global__ void transposeSharedKernel(const float* input, float* output, int wid
   }
 }
 
-/** @brief Shared memory with intentional bank conflicts */
-__global__ void sharedBankConflictKernel(float* data, int n) {
-  __shared__ float shared[256];
-  int idx = threadIdx.x;
-
-  if (idx < n) {
-    // Intentional bank conflict: all threads access same bank
-    // Stride of 32 floats = 128 bytes causes conflicts on 32 banks
-    int conflictIdx = idx * 32;
-    if (conflictIdx < 256) {
-      shared[conflictIdx] = data[idx];
-      __syncthreads();
-      data[idx] = shared[conflictIdx];
-    }
-  }
-}
-
-/** @brief Shared memory with conflict-free access */
-__global__ void sharedConflictFreeKernel(float* data, int n) {
-  __shared__ float shared[256];
-  int idx = threadIdx.x;
-
-  if (idx < n && idx < 256) {
-    // Conflict-free: sequential access
-    shared[idx] = data[idx];
-    __syncthreads();
-    data[idx] = shared[idx];
-  }
-}
-
 /** @brief Reduction using shared memory */
 __global__ void reductionSharedKernel(const float* input, float* output, int n) {
   __shared__ float shared[256];
@@ -141,6 +111,27 @@ __global__ void reductionSharedKernel(const float* input, float* output, int n) 
   }
 }
 
+/** @brief The transpose of a row-major width x height matrix, computed on the CPU. */
+std::vector<float> transposeOnCpu(const std::vector<float>& input, int width, int height) {
+  std::vector<float> output(input.size());
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      output[x * height + y] = input[y * width + x];
+    }
+  }
+  return output;
+}
+
+/** @brief Index of the first element where @p got differs from @p want, or -1 when all agree. */
+int firstMismatch(const std::vector<float>& got, const std::vector<float>& want) {
+  for (std::size_t i = 0; i < want.size(); ++i) {
+    if (got[i] != want[i]) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
 } // anonymous namespace
 
 /**
@@ -152,7 +143,7 @@ __global__ void reductionSharedKernel(const float* input, float* output, int n) 
  * @test GlobalMemoryBaseline
  *
  * Validates:
- *  - Global memory transpose works correctly
+ *  - Global memory transpose is correct element by element
  *  - Baseline performance measurement
  *  - Reference for comparison
  *
@@ -177,6 +168,8 @@ PERF_GPU_TEST(GpuSharedMemory, GlobalMemoryBaseline) {
   cudaMalloc(&d_input, SIZE);
   cudaMalloc(&d_output, SIZE);
   cudaMemcpy(d_input, h_input.data(), SIZE, cudaMemcpyHostToDevice);
+  // An element the kernel never writes reads 0, whatever the allocation held
+  ASSERT_EQ(cudaMemset(d_output, 0, SIZE), cudaSuccess);
 
   // Launch configuration
   dim3 block(TILE_SIZE, TILE_SIZE);
@@ -200,9 +193,13 @@ PERF_GPU_TEST(GpuSharedMemory, GlobalMemoryBaseline) {
 
   EXPECT_GT(result.callsPerSecond, 0.0) << "Should have valid throughput";
 
-  // Verify correctness
-  cudaMemcpy(h_output.data(), d_output, SIZE, cudaMemcpyDeviceToHost);
-  EXPECT_FLOAT_EQ(h_output[WIDTH], h_input[1]) << "Transpose should be correct: [0][1] -> [1][0]";
+  // Verify correctness: every element against the CPU's transpose
+  ASSERT_EQ(cudaMemcpy(h_output.data(), d_output, SIZE, cudaMemcpyDeviceToHost), cudaSuccess);
+  const std::vector<float> expected = transposeOnCpu(h_input, WIDTH, HEIGHT);
+  const int WRONG = firstMismatch(h_output, expected);
+  EXPECT_EQ(WRONG, -1) << "output[" << WRONG << "] (row " << WRONG / HEIGHT << ", column "
+                       << WRONG % HEIGHT << ") = " << h_output[WRONG] << ", expected "
+                       << expected[WRONG];
 
   // Cleanup
   cudaFree(d_input);
@@ -212,18 +209,20 @@ PERF_GPU_TEST(GpuSharedMemory, GlobalMemoryBaseline) {
 /**
  * @brief Shared memory optimized transpose
  *
- * Validates that shared memory optimization significantly improves
- * performance compared to global memory baseline.
+ * Transposes through a tile in shared memory: each block reads a 32x32 tile
+ * along rows and writes it out transposed, also along rows. The tile is
+ * declared static, padded by one column, and the launch asks for no dynamic
+ * shared memory.
  *
  * @test SharedMemoryOptimized
  *
  * Validates:
  *  - Shared memory usage
- *  - Performance improvement over baseline
- *  - Correctness of optimized implementation
+ *  - Correctness of optimized implementation, element by element
  *
  * Expected performance:
- *  - 2-10x faster than global memory version
+ *  - Faster than GlobalMemoryBaseline; how much depends on the GPU and the
+ *    matrix size
  */
 PERF_GPU_TEST(GpuSharedMemory, SharedMemoryOptimized) {
   UB_PERF_GPU_GUARD(perf);
@@ -243,35 +242,39 @@ PERF_GPU_TEST(GpuSharedMemory, SharedMemoryOptimized) {
   cudaMalloc(&d_input, SIZE);
   cudaMalloc(&d_output, SIZE);
   cudaMemcpy(d_input, h_input.data(), SIZE, cudaMemcpyHostToDevice);
+  // An element the kernel never writes reads 0, whatever the allocation held
+  ASSERT_EQ(cudaMemset(d_output, 0, SIZE), cudaSuccess);
 
-  // Launch configuration
+  // Launch configuration. The kernel's tile is static shared memory, so the
+  // launch requests no dynamic shared memory.
   dim3 block(TILE_SIZE, TILE_SIZE);
   dim3 grid((WIDTH + TILE_SIZE - 1) / TILE_SIZE, (HEIGHT + TILE_SIZE - 1) / TILE_SIZE);
 
-  // Shared memory size
-  const size_t sharedMemBytes = TILE_SIZE * (TILE_SIZE + 1) * sizeof(float);
-
   // Warmup
   perf.cudaWarmup([&](cudaStream_t s) {
-    transposeSharedKernel<<<grid, block, sharedMemBytes, s>>>(d_input, d_output, WIDTH, HEIGHT);
+    transposeSharedKernel<<<grid, block, 0, s>>>(d_input, d_output, WIDTH, HEIGHT);
   });
 
   // Measure shared memory transpose
-  auto result = perf.cudaKernel([&](cudaStream_t s) {
-                      transposeSharedKernel<<<grid, block, sharedMemBytes, s>>>(d_input, d_output,
-                                                                                WIDTH, HEIGHT);
-                    })
-                    .withLaunchConfig(grid, block, sharedMemBytes)
-                    .measure();
+  auto result =
+      perf.cudaKernel([&](cudaStream_t s) {
+            transposeSharedKernel<<<grid, block, 0, s>>>(d_input, d_output, WIDTH, HEIGHT);
+          })
+          .withLaunchConfig(grid, block)
+          .measure();
 
   // Validate execution
   EXPECT_GT(result.kernelTimeUs, 0.0) << "Kernel should execute";
 
   EXPECT_GT(result.callsPerSecond, 0.0) << "Should have valid throughput";
 
-  // Verify correctness
-  cudaMemcpy(h_output.data(), d_output, SIZE, cudaMemcpyDeviceToHost);
-  EXPECT_FLOAT_EQ(h_output[WIDTH], h_input[1]) << "Transpose should be correct: [0][1] -> [1][0]";
+  // Verify correctness: every element against the CPU's transpose
+  ASSERT_EQ(cudaMemcpy(h_output.data(), d_output, SIZE, cudaMemcpyDeviceToHost), cudaSuccess);
+  const std::vector<float> expected = transposeOnCpu(h_input, WIDTH, HEIGHT);
+  const int WRONG = firstMismatch(h_output, expected);
+  EXPECT_EQ(WRONG, -1) << "output[" << WRONG << "] (row " << WRONG / HEIGHT << ", column "
+                       << WRONG % HEIGHT << ") = " << h_output[WRONG] << ", expected "
+                       << expected[WRONG];
 
   // Cleanup
   cudaFree(d_input);
@@ -279,124 +282,16 @@ PERF_GPU_TEST(GpuSharedMemory, SharedMemoryOptimized) {
 }
 
 /**
- * @brief Bank conflict performance impact
- *
- * Validates that intentional bank conflicts cause measurable performance
- * degradation in shared memory access.
- *
- * @test BankConflicts
- *
- * Validates:
- *  - Bank conflict detection
- *  - Performance impact of conflicts
- *  - Conflict pattern identification
- *
- * Expected performance:
- *  - Slower than conflict-free access
- *  - Demonstrates conflict penalty
- */
-PERF_GPU_TEST(GpuSharedMemory, BankConflicts) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 256;
-  const size_t SIZE = N * sizeof(float);
-
-  // Allocate memory
-  std::vector<float> h_data(N, 1.0f);
-  float* d_data;
-  cudaMalloc(&d_data, SIZE);
-  cudaMemcpy(d_data, h_data.data(), SIZE, cudaMemcpyHostToDevice);
-
-  // Launch configuration
-  dim3 block(256);
-  dim3 grid(1);
-
-  // Warmup
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { sharedBankConflictKernel<<<grid, block, 0, s>>>(d_data, N); });
-
-  // Measure with bank conflicts
-  auto result = perf.cudaKernel([&](cudaStream_t s) {
-                      sharedBankConflictKernel<<<grid, block, 0, s>>>(d_data, N);
-                    })
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  // Validate execution
-  EXPECT_GT(result.kernelTimeUs, 0.0) << "Kernel should execute";
-
-  // Bank conflicts cause slowdown, but kernel still works
-  EXPECT_GT(result.callsPerSecond, 0.0) << "Should complete despite conflicts";
-
-  // Cleanup
-  cudaFree(d_data);
-}
-
-/**
- * @brief Conflict-free shared memory access
- *
- * Validates that conflict-free shared memory access patterns achieve
- * best performance without bank conflict penalties.
- *
- * @test ConflictFree
- *
- * Validates:
- *  - Conflict-free access pattern
- *  - Optimal shared memory performance
- *  - Best-case throughput
- *
- * Expected performance:
- *  - Best shared memory performance
- *  - Faster than version with conflicts
- */
-PERF_GPU_TEST(GpuSharedMemory, ConflictFree) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 256;
-  const size_t SIZE = N * sizeof(float);
-
-  // Allocate memory
-  std::vector<float> h_data(N, 1.0f);
-  float* d_data;
-  cudaMalloc(&d_data, SIZE);
-  cudaMemcpy(d_data, h_data.data(), SIZE, cudaMemcpyHostToDevice);
-
-  // Launch configuration
-  dim3 block(256);
-  dim3 grid(1);
-
-  // Warmup
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { sharedConflictFreeKernel<<<grid, block, 0, s>>>(d_data, N); });
-
-  // Measure conflict-free access
-  auto result = perf.cudaKernel([&](cudaStream_t s) {
-                      sharedConflictFreeKernel<<<grid, block, 0, s>>>(d_data, N);
-                    })
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  // Validate execution
-  EXPECT_GT(result.kernelTimeUs, 0.0) << "Kernel should execute";
-
-  EXPECT_GT(result.callsPerSecond, 0.0) << "Should have high throughput";
-
-  // Cleanup
-  cudaFree(d_data);
-}
-
-/**
  * @brief Reduction with shared memory
  *
- * Validates shared memory usage in a practical algorithm (reduction)
- * demonstrating real-world shared memory benefits.
+ * Validates shared memory usage in a practical algorithm (reduction): each
+ * block sums its 256 inputs in shared memory.
  *
  * @test ReductionSharedMemory
  *
  * Validates:
  *  - Shared memory reduction algorithm
- *  - Synchronization correctness
- *  - Performance benefits for reductions
+ *  - Synchronization correctness: every block's sum is exact
  *
  * Expected performance:
  *  - Efficient parallel reduction
@@ -418,6 +313,8 @@ PERF_GPU_TEST(GpuSharedMemory, ReductionSharedMemory) {
   cudaMalloc(&d_input, SIZE);
   cudaMalloc(&d_output, numBlocks * sizeof(float));
   cudaMemcpy(d_input, h_input.data(), SIZE, cudaMemcpyHostToDevice);
+  // A block that never writes its sum reads 0, whatever the allocation held
+  ASSERT_EQ(cudaMemset(d_output, 0, numBlocks * sizeof(float)), cudaSuccess);
 
   // Launch configuration
   dim3 block(threadsPerBlock);
@@ -437,14 +334,15 @@ PERF_GPU_TEST(GpuSharedMemory, ReductionSharedMemory) {
   // Validate execution
   EXPECT_GT(result.kernelTimeUs, 0.0) << "Kernel should execute";
 
-  // Verify partial results (each block produces one output)
+  // Every block sums its threadsPerBlock inputs of 1.0, exactly
   std::vector<float> h_output(numBlocks);
-  cudaMemcpy(h_output.data(), d_output, numBlocks * sizeof(float), cudaMemcpyDeviceToHost);
-
-  // Each block should have reduced its portion
-  for (int i = 0; i < std::min(10, numBlocks); ++i) {
-    EXPECT_GT(h_output[i], 0.0f) << "Block " << i << " should have non-zero reduction result";
-  }
+  ASSERT_EQ(
+      cudaMemcpy(h_output.data(), d_output, numBlocks * sizeof(float), cudaMemcpyDeviceToHost),
+      cudaSuccess);
+  const std::vector<float> expected(numBlocks, static_cast<float>(threadsPerBlock));
+  const int WRONG = firstMismatch(h_output, expected);
+  EXPECT_EQ(WRONG, -1) << "Block " << WRONG << " of " << numBlocks << " summed to "
+                       << h_output[WRONG] << ", expected " << expected[WRONG];
 
   // Cleanup
   cudaFree(d_input);
