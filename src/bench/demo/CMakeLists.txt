@@ -103,6 +103,11 @@ if (TARGET bench_cuda)
       demo_helpers
     )
   endforeach ()
+
+  # Demo 03's kernels are a source of their own, so the tests beside the demo
+  # compile the kernels the demo launches (the sections at the end of this
+  # file).
+  target_sources(BenchDemo_Gpu_03_SharedMemoryOpt PRIVATE gpu/03_SharedMemoryOpt_Transpose.cu)
 endif ()
 
 # ------------------------------------------------------------------------------
@@ -409,3 +414,63 @@ set_tests_properties(
   PROPERTIES SKIP_REGULAR_EXPRESSION
              "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe"
 )
+
+# ------------------------------------------------------------------------------
+# GPU Demo Tests and Effect Checks Run by CTest (3)
+# ------------------------------------------------------------------------------
+# Demo 03's tests. TestDemoBankConflictsReport holds the bank-conflict check's
+# reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
+# GPU, so every configuration runs it, under the check's labels.
+# TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
+# check also ncu) and are built where the GPU demos are. The check's skip
+# expression names its own case, so the demo's GoogleTest lines in its failure
+# output cannot turn a failure into a skip.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoBankConflictsReport
+  SOURCES
+  gpu/utst/03_SharedMemoryOpt_BankConflictsReport_uTest.cpp
+  LABELS
+  demo
+  ncu
+)
+
+if (TARGET bench_cuda)
+  vernier_add_gtest(
+    TARGET
+    TestDemoTranspose
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_uTest.cu
+    gpu/03_SharedMemoryOpt_Transpose.cu
+    LINK
+    CUDA::cudart
+    LABELS
+    demo
+  )
+  target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
+
+  # The check behind walkthrough 12, beside the demo it runs.
+  vernier_add_gtest(
+    TARGET
+    TestDemoBankConflicts
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_BankConflicts_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    ncu
+  )
+  target_compile_definitions(
+    TestDemoBankConflicts
+    PRIVATE VERNIER_DEMO_GPU_03_BINARY="$<TARGET_FILE:BenchDemo_Gpu_03_SharedMemoryOpt>"
+  )
+  add_dependencies(TestDemoBankConflicts BenchDemo_Gpu_03_SharedMemoryOpt)
+  set_tests_properties(
+    BankConflicts.CountedByNsightCompute
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] BankConflicts\\.CountedByNsightCompute"
+  )
+endif ()
