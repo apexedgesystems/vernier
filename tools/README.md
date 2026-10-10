@@ -260,7 +260,9 @@ from a previous run`. Nothing else in the folder, and nothing outside it, is
 removed. valgrind, compute-sanitizer, nsys and ncu read a `%` in an output
 option as the start of a macro (`%p`, `%q{VAR}`), so `bench run` writes the
 folder there with each `%` doubled, and the output lands in the folder as
-named. heaptrack replaces `%h` and `%p` in its `-o` with the host name and
+named. compute-sanitizer joins a relative log name to its working directory
+before it reads the macros, so `bench run` gives it the folder named whole,
+from the working directory, as its `Running:` line shows. heaptrack replaces `%h` and `%p` in its `-o` with the host name and
 its process id and has no escape for them, so `bench run` refuses a heaptrack
 folder holding either before anything starts; any other `%` reaches
 heaptrack as it is. After the benchmark exits 0, the file must exist and hold

@@ -4,7 +4,11 @@
 #
 # Tab-separated. '#' starts a comment line. A '-' field is empty. In a route,
 # <dir> is the folder the wrap writes into (<output-dir>/<binary>.<canonical
-# tool>) and <bin> the benchmark; arguments are separated by single spaces.
+# tool>), <cwd> the working directory and <whole-dir> the folder named whole,
+# <cwd>/<dir>, each with every '%' doubled, and <bin> the benchmark;
+# arguments are separated by single spaces. compute-sanitizer joins a
+# relative log name to its working directory before it reads '%' macros,
+# so its log is named whole.
 #
 # alias   <spelling>  <canonical backend>
 alias	nsys	nsight
@@ -36,11 +40,11 @@ route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --leak-check=ful
 route	helgrind	-	valgrind	--tool=helgrind --log-file=<dir>/helgrind.log <bin>
 route	helgrind	drd	valgrind	--tool=drd --log-file=<dir>/helgrind.log <bin>
 route	heaptrack	-	heaptrack	-o <dir>/run <bin>
-route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
-route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --error-exitcode 5 --log-file <dir>/sanitizer.log <bin>
+route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
 route	nsight	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
 route	nsys	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
 route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
@@ -54,8 +58,8 @@ route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 # in the folder as named. heaptrack's -o replaces %h and %p and has no
 # escape: any other '%' reaches it as it is, and a folder holding %h or %p is
 # refused, in the refuse-folder rows below)
-escape	compute-sanitizer	-	out%p	--log-file	out%%p/my_test.compute-sanitizer/sanitizer.log
-escape	compute-sanitizer	-	a%%b%x	--log-file	a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
+escape	compute-sanitizer	-	out%p	--log-file	<cwd>/out%%p/my_test.compute-sanitizer/sanitizer.log
+escape	compute-sanitizer	-	a%%b%x	--log-file	<cwd>/a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
 escape	callgrind	-	out%p	--callgrind-out-file	out%%p/my_test.callgrind/callgrind.out
 escape	massif	-	out%q{HOME}	--massif-out-file	out%%q{HOME}/my_test.massif/massif.out
 escape	memcheck	-	a%%b%x	--log-file	a%%%%b%%x/my_test.memcheck/memcheck.log

@@ -1789,8 +1789,9 @@ struct RouteRig {
 /// the form of its recorded error lines), and ends as the tool does: errors
 /// found end with its `--error-exitcode` value (0 without one, the tool's
 /// default), otherwise with the benchmark's own status. It reads its
-/// `--log-file` value as the tool does: `%%` is one `%`, and any other `%`
-/// is refused, with status 255 and no report.
+/// `--log-file` value as the tool does: a relative name is first joined to
+/// its working directory, then `%%` is one `%` and any other `%` is refused,
+/// with status 255 and no report.
 const SANITIZER_STAND_IN: &str = r#"#!/bin/bash
 echo "compute-sanitizer wrap=$VERNIER_EXTERNAL_WRAP $*" >> '{log}'
 log=""
@@ -1801,6 +1802,7 @@ for a in "$@"; do
   [ "$prev" = --error-exitcode ] && ec="$a"
   prev="$a"
 done
+[[ -n "$log" && "$log" != /* ]] && log="$(pwd -P)/$log"
 if [[ "${log//\%\%/}" == *%* ]]; then
   echo "fake compute-sanitizer: a '%' macro in the log path $log" >&2
   exit 255
@@ -2195,7 +2197,8 @@ fn run_compute_sanitizer_tools() {
         assert!(
             log.starts_with(&format!(
                 "compute-sanitizer wrap=compute-sanitizer --tool={tool} --error-exitcode 5 \
-                 --log-file bench-out/fake_bench.compute-sanitizer/sanitizer.log {}",
+                 --log-file {}/bench-out/fake_bench.compute-sanitizer/sanitizer.log {}",
+                whole_dir(&rig),
                 rig.bench.display()
             )),
             "{tool}: {log}"
@@ -3493,7 +3496,10 @@ fn run_compute_sanitizer_log_path_with_percent() {
     );
     assert_eq!(code, 0, "{err}");
     assert!(
-        log.contains("--log-file out%%p/fake_bench.compute-sanitizer/sanitizer.log"),
+        log.contains(&format!(
+            "--log-file {}/out%%p/fake_bench.compute-sanitizer/sanitizer.log",
+            whole_dir(&rig)
+        )),
         "{log}"
     );
     let report = rig
@@ -3506,6 +3512,50 @@ fn run_compute_sanitizer_log_path_with_percent() {
             "[bench] compute-sanitizer wrote out%p/fake_bench.compute-sanitizer/sanitizer.log ("
         ),
         "{stdout}"
+    );
+}
+
+/// The rig's directory as the runner names it whole, from its working
+/// directory: the physical path, each '%' doubled.
+fn whole_dir(rig: &RouteRig) -> String {
+    std::fs::canonicalize(rig.dir.path())
+        .expect("the rig's directory")
+        .display()
+        .to_string()
+        .replace('%', "%%")
+}
+
+/// @test Run from a working directory whose path holds a '%', the report
+/// lands where it should: the tool joins a relative log name to that
+/// directory before it reads '%' macros, so `bench run` names the log whole,
+/// each '%' doubled.
+#[test]
+fn run_compute_sanitizer_from_a_percent_directory() {
+    let rig = route_rig(&["compute-sanitizer"]);
+    let work = rig.dir.path().join("run-%p-dir");
+    std::fs::create_dir(&work).expect("the working directory");
+    let out = output_of(
+        Command::new(bin())
+            .args(["run", &rig.bench.to_string_lossy()])
+            .args(["--profile", "compute-sanitizer"])
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(&work),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}{log}");
+    assert!(
+        log.contains(&format!(
+            "--log-file {}/run-%%p-dir/bench-out/fake_bench.compute-sanitizer/sanitizer.log ",
+            whole_dir(&rig)
+        )),
+        "{log}"
+    );
+    assert!(
+        work.join("bench-out/fake_bench.compute-sanitizer/sanitizer.log")
+            .is_file(),
+        "{stdout}{stderr}"
     );
 }
 

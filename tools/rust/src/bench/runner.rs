@@ -828,6 +828,12 @@ fn route_for(
                 ));
             }
             let sanitizer = words.first().copied().unwrap_or("memcheck");
+            // compute-sanitizer joins a relative log name to its working
+            // directory before it reads '%' macros, so a '%' in that
+            // directory's path would make it refuse the log: the folder is
+            // named whole, then escaped.
+            let whole = std::path::absolute(&dir).unwrap_or_else(|_| dir.clone());
+            let log = escape_percent(&whole.display().to_string());
             (
                 "compute-sanitizer",
                 vec![
@@ -835,7 +841,7 @@ fn route_for(
                     "--error-exitcode".into(),
                     TOOL_FINDINGS_EXIT_CODE.to_string(),
                     "--log-file".into(),
-                    format!("{escaped}/sanitizer.log"),
+                    format!("{log}/sanitizer.log"),
                 ],
                 &[&["sanitizer.log"]],
             )
@@ -2035,15 +2041,27 @@ mod tests {
         }
         let root = Path::new("out");
         let bin = Path::new("./my_test");
+        // The working directory as the table's <cwd> spells it.
+        let cwd = escape_percent(
+            &std::env::current_dir()
+                .expect("the working directory")
+                .display()
+                .to_string(),
+        );
         let routes = table_rows("route");
         assert!(routes.len() >= 20, "the table lost its routes");
         for row in routes {
             let tool = canonical_backend(&row[1]);
             let args = (!row[2].is_empty()).then_some(row[2].as_str());
             let dir = format!("out/my_test.{tool}");
+            let whole = format!("{cwd}/{dir}");
             let expected: Vec<String> = row[4]
                 .split(' ')
-                .map(|a| a.replace("<dir>", &dir).replace("<bin>", "./my_test"))
+                .map(|a| {
+                    a.replace("<whole-dir>", &whole)
+                        .replace("<dir>", &dir)
+                        .replace("<bin>", "./my_test")
+                })
                 .collect();
             let route = route_for(tool, args, bin, Some(root))
                 .unwrap_or_else(|e| panic!("{row:?} refused: {e}"))
@@ -2086,7 +2104,8 @@ mod tests {
                     a.strip_prefix(&joined).map(str::to_string)
                 }
             });
-            assert_eq!(value.as_ref(), Some(&row[5]), "{row:?}: {:?}", route.args);
+            let expected = row[5].replace("<cwd>", &cwd);
+            assert_eq!(value.as_ref(), Some(&expected), "{row:?}: {:?}", route.args);
             assert_eq!(
                 route.dir,
                 Path::new(&row[3]).join(format!("my_test.{tool}")),
