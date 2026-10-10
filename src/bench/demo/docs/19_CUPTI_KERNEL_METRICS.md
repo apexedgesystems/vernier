@@ -448,7 +448,7 @@ reported, `kalex`.
   have shown, not what CUDA or CUPTI promise: a build that reads another form
   fails the check until a run of it qualifies that form.
 - Demo 02's two kernel tests fail if the occupancy estimate stops matching
-  their shapes, and the SAXPY example's unit tests, in `TestDemoExamples`,
+  their shapes, and the SAXPY example's unit tests, in `TestDemoSaxpy`,
   hold its versions to the same answers.
 
 An ordinary test run includes the check, and every test it runs should pass:
