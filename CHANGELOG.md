@@ -119,6 +119,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which walkthrough 20 measures: holding the lock across the join, four
   threads are no faster than one. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 03 (GPU shared memory) reports its tiles to the harness and checks
+  its answers** -- each of its tests checks the transpose it measured, and a
+  check registered with `ctest` under the `demo` and `ncu` labels counts its
+  bank conflicts with Nsight Compute. Walkthrough 12 is rewritten from a Release
+  run on the documented Jetson AGX Thor rig, whose CSV is committed as its
+  reference. The test `SharedMemoryOpt.SharedConflictFree` is renamed
+  `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured before this
+  release does not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns

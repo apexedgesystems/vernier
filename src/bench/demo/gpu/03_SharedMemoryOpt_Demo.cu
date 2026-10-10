@@ -1,262 +1,225 @@
 /**
  * @file 03_SharedMemoryOpt_Demo.cu
- * @brief Demo 12: Shared memory optimization and bank conflicts
+ * @brief Demo 12: a matrix transpose three ways, and the shared-memory bank
+ *        conflicts Nsight Compute counts in one of them.
  *
- * Demonstrates the progression from global memory to shared memory,
- * showing how bank conflicts degrade performance and how padding
- * eliminates them. Three-way comparison:
+ * Three kernels transpose the same 1024 x 1024 matrix of floats
+ * (03_SharedMemoryOpt_Transpose.cu):
+ *  1. transposeNaive, through global memory alone: every warp's writes
+ *     stride through the output a column at a time;
+ *  2. transposeSharedConflict, through a 32 x 32 tile in shared memory: the
+ *     global reads and writes are both coalesced, but every warp's reads of
+ *     one tile column land in one shared-memory bank;
+ *  3. transposeSharedPadded, the same tile with its rows padded by one
+ *     float, so those reads land in 32 banks.
  *
- *  1. Global memory only (baseline)
- *  2. Shared memory with bank conflicts (partial win)
- *  3. Shared memory without bank conflicts (full win)
+ * Each test measures one kernel, writes one CSV row, and checks the
+ * transpose the kernel produced. The harness is told the static shared
+ * memory each tiled kernel declares, which its occupancy estimate accounts
+ * for; on the reference rig the 1,024-thread block, not the tile, limits
+ * occupancy, so the three rows read the same figure.
  *
- * Workload: Matrix transpose (demonstrates the classic shared memory use case)
+ * The counter the walkthrough reads, bank conflicts per launch from Nsight
+ * Compute, is checked beside the demo by TestDemoBankConflicts
+ * (utst/03_SharedMemoryOpt_BankConflicts_uTest.cpp), so this source holds
+ * only what it teaches.
  *
  * Usage:
  *   @code{.sh}
- *   # Run all three
- *   ./BenchDemo_Gpu_03_SharedMemoryOpt --csv results.csv
+ *   # Measure all three, write the CSV the walkthrough reads
+ *   ./BenchDemo_Gpu_03_SharedMemoryOpt --repeats 10 --csv shared_memory_opt.csv
  *
- *   # Compare
- *   bench summary results.csv --sort median
+ *   # Count the bank conflicts of every launch (root on Jetson; ncu replays
+ *   # each launch, so keep them few)
+ *   sudo env PATH="$PATH" ncu --target-processes all \
+ *     --metrics l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum \
+ *     ./BenchDemo_Gpu_03_SharedMemoryOpt --cycles 3 --repeats 1
  *   @endcode
  *
- * @see docs/12_SHARED_MEMORY_OPT.md for step-by-step walkthrough
+ * @see docs/12_SHARED_MEMORY_OPT.md for the walkthrough this demo backs
  */
 
 #include <gtest/gtest.h>
+
+#include <cuda_runtime.h>
+
+#include <cstddef>
 #include <vector>
 
+#include "src/bench/demo/gpu/03_SharedMemoryOpt_Transpose.cuh"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
 
-namespace ub = vernier::bench;
+namespace sm = vernier::bench::demo::shared_memory_demo;
 
 namespace {
 
 /* ----------------------------- Constants ----------------------------- */
 
-static constexpr int TILE_DIM = 32;
-static constexpr int MATRIX_DIM = 1024; // 1024x1024 matrix
-static constexpr int N = MATRIX_DIM * MATRIX_DIM;
-static constexpr std::size_t SIZE = N * sizeof(float);
+constexpr std::size_t N = static_cast<std::size_t>(sm::MATRIX_DIM) * sm::MATRIX_DIM; ///< Elements
+constexpr std::size_t BYTES = N * sizeof(float); ///< One matrix, in bytes
 
-/* ----------------------------- Kernels ----------------------------- */
+/* ----------------------------- Helpers ----------------------------- */
 
 /**
- * @brief Naive transpose: global memory only.
- *
- * Reads are coalesced (row-major) but writes are strided (column-major).
- * Each warp writes to addresses MATRIX_DIM apart, causing uncoalesced writes.
+ * @brief The input: element i holds i, exact in a float up to 2^24, so a
+ *        transpose and a copy differ everywhere off the diagonal.
  */
-__global__ void transposeNaive(const float* input, float* output, int dim) {
-  const int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  const int y = blockIdx.y * TILE_DIM + threadIdx.y;
-  if (x < dim && y < dim) {
-    output[x * dim + y] = input[y * dim + x];
+std::vector<float> rampMatrix() {
+  std::vector<float> m(N);
+  for (std::size_t i = 0; i < N; ++i) {
+    m[i] = static_cast<float>(i);
   }
+  return m;
+}
+
+/** @brief How many elements of @p output are not the transpose of @p input. */
+std::size_t transposeMismatches(const std::vector<float>& input, const std::vector<float>& output,
+                                int dim) {
+  std::size_t mismatches = 0;
+  for (int y = 0; y < dim; ++y) {
+    for (int x = 0; x < dim; ++x) {
+      const std::size_t IN = static_cast<std::size_t>(y) * dim + x;
+      const std::size_t OUT = static_cast<std::size_t>(x) * dim + y;
+      if (output[OUT] != input[IN]) {
+        ++mismatches;
+      }
+    }
+  }
+  return mismatches;
+}
+
+/** @brief The input and output matrices on the device, freed however the test leaves. */
+class DeviceMatrices {
+public:
+  DeviceMatrices() {
+    if (cudaMalloc(&input_, BYTES) != cudaSuccess) {
+      input_ = nullptr;
+    }
+    if (cudaMalloc(&output_, BYTES) != cudaSuccess) {
+      output_ = nullptr;
+    }
+  }
+
+  ~DeviceMatrices() {
+    cudaFree(output_);
+    cudaFree(input_);
+  }
+
+  DeviceMatrices(const DeviceMatrices&) = delete;
+  DeviceMatrices& operator=(const DeviceMatrices&) = delete;
+
+  [[nodiscard]] bool ok() const { return input_ != nullptr && output_ != nullptr; }
+  [[nodiscard]] const float* input() const { return input_; }
+  [[nodiscard]] float* output() const { return output_; }
+
+  /** @brief Copy @p host into the input matrix. */
+  [[nodiscard]] bool upload(const std::vector<float>& host) const {
+    return cudaMemcpy(input_, host.data(), BYTES, cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+  /** @brief Copy the output matrix into @p host. */
+  [[nodiscard]] bool download(std::vector<float>& host) const {
+    return cudaMemcpy(host.data(), output_, BYTES, cudaMemcpyDeviceToHost) == cudaSuccess;
+  }
+
+private:
+  float* input_ = nullptr;
+  float* output_ = nullptr;
+};
+
+} // namespace
+
+/**
+ * @test The transpose through global memory alone. Each warp reads 32
+ *       consecutive floats of a row and writes them a whole row apart, down
+ *       a column of the output.
+ */
+PERF_GPU_TEST(SharedMemoryOpt, NaiveGlobalMemory) {
+  PERF_GPU_GUARD(perf);
+
+  DeviceMatrices device;
+  ASSERT_TRUE(device.ok()) << "device allocation failed";
+  const std::vector<float> INPUT = rampMatrix();
+  ASSERT_TRUE(device.upload(INPUT)) << "device upload failed";
+
+  const dim3 GRID = sm::transposeGrid(sm::MATRIX_DIM);
+  const dim3 BLOCK = sm::transposeBlock();
+  const auto LAUNCH = [&](cudaStream_t s) {
+    sm::transposeNaive<<<GRID, BLOCK, 0, s>>>(device.input(), device.output(), sm::MATRIX_DIM);
+  };
+  perf.cudaWarmup(LAUNCH);
+  perf.cudaKernel(LAUNCH, "transpose_naive").withLaunchConfig(GRID, BLOCK).measure();
+
+  // Every launch wrote the transpose.
+  std::vector<float> output(N);
+  ASSERT_TRUE(device.download(output)) << "device download failed";
+  EXPECT_EQ(transposeMismatches(INPUT, output, sm::MATRIX_DIM), 0U)
+      << "the kernel did not transpose the input";
 }
 
 /**
- * @brief Shared memory transpose WITH bank conflicts.
- *
- * Loads a tile into shared memory (coalesced reads), then writes
- * from shared memory (coalesced writes). However, the shared memory
- * access pattern during the write phase causes 32-way bank conflicts
- * because all threads in a warp access the same bank.
+ * @test The transpose through a shared-memory tile. The global reads and
+ *       writes are both coalesced; every warp's reads of one tile column
+ *       land in one bank, so each is served 32 times over.
  */
-__global__ void transposeSharedConflict(const float* input, float* output, int dim) {
-  __shared__ float tile[TILE_DIM][TILE_DIM]; // Bank conflicts on column access
+PERF_GPU_TEST(SharedMemoryOpt, SharedWithBankConflicts) {
+  PERF_GPU_GUARD(perf);
 
-  const int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  const int y = blockIdx.y * TILE_DIM + threadIdx.y;
+  DeviceMatrices device;
+  ASSERT_TRUE(device.ok()) << "device allocation failed";
+  const std::vector<float> INPUT = rampMatrix();
+  ASSERT_TRUE(device.upload(INPUT)) << "device upload failed";
 
-  // Coalesced read from global -> shared
-  if (x < dim && y < dim) {
-    tile[threadIdx.y][threadIdx.x] = input[y * dim + x];
-  }
-  __syncthreads();
+  const dim3 GRID = sm::transposeGrid(sm::MATRIX_DIM);
+  const dim3 BLOCK = sm::transposeBlock();
+  const auto LAUNCH = [&](cudaStream_t s) {
+    sm::transposeSharedConflict<<<GRID, BLOCK, 0, s>>>(device.input(), device.output(),
+                                                       sm::MATRIX_DIM);
+  };
+  perf.cudaWarmup(LAUNCH);
+  // The tile is static shared memory, declared in the kernel; the harness is
+  // told its size so its occupancy estimate can account for it.
+  perf.cudaKernel(LAUNCH, "transpose_shared_conflict")
+      .withLaunchConfig(GRID, BLOCK, sm::TILE_BYTES)
+      .measure();
 
-  // Write from shared -> global (transposed)
-  const int outX = blockIdx.y * TILE_DIM + threadIdx.x;
-  const int outY = blockIdx.x * TILE_DIM + threadIdx.y;
-  if (outX < dim && outY < dim) {
-    // tile[threadIdx.x][threadIdx.y] causes bank conflicts:
-    // all threads in warp read same column (same bank)
-    output[outY * dim + outX] = tile[threadIdx.x][threadIdx.y];
-  }
+  std::vector<float> output(N);
+  ASSERT_TRUE(device.download(output)) << "device download failed";
+  EXPECT_EQ(transposeMismatches(INPUT, output, sm::MATRIX_DIM), 0U)
+      << "the kernel did not transpose the input";
 }
 
 /**
- * @brief Shared memory transpose WITHOUT bank conflicts (padded).
- *
- * Same algorithm as above, but shared memory is padded by 1 element
- * per row. This shifts column accesses across different banks,
- * eliminating all bank conflicts.
+ * @test The same transpose through a tile padded by one float per row, so
+ *       every warp's reads of one tile column land in 32 banks and each is
+ *       served once.
  */
-__global__ void transposeSharedNoPadding(const float* input, float* output, int dim) {
-  __shared__ float tile[TILE_DIM][TILE_DIM + 1]; // +1 padding eliminates bank conflicts
+PERF_GPU_TEST(SharedMemoryOpt, SharedPadded) {
+  PERF_GPU_GUARD(perf);
 
-  const int x = blockIdx.x * TILE_DIM + threadIdx.x;
-  const int y = blockIdx.y * TILE_DIM + threadIdx.y;
+  DeviceMatrices device;
+  ASSERT_TRUE(device.ok()) << "device allocation failed";
+  const std::vector<float> INPUT = rampMatrix();
+  ASSERT_TRUE(device.upload(INPUT)) << "device upload failed";
 
-  if (x < dim && y < dim) {
-    tile[threadIdx.y][threadIdx.x] = input[y * dim + x];
-  }
-  __syncthreads();
+  const dim3 GRID = sm::transposeGrid(sm::MATRIX_DIM);
+  const dim3 BLOCK = sm::transposeBlock();
+  const auto LAUNCH = [&](cudaStream_t s) {
+    sm::transposeSharedPadded<<<GRID, BLOCK, 0, s>>>(device.input(), device.output(),
+                                                     sm::MATRIX_DIM);
+  };
+  perf.cudaWarmup(LAUNCH);
+  perf.cudaKernel(LAUNCH, "transpose_shared_padded")
+      .withLaunchConfig(GRID, BLOCK, sm::TILE_PADDED_BYTES)
+      .measure();
 
-  const int outX = blockIdx.y * TILE_DIM + threadIdx.x;
-  const int outY = blockIdx.x * TILE_DIM + threadIdx.y;
-  if (outX < dim && outY < dim) {
-    output[outY * dim + outX] = tile[threadIdx.x][threadIdx.y];
-  }
-}
-
-} // anonymous namespace
-
-/**
- * @test Baseline: Naive global memory transpose.
- *
- * Writes are uncoalesced (column-major pattern). This is the worst
- * case for memory throughput. Nsight will show low store efficiency.
- */
-PERF_GPU_BANDWIDTH(SharedMemoryOpt, NaiveGlobalMemory) {
-  UB_PERF_GPU_GUARD(perf);
-
-  float *d_in = nullptr, *d_out = nullptr;
-  cudaMalloc(&d_in, SIZE);
-  cudaMalloc(&d_out, SIZE);
-
-  std::vector<float> h_in(N);
-  for (int i = 0; i < N; ++i) {
-    h_in[i] = static_cast<float>(i);
-  }
-  cudaMemcpy(d_in, h_in.data(), SIZE, cudaMemcpyHostToDevice);
-
-  const dim3 block(TILE_DIM, TILE_DIM);
-  const dim3 grid((MATRIX_DIM + TILE_DIM - 1) / TILE_DIM, (MATRIX_DIM + TILE_DIM - 1) / TILE_DIM);
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { transposeNaive<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM); });
-
-  auto result = perf.cudaKernel(
-                        [&](cudaStream_t s) {
-                          transposeNaive<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM);
-                        },
-                        "naive_global")
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  cudaFree(d_in);
-  cudaFree(d_out);
-}
-
-/**
- * @test Intermediate: Shared memory with bank conflicts.
- *
- * Both reads and writes to global memory are coalesced (via shared
- * memory staging). However, the shared memory column access pattern
- * causes bank conflicts, limiting speedup to ~2-3x over naive.
- */
-PERF_GPU_BANDWIDTH(SharedMemoryOpt, SharedWithBankConflicts) {
-  UB_PERF_GPU_GUARD(perf);
-
-  float *d_in = nullptr, *d_out = nullptr;
-  cudaMalloc(&d_in, SIZE);
-  cudaMalloc(&d_out, SIZE);
-
-  std::vector<float> h_in(N);
-  for (int i = 0; i < N; ++i) {
-    h_in[i] = static_cast<float>(i);
-  }
-  cudaMemcpy(d_in, h_in.data(), SIZE, cudaMemcpyHostToDevice);
-
-  const dim3 block(TILE_DIM, TILE_DIM);
-  const dim3 grid((MATRIX_DIM + TILE_DIM - 1) / TILE_DIM, (MATRIX_DIM + TILE_DIM - 1) / TILE_DIM);
-
-  perf.cudaWarmup([&](cudaStream_t s) {
-    transposeSharedConflict<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM);
-  });
-
-  auto result = perf.cudaKernel(
-                        [&](cudaStream_t s) {
-                          transposeSharedConflict<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM);
-                        },
-                        "shared_with_conflicts")
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  cudaFree(d_in);
-  cudaFree(d_out);
-}
-
-/**
- * @test Optimized: Shared memory without bank conflicts (padded).
- *
- * Adding +1 padding to shared memory declarations shifts column
- * accesses across different banks. All bank conflicts are eliminated.
- *
- * Expected improvement over naive: 5-10x.
- * Expected improvement over bank-conflict version: 1.5-3x.
- */
-PERF_GPU_BANDWIDTH(SharedMemoryOpt, SharedConflictFree) {
-  UB_PERF_GPU_GUARD(perf);
-
-  float *d_in = nullptr, *d_out = nullptr;
-  cudaMalloc(&d_in, SIZE);
-  cudaMalloc(&d_out, SIZE);
-
-  std::vector<float> h_in(N);
-  for (int i = 0; i < N; ++i) {
-    h_in[i] = static_cast<float>(i);
-  }
-  cudaMemcpy(d_in, h_in.data(), SIZE, cudaMemcpyHostToDevice);
-
-  const dim3 block(TILE_DIM, TILE_DIM);
-  const dim3 grid((MATRIX_DIM + TILE_DIM - 1) / TILE_DIM, (MATRIX_DIM + TILE_DIM - 1) / TILE_DIM);
-
-  perf.cudaWarmup([&](cudaStream_t s) {
-    transposeSharedNoPadding<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM);
-  });
-
-  auto result = perf.cudaKernel(
-                        [&](cudaStream_t s) {
-                          transposeSharedNoPadding<<<grid, block, 0, s>>>(d_in, d_out, MATRIX_DIM);
-                        },
-                        "shared_conflict_free")
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  cudaFree(d_in);
-  cudaFree(d_out);
+  std::vector<float> output(N);
+  ASSERT_TRUE(device.download(output)) << "device download failed";
+  EXPECT_EQ(transposeMismatches(INPUT, output, sm::MATRIX_DIM), 0U)
+      << "the kernel did not transpose the input";
 }
 
 /* ----------------------------- Main ----------------------------- */
 
-#include "src/bench/inc/PerfConfig.hpp"
-#include "src/bench/inc/PerfGpuConfig.hpp"
-#include "src/bench/inc/PerfRegistry.hpp"
-#include "src/bench/inc/PerfListener.hpp"
-#include "src/bench/inc/PerfTestMacros.hpp"
-#include "src/bench/inc/PerfGpuTestMacros.hpp"
-
-int main(int argc, char** argv) {
-  auto& cfg = vernier::bench::detail::perfConfigSingleton();
-  vernier::bench::parsePerfFlags(cfg, &argc, argv);
-
-  vernier::bench::PerfGpuConfig gpuCfg;
-  vernier::bench::parseGpuFlags(gpuCfg, &argc, argv);
-
-  vernier::bench::detail::setGlobalGpuConfig(gpuCfg);
-  vernier::bench::setGlobalPerfConfig(&cfg);
-  vernier::bench::installPerfEventListener(cfg);
-
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+PERF_GPU_MAIN()
