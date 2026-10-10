@@ -100,7 +100,7 @@ Requires NVIDIA GPU with CUDA support.
 | --- | ------------------ | --------------------------------------------- | ------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
 | 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers         | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
 | 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block           | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                             | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 03  | Shared Memory Opt  | Bank conflicts, counted by Nsight Compute     | Transpose through a 32-wide shared tile     | The same tile with each row padded by one float     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
 | 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                                | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 | 05  | NVTX Annotation    | Named ranges on an Nsight Systems timeline    | SAXPY G1 as it is: the test's range only    | G1 in three named phases: copy_in, kernel, copy_out | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
 
@@ -240,7 +240,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 17. [13](docs/13_NVTX_ANNOTATION.md) -- named NVTX ranges: where a call's time goes on an Nsight Systems timeline
 18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- the GPU columns of a kernel test, and where each comes from
 19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
-20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
+20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared-memory bank conflicts, read from Nsight Compute's counter (advanced)
 
 ---
 
