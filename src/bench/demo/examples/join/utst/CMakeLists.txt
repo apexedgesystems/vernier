@@ -122,12 +122,15 @@ if (TARGET JoinInstructionCountsStartupFault)
   # only on evidence that is not the check's wording: "valgrind is not
   # installed", decided before anything runs; valgrind's own words when it
   # stops reading debug information, which the check's skip quotes as valgrind
-  # wrote them; and, in a build with a sanitizer only, the check's skip for that
-  # build, decided at compile time.
+  # wrote them, its reader's assertion only where that skip quotes it ("It
+  # printed:"), which the check allows only with the evidence that valgrind
+  # stopped before the program started (src/bench/utst/ValgrindReaderAssertion.hpp);
+  # and, in a build with a sanitizer only, the check's skip for that build,
+  # decided at compile time.
   set(_fault_skips
       "valgrind is not installed"
       "Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-      "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
+      "It printed:\nvalgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
   )
   if (SANITIZER MATCHES "^(asan|tsan|ubsan)$" AND NOT CMAKE_CROSSCOMPILING)
     list(APPEND _fault_skips
