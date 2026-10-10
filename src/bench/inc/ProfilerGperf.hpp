@@ -113,7 +113,12 @@ public:
 
   /** @brief Construct from a decision already made (the registry's path). */
   GperfProfiler(const PerfConfig& cfg, std::string testName, std::shared_ptr<const GperfPlan> plan);
-  ~GperfProfiler() override = default;
+
+  /** @brief Stops a capture beforeMeasure() started and afterMeasure() did not. */
+  ~GperfProfiler() override;
+
+  GperfProfiler(const GperfProfiler&) = delete;
+  GperfProfiler& operator=(const GperfProfiler&) = delete;
 
   std::string toolName() const noexcept override { return "gperf"; }
   std::string artifactDir() const noexcept override { return artifactDir_; }
@@ -129,9 +134,17 @@ private:
 
   void applyPlan();
   void runPprofAnalysis() const;
+  /// Stop the captures this profiler started, without analysis.
+  void stopCapture() noexcept;
 
   bool wantCpu_{false};
   bool wantHeap_{false};
+
+  // True while a capture beforeMeasure() started runs, so it is stopped
+  // exactly once: by afterMeasure(), or by the destructor when the measured
+  // window ended by an exception, with no analysis.
+  bool cpuActive_{false};
+  bool heapActive_{false};
 
 #if UB_HAS_GPERF_CPU
   std::string cpuPath_;

@@ -265,6 +265,8 @@ void GperfProfiler::applyPlan() {
   }
 }
 
+GperfProfiler::~GperfProfiler() { stopCapture(); }
+
 void GperfProfiler::beforeMeasure() {
 #if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
   // Pass --profile-frequency to gperftools as CPUPROFILE_FREQUENCY. Measured with gperftools
@@ -280,38 +282,55 @@ void GperfProfiler::beforeMeasure() {
     // HeapProfilerStart uses a prefix (it creates <prefix>.<N>.heap files)
     heapPrefix_ = artifactDir_ + "/heap";
     HeapProfilerStart(heapPrefix_.c_str());
+    heapActive_ = true;
 #endif
   }
   if (wantCpu_) {
 #if UB_HAS_GPERF_CPU
     cpuPath_ = artifactDir_ + "/cpu.prof";
     ProfilerStart(cpuPath_.c_str());
+    cpuActive_ = true;
 #endif
   }
 #endif
 }
 
 void GperfProfiler::afterMeasure(const Stats& /*s*/) {
-#if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
-  if (wantCpu_) {
 #if UB_HAS_GPERF_CPU
+  if (cpuActive_) {
     ProfilerFlush();
     ProfilerStop();
+    cpuActive_ = false;
 
     // Auto-analyze: run the analyzer the check found and print top functions
     if (cfg_.profileAnalyze && !cpuPath_.empty()) {
       runPprofAnalysis();
     }
-#endif
   }
-  if (wantHeap_) {
+#endif
 #if UB_HAS_GPERF_HEAP
+  if (heapActive_) {
     // Emit a final snapshot (optional), then stop.
     HeapProfilerDump("final");
     HeapProfilerStop();
-#endif
+    heapActive_ = false;
   }
 #endif
+}
+
+void GperfProfiler::stopCapture() noexcept {
+#if UB_HAS_GPERF_CPU
+  if (cpuActive_) {
+    ProfilerStop();
+  }
+#endif
+#if UB_HAS_GPERF_HEAP
+  if (heapActive_) {
+    HeapProfilerStop();
+  }
+#endif
+  cpuActive_ = false;
+  heapActive_ = false;
 }
 
 void GperfProfiler::runPprofAnalysis() const {
