@@ -452,6 +452,93 @@ std::string perfSaid(const std::string& path) {
   const std::string TAIL = outputTail(readText(path));
   return TAIL.empty() ? std::string{"perf wrote nothing to "} + path : "perf: " + TAIL;
 }
+
+/**
+ * @brief True when @p status is how perf ends once SIGINT has made it write
+ * its report: by SIGINT itself, which perf raises again after writing, or
+ * with exit status 130 (128 + SIGINT) or 0.
+ */
+bool endedAsAfterSigint(int status) {
+  if (WIFSIGNALED(status)) {
+    return WTERMSIG(status) == SIGINT;
+  }
+  return WIFEXITED(status) && (WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 128 + SIGINT);
+}
+
+/** @brief What perf stat's report holds. */
+struct StatReport {
+  int counted = 0;                      ///< Events reported with a count.
+  std::vector<std::string> unavailable; ///< "<event> <not supported>" or "<not counted>".
+  bool error = false;                   ///< A line of the report begins with "Error".
+};
+
+/** @brief True when @p word is a count as perf stat prints one: digits, commas and a point. */
+bool isCount(const std::string& word) {
+  return word.find_first_of("0123456789") != std::string::npos &&
+         word.find_first_not_of("0123456789,.") == std::string::npos;
+}
+
+/**
+ * @brief Read perf stat's report: after its "Performance counter stats"
+ * heading, a line is an event's count ("66,055  cpu-cycles:u", a unit such as
+ * "msec" between them), or its mark when perf could not count it
+ * ("<not supported>", "<not counted>"). The heading, the elapsed, user and
+ * system times, notes and comments after '#' are none of these. A line
+ * anywhere that begins with "Error" is perf's error.
+ */
+StatReport readStatReport(const std::string& text) {
+  StatReport report;
+  bool heading = false;
+  std::istringstream in(text);
+  std::string line;
+  while (std::getline(in, line)) {
+    std::istringstream words(line.substr(0, line.find('#')));
+    std::vector<std::string> tokens;
+    for (std::string word; words >> word;) {
+      tokens.push_back(word);
+    }
+    if (tokens.empty()) {
+      continue;
+    }
+    if (tokens[0].rfind("Error", 0) == 0) {
+      report.error = true;
+      continue;
+    }
+    if (line.find("Performance counter stats") != std::string::npos) {
+      heading = true;
+      continue;
+    }
+    std::string mark;
+    std::size_t first = 1;
+    if (tokens.size() > 1 && tokens[0] == "<not" &&
+        (tokens[1] == "supported>" || tokens[1] == "counted>")) {
+      mark = tokens[0] + " " + tokens[1];
+      first = 2;
+    } else if (!isCount(tokens[0])) {
+      continue;
+    }
+    if (!heading || tokens.size() <= first || tokens[first] == "seconds") {
+      continue;
+    }
+    // The event is the last word before the comment that is not a share of
+    // the time it was counted, "(50.00%)".
+    std::string event;
+    for (std::size_t i = tokens.size(); i > first && event.empty(); --i) {
+      if (tokens[i - 1].front() != '(') {
+        event = tokens[i - 1];
+      }
+    }
+    if (event.empty()) {
+      continue;
+    }
+    if (mark.empty()) {
+      ++report.counted;
+    } else {
+      report.unavailable.push_back(event + " " + mark);
+    }
+  }
+  return report;
+}
 #endif
 
 } // namespace
@@ -603,6 +690,15 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
          ReadinessStage::COMPLETION);
     return;
   }
+  if (!endedAsAfterSigint(STOP.waitStatus)) {
+    fail(ReadinessCause::UNUSABLE,
+         "perf ended (" + waitStatusText(STOP.waitStatus) +
+             ") after SIGINT, not as a perf that has written its report ends (by SIGINT, or exit "
+             "status 130 or 0), so its output does not count: " +
+             perfSaid(OUTPUT),
+         ReadinessStage::COMPLETION);
+    return;
+  }
   checkOutput();
 #endif
 }
@@ -610,10 +706,27 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
 void PerfStatProfiler::checkOutput() const {
 #ifdef __linux__
   if (!statPath_.empty()) {
-    // perf stat prints this header before its counts; an error message in
-    // its place is not a count (a zero or <not supported> count is one).
-    if (readText(statPath_).find("Performance counter stats") == std::string::npos) {
+    // Usable means at least one event counted (a zero count is one). A
+    // heading or an error message is no count, an event marked unavailable
+    // is named as such, and an error perf adds after its counts fails them.
+    const StatReport REPORT = readStatReport(readText(statPath_));
+    if (REPORT.counted == 0 && REPORT.unavailable.empty()) {
       fail(ReadinessCause::UNUSABLE, statPath_ + " holds no counts: " + perfSaid(statPath_),
+           ReadinessStage::COMPLETION);
+    } else if (REPORT.counted == 0) {
+      std::string events;
+      for (const std::string& EVENT : REPORT.unavailable) {
+        events += (events.empty() ? "" : ", ") + EVENT;
+      }
+      fail(ReadinessCause::UNSUPPORTED,
+           statPath_ + " holds no count: perf counted none of its events here (" + events + ")",
+           ReadinessStage::COMPLETION);
+    } else if (REPORT.error) {
+      fail(ReadinessCause::UNUSABLE,
+           statPath_ +
+               " holds an error from perf after its counts, which therefore do not "
+               "count: " +
+               perfSaid(statPath_),
            ReadinessStage::COMPLETION);
     }
     return;

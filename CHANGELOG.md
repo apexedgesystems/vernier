@@ -310,8 +310,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   measured phase could go unprofiled and an incomplete capture passed. The
   phase starts once perf answers a ping on its `--control` fifo (a perf
   without it and `perf mem` keep the 200 ms), the stop waits for perf's
-  report, and a perf that ends early, needs SIGTERM or SIGKILL, or leaves no
-  counts fails the run (exit status 4).
+  report, and a perf that ends early, needs SIGTERM or SIGKILL, ends after
+  SIGINT otherwise than by it or with status 130 or 0, or counts no event (a
+  heading or an error is no count) fails the run (exit status 4).
 - **`--profile callgrind --profile-analyze` annotates the finished profile**
   -- the benchmark annotated the profile from its own hook before valgrind
   had written it; `bench run --profile-analyze` runs `callgrind_annotate`

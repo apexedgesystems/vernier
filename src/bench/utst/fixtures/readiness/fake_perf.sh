@@ -23,6 +23,16 @@
 #   ignore-int   ignores SIGINT; SIGTERM ends it without output
 #   hang         ignores SIGINT and SIGTERM (SIGKILL ends it)
 #   error-text   answers SIGINT with an error message instead of counts
+#   error-exit   answers SIGINT with a count, then "Error: final read
+#                failed", and exits 42
+#   error-after  the same, but exits 130 as a finished perf does
+#   heading-only answers SIGINT with stat's heading and no count
+#   none-counted answers SIGINT with stat's heading and every event
+#                <not supported> or <not counted>
+#   raise-int    answers SIGINT with the counts, then ends by SIGINT itself,
+#                as perf does, instead of exiting 130
+#   some-unsupported  answers SIGINT with the counts and one event
+#                <not supported>, as perf on the Pi reports branches:u
 
 PATH=/usr/bin:/bin
 export PATH
@@ -126,6 +136,20 @@ finish() {
   error-text)
     echo "Error: the fake perf could not read its counters" >&2
     ;;
+  heading-only)
+    echo "" >&2
+    echo " Performance counter stats for process id '$$':" >&2
+    echo "" >&2
+    ;;
+  none-counted)
+    echo "" >&2
+    echo " Performance counter stats for process id '$$':" >&2
+    echo "" >&2
+    echo "     <not supported>      cpu-cycles:u" >&2
+    echo "     <not counted> msec   task-clock" >&2
+    echo "" >&2
+    echo "       0.101234567 seconds time elapsed" >&2
+    ;;
   *)
     if [ -n "$out" ]; then
       printf 'fake perf data\n' >"$out"
@@ -136,8 +160,16 @@ finish() {
       echo " Performance counter stats for process id '$$':" >&2
       echo "" >&2
       echo "            66,055      cpu-cycles:u" >&2
+      echo "            51,605      instructions:u      #    0.78  insn per cycle" >&2
+      echo "             9,805      branches:u                                  (79.98%)" >&2
+      if [ "$mode" = "some-unsupported" ]; then
+        echo "     <not supported>      cache-misses:u" >&2
+      fi
       echo "" >&2
       echo "       0.101234567 seconds time elapsed" >&2
+      if [ "$mode" = "error-exit" ] || [ "$mode" = "error-after" ]; then
+        echo "Error: final read failed" >&2
+      fi
     fi
     ;;
   esac
@@ -149,6 +181,13 @@ on_int() {
     sleep 2
   fi
   finish
+  if [ "$mode" = "error-exit" ]; then
+    exit 42
+  fi
+  if [ "$mode" = "raise-int" ]; then
+    trap - INT
+    kill -INT $$
+  fi
   exit 130
 }
 

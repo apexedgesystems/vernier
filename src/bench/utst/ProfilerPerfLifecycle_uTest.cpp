@@ -226,6 +226,69 @@ TEST_F(PerfLifecycleTest, ErrorTextIsNotACount) {
           "/stat.txt holds no counts: perf: Error: the fake perf could not read its counters");
 }
 
+/**
+ * @test A perf that ends after SIGINT otherwise than a perf that has written
+ * its report ends fails the capture, whatever it wrote: here a count, then
+ * "Error: final read failed", and exit status 42.
+ */
+TEST_F(PerfLifecycleTest, OtherEndAfterSigintFails) {
+  const Window W = window("error-exit");
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.stage, ReadinessStage::COMPLETION);
+  EXPECT_EQ(W.failures[0].result.report.message,
+            "completion: unusable: perf ended (exit status 42) after SIGINT, not as a perf that "
+            "has written its report ends (by SIGINT, or exit status 130 or 0), so its output does "
+            "not count: perf: 0.101234567 seconds time elapsed | Error: final read failed");
+}
+
+/** @test The control: perf ending by SIGINT itself, as it does after its report, passes. */
+TEST_F(PerfLifecycleTest, EndBySigintKeepsCounts) {
+  const Window W = window("raise-int");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_NE(readText(W.folder + "/stat.txt").find("66,055"), std::string::npos);
+}
+
+/** @test stat's heading alone, with perf's usual exit status 130, is no count. */
+TEST_F(PerfLifecycleTest, HeadingAloneIsNoCount) {
+  const Window W = window("heading-only");
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.stage, ReadinessStage::COMPLETION);
+  const std::string MESSAGE = W.failures[0].result.report.message;
+  EXPECT_EQ(MESSAGE.rfind("completion: unusable: " + W.folder +
+                              "/stat.txt holds no counts: perf: Performance counter stats for "
+                              "process id '",
+                          0),
+            0U)
+      << MESSAGE;
+}
+
+/**
+ * @test Events perf marks <not supported> or <not counted> are named when
+ * none is counted, apart from missing data; one counted event among them
+ * passes, as on a CPU without one of the counters.
+ */
+TEST_F(PerfLifecycleTest, UnavailableEventsAreNamed) {
+  const Window NONE = window("none-counted");
+  ASSERT_EQ(NONE.failures.size(), 1U);
+  EXPECT_EQ(NONE.failures[0].result.report.message,
+            "completion: unsupported: " + NONE.folder +
+                "/stat.txt holds no count: perf counted none of its events here (cpu-cycles:u "
+                "<not supported>, task-clock <not counted>)");
+  ProfilerRegistry::instance().resetFailures();
+  const Window SOME = window("some-unsupported");
+  EXPECT_TRUE(SOME.failures.empty()) << SOME.failures.front().result.report.message;
+}
+
+/** @test An error perf prints after its counts fails them, even with exit status 130. */
+TEST_F(PerfLifecycleTest, ErrorAfterTheCountsFails) {
+  const Window W = window("error-after");
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.report.message,
+            "completion: unusable: " + W.folder +
+                "/stat.txt holds an error from perf after its counts, which therefore do not "
+                "count: perf: 0.101234567 seconds time elapsed | Error: final read failed");
+}
+
 /** @test Record mode's data file, confirmed by perf, passes; without it the capture fails. */
 TEST_F(PerfLifecycleTest, RecordNeedsItsConfirmedData) {
   const Window GOOD = window("ok", "record -g");
