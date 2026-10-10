@@ -1607,8 +1607,8 @@ public:
    * tracer with the window bound to this process, that thread and the calling
    * thread, then wait, as the window's WAIT_THREAD while the arm thread naps,
    * until each tracer has acknowledged its arm or failed, up to the plan's
-   * armWaitMs. Every tracer is launched before any is awaited, so no run copy
-   * is written while a tracer runs.
+   * armWaitMs. Every tracer is launched before the wait for their
+   * acknowledgements begins.
    */
   void beforeMeasure() {
     if (!enabled_) {

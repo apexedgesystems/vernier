@@ -705,9 +705,14 @@ the histogram holds the warm-up call too, 41 calls of 1,000 lines, and 8
 larger writes of 32 to 255 bytes, the test's own output, which GoogleTest and
 the harness write a line or two at a time. Nothing marks the measured repeats
 in such a trace, and the benchmark ran as root, as bpftrace does; it left
-nothing root-owned behind, since it wrote no files. Vernier's hooks are what
-confine a capture to the measured repeats. [BPF_SCRIPTS.md](../../docs/BPF_SCRIPTS.md#scripts)
-also shows how to attach to a benchmark that is already running.
+nothing root-owned behind, since it wrote no files. Vernier's hooks mark them:
+the measured repeats run inside the interval the tracer acknowledges, between
+its arm line and its stop line, while the script's own probes record from
+their attach to the stop, the waits around the repeats and what the harness
+does in them included
+([the capture window](../../docs/BPF_SCRIPTS.md#the-capture-window)).
+[BPF_SCRIPTS.md](../../docs/BPF_SCRIPTS.md#scripts) also shows how to attach
+to a benchmark that is already running.
 
 ## What Should Reproduce
 
@@ -933,9 +938,9 @@ ctest --test-dir build -L bpftrace
 ctest --test-dir build -L demo
 ```
 
-On this rig, at this page's revision, `-L bpftrace` ran its 1 test and
-`-L demo` its 60, and every test passed; the traced test counted 40,000 of
-40,000 writes. The demo's timing tests are not registered: what they measure
+On this rig, at this page's revision, both commands passed every test they
+ran, and the traced test counted 40,000 of 40,000 writes. The demo's timing
+tests are not registered: what they measure
 belongs to the machine they run on. This repository has no
 continuous-integration lane on the reference board, so before a release the
 page's commands are run on the rig by hand, and the page and its reference CSV
