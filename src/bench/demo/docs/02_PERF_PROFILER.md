@@ -687,7 +687,8 @@ To run only the three counting tests, pin them to one core, so that a hybrid
 processor keeps them on the kind of core whose counter they read:
 
 ```bash
-taskset -c 3 ./build/bin/tests/TestDemoExamples --gtest_filter='JoinInstructionTest.*:FilterBranchTest.*'
+taskset -c 3 ./build/bin/tests/TestDemoJoin --gtest_filter='JoinInstructionTest.*'
+taskset -c 3 ./build/bin/tests/TestDemoFilter --gtest_filter='FilterBranchTest.*'
 ```
 
 Every test should pass. Where the counter cannot be opened (a container's
