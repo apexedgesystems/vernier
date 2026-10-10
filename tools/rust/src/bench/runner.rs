@@ -1489,18 +1489,32 @@ fn escape_percent(path: &str) -> String {
 }
 
 /// The error count of a compute-sanitizer report, from its last summary line:
-/// `ERROR SUMMARY: N error(s)` (memcheck, synccheck, initcheck), or
-/// racecheck's `RACECHECK SUMMARY: H hazard(s) displayed (E error(s), W
-/// warning(s))`, whose errors count and whose warnings do not. `None` when the
-/// report has neither in that form (a report cut short, or a tool that stopped
-/// before summarizing): nothing is counted from a line read any other way.
+/// `ERROR SUMMARY: N error(s)` and nothing after it (memcheck, synccheck,
+/// initcheck), or racecheck's `RACECHECK SUMMARY: H hazard(s) displayed (E
+/// error(s), W warning(s))`, whose errors count and whose warnings do not.
+/// The line the print limit adds after the total, `ERROR SUMMARY: N errors
+/// were not printed...`, counts what was left out and is not a total. `None`
+/// when the report has no summary in that form (a report cut short, or a
+/// tool that stopped before summarizing): nothing is counted from a line read
+/// any other way.
 fn sanitizer_error_count(report: &str) -> Option<u64> {
     report.lines().rev().find_map(|line| {
         if let Some((_, rest)) = line.split_once("RACECHECK SUMMARY:") {
             return racecheck_errors(rest);
         }
-        leading_count(line.split_once("ERROR SUMMARY:")?.1, "error")
+        whole_count(line.split_once("ERROR SUMMARY:")?.1, "error")
     })
+}
+
+/// N of @p text when it is "N <noun>" or "N <noun>s" and nothing else
+/// (spaces around it aside).
+fn whole_count(text: &str, noun: &str) -> Option<u64> {
+    let count = leading_count(text, noun)?;
+    let rest = text
+        .trim_start()
+        .trim_start_matches(|c: char| c.is_ascii_digit());
+    let rest = rest.trim_start().strip_prefix(noun)?;
+    matches!(rest.trim_end(), "" | "s").then_some(count)
 }
 
 /// N of "N <noun>" or "N <noun>s" at the start of @p text (after spaces).
@@ -2104,8 +2118,9 @@ mod tests {
 
     /// @test A report's error count comes from its last summary line, in
     /// memcheck's, synccheck's and initcheck's form or in racecheck's (whose
-    /// warnings do not count), and a report without one, or with a summary in
-    /// any other form, has no count.
+    /// warnings do not count), the print limit's line after it not counted,
+    /// and a report without one, or with a summary in any other form, has no
+    /// count.
     #[test]
     fn sanitizer_error_count_reads_the_summary() {
         let head = "========= COMPUTE-SANITIZER\n";
@@ -2116,6 +2131,22 @@ mod tests {
             ("========= Invalid __global__ write of size 4 bytes\n", None),
             ("========= ERROR SUMMARY: many errors\n", None),
             ("========= ERROR SUMMARY: 3 warnings\n", None),
+            // The print limit's line after the total (the report case of the
+            // Compute Sanitizer walkthrough's check), and that line alone.
+            (
+                "========= ERROR SUMMARY: 259 errors\n========= ERROR SUMMARY: 159 errors \
+                 were not printed. Use --print-limit option to adjust the number of printed \
+                 errors\n",
+                Some(259),
+            ),
+            (
+                "========= ERROR SUMMARY: 159 errors were not printed. Use --print-limit \
+                 option to adjust the number of printed errors\n",
+                None,
+            ),
+            ("========= ERROR SUMMARY: 3 errors (and more)\n", None),
+            ("========= ERROR SUMMARY: 3 errorsx\n", None),
+            ("========= ERROR SUMMARY: 2 errors   \n", Some(2)),
             (
                 "========= RACECHECK SUMMARY: 0 hazards displayed (0 errors, 0 warnings)\n",
                 Some(0),

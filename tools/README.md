@@ -281,14 +281,14 @@ signal `bench run` was started with ignored stays ignored).
 tool ends with status 5 when it reports errors, whatever the benchmark itself
 returned, and otherwise with the benchmark's own status. `bench run` reads
 this run's `sanitizer.log` to tell them apart. Errors counted by its summary
-fail the run, and the count printed is the summary's: the `ERROR SUMMARY`
-line of memcheck, synccheck and initcheck, or racecheck's `RACECHECK SUMMARY:
-H hazards displayed (E errors, W warnings)`, whose errors count and whose
-warnings do not. With no errors counted, the status is the benchmark's own,
-5 included. A report that
-holds only the tool's own `Error:` line fails the run as `collection:`, a
-missing report or one without its summary as `completion:`, and nothing is
-counted.
+fail the run, and the count printed is the summary's: the
+`ERROR SUMMARY: N errors` line of memcheck, synccheck and initcheck (not the
+`ERROR SUMMARY: N errors were not printed` line the print limit adds after
+it), or racecheck's `RACECHECK SUMMARY: H hazards displayed (E errors, W
+warnings)`, whose errors count and whose warnings do not. With no errors
+counted, the status is the benchmark's own, 5 included. A report that holds
+only the tool's own `Error:` line fails the run as `collection:`, a missing
+report or one without its summary as `completion:`, and nothing is counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 

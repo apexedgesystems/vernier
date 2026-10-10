@@ -1800,6 +1800,10 @@ case "${FAKE_SANITIZER:-clean}" in
       '    and Write access at k(int *, int)+0x70 [2 hazards]' '' \
       'RACECHECK SUMMARY: 2 hazards displayed (1 error, 1 warning)'
     exit "$ec" ;;
+  print-limit)
+    report 'Invalid __global__ write of size 4 bytes' 'ERROR SUMMARY: 259 errors' \
+      'ERROR SUMMARY: 159 errors were not printed. Use --print-limit option to adjust the number of printed errors'
+    exit "$ec" ;;
   startup) report 'Error: Target application terminated before first instrumented API call'; exit 255 ;;
   truncated) report 'Invalid __global__ write of size 4 bytes'; exit "${FAKE_SANITIZER_EXIT:-5}" ;;
   no-report) exit 5 ;;
@@ -3231,6 +3235,22 @@ fn run_compute_sanitizer_findings() {
     assert!(
         err.ends_with(&format!(
             "Error: compute-sanitizer reported 1 error in the benchmark; the report is \
+             {SANITIZER_REPORT} (the tool exited with status 5)\n"
+        )),
+        "{err}"
+    );
+}
+
+/// @test The line the print limit adds after the total does not stand for
+/// it: a report of 259 errors, 159 of them not printed, fails the run with
+/// 259 (the Compute Sanitizer walkthrough's report case).
+#[test]
+fn run_compute_sanitizer_print_limit() {
+    let (code, _, err, _) = run_sanitizer("print-limit", &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.ends_with(&format!(
+            "Error: compute-sanitizer reported 259 errors in the benchmark; the report is \
              {SANITIZER_REPORT} (the tool exited with status 5)\n"
         )),
         "{err}"
