@@ -222,7 +222,8 @@ directory.
 `--profile X` dispatches to whichever backend self-registered under that
 name; `bench doctor` lists them all with their environment readiness
 (`--json` for CI capability records, `--require a,b` to gate a profile
-lane on the backends it needs).
+lane on the backends it needs, `--profile X` with its options to check one
+request).
 
 | Backend             | Layer | Wraps                                         |
 | ------------------- | ----- | --------------------------------------------- |
@@ -234,7 +235,7 @@ lane on the backends it needs).
 | `massif`            | CPU   | valgrind massif (heap timeline, ~20x)         |
 | `memcheck`          | CPU   | valgrind memcheck (errors / leaks)            |
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)   |
-| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)  |
+| `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)   |
 | `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
 | `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)              |

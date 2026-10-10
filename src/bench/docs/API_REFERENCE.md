@@ -74,6 +74,12 @@ PERF_GUARD(varName)                   // Create scoped PerfCase
 PERF_MAIN()                              // Main function with CSV export
 ```
 
+`PERF_MAIN()` and `PERF_GPU_MAIN()` return the tests' status, or 4
+(`BENCH_PROFILE_FAILED_EXIT_CODE`) when the tests passed and the requested
+`--profile` failed, after a report of each failure. A benchmark with its own
+`main()` gets the same status from `ProfilerRegistry::finishRun()`; the
+[advanced guide](ADVANCED_GUIDE.md#perf_main-macro) shows the call.
+
 ### PerfCase
 
 Core CPU benchmark harness.
@@ -191,7 +197,7 @@ struct PerfConfig {
   std::string artifactRoot;            // Profiler artifact directory
   int profileFrequency = 10000;        // Rate asked of gperf; set too late to take effect (see ProfilerGperf)
   bool profileAnalyze = false;         // Auto-run analysis after profiling
-  int profileTestTimeoutSecs = 0;      // Watchdog seconds per measured()/throughputLoop() loop under --profile (0 means 300); contentionRun() and GPU runs are not covered
+  int profileTestTimeoutSecs = -1;     // Watchdog seconds per measured()/throughputLoop() loop under --profile: -1 not given (300 under --profile), 0 off; contentionRun() and GPU runs are not covered
 
   bool quickMode = false;              // Apply reduced cycles/repeats
 
@@ -253,7 +259,20 @@ Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 
 ```cpp
 void attachProfilerHooks(PerfCase& perf, const PerfConfig& cfg);
+PerfCase makePerfCaseWithProfiler(std::string testName, const PerfConfig& cfg);
 ```
+
+`--profile` profiles the cases that create a profiler: `PERF_GUARD` does it
+for its case, `attachProfilerHooks()` for a `PerfCase` you construct, and
+`makePerfCaseWithProfiler()` constructs the case and attaches it (on the GPU,
+`PERF_GPU_GUARD` and `attachGpuProfilerHooks()`). A bare `PerfCase`, or one
+built with `PERF_GUARD_NOPROFILE`, gets none, so the backend does nothing
+around its measured phase;
+a tool that runs the whole process still records it. The request is checked
+when the profiler is created: one that cannot run fails the run (exit status
+4 when the tests pass), and a run in which no case created a profiler ends
+with a notice that nothing was profiled. See the
+[advanced guide](ADVANCED_GUIDE.md#attachprofilerhooks-function).
 
 **Supported profilers** (each self-registers via the backend registry):
 
@@ -267,7 +286,7 @@ CPU:
 - `massif` - valgrind massif (heap usage timeline, ~20x overhead)
 - `memcheck` - valgrind memcheck (memory errors and leaks)
 - `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
-- `offcpu` - bpftrace finish_task_switch (where threads spend blocked time)
+- `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
 - `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
 - `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
 
@@ -275,6 +294,7 @@ GPU:
 
 - `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
   canonical nsys stats reports)
+- `ncu` - NVIDIA Nsight Compute (per-kernel analysis)
 - `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
   / synccheck / initcheck)
 - `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
@@ -292,8 +312,7 @@ Adjacent in-process instrumentation:
 
 ```cpp
 PERF_TEST(MyComponent, Throughput) {
-  PERF_GUARD(perf);
-  ub::attachProfilerHooks(perf, ub::detail::getPerfConfig());
+  PERF_GUARD(perf);  // creates the case and attaches the --profile profiler
 
   perf.warmup([&]{ /* ... */ });
   auto result = perf.throughputLoop([&]{ /* ... */ }, "op");
@@ -543,9 +562,14 @@ benchmark process for the measured phase only; `--profile-args` picks the mode:
 # Writes: MyComponent.Throughput.perf/perf.data
 ```
 
-perf needs time to attach before it samples, and the backend gives it 200 ms; a
-measured phase of a few milliseconds can leave `perf.data` without samples,
-which `--target-time` (or more `--cycles`) avoids.
+The measured phase starts once perf answers a `ping` on its `--control` fifo,
+which perf does from its main loop with its counters on, so the phase is
+profiled from its first iteration however long perf takes to start
+(`perf record` takes longer than `perf stat`). The wait is bounded at 5 s: a
+perf that has not answered by then is stopped and the request fails. A perf
+without `--control`, which the doctor's perf row reports, and `perf mem` start
+after a fixed 200 ms instead. A measured phase of a few milliseconds holds few
+samples, which `--target-time` (or more `--cycles`) avoids.
 
 **Analysis** (of a `record` run):
 
@@ -608,15 +632,16 @@ BPF-based kernel tracing.
 
 **Features:**
 
-- Off-CPU analysis
 - Syscall tracing
 - Custom probe points
+- Off-CPU time has a backend of its own, `offcpu`
 
 **Usage:**
 
 ```bash
-# Requires root or CAP_BPF capability
-sudo ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
+# bpftrace runs only as root: run the benchmark as root, or set BENCH_SUDO=1
+# with a sudoers grant for bpftrace and kill, which runs only the tracer as root
+BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
 ```
 
 ### ProfilerRAPL
@@ -650,9 +675,13 @@ NVIDIA Nsight Compute integration.
 **Usage:**
 
 ```bash
-# Requires NVIDIA driver with profiling support
-./MyGpuTest_PTEST --profile nsight --gtest_filter="*Kernel"
+# nsys and ncu record a process only when they start it: bench run starts the
+# benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
+bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
 ```
+
+Run directly with `--profile nsight`, without a tool around it, the run fails
+(exit status 4 when the tests pass) and prints the command that captures it.
 
 ---
 
@@ -778,16 +807,16 @@ time; no `--profile` flag required.
 
 | Flag                     | Type   | Default | Description                                                                                                                                                                                                                                 |
 | ------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|compute-sanitizer\|rocprof                                                                                               |
-| `--profile-args ARGS`    | string | -       | Profiler-specific arguments                                                                                                                                                                                                                 |
+| `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                     |
+| `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                         |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
-| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 means 300. `contentionRun()` and GPU measurements are not covered                                                                           |
+| `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off, and a value that is not a whole number from 0 exits 2. `contentionRun()` and GPU measurements are not covered                 |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |
 | `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
 | `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |
 | `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                   |
 | `--profile-frequency N`  | int    | 10000   | Rate asked of gperf, the only backend that reads it; set too late to take effect, see [ProfilerGperf](#profilergperf)                                                                                                                       |
-| `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                                                                                                                           |
+| `--profile-analyze`      | bool   | false   | Run the requested profile's analysis after profiling: gperf's pprof report in the benchmark; for callgrind, `bench run --profile-analyze` annotates the profile after valgrind has written it                                               |
 | `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                                                                                                               |
 
 ### GPU-Specific Flags

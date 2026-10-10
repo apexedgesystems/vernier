@@ -5,6 +5,10 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-26, written for the Vernier 1.0.4 release; captured from
 the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
+Step 2's console output and the run quoted first under If It Does Not Match
+come from 2026-10-03 (UTC), a later tree at the same version: its run executed
+30,407,155 instructions, where the reference run, whose profile steps 3 and 5
+read, executed 29,908,412.
 
 ## Overview
 
@@ -33,8 +37,8 @@ under `valgrind --tool=callgrind` and writes one profile of the whole run to
 `bench-out/<binary>.callgrind/callgrind.out` (`--profile-output-dir` replaces
 `bench-out`). The CSV's `profileDir` column names that folder, and
 `callgrind_annotate` reads the file. Running the binary with
-`--profile callgrind` without `bench run` collects nothing; see
-[If It Does Not Match](#if-it-does-not-match).
+`--profile callgrind` without `bench run` collects nothing and fails the run
+(exit status 4); see [If It Does Not Match](#if-it-does-not-match).
 
 **Needs:** valgrind, from the rig document's
 [package list](../../docs/rigs/RIG_PI4.md#2-one-time-setup). Counts by source
@@ -117,33 +121,34 @@ Captured output, trimmed where marked:
 Running: valgrind --tool=callgrind --callgrind-out-file=bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind
 ...
 [ RUN      ] CallgrindProfiler.JoinV0
-[CallgrindProfiler.JoinV0]  52808.600 us/call  CV=0.0%  ~19 calls/s  (p10=52808.600 p90=52808.600 sd=0.000)
+[CallgrindProfiler.JoinV0]  50994.600 us/call  CV=0.0%  ~20 calls/s  (p10=50994.600 p90=50994.600 sd=0.000)
 
 === Callgrind Profile ===
 Output: bench-out/BenchDemo_07_CallgrindProfiler.callgrind
-   Run with --profile-analyze for automatic annotation
-   Or manually: callgrind_annotate bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out
-   Or: kcachegrind bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out
+   bench run checks the profile after valgrind has written it
 
-[       OK ] CallgrindProfiler.JoinV0 (850 ms)
+[       OK ] CallgrindProfiler.JoinV0 (980 ms)
 [ RUN      ] CallgrindProfiler.JoinV1
-[CallgrindProfiler.JoinV1]  1788.000 us/call  CV=0.0%  ~559 calls/s  (p10=1788.000 p90=1788.000 sd=0.000)
+[CallgrindProfiler.JoinV1]  1783.500 us/call  CV=0.0%  ~561 calls/s  (p10=1783.500 p90=1783.500 sd=0.000)
 ...
-==112452== Events    : Ir
-==112452== Collected : 29908412
-==112452==
-==112452== I   refs:      29,908,412
+==156171== Events    : Ir
+==156171== Collected : 30407155
+==156171==
+==156171== I   refs:      30,407,155
+[bench] callgrind wrote bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out (462770 bytes)
 ```
 
 `bench run` put `valgrind --tool=callgrind` in front of the binary and told the
 benchmark where the profile goes, so the backend reports that folder after each
-measured test: one file for the whole run, written when the process exits. The
-last lines are valgrind's own: this run executed 29,908,412 instructions.
+measured test: one file for the whole run, written when the process exits.
+valgrind's own lines follow: this run executed 30,407,155 instructions. The
+last line is `bench run`'s, after valgrind exited: it checks that the profile
+was written and names its size, and fails the run when it was not.
 
 `--cycles 10 --repeats 1` because a count needs no repeats to average: the same
 work counts the same when you run it again (step 5). It also keeps the run
-short. Under callgrind V0 took 52,808.6 us per call against 1017.2 us natively,
-52 times slower, and V1 94 times slower; at that speed the default of 10,000
+short. Under callgrind V0 took 50,994.6 us per call against 1017.2 us natively,
+50 times slower, and V1 94 times slower; at that speed the default of 10,000
 calls per repeat would take almost nine minutes per repeat of V0. Each test
 calls its version twelve times: once to check the answer, once to warm up
 (`--warmup` defaults to 1) and the ten measured calls.
@@ -375,13 +380,22 @@ up to 830 instructions (0.04%) with the length of the directory it ran from.
 
 ## If It Does Not Match
 
-- **`[callgrind] not running under valgrind; instrumentation skipped.`** The
-  binary was run with `--profile callgrind` directly, and nothing counted it.
-  Use step 2's `bench run`, or run the valgrind command that message prints.
+- **`[FAIL] Profiler 'callgrind': missing: callgrind collects only when
+valgrind's callgrind runs the process, and valgrind does not run this one`,
+  and the run exits with status 4.** The binary was run with
+  `--profile callgrind` directly, and nothing counted it. Use step 2's
+  `bench run`, or run the valgrind command that line prints:
+
+  ```
+     Wrap it: valgrind --tool=callgrind --instr-atstart=no --callgrind-out-file=./callgrind.out <this-binary> --profile callgrind [...]; or run it with bench run --profile callgrind, which wraps it.
+  ```
+
   Under that command the benchmark switches counting on only around each
   measured window, so the profile holds the measured calls and the harness's
-  work around them and not the rest of the process: for `JoinV0`, 21,332,027
-  instructions for its ten measured calls.
+  work around them and not the rest of the process: for `JoinV0` alone
+  (`--gtest_filter=CallgrindProfiler.JoinV0`), 21,312,906 instructions for its
+  ten measured calls.
+
 - **Functions named `???` and no source lines.** The binary has no line tables:
   it was stripped, or the example was built without its `-g`.
 - **A line in step 3 reports more than 100%.** That is callgrind's call graph

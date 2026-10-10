@@ -10,9 +10,12 @@
  * contexts, and remove the backends again: one decision serves the doctor
  * rows, the selected row and construction, zero-argument checks never vouch
  * for more than they verified, and decisions are memoized per request and
- * context until resetReadiness().
+ * context until resetReadiness(). The outcome tests pin the run's result: a
+ * failed request is recorded once, finishRun() reports it and returns 4 when
+ * the tests passed, and a run that created no profiler says so.
  */
 
+#include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
@@ -25,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -37,6 +41,7 @@ namespace {
 using vernier::bench::EnvReport;
 using vernier::bench::LaunchContext;
 using vernier::bench::PerfConfig;
+using vernier::bench::ProfileFailure;
 using vernier::bench::Profiler;
 using vernier::bench::ProfilerRegistry;
 using vernier::bench::ReadinessCause;
@@ -288,37 +293,44 @@ TEST(ProfilerReadinessRouting, CollectionErrorSkipsTheFactory) {
   const auto FIRST = ProfilerRegistry::instance().make(backend.name(), CFG, "T.A", CTX);
   const auto SECOND = ProfilerRegistry::instance().make(backend.name(), CFG, "T.B", CTX);
   const std::string ERR = capture.text();
-  EXPECT_EQ(FIRST->toolName(), backend.name());
+  EXPECT_EQ(FIRST->toolName(), "") << "a no-op for a failed request names no profiler";
   EXPECT_EQ(FIRST->artifactDir(), "") << "a no-op, not the backend's profiler";
   EXPECT_EQ(backend.calls()->factories.load(), 0);
   EXPECT_EQ(backend.calls()->checks.load(), 1);
   const std::string EXPECTED = "[FAIL] Profiler '" + backend.name() +
-                               "': denied: the tool refused\n   grant it\n   Falling back to "
-                               "no-op (measurements will proceed without profiling).\n";
+                               "': denied: the tool refused\n   grant it\n   Nothing is collected "
+                               "for this request; the run will fail (exit status 4 if the tests "
+                               "pass).\n";
   EXPECT_NE(ERR.find(EXPECTED), std::string::npos) << ERR;
   EXPECT_EQ(ERR.find(EXPECTED), ERR.rfind(EXPECTED)) << "printed more than once:\n" << ERR;
 }
 
-/** @test An analysis-stage error is printed once and collection still runs. */
+/** @test An analysis-stage error is printed once, recorded, and collection still runs. */
 TEST(ProfilerReadinessRouting, AnalysisErrorStillConstructs) {
   ScopedBackend backend("analysis");
   backend.readiness([](const ReadinessRequest&) {
     return readinessResult(ReadinessCause::MISSING, "no analyzer", "install one",
                            ReadinessStage::ANALYSIS);
   });
+  ProfilerRegistry::instance().resetFailures();
   StderrCapture capture;
   const auto PROFILER = ProfilerRegistry::instance().make(backend.name(), configFor(backend.name()),
                                                           "T.A", contextWith());
   const std::string ERR = capture.text();
+  const std::vector<ProfileFailure> FAILED = ProfilerRegistry::instance().failures();
+  ProfilerRegistry::instance().resetFailures();
+  ASSERT_EQ(FAILED.size(), 1U) << "the analysis error is the run's failure";
+  EXPECT_EQ(FAILED[0].result.stage, ReadinessStage::ANALYSIS);
   EXPECT_EQ(PROFILER->artifactDir(), "fake-artifacts");
   EXPECT_EQ(backend.calls()->factories.load(), 1);
   EXPECT_NE(ERR.find("[FAIL] Profiler '" + backend.name() + "': analysis: missing: no analyzer"),
             std::string::npos)
       << ERR;
-  EXPECT_NE(ERR.find("Collection proceeds; the analysis is skipped and the raw capture is kept."),
+  EXPECT_NE(ERR.find("   Collection proceeds and keeps the raw capture; the analysis is skipped "
+                     "and the run will fail (exit status 4 if the tests pass).\n"),
             std::string::npos)
       << ERR;
-  EXPECT_EQ(ERR.find("Falling back to no-op"), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find("Nothing is collected"), std::string::npos) << ERR;
 }
 
 /** @test A warning is printed once per decision and every case is still profiled. */
@@ -390,6 +402,17 @@ TEST(ProfilerReadinessRouting, MemoizedPerRequestAndContext) {
   EXPECT_EQ(backend.calls()->checks.load(), 4) << "a declared input changed";
   MAKE(CFG, contextWith({{"PATH", "/a"}, {"BENCH_SUDO", "1"}}));
   EXPECT_EQ(backend.calls()->checks.load(), 5) << "the privilege opt-in changed";
+  PerfConfig analyzed = CFG;
+  analyzed.profileAnalyze = true;
+  MAKE(analyzed, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 6) << "a promised analysis is another request";
+  PerfConfig scripted = CFG;
+  scripted.bpfScripts = {"one"};
+  MAKE(scripted, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 7) << "a script selection is another request";
+  MAKE(analyzed, contextWith({{"PATH", "/a"}}));
+  MAKE(scripted, contextWith({{"PATH", "/a"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 7) << "each is kept once decided";
 }
 
 /** @test A repair is seen only after resetReadiness(), the one reset boundary. */
@@ -470,12 +493,15 @@ TEST(ProfilerReadinessRouting, ThrowingCheckIsInternalError) {
             "");
 }
 
-/** @test An unknown backend is an error in checkRequest(), as in runCheck(). */
+/** @test An unknown backend is an error in checkRequest(), as in runCheck(), naming the others. */
 TEST(ProfilerReadinessRouting, UnknownBackendIsError) {
   const ReadinessResult R = ProfilerRegistry::instance().checkRequest(
       requestOf("not-a-real-backend", ReadinessScope::PREFLIGHT), contextWith());
   EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::MISSING);
   EXPECT_EQ(R.report.message, "unknown profiler 'not-a-real-backend'");
+  EXPECT_EQ(R.report.hint.rfind("Available: ", 0), 0U) << R.report.hint;
+  EXPECT_NE(R.report.hint.find("gperf, "), std::string::npos) << R.report.hint;
 }
 
 /** @test The run prints exactly the selected doctor row's report for the same request. */
@@ -606,12 +632,253 @@ TEST(ProfilerReadinessRouting, AnalysisStageErrorFailsEveryViewAndItsTwinIsOk) {
   const std::string ERR = capture.text();
   EXPECT_NE(ERR.find("[FAIL] Profiler '" + backend.name() +
                      "': analysis: missing: no analyzer\n"
-                     "   install one\n   Collection proceeds;"),
+                     "   install one\n   Collection proceeds and keeps the raw capture;"),
             std::string::npos)
       << ERR;
   EXPECT_EQ(PROFILER->artifactDir(), "fake-artifacts") << "collection still runs";
   EXPECT_EQ(QUIET->artifactDir(), "fake-artifacts");
   EXPECT_EQ(ERR.find("collects"), std::string::npos) << "the Ok twin prints nothing";
+}
+
+/* ----------------------------- Run Outcome ----------------------------- */
+
+/** @brief Empties the process's run outcome before and after each test. */
+class ProfilerOutcomeTest : public ::testing::Test {
+protected:
+  void SetUp() override { ProfilerRegistry::instance().resetFailures(); }
+  void TearDown() override { ProfilerRegistry::instance().resetFailures(); }
+};
+
+/** @test A failure while the tests pass gives status 4; the tests' own failure wins. */
+TEST_F(ProfilerOutcomeTest, TestFailureWins) {
+  ScopedBackend backend("outcome-status");
+  backend.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::READY, "ok", ""); });
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const PerfConfig CFG = configFor(backend.name());
+  StderrCapture capture;
+  reg.reportFailure(
+      backend.name(), "T.F",
+      readinessResult(ReadinessCause::MISSING, "no output", "rerun", ReadinessStage::COMPLETION));
+  EXPECT_EQ(reg.finishRun(CFG, 0, 1), 4);
+  EXPECT_EQ(reg.finishRun(CFG, 1, 1), 1);
+  const std::string ERR = capture.text();
+  EXPECT_NE(ERR.find("\n[FAIL] Profiler '" + backend.name() +
+                     "' (T.F): completion: missing: no output\n   rerun\n   The run will fail "
+                     "(exit status 4 if the tests pass).\n"),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("[profile] --profile " + backend.name() +
+                     " failed; the run exits with status 4:\n[profile]   " + backend.name() +
+                     " (T.F): completion: missing: no output\n"),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("[profile] --profile " + backend.name() +
+                     " failed; the run exits with the tests' status 1:\n"),
+            std::string::npos)
+      << ERR;
+}
+
+/** @test Nothing recorded: the tests' status, and nothing printed without a request. */
+TEST_F(ProfilerOutcomeTest, NothingFailedKeepsTheTestsStatus) {
+  StderrCapture capture;
+  EXPECT_EQ(ProfilerRegistry::instance().finishRun(PerfConfig{}, 0, 3), 0);
+  EXPECT_EQ(ProfilerRegistry::instance().finishRun(PerfConfig{}, 1, 3), 1);
+  EXPECT_EQ(capture.text(), "");
+}
+
+/** @test A decision's error is recorded once for every case it serves; a warning is not. */
+TEST_F(ProfilerOutcomeTest, RecordedOncePerDecision) {
+  ScopedBackend denied("outcome-denied");
+  denied.readiness([](const ReadinessRequest&) {
+    return readinessResult(ReadinessCause::DENIED, "refused", "grant it");
+  });
+  ScopedBackend caveat("outcome-caveat");
+  caveat.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::CAVEAT, "short", ""); });
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  StderrCapture quiet;
+  for (const char* test : {"T.A", "T.B", "T.C"}) {
+    (void)reg.make(denied.name(), configFor(denied.name()), test, contextWith());
+    (void)reg.make(caveat.name(), configFor(caveat.name()), test, contextWith());
+    (void)reg.make("no-such-profiler", configFor("no-such-profiler"), test, contextWith());
+  }
+  const std::vector<ProfileFailure> FAILED = reg.failures();
+  ASSERT_EQ(FAILED.size(), 2U);
+  EXPECT_EQ(FAILED[0].backend, denied.name());
+  EXPECT_EQ(FAILED[0].test, "") << "a decision concerns the whole request";
+  EXPECT_EQ(FAILED[0].result.stage, ReadinessStage::COLLECTION);
+  EXPECT_EQ(FAILED[0].result.cause, ReadinessCause::DENIED);
+  EXPECT_EQ(FAILED[0].result.report.message, "denied: refused");
+  EXPECT_EQ(FAILED[1].backend, "no-such-profiler") << "recorded when asked, not only at the end";
+  EXPECT_EQ(FAILED[1].result.cause, ReadinessCause::MISSING);
+}
+
+/** @test A factory that still builds nothing is printed once and recorded as unusable. */
+TEST_F(ProfilerOutcomeTest, UnavailableFactoryIsRecorded) {
+  ScopedBackend backend("outcome-null");
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  reg.registerReadinessBackend(
+      backend.name(),
+      [](const ReadinessRequest&, const ReadinessContext&) {
+        return readinessResult(ReadinessCause::READY, "ok", "");
+      },
+      [](const PerfConfig&, const std::string&, const ReadinessResult&) {
+        return std::unique_ptr<Profiler>{};
+      },
+      "build it with the tool");
+  StderrCapture capture;
+  const auto FIRST = reg.make(backend.name(), configFor(backend.name()), "T.A", contextWith());
+  const auto SECOND = reg.make(backend.name(), configFor(backend.name()), "T.B", contextWith());
+  const std::string ERR = capture.text();
+  EXPECT_EQ(FIRST->toolName(), "");
+  const std::string NOTICE = "[FAIL] Profiler '" + backend.name() +
+                             "': unusable: " + backend.name() +
+                             " is unavailable on this platform\n   build it with the tool\n"
+                             "   Nothing is collected for this request;";
+  EXPECT_NE(ERR.find(NOTICE), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find(NOTICE), ERR.rfind(NOTICE)) << "printed more than once:\n" << ERR;
+  const std::vector<ProfileFailure> FAILED = reg.failures();
+  ASSERT_EQ(FAILED.size(), 1U);
+  EXPECT_EQ(FAILED[0].result.cause, ReadinessCause::UNUSABLE);
+}
+
+/** @test A hook's failure is recorded and printed once per case and message; a non-error is not. */
+TEST_F(ProfilerOutcomeTest, HookFailuresOncePerCaseAndMessage) {
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const ReadinessResult LOST =
+      readinessResult(ReadinessCause::MISSING, "no output", "", ReadinessStage::COMPLETION);
+  StderrCapture capture;
+  reg.reportFailure("b", "T.A", LOST);
+  reg.reportFailure("b", "T.A", LOST);
+  reg.reportFailure("b", "T.B", LOST);
+  reg.reportFailure(
+      "b", "T.A",
+      readinessResult(ReadinessCause::UNUSABLE, "truncated", "", ReadinessStage::COMPLETION));
+  reg.reportFailure("b", "T.A", readinessResult(ReadinessCause::CAVEAT, "short", ""));
+  const std::string ERR = capture.text();
+  EXPECT_EQ(reg.failures().size(), 3U);
+  const std::string LINE = "[FAIL] Profiler 'b' (T.A): completion: missing: no output\n";
+  EXPECT_NE(ERR.find(LINE), std::string::npos) << ERR;
+  EXPECT_EQ(ERR.find(LINE), ERR.rfind(LINE)) << "printed more than once:\n" << ERR;
+  EXPECT_EQ(ERR.find("short"), std::string::npos) << "a warning is not a failure:\n" << ERR;
+}
+
+/** @test Reports from many threads are all recorded, each once. */
+TEST_F(ProfilerOutcomeTest, ConcurrentReportsAllRecorded) {
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  StderrCapture quiet;
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&reg, i] {
+      for (int j = 0; j < 50; ++j) {
+        reg.reportFailure(
+            "b", "T." + std::to_string(i),
+            readinessResult(ReadinessCause::MISSING, "no output", "", ReadinessStage::COMPLETION));
+        reg.reportFailure("b", "", readinessResult(ReadinessCause::MISSING, "shared", ""));
+      }
+    });
+  }
+  for (std::thread& t : threads) {
+    t.join();
+  }
+  EXPECT_EQ(reg.failures().size(), 9U);
+}
+
+/** @test An unknown name fails the run at its end, even when no case asked for a profiler. */
+TEST_F(ProfilerOutcomeTest, UnknownNameFailsAtTheEnd) {
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  reg.resetReadiness(); // the notice is printed once per process until this reset
+  StderrCapture capture;
+  EXPECT_EQ(reg.finishRun(configFor("no-such-profiler"), 0, 1), 4);
+  const std::string ERR = capture.text();
+  EXPECT_NE(ERR.find("[FAIL] Profiler 'no-such-profiler': unknown profiler 'no-such-profiler'\n"
+                     "   Available: "),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("[profile] --profile no-such-profiler failed; the run exits with status 4:\n"
+                     "[profile]   no-such-profiler: unknown profiler 'no-such-profiler'\n"),
+            std::string::npos)
+      << ERR;
+  ASSERT_EQ(reg.failures().size(), 1U);
+  reg.resetFailures();
+  StderrCapture quiet;
+  EXPECT_EQ(reg.finishRun(configFor("cupti"), 0, 1), 0) << "cupti needs no --profile";
+  EXPECT_TRUE(reg.failures().empty());
+}
+
+/** @test A run that ran tests and created no profiler says so; one that created one is silent. */
+TEST_F(ProfilerOutcomeTest, NoProfilerCreatedNotice) {
+  ScopedBackend backend("outcome-created");
+  backend.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::READY, "ok", ""); });
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const PerfConfig CFG = configFor(backend.name());
+  const std::string NOTICE = "[profile] --profile " + backend.name() +
+                             ": no case that ran was built with the profiler guard, so nothing "
+                             "was profiled.\n";
+  {
+    StderrCapture capture;
+    EXPECT_EQ(reg.finishRun(CFG, 0, 2), 0) << "a notice, not a failure";
+    EXPECT_EQ(reg.finishRun(CFG, 0, 0), 0);
+    const std::string ERR = capture.text();
+    EXPECT_NE(ERR.find(NOTICE), std::string::npos) << ERR;
+    EXPECT_EQ(ERR.find(NOTICE), ERR.rfind(NOTICE)) << "no notice when no test ran:\n" << ERR;
+  }
+  (void)reg.make(backend.name(), CFG, "T.N", contextWith());
+  StderrCapture capture;
+  EXPECT_EQ(reg.finishRun(CFG, 0, 2), 0);
+  EXPECT_EQ(capture.text(), "") << "a profiler was created";
+}
+
+/* ----------------------------- Shared Route Table ----------------------------- */
+
+/** @brief The rows of @p kind in the table the Rust tools are tested against too. */
+std::vector<std::vector<std::string>> sharedTableRows(const std::string& kind) {
+  std::ifstream in(std::string{VERNIER_SHARED_FIXTURE_DIR} + "/profile_routes.tsv");
+  std::vector<std::vector<std::string>> rows;
+  std::string line;
+  while (std::getline(in, line)) {
+    if (line.empty() || line[0] == '#') {
+      continue;
+    }
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (std::size_t tab = line.find('\t'); tab != std::string::npos;
+         start = tab + 1, tab = line.find('\t', start)) {
+      fields.push_back(line.substr(start, tab - start));
+    }
+    fields.push_back(line.substr(start));
+    if (fields[0] == kind) {
+      rows.push_back(fields);
+    }
+  }
+  return rows;
+}
+
+/**
+ * @test The aliases and the profile-failed status are the ones `bench run`
+ * uses, and the status `bench run` reserves for compute-sanitizer's findings
+ * is none that a benchmark ends with: 1 (a test failed), 2 (the watchdog or a
+ * refused flag), BENCH_ABI_MISMATCH_EXIT_CODE or BENCH_PROFILE_FAILED_EXIT_CODE.
+ */
+TEST(ProfilerRoutesTable, AliasesAndExitStatus) {
+  const auto ALIASES = sharedTableRows("alias");
+  ASSERT_GE(ALIASES.size(), 16U) << "the shared table was not read";
+  for (const auto& row : ALIASES) {
+    ASSERT_EQ(row.size(), 3U);
+    EXPECT_EQ(ProfilerRegistry::canonicalName(row[1]), row[2]) << "alias " << row[1];
+  }
+  const auto EXITS = sharedTableRows("exit");
+  ASSERT_EQ(EXITS.size(), 2U);
+  EXPECT_EQ(EXITS[0][1], "profile-failed");
+  EXPECT_EQ(std::to_string(vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE), EXITS[0][2]);
+  ASSERT_EQ(EXITS[1][1], "tool-findings");
+  const int FINDINGS = std::stoi(EXITS[1][2]);
+  for (const int BENCHMARK_STATUS : {0, 1, 2, vernier::bench::BENCH_ABI_MISMATCH_EXIT_CODE,
+                                     vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE}) {
+    EXPECT_NE(FINDINGS, BENCHMARK_STATUS);
+  }
 }
 
 } // namespace

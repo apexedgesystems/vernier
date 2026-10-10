@@ -150,14 +150,38 @@ label from `classification`: `delta_pct` is the change as binary floating
 point computes it, so a change exactly at the threshold in the CSVs' decimals
 can read a few units in its last digit past it (`5.000000000000004`).
 
-### validate - Environment Checks
+### validate - Profiling Tools on This Host
 
-Verify system readiness for benchmarking.
+An advisory inventory: it exits 0 whatever it finds. Without a binary it
+reports facts, not readiness: the profiling tools PATH finds, each with its
+path and the version its `--version` prints (`ncu` has a row of its own, and
+the `gperftools` row names the analyzer `--profile-analyze` runs), the msr
+device `rapl` reads, ASLR, the FlameGraph scripts, and
+`kernel.perf_event_paranoid` with what the kernel allows at its value. A tool
+PATH does not find, or finds without an execute bit, is `[WARN]`. Each
+`--version` runs for at most 5 s in a process group of its own, which
+`bench validate` ends before it moves on, so nothing a tool starts outlives
+it. Whether a profiler can run here, and in which modes, is what
+`bench doctor <binary>` checks.
 
 ```bash
 bench validate
 bench validate --json
+bench validate ./build/native-linux-release/bin/ptests/MyComponent_PTEST
 ```
+
+With a binary, the tool rows give way to the binary's own rows for each
+profiler's default mode (its doctor's JSON document), after the ASLR,
+FlameGraph and `perf_event_paranoid` rows: `ok` stays `[OK]`, `warn` stays
+`[WARN]`, and a profiler the binary cannot use here is `[WARN]` with
+`not usable here: <message>`, the doctor's remedy on the line after it. No
+row fails the command; to fail a lane on the profilers it needs, use
+`bench doctor <binary> --require <backends>`. A binary that is missing, does
+not start, or prints no usable doctor document is an error (exit 1, the cause
+on stderr, nothing on stdout).
+
+`--json` prints one array of rows: `label`, `status` (`ok` or `warn`),
+`detail`, and `hint` where the binary's row has a remedy.
 
 ### run - Execute Benchmark Binary
 
@@ -165,7 +189,9 @@ Run a benchmark binary with optional CPU pinning and profiling. The binary
 argument can be a full path OR a short name -- the latter auto-resolves
 under `build/*/bin/{ptests,tests,examples}` (override with
 `VERNIER_BENCH_BIN_ROOTS` / `VERNIER_BENCH_BIN_SUBDIRS` for non-CMake
-layouts).
+layouts). A name that is a file in the working directory is that file, as
+`bench doctor` reads it: it starts as `./<name>`, never as a program of that
+name on PATH, and must be executable.
 
 ```bash
 bench run BasicWorkflow                                   # short name auto-resolve
@@ -185,18 +211,105 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--quick`                  | Fewer cycles/repeats for fast iteration              | --           |
 | `--taskset CPUS`           | Pin to specific CPU cores                            | --           |
 | `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
+| `--profile-args ARGS`      | The profile's mode (see below); may start with `-`   | --           |
 | `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
+| `--profile-analyze`        | The profile's analysis (callgrind: see below)        | --           |
 | `--analyze`                | Run summary after execution                          | --           |
 
 When `--profile` names a wrap-externally backend (`callgrind`, `massif`,
-`memcheck`, `helgrind`, `heaptrack`, `compute-sanitizer`), `bench run` transparently
-invokes the correct wrap (`valgrind --tool=...`, `heaptrack -o ...`,
-etc.) and writes the artifacts to
-`<--profile-output-dir>/<binary-stem>.<tool>/`. In-process backends
-(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly
-and the C++ harness manages its own per-test artifact subdirs.
+`memcheck`, `helgrind`, `heaptrack`, `compute-sanitizer`, `nsight` or its
+other name `nsys`, `ncu`), `bench run` starts the binary under that tool
+(`valgrind --tool=...`, `heaptrack -o ...`, `nsys profile ...`, etc.) and
+writes the artifacts to `<--profile-output-dir>/<binary-stem>.<tool>/`, where
+`<tool>` is the canonical name (`nsys` writes to `.nsight`). The words of
+`--profile-args` select the tool's mode, and any other word is refused before
+anything starts:
+
+| `--profile`         | `--profile-args` words                                   | Selects                                                  |
+| ------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
+| `massif`            | `pages` or `stacks`                                      | `--pages-as-heap=yes` or `--stacks=yes`                  |
+| `memcheck`          | `leak-full`, `track-origins`                             | the full leak check (the default), `--track-origins=yes` |
+| `helgrind`          | `drd`                                                    | valgrind's DRD instead of Helgrind                       |
+| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
+| `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
+
+`callgrind`, `heaptrack` and `ncu` take no mode. A kernel replay
+(`--profile-args replay`) is refused: its metrics are the benchmark's own, so
+run the benchmark directly, and it prints the `ncu` command that replays its
+kernels. In-process backends
+(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly, which
+reads `--profile-args` itself, and the C++ harness manages its own per-test
+artifact subdirs.
+
+Arguments after `--` reach the binary as they are, except the request's own
+fields: `--profile`, `--profile-args` and `--profile-output-dir` (or the
+binary's `--artifact-root`) given there are the request `bench run` routes, as
+if given to it, and reach the binary once. A field given twice with
+different values, to `bench run` and after `--`, is refused before anything
+starts.
+
+**A wrapped run's output.** Before it starts the benchmark, `bench run`
+creates the wrap's folder (a folder it cannot create stops the run before
+anything starts) and removes from that folder the files a previous run of
+the same wrap left: `callgrind.out`, `massif.out`, `memcheck.log`,
+`helgrind.log`, `run.zst` and `run.gz` (heaptrack), `sanitizer.log`,
+`profile.nsys-rep` with `profile.sqlite` and the four summaries (nsight),
+`kernel_profile.ncu-rep` (ncu, and nsight's compute mode) and
+`jeprof.*.heap` (jemalloc), each removal printed as `[bench] removed <file>
+from a previous run`. Nothing else in the folder, and nothing outside it, is
+removed. valgrind, compute-sanitizer, nsys and ncu read a `%` in an output
+option as the start of a macro (`%p`, `%q{VAR}`), so `bench run` writes the
+folder there with each `%` doubled, and the output lands in the folder as
+named. compute-sanitizer joins a relative log name to its working directory
+before it reads the macros, so `bench run` gives it the folder named whole,
+from the working directory, as its `Running:` line shows. heaptrack replaces `%h` and `%p` in its `-o` with the host name and
+its process id and has no escape for them, so `bench run` refuses a heaptrack
+folder holding either before anything starts; any other `%` reaches
+heaptrack as it is. After the benchmark exits 0, the file must exist and hold
+something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
+otherwise fails with `completion: <file> was not written` (or `is empty`).
+For nsight, a `nsys stats` summary that fails, or still runs after 300 s,
+fails the run as `analysis:`, and the report is kept. With
+`--profile-analyze` (given to `bench run`, or forwarded after `--`), a
+callgrind run's profile is annotated after valgrind has written it:
+`callgrind_annotate --auto=yes <profile>`, its first 40 lines printed; a
+missing or failing `callgrind_annotate`, or one still running after 120 s,
+fails the run as `analysis:`, and the profile is kept. Each `nsys stats` and
+the annotator run in a process group of their own: a process of that group
+still running when the program exits is ended, and `bench run` says so, while
+the program's own exit status decides the analysis; SIGINT, SIGTERM or SIGHUP
+sent to `bench run` meanwhile ends the group, then `bench run` itself (a
+signal `bench run` was started with ignored stays ignored).
+
+**compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
+tool ends with status 5 when it reports errors, whatever the benchmark itself
+returned, and otherwise with the benchmark's own status. `bench run` reads
+this run's `sanitizer.log` to tell them apart. Errors counted by its summary
+fail the run, and the count printed is the summary's: the
+`ERROR SUMMARY: N errors` line of memcheck, synccheck and initcheck (not the
+`ERROR SUMMARY: N errors were not printed` line the print limit adds after
+it), or racecheck's `RACECHECK SUMMARY: H hazards displayed (E errors, W
+warnings)`, whose errors count and whose warnings do not. With no errors
+counted, the status is the benchmark's own, 5 included. A report that holds
+only the tool's own `Error:` line fails the run as `collection:`, a missing
+report or one without its summary as `completion:`, and nothing is counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
+
+**How a run ends.** `bench run` exits 0 when the benchmark does and 1
+otherwise, and its last line names how the benchmark ended:
+
+```text
+Error: the benchmark exited with status 1
+Error: the benchmark was ended by signal 9
+Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+Error: compute-sanitizer reported 3 errors in the benchmark; the report is bench-out/probe.compute-sanitizer/sanitizer.log (the tool exited with status 5)
+```
+
+Status 4 means the tests passed and the `--profile` request failed: the
+benchmark's own `[profile]` report, printed just above, lists each failure. A
+benchmark run directly exits with that status itself (see the exit status 4
+entry in [Troubleshooting](../src/bench/docs/TROUBLESHOOTING.md)).
 
 ### doctor - Backend Environment Check
 
@@ -206,7 +319,46 @@ per-backend doctor (whether each registered profiler can actually run here).
 
 ```bash
 bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --json > doctor.json
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST --require offcpu,heaptrack
+bench doctor ./build/native-linux-release/bin/ptests/MyComponent_PTEST \
+  --profile massif --profile-args pages --require massif
 ```
+
+With `--json`, stdout is the binary's JSON document and nothing else. With
+`--require`, `bench doctor` exits 1 unless every named backend reports OK,
+and prints one `[require]` line per backend: on stderr when `--json` is also
+given, so that stdout stays one document, and on stdout otherwise. A binary
+whose doctor prints no valid document is an error (exit 1).
+
+`--profile`, `--profile-args`, `--profile-analyze` and the arguments after
+`--` make the request `bench run` would make of them, and are passed to the
+binary as `bench run` passes them; the doctor adds a row for that request.
+`--require` judges the requested backend by that row and every other backend
+by its default mode's row, so a requirement on `massif` with
+`--profile-args pages` is met only when that mode is ready. The row must
+answer the request, by its backend and its mode; a row for another request,
+like no row at all, leaves the requirement unmet. A binary built before the
+requested row existed cannot answer such a requirement: rebuild it against
+this vernier, or drop `--profile`.
+
+`bench validate <binary>` shows the same default-mode rows as an advisory
+report that never fails on them.
+
+**What the doctor runs, and what it costs.** To say whether each profiler can
+run here, the doctor starts most of the tools once, one after another: each
+valgrind tool and heaptrack on `/bin/true`, a short `perf stat` of its own
+process, the bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu
+and compute-sanitizer. Those starts take most of its time, which depends on
+the machine and on the tools installed; no time is promised. One run of this
+release's `bench doctor build/bin/ptests/BenchmarkCPU_PTEST` on each rig,
+timed on core 3 after one untimed run: on the
+[Raspberry Pi 4 rig](../src/bench/docs/rigs/RIG_PI4.md), with the governor at
+performance, 3.96 s, and 8.60 s with `BENCH_SUDO=1`, under which the
+bpftrace and off-CPU probes attach and run; on the
+[Jetson AGX Thor rig](../src/bench/docs/rigs/RIG_THOR_AGX.md), with its clocks
+as found, 1.35 s, and 3.26 s with `BENCH_SUDO=1`. Other runs and machines take
+their own time. A benchmark run checks only its own request.
 
 ### profile-all - Iterate Every Profiler
 
@@ -218,6 +370,22 @@ bench profile-all MyComponent                                       # gperf + pe
 bench profile-all MyComponent --profilers gperf,callgrind --out out/
 bench profile-all MyComponent --quick --filter '*Hot*'
 ```
+
+Each profiler runs as `bench run --profile <name>` does, into
+`<out>/<name>/`, whatever the others did. The run ends with one line per
+profiler, `completed` or `failed` with the reason, and exits 1 when any of them
+failed:
+
+```
+=== bench profile-all: summary ===
+  gperf      completed  bench-out/gperf
+  perf       failed     bench-out/perf -- the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+  callgrind  completed  bench-out/callgrind
+Error: 1 of 3 profile runs failed: perf
+```
+
+Every profiler in the list is required, the default three included: on a
+machine that lacks one, name the others with `--profilers`.
 
 ### profile-summarize - Tabulate Artifacts
 
@@ -343,7 +511,12 @@ bench gpu-topo --json
 ### Registered Profiler Backends
 
 `--profile X` dispatches to whichever backend self-registered under name `X`.
-The `doctor` command lists all of them with their environment readiness.
+The `doctor` command lists all of them with whether each can run here, and
+checks a given `--profile` request by its own mode. The backends whose tool
+records the whole process (`callgrind`, `massif`, `memcheck`, `helgrind`,
+`heaptrack`, `nsight`, `ncu`, `compute-sanitizer`, `rocprof`) collect only in a
+process that tool started: `bench run` starts it for all but `rocprof`, and a
+run started without it fails with the command that would start it.
 
 | Backend             | Layer | Wraps                                             |
 | ------------------- | ----- | ------------------------------------------------- |
@@ -355,10 +528,11 @@ The `doctor` command lists all of them with their environment readiness.
 | `massif`            | CPU   | valgrind massif (heap timeline, ~20x)             |
 | `memcheck`          | CPU   | valgrind memcheck (errors / leaks)                |
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, lock order)  |
-| `offcpu`            | CPU   | bpftrace finish_task_switch (off-CPU stacks)      |
+| `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)       |
 | `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
 | `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |
 | `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)    |
+| `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)       |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init) |
 | `rocprof`           | GPU   | AMD ROCm rocprof                                  |
 

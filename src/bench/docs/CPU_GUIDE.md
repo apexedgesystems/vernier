@@ -559,6 +559,17 @@ PERF_TEST(Algorithm, PayloadScaling) {
 
 ## Profiling and Analysis
 
+`--profile <name>` profiles the cases that create a profiler: `PERF_GUARD`,
+`makePerfCaseWithProfiler()` and `attachProfilerHooks()` create one (see the
+[advanced guide](ADVANCED_GUIDE.md#attachprofilerhooks-function)), and a bare
+`PerfCase` gets none. The request is checked when a case creates its
+profiler. One that cannot run here fails the run: the tests still run and
+report, a `[FAIL] Profiler '<name>'` line gives the remedy, and the run ends
+with a report of the failure and exit status 4 when the tests passed. The
+tools that record a whole process (valgrind's, heaptrack) fail this way when
+the process was not started under them, and the line gives the command that
+starts it. `bench doctor <binary>` reports the same verdicts before a run.
+
 ### CPU Profiling with perf
 
 Find hotspots and optimization opportunities:
@@ -587,10 +598,11 @@ perf script -i MyComponent.Throughput.perf/perf.data > profile.txt
 branch-misses and cache-misses. `perf.data` is written only when
 `--profile-args` starts with `record`; the rest of the string goes to
 `perf record` (`-g` samples call stacks). The backend starts perf just before
-the measured phase and gives it 200 ms to attach; perf can take longer to start
-sampling, so a measured phase of a few milliseconds may leave `perf.data`
-without samples. `--target-time 250ms` sizes the cycles so that each of the ten
-default repeats runs for roughly that long.
+the measured phase, which begins once perf answers that its counters are on (a
+`ping` on perf's `--control` fifo, waited for up to 5 s), so the phase is
+profiled from its first iteration. A measured phase of a few milliseconds still
+holds few samples; `--target-time 250ms` sizes the cycles so that each of the
+ten default repeats runs for roughly that long.
 
 **Common patterns to look for:**
 
@@ -626,22 +638,27 @@ google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/heap.0001.h
 Trace syscalls and kernel interactions:
 
 ```bash
-# Requires root or CAP_BPF capability
+# bpftrace runs only as root: run the benchmark as root, or set BENCH_SUDO=1
+# with a sudoers grant for bpftrace and kill, which runs only the tracer as root
 # --bpf takes a script name resolved under --bpf-scripts (default bpf dir)
-sudo ./MyComponent_PTEST --profile bpftrace \
+BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace \
   --bpf fsync_latency \
   --gtest_filter="*IO"
 
 # Custom bpftrace script (absolute path also accepted by --bpf)
-sudo ./MyComponent_PTEST --profile bpftrace \
+BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace \
   --bpf /path/to/custom_trace.bt
 ```
 
 ### Heap Profilers (Massif, Heaptrack, jemalloc prof)
 
 Three heap profilers ship with the harness; pick by your overhead budget.
-All three wrap the binary externally and the backend prints the exact
-invocation if you forget to wrap.
+Massif and heaptrack record a process only when they start it:
+`bench run <binary> --profile massif` (or `heaptrack`) starts the binary under
+the tool, or start it yourself as below. A run started without the tool fails
+with exit status 4 and prints that command. jemalloc profiles through the
+allocator preloaded below, and its backend prints that command when the
+allocator is not loaded.
 
 ```bash
 # Full timeline, lab use (~20x overhead)
@@ -694,10 +711,12 @@ valgrind --tool=drd --log-file=run.drd \
 
 All the on-CPU profilers above show where threads burn cycles. `--profile
 offcpu` shows where they _stop_ burning cycles -- sleep, mutex wait, I/O
-wait. Requires root + tracefs.
+wait. It runs bpftrace on the scheduler's tracepoints, which needs tracefs
+and root: run the benchmark as root, or set `BENCH_SUDO=1` with a sudoers
+grant for bpftrace and kill.
 
 ```bash
-sudo ./MyComponent_PTEST --profile offcpu \
+BENCH_SUDO=1 ./MyComponent_PTEST --profile offcpu \
     --gtest_filter="*Concurrency"
 cat MyComponent.Concurrency.offcpu/offcpu.txt
 ```

@@ -9,7 +9,11 @@ no shared example has a bank conflict to show
 captured from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada figures in
 [What Should Reproduce](#what-should-reproduce) come from one run of the same
-tree in the project's `dev-cuda` container on the same day.
+tree in the project's `dev-cuda` container on the same day. The output of
+`bench run --profile ncu` in [If It Does Not Match](#if-it-does-not-match) is
+from a later session on 2026-10-10 (UTC), from a later development tree at
+the same version with the same Nsight Compute; the report's sections under it,
+and every other figure, are from the first.
 
 ## Overview
 
@@ -61,8 +65,8 @@ them into a sentence naming the conflict's degree.
 wrap collects ncu's default sections (launch statistics, occupancy and
 throughput, as walkthrough 11 reads them) into
 `bench-out/<binary>.ncu/kernel_profile.ncu-rep`, and none of them carries a
-bank-conflict figure; `bench run` passes ncu no option of its own
-(`--profile-args` goes to the binary). So this page types the ncu command
+bank-conflict figure; `bench run` passes ncu no option of its own and takes
+no `--profile-args` word for it. So this page types the ncu command
 itself, with the sections and metrics it reads, as walkthrough 14 types
 massif's for `--time-unit`. The CSV's `occupancy` column is the harness's
 estimate from the launch shape, the device's limits and the static shared
@@ -570,26 +574,31 @@ kernel); they are stated for their direction, not their size.
   Running: ncu -o bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt --cycles 1 --repeats 1 --profile ncu --gpu-warmup 1 --gtest_filter=SharedMemoryOpt.SharedPadded
   ...
   [ RUN      ] SharedMemoryOpt.SharedPadded
-  ==PROF== Connected to process 87417 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
-  [WARN] Profiler 'ncu': unverified: collection is owned by the ncu wrap; completion is checked at exit
+  ==PROF== Connected to process 56390 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+
+  [WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
+
+  [nsight] this process runs under ncu, which writes the report when the process exits.
   ==WARNING== Unable to access the following 8 metrics: mcc__cycles_active.avg, mcc__cycles_active.max, mcc__cycles_active.min, mcc__cycles_active.sum, mcc__cycles_elapsed.avg, mcc__cycles_elapsed.max, mcc__cycles_elapsed.min, mcc__cycles_elapsed.sum.
   ...
-  [nsight] external ncu wrap active; skipping in-process attach.
   [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
   ...
-  [SharedMemoryOpt.SharedPadded]  888230.835 us/call  CV=0.0%  ~1 calls/s  (p10=888230.835 p90=888230.835 sd=0.000)
-  [       OK ] SharedMemoryOpt.SharedPadded (7296 ms)
+  [SharedMemoryOpt.SharedPadded]  876192.139 us/call  CV=0.0%  ~1 calls/s  (p10=876192.139 p90=876192.139 sd=0.000)
+  [       OK ] SharedMemoryOpt.SharedPadded (7292 ms)
   ...
   [  PASSED  ] 1 test.
   ...
   ==PROF== Report: .../bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep
+  [bench] ncu wrote bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep (207247 bytes)
   ```
 
   The `[WARN]` line is the harness's readiness report for the profiler
-  request, printed once per run: under `bench run`'s wrap the capture belongs
-  to `ncu`, so the harness runs no check of its own and reports the request
-  unverified (walkthrough 11 explains it). The eight `mcc__` metrics are not
-  readable on this rig. The report holds four sections and no counter:
+  request, printed once per run: `ncu` started the process and writes the
+  report when it exits, which the harness cannot check from inside the
+  process, so it reports the request unverified (walkthrough 11 explains it).
+  `bench run` checks the report after the process exits and names its size.
+  The eight `mcc__` metrics are not readable on this rig. The report holds
+  four sections and no counter:
 
   ```
     transposeSharedPadded(const float *, float *, int) (32, 32, 1)x(32, 32, 1), Device 0, CC 11.0, Invocations 3

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -28,6 +29,7 @@
 #include <future>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -370,9 +372,33 @@ ReadinessResult readinessResult(ReadinessCause cause, std::string detail, std::s
   std::string message = prefix + std::move(detail);
   if (stage == ReadinessStage::ANALYSIS) {
     message = "analysis: " + message;
+  } else if (stage == ReadinessStage::COMPLETION) {
+    message = "completion: " + message;
   }
   result.report = EnvReport{status, std::move(message), std::move(remedy)};
   return result;
+}
+
+std::string ReadinessRequest::identity() const {
+  // Every field is length-prefixed, so the key reads back as exactly one
+  // sequence of fields: no value can imitate a separator, and the number of
+  // scripts follows from the number of fields.
+  std::string key;
+  const auto FIELD = [&key](const std::string& value) {
+    key += std::to_string(value.size());
+    key += ':';
+    key += value;
+    key += ';';
+  };
+  FIELD(backend);
+  FIELD(profileArgs);
+  for (const std::string& script : bpfScripts) {
+    FIELD(script);
+  }
+  FIELD(analyze ? "1" : "0");
+  FIELD(std::to_string(static_cast<int>(scope)));
+  FIELD(std::to_string(static_cast<int>(launch)));
+  return key;
 }
 
 ReadinessRequest readinessRequestFor(const PerfConfig& cfg, ReadinessScope scope,
@@ -732,6 +758,35 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   return result;
 }
 
+std::string detail::shellQuote(const std::string& word) {
+  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "0123456789_@%+=:,./-";
+  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
+    return word;
+  }
+  std::string quoted = "'";
+  for (const char C : word) {
+    if (C == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += C;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+std::string detail::escapePercent(const std::string& path) {
+  std::string out;
+  for (const char CH : path) {
+    out += CH;
+    if (CH == '%') {
+      out += '%';
+    }
+  }
+  return out;
+}
+
 std::string outputTail(const std::string& text, std::size_t maxLines) {
   constexpr std::size_t MAX_LINE = 300;
   std::vector<std::string> lines;
@@ -869,6 +924,42 @@ bool waitGone(pid_t child, bool& reaped, int& waitStatus, int ms) {
   return true;
 }
 
+/**
+ * @brief The command name of process @p pid as the kernel keeps it (its
+ * executable's file name, at most 15 characters), or "" when unreadable.
+ */
+std::string processName(pid_t pid) {
+  std::ifstream in("/proc/" + std::to_string(pid) + "/comm");
+  std::string name;
+  std::getline(in, name);
+  return name;
+}
+
+/**
+ * @brief The process that runs the tool sudo was asked to run, from
+ * @p started, the process this helper started with @p sudoPath.
+ *
+ * sudo either stays the tool's parent (it forks the tool, sometimes with a
+ * monitor process of its own between them, which is also named sudo) or
+ * executes the tool in its own process. The command name tells them apart:
+ * while a process is still sudo and has exactly one child, the tool is
+ * below it; a process that is not sudo is the tool, and its own child is
+ * never taken for it. An unreadable name, or a sudo with no child or
+ * several, ends the walk there.
+ */
+pid_t toolUnderSudo(pid_t started, const std::string& sudoPath) {
+  const std::string SUDO_NAME = std::filesystem::path(sudoPath).filename().string().substr(0, 15);
+  pid_t target = started;
+  for (int depth = 0; depth < 3 && processName(target) == SUDO_NAME; ++depth) {
+    const std::vector<pid_t> CHILDREN = childProcesses(target);
+    if (CHILDREN.size() != 1) {
+      break;
+    }
+    target = CHILDREN.front();
+  }
+  return target;
+}
+
 } // namespace
 
 bool OwnedHelper::running() { return child_ > 0 && !tryReap(child_, reaped_, waitStatus_); }
@@ -976,6 +1067,53 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   return outcome;
 }
 
+std::vector<pid_t> childProcesses(pid_t parent, const std::string& procRoot) {
+  std::vector<pid_t> children;
+  const std::string PID = std::to_string(parent);
+  std::ifstream list(procRoot + "/" + PID + "/task/" + PID + "/children");
+  if (list) {
+    long pid = 0;
+    while (list >> pid) {
+      if (pid > 0) {
+        children.push_back(static_cast<pid_t>(pid));
+      }
+    }
+    std::sort(children.begin(), children.end());
+    return children;
+  }
+  // No children list on this kernel: read each process's parent instead. The
+  // walk throws nothing (stop() runs from a destructor): an unreadable
+  // directory ends it and a name that is not a pid is skipped.
+  std::error_code ec;
+  std::filesystem::directory_iterator entry(procRoot, ec);
+  for (; !ec && entry != std::filesystem::directory_iterator(); entry.increment(ec)) {
+    const std::string NAME = entry->path().filename().string();
+    const char* const END = NAME.data() + NAME.size();
+    pid_t pid = 0;
+    const auto [STOP, ERR] = std::from_chars(NAME.data(), END, pid);
+    if (NAME.empty() || ERR != std::errc{} || STOP != END || pid <= 0) {
+      continue;
+    }
+    std::ifstream stat(entry->path() / "stat");
+    std::string line;
+    if (!std::getline(stat, line)) {
+      continue;
+    }
+    const std::size_t CLOSE = line.rfind(')');
+    if (CLOSE == std::string::npos) {
+      continue;
+    }
+    std::istringstream fields(line.substr(CLOSE + 1));
+    std::string state;
+    long ppid = 0;
+    if (fields >> state >> ppid && ppid == static_cast<long>(parent)) {
+      children.push_back(pid);
+    }
+  }
+  std::sort(children.begin(), children.end());
+  return children;
+}
+
 HelperStopResult OwnedHelper::stop() {
   HelperStopResult result;
   if (child_ <= 0) {
@@ -1005,20 +1143,7 @@ HelperStopResult OwnedHelper::stop() {
     delivery.target = child_;
     if (policy_.route == PrivilegeRoute::SCOPED_SUDO) {
 #ifdef __linux__
-      // sudo may keep a monitor process between itself and the tool: the
-      // tool is then the monitor's only child.
-      char path[96];
-      std::snprintf(path, sizeof(path), "/proc/%d/task/%d/children", static_cast<int>(child_),
-                    static_cast<int>(child_));
-      std::ifstream children(path);
-      std::vector<long> pids;
-      long p = 0;
-      while (children >> p) {
-        pids.push_back(p);
-      }
-      if (pids.size() == 1 && pids.front() > 0) {
-        delivery.target = static_cast<pid_t>(pids.front());
-      }
+      delivery.target = toolUnderSudo(child_, policy_.sudoPath);
 #endif
       const std::vector<std::string> ARGV = {policy_.sudoPath,
                                              "-n",

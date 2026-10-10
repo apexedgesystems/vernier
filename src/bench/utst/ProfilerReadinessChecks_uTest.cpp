@@ -34,6 +34,8 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
@@ -1117,15 +1119,16 @@ TEST_F(PerfCheckTest, LaunchKeepsPunctuationInPaths) {
     EXPECT_EQ(TEXT.find("Syntax error"), std::string::npos) << TEXT;
     EXPECT_EQ(TEXT.find("not found"), std::string::npos) << TEXT;
   }
+  // The checked perf answers on --control, so each launch ends with its fifos.
   EXPECT_EQ(dir_.logLines("perf " + PERF +
                           " stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses "
                           "-p " +
-                          PID + " pid=")
+                          PID + " --control fifo:")
                 .size(),
             1U)
       << dir_.log();
   EXPECT_EQ(dir_.logLines("perf " + PERF + " record -g -p " + PID + " -o " + ROOT +
-                          "/Perf.Record.perf/perf.data pid=")
+                          "/Perf.Record.perf/perf.data --control fifo:")
                 .size(),
             1U)
       << dir_.log();
@@ -1167,14 +1170,84 @@ protected:
 
 } // namespace
 
-/** @test One parser decides the modes for the check and the profiler. */
+namespace {
+
+/** @brief The modes @p args selects; fails the test when it is refused. */
+GperfModes gperfModes(const std::string& args) {
+  GperfModes modes;
+  const auto REFUSED = parseGperfModes(args, modes);
+  EXPECT_FALSE(REFUSED.has_value()) << "'" << args << "': " << REFUSED->report.message;
+  return modes;
+}
+
+} // namespace
+
+/** @test Each word, and each combination of them, selects its modes; none selects cpu. */
 TEST(GperfModeTest, ParsesTheSelectedModes) {
-  EXPECT_TRUE(parseGperfModes("").cpu);
-  EXPECT_FALSE(parseGperfModes("").heap);
-  EXPECT_FALSE(parseGperfModes("heap").cpu);
-  EXPECT_TRUE(parseGperfModes("heap").heap);
-  EXPECT_TRUE(parseGperfModes("both").cpu && parseGperfModes("both").heap);
-  EXPECT_TRUE(parseGperfModes("cpu,heap").cpu && parseGperfModes("cpu,heap").heap);
+  for (const auto& [ARGS, CPU, HEAP] : std::vector<std::tuple<std::string, bool, bool>>{
+           {"", true, false},
+           {"  ", true, false},
+           {"cpu", true, false},
+           {"heap", false, true},
+           {"both", true, true},
+           {"cpu,heap", true, true},
+           {"heap cpu", true, true},
+           {"heap,heap", false, true},
+           {"both, cpu", true, true},
+       }) {
+    const GperfModes MODES = gperfModes(ARGS);
+    EXPECT_EQ(MODES.cpu, CPU) << "'" << ARGS << "'";
+    EXPECT_EQ(MODES.heap, HEAP) << "'" << ARGS << "'";
+  }
+}
+
+/**
+ * @test A word that is not a mode is refused whole, with the configuration
+ * error every backend gives such a word, and selects nothing; a mode's name
+ * inside another word is not that mode.
+ */
+TEST(GperfModeTest, RefusesAWordThatIsNotAMode) {
+  for (const auto& [ARGS, WORD] : std::vector<std::pair<std::string, std::string>>{
+           {"nonsense", "nonsense"},
+           {"cpuheap", "cpuheap"},
+           {"xcpu", "xcpu"},
+           {"heap-ish", "heap-ish"},
+           {"CPU", "CPU"},
+           {"cpu,nonsense", "nonsense"},
+           {"both;", "both;"},
+       }) {
+    GperfModes modes;
+    modes.cpu = modes.heap = true;
+    const auto REFUSED = parseGperfModes(ARGS, modes);
+    ASSERT_TRUE(REFUSED.has_value()) << "'" << ARGS << "' was accepted";
+    EXPECT_EQ(REFUSED->report.status, EnvReport::Status::Error);
+    EXPECT_EQ(REFUSED->cause, ReadinessCause::CONFIGURATION);
+    EXPECT_FALSE(REFUSED->collectionReady());
+    EXPECT_EQ(REFUSED->report.message,
+              "configuration: '" + WORD +
+                  "' is not a mode of gperf; its modes are cpu, heap, both");
+    EXPECT_EQ(REFUSED->report.hint, "Use one of cpu, heap, both in --profile-args, or drop it.");
+    EXPECT_FALSE(modes.cpu || modes.heap) << "'" << ARGS << "' left a mode selected";
+  }
+}
+
+/**
+ * @test The check refuses such a word first, in every build (with gperftools
+ * or without), so a run creates nothing for it and fails, as the doctor says.
+ */
+TEST(GperfModeTest, CheckRefusesAWordBeforeAnythingElse) {
+  FakeToolDir dir;
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.profileArgs = "nonsense";
+  request.scope = ReadinessScope::RUNTIME;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(request, dir.context());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_FALSE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "configuration: 'nonsense' is not a mode of gperf; its modes are cpu, heap, both");
+  EXPECT_EQ(R.plan, nullptr) << "a refused request carries no plan to build a profiler from";
 }
 
 /** @test Without --profile-analyze a missing analyzer is only information. */
@@ -1252,6 +1325,7 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
   cfg.profileAnalyze = true;
   cfg.artifactRoot = dir_.path();
   std::string err;
+  ProfilerRegistry::instance().resetFailures();
   {
     ScopedEnv mode("FAKE_PPROF_MODE", "fail-on-profile");
     ScopedEnv log("FAKE_LOG", dir_.logPath());
@@ -1266,12 +1340,20 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
     err = capture.text();
   }
   const std::string CPU_PROF = dir_.path() + "/Gperf.Fails.gperf/cpu.prof";
-  EXPECT_NE(
-      err.find("[gperf] " + PPROF +
-               " failed: exit status 1: fake pprof: cannot read profile; raw profile kept at " +
-               CPU_PROF),
-      std::string::npos)
+  EXPECT_NE(err.find("[FAIL] Profiler 'gperf' (Gperf.Fails): analysis: unusable: " + PPROF +
+                     " failed on the profile: exit status 1: fake pprof: cannot read profile; "
+                     "raw profile kept at " +
+                     CPU_PROF + "\n   Run it by hand to see why: " + PPROF +
+                     " --text --cum --lines "),
+            std::string::npos)
       << err;
+  const std::vector<vernier::bench::ProfileFailure> FAILED =
+      ProfilerRegistry::instance().failures();
+  ProfilerRegistry::instance().resetFailures();
+  ASSERT_EQ(FAILED.size(), 1U) << "the failed analysis is the run's failure";
+  EXPECT_EQ(FAILED[0].backend, "gperf");
+  EXPECT_EQ(FAILED[0].test, "Gperf.Fails");
+  EXPECT_EQ(FAILED[0].result.stage, vernier::bench::ReadinessStage::ANALYSIS);
   std::error_code ec;
   EXPECT_TRUE(std::filesystem::exists(CPU_PROF, ec)) << "the raw capture is never removed";
   EXPECT_EQ(dir_.logLines("pprof " + PPROF + " --text --cum --lines ").size(), 1U) << dir_.log();

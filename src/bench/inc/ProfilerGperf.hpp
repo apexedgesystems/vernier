@@ -4,17 +4,23 @@
  * @file ProfilerGperf.hpp
  * @brief gperftools backend for the benchmarking profiler facade.
  *
- * Modes:
- *  - CPU profiling (default): generates "<artifactDir>/cpu.prof"
- *  - Heap profiling (opt-in): parses "heap" in profileArgs -> starts HeapProfiler
- *  - Both: parse "both" or include both "cpu" and "heap" keywords in profileArgs
+ * Modes (the words of --profile-args):
+ *  - cpu, or no word (the default): generates "<artifactDir>/cpu.prof"
+ *  - heap: starts gperftools' heap profiler
+ *  - both, or cpu and heap together: both captures
  *
- * Readiness (checkGperfRequest): every requested mode must be compiled in; a
- * request that is not is a collection error. With --profile-analyze the
- * analyzer is the first of google-pprof and pprof found on PATH, and it must
- * run; a missing or broken analyzer is an analysis error, and the capture
- * still runs and keeps cpu.prof. The analysis runs exactly the analyzer the
- * check found.
+ * Readiness (checkGperfRequest): any other word is refused as a configuration
+ * error; every requested mode must be compiled in, and a request that is not
+ * is a collection error. With --profile-analyze the analyzer is the first of
+ * google-pprof and pprof found on PATH, and it must run; a missing or broken
+ * analyzer is an analysis error, and the capture still runs and keeps
+ * cpu.prof. The analysis runs exactly the analyzer the check found.
+ *
+ * A run fails a case whose capture gperftools does not start (another
+ * profile of the same kind already runs in the process, or the file cannot
+ * be written), and one whose stopped capture leaves no file of this run, or
+ * an empty one, whether or not an analysis follows; only a capture that left
+ * its file is analyzed. A profiler stops only the captures it started.
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
@@ -23,8 +29,8 @@
  *    tcmalloc replaces the allocator for the whole process, so it is never
  *    linked implicitly. Without it, a heap request is a readiness error that
  *    says how to enable it.
- *  - If unavailable, makeGperfProfiler(...) returns nullptr and the factory
- *    in Profiler.hpp will produce a named no-op.
+ *  - If unavailable, makeGperfProfiler(...) returns nullptr, reporting why
+ *    as the registry does.
  */
 
 #include <filesystem>
@@ -61,10 +67,16 @@ struct GperfModes {
 };
 
 /**
- * @brief One parser for the check and the profiler: empty, "cpu" or "both"
- * select CPU profiling; "heap" or "both" select heap profiling.
+ * @brief The modes the words of @p profileArgs select, or the refusal of a
+ * word that is not one.
+ *
+ * The words are split on whitespace and commas, as `bench run` splits them.
+ * No word selects CPU profiling; "cpu" selects it, "heap" heap profiling and
+ * "both" the two, in any combination. Any other word is refused with the
+ * CONFIGURATION error every backend gives a word it does not take, naming
+ * the modes; @p modes is then left with no mode.
  */
-GperfModes parseGperfModes(const std::string& profileArgs);
+std::optional<ReadinessResult> parseGperfModes(const std::string& profileArgs, GperfModes& modes);
 
 /** @brief What the gperf check verified, for the profiler to use. */
 struct GperfPlan final : ReadinessPlan {
@@ -106,14 +118,20 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
 class GperfProfiler final : public Profiler {
 public:
   /**
-   * @brief Construct, deciding the request itself; when it cannot run,
-   * prints why and does nothing in the hooks.
+   * @brief Construct, deciding the request itself and reporting it as the
+   * registry does: one that cannot run fails the run, creates no folder and
+   * does nothing in the hooks.
    */
   GperfProfiler(const PerfConfig& cfg, std::string testName);
 
   /** @brief Construct from a decision already made (the registry's path). */
   GperfProfiler(const PerfConfig& cfg, std::string testName, std::shared_ptr<const GperfPlan> plan);
-  ~GperfProfiler() override = default;
+
+  /** @brief Stops a capture beforeMeasure() started and afterMeasure() did not. */
+  ~GperfProfiler() override;
+
+  GperfProfiler(const GperfProfiler&) = delete;
+  GperfProfiler& operator=(const GperfProfiler&) = delete;
 
   std::string toolName() const noexcept override { return "gperf"; }
   std::string artifactDir() const noexcept override { return artifactDir_; }
@@ -129,9 +147,20 @@ private:
 
   void applyPlan();
   void runPprofAnalysis() const;
+  /// Stop the captures this profiler started, without analysis.
+  void stopCapture() noexcept;
+  /// Record this case's failure, for the run's exit status.
+  void fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
+            ReadinessStage stage) const;
 
   bool wantCpu_{false};
   bool wantHeap_{false};
+
+  // True while a capture beforeMeasure() started runs, so it is stopped
+  // exactly once: by afterMeasure(), or by the destructor when the measured
+  // window ended by an exception, with no analysis.
+  bool cpuActive_{false};
+  bool heapActive_{false};
 
 #if UB_HAS_GPERF_CPU
   std::string cpuPath_;
@@ -146,8 +175,10 @@ private:
 /**
  * @brief Factory function for gperftools profiler.
  *
- * Decides the request in a snapshot of this process first.
- * @return Profiler instance, or nullptr if collection cannot run here.
+ * Decides the request in a snapshot of this process first and reports it
+ * as the registry does.
+ * @return Profiler instance, or nullptr (the run then fails) if collection
+ *         cannot run here.
  */
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName);
 

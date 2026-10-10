@@ -12,6 +12,7 @@
 #include "src/bench/inc/ProfilerReadiness.hpp"
 
 #include "src/bench/inc/PerfConfig.hpp"
+#include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 
 #include <gtest/gtest.h>
@@ -23,18 +24,18 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <csignal>
+#include <filesystem>
 #include <fstream>
 #include <future>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
 
+using vernier::bench::childProcesses;
 using vernier::bench::decidePrivilege;
 using vernier::bench::EnvBool;
 using vernier::bench::EnvReport;
@@ -151,23 +152,33 @@ OrphanOutcome runOrphanProbe(const FakeToolDir& dir, const std::string& helper,
   return out;
 }
 
-/** @brief Every thread arrives, then all proceed; false when @p count never arrive in time. */
+/**
+ * @brief Every thread arrives, then all proceed; false when @p count never arrive in time.
+ *
+ * Waits by polling an atomic count. A timed std::condition_variable wait calls
+ * pthread_cond_clockwait, which GCC 11's ThreadSanitizer does not intercept: it
+ * sees the waiting thread keep the mutex and reports the next arrival's lock
+ * as a double lock and a data race.
+ */
 class Rendezvous {
 public:
   explicit Rendezvous(int count) : count_(count) {}
 
   bool arriveAndWait(std::chrono::milliseconds timeout) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    ++arrived_;
-    cv_.notify_all();
-    return cv_.wait_for(lock, timeout, [this] { return arrived_ >= count_; });
+    arrived_.fetch_add(1);
+    const auto DEADLINE = std::chrono::steady_clock::now() + timeout;
+    while (arrived_.load() < count_) {
+      if (std::chrono::steady_clock::now() >= DEADLINE) {
+        return false;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return true;
   }
 
 private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  int count_;
-  int arrived_ = 0;
+  const int count_;
+  std::atomic<int> arrived_{0};
 };
 
 } // namespace
@@ -426,9 +437,70 @@ TEST(ReadinessContextTest, RequestForConfiguration) {
   EXPECT_EQ(OTHER.launch, LaunchContext::IN_PROCESS);
 }
 
+/* ----------------------------- Request Identity ----------------------------- */
+
+/**
+ * @test The request has exactly the fields identity() keys.
+ *
+ * The binding below stops compiling when a field is added to
+ * ReadinessRequest: key it in identity(), vary it in EveryFieldChangesTheKey,
+ * then name it here.
+ */
+TEST(ReadinessRequestIdentityTest, NamesEveryField) {
+  ReadinessRequest request;
+  request.bpfScripts = {"s"};
+  const auto& [backend, profileArgs, bpfScripts, analyze, scope, launch] = request;
+  EXPECT_TRUE(backend.empty());
+  EXPECT_TRUE(profileArgs.empty());
+  EXPECT_EQ(bpfScripts.size(), 1U);
+  EXPECT_FALSE(analyze);
+  EXPECT_EQ(scope, ReadinessScope::DEFAULT_INVENTORY);
+  EXPECT_EQ(launch, LaunchContext::IN_PROCESS);
+}
+
+/** @test A change to any one field is a different identity, and no value imitates a separator. */
+TEST(ReadinessRequestIdentityTest, EveryFieldChangesTheKey) {
+  ReadinessRequest base;
+  base.backend = "b";
+  base.profileArgs = "m";
+  base.bpfScripts = {"x"};
+  std::vector<ReadinessRequest> variants(6, base);
+  variants[0].backend = "c";
+  variants[1].profileArgs = "n";
+  variants[2].bpfScripts = {"y"};
+  variants[3].analyze = true;
+  variants[4].scope = ReadinessScope::RUNTIME;
+  variants[5].launch = LaunchContext::RUNNER_WRAPPED;
+  std::vector<std::string> keys{base.identity()};
+  for (const ReadinessRequest& variant : variants) {
+    keys.push_back(variant.identity());
+  }
+  // Values that a separator-based key would confuse.
+  ReadinessRequest joined = base;
+  joined.bpfScripts = {"x;y"};
+  ReadinessRequest split = base;
+  split.bpfScripts = {"x", "y"};
+  ReadinessRequest none = base;
+  none.bpfScripts = {};
+  ReadinessRequest emptyName = base;
+  emptyName.bpfScripts = {""};
+  ReadinessRequest shifted = base;
+  shifted.backend = "b;1:m";
+  shifted.profileArgs = "";
+  for (const ReadinessRequest* request : {&joined, &split, &none, &emptyName, &shifted}) {
+    keys.push_back(request->identity());
+  }
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    for (std::size_t j = i + 1; j < keys.size(); ++j) {
+      EXPECT_NE(keys[i], keys[j]) << "requests " << i << " and " << j << " share a key";
+    }
+  }
+  EXPECT_EQ(ReadinessRequest{base}.identity(), base.identity()) << "equal requests, equal keys";
+}
+
 /* ----------------------------- Results ----------------------------- */
 
-/** @test Each cause maps to one status and one leading word; analysis says so. */
+/** @test Each cause maps to one status and one leading word; analysis and completion say so. */
 TEST(ReadinessResultTest, CauseWordsAndStatus) {
   struct Row {
     ReadinessCause cause;
@@ -459,6 +531,11 @@ TEST(ReadinessResultTest, CauseWordsAndStatus) {
                                                    "install one", ReadinessStage::ANALYSIS);
   EXPECT_EQ(ANALYSIS.report.message, "analysis: missing: no analyzer");
   EXPECT_TRUE(ANALYSIS.collectionReady()) << "an analysis error still collects";
+  const ReadinessResult COMPLETION =
+      readinessResult(ReadinessCause::MISSING, "no output", "rerun", ReadinessStage::COMPLETION);
+  EXPECT_EQ(COMPLETION.report.message, "completion: missing: no output");
+  EXPECT_EQ(COMPLETION.report.status, EnvReport::Status::Error);
+  EXPECT_TRUE(COMPLETION.collectionReady()) << "a completion outcome concerns a capture that ran";
   EXPECT_FALSE(readinessResult(ReadinessCause::DENIED, "d", "").collectionReady());
   EXPECT_TRUE(readinessResult(ReadinessCause::CAVEAT, "d", "").collectionReady());
 }
@@ -544,6 +621,38 @@ TEST(ReadinessProbes, SeparateStreams) {
   EXPECT_TRUE(APART.succeeded()) << APART.describe();
   EXPECT_EQ(APART.output, "to stdout\n");
   EXPECT_EQ(APART.errorOutput, "to stderr\n");
+}
+
+/**
+ * @test One shell word: a safe word as it is, any other single-quoted with a
+ * quote written as '\''; and /bin/sh reads every quoted word back as it was.
+ */
+TEST(ReadinessShellQuote, OneWordTheShellReadsBack) {
+  using vernier::bench::detail::shellQuote;
+  EXPECT_EQ(shellQuote("/usr/bin/perf"), "/usr/bin/perf");
+  EXPECT_EQ(shellQuote("fifo:/tmp/ctl,/tmp/ack"), "fifo:/tmp/ctl,/tmp/ack");
+  EXPECT_EQ(shellQuote("a b"), "'a b'");
+  EXPECT_EQ(shellQuote("it's"), "'it'\\''s'");
+  EXPECT_EQ(shellQuote(""), "''");
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const ReadinessContext CTX = dir.context();
+  for (const std::string WORD :
+       {"plain", "two words", "it's", "$HOME;`id`", "a\\b*?[c]", "\"q\" & <r>", "", "x'y'z"}) {
+    const ProbeResult READ = runBoundedProbe({"/bin/sh", "-c", "printf '%s' " + shellQuote(WORD)},
+                                             5000, CTX, ProbeStreams::SEPARATE);
+    EXPECT_TRUE(READ.succeeded()) << WORD << ": " << READ.describe();
+    EXPECT_EQ(READ.output, WORD) << shellQuote(WORD);
+  }
+}
+
+/** @test A path as a macro-expanding tool reads it: each '%' doubled, nothing else changed. */
+TEST(ReadinessEscapePercent, DoublesEachPercent) {
+  using vernier::bench::detail::escapePercent;
+  EXPECT_EQ(escapePercent("/tmp/out/sanitizer.log"), "/tmp/out/sanitizer.log");
+  EXPECT_EQ(escapePercent("/tmp/a%b/x.log"), "/tmp/a%%b/x.log");
+  EXPECT_EQ(escapePercent("%%q{X}%"), "%%%%q{X}%%");
+  EXPECT_EQ(escapePercent(""), "");
 }
 
 /** @test Output beyond the limit is dropped, and the probe still ends. */
@@ -817,8 +926,11 @@ TEST(ReadinessOwnedHelper, AllDeliveriesRefusedLeavesItReportedAlive) {
   EXPECT_FALSE(helper.running());
 }
 
-/** @test On the sudo route the single child under the direct child is the one signalled. */
-TEST(ReadinessOwnedHelper, SudoRouteTargetsTheOnlyGrandchild) {
+/**
+ * @test sudo that executed the tool in its own process: the tool is the one
+ * signalled, not the one child the tool has of its own.
+ */
+TEST(ReadinessOwnedHelper, SudoRouteSignalsAToolSudoExecutedNotItsChild) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
   const std::string SUDO = dir.install("fake_sudo.sh", "sudo");
@@ -831,15 +943,55 @@ TEST(ReadinessOwnedHelper, SudoRouteTargetsTheOnlyGrandchild) {
   policy.context = ctx;
   OwnedHelper helper(policy);
   ASSERT_TRUE(helper.start({SUDO, "-n", "--", HELPER, "parent"}, "", "", 400, ctx.get()).running());
-  const std::vector<std::string> CHILDREN = dir.logLines("helper child pid=");
-  ASSERT_EQ(CHILDREN.size(), 1U) << dir.log();
-  const std::string GRANDCHILD = CHILDREN.front().substr(CHILDREN.front().find('=') + 1);
+  const pid_t TOOL = helper.pid();
+  ASSERT_EQ(dir.logLines("helper child pid=").size(), 1U) << dir.log();
   const HelperStopResult STOP = helper.stop();
   killLoggedChildren(dir);
   EXPECT_TRUE(STOP.reaped);
+  EXPECT_EQ(STOP.stoppedBy, SIGINT);
   ASSERT_FALSE(STOP.deliveries.empty());
   for (const auto& delivery : STOP.deliveries) {
-    EXPECT_EQ(std::to_string(delivery.target), GRANDCHILD) << delivery.command;
+    EXPECT_EQ(delivery.target, TOOL) << delivery.command;
+  }
+}
+
+/**
+ * @test sudo that stays the tool's parent, directly or through a monitor of
+ * its own (also named sudo): the tool below is the one signalled, and the
+ * stop ends it.
+ */
+TEST(ReadinessOwnedHelper, SudoRouteSignalsTheToolBelowSudo) {
+  for (const char* stays : {"child", "monitor"}) {
+    FakeToolDir dir;
+    ASSERT_TRUE(dir.ok());
+    const std::string SUDO = dir.install("fake_sudo.sh", "sudo");
+    const std::string KILL = dir.install("fake_kill.sh", "kill");
+    const std::string HELPER = dir.install("fake_helper.sh", "helper");
+    auto ctx = std::make_shared<const ReadinessContext>(dir.context({{"FAKE_SUDO_STAYS", stays}}));
+    HelperStopPolicy policy = quickPolicy(PrivilegeRoute::SCOPED_SUDO);
+    policy.sudoPath = SUDO;
+    policy.killPath = KILL;
+    policy.context = ctx;
+    OwnedHelper helper(policy);
+    ASSERT_TRUE(helper.start({SUDO, "-n", "--", HELPER, "run"}, "", "", 400, ctx.get()).running())
+        << stays;
+    const std::vector<std::string> STARTED = dir.logLines("helper run pid=");
+    ASSERT_EQ(STARTED.size(), 1U) << stays << ": " << dir.log();
+    const pid_t TOOL =
+        static_cast<pid_t>(std::stoi(STARTED.front().substr(STARTED.front().find('=') + 1)));
+    ASSERT_NE(TOOL, helper.pid()) << stays;
+    const HelperStopResult STOP = helper.stop();
+    const bool TOOL_ENDED = ::kill(TOOL, 0) != 0;
+    if (!TOOL_ENDED) {
+      (void)::kill(TOOL, SIGKILL); // this test started it, through the fake
+    }
+    EXPECT_TRUE(STOP.reaped) << stays;
+    EXPECT_EQ(STOP.stoppedBy, SIGINT) << stays;
+    ASSERT_FALSE(STOP.deliveries.empty()) << stays;
+    for (const auto& delivery : STOP.deliveries) {
+      EXPECT_EQ(delivery.target, TOOL) << stays << ": " << delivery.command;
+    }
+    EXPECT_TRUE(TOOL_ENDED) << stays << ": the tool outlived the stop";
   }
 }
 
@@ -894,6 +1046,181 @@ TEST(ReadinessOwnedHelper, UnwritableCaptureFileFailsToStart) {
   EXPECT_FALSE(START.started);
   EXPECT_EQ(START.spawnErrno, ENOENT);
   EXPECT_NE(START.errorTail.find("could not open"), std::string::npos) << START.errorTail;
+}
+
+/* ----------------------------- Child Processes ----------------------------- */
+
+namespace {
+
+/** @brief A process table in a temporary directory, laid out as /proc is. */
+class FakeProcTree {
+public:
+  FakeProcTree() {
+    std::string pattern = (std::filesystem::temp_directory_path() / "vernier_proc_XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      root_ = pattern;
+    }
+  }
+  ~FakeProcTree() {
+    std::error_code ec;
+    std::filesystem::remove_all(root_, ec);
+  }
+  FakeProcTree(const FakeProcTree&) = delete;
+  FakeProcTree& operator=(const FakeProcTree&) = delete;
+
+  [[nodiscard]] const std::string& root() const { return root_; }
+
+  /** @brief Process @p pid named @p comm with parent @p ppid (its stat line). */
+  void process(pid_t pid, const std::string& comm, pid_t ppid) const {
+    entry(std::to_string(pid), comm, ppid);
+  }
+
+  /** @brief A directory named @p name whose stat line names @p comm and @p ppid. */
+  void entry(const std::string& name, const std::string& comm, pid_t ppid) const {
+    const std::string DIR = root_ + "/" + name;
+    std::filesystem::create_directories(DIR);
+    std::ofstream(DIR + "/stat") << name << " (" << comm << ") S " << ppid << " " << name
+                                 << " 0 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0\n";
+  }
+
+  /** @brief The kernel's children list of @p pid, holding @p text. */
+  void childrenList(pid_t pid, const std::string& text) const {
+    const std::string DIR = root_ + "/" + std::to_string(pid) + "/task/" + std::to_string(pid);
+    std::filesystem::create_directories(DIR);
+    std::ofstream(DIR + "/children") << text;
+  }
+
+private:
+  std::string root_;
+};
+
+} // namespace
+
+/** @test Where the kernel lists a process's children, the list is what counts. */
+TEST(ReadinessChildProcesses, ReadsTheKernelsChildrenList) {
+  FakeProcTree proc;
+  ASSERT_FALSE(proc.root().empty());
+  proc.process(10, "sudo", 1);
+  proc.process(11, "bpftrace", 10);
+  proc.process(12, "sh", 10); // listed by stat only: the kernel's list wins
+  proc.childrenList(10, "11 ");
+  EXPECT_EQ(childProcesses(10, proc.root()), (std::vector<pid_t>{11}));
+  proc.childrenList(12, "");
+  EXPECT_TRUE(childProcesses(12, proc.root()).empty());
+}
+
+/**
+ * @test Without the kernel's list (CONFIG_PROC_CHILDREN off, as on the Jetson
+ * AGX Thor), each process's parent is read from its stat line, whatever its
+ * command name holds.
+ */
+TEST(ReadinessChildProcesses, WithoutTheListReadsEachParent) {
+  FakeProcTree proc;
+  ASSERT_FALSE(proc.root().empty());
+  proc.process(10, "sudo", 1);
+  proc.process(11, "a) (b 9 ", 10);
+  proc.process(13, "tool name", 10);
+  proc.process(14, "unrelated", 1);
+  proc.process(15, "grandchild", 11);
+  std::filesystem::create_directories(proc.root() + "/self");
+  // Names that are not pids are skipped, even when their stat names the parent.
+  proc.entry("99999999999999999999", "too large", 10);
+  proc.entry("16x", "not a pid", 10);
+  EXPECT_EQ(childProcesses(10, proc.root()), (std::vector<pid_t>{11, 13}));
+  EXPECT_EQ(childProcesses(11, proc.root()), (std::vector<pid_t>{15}));
+  EXPECT_TRUE(childProcesses(14, proc.root()).empty());
+  EXPECT_TRUE(childProcesses(99, proc.root()).empty()) << "no such process";
+}
+
+/** @test The default root lists a child this process started. */
+TEST(ReadinessChildProcesses, ListsALiveChildOfThisProcess) {
+  const pid_t CHILD = ::fork();
+  ASSERT_GE(CHILD, 0);
+  if (CHILD == 0) {
+    ::pause();
+    ::_exit(0);
+  }
+  const std::vector<pid_t> CHILDREN = childProcesses(::getpid());
+  ::kill(CHILD, SIGKILL);
+  int status = 0;
+  ::waitpid(CHILD, &status, 0);
+  EXPECT_NE(std::find(CHILDREN.begin(), CHILDREN.end(), CHILD), CHILDREN.end());
+}
+
+namespace {
+
+/** @brief A forked process holding children of its own, all paused. */
+struct ParentOfPaused {
+  pid_t pid = -1;
+  std::vector<pid_t> children;
+};
+
+/** @brief Fork a process that starts @p count paused children and reports their pids. */
+ParentOfPaused startParentOf(int count) {
+  ParentOfPaused out;
+  int fds[2] = {-1, -1};
+  if (::pipe(fds) != 0) {
+    return out;
+  }
+  out.pid = ::fork();
+  if (out.pid == 0) {
+    ::close(fds[0]);
+    for (int i = 0; i < count; ++i) {
+      const pid_t KID = ::fork();
+      if (KID == 0) {
+        ::pause();
+        ::_exit(0);
+      }
+      (void)!::write(fds[1], &KID, sizeof(KID));
+    }
+    ::close(fds[1]);
+    ::pause();
+    ::_exit(0);
+  }
+  ::close(fds[1]);
+  pid_t kid = -1;
+  while (out.pid > 0 && static_cast<int>(out.children.size()) < count &&
+         ::read(fds[0], &kid, sizeof(kid)) == static_cast<ssize_t>(sizeof(kid))) {
+    out.children.push_back(kid);
+  }
+  ::close(fds[0]);
+  return out;
+}
+
+/** @brief Kill @p parent's children and @p parent, and reap @p parent. */
+void stopParentOf(const ParentOfPaused& parent) {
+  for (const pid_t KID : parent.children) {
+    if (KID > 0) {
+      ::kill(KID, SIGKILL);
+    }
+  }
+  if (parent.pid > 0) {
+    ::kill(parent.pid, SIGKILL);
+    int status = 0;
+    ::waitpid(parent.pid, &status, 0);
+  }
+}
+
+} // namespace
+
+/**
+ * @test tracerPid() names a process's only child, and the process itself when
+ * it has none or more than one.
+ */
+TEST(ReadinessChildProcesses, TracerPidIsTheOnlyChild) {
+  const ParentOfPaused ONE = startParentOf(1);
+  const ParentOfPaused TWO = startParentOf(2);
+  const pid_t ONLY = ONE.children.empty() ? -1 : ONE.children.front();
+  const pid_t TRACER = vernier::bench::profiler_env::tracerPid(ONE.pid);
+  const pid_t ALONE = vernier::bench::profiler_env::tracerPid(ONLY);
+  const pid_t AMBIGUOUS = vernier::bench::profiler_env::tracerPid(TWO.pid);
+  stopParentOf(ONE);
+  stopParentOf(TWO);
+  ASSERT_EQ(ONE.children.size(), 1U);
+  ASSERT_EQ(TWO.children.size(), 2U);
+  EXPECT_EQ(TRACER, ONLY);
+  EXPECT_EQ(ALONE, ONLY) << "a process with no child is its own tracer";
+  EXPECT_EQ(AMBIGUOUS, TWO.pid) << "two children: neither is the tracer";
 }
 
 /* ----------------------------- Memo ----------------------------- */

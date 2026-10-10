@@ -15,8 +15,9 @@
  * the process ended.
  *
  * Notes:
- *  - Fake nsys and ncu first on PATH let the registry create the backend on any
- *    machine; the backend never runs them.
+ *  - NSYS_PROFILING_SESSION_ID, which nsys exports to the process it starts,
+ *    and fake nsys and ncu first on PATH let the registry create the backend
+ *    on any machine, as in an nsys session; the backend never runs them.
  *  - "Inside the range" is judged by order, not by a thread's nesting: each
  *    call notes how many pushes and pops the recorder had received when it
  *    ran, because the multi-GPU path launches on a worker thread while the
@@ -226,7 +227,10 @@ private:
 
 /* ----------------------------- Fixtures ----------------------------- */
 
-/** @brief --profile nsight, fake tools first on PATH, artifacts in a private root. */
+/**
+ * @brief --profile nsight in an nsys session's environment, fake tools first on
+ * PATH, artifacts in a private root.
+ */
 class NsightRangeTest : public ::testing::Test {
 protected:
   void SetUp() override {
@@ -238,6 +242,9 @@ protected:
     ASSERT_TRUE(tools_->ok()) << "could not create the fake tool directory";
     const char* oldPath = std::getenv("PATH");
     path_.emplace("PATH", tools_->dir() + ":" + (oldPath != nullptr ? oldPath : ""));
+    // A request for nsight collects only in an nsys session; this is the
+    // variable nsys exports to the process it starts.
+    session_.emplace("NSYS_PROFILING_SESSION_ID", "nsight-range-test");
 
     cfg_.profileTool = "nsight";
     cfg_.artifactRoot = tools_->dir() + "/artifacts";
@@ -250,6 +257,7 @@ protected:
 
   void TearDown() override {
     (void)ub::PerfRegistry::instance().take();
+    session_.reset();
     path_.reset();
     tools_.reset();
   }
@@ -257,6 +265,7 @@ protected:
   ub::PerfConfig cfg_{};
   std::optional<FakeNsightTools> tools_;
   std::optional<ScopedEnv> path_;
+  std::optional<ScopedEnv> session_;
 };
 
 /** @brief The same, for cases that measure on a CUDA device: skips without one. */

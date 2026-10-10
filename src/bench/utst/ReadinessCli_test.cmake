@@ -361,19 +361,19 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
     selected
     hint
   )
-  expect_eq("${_message}" "valgrind binary not found on PATH" "selected message")
+  expect_eq("${_message}" "missing: valgrind not found on PATH" "selected message")
   run(text --profile massif --profile-check)
   expect_has(
     "${text_OUT}" "Selected request: --profile massif\n  [FAIL] massif     ${_message}"
     "text selected row"
   )
   run(run --profile massif ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
-  set(_notice "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Falling back to no-op")
+  expect_eq("${run_RC}" "4" "run exit status")
+  set(_notice "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Nothing is collected")
   expect_has("${run_ERR}" "${_notice}" "run notice")
   count_of(_times "${run_ERR}" "${_notice}")
   expect_eq("${_times}" "1" "notices for two guarded cases")
-  expect_not("${run_ERR}" "requested but unavailable" "run notice")
+  expect_not("${run_ERR}" "unavailable on this platform" "run notice")
 
 elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
   # No opt-in: the attach runs as the current user, a denial says how to get
@@ -411,7 +411,7 @@ elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
     "selected hint"
   )
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
@@ -465,7 +465,7 @@ elseif (CASE STREQUAL "BpfInvalidValueLaunchesNothing")
   )
   expect_eq("${_message}" "configuration: BENCH_SUDO='maybe' is not a boolean" "selected message")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}" "run notice")
   read_log(_text)
   expect_eq("${_text}" "" "fake log (nothing may run)")
@@ -605,7 +605,7 @@ elseif (CASE STREQUAL "OffcpuRefusedStopLeavesNoTracer")
   expect_not("${row_MESSAGE}" "still runs" "selected message")
   expect_owned_and_gone("doctor")
   run(run --profile offcpu ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'offcpu': denied: cleanup: " "run notice")
   expect_owned_and_gone("run")
 
@@ -746,9 +746,9 @@ elseif (CASE MATCHES "^Gperf")
       "text selected row"
     )
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     set(_notice
-        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
     )
     expect_has("${run_ERR}" "${_notice}" "run notice")
     count_of(_times "${run_ERR}" "${_notice}")
@@ -779,10 +779,10 @@ elseif (CASE MATCHES "^Gperf")
     )
     expect_eq("${off_STATUS}" "ok" "selected status without --profile-analyze")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
       "run notice"
     )
     expect_has(
@@ -804,10 +804,10 @@ elseif (CASE MATCHES "^Gperf")
     selected_row(on --profile gperf --profile-analyze)
     expect_eq("${on_STATUS}" "ok" "selected status (the analyzer answers --help)")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[gperf] ${WORK_DIR}/bin/google-pprof failed: exit status 1: fake pprof: cannot read profile; raw profile kept at "
+      "[FAIL] Profiler 'gperf' (ReadinessFixture.First): analysis: unusable: ${WORK_DIR}/bin/google-pprof failed on the profile: exit status 1: fake pprof: cannot read profile; raw profile kept at "
       "analysis failure"
     )
     if (NOT EXISTS "${_prof}")

@@ -15,25 +15,31 @@
  * value is running memcheck alongside benchmarks to catch correctness
  * regressions introduced by an optimization pass.
  *
- * Wraps the binary externally (same as callgrind / massif):
+ * Memcheck checks only when valgrind runs the whole process; a request run
+ * without it fails (exit status 4) and prints the wrap command:
  *
+ *   bench run ./MyTest --profile memcheck --cycles 5 --gtest_filter='Foo.Bar'
+ *
+ *   # or by hand:
  *   valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
  *       --log-file=run.memcheck.log \
  *       ./MyTest --profile memcheck --cycles 5 --gtest_filter='Foo.Bar'
  *
- * Tools (selectable via --profile-args, passed through to memcheck):
- *   default               leak-check=summary, no track-origins
- *   "leak-full"           leak-check=full
- *   "track-origins"       track-origins=yes (helps locate uninit-read sources)
- *   combinations allowed; profileArgs is a substring match.
+ * Modes (--profile-args, words separated by spaces or commas):
+ *   default               --leak-check=full, as bench run passes it
+ *   "leak-full"           the same full leak check
+ *   "track-origins"       --track-origins=yes (helps locate uninit-read sources)
  */
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 
 namespace vernier {
 namespace bench {
@@ -42,7 +48,16 @@ namespace bench {
 
 class MemcheckProfiler final : public Profiler {
 public:
+  /**
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot check fails the run and creates nothing.
+   */
   MemcheckProfiler(const PerfConfig& cfg, std::string testName);
+
+  /** @brief Build from a decision that lets the request run. */
+  MemcheckProfiler(const PerfConfig& cfg, std::string testName,
+                   std::shared_ptr<const valgrind_tool::ValgrindPlan> plan);
+
   ~MemcheckProfiler() override = default;
 
   std::string toolName() const noexcept override { return "memcheck"; }
@@ -55,10 +70,28 @@ private:
   PerfConfig cfg_;
   std::string testName_;
   std::string artifactDir_;
-  bool runningUnderValgrind_{false};
+  std::shared_ptr<const valgrind_tool::ValgrindPlan> plan_;
 };
 
 /* --------------------------------- API --------------------------------- */
+
+/**
+ * @brief Read memcheck's mode from @p profileArgs into @p mode.
+ * @return The error that refuses a word other than leak-full and
+ *         track-origins; nullopt when the mode was read.
+ */
+std::optional<ReadinessResult> parseMemcheckMode(const std::string& profileArgs,
+                                                 valgrind_tool::ValgrindMode& mode);
+
+/**
+ * @brief The memcheck backend's readiness decision for @p request in @p ctx.
+ *
+ * The doctor's scopes probe the tool's start; a run reads its own memory map
+ * for valgrind's memcheck. --profile-analyze is an analysis-stage error:
+ * memcheck has no automatic analysis (its log is the report). On success the
+ * result's plan is a ValgrindPlan.
+ */
+ReadinessResult checkMemcheckRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
 
 std::unique_ptr<Profiler> makeMemcheckProfiler(const PerfConfig& cfg, const std::string& testName);
 

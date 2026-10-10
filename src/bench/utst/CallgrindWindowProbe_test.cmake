@@ -19,6 +19,10 @@
 #         VERNIER_EXTERNAL_WRAP_DIR set as tools/rust/src/bench/runner.rs sets
 #         them. Expect all three phases: the backend must leave a recording of
 #         the whole process alone.
+# analyze: the runner case with --profile-analyze and a stand-in
+#         callgrind_annotate first on PATH. The profile is complete only when
+#         valgrind exits, so the benchmark must not annotate it itself (bench
+#         run does, after the exit): the stand-in must never run.
 #
 # Prints "SKIPPED: <reason>", the tests' skip expression, in four cases only,
 # each with valgrind's own words where it has them: the probe is built with the
@@ -95,15 +99,27 @@ if (CASE STREQUAL "hint")
   set(_env ${_clean_env})
   set(_present workInsideWindow)
   set(_absent workBeforeWindow workAfterWindow)
-elseif (CASE STREQUAL "runner")
+elseif (CASE STREQUAL "runner" OR CASE STREQUAL "analyze")
   set(_wrap_dir "${WORK_DIR}/wrap")
   file(MAKE_DIRECTORY "${_wrap_dir}")
   set(_wrap valgrind --tool=callgrind "--callgrind-out-file=${_wrap_dir}/callgrind.out")
   set(_env VERNIER_EXTERNAL_WRAP=callgrind "VERNIER_EXTERNAL_WRAP_DIR=${_wrap_dir}")
   set(_present workBeforeWindow workInsideWindow workAfterWindow)
   set(_absent "")
+  if (CASE STREQUAL "analyze")
+    file(WRITE "${WORK_DIR}/stage/callgrind_annotate"
+         "#!/bin/sh\necho \"callgrind_annotate $*\" >> '${WORK_DIR}/annotate.log'\n"
+    )
+    file(
+      COPY "${WORK_DIR}/stage/callgrind_annotate"
+      DESTINATION "${WORK_DIR}/fakebin"
+      FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE
+    )
+    list(APPEND _env "PATH=${WORK_DIR}/fakebin:$ENV{PATH}")
+    list(APPEND _probe_args --profile-analyze)
+  endif ()
 else ()
-  message(FATAL_ERROR "CASE must be hint or runner")
+  message(FATAL_ERROR "CASE must be hint, runner or analyze")
 endif ()
 
 set(_profile "")
@@ -196,6 +212,12 @@ endif ()
 set(_problems "")
 if (NOT _rc EQUAL 0)
   string(APPEND _problems " expected exit 0;")
+endif ()
+if (CASE STREQUAL "analyze" AND EXISTS "${WORK_DIR}/annotate.log")
+  file(READ "${WORK_DIR}/annotate.log" _annotated)
+  string(APPEND _problems " the benchmark ran callgrind_annotate before valgrind wrote the"
+         " profile: ${_annotated};"
+  )
 endif ()
 if (NOT EXISTS "${_profile}")
   message(FATAL_ERROR "CallgrindWindowProbe (${CASE}): no profile at ${_profile};${_problems}")

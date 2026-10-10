@@ -86,10 +86,11 @@ enum class LaunchContext : std::uint8_t {
   NOT_WRAPPED       ///< The backend needs a wrapper and none is present.
 };
 
-/** @brief Which stage of the request a decision concerns. */
+/** @brief Which stage of the request a decision or an outcome concerns. */
 enum class ReadinessStage : std::uint8_t {
   COLLECTION, ///< Capturing data; an Error here means nothing is collected.
-  ANALYSIS    ///< A promised analysis; an Error here still collects and keeps the raw data.
+  ANALYSIS,   ///< A promised analysis; an Error here still collects and keeps the raw data.
+  COMPLETION  ///< The capture's finished output; outcomes only, never a decision.
 };
 
 /** @brief Why a decision came out as it did; selects the status and the message prefix. */
@@ -170,6 +171,16 @@ struct ReadinessRequest {
   bool analyze = false;                ///< --profile-analyze promised an analysis.
   ReadinessScope scope = ReadinessScope::DEFAULT_INVENTORY;
   LaunchContext launch = LaunchContext::IN_PROCESS;
+
+  /**
+   * @brief Every field of the request as one key, each length-prefixed.
+   *
+   * Two requests have the same identity exactly when all their fields are
+   * equal. The registry keeps one decision per identity, context and
+   * registration, so a field added to this struct is added here too, or two
+   * different requests would share a decision.
+   */
+  [[nodiscard]] std::string identity() const;
 };
 
 /**
@@ -193,7 +204,7 @@ struct ReadinessResult {
 
   /** @brief True unless collection itself cannot run (an Error at the collection stage). */
   [[nodiscard]] bool collectionReady() const noexcept {
-    return report.status != EnvReport::Status::Error || stage == ReadinessStage::ANALYSIS;
+    return report.status != EnvReport::Status::Error || stage != ReadinessStage::COLLECTION;
   }
 };
 
@@ -212,7 +223,8 @@ using PlannedFactory = std::function<std::unique_ptr<Profiler>(
  * UNVERIFIED gives Warning prefixed "unverified: "; every other cause gives
  * Error prefixed "missing: ", "unusable: ", "unsupported: ", "denied: ",
  * "configuration: ", "missing helper: " or "internal: ". An ANALYSIS-stage
- * result is further prefixed "analysis: ". @p remedy becomes the hint.
+ * result is further prefixed "analysis: ", a COMPLETION-stage one
+ * "completion: ". @p remedy becomes the hint.
  */
 [[nodiscard]] ReadinessResult readinessResult(ReadinessCause cause, std::string detail,
                                               std::string remedy,
@@ -355,6 +367,25 @@ enum class ProbeStreams : std::uint8_t {
  */
 [[nodiscard]] std::string outputTail(const std::string& text, std::size_t maxLines = 2);
 
+namespace detail {
+
+/**
+ * @brief @p word as one POSIX shell word: unchanged when every character is
+ * safe (letters, digits and `_@%+=:,./-`), otherwise in single quotes with
+ * each quote written as '\''. For the commands the backends run through
+ * `/bin/sh -c` and the ones they print for a user to run.
+ */
+[[nodiscard]] std::string shellQuote(const std::string& word);
+
+/**
+ * @brief @p path as a tool that expands macros in its output names reads it:
+ * each '%' written "%%". compute-sanitizer's --log-file takes %p, %q{VAR} and
+ * %% and refuses any other '%'.
+ */
+[[nodiscard]] std::string escapePercent(const std::string& path);
+
+} // namespace detail
+
 /**
  * @brief A private directory for one decision's probe files, removed on destruction.
  *
@@ -429,6 +460,21 @@ struct HelperStopResult {
 };
 
 /**
+ * @brief The children of process @p parent, in pid order.
+ *
+ * Read from `<procRoot>/<parent>/task/<parent>/children` where the kernel
+ * provides that list; a kernel built without it (CONFIG_PROC_CHILDREN off)
+ * has no such file, and then every `<procRoot>/<pid>/stat` is read for its
+ * parent id (the field after the command name's closing parenthesis, so a
+ * command name holding spaces or parentheses cannot shift it). An empty list
+ * when @p parent has no child or does not exist. Entries that cannot be read
+ * or parsed are skipped, and nothing but an allocation failure throws.
+ * @p procRoot lets tests use a tree of their own.
+ */
+[[nodiscard]] std::vector<pid_t> childProcesses(pid_t parent,
+                                                const std::string& procRoot = "/proc");
+
+/**
  * @brief A helper process this benchmark started and alone may signal.
  *
  * start() forks and executes argv[0] directly (an absolute path, often the
@@ -437,9 +483,12 @@ struct HelperStopResult {
  * helper ends. stop() delivers SIGINT, then SIGTERM, then SIGKILL through the
  * policy's route, waiting a bounded time after each and reporting every
  * delivery. Only processes this object started are signalled: its direct
- * child while that is not yet reaped, or, on the sudo route, the single child
- * listed under it (sudo may keep a monitor process between the two). An
- * empty or ambiguous list falls back to the direct child.
+ * child while that is not yet reaped, or, on the sudo route, the process that
+ * runs the tool: below the direct child while that is still sudo (by its
+ * command name) with exactly one child, through a monitor sudo may keep
+ * between itself and the tool; the direct child itself once sudo has
+ * executed the tool in it, whatever children the tool has. A sudo with no
+ * child or several is signalled itself.
  */
 class OwnedHelper {
 public:

@@ -17,8 +17,10 @@
  *    --branch-sim=yes to the wrap command
  *
  * Requirements:
- *  - valgrind installed (apt install valgrind)
- *  - Linux only (safe no-op on other platforms)
+ *  - valgrind installed (apt install valgrind), and valgrind running the
+ *    process: a request run without it fails (exit status 4) and prints the
+ *    wrap command
+ *  - Linux only
  *  - No special permissions needed (runs as normal user)
  *
  * Trade-offs vs sampling profilers:
@@ -28,18 +30,24 @@
  *  - Not for: Real-time profiling, measuring wall-clock time
  *
  * Usage:
- *   --profile callgrind                    # Basic instruction counts
- *   --profile callgrind --profile-analyze  # Auto-run callgrind_annotate
+ *   bench run ./MyTest --profile callgrind                    # Whole-process counts
+ *   bench run ./MyTest --profile callgrind --profile-analyze  # Then callgrind_annotate
  *   # Cache simulation: wrap with valgrind directly:
  *   #   valgrind --tool=callgrind --cache-sim=yes ./MyTest --profile callgrind
+ *
+ * The profile is complete when valgrind exits: bench run checks it and runs
+ * callgrind_annotate after that exit; under a manual wrap, read it then.
  */
 
 #include <memory>
+#include <optional>
 #include <string>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 
 namespace vernier {
 namespace bench {
@@ -62,7 +70,16 @@ namespace bench {
  */
 class CallgrindProfiler final : public Profiler {
 public:
+  /**
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot record fails the run and creates nothing.
+   */
   CallgrindProfiler(const PerfConfig& cfg, std::string testName);
+
+  /** @brief Build from a decision that lets the request run. */
+  CallgrindProfiler(const PerfConfig& cfg, std::string testName,
+                    std::shared_ptr<const valgrind_tool::ValgrindPlan> plan);
+
   ~CallgrindProfiler() override = default;
 
   std::string toolName() const noexcept override { return "callgrind"; }
@@ -72,23 +89,56 @@ public:
   void afterMeasure(const Stats& s) override;
 
 private:
-  void runAnnotateAnalysis() const;
+  void applyPlan();
 
   PerfConfig cfg_;
   std::string testName_;
   std::string artifactDir_;
+  std::shared_ptr<const valgrind_tool::ValgrindPlan> plan_;
   bool runningUnderValgrind_{false};
+  bool wrappedByRunner_{false};
   // True when this backend switches instrumentation around the measured
-  // window: under valgrind, with callgrind_control on PATH, and not under
-  // bench run's wrap, whose recording covers the whole process.
+  // window: under a wrap started by hand, with callgrind_control on PATH;
+  // bench run's wrap records the whole process.
   bool canToggle_{false};
 };
 
 /* --------------------------------- API --------------------------------- */
 
 /**
- * @brief Factory function for callgrind profiler.
- * @return Profiler instance, or nullptr if valgrind is not available.
+ * @brief Read callgrind's mode from @p profileArgs into @p mode.
+ * @return The error that refuses any word (callgrind takes none); nullopt
+ *         when the mode was read.
+ */
+std::optional<ReadinessResult> parseCallgrindMode(const std::string& profileArgs,
+                                                  valgrind_tool::ValgrindMode& mode);
+
+/**
+ * @brief The callgrind backend's readiness decision for @p request in @p ctx.
+ *
+ * The doctor's scopes probe the tool's start; a run reads its own memory map
+ * for valgrind's callgrind (its executable: callgrind maps no preload of its
+ * own). A wrap started by hand without callgrind_control is a caveat: the
+ * window cannot be switched. --profile-analyze is bench run's, after the
+ * process exits: ready under its wrap, an analysis-stage error under a wrap
+ * started by hand, and in the doctor's scopes an analysis-stage error when
+ * callgrind_annotate is missing. On success the result's plan is a
+ * ValgrindPlan.
+ */
+ReadinessResult checkCallgrindRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
+
+/**
+ * @brief checkCallgrindRequest() for a process whose memory map shows
+ * @p identity at the runtime scope (the two-argument form reads the map of
+ * @p ctx's process).
+ */
+ReadinessResult checkCallgrindRequestWithIdentity(const ReadinessRequest& request,
+                                                  const ReadinessContext& ctx,
+                                                  const valgrind_tool::ValgrindIdentity& identity);
+
+/**
+ * @brief Factory function for callgrind profiler: decides the request when
+ * the profiler is constructed.
  */
 std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg, const std::string& testName);
 

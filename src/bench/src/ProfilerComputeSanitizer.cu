@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <string>
 
+#include "src/bench/inc/ProfilerComputeSanitizerChecks.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
@@ -28,49 +29,8 @@ bool isComputeSanitizerOnPath() {
 // helper decides it, from what the tool exports and maps, never from a name.
 bool detectUnderSanitizer() { return profiler_env::isRunningUnderComputeSanitizer(); }
 
-std::string sanitizerToolFromArgs(const std::string& profileArgs) {
-  static const char* const TOOLS[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
-  for (const char* tool : TOOLS) {
-    if (profileArgs.find(tool) != std::string::npos) {
-      return tool;
-    }
-  }
-  return "memcheck"; // default
-}
-
-// @p path with each '%' written "%%": compute-sanitizer expands %p, %q{VAR}
-// and %% in its --log-file name and refuses any other '%'.
-std::string escapePercent(const std::string& path) {
-  std::string out;
-  for (const char CH : path) {
-    out += CH;
-    if (CH == '%') {
-      out += '%';
-    }
-  }
-  return out;
-}
-
-// @p word as one POSIX shell word: unchanged when every character is safe,
-// otherwise in single quotes with each quote written '\'' (the rule the
-// Nsight backend's printed commands follow).
-std::string shellQuote(const std::string& word) {
-  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-                                      "0123456789_@%+=:,./-";
-  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
-    return word;
-  }
-  std::string quoted = "'";
-  for (const char C : word) {
-    if (C == '\'') {
-      quoted += "'\\''";
-    } else {
-      quoted += C;
-    }
-  }
-  quoted += "'";
-  return quoted;
-}
+using detail::escapePercent;
+using detail::shellQuote;
 
 // The mode argument the commands carry: none for memcheck, the default the
 // registry checks; a tool asked for by name is passed on.
@@ -80,24 +40,23 @@ std::string toolArguments(const std::string& tool) {
 
 // What the backend prints when the process is not under the tool: the ways
 // to check it with the tool it was asked for. `bench run --profile
-// compute-sanitizer` wraps the process with memcheck whatever --profile-args
-// says, so it is offered for memcheck only, first, since it makes the folder
-// its wrap logs into; any tool runs by hand. The tool opens its log before
-// this program starts and drops it silently when the folder is missing, so
-// the by-hand command makes the folder first. The folder and the log are one
+// compute-sanitizer` wraps the process with the tool --profile-args names, so
+// it is offered first, with that request, since it makes the folder its wrap
+// logs into; the tool also runs by hand. The tool opens its log before this
+// program starts and drops it silently when the folder is missing, so the
+// by-hand command makes the folder first. The folder and the log are one
 // shell word each, quoted where they need it; the log's '%' is written "%%"
 // for the tool before it is quoted for the shell.
 std::string notWrappedHint(const std::string& tool, const std::string& artifactDir) {
-  const char* const ROUTES =
-      tool == "memcheck"
-          ? "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer -- [...]\n"
-            "[compute-sanitizer] or by hand, making the folder first (the tool opens its log "
-            "before this program starts):\n"
-          : "[compute-sanitizer] by hand, making the folder first (the tool opens its log before "
-            "this program starts):\n";
+  const std::string ROUTES =
+      "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer" +
+      toolArguments(tool) +
+      " -- [...]\n"
+      "[compute-sanitizer] or by hand, making the folder first (the tool opens its log before "
+      "this program starts):\n";
   return "\n[compute-sanitizer] not running under compute-sanitizer: this measurement runs "
          "unchecked. To check it:\n" +
-         std::string(ROUTES) + "[compute-sanitizer]   mkdir -p " + shellQuote(artifactDir) +
+         ROUTES + "[compute-sanitizer]   mkdir -p " + shellQuote(artifactDir) +
          " && compute-sanitizer --tool=" + tool +
          " --log-file=" + shellQuote(escapePercent(artifactDir) + "/sanitizer.log") +
          " \\\n"
@@ -120,7 +79,10 @@ std::string wrappedNotice(const std::string& tool, const std::string& artifactDi
 
 ComputeSanitizerProfiler::ComputeSanitizerProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  sanitizerTool_ = sanitizerToolFromArgs(cfg_.profileArgs);
+  // The tool, by the readiness check's own parser. The registry refuses a
+  // request holding a word the parser does not take before it builds this;
+  // built directly, the tool named decides (memcheck when none is).
+  (void)parseSanitizerTool(cfg_.profileArgs, sanitizerTool_);
   runningUnderSanitizer_ = detectUnderSanitizer();
 
   artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
@@ -143,16 +105,6 @@ void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {
   // it is wrapping the binary. When not wrapped, this backend is a no-op.
 }
 
-/* ----------------------------- Env check ----------------------------- */
-
-EnvReport checkComputeSanitizerEnvironment() {
-  if (!isComputeSanitizerOnPath()) {
-    return EnvReport{EnvReport::Status::Error, "compute-sanitizer not found on PATH",
-                     "Install the CUDA toolkit; compute-sanitizer ships with it."};
-  }
-  return EnvReport{EnvReport::Status::Ok, "compute-sanitizer available", ""};
-}
-
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeComputeSanitizerProfiler(const PerfConfig& cfg,
@@ -163,10 +115,28 @@ std::unique_ptr<Profiler> makeComputeSanitizerProfiler(const PerfConfig& cfg,
   return std::make_unique<ComputeSanitizerProfiler>(cfg, testName);
 }
 
+namespace {
+
+/** @brief The backend for a request the readiness check let collect. */
+std::unique_ptr<Profiler> makePlannedComputeSanitizerProfiler(const PerfConfig& cfg,
+                                                              const std::string& testName,
+                                                              const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::make_unique<ComputeSanitizerProfiler>(cfg, testName);
+}
+
+} // namespace
+
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND("compute-sanitizer",
-                                  ::vernier::bench::makeComputeSanitizerProfiler,
-                                  ::vernier::bench::checkComputeSanitizerEnvironment,
-                                  "Install CUDA toolkit; compute-sanitizer ships with it.")
+// The check is libbench's (ProfilerComputeSanitizerChecks.cpp), which
+// registers it with a passive profiler; this registration replaces that one
+// with the backend in every build that has it.
+VERNIER_REGISTER_READINESS_BACKEND("compute-sanitizer",
+                                   ::vernier::bench::checkComputeSanitizerRequest,
+                                   ::vernier::bench::makePlannedComputeSanitizerProfiler,
+                                   "Install the CUDA toolkit; compute-sanitizer ships with it.",
+                                   "NV_SANITIZER_INJECTION_PORT_BASE", "CUDA_INJECTION64_PATH")

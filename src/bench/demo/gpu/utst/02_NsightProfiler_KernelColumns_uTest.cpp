@@ -12,10 +12,11 @@
  *  - occupancy: the harness's estimate for the row's launch shape, taken from a
  *    measurement of the kernel in that shape in this process.
  *  - cupti*: CUPTI's records of the measured launches: one per launch (cycles
- *    times repeats; the warmup is outside the window), the registers each
- *    thread was allocated (the compiled count rounded up to a multiple of 8),
- *    the kernel's static shared memory and no dynamic. In a build without
- *    CUPTI the five cells are empty and the run says so.
+ *    times repeats; the warmup is outside the window), a median and a maximum
+ *    register count that agree and read as one of the two forms recorded for
+ *    this kernel (isRegisterForm), the kernel's static shared memory and no
+ *    dynamic. In a build without CUPTI the five cells are empty and the run
+ *    says so.
  *  - The cells the run states empty are empty; the NVML cells it does not state
  *    are readings; the cells these cases have nothing for (speedupVsCpu,
  *    memBandwidthGBs, the multi-GPU and unified-memory cells) are empty.
@@ -226,8 +227,29 @@ std::vector<Statement> statementsIn(const std::string& output) {
 
 /* ----------------------------- Sources ----------------------------- */
 
-/** @brief @p registers rounded up to a multiple of 8: the per-thread allocation unit. */
-int allocatedRegisters(int registers) { return (registers + 7) / 8 * 8; }
+/** @brief @p registers rounded up to a multiple of 8. */
+int roundedUpTo8(int registers) { return (registers + 7) / 8 * 8; }
+
+/**
+ * @brief Whether @p text, a register cell, is one of the two forms recorded
+ *        for a kernel compiled to @p compiled registers per thread: the
+ *        compiled count, or that count rounded up to a multiple of 8, written
+ *        as the CSV writes an integer.
+ *
+ * Neither form is promised. CUDA documents numRegs as the registers each
+ * thread of the function uses, and CUPTI documents registersPerThread as the
+ * registers each thread executing the kernel requires; neither says how the
+ * two relate. The forms are what runs of this kernel read: on the RTX 5000
+ * Ada a Release build compiled to 10 and read 16, and a Debug build compiled
+ * to 20 and read 20; the Jetson AGX Thor's Release build read 16 for 10. Any
+ * other text fails: an empty cell, 0, a fraction, and a count between the two
+ * forms or outside them. A build that reads another form fails the check
+ * until a run of it qualifies that form here.
+ */
+bool isRegisterForm(const std::string& text, int compiled) {
+  return compiled > 0 &&
+         (text == std::to_string(compiled) || text == std::to_string(roundedUpTo8(compiled)));
+}
 
 /**
  * @brief The harness's occupancy estimate for @p threadsPerBlock threads per
@@ -390,12 +412,15 @@ TEST_F(KernelColumns, MatchTheirSources) {
 
     // CUPTI's records of the measured launches.
     if (VERNIER_DEMO_02_HAS_CUPTI != 0) {
-      const int ALLOCATED = allocatedRegisters(attributes.numRegs);
+      const int COMPILED = attributes.numRegs;
       EXPECT_EQ(cell(row, "cuptiKernelLaunches"), std::to_string(CYCLES * REPEATS));
-      EXPECT_EQ(cell(row, "cuptiRegistersMedian"), std::to_string(ALLOCATED))
-          << "compiled registers " << attributes.numRegs;
-      EXPECT_EQ(cell(row, "cuptiRegistersMax"), std::to_string(ALLOCATED))
-          << "compiled registers " << attributes.numRegs;
+      for (const char* COLUMN : {"cuptiRegistersMedian", "cuptiRegistersMax"}) {
+        EXPECT_TRUE(isRegisterForm(cell(row, COLUMN), COMPILED))
+            << COLUMN << " is '" << cell(row, COLUMN) << "'; compiled to " << COMPILED
+            << " registers, the kernel reads " << COMPILED << " or " << roundedUpTo8(COMPILED);
+      }
+      EXPECT_EQ(cell(row, "cuptiRegistersMax"), cell(row, "cuptiRegistersMedian"))
+          << "the measured launches are one kernel in one shape";
       EXPECT_EQ(cell(row, "cuptiStaticSmemBytes"), std::to_string(attributes.sharedSizeBytes));
       EXPECT_EQ(cell(row, "cuptiDynamicSmemBytes"), "0");
     } else {

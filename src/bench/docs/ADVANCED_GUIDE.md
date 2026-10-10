@@ -293,6 +293,11 @@ PERF_TEST(MyComponent, PayloadSweep) {
 }
 ```
 
+`attachProfilerHooks()` gives the case the profiler `--profile` names;
+`ub::makePerfCaseWithProfiler(testName, cfg)` constructs the case and
+attaches it in one call. A `PerfCase` constructed without either gets no
+profiler (see [attachProfilerHooks()](#attachprofilerhooks-function)).
+
 ### Why Custom Config?
 
 **`PERF_GUARD(perf)` limitations:**
@@ -476,15 +481,39 @@ call of its own.
 **What it does:**
 
 1. Creates the backend that `cfg.profileTool` names (a no-op when no
-   `--profile` was given)
+   `--profile` was given), after checking that the request can run here; a
+   request that cannot gets no backend, and the run exits with status 4
+   after a report of the failure (see
+   [Troubleshooting](TROUBLESHOOTING.md#--profile--failed-and-exit-status-4))
 2. Starts it before the measured phase and stops it after, through the
    PerfCase's before/after measure hooks
 3. Records the tool and its artifact folder for the CSV's `profileTool` and
    `profileDir` columns
 
+**Which cases get a profiler:** only the cases that create one, through
+`PERF_GUARD` (`UB_PERF_GUARD`), `makePerfCaseWithProfiler()` or
+`attachProfilerHooks()`, and on the GPU `PERF_GPU_GUARD` or
+`attachGpuProfilerHooks()`. A case built with `PERF_GUARD_NOPROFILE`, or a
+bare `PerfCase`, gets none.
+
 **What happens if omitted** (on a `PerfCase` you construct): the test runs, but
-`--profile` attaches no profiler to it, so it collects nothing and no artifact
-folder is created for it.
+`--profile` attaches no profiler to it: the backend does nothing around its
+measured phase (no perf counting, no callgrind instrumentation window, no NVTX
+range) and no artifact folder is created for it. A tool that runs the whole
+process, such as valgrind, heaptrack, nsys, ncu or compute-sanitizer started
+by `bench run` or by hand, still records the case with the rest of the
+process. When no case that ran created a profiler, the run ends with a notice
+and its exit status is unchanged:
+
+```
+[profile] --profile perf: no case that ran was built with the profiler guard, so nothing was profiled.
+```
+
+and, under `bench run`'s wrap of a tool:
+
+```
+[profile] --profile massif: no case that ran was built with the profiler guard; the massif wrap still recorded the whole process.
+```
 
 **Example:**
 
@@ -505,24 +534,27 @@ PERF_TEST(MyComponent, Throughput) {
 
 Every backend below self-registers via the profiler registry; `bench doctor`
 (or `--profile-check`) walks the list and reports each one's environment
-readiness with the exact remediation hint.
+readiness with the exact remediation hint. "Under the tool" means the process
+must be started by that tool: `bench run --profile <name>` starts it (for
+every name marked so but `rocprof`), or you start it yourself; a run started
+without it fails with the command that would start it.
 
-| Profiler             | Layer | Purpose                                          | Requirements                           | Overhead |
-| -------------------- | ----- | ------------------------------------------------ | -------------------------------------- | -------- |
-| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | Linux, `kernel.perf_event_paranoid<=1` | ~5%      |
-| `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                          | ~10%     |
-| `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind                               | ~20-50x  |
-| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | Linux BPF + root / CAP_BPF             | <1%      |
-| `rapl`               | CPU   | Package energy consumption                       | Intel CPU + MSR access                 | <1%      |
-| `massif`             | CPU   | Heap usage timeline                              | valgrind                               | ~20x     |
-| `memcheck`           | CPU   | Memory errors and leaks                          | valgrind                               | ~20x     |
-| `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind                               | ~20x     |
-| `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace + root + tracefs              | low      |
-| `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack on PATH                      | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)       | ~5-10%   |
-| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | CUDA toolkit + nsys/ncu                | ~2x      |
-| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit                           | ~5-10x   |
-| `rocprof`            | GPU   | AMD ROCm GPU profiler                            | ROCm + rocprof                         | ~2x      |
+| Profiler             | Layer | Purpose                                          | Requirements                                                           | Overhead |
+| -------------------- | ----- | ------------------------------------------------ | ---------------------------------------------------------------------- | -------- |
+| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | perf for the running kernel; `perf_event_paranoid` 2 or lower, or root | ~5%      |
+| `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                                                          | ~10%     |
+| `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind, under the tool                                               | ~20-50x  |
+| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                 | <1%      |
+| `rapl`               | CPU   | Package energy consumption                       | Intel CPU + MSR access                                                 | <1%      |
+| `massif`             | CPU   | Heap usage timeline                              | valgrind, under the tool                                               | ~20x     |
+| `memcheck`           | CPU   | Memory errors and leaks                          | valgrind, under the tool                                               | ~20x     |
+| `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
+| `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
+| `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
+| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)                                       | ~5-10%   |
+| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
+| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
+| `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
@@ -552,9 +584,15 @@ machine-readable and enforceable:
 bench doctor MyComponent_PTEST --json > doctor.json
 
 # Fail a profile lane fast unless its tools are actually ready
-# ("warn" is not ready -- a warning offcpu row means empty artifacts):
+# ("warn" is not ready: --require accepts only [OK]):
 bench doctor MyComponent_PTEST --require offcpu,heaptrack
+
+# Check the request the lane runs, mode included, as bench run passes it:
+bench doctor MyComponent_PTEST --profile massif --profile-args pages --require massif
 ```
+
+`bench doctor` takes the binary's full path. With `--json` its stdout is one
+JSON document and the `--require` lines go to stderr.
 
 Assess-and-record on gate lanes, assess-and-enforce on profile lanes;
 the doctor never installs anything.
@@ -699,7 +737,8 @@ Provides complete main() function with:
 - PerfConfig singleton setup
 - CSV export after all tests
 - Profiler lifecycle management
-- Proper exit codes for CI/CD
+- An exit status for CI/CD: the tests' status, or 4 when the tests passed and
+  the requested `--profile` failed
 
 **Usage:**
 Place at end of test file:
@@ -725,23 +764,37 @@ PERF_MAIN()  // That's it - no custom main() needed!
 
 ```cpp
 int main(int argc, char** argv) {
-  // 1. Parse performance flags
+  // 1. Check that this benchmark and the libbench it loaded share one layout
+  vernier::bench::ensureBenchAbi();
+
+  // 2. Parse performance flags
   auto& cfg = vernier::bench::detail::perfConfigSingleton();
   vernier::bench::parsePerfFlags(cfg, &argc, argv);
 
-  // 2. Register global config for CSV export
+  // 3. Register global config for CSV export
   vernier::bench::setGlobalPerfConfig(&cfg);
 
-  // 3. Install CSV listener
+  // 4. Install CSV listener
   vernier::bench::installPerfEventListener(cfg);
 
-  // 4. Initialize GoogleTest
+  // 5. Initialize GoogleTest
   ::testing::InitGoogleTest(&argc, argv);
 
-  // 5. Run all tests
-  return RUN_ALL_TESTS();
+  // 6. Run all tests
+  const int rc = RUN_ALL_TESTS();
+
+  // 7. Warn when --profile was given and the filter matched no test
+  VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);
+
+  // 8. Report each failure of the --profile request and return the run's
+  //    status: the tests' status, or 4 when they passed and the profile failed
+  return vernier::bench::ProfilerRegistry::instance().finishRun(
+      cfg, rc, ::testing::UnitTest::GetInstance()->test_to_run_count());
 }
 ```
+
+Step 8 comes after `RUN_ALL_TESTS()` returns, in its own statement: GoogleTest
+counts the selected tests during the run.
 
 **When NOT to use:**
 
@@ -791,11 +844,11 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 **Profiling flags:**
 
 ```bash
---profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind
+--profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind|massif|memcheck|helgrind|offcpu|heaptrack|jemalloc|nsight (or nsys)|ncu|compute-sanitizer|rocprof
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
 --profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
---profile-analyze      # Auto-run analysis after profiling
+--profile-analyze      # Run the profile's analysis (callgrind: bench run, after valgrind exits)
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 ```
 
@@ -1026,26 +1079,29 @@ linked at build time; no `--profile` flag required. See
 
 GPU-specific profilers:
 
-| Profiler            | Purpose                                          | Requirements            | Output                                                                          |
-| ------------------- | ------------------------------------------------ | ----------------------- | ------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | CUDA toolkit + nsys/ncu | `profile.nsys-rep` (default), `kernel_replay.ncu-rep` (`--profile-args replay`) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | CUDA toolkit            | `sanitizer.log`                                                                 |
-| `rocprof`           | AMD ROCm GPU profiler                            | ROCm + rocprof          | `results.{csv,json}`                                                            |
+| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                        |
+| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute`), `kernel_replay.ncu-rep` (the printed replay command) |
+| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                               |
+| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                               |
+
+"Under it" means the process must be started by the tool, as for the CPU
+tools in [Available Profilers](#available-profilers).
 
 **Using Nsight:**
 
 ```bash
-# Profile specific kernel (default Systems mode)
-./test --profile nsight --gtest_filter="*MyKernel"
+# Profile specific kernel (default Systems mode): bench run starts it under nsys
+bench run ./test --profile nsight -- --gtest_filter="*MyKernel"
+# Generates: bench-out/test.nsight/profile.nsys-rep and the nsys stats summaries
 
-# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep
-
-# Kernel deep-dive (Compute replay)
+# Kernel deep-dive (Compute replay): bench run does not wrap a replay. Run the
+# benchmark directly: it fails, printing the ncu --metrics command to run
 ./test --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+# That command writes ./kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu-ui kernel_replay.ncu-rep
 ```
 
 ### GPU Best Practices

@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (16 files)
+# Sources (20 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -26,6 +26,10 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ValgrindReaderAssertion_uTest.cpp"
 )
 
@@ -131,13 +135,14 @@ target_include_directories(TestBenchNvmlAbsent BEFORE PRIVATE "${PROJECT_SOURCE_
 target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (2 files)
+# GPU Unit Tests (3 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
-# skip without one). TestBenchNsight: the Nsight backend, which lives in
-# libbench_cuda but makes no CUDA call, so it needs the toolkit and no device.
-# Both exist only where libbench_cuda does.
+# skip without one). TestBenchNsight: the Nsight backend, and the backends the
+# registry builds for the GPU names once libbench_cuda's registrations replace
+# libbench's; they live in libbench_cuda but make no CUDA call, so they need
+# the toolkit and no device. Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -159,6 +164,7 @@ if (TARGET bench_cuda)
     TestBenchNsight
     SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsight_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuRegistration_uTest.cpp"
     LINK
     bench
     bench_cuda
@@ -288,6 +294,19 @@ if (TARGET TestBench)
     TestBench
     PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
   )
+  # Tables both languages are tested against (the Rust tools read them in
+  # place), e.g. the profile aliases and the profile-failed exit status.
+  target_compile_definitions(
+    TestBench PRIVATE VERNIER_SHARED_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tools/rust/tests/fixtures"
+  )
+  # The gperf lifecycle tests ask gperftools which captures run, so TestBench
+  # links what libbench links for them.
+  if (GPERF_PROFILER_LIB)
+    target_link_libraries(TestBench PRIVATE ${GPERF_PROFILER_LIB})
+  endif ()
+  if (VERNIER_LINK_TCMALLOC)
+    target_link_libraries(TestBench PRIVATE ${GPERF_TCMALLOC_LIB})
+  endif ()
 endif ()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
@@ -341,15 +360,17 @@ add_library(
 target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_DIR}")
 
 # ------------------------------------------------------------------------------
-# Callgrind Window Probe (2 tests)
+# Callgrind Window Probe (3 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
 # valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
 # prints must record the window and none of the work around it, the wrap
-# `bench run` uses the whole process. A process fixture with its own PERF_MAIN,
-# run only by these tests; they skip without valgrind, where valgrind cannot
-# read the probe and says so, and in a build with the address sanitizer, which
-# the driver learns from the build's SANITIZER setting.
+# `bench run` uses the whole process, and under that wrap with
+# --profile-analyze the benchmark leaves the annotation to `bench run`, which
+# makes it after valgrind has written the profile. A process fixture with its
+# own PERF_MAIN, run only by these tests; they skip without valgrind, where
+# valgrind cannot read the probe and says so, and in a build with the address
+# sanitizer, which the driver learns from the build's SANITIZER setting.
 # ------------------------------------------------------------------------------
 
 set(_probe_sanitizer "")
@@ -368,7 +389,7 @@ vernier_add_gtest(
 )
 
 if (TARGET CallgrindWindowProbe)
-  foreach (_case Hint Runner)
+  foreach (_case Hint Runner Analyze)
     string(TOLOWER "${_case}" _mode)
     add_test(
       NAME CallgrindWindow${_case}Test

@@ -356,6 +356,42 @@ ldd ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST | grep libbench
 
 ---
 
+### "--profile ... failed" and Exit Status 4
+
+**Symptoms:** the tests pass, but the benchmark exits with status 4 and ends
+with a report of the profile request that failed, here a misspelled name:
+
+```
+[profile] --profile perff failed; the run exits with status 4:
+[profile]   perff: unknown profiler 'perff'
+```
+
+Earlier in the run a `[FAIL] Profiler 'perff'` line reported the same failure
+with its remedy (for an unknown name, the list of available profilers).
+Through `bench run`, the same report is followed by `bench`'s own last line,
+and `bench` exits 1:
+
+```
+Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+```
+
+**Cause:** the run was given `--profile` and did not get that profile: the
+name is unknown, the tool cannot collect in this environment, or a requested
+analysis (`--profile-analyze`) could not run or failed. The tests still ran and
+their results are valid, but the requested profile is missing or incomplete,
+so the run does not pass. When tests fail as well, the run exits with their
+status and the report still lists the profile failure.
+
+**Fix:** apply the remedy printed with the `[FAIL]` line, and check the
+request before the next run: `--profile-check` with the same `--profile`
+options prints the same verdict. `--profile cupti` never exits 4, and a run
+without `--profile` exits 4 only when a profiler the benchmark constructs
+itself reports a failure. A benchmark with its own `main()` returns this
+status from `ProfilerRegistry::finishRun()`, called after `RUN_ALL_TESTS()` as
+in [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
+
+---
+
 ### "libbench.so.1: cannot open shared object file"
 
 **Symptoms:** a benchmark built against an earlier release does not start;
@@ -527,12 +563,13 @@ before any profiler or `--repeats` run.
 Under `--profile X`, vernier arms a SIGALRM watchdog around each measured loop
 (the repeats of `measured()` and `throughputLoop()`). A loop that runs longer
 than 300 s stops the run with exit status 2 and a diagnostic naming the test and
-the profile tool. `--profile-test-timeout <seconds>` changes the limit; under
-`--profile`, `0`, a negative value or a non-number means the 300 s default, so
-there the watchdog cannot be switched off. It is not armed without `--profile`,
-and it does not cover warmup, `--target-time` calibration, the profiler's own
-start and stop, `contentionRun()` or GPU measurements; an external `timeout`
-bounds those.
+the profile tool. `--profile-test-timeout <seconds>` changes the limit, and
+`--profile-test-timeout 0` switches the watchdog off; a value that is not a
+whole number of seconds from 0 (a negative number, `30s`, text) stops the run
+before any test with exit status 2 and the accepted range. It is not armed
+without `--profile`, and it does not cover warmup, `--target-time`
+calibration, the profiler's own start and stop, `contentionRun()` or GPU
+measurements; an external `timeout` bounds those.
 
 **Debug:**
 
@@ -637,8 +674,8 @@ watch -n 1 nvidia-smi
 **Debug steps:**
 
 ```bash
-# Profile to identify bottleneck
-./MyKernel_GPU_PTEST --profile nsight --gtest_filter="*CpuVsGpu*"
+# Profile to identify bottleneck (bench run starts it under nsys)
+bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*CpuVsGpu*"
 
 # Check all GPU metrics in CSV
 cat results.csv | grep -E "(transfer|occupancy|speedup)"
@@ -732,11 +769,39 @@ Error: tool not found: 'nsys' is not on PATH; --profile nsight runs the benchmar
 must be on `PATH`: `callgrind`, `massif`, `memcheck` and `helgrind`
 (`valgrind`), `heaptrack`, `compute-sanitizer`, `nsight` (`nsys`) and `ncu`.
 `--taskset` needs `taskset` the same way. `bench profile-all` reports the same
-line for that profiler and moves on to the next one.
+line for that profiler, runs the others, and exits 1 after its summary.
 
 **Fix:** install the named program, or add the directory that holds it to
 `PATH`. `bench doctor <binary>` lists each profiler backend the binary has and
 whether its tool is available.
+
+---
+
+### A Profile That Runs Under Its Tool Fails Without It
+
+**Symptoms:** a benchmark run directly with `--profile callgrind`, `massif`,
+`memcheck`, `helgrind`, `heaptrack`, `nsight` (or `nsys`), `ncu`,
+`compute-sanitizer` or `rocprof` runs its tests and exits with status 4.
+When its first case creates the profiler, it prints:
+
+```
+[FAIL] Profiler 'massif': missing: massif collects only when valgrind's massif runs the process, and valgrind does not run this one
+   Wrap it: valgrind --tool=massif --massif-out-file=./massif.out <this-binary> --profile massif [...]; or run it with bench run --profile massif, which wraps it.
+   Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
+```
+
+**Cause:** these tools record a process only when they start it, and nothing
+started this one under the tool, so nothing was collected. A process that
+runs under another tool than the requested one fails the same way, naming
+both (`--profile ncu needs ncu, and this process runs under nsys`).
+
+**Fix:** run it as the line says: `bench run <binary> --profile <name>`
+starts the binary under the tool (every name above but `rocprof`, and every
+mode but an Nsight kernel replay), or start it yourself with the printed
+command. Under the tool, the valgrind tools and heaptrack are confirmed from
+the process's own memory map. nsys, ncu, compute-sanitizer and rocprof cannot
+be confirmed from inside the process: the run proceeds with a `[WARN] ...
+unverified:` line that says so, and the tool's report is the evidence.
 
 ---
 
@@ -767,22 +832,31 @@ then install a generic perf build and put it first on `PATH`, as the
 [Thor rig](rigs/RIG_THOR_AGX.md) does. In a container, see
 [Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
 
-**2. Check permissions** (a `perf` that runs can still be refused):
+**2. Check permissions** (a `perf` that runs can still be refused). The
+doctor's perf row says so, quoting perf:
+
+```
+[FAIL] perf       denied: perf stat cannot open the counters as this user: Access to performance monitoring and observability operations is limited.
+```
+
+`kernel.perf_event_paranoid` at 2 lets a user count user-space events, which
+is what the perf backend asks for; above 2 (some distributions default to 3
+or 4), lower it, or run as root:
 
 ```bash
-# Option 1: Run as root
+# Option 1: Lower the paranoid level
+sudo sysctl -w kernel.perf_event_paranoid=2
+
+# Option 2: Run as root
 sudo ./MyComponent_PTEST --profile perf
-
-# Option 2: Adjust paranoid level
-sudo sysctl -w kernel.perf_event_paranoid=-1
-
-# Option 3: Add capability
-sudo setcap cap_perfmon=ep ./MyComponent_PTEST
 ```
 
 **3. Check what perf wrote**: the default mode's `stat.txt` holds perf's
 output, the counts or its error message; a `--profile-args "record ..."` run
-writes `perf.data`:
+writes `perf.data`. A run whose perf ended early, had to be stopped with
+SIGTERM or SIGKILL, left an error message instead of counts, or left no
+confirmed `perf.data` reports `[FAIL] Profiler 'perf' (<test>)` with perf's
+own last words and exits with status 4:
 
 ```bash
 cat MyComponent.Test.perf/stat.txt
@@ -791,26 +865,34 @@ perf report -i MyComponent.Test.perf/perf.data --stdio
 
 ---
 
-### bpftrace Requires Sudo
+### bpftrace Requires Root
 
-**Symptoms:**
+**Symptoms:** `--profile bpftrace` or `--profile offcpu` fails, and the
+doctor's `bpftrace` and `offcpu` rows quote bpftrace:
 
 ```
-bpftrace: insufficient privileges
+ERROR: bpftrace currently only supports running as the root user.
 ```
+
+**Cause:** bpftrace refuses every effective user but root, whatever
+capabilities the user has, so `CAP_BPF` on the benchmark does not help.
 
 **Solutions:**
 
-**1. Run with sudo**:
+**1. Run only the tracer as root**: give your user passwordless sudo for
+`bpftrace` and `kill` and set `BENCH_SUDO=1`. The backend then runs bpftrace,
+and the `kill` that stops it, through `sudo -n`; the test and its output files
+stay yours. [BPF Scripts](BPF_SCRIPTS.md) says what the sudoers grant must
+allow.
 
 ```bash
-sudo ./MyComponent_PTEST --profile bpftrace
+BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace --bpf cpu_migrations
 ```
 
-**2. Add CAP_BPF** (Linux 5.8+):
+**2. Run the benchmark as root**:
 
 ```bash
-sudo setcap cap_bpf,cap_perfmon=ep ./MyComponent_PTEST
+sudo ./MyComponent_PTEST --profile bpftrace --bpf cpu_migrations
 ```
 
 **3. Skip if unavailable**:
@@ -828,41 +910,47 @@ sudo setcap cap_bpf,cap_perfmon=ep ./MyComponent_PTEST
 
 **Solutions:**
 
-**1. Check Nsight is installed**:
+**1. Start the process under the tool.** nsys and ncu record a process only
+when they start it. Run directly with `--profile nsight` (or `nsys`, or
+`ncu`), a benchmark fails (exit status 4 when its tests pass) and prints the
+command that captures it:
 
-```bash
-which nsys
-which ncu
+```
+[FAIL] Profiler 'nsight': missing: nsight collects only when nsys starts the process, and nsys did not start this one
+   Wrap it: nsys profile -o ./profile -t cuda,nvtx --force-overwrite true <this-binary> --profile nsight [...]; or run it with bench run --profile nsight, which wraps it and writes the summary reports.
 ```
 
-**2. Check the artifact directory**. A direct run writes one folder per
-profiled test, named after the test; under `bench run` the whole run's data is
-in one folder named after the binary, and no per-test folder is created:
+`bench run <binary> --profile nsight` starts it under nsys, and under ncu for
+`--profile ncu` or `--profile-args compute`. A kernel replay
+(`--profile-args replay`) is the one mode `bench run` does not wrap: run the
+benchmark under the `ncu --metrics ...` command it prints.
+
+**2. Check that the mode's tool runs here.** Each mode needs one program:
+nsys for Nsight Systems, ncu for the compute modes and `--profile ncu`.
+`bench doctor <binary> --profile nsight --profile-args compute` reports that
+program's row, `unverified` when it runs (the doctor cannot see whether it
+captures the benchmark's GPU work) and `missing` when it is not on `PATH`.
+
+**3. Check the artifact directory**. Under `bench run` the whole run's data
+is in one folder named after the binary, and no per-test folder is created. A
+wrap typed by hand writes its report where its `-o` says, and the benchmark
+also creates a folder for each profiled test, named after the test, which the
+report does not go into:
 
 ```bash
-# ./test --profile nsight
-ls -la Suite.Case.nsight/
-
 # bench run ./test --profile nsight
 ls -la bench-out/test.nsight/
+
+# nsys profile -o ./profile ... ./test --profile nsight
+ls -la profile.nsys-rep Suite.Case.nsight/
 ```
 
 `--profile ncu` writes `.ncu` folders in place of `.nsight` in both cases.
 
-**3. Use manual profiling**:
-
-```bash
-# Nsight Systems
-nsys profile --trace=cuda ./test --gtest_filter="*Specific*"
-
-# Nsight Compute
-ncu --set full ./test --gtest_filter="*Specific*"
-```
-
 **4. `nsys` runs but the report has no GPU activity**: nsys completes without
 error and writes a `.nsys-rep`, yet `nsys stats --report cuda_gpu_kern_sum`
-reports "does not contain CUDA kernel data" and `nsight-parse` writes 0 rows.
-Two distinct, fixable causes:
+reports "does not contain CUDA kernel data" and `bench nsight-parse` writes 0
+rows. Two distinct, fixable causes:
 
 - **Build toolkit ahead of the driver.** A binary built with a CUDA toolkit
   whose minor version is higher than the CUDA the driver provides (the "CUDA
@@ -873,16 +961,29 @@ Two distinct, fixable causes:
   tell-tale: GPU benchmarks and CSV metrics succeed while the nsys timeline is
   empty.
 
-- **The in-process CUPTI collector holds the single client slot.** CUPTI allows
-  one client per process. When the binary uses the in-process CUPTI collector
-  (the automatic GPU CSV columns), it claims that slot and starves an external
-  nsys / ncu session. Set `VERNIER_DISABLE_CUPTI=1` when wrapping the binary so
-  the in-process collector stands down and the external tool can attach:
+- **Another CUPTI client holds the single client slot.** CUPTI allows one
+  client per process. The in-process CUPTI collector (the automatic GPU CSV
+  columns) stands down by itself inside an nsys or ncu session, and says so:
 
-  ```bash
-  VERNIER_DISABLE_CUPTI=1 nsys profile -o out --trace=cuda,nvtx \
-      ./test --profile nsight --gtest_filter="*Specific*"
   ```
+  [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+  ```
+
+  Under a tool it does not recognize as a session, set
+  `VERNIER_DISABLE_CUPTI=1` so the collector stands down.
+
+**5. ncu prints `ERR_NVGPUCTRPERM`.** The driver gives the GPU performance
+counters to root only, and the tests pass with no kernel profiled; `bench run`
+then ends with `Error: the benchmark exited with status 1`. The doctor's ncu
+row names the setting when it is on and the process is not root
+(`the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params)`).
+Run ncu as root, keeping your `PATH`, and give the output back to your user:
+
+```bash
+sudo env PATH="$PATH" bench run ./test --profile ncu --cycles 3 --repeats 1 -- \
+  --gtest_filter="*Specific*"
+sudo chown -R "$(id -u):$(id -g)" bench-out
+```
 
 If you only need per-kernel metrics, the in-process CUPTI columns (kernel time,
 registers, shared memory, launch count) populate automatically with no nsys
@@ -932,25 +1033,29 @@ lscpu | grep "Model name"
 
 ### Container Validation Fails
 
-**Symptoms:** `validate_container.sh` reports errors.
+**Symptoms:** a profile lane's check in a container,
+`bench doctor <binary> --require <backends>`, exits 1:
+
+```
+[require] perf: NOT READY (denied: perf stat cannot open the counters as this user: Access to performance monitoring and observability operations is limited.)
+```
 
 **Solutions:**
 
-**Check specific failures:**
+**See every profiler's row, with its remedy** (advisory: it exits 0 whatever
+it finds):
 
 ```bash
-docker run --rm mybench:latest ./tst/validate_container.sh
+docker run --rm mybench:latest bash -c \
+  "source build/native-linux-debug/.env && bench validate build/native-linux-debug/bin/ptests/MyComponent_PTEST"
 ```
 
 **Common fixes:**
 
-**1. Python packages missing**:
+**1. A tool is not in the image** (`missing: ... not found on PATH`): install
+it when the image is built (valgrind, heaptrack, bpftrace).
 
-```dockerfile
-RUN pip3 install pandas matplotlib seaborn scipy
-```
-
-**2. FlameGraph tools not found**:
+**2. FlameGraph tools not found** (`bench validate`'s FlameGraph row):
 
 ```dockerfile
 RUN git clone https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
@@ -958,8 +1063,11 @@ ENV PATH="/opt/FlameGraph:${PATH}"
 ENV FLAMEGRAPH_DIR="/opt/FlameGraph"
 ```
 
-**3. Perf not available**: see
+**3. Perf not available or refused**: see
 [Perf Doesn't Work in Container](#perf-doesnt-work-in-container).
+
+The [Docker Setup Guide](DOCKER_SETUP.md#container-validation) shows both
+checks and a smoke test.
 
 ---
 
@@ -1121,8 +1229,11 @@ about.
 ```
 
 A direct run writes each profiled test's artifacts to a `<Test>.<tool>/`
-subdirectory of that root (`.bpf` for bpftrace). A `/` in a parameterized
-test's name is written `+2F` and a `+` as `+2B`, so `Parts/Join.V0/n1000` gets
+subdirectory of that root (`.bpf` for bpftrace). A tool started by hand
+around the whole process writes its file where its own output option says,
+and the `<Test>.<tool>/` folders the run creates stay empty. A `/` in a
+parameterized test's name is written `+2F` and a `+` as `+2B`, so
+`Parts/Join.V0/n1000` gets
 `Parts+2FJoin.V0+2Fn1000.gperf/`. Under `bench run`, a profiler that
 `bench run` wraps around the whole process (the valgrind tools, heaptrack,
 compute-sanitizer, nsight, ncu, and jemalloc when its library can be
@@ -1175,9 +1286,10 @@ Error: tool not found: FlameGraph scripts not found; set $FLAMEGRAPH_DIR or clon
 
 **1. Record call stacks, for long enough**: `--profile perf` on its own runs
 `perf stat` and writes only `stat.txt`. A flamegraph needs the `perf.data` that
-record mode writes, with samples in it. perf needs time to attach, so a measured
-phase of a few milliseconds can end before it samples (`perf report` then says
-the file has no samples); `--target-time` lengthens the phase:
+record mode writes, with samples in it. The measured phase starts once perf is
+sampling, but a phase of a few milliseconds holds few samples (with none,
+`perf report` says the file has no samples); `--target-time` lengthens the
+phase:
 
 ```bash
 ./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \
@@ -1205,19 +1317,19 @@ perf report -i artifacts/MyComponent.Test.perf/perf.data --stdio
 
 ### CSV Parsing Errors
 
-**Symptoms:**
+**Symptoms:** `bench summary` (or `bench compare`) stops with a parse error
+that names the file, the test and the column it could not read, and exits 1:
 
 ```
-Error: Could not parse CSV
+Error: parse error: bad.csv, line 1: test 'ReadinessFixture.First' has wallCV 'garbage', which is not a number
 ```
 
 **Solutions:**
 
-**1. Validate CSV format**:
-
-```bash
-bench validate results.csv
-```
+**1. Fix or regenerate the named value**: the error names the test and the
+column; a CSV the harness writes (`--csv`) holds numbers in every timing
+column, so a value like this one was edited or cut short. Rerun the benchmark
+with `--csv` to write the file again.
 
 **2. Check file isn't empty**:
 

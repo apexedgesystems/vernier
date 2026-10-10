@@ -6,7 +6,7 @@
 //! Usage:
 //!   bench summary <results.csv>                      # Pretty-print one CSV
 //!   bench compare <baseline.csv> <candidate.csv>     # Colored median-change diff
-//!   bench validate                                   # CPU environment readiness
+//!   bench validate [<binary>]                        # Profiling tools here (advisory)
 //!   bench gpu-env                                    # GPU environment readiness
 //!   bench gpu-lock lock [--freq MHz] [-- cmd...]     # Lock GPU clocks for benchmarking
 //!   bench gpu-lock reset                             # Reset GPU clocks to default
@@ -100,8 +100,12 @@ enum Command {
         fail_on_regression: bool,
     },
 
-    /// Check environment readiness for profiling
+    /// Report the profiling tools and settings this host has, or a binary's
+    /// profilers at advisory severity; never fails on them (bench doctor
+    /// --require is the gate)
     Validate {
+        /// A benchmark binary whose default-mode doctor rows to report
+        binary: Option<PathBuf>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -134,17 +138,23 @@ enum Command {
         #[arg(long)]
         repeats: Option<u32>,
 
-        /// Profiling tool (passed to binary as --profile)
+        /// Profiling tool, passed to the binary as --profile by its canonical
+        /// name (nsys is nsight)
         #[arg(long)]
         profile: Option<String>,
 
-        /// Verbatim pass-through to the profiler backend (passed to the
-        /// binary as --profile-args, e.g. "replay" for ncu kernel replay)
-        #[arg(long)]
+        /// The profile's mode, passed to the binary as --profile-args. For a
+        /// profile bench run wraps it also selects the wrap (massif: pages or
+        /// stacks; memcheck: leak-full, track-origins; helgrind: drd;
+        /// compute-sanitizer: memcheck, racecheck, synccheck or initcheck;
+        /// nsight: compute), and any other word is refused. May start with
+        /// '-', e.g. "-e cycles" for perf
+        #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 
-        /// Per-test profiler watchdog timeout in seconds (passed to the
-        /// binary as --profile-test-timeout)
+        /// Per-test profiler watchdog timeout in seconds, passed to the binary
+        /// as --profile-test-timeout: 0 turns the watchdog off; omitted, the
+        /// binary uses 300 under --profile
         #[arg(long)]
         profile_test_timeout: Option<u32>,
 
@@ -158,6 +168,12 @@ enum Command {
         /// Pin to CPUs (e.g., "0,1,3")
         #[arg(long)]
         taskset: Option<String>,
+
+        /// Run the requested profile's analysis (passed to the binary as
+        /// --profile-analyze; for callgrind, bench run annotates the profile
+        /// after valgrind has written it, and a failed annotation fails the run)
+        #[arg(long)]
+        profile_analyze: bool,
 
         /// Auto-run comparison after execution (requires --csv)
         #[arg(long)]
@@ -202,9 +218,23 @@ enum Command {
         #[arg(long)]
         json: bool,
         /// Comma-separated backends that must report OK (exit nonzero otherwise),
-        /// e.g. --require offcpu,heaptrack. Implies parsing the JSON form.
+        /// e.g. --require offcpu,heaptrack. Implies parsing the JSON form. The
+        /// backend of --profile is judged by that request's own row
         #[arg(long, value_delimiter = ',')]
         require: Vec<String>,
+        /// A profile request to check, passed to the binary as bench run
+        /// passes it (--profile by its canonical name; nsys is nsight)
+        #[arg(long)]
+        profile: Option<String>,
+        /// The request's mode, passed to the binary as --profile-args
+        #[arg(long, allow_hyphen_values = true)]
+        profile_args: Option<String>,
+        /// The request's analysis, passed to the binary as --profile-analyze
+        #[arg(long)]
+        profile_analyze: bool,
+        /// Further arguments for the binary, after --, as bench run passes them
+        #[arg(last = true)]
+        extra_args: Vec<String>,
     },
 
     /// Run a benchmark binary under each profiler in sequence
@@ -409,13 +439,16 @@ fn run(args: Args) -> Result<(), Error> {
             }
         }
 
-        Command::Validate { json } => {
-            let results = bench::validate::run_checks();
+        Command::Validate { binary, json } => {
+            let rows = match binary.as_deref() {
+                Some(binary) => bench::validate::binary_rows(binary)?,
+                None => bench::validate::run_checks(),
+            };
 
             if json {
-                println!("{}", bench::report::validate_to_json(&results));
+                println!("{}", bench::report::validate_to_json(&rows));
             } else {
-                bench::validate::print_results(&results);
+                bench::validate::print_results(&rows, binary.as_deref());
             }
         }
 
@@ -431,6 +464,7 @@ fn run(args: Args) -> Result<(), Error> {
             profile_test_timeout,
             profile_output_dir,
             taskset,
+            profile_analyze,
             analyze,
             extra_args,
         } => {
@@ -454,6 +488,7 @@ fn run(args: Args) -> Result<(), Error> {
                 profile_args,
                 profile_test_timeout,
                 profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
+                profile_analyze,
                 taskset,
                 extra_args,
             };
@@ -557,8 +592,20 @@ fn run(args: Args) -> Result<(), Error> {
             binary,
             json,
             require,
+            profile,
+            profile_args,
+            profile_analyze,
+            extra_args,
         } => {
-            let rc = bench::workflow::doctor(Some(&binary), json, &require)?;
+            let request = bench::runner::RunConfig {
+                binary: binary.clone(),
+                profile,
+                profile_args,
+                profile_analyze,
+                extra_args,
+                ..Default::default()
+            };
+            let rc = bench::workflow::doctor(&binary, &request, &[], json, &require)?;
             std::process::exit(rc);
         }
 
