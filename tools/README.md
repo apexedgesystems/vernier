@@ -329,11 +329,14 @@ whose doctor prints no valid document is an error (exit 1).
 
 `--profile`, `--profile-args`, `--profile-analyze` and the arguments after
 `--` make the request `bench run` would make of them, and are passed to the
-binary as `bench run` passes them; the doctor adds a row for that request. `--require` judges the requested backend by that row
-and every other backend by its default mode's row, so a requirement on
-`massif` with `--profile-args pages` is met only when that mode is ready. A
-binary built before the requested row existed cannot answer such a
-requirement: rebuild it against this vernier, or drop `--profile`.
+binary as `bench run` passes them; the doctor adds a row for that request.
+`--require` judges the requested backend by that row and every other backend
+by its default mode's row, so a requirement on `massif` with
+`--profile-args pages` is met only when that mode is ready. The row must
+answer the request, by its backend and its mode; a row for another request,
+like no row at all, leaves the requirement unmet. A binary built before the
+requested row existed cannot answer such a requirement: rebuild it against
+this vernier, or drop `--profile`.
 
 `bench validate <binary>` shows the same default-mode rows as an advisory
 report that never fails on them.

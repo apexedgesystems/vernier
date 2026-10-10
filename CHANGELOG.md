@@ -341,9 +341,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   every backend by its default mode, so a lane running
   `--profile massif --profile-args pages` could pass while its mode could not
   run; the doctor takes `--profile`, `--profile-args`, `--profile-analyze` and
-  arguments after `--`, and judges that request's row. **Action needed:**
-  rebuild a binary built before this release, or drop `--profile`, to meet
-  such a requirement.
+  arguments after `--`, and judges that request's row, which must be for that
+  backend and mode. **Action needed:** rebuild a binary built before this
+  release, or drop `--profile`, to meet such a requirement.
 - **`bench doctor --json --require` prints one JSON document** -- the
   verdict followed the document on stdout, so the output did not parse; with
   `--json` the verdict goes to stderr, and a document that does not parse is

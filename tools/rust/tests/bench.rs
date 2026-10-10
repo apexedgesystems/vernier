@@ -3816,3 +3816,39 @@ fn doctor_checks_the_request_bench_run_makes() {
         "the refused request reached the binary"
     );
 }
+
+/// @test A binary whose selected row answers another request (here gperf's
+/// for --profile perf) does not meet the requirement on the requested
+/// backend, whatever that row's status; stdout stays the binary's one
+/// document. The control: a row that answers the request meets it.
+#[test]
+fn doctor_require_needs_the_requests_own_row() {
+    for (name, code, verdict) in [
+        (
+            "gperf",
+            1,
+            "[require] perf (--profile perf): NOT READY (the binary's selected row answers \
+             --profile gperf, not this request)\n",
+        ),
+        ("perf", 0, "[require] perf (--profile perf): OK\n"),
+    ] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let doc = DOCTOR_DOC.trim_end().trim_end_matches('}').to_string()
+            + &format!(
+                r#", "selected": {{"name": "{name}", "profileArgs": "", "status": "ok", "message": "{name} selected", "hint": ""}}}}"#
+            )
+            + "\n";
+        let bench = doctor_stand_in(dir.path(), &doc);
+        let (rc, out, err) = run_doctor(&[
+            &bench.to_string_lossy(),
+            "--profile",
+            "perf",
+            "--require",
+            "perf",
+            "--json",
+        ]);
+        assert_eq!(rc, code, "selected {name}: {err}");
+        assert_eq!(out, doc, "selected {name}: stdout is the document");
+        assert!(err.contains(verdict), "selected {name}: {err}");
+    }
+}

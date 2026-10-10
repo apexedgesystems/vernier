@@ -157,7 +157,10 @@ pub fn doctor(
     let request = &super::runner::effective_request(request, "bench doctor")?;
     let mut request_args = super::runner::profile_request_args(request);
     request_args.extend(request.extra_args.iter().cloned());
-    let selected = request.profile.as_deref().map(canonical_backend);
+    let selected = request.profile.as_deref().map(|profile| SelectedRequest {
+        backend: canonical_backend(profile),
+        profile_args: request.profile_args.as_deref().unwrap_or(""),
+    });
     if json || !require.is_empty() {
         let doc = read_doctor_document(&bin, &request_args, env)?;
         if json {
@@ -264,46 +267,78 @@ struct RequireVerdict {
     status: i32,
 }
 
+/// The request the doctor was asked about: its backend by the canonical
+/// name, and its mode ("" for none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SelectedRequest<'a> {
+    backend: &'a str,
+    profile_args: &'a str,
+}
+
+/// A request as the command line states it, for messages.
+fn request_text(backend: &str, profile_args: &str) -> String {
+    if profile_args.is_empty() {
+        format!("--profile {backend}")
+    } else {
+        format!("--profile {backend} --profile-args '{profile_args}'")
+    }
+}
+
 /// The --require verdict: every named backend must exist and report "ok".
-/// @p selected names the backend of the request the doctor was asked about:
-/// that backend is judged by the document's `selected` row, which a binary
-/// older than the selected row does not print (the requirement is then
-/// unmet); every other backend by its default-mode row.
+/// @p selected is the request the doctor was asked about: its backend is
+/// judged by the document's `selected` row, which must be that request's,
+/// by the backend's canonical name and the mode; a row for another request,
+/// a row without that identity, and no row (a binary older than the
+/// selected row) leave the requirement unmet. Every other backend is judged
+/// by its default-mode row.
 fn evaluate_required_backends(
     doc: &serde_json::Value,
     require: &[String],
-    selected: Option<&str>,
+    selected: Option<SelectedRequest<'_>>,
 ) -> RequireVerdict {
     let rows = doc["backends"].as_array().cloned().unwrap_or_default();
     let mut lines = Vec::new();
     let mut failed = 0;
     for raw in require {
         let want = canonical_backend(raw.trim());
-        let (row, label) = if selected == Some(want) {
-            match doc.get("selected").filter(|row| row.is_object()) {
-                Some(row) => {
-                    let args = row["profileArgs"].as_str().unwrap_or("");
-                    let request = if args.is_empty() {
-                        format!("--profile {want}")
-                    } else {
-                        format!("--profile {want} --profile-args '{args}'")
-                    };
-                    (Some(row.clone()), format!("{want} ({request})"))
-                }
-                None => {
+        let (row, label) = match selected.filter(|s| s.backend == want) {
+            Some(request) => {
+                let label = format!(
+                    "{want} ({})",
+                    request_text(request.backend, request.profile_args)
+                );
+                let Some(row) = doc.get("selected").filter(|row| row.is_object()) else {
                     failed += 1;
                     lines.push(format!(
                         "[require] {want}: this binary does not report selected requests; \
                          rebuild it against this vernier, or drop --profile"
                     ));
                     continue;
+                };
+                // The request the binary's row answers, by the same names:
+                // a row for another one does not answer this one.
+                let answered = match (row["name"].as_str(), row["profileArgs"].as_str()) {
+                    (Some(name), Some(args)) if !name.is_empty() => {
+                        let name = canonical_backend(name);
+                        (name != request.backend || args != request.profile_args)
+                            .then(|| request_text(name, args))
+                    }
+                    _ => Some("no named request".to_string()),
+                };
+                if let Some(other) = answered {
+                    failed += 1;
+                    lines.push(format!(
+                        "[require] {label}: NOT READY (the binary's selected row answers \
+                         {other}, not this request)"
+                    ));
+                    continue;
                 }
+                (Some(row.clone()), label)
             }
-        } else {
-            (
+            None => (
                 rows.iter().find(|r| r["name"] == want).cloned(),
                 want.to_string(),
-            )
+            ),
         };
         match row {
             Some(r) if r["status"] == "ok" => {
@@ -384,14 +419,122 @@ mod doctor_tests {
         let mut doc = doc();
         doc["selected"] = serde_json::json!({"name": "offcpu", "profileArgs": "x",
             "status": "fail", "message": "configuration: 'x'", "hint": "drop it"});
-        let verdict =
-            evaluate_required_backends(&doc, &["offcpu".into(), "nsight".into()], Some("offcpu"));
+        let verdict = evaluate_required_backends(
+            &doc,
+            &["offcpu".into(), "nsight".into()],
+            Some(SelectedRequest {
+                backend: "offcpu",
+                profile_args: "x",
+            }),
+        );
         assert_eq!(verdict.status, 1);
         assert_eq!(
             verdict.lines[0],
             "[require] offcpu (--profile offcpu --profile-args 'x'): NOT READY (configuration: 'x')"
         );
         assert!(verdict.lines.contains(&"[require] nsight: OK".to_string()));
+    }
+
+    /// The default rows with a selected row of @p name, @p args and @p status.
+    fn doc_with_selected(
+        name: serde_json::Value,
+        args: serde_json::Value,
+        status: &str,
+    ) -> serde_json::Value {
+        let mut doc = doc();
+        doc["selected"] = serde_json::json!({"name": name, "profileArgs": args,
+            "status": status, "message": "checked", "hint": ""});
+        doc
+    }
+
+    /// @test A selected row that answers another request, by its backend or
+    /// its mode, or names none, does not meet the requested backend's
+    /// requirement, whatever its status; the line says which request it
+    /// answers.
+    #[test]
+    fn require_selected_row_of_another_request_is_unmet() {
+        let perf = SelectedRequest {
+            backend: "perf",
+            profile_args: "",
+        };
+        for (name, args, answers) in [
+            (
+                serde_json::json!("gperf"),
+                serde_json::json!(""),
+                "--profile gperf",
+            ),
+            (
+                serde_json::json!("perf"),
+                serde_json::json!("record"),
+                "--profile perf --profile-args 'record'",
+            ),
+            (
+                serde_json::json!(""),
+                serde_json::json!(""),
+                "no named request",
+            ),
+            (
+                serde_json::Value::Null,
+                serde_json::json!(""),
+                "no named request",
+            ),
+            (
+                serde_json::json!("perf"),
+                serde_json::Value::Null,
+                "no named request",
+            ),
+        ] {
+            let doc = doc_with_selected(name.clone(), args.clone(), "ok");
+            let verdict = evaluate_required_backends(&doc, &["perf".into()], Some(perf));
+            assert_eq!(verdict.status, 1, "{name} {args}");
+            assert_eq!(
+                verdict.lines,
+                [
+                    format!(
+                        "[require] perf (--profile perf): NOT READY (the binary's selected row \
+                         answers {answers}, not this request)"
+                    ),
+                    "[require] 1 requirement(s) unmet".to_string(),
+                ],
+                "{name} {args}"
+            );
+        }
+    }
+
+    /// @test The control: a selected row that answers the request meets the
+    /// requirement when ok, by the canonical name (a row naming nsys answers
+    /// a request for nsight); the other backends keep their default rows.
+    #[test]
+    fn require_selected_row_of_the_request_is_judged() {
+        let doc = doc_with_selected(serde_json::json!("perf"), serde_json::json!(""), "ok");
+        let perf = SelectedRequest {
+            backend: "perf",
+            profile_args: "",
+        };
+        let verdict =
+            evaluate_required_backends(&doc, &["perf".into(), "offcpu".into()], Some(perf));
+        assert_eq!(verdict.status, 0);
+        assert_eq!(
+            verdict.lines,
+            [
+                "[require] perf (--profile perf): OK",
+                "[require] offcpu: OK"
+            ]
+        );
+        let doc = doc_with_selected(
+            serde_json::json!("nsys"),
+            serde_json::json!("compute"),
+            "ok",
+        );
+        let nsight = SelectedRequest {
+            backend: "nsight",
+            profile_args: "compute",
+        };
+        let verdict = evaluate_required_backends(&doc, &["nsys".into()], Some(nsight));
+        assert_eq!(
+            verdict.lines,
+            ["[require] nsight (--profile nsight --profile-args 'compute'): OK"]
+        );
     }
 
     /// @test nsys is required as nsight, its registered name.
