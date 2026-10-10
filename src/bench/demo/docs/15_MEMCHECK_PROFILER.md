@@ -462,15 +462,15 @@ which is 0 in both cases here.
 
 ## What Should Reproduce
 
-| Reading                  | On this rig                                                                                                          | Elsewhere                                                                                                                                      |
-| ------------------------ | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| the write                | `Invalid write of size 1`, once per call, `0 bytes after a block of size 7,490`, at line 32 of the wrong join's file | should match: it depends on the code, not the machine; the same write after the same block on an x86-64 laptop with GCC 11.4 and with clang 21 |
-| the read                 | `Invalid read of size 1` in `strlen`, once per call, at the same address                                             | the same wherever memcheck replaces the C library's `strlen`, as it did on x86-64; a `strlen` it does not replace may read more bytes at once  |
-| errors and contexts      | 6 errors from 2 contexts                                                                                             | 6 errors; 6 contexts where the compiler unrolled the case's loop (clang 21 on x86-64 did), because each call is then its own call site         |
-| what `joinV1` reports    | 0 errors from 0 contexts, in every run for this page and in five more taken for it                                   | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                           |
-| `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over the session's twelve runs of step 1                                                    | tens of times in an optimized build                                                                                                            |
-| memcheck's cost          | one call of `joinV1` 115 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                              |
-| absolute times           | 921.2 and 20.8 us/call in step 1; 915.8 to 1013.0 and 19.8 to 21.1 over twelve runs                                  | will differ                                                                                                                                    |
+| Reading                  | On this rig                                                                                                          | Elsewhere                                                                                                                                                                                                                                                 |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the write                | `Invalid write of size 1`, once per call, `0 bytes after a block of size 7,490`, at line 32 of the wrong join's file | should match: it depends on the code, not the machine; the same write after the same block on an x86-64 laptop with GCC 11.4 and with clang 21, at line 32 but in clang 21's Release build, where valgrind names line 27 ([below](#if-it-does-not-match)) |
+| the read                 | `Invalid read of size 1` in `strlen`, once per call, at the same address                                             | the same wherever memcheck replaces the C library's `strlen`, as it did on x86-64; a `strlen` it does not replace may read more bytes at once                                                                                                             |
+| errors and contexts      | 6 errors from 2 contexts                                                                                             | 6 errors; 6 contexts where the compiler unrolled the case's loop (clang 21 on x86-64 did), because each call is then its own call site                                                                                                                    |
+| what `joinV1` reports    | 0 errors from 0 contexts, in every run for this page and in five more taken for it                                   | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                                                                                                                                      |
+| `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over the session's twelve runs of step 1                                                    | tens of times in an optimized build                                                                                                                                                                                                                       |
+| memcheck's cost          | one call of `joinV1` 115 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                                                                                                                                         |
+| absolute times           | 921.2 and 20.8 us/call in step 1; 915.8 to 1013.0 and 19.8 to 21.1 over twelve runs                                  | will differ                                                                                                                                                                                                                                               |
 
 The twelve runs are step 1's command run twelve times in one session on
 this rig, the reference capture and this page's run among them. That range
@@ -581,6 +581,21 @@ to carry elsewhere.
   files its write and its read separately. The counts are the same: three
   writes, three reads.
 
+- **The write is reported at line 27, below a frame of `operator==`.** In a
+  clang 21 Release build, in this project's container, valgrind 3.22 printed
+  the write's first frame as `operator==<...> (stl_iterator.h:1203)` and the
+  next, at the same address, as `joinOffByOne(...)` at
+  `src/bench/demo/cpu/12_MemcheckProfiler_OffByOne.cpp:27`, the loop's line
+  (template arguments shortened here). The compiler credits the store itself
+  to line 32. The address valgrind gives the write is that of the jump out of
+  the loop that leads to the store, which the compiler credits to the loop's
+  comparison, the vector iterator's `operator==` inlined at line 27: valgrind
+  follows that jump into the store as it translates the code, and reports
+  the write at the jump. Run with `--vex-guest-chase=no`, which stops it
+  following jumps, the same valgrind names line 32. The write is the same,
+  once per call after the same block, and `Memcheck.FindsTheOffByOne` accepts
+  it at any line of `joinOffByOne` for this reason.
+
 - **`Memcheck.FindsTheOffByOne` and the helper's valgrind test report
   `SKIPPED` in a build with the address or the thread sanitizer.** valgrind
   cannot check either. With clang 21's address sanitizer and valgrind 3.22,
@@ -651,32 +666,35 @@ Three things check what this page shows, and all fail loudly:
   exit code for errors, on `Memcheck.JoinOffByOne` and on `Memcheck.JoinV1`,
   and reads the two logs. It fails unless each case it selects runs to its
   end, memcheck reports the write once per call, `0 bytes after a block` the
-  size of the joined string, with the write's own frame in `joinOffByOne` at
-  the line that writes the terminator, `*at = '\0';`, and the frame below
+  size of the joined string, with the write in `joinOffByOne` at one of its
+  lines (the frame of `joinOffByOne` at the address valgrind gives the write,
+  below the frames of any code inlined there: the line need not be the
+  terminator's, as [above](#if-it-does-not-match)), and the frame below
   valgrind's allocator in the block's stack in `joinOffByOne` at the line
-  that allocates it, `char* buf = new char[total];` (both lines found in the
-  wrong join's source, so an edit that moves one moves what the check looks
-  for), with valgrind exiting with the code it was given; and unless
-  `joinV1`'s log counts no error and valgrind exits 0. It skips only in a
-  build with the address or the thread sanitizer (which valgrind cannot
-  check), where valgrind is not installed, where valgrind gives up reading
-  the demo binary, where an assertion in valgrind's debug-information reader
-  stops it before the program starts (the program wrote nothing, only blank
-  lines between valgrind's opening lines and the assertion and after it,
-  valgrind killed by a signal), and where valgrind cannot read the demo
-  binary's symbols, once everything else has passed: it reads each of the two
-  frames on its own and excuses only a frame left unnamed in the demo binary,
-  so a frame valgrind named at another function or line, an unnamed frame in
-  another object or a missing frame fails. The last three skips quote
-  valgrind's own lines. A wrong join made right fails it, whether or not
-  valgrind can read the symbols: with room for the terminator, memcheck
-  reports nothing, and the test says the wrong join has stopped being wrong.
-  Beside it, `MemcheckLogTest` holds the log reading those skips rest on to
-  its cases (a warning about a library, another of valgrind's reasons, the
-  reader's assertion before the program started and after it had, another
-  assertion and the program's own, each frame beside an unnamed one, a run
-  that crashed). All of them are registered with `ctest` under the `demo` and
-  `memcheck` labels; `ctest --test-dir build -L memcheck` runs them alone.
+  that allocates it, `char* buf = new char[total];` (the function's lines and
+  that line found in the wrong join's source, so an edit that moves them moves
+  what the check looks for), with valgrind exiting with the code it was given;
+  and unless `joinV1`'s log counts no error and valgrind exits 0. It skips only
+  in a build with the address or the thread sanitizer (which valgrind cannot
+  check), where valgrind is not installed, where valgrind gives up reading the
+  demo binary, where an assertion in valgrind's debug-information reader stops
+  it before the program starts (the program wrote nothing, only blank lines
+  between valgrind's opening lines and the assertion and after it, valgrind
+  killed by a signal), and where valgrind cannot read the demo binary's
+  symbols, once everything else has passed: it reads each of the two frames on
+  its own and excuses only a frame left unnamed in the demo binary, so a write
+  frame valgrind named outside `joinOffByOne`'s lines, an allocation frame at
+  another function or line, an unnamed frame in another object or a missing
+  frame fails. The last three skips quote valgrind's own lines. A wrong join
+  made right fails it, whether or not valgrind can read the symbols: with room
+  for the terminator, memcheck reports nothing, and the test says the wrong
+  join has stopped being wrong. Beside it, `MemcheckLogTest` holds the log
+  reading those skips rest on to its cases (a warning about a library, another
+  of valgrind's reasons, the reader's assertion before the program started and
+  after it had, another assertion and the program's own, each frame beside an
+  unnamed one, a write at code inlined into the function, a run that crashed).
+  All of them are registered with `ctest` under the `demo` and `memcheck`
+  labels; `ctest --test-dir build -L memcheck` runs them alone.
 - The helper's own tests,
   `SkipUnlessUnderValgrindTest.PlainRunSkipsTheProbe` and
   `SkipUnlessUnderValgrindTest.ValgrindRunRunsTheProbe`, run their binary as
