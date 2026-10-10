@@ -9,6 +9,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 09 traces writes and lock hand-offs on the shared join example** --
+  its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
+  from a run on the documented Raspberry Pi 4 rig.
+  **Action needed:** its test names change, so demo 09 CSVs from before this
+  release do not join with newer ones, and `manySmallWrites()` and
+  `singleBatchedWrite()` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 04 measures the shared SAXPY kernel and carries a copy without its
   bounds guard for Compute Sanitizer to find** -- the copy runs only under
   the tool, and a check registered with `ctest` under the `compute-sanitizer`
@@ -312,6 +318,48 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
+- **bpftrace's hints offer only what works** -- a user bpftrace refuses is
+  offered root, directly or through `BENCH_SUDO=1` and a scoped sudoers grant,
+  not `CAP_BPF` and `CAP_PERFMON`, which bpftrace refuses too, and the offcpu
+  backend's hint for a probe the kernel lacks no longer suggests another script.
+- **bpftrace measures only once its tracer shows that it sees the benchmark**
+  -- on a busy machine the measured repeats could start before the tracer had
+  attached, and the doctor could pass a script that cannot attach; both now
+  wait for the tracer's own sign that it has (see
+  [the capture window](src/bench/docs/BPF_SCRIPTS.md#the-capture-window)).
+  **Action needed:** a report holds a `bpftrace armed` and a
+  `bpftrace disarmed` line; a script must not use maps named `@vernier_...` or
+  print those two lines (the check refuses it), and one with an iterator probe
+  runs only by hand; a benchmark must not name the thread that runs its
+  measured repeats `vernier-stop`.
+- **The bundled bpftrace scripts trace threaded tests to their end** -- they
+  ended when any thread of the traced process exited, and `wakeup_latency.bt`
+  missed wakeups completed on another CPU. **Action needed:** its histograms do
+  not compare with earlier ones, and scripts copied from these should filter
+  `sched_process_exit` on `tid == {{PID}}`.
+- **bpftrace finds its scripts from any directory and keeps a run's files in
+  its capture folder** -- bundled scripts are found in the source tree the
+  library was built from, `--bpf-scripts DIR` selects another directory, and
+  `--bpf` takes a path with or without `.bt` (see
+  [selecting scripts](src/bench/docs/BPF_SCRIPTS.md#selecting-scripts)).
+  **Action needed:** a `--bpf` name containing `/` is a path from the working
+  directory, and an installed library whose source tree is gone needs
+  `--bpf-scripts`.
+- **Profiler helpers stop on SIGINT when the benchmark runs in the
+  background** -- a benchmark started as a background job of a script ignores
+  SIGINT, and the tracers and probes it started inherited the ignore, so one
+  stopped before it had set its own handler ignored the stop; each helper now
+  starts with SIGINT and SIGTERM at their default action.
+- **bpftrace and offcpu report a tracer that fails when it is stopped** -- a
+  tracer that exited with an error or another status than 0 at the stop, or
+  died of a stop signal it does not handle, passed as one that had printed its
+  maps; the run now says how it ended and quotes its error, a bpftrace capture
+  so ended counts as failed with its files kept, and offcpu no longer says its
+  stacks were written.
+- **`PERF_BPF` reads like every other boolean setting** -- `yes` and `on` turn
+  it on, where they left it off, and a value that is no boolean is a
+  configuration error instead of off. **Action needed:** fix an invalid
+  `PERF_BPF` value; the check refuses it.
 - **`--profile compute-sanitizer` tells the tool apart from the binary's
   name, and its printed wrap command keeps its log** -- the backend decides
   it is running under the tool from what the tool exports to the process and

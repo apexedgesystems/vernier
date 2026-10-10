@@ -128,7 +128,7 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (13)
+# Demos Built on a Shared Example (14)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -152,6 +152,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_09_BpftraceProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -245,7 +249,7 @@ if (TARGET BenchDemo_Gpu_02_NsightProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (6)
+# Demo Effect Checks Run by CTest (7)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -307,6 +311,36 @@ foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothin
     ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
   )
 endforeach ()
+
+# Demo 09's check also counts the demo's writes and totals, with no tool, under
+# the demo label; only its traced test runs bpftrace, and carries that label
+# too. That test runs alone: its tracer compiles its program and traces every
+# write of the process, which timing tests running beside it would feel. Its
+# backend bounds each of its waits; the test's own bound is far above their sum.
+vernier_add_gtest(
+  TARGET
+  TestDemoBpftrace
+  SOURCES
+  cpu/utst/09_BpftraceProfiler_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
+)
+target_compile_definitions(
+  TestDemoBpftrace PRIVATE VERNIER_DEMO_09_BINARY="$<TARGET_FILE:BenchDemo_09_BpftraceProfiler>"
+)
+add_dependencies(TestDemoBpftrace BenchDemo_09_BpftraceProfiler)
+set_property(
+  TEST Bpftrace.CountsEveryWrite
+  APPEND
+  PROPERTY LABELS bpftrace
+)
+set_tests_properties(
+  Bpftrace.CountsEveryWrite PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 SKIP_REGULAR_EXPRESSION
+                                       "\\[  SKIPPED \\] Bpftrace\\.CountsEveryWrite"
+)
 
 # Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only
 # where the GPU demos are built. It links the CUDA runtime for one question

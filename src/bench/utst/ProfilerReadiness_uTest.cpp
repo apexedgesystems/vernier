@@ -27,6 +27,7 @@
 #include <csignal>
 #include <fstream>
 #include <future>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -81,6 +82,47 @@ HelperStopPolicy quickPolicy(PrivilegeRoute route = PrivilegeRoute::CURRENT_USER
   policy.killWaitMs = 400;
   return policy;
 }
+
+/**
+ * @brief While it lives, this process ignores SIGINT and this thread blocks
+ * SIGTERM, as a benchmark started as a background job of a script, or by a
+ * caller that blocked the signal, inherits them; restored after.
+ */
+class StopSignalsInherited {
+public:
+  StopSignalsInherited() {
+    struct sigaction ignore{};
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    ::sigaction(SIGINT, &ignore, &savedInterrupt_);
+    sigset_t block;
+    sigemptyset(&block);
+    sigaddset(&block, SIGTERM);
+    ::pthread_sigmask(SIG_BLOCK, &block, &savedMask_);
+  }
+  ~StopSignalsInherited() {
+    ::sigaction(SIGINT, &savedInterrupt_, nullptr);
+    ::pthread_sigmask(SIG_SETMASK, &savedMask_, nullptr);
+  }
+  StopSignalsInherited(const StopSignalsInherited&) = delete;
+  StopSignalsInherited& operator=(const StopSignalsInherited&) = delete;
+
+private:
+  struct sigaction savedInterrupt_{};
+  sigset_t savedMask_{};
+};
+
+/**
+ * @brief The hexadecimal mask after @p key ("SigIgn:") in /proc/<pid>/status
+ *        text @p status; all bits set when the line is missing.
+ */
+unsigned long long statusMask(const std::string& status, const std::string& key) {
+  const std::size_t AT = status.find(key);
+  return AT == std::string::npos ? ~0ULL : std::stoull(status.substr(AT + key.size()), nullptr, 16);
+}
+
+/** @brief The bit for signal @p sig in a /proc status mask. */
+constexpr unsigned long long bitOf(int sig) { return 1ULL << (sig - 1); }
 
 /** @brief Kill and reap every pid the fake helper logged ("... pid=N"). */
 void killLoggedChildren(const FakeToolDir& dir) {
@@ -530,6 +572,25 @@ TEST(ReadinessProbes, ExitStatusAndOutput) {
   EXPECT_EQ(FAIL.describe(), "exit status 3");
 }
 
+/**
+ * @test A probe's program, a stop's `sudo -n kill` among them, takes SIGINT
+ * and SIGTERM at their default action whatever this process inherited.
+ */
+TEST(ReadinessProbes, StopSignalsAtTheirDefaultWhateverThisProcessInherited) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  ProbeResult masks;
+  {
+    const StopSignalsInherited INHERITED;
+    masks = runBoundedProbe({HELPER, "masks"}, 5000, CTX);
+  }
+  ASSERT_TRUE(masks.succeeded()) << masks.describe() << "\n" << masks.output;
+  EXPECT_EQ(statusMask(masks.output, "SigIgn:") & bitOf(SIGINT), 0ULL) << masks.output;
+  EXPECT_EQ(statusMask(masks.output, "SigBlk:") & bitOf(SIGTERM), 0ULL) << masks.output;
+}
+
 /** @test stderr is interleaved by default and kept apart on request. */
 TEST(ReadinessProbes, SeparateStreams) {
   FakeToolDir dir;
@@ -706,6 +767,35 @@ TEST(ReadinessOwnedHelper, StopsOnInterrupt) {
   EXPECT_EQ(STOP.deliveries[0].target, START.started ? helper.pid() : -1);
   EXPECT_TRUE(dir.logLines("sudo").empty()) << "the current-user route never calls sudo";
   EXPECT_TRUE(dir.logLines("kill").empty()) << dir.log();
+}
+
+/**
+ * @test A helper takes the stop signals at their default action whatever this
+ * process inherited: started while this process ignores SIGINT and blocks
+ * SIGTERM, it neither ignores nor blocks them, and it stops on SIGINT.
+ */
+TEST(ReadinessOwnedHelper, StopsOnInterruptThatThisProcessIgnores) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  OwnedHelper helper(quickPolicy());
+  HelperStart start;
+  {
+    const StopSignalsInherited INHERITED;
+    start = helper.start({HELPER, "run"}, "", dir.path() + "/err.txt", 200, &CTX);
+  }
+  ASSERT_TRUE(start.running()) << start.errorTail;
+  std::ifstream statusFile("/proc/" + std::to_string(helper.pid()) + "/status");
+  const std::string STATUS((std::istreambuf_iterator<char>(statusFile)),
+                           std::istreambuf_iterator<char>());
+  EXPECT_EQ(statusMask(STATUS, "SigIgn:") & bitOf(SIGINT), 0ULL) << STATUS;
+  EXPECT_EQ(statusMask(STATUS, "SigBlk:") & bitOf(SIGTERM), 0ULL) << STATUS;
+  const HelperStopResult STOP = helper.stop();
+  EXPECT_TRUE(STOP.reaped);
+  EXPECT_EQ(STOP.stoppedBy, SIGINT);
+  EXPECT_TRUE(WIFSIGNALED(STOP.waitStatus) && WTERMSIG(STOP.waitStatus) == SIGINT)
+      << "wait status " << STOP.waitStatus;
 }
 
 /** @test A helper that ends within the grace is reported with its stderr and never signalled. */

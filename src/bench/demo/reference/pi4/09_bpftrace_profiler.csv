@@ -1,0 +1,3 @@
+test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
+BpftraceProfiler.WritePerLine,93,10,1,1,64,0,0,INFO,532.28,532.063,532.828,533.002,533.02,532.054,533.022,532.406,0.322251,0.000605272,1878.71,1,0.1,2026-10-03T21:19:26Z,unknown,raspberrypi,aarch64
+BpftraceProfiler.WriteBatched,89903,10,1,1,64,0,0,INFO,0.533887,0.531729,0.534463,0.534715,0.53474,0.529426,0.534743,0.533387,0.00148534,0.00278474,1.87306e+06,1,0.1,2026-10-03T21:19:27Z,unknown,raspberrypi,aarch64

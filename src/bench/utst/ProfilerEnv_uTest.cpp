@@ -20,6 +20,7 @@
 #include <sys/wait.h>
 
 #include <chrono>
+#include <csignal>
 #include <cstdlib>
 #include <map>
 #include <optional>
@@ -219,7 +220,18 @@ TEST(ProfilerEnv, BenchSudoActiveParsesEnv) {
   EXPECT_FALSE(vernier::bench::profiler_env::benchSudoActive());
 }
 
-/** @test sudoKill() delivers through `sudo -n -- <kill>` found on PATH. */
+/**
+ * @test sudoKill() delivers through `sudo -n -- <kill>` found on PATH.
+ *
+ * The child must end on the SIGTERM delivered to it whatever this process
+ * inherited: an ignored signal stays ignored across fork, and a test program
+ * whose parent ignores SIGTERM (a background job of a script, say) would
+ * leave the child ignoring it. So the child restores SIGTERM's default action
+ * and unblocks it before it pauses, and SIGTERM is blocked across the fork,
+ * so one delivered before the child has done so waits instead of being lost.
+ * The wait for the child is bounded, as the helpers' waits are: a child the
+ * signal did not end fails the test instead of hanging it.
+ */
 TEST(ProfilerEnv, SudoKillDeliversThroughResolvedTools) {
   if (::geteuid() == 0) {
     GTEST_SKIP() << "sudoKill signals directly as root";
@@ -228,19 +240,40 @@ TEST(ProfilerEnv, SudoKillDeliversThroughResolvedTools) {
   ASSERT_TRUE(dir.ok());
   const std::string KILL = dir.install("fake_kill.sh", "kill");
   dir.install("fake_sudo.sh", "sudo");
+  sigset_t term;
+  sigemptyset(&term);
+  sigaddset(&term, SIGTERM);
+  sigset_t saved;
+  ASSERT_EQ(::pthread_sigmask(SIG_BLOCK, &term, &saved), 0);
   const pid_t CHILD = ::fork();
-  ASSERT_GE(CHILD, 0);
   if (CHILD == 0) {
+    struct sigaction byDefault{};
+    byDefault.sa_handler = SIG_DFL;
+    (void)::sigaction(SIGTERM, &byDefault, nullptr);
+    (void)::sigprocmask(SIG_UNBLOCK, &term, nullptr);
     ::pause();
     ::_exit(0);
   }
+  (void)::pthread_sigmask(SIG_SETMASK, &saved, nullptr);
+  ASSERT_GE(CHILD, 0);
   {
     EnvOverride path("PATH", dir.path());
     EnvOverride log("FAKE_LOG", dir.logPath());
     EXPECT_TRUE(vernier::bench::profiler_env::sudoKill(CHILD, SIGTERM));
   }
   int status = 0;
-  EXPECT_EQ(::waitpid(CHILD, &status, 0), CHILD);
+  pid_t reaped = 0;
+  const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  while ((reaped = ::waitpid(CHILD, &status, WNOHANG)) == 0 &&
+         std::chrono::steady_clock::now() < UNTIL) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  if (reaped == 0) {
+    (void)::kill(CHILD, SIGKILL);
+    (void)::waitpid(CHILD, &status, 0);
+    FAIL() << "the child still ran 10 s after sudoKill() delivered SIGTERM to it";
+  }
+  EXPECT_EQ(reaped, CHILD);
   EXPECT_TRUE(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM);
   EXPECT_EQ(dir.logLines("sudo"),
             (std::vector<std::string>{"sudo -n -- " + KILL + " -15 " + std::to_string(CHILD)}));

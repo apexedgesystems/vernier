@@ -181,14 +181,24 @@ endfunction ()
 # Fast runs: the cases measure nothing that matters here.
 set(_quick --cycles 50 --repeats 2 --warmup 0)
 
-# The bpftrace fakes, and a scripts directory holding one sched script.
-macro (bpf_fakes)
+# The fake bpftrace, sudo and kill.
+macro (bpf_tools)
   fake(fake_bpftrace.sh bpftrace)
   fake(fake_sudo.sh sudo)
   fake(fake_kill.sh kill)
+endmacro ()
+
+# A scripts directory holding one sched script.
+macro (bpf_scripts_dir)
   file(WRITE "${WORK_DIR}/scripts/probe_script.bt"
        "tracepoint:sched:sched_switch /pid == {{PID}}/ { @c = count(); }\n"
   )
+endmacro ()
+
+# The bpftrace fakes, and PERF_BPF_SCRIPTS naming that scripts directory.
+macro (bpf_fakes)
+  bpf_tools()
+  bpf_scripts_dir()
   list(APPEND _env "PERF_BPF_SCRIPTS=${WORK_DIR}/scripts")
 endmacro ()
 
@@ -485,7 +495,7 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   )
   expect_has(
     "${row_MESSAGE}"
-    "/probe0.bt: sudo: a password is required; the run executes ${WORK_DIR}/bin/bpftrace -q <capture folder>/probe_script.tmp.bt instead, which only the run can try"
+    "/probe0.bt: sudo: a password is required; the run executes ${WORK_DIR}/bin/bpftrace -q -B none <capture folder>/probe_script.tmp.bt instead, which only the run can try"
     "selected message"
   )
   expect_not("${row_MESSAGE}" "${WORK_DIR}/scripts/" "selected message (a command not attempted)")
@@ -499,7 +509,7 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   foreach (_case First Second)
     expect_has(
       "${run_ERR}"
-      "[bpftrace] the tracer exited during its start grace: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
+      "[bpftrace] the tracer exited before it acknowledged its arm probe: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
       "run report (${_case})"
     )
   endforeach ()
@@ -518,7 +528,7 @@ elseif (CASE STREQUAL "BpfRunAllowedProbeRefused")
   expect_eq("${run_RC}" "0" "run exit status")
   expect_not("${run_ERR}" "[bpftrace]" "run reports")
   read_log(_text)
-  count_of(_launches "${_text}" "\nbpftrace -q ./ReadinessFixture.")
+  count_of(_launches "${_text}" "\nbpftrace -q -B none ./ReadinessFixture.")
   expect_eq("${_launches}" "2" "tracers the run started (one per guarded case)")
   expect_owned_and_gone("run")
 
@@ -531,7 +541,9 @@ elseif (CASE STREQUAL "BpfRunStopsThroughRoute")
   expect_eq("${run_RC}" "0" "run exit status")
   expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
   read_log(_text)
-  count_of(_launches "${_text}" "sudo -n -- ${WORK_DIR}/bin/bpftrace -q ./ReadinessFixture.")
+  count_of(_launches "${_text}"
+           "sudo -n -- ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture."
+  )
   expect_eq("${_launches}" "2" "launches through sudo (one per guarded case)")
   count_of(_interrupts "${_text}" "sudo -n -- ${WORK_DIR}/bin/kill -2 ")
   expect_eq("${_interrupts}" "3" "SIGINT through sudo (the probe and two launches)")
@@ -565,7 +577,9 @@ elseif (CASE STREQUAL "OffcpuCurrentUserRun")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
   count_of(_launches "${_text}" "bpftrace -e ")
-  expect_eq("${_launches}" "3" "offcpu attaches (the probe and two launches)")
+  expect_eq("${_launches}" "2" "offcpu launches, one per case")
+  count_of(_probes "${_text}" "bpftrace -B none -e ")
+  expect_eq("${_probes}" "1" "offcpu's readiness probe")
   count_of(_written "${run_ERR}" "[offcpu] stacks written to ")
   expect_eq("${_written}" "2" "stacks written, once per case")
   if (NOT EXISTS "${WORK_DIR}/ReadinessFixture.First.offcpu/offcpu.err.txt")
@@ -583,7 +597,7 @@ elseif (CASE STREQUAL "OffcpuRunAllowedProbeRefused")
   expect_eq("${row_STATUS}" "warn" "selected status")
   expect_has(
     "${row_MESSAGE}"
-    "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -e <the off-CPU script with a 5 s self-exit> "
+    "unverified: sudo -n refused the probe command ${WORK_DIR}/bin/bpftrace -B none -e <the off-CPU script with an attach line and a 5 s self-exit> "
     "selected message"
   )
   run(run --profile offcpu ${_quick})
@@ -867,6 +881,34 @@ elseif (CASE MATCHES "^Gperf")
       expect_eq("${_times}" "1" "the remedy, once for two guarded cases")
     endif ()
   endif ()
+
+elseif (CASE STREQUAL "BpfBundledScriptFromAnyDirectory")
+  # A bundled script's name, with no PERF_BPF_SCRIPTS, from a working directory
+  # outside the source tree: the check finds the bundled script and probes it.
+  bpf_tools()
+  selected_row(row --profile bpftrace --bpf write_latency)
+  expect_eq("${row_STATUS}" "ok" "selected status")
+  expect_has("${row_MESSAGE}" "write_latency: a probe copy" "selected message")
+  expect_not("${row_MESSAGE}" "not found" "selected message")
+  expect_owned_and_gone("doctor")
+
+elseif (CASE STREQUAL "BpfScriptsFlagSelectsTheDirectory")
+  # --bpf-scripts, with no PERF_BPF_SCRIPTS: the doctor's row and the run both
+  # look the script up in the directory the flag names.
+  bpf_tools()
+  bpf_scripts_dir()
+  set(_request --profile bpftrace --bpf probe_script --bpf-scripts "${WORK_DIR}/scripts")
+  selected_row(row ${_request})
+  expect_eq("${row_STATUS}" "ok" "selected status")
+  expect_has("${row_MESSAGE}" "probe_script: a probe copy" "selected message")
+  run(run ${_request} ${_quick})
+  expect_eq("${run_RC}" "0" "run exit status")
+  expect_not("${run_ERR}" "unknown option" "run warnings")
+  expect_not("${run_ERR}" "Profiler 'bpftrace'" "run notice")
+  read_log(_text)
+  count_of(_launches "${_text}" "bpftrace -q -B none ./ReadinessFixture.")
+  expect_eq("${_launches}" "2" "launches (one per guarded case)")
+  expect_owned_and_gone("run")
 
 else ()
   message(FATAL_ERROR "unknown CASE '${CASE}'")
