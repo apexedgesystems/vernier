@@ -61,11 +61,10 @@ add_dependencies(TestMeasurementRows MeasurementRowsProbe)
 # CLI Agreement (1 test, where the CLI tools are built)
 # ------------------------------------------------------------------------------
 # A test of the CLI's own suite, run by cargo with the fixture's path: what
-# bench summary and bench compare read from the fixture's CSV. Cargo keeps to
-# the lockfile and, where VERNIER_RUST_OFFLINE is set when the test runs, to the
-# crates already fetched, as the tools build does; and it removes nothing from
-# the crate cache it shares with that build. The test passes only on its pass
-# line, so a missing cargo, crate or fixture, or a renamed test, fails it. The
+# bench summary and bench compare read from the fixture's CSV. cargo_test.sh
+# passes it only when cargo exits 0 and reports the test passed, so a missing
+# cargo, crate or fixture, a stale lockfile or a renamed test fails it. Cargo
+# removes nothing from the crate cache it shares with the tools build. The
 # nested build's jobs are reserved from ctest's parallel slots.
 # ------------------------------------------------------------------------------
 
@@ -75,10 +74,9 @@ if (VERNIER_BUILD_TOOLS)
   add_test(
     NAME MeasurementRows.CliAgreement
     COMMAND
-      sh -c [=[exec "$0" test --locked ${VERNIER_RUST_OFFLINE:+--offline} "$@"]=]
-      "${CARGO_EXECUTABLE}" --manifest-path "${PROJECT_SOURCE_DIR}/tools/rust/Cargo.toml"
+      sh "${CMAKE_CURRENT_SOURCE_DIR}/cargo_test.sh" "${CARGO_EXECUTABLE}"
+      measurement_rows_cli_agreement --manifest-path "${PROJECT_SOURCE_DIR}/tools/rust/Cargo.toml"
       --target-dir "${CMAKE_BINARY_DIR}/rust-test-target" --jobs ${_rows_cargo_jobs} --test bench
-      measurement_rows_cli_agreement -- --ignored --exact
   )
   set_tests_properties(
     MeasurementRows.CliAgreement
@@ -87,8 +85,6 @@ if (VERNIER_BUILD_TOOLS)
       "benchmarking;rows"
       ENVIRONMENT
       "MEASUREMENT_ROWS_PROBE=$<TARGET_FILE:MeasurementRowsProbe>;CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never"
-      PASS_REGULAR_EXPRESSION
-      "test measurement_rows_cli_agreement \\.\\.\\. ok"
       PROCESSORS
       ${_rows_cargo_jobs}
   )
