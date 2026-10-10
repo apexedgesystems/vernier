@@ -9,6 +9,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 04 measures the shared SAXPY kernel and carries a copy without its
+  bounds guard for Compute Sanitizer to find** -- the copy runs only under
+  the tool, and a check registered with `ctest` under the `compute-sanitizer`
+  label fails if the tool stops reporting its out-of-bounds read. Its
+  walkthrough and reference CSV are captured on the Jetson AGX Thor rig. The
+  demo's test names change, so CSVs captured from it before this release do
+  not join with newer ones.
 - **Demo 07 counts the instructions of the shared join example** --
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts that workload cannot produce. It
@@ -36,6 +43,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`NsightProfiler.G0`, `G1`, `KernelOneThreadPerBlock`,
   `Kernel256ThreadsPerBlock`, `LaunchShapeSpeedup`), so capture a new baseline:
   demo 02 CSVs from earlier releases do not join with newer ones.
+- **Demo 13 (NVTX) is a GPU demo on the shared SAXPY example** --
+  `BenchDemo_Gpu_05_NvtxAnnotation` times the example's `G1` as it is and in
+  three named NVTX ranges, with a check registered with `ctest` under the
+  `demo` and `nsight` labels, and its walkthrough and reference CSV are
+  captured on the documented Jetson AGX Thor rig. It replaces
+  `BenchDemo_10_NvtxAnnotation` and its test `Nvtx.PhasedWorkload`, so CSVs
+  captured from that demo before this release do not join with newer ones.
 - **The GPU harness's CUPTI collector stands down only inside an Nsight session
   or on request** -- it stands down when nsys or ncu started the process
   (`bench run --profile nsight|ncu`, or a wrap typed by hand, recognised from
@@ -119,6 +133,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which walkthrough 20 measures: holding the lock across the join, four
   threads are no faster than one. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 03 (GPU shared memory) reports its tiles to the harness and checks
+  its answers** -- each of its tests checks the transpose it measured, and a
+  check registered with `ctest` under the `demo` and `ncu` labels counts its
+  bank conflicts with Nsight Compute. Walkthrough 12 is rewritten from a Release
+  run on the documented Jetson AGX Thor rig, whose CSV is committed as its
+  reference. The test `SharedMemoryOpt.SharedConflictFree` is renamed
+  `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured before this
+  release does not join with newer ones.
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -290,6 +312,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
+- **`--profile compute-sanitizer` tells the tool apart from the binary's
+  name, and its printed wrap command keeps its log** -- the backend decides
+  it is running under the tool from what the tool exports to the process and
+  maps into it, not from a name in a path; the commands it prints run the
+  tool `--profile-args` asks for, memcheck by default, and the by-hand one
+  quotes its paths and makes the log's folder first.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing
@@ -701,6 +729,23 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   clang's thread-sanitizer runtime also defines, so a `-DSANITIZER=tsan` build
   failed to link them. In such a build they replace neither, and their
   counting tests skip, saying why.
+- **The memcheck and helgrind walkthroughs' checks skip only where valgrind
+  could not check the demo** -- where an assertion in valgrind 3.18.1's ELF
+  debug-information reader stops it before the demo binary starts (GCC 11.4
+  Debug builds linked by mold), `Memcheck.FindsTheOffByOne`,
+  `Helgrind.FindsTheRace` and `Helgrind.LockedTotalReportsNothing` skip and
+  quote valgrind's line instead of failing. The memcheck check checks the
+  write's frame for its function and the block's allocation frame for its
+  function and line, each on its own, and where valgrind cannot read the demo
+  binary's symbols only a frame left unnamed in that binary goes unchecked, so
+  a wrong frame beside an unnamed one fails instead of skipping.
+- **Walkthrough 07's callgrind checks skip on valgrind's reader assertion only
+  before the program started** -- `JoinInstructionCounts.UnderCallgrind`, the
+  callgrind window tests and their two startup-fault controls skipped on any
+  assertion of valgrind's debug-information reader, wherever valgrind printed
+  it. They skip on it only where it stopped valgrind before the program
+  started, read as the memcheck and helgrind checks read it, and fail
+  otherwise.
 - **A single-thread measurement's row records one thread** -- a `measured()` or
   `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
   `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
