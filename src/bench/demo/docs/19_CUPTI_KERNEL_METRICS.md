@@ -263,13 +263,20 @@ Resource usage:
 ```
 
 The compiler gave the kernel 10 registers per thread and no shared memory
-(`REG:10`, `SHARED:0`); the CSV says 16. `cuptiRegistersMedian` is what each
-thread was allocated at launch, and a launch is given registers in larger
-units than one: on this GPU and on the RTX 5000 Ada, the 10 compiled registers
-were allocated as 16, the count rounded up to a multiple of 8. Nsight Compute,
-in walkthrough 11's capture on this rig, reports `Registers Per Thread` 16.00
-for both shapes. Read the column as the kernel's footprint on the register
-file, and the compiler's report for the count the code needs.
+(`REG:10`, `SHARED:0`); the CSV says 16. The two counts come from different
+places, and neither API says how one follows from the other. CUDA documents
+the compiled count, which a program reads as `cudaFuncAttributes::numRegs`, as
+the registers each thread of the function uses; CUPTI documents its record's
+`registersPerThread`, whose median and maximum over the measured launches are
+`cuptiRegistersMedian` and `cuptiRegistersMax`, as the registers each thread
+executing the kernel requires. What runs have shown: in Release builds, on
+this GPU and on the RTX 5000 Ada, the 10 compiled registers read 16, the count
+rounded up to a multiple of 8, and Nsight Compute, in walkthrough 11's capture
+on this rig, reports `Registers Per Thread` 16.00 for both shapes; in a Debug
+build on the RTX 5000 Ada (CUDA 13.1, driver 580.178.04, in the project's CUDA
+development container) the kernel compiled to 20 and read 20, the compiled
+count itself. Read the column as CUPTI's count for the launch, and the
+compiler's report for the count the code needs.
 
 ## Step 4: Against Nsight Systems' Kernel Durations
 
@@ -428,14 +435,18 @@ reported, `kalex`.
   built as `TestDemoKernelColumns`), runs demo 02's two kernel tests with
   `--csv` and holds each row to this page: `kernelTimeUs` equal to
   `wallMedian`; the copy columns 0; `occupancy` equal to the harness's estimate
-  for the row's block; one CUPTI record per measured launch, registers equal to
-  the compiled count rounded up to a multiple of 8, the kernel's static shared
+  for the row's block; one CUPTI record per measured launch, a median and a
+  maximum register count equal to each other and to one of the two forms Step 3
+  records, the compiled count or that count rounded up to a multiple of 8 (any
+  other value fails, one between the two included), the kernel's static shared
   memory and no dynamic, or, in a build without CUPTI, the five cells stated
   empty; every cell the run states empty empty, every NVML cell it does not
   state a reading, and `speedupVsCpu`, `memBandwidthGBs` and the multi-GPU and
   unified-memory cells empty. It compares no timing. It skips only without a
   CUDA device or inside an Nsight session, saying which, and a failing run
-  keeps its files and names the folder.
+  keeps its files and names the folder. The two register forms are what runs
+  have shown, not what CUDA or CUPTI promise: a build that reads another form
+  fails the check until a run of it qualifies that form.
 - Demo 02's two kernel tests fail if the occupancy estimate stops matching
   their shapes, and the SAXPY example's unit tests, in `TestDemoExamples`,
   hold its versions to the same answers.
