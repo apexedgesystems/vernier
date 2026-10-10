@@ -350,6 +350,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   the run before any test (exit status 2). **Action needed:** a benchmark that
   sets `PerfConfig::profileTestTimeoutSecs = 0` to mean the default leaves the
   field alone (it defaults to -1, not given) or sets 300.
+- **A measured callback that throws leaves no watchdog behind** -- under
+  `--profile` the watchdog stayed armed, so it could end a later test of the
+  process with exit status 2; it is turned off, the case publishes no row and
+  the exception reaches the caller unchanged.
 - **A profiled run takes its metadata before any profiler starts** -- the
   first measured case ran `git describe` while its profiler was recording; the
   metadata is taken when the first profiler is created.

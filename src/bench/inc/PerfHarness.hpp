@@ -498,6 +498,12 @@ public:
    * Records wall us per call per repeat, then summarizes.
    *
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
+   *
+   * An exception from @p fn ends the measurement: the watchdog is turned off,
+   * nothing is summarized or published, the after hook does not run, and the
+   * exception reaches the caller unchanged. What the before hook started is
+   * ended by its owner (attachProfilerHooks(): the profiler, when the case is
+   * destroyed).
    */
   PerfResult measured(Fn fn, std::string label = "measured") {
     if (beforeHook_) {
@@ -519,22 +525,33 @@ public:
     }
 
     std::vector<double> perCall;
-    perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
-    for (int r = 0; r < cfg_.repeats; ++r) {
-      const double T0 = nowUs();
-      fn();
-      const double T1 = nowUs();
-      perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
+    try {
+      perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
+      for (int r = 0; r < cfg_.repeats; ++r) {
+        const double T0 = nowUs();
+        fn();
+        const double T1 = nowUs();
+        perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
 
-      // Progress reporting: print every ~2 seconds for long runs
-      auto now = std::chrono::steady_clock::now();
-      auto sinceLast =
-          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
-      if (sinceLast.count() >= 2000) {
-        printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
-        lastProgressTime = now;
-        showedProgress = true;
+        // Progress reporting: print every ~2 seconds for long runs
+        auto now = std::chrono::steady_clock::now();
+        auto sinceLast =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
+        if (sinceLast.count() >= 2000) {
+          printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
+          lastProgressTime = now;
+          showedProgress = true;
+        }
       }
+    } catch (...) {
+      // Left armed, the alarm would end a later case of this process.
+      if (showedProgress) {
+        clearProgress();
+      }
+      if (watchdogActive) {
+        perf_watchdog::disarm();
+      }
+      throw;
     }
 
     if (showedProgress) {
