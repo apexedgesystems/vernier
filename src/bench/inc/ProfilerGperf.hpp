@@ -4,17 +4,17 @@
  * @file ProfilerGperf.hpp
  * @brief gperftools backend for the benchmarking profiler facade.
  *
- * Modes:
- *  - CPU profiling (default): generates "<artifactDir>/cpu.prof"
- *  - Heap profiling (opt-in): parses "heap" in profileArgs -> starts HeapProfiler
- *  - Both: parse "both" or include both "cpu" and "heap" keywords in profileArgs
+ * Modes (the words of --profile-args):
+ *  - cpu, or no word (the default): generates "<artifactDir>/cpu.prof"
+ *  - heap: starts gperftools' heap profiler
+ *  - both, or cpu and heap together: both captures
  *
- * Readiness (checkGperfRequest): every requested mode must be compiled in; a
- * request that is not is a collection error. With --profile-analyze the
- * analyzer is the first of google-pprof and pprof found on PATH, and it must
- * run; a missing or broken analyzer is an analysis error, and the capture
- * still runs and keeps cpu.prof. The analysis runs exactly the analyzer the
- * check found.
+ * Readiness (checkGperfRequest): any other word is refused as a configuration
+ * error; every requested mode must be compiled in, and a request that is not
+ * is a collection error. With --profile-analyze the analyzer is the first of
+ * google-pprof and pprof found on PATH, and it must run; a missing or broken
+ * analyzer is an analysis error, and the capture still runs and keeps
+ * cpu.prof. The analysis runs exactly the analyzer the check found.
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
@@ -61,10 +61,16 @@ struct GperfModes {
 };
 
 /**
- * @brief One parser for the check and the profiler: empty, "cpu" or "both"
- * select CPU profiling; "heap" or "both" select heap profiling.
+ * @brief The modes the words of @p profileArgs select, or the refusal of a
+ * word that is not one.
+ *
+ * The words are split on whitespace and commas, as `bench run` splits them.
+ * No word selects CPU profiling; "cpu" selects it, "heap" heap profiling and
+ * "both" the two, in any combination. Any other word is refused with the
+ * CONFIGURATION error every backend gives a word it does not take, naming
+ * the modes; @p modes is then left with no mode.
  */
-GperfModes parseGperfModes(const std::string& profileArgs);
+std::optional<ReadinessResult> parseGperfModes(const std::string& profileArgs, GperfModes& modes);
 
 /** @brief What the gperf check verified, for the profiler to use. */
 struct GperfPlan final : ReadinessPlan {

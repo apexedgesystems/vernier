@@ -34,6 +34,8 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
@@ -1168,14 +1170,84 @@ protected:
 
 } // namespace
 
-/** @test One parser decides the modes for the check and the profiler. */
+namespace {
+
+/** @brief The modes @p args selects; fails the test when it is refused. */
+GperfModes gperfModes(const std::string& args) {
+  GperfModes modes;
+  const auto REFUSED = parseGperfModes(args, modes);
+  EXPECT_FALSE(REFUSED.has_value()) << "'" << args << "': " << REFUSED->report.message;
+  return modes;
+}
+
+} // namespace
+
+/** @test Each word, and each combination of them, selects its modes; none selects cpu. */
 TEST(GperfModeTest, ParsesTheSelectedModes) {
-  EXPECT_TRUE(parseGperfModes("").cpu);
-  EXPECT_FALSE(parseGperfModes("").heap);
-  EXPECT_FALSE(parseGperfModes("heap").cpu);
-  EXPECT_TRUE(parseGperfModes("heap").heap);
-  EXPECT_TRUE(parseGperfModes("both").cpu && parseGperfModes("both").heap);
-  EXPECT_TRUE(parseGperfModes("cpu,heap").cpu && parseGperfModes("cpu,heap").heap);
+  for (const auto& [ARGS, CPU, HEAP] : std::vector<std::tuple<std::string, bool, bool>>{
+           {"", true, false},
+           {"  ", true, false},
+           {"cpu", true, false},
+           {"heap", false, true},
+           {"both", true, true},
+           {"cpu,heap", true, true},
+           {"heap cpu", true, true},
+           {"heap,heap", false, true},
+           {"both, cpu", true, true},
+       }) {
+    const GperfModes MODES = gperfModes(ARGS);
+    EXPECT_EQ(MODES.cpu, CPU) << "'" << ARGS << "'";
+    EXPECT_EQ(MODES.heap, HEAP) << "'" << ARGS << "'";
+  }
+}
+
+/**
+ * @test A word that is not a mode is refused whole, with the configuration
+ * error every backend gives such a word, and selects nothing; a mode's name
+ * inside another word is not that mode.
+ */
+TEST(GperfModeTest, RefusesAWordThatIsNotAMode) {
+  for (const auto& [ARGS, WORD] : std::vector<std::pair<std::string, std::string>>{
+           {"nonsense", "nonsense"},
+           {"cpuheap", "cpuheap"},
+           {"xcpu", "xcpu"},
+           {"heap-ish", "heap-ish"},
+           {"CPU", "CPU"},
+           {"cpu,nonsense", "nonsense"},
+           {"both;", "both;"},
+       }) {
+    GperfModes modes;
+    modes.cpu = modes.heap = true;
+    const auto REFUSED = parseGperfModes(ARGS, modes);
+    ASSERT_TRUE(REFUSED.has_value()) << "'" << ARGS << "' was accepted";
+    EXPECT_EQ(REFUSED->report.status, EnvReport::Status::Error);
+    EXPECT_EQ(REFUSED->cause, ReadinessCause::CONFIGURATION);
+    EXPECT_FALSE(REFUSED->collectionReady());
+    EXPECT_EQ(REFUSED->report.message,
+              "configuration: '" + WORD +
+                  "' is not a mode of gperf; its modes are cpu, heap, both");
+    EXPECT_EQ(REFUSED->report.hint, "Use one of cpu, heap, both in --profile-args, or drop it.");
+    EXPECT_FALSE(modes.cpu || modes.heap) << "'" << ARGS << "' left a mode selected";
+  }
+}
+
+/**
+ * @test The check refuses such a word first, in every build (with gperftools
+ * or without), so a run creates nothing for it and fails, as the doctor says.
+ */
+TEST(GperfModeTest, CheckRefusesAWordBeforeAnythingElse) {
+  FakeToolDir dir;
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.profileArgs = "nonsense";
+  request.scope = ReadinessScope::RUNTIME;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(request, dir.context());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_FALSE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "configuration: 'nonsense' is not a mode of gperf; its modes are cpu, heap, both");
+  EXPECT_EQ(R.plan, nullptr) << "a refused request carries no plan to build a profiler from";
 }
 
 /** @test Without --profile-analyze a missing analyzer is only information. */

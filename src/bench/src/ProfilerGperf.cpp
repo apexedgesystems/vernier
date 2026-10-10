@@ -6,6 +6,7 @@
 #include "src/bench/inc/ProfilerGperf.hpp"
 
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 
 #include <unistd.h>
 
@@ -92,18 +93,30 @@ std::string capturedModes(const GperfModes& modes) {
 
 /* ----------------------------- Readiness ----------------------------- */
 
-GperfModes parseGperfModes(const std::string& profileArgs) {
-  // Simple substring match, as the flag has always been read.
-  const auto HAS = [&](const char* key) { return profileArgs.find(key) != std::string::npos; };
-  GperfModes modes;
-  modes.cpu = profileArgs.empty() || HAS("cpu") || HAS("both");
-  modes.heap = HAS("heap") || HAS("both");
-  return modes;
+std::optional<ReadinessResult> parseGperfModes(const std::string& profileArgs, GperfModes& modes) {
+  modes = GperfModes{};
+  const std::vector<std::string> WORDS = valgrind_tool::modeWords(profileArgs);
+  for (const std::string& WORD : WORDS) {
+    const bool CPU = WORD == "cpu" || WORD == "both";
+    const bool HEAP = WORD == "heap" || WORD == "both";
+    if (!CPU && !HEAP) {
+      modes = GperfModes{};
+      return valgrind_tool::refusedWord("gperf", WORD, {"cpu", "heap", "both"});
+    }
+    modes.cpu = modes.cpu || CPU;
+    modes.heap = modes.heap || HEAP;
+  }
+  if (WORDS.empty()) {
+    modes.cpu = true;
+  }
+  return std::nullopt;
 }
 
 ReadinessResult checkGperfRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
   auto plan = std::make_shared<GperfPlan>();
-  plan->modes = parseGperfModes(request.profileArgs);
+  if (auto refused = parseGperfModes(request.profileArgs, plan->modes)) {
+    return *refused;
+  }
   plan->analyze = request.analyze;
 
   constexpr bool CPU_BUILT = UB_HAS_GPERF_CPU != 0;

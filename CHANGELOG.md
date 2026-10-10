@@ -255,11 +255,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `record`, `mem` and `c2c` are checked only for that counting access and
   reported `unverified`.
 - **gperf checks the requested mode and runs the analyzer it finds** -- a mode
-  the build lacks is an error, and `--profile-analyze` runs the first of
-  `google-pprof` and `pprof` on `PATH` (it always ran `google-pprof`, so a
-  `pprof`-only installation printed empty analysis). An analyzer that is
-  missing, does not run or fails on the profile is reported, and the capture
-  and its `cpu.prof` are kept.
+  the build lacks is an error, a word other than `cpu`, `heap` and `both` is
+  refused (it was matched as a substring, and an unknown word ran nothing),
+  and `--profile-analyze` runs the first of `google-pprof` and `pprof` on
+  `PATH` (it always ran `google-pprof`, so a `pprof`-only installation printed
+  empty analysis). An analyzer that is missing, does not run or fails on the
+  profile is reported, and the capture and its `cpu.prof` are kept.
+  **Action needed:** give gperf's `--profile-args` its modes alone.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
   cells only from readings NVML reported, `occupancy` (an estimate from the

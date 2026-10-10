@@ -692,3 +692,26 @@ TEST_F(ReadinessFixtureRun, GperfHeapWithoutSupportFailsTheRun) {
   EXPECT_EQ(RUN.status, 4) << "run exit status";
   EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE)) << "run notice";
 }
+
+/**
+ * @test A word that is not a gperf mode is refused in every build, with
+ * gperftools or without, by the doctor and by the run: the run creates no
+ * folder for it, collects nothing and exits 4, its report naming the modes.
+ */
+TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
+  const std::string MESSAGE =
+      "configuration: 'nonsense' is not a mode of gperf; its modes are cpu, heap, both";
+  const std::string DOCTOR = doctorJson({"--profile", "gperf", "--profile-args", "nonsense"});
+  EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << "doctor status";
+  EXPECT_EQ(selectedField(DOCTOR, "message"), MESSAGE) << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf", "--profile-args", "nonsense"}));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE +
+                                 "\n   Use one of cpu, heap, both in --profile-args, or drop it."))
+      << "run notice";
+  EXPECT_THAT(RUN.err, HasSubstr("[profile] --profile gperf --profile-args 'nonsense' failed; the "
+                                 "run exits with status 4:\n[profile]   gperf: " +
+                                 MESSAGE))
+      << "run-end report";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
