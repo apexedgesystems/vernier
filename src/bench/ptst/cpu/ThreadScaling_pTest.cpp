@@ -3,8 +3,9 @@
  * @brief Multi-threaded performance scaling validation
  *
  * This test suite validates that the framework correctly measures multi-threaded
- * performance and calculates speedup/efficiency metrics. Tests use minimal thread
- * counts (1-2) optimized for CI environments.
+ * performance and calculates speedup/efficiency metrics. The scaling case runs
+ * on the workers --threads asks for (two or more) and divides its speedup by
+ * that count.
  *
  * Features tested:
  *  - Single-threaded baseline performance
@@ -23,8 +24,9 @@
  *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
  *       --gtest_filter="ThreadScaling.*"
  *
- *   # Control thread count
- *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *   # Control thread count: a core per worker plus one for the test's own
+ *   # thread, since workers pinned to fewer cores take turns
+ *   taskset -c 1-3 ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
  *       --gtest_filter="ThreadScaling.*" --threads 2
  *   @endcode
  *
@@ -40,6 +42,7 @@
 #include <gtest/gtest.h>
 #include <atomic>
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 #include <thread>
 
@@ -98,8 +101,9 @@ PERF_TEST(ThreadScaling, SingleThreadBaseline) {
 /**
  * @brief Multi-threaded efficiency validation
  *
- * Measures performance with 2 threads and validates speedup and efficiency
- * metrics. Only tests minimal thread counts for CI speed.
+ * Measures the same calls on the test's own thread and on the workers
+ * contentionRun() starts (--threads), and prints the workers, the speedup and
+ * the efficiency (the speedup per worker) on every run.
  *
  * @test EfficiencyValidation
  *
@@ -146,9 +150,14 @@ PERF_TEST(ThreadScaling, EfficiencyValidation) {
 
   EXPECT_EQ(mismatches.load(), 0u) << "Calls computed a wrong sum";
 
-  // Calculate speedup (ratio of throughputs)
+  // contentionRun() reports the throughput of all its workers' calls, so the
+  // ratio of the two throughputs is the speedup, and the speedup per worker it
+  // started is the efficiency
+  const int WORKERS = perf.threads();
   const double speedup = multithread.callsPerSecond / baseline.callsPerSecond;
-  const double efficiency = speedup / 2.0; // 2 threads
+  const double efficiency = speedup / WORKERS;
+  std::printf("[%s] workers %d speedup %.4f efficiency %.4f\n", perf.testName().c_str(), WORKERS,
+              speedup, efficiency);
 
   // Validate speedup (should be >1.2x accounting for overhead)
   EXPECT_GT(speedup, 1.2) << "Multi-threaded speedup too low: " << speedup << "x";
