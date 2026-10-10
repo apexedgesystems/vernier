@@ -24,6 +24,7 @@
 
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -773,4 +774,35 @@ TEST_F(CsvOpenFailureDeathTest, AWritablePathGoesOn) {
       (fs::temp_directory_path() / ("vernier_listener_csv_" + std::to_string(::getpid()) + ".csv"))
           .string();
   EXPECT_EXIT(installThenExit(PATH), ::testing::ExitedWithCode(0), "installed");
+}
+
+/**
+ * @test A listener whose file did not open keeps the open's error, which the
+ *       run names before it stops (AMissingDirectoryStopsTheRun, the same
+ *       directory), and still takes its test's rows: the next test's file
+ *       holds that test's row once and none of them
+ */
+TEST_F(CsvListenerTest, AFailedOpenStillTakesItsTestsRows) {
+  const fs::path DIR = fs::temp_directory_path() / MISSING_DIR;
+  ASSERT_FALSE(fs::exists(DIR)) << DIR;
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  PerfCase unwritten{"Listener.Unwritten", caseCfg};
+  (void)unwritten.throughputLoop([] { spin(8); }, "a");
+  (void)unwritten.throughputLoop([] { spin(8); }, "b");
+  {
+    CsvListener listener((DIR / "rows.csv").string(), /*includeProfile=*/false,
+                         /*includeGpu=*/false);
+    EXPECT_FALSE(listener.isOpen());
+    EXPECT_EQ(listener.openError(), ENOENT);
+    listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+  }
+
+  PerfCase next{"Listener.Next", caseCfg};
+  (void)next.throughputLoop([] { spin(8); });
+  const std::vector<std::map<std::string, std::string>> rows = emitAndReadAll();
+
+  ASSERT_EQ(rows.size(), 1U) << "a row of the test whose file did not open reached the next test";
+  EXPECT_EQ(rows[0].at("test"), "Listener.Next");
 }
