@@ -21,20 +21,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   names change, so CSVs captured from it before this release do not join with
   newer ones, and `linearSearch` and `binarySearch` leave
   `helpers/DemoWorkloads.hpp`.
-- **Demo 01 measures a shared example** -- `src/bench/demo/examples/` holds the
-  code the walkthroughs measure, starting with `join`: `joinV0` builds the
-  result with `out = out + part + sep`, `joinV1` reserves once and appends in
-  place, and unit tests registered with `ctest` hold both versions to the same
-  answers. Demo 01 measured `std::accumulate` against a manual pointer loop,
-  which an optimizing compiler turns into the same loop, and it kept two
-  measurements in one test, so only the second reached the CSV. It now
-  measures one version per test, one CSV row each, and a third test fails when
-  V0 stops being at least three times slower than V1. Its walkthrough,
-  `src/bench/demo/docs/01_BASIC_WORKFLOW.md`, is rewritten from a Release run
-  on the documented Raspberry Pi 4 rig, and that run's CSV is committed at
-  `src/bench/demo/reference/pi4/01_basic_workflow.csv`; the opening section of
-  `src/bench/demo/README.md` shows the short form of the same run. Demo 01's
-  test names change, so CSVs captured from it before this release do not join
+- **Demo 01 measures a shared example** -- `BenchDemo_01_BasicWorkflow`
+  measures the two versions of the shared `join` example
+  (`src/bench/demo/examples/`), one test each. Demo 01's tests are renamed
+  (`SimpleThroughput`, `AccumulateVsManualLoop` and `QuickModeIteration`
+  become `JoinV0` and `JoinV1`), so its CSVs from earlier releases do not join
   with newer ones.
 - **Demo 02 (Nsight) measures the shared SAXPY example** --
   `BenchDemo_Gpu_02_NsightProfiler` times the example's `G0` and `G1` versions
@@ -56,58 +47,18 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (building a GPU case or a `CuptiCollector` throws `std::invalid_argument`).
   With an Nsight version that does not export those session variables, set
   `VERNIER_DISABLE_CUPTI=1` when wrapping.
-- **Demo 03 profiles the shared join example and checks what the profile
-  says** -- `BenchDemo_03_GperfProfiler` measures `joinV0` and `joinV1` in
-  `GperfProfiler.JoinV0` and `GperfProfiler.JoinV1`, one CSV row each. A third
-  test, `GperfProfiler.ProfileAttribution`, profiles each version for two
-  seconds of CPU time through the gperf backend, reads the profiles with
-  `google-pprof --text`, and fails when either function is on the stack of
-  fewer than 80% of its version's samples, when `joinV0`'s own code holds more
-  than a quarter of V0's samples (V0's time belongs to the copying and
-  allocating it calls), or when `joinV1`'s own code holds less than a quarter
-  of V1's. It skips, saying why, when the gperf backend or `google-pprof` is
-  unavailable, and under `--profile`. The demo profiled a bubble sort that a
-  Release build inlined into the test's lambda, so every sample landed in
-  `std::_Function_handler::_M_invoke` and the sort was never named, and its
-  only checks were `callsPerSecond` floors. `joinV0` and `joinV1` are declared
-  `[[gnu::noinline]]`, so a build that can see their definitions cannot fold
-  them into their callers; GCC may still specialize them when it sees every
-  caller, and a profile then names the copy
-  `vernier::bench::demo::joinV0 [clone .constprop.0]`, which the test counts as
-  the function. Its walkthrough, `src/bench/demo/docs/03_GPERF_PROFILER.md`, is
-  rewritten from a Release run on the documented Raspberry Pi 4 rig: the
-  `google-pprof` report of each version read row by row, the sampling rate the
-  profiles record (100 samples per second of CPU time), and what the report
-  shows without the C library's debug symbols; that run's CSV is committed at
-  `src/bench/demo/reference/pi4/03_gperf_profiler.csv`. Demo 03's test names
-  change (`BubbleSortHotspot` and `StdSortOptimized` are gone), so its CSVs
-  from earlier releases do not join with newer ones, and `bubbleSort` and
-  `fastSort` leave `helpers/DemoWorkloads.hpp`.
+- **Demo 03 profiles the shared join example** --
+  `BenchDemo_03_GperfProfiler` measures the two `join` versions, one test
+  each, instead of a bubble sort a Release build inlined out of every profile.
+  Demo 03's tests are renamed (`BubbleSortHotspot` and `StdSortOptimized`
+  become `JoinV0` and `JoinV1`), so its CSVs from earlier releases do not join
+  with newer ones, and `bubbleSort` and `fastSort` leave
+  `helpers/DemoWorkloads.hpp`.
 - **Demo 11 measures the join example's peak heap** --
-  `BenchDemo_11_MassifProfiler` joins 20,000 words with the shared `join`
-  example instead of allocating an 8 MB buffer per call. `Massif.JoinV0` and
-  `Massif.JoinV1` publish one CSV row each, and `Massif.JoinPeakHeap` counts
-  the bytes one call of each version holds at its peak and fails unless V0
-  holds more than three times what V1 holds. It skips itself under valgrind,
-  which replaces the counting. The demo's earlier tests asserted only that
-  each variant ran more than once a second, which still held with both
-  variants made identical. The join example gains `joinedSize()`, the length
-  of the string both versions return, computed without allocating (a unit
-  test counts no call to `operator new`); demos 07, 11 and 15 check each
-  result against it, and demo 11's guard checks that it holds no heap.
-  `Massif.JoinPeakHeap` is registered with `ctest` under the `demo` label, so
-  an ordinary test run includes it; the demo's timing tests are not
-  registered. Its walkthrough,
-  `src/bench/demo/docs/14_MASSIF_PROFILER.md`, is rewritten from a Release run
-  on the documented Raspberry Pi 4 rig: massif with `--time-unit=B` (on the
-  default instruction axis two of V1's three calls draw as one block), the
-  peak and the call sites that hold it, and where the output lands (the file
-  `--massif-out-file` names; run by hand with `--profile massif`, the binary
-  also creates a `<Suite.Case>.massif/` folder per test, empty unless
-  `--massif-out-file` points into it). That run's CSV is committed at
-  `src/bench/demo/reference/pi4/14_massif_profiler.csv`. Demo 11's test names
-  change (`Massif.SmallChurn` and `Massif.PooledReuse` are gone), so CSVs
-  captured from it before this release do not join with newer ones.
+  `BenchDemo_11_MassifProfiler` measures the two `join` versions at 20,000
+  words, one test each, instead of allocating an 8 MB buffer per call.
+  Demo 11's tests are renamed (`SmallChurn` and `PooledReuse` become `JoinV0`
+  and `JoinV1`), so its CSVs from earlier releases do not join with newer ones.
 - **Demo 15 (heaptrack) measures the shared `join` example** --
   `BenchDemo_15_HeaptrackProfiler` measured a vector filled by `push_back`
   without `reserve` against a reserved vector cleared and reused. It measures
@@ -223,7 +174,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   per-process data (a tool that `bench run` wraps around the whole binary) to
   `<root>/<binary>.<tool>/`. What changes for a user:
   - Under `bench run --profile callgrind|massif|memcheck|helgrind|heaptrack|
-    compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
+compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
     empty `<Suite.Case>.<tool>/` folder per test next to the real output in
     `bench-out/<binary>.<tool>/`, and the CSV `profileDir` column names that
     real folder instead of the empty one. Running the binary under the tool by
@@ -246,8 +197,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `.nsight` in every mode.
   - The rocprof and compute-sanitizer hints print their folder with a leading
     `./`, as the other backends do; the folder is the same.
-  Default roots are unchanged: the working directory for in-process backends,
-  `bench-out/` for wrapped ones.
+    Default roots are unchanged: the working directory for in-process backends,
+    `bench-out/` for wrapped ones.
 - **Unknown long options produce a warning** -- a test binary given a `--option`
   that neither vernier nor GoogleTest recognizes prints one stderr line naming
   it (`[WARN] unknown option '--target-tmie': ...`); the argument is still
@@ -382,7 +333,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `-UCMAKE_CUDA_ARCHITECTURES` (add `-UCUDA_ARCHS` if you never set it), or
   start from an empty build directory.
 - **`bench run` names a missing wrapper program** -- `bench run --profile
-  callgrind` on a machine without valgrind failed with
+callgrind` on a machine without valgrind failed with
   `I/O error: No such file or directory`, naming neither the file nor the
   cause, and left an empty `bench-out/<binary>.callgrind/` directory behind.
   The CLI resolves the programs it launches a run through before creating or
@@ -390,7 +341,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   callgrind, massif, memcheck and helgrind; `heaptrack`; `compute-sanitizer`;
   `nsys` for nsight; `ncu`) and `taskset` for `--taskset`. A missing one
   fails with `tool not found: 'valgrind' is not on PATH; --profile callgrind
-  runs the benchmark under it. ...` and a non-zero exit, and points at
+runs the benchmark under it. ...` and a non-zero exit, and points at
   `bench doctor`. `bench profile-all` reports the same line for that profiler
   and continues with the next.
 - **`bench doctor` warns when heaptrack cannot see C++ allocations** -- in a
@@ -400,8 +351,8 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   family heaptrack records, so a heaptrack trace of that process holds almost
   none of them. `bench doctor <binary>`, which checks the benchmark's own
   process, reported heaptrack `[OK]` there, and `bench doctor --require
-  heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
-  libtcmalloc is loaded: C++ allocations will be missing`, followed by the
+heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
+libtcmalloc is loaded: C++ allocations will be missing`, followed by the
   build option that removes tcmalloc, and `--require heaptrack` fails, as it
   does for any warning. The default build does not link tcmalloc and reports
   `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
@@ -535,9 +486,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   library compares it with its own build. On a mismatch the run prints one line
   and exits with status 3, before any profiler is constructed:
   `[bench] ABI mismatch: this benchmark and the libbench it loaded were built
-  from different vernier headers (sizeof(PerfConfig): benchmark 232, library
-  240). Rebuild the benchmark against this libbench, or load the libbench that
-  matches the benchmark's headers. Exiting.` The ABI version and the size of
+from different vernier headers (sizeof(PerfConfig): benchmark 232, library
+240). Rebuild the benchmark against this libbench, or load the libbench that
+matches the benchmark's headers. Exiting.` The ABI version and the size of
   each of the three structs must be equal on both sides; a larger struct in the
   benchmark is refused like a smaller one, because the libraries copy these
   objects into storage of their own size. Members are still only appended
@@ -679,15 +630,14 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   builder is created; the timed window is unchanged.
 - **`bench compare` fails instead of certifying a comparison it cannot make**
   -- two runs with no test name in common printed `No common tests to
-  compare.` and exited 0, so a CI job that compared the wrong pair of files,
+compare.` and exited 0, so a CI job that compared the wrong pair of files,
   or a suite whose tests had all been renamed, passed its regression gate
   without comparing anything. Such a comparison exits 1, with or without
   `--fail-on-regression`, and names the tests each side ran alone. The same
   holds for input a comparison cannot be built from: a `--threshold` that is
   not a finite percentage of zero or more, a test name a CSV reports twice
   (whose rows silently overwrote each other), a `wallMedian` or `wallCV` that
-  is missing from its row, empty, not a number (the loader read all three as
-  0) or not finite, a `wallMedian` of zero or less (a relative change against
+  is missing from its row, empty, not a number (the loader read all three as 0) or not finite, a `wallMedian` of zero or less (a relative change against
   a zero baseline was reported as a neutral `+0.0%`), a negative `wallCV`,
   and a candidate median so many times its baseline that the percentage
   change overflows (it printed as `+inf%` in the table and `null` in the
@@ -723,7 +673,7 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   empty or only whitespace loaded as a test with that name, so two CSVs with
   one such row each compared them as the same test and passed
   `--fail-on-regression`, and `bench summary` listed an unnamed row. `bench
-  summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
+summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   row, naming the file and line. A name is otherwise kept exactly as
   written: spaces around it, or a difference in case, make it a different
   test.
@@ -754,6 +704,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,
   with `[csv] cannot write --csv '<path>': <reason>` on stderr, so a script
   that relied on exit 0 from such a run sees 2.
+- **A thread-sanitizer build links with clang** -- the test programs that
+  count allocations replace `operator new` and `operator delete`, which
+  clang's thread-sanitizer runtime also defines, so a `-DSANITIZER=tsan` build
+  failed to link them. In such a build they replace neither, and their
+  counting tests skip, saying why.
 
 ## v1.0.3 - 2026-06-28
 
@@ -830,17 +785,17 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   from a hardcoded if-chain to a registry. New backends slot in via a
   single `VERNIER_REGISTER_PROFILER_BACKEND` line at file scope.
 - **Eight new profiler backends** (registry now lists 14):
-  - `massif`            -- valgrind heap profiler (full timeline, ~20x)
-  - `memcheck`          -- valgrind memory error / leak detector
-  - `helgrind`          -- valgrind thread-error detector: data races, lock
+  - `massif` -- valgrind heap profiler (full timeline, ~20x)
+  - `memcheck` -- valgrind memory error / leak detector
+  - `helgrind` -- valgrind thread-error detector: data races, lock
     order, pthread misuse (`--profile-args drd` selects DRD). CPU analog of
     compute-sanitizer's racecheck
-  - `offcpu`            -- bpftrace finish_task_switch (where threads sleep)
-  - `heaptrack`         -- low-overhead heap profiler (~1.5x)
-  - `jemalloc`          -- jemalloc prof sampling (~5-10%, LD_PRELOAD)
+  - `offcpu` -- bpftrace finish_task_switch (where threads sleep)
+  - `heaptrack` -- low-overhead heap profiler (~1.5x)
+  - `jemalloc` -- jemalloc prof sampling (~5-10%, LD_PRELOAD)
   - `compute-sanitizer` -- NVIDIA GPU memcheck (race / sync / init)
-  - `rocprof`           -- AMD ROCm GPU profiler
-  - `perf` `mem`/`c2c`  -- memory + cache-line-contention submodes
+  - `rocprof` -- AMD ROCm GPU profiler
+  - `perf` `mem`/`c2c` -- memory + cache-line-contention submodes
 - **CUPTI in-process kernel metrics** -- per-launch register count, static /
   dynamic shared memory, kernel name surface in the GPU CSV section without
   spawning `ncu` as an external process.
@@ -946,11 +901,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now use `HOST_UID` / `HOST_GID` uniformly.
 - **CSV listener GPU-mode detection** -- previously scanned test names
   for "Gpu" / "CUDA" substrings, which missed `PERF_GPU_BANDWIDTH(Foo,
-  Bar)`-style tests. Now reads an explicit flag set by `PERF_GPU_MAIN`.
+Bar)`-style tests. Now reads an explicit flag set by `PERF_GPU_MAIN`.
 - **Valgrind under-detection** -- massif / memcheck reported "not running
   under valgrind" (and printed the manual-wrap hint) even when the auto-wrap
   had the binary under valgrind, because they checked `getenv(
-  "RUNNING_ON_VALGRIND")` -- a valgrind *client request*, never an env var.
+"RUNNING_ON_VALGRIND")` -- a valgrind _client request_, never an env var.
   They now scan `/proc/self/maps` for the `vgpreload` library. compute-sanitizer
   detection gained the same `/proc/self/maps` fallback (its injection env var
   drifted across CUDA releases).
