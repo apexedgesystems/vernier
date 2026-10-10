@@ -765,6 +765,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
   counts being rows; when every test published one row it is unchanged.
+- **The dev images keep their baked Rust crates** -- the base and CUDA dev
+  images set `CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`, so an online cargo
+  build or test in an image older than three months keeps the baked crates
+  that a later offline build or test in the same container needs.
 
 ## v1.0.3 - 2026-06-28
 
