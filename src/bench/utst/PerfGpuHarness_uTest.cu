@@ -5,7 +5,9 @@
  * These need a CUDA device: they run a small kernel through the public
  * PerfGpuCase API and check the result and the row the harness leaves in
  * PerfRegistry, and one opens the harness's private NVML helper for the device
- * as the harness does. Without a device every test skips.
+ * as the harness does. The setup-failure tests count the streams and events
+ * the harness makes, and fail one setup step, through CudaHandleRecorder.
+ * Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -31,6 +33,7 @@
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
+#include "src/bench/utst/CudaHandleRecorder.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -1435,5 +1438,142 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
         << "the case's next window counted the failed window's launches";
+  }
+}
+
+/* ----------------------------- Setup Failures ----------------------------- */
+
+namespace {
+
+namespace bt = vernier::bench::test;
+
+/** @brief A step of a device's setup that a test makes fail. */
+struct SetupStep {
+  bt::CudaSetupFailure failure; ///< What CudaHandleRecorder makes fail
+  const char* name;             ///< The step, for the test's messages
+  int eventsBefore;             ///< Events the setup made before this step failed
+};
+
+/// Every step after the stream: each event, then the properties, read after both.
+constexpr SetupStep SETUP_STEPS[] = {
+    {bt::CudaSetupFailure::FirstEvent, "the first event", 0},
+    {bt::CudaSetupFailure::SecondEvent, "the second event", 1},
+    {bt::CudaSetupFailure::Properties, "the device properties", 2},
+};
+
+} // namespace
+
+/**
+ * @test A case whose device setup fails after it made its stream (at the first
+ *       event, the second event, or the properties read after both): the
+ *       exception reaches the caller, every stream and event the setup made is
+ *       destroyed, the current device is unchanged, and a new case on the same
+ *       device measures there and, when it ends, destroys all it made
+ */
+TEST_F(PerfGpuHarnessTest, CaseSetupThatFailsLeavesNoHandleAndANewCaseMeasures) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  for (const SetupStep& STEP : SETUP_STEPS) {
+    SCOPED_TRACE(STEP.name);
+    const int CALLER = currentDevice();
+
+    bt::startCudaHandleRecording(STEP.failure);
+    try {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuSetupFails") + ".Kernel", cfg_};
+      ADD_FAILURE() << "the case was made although " << STEP.name << " failed";
+    } catch (const std::runtime_error& e) {
+      EXPECT_EQ(std::string(e.what()), INJECTED);
+    }
+    const bt::CudaHandleCounts FAILED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(FAILED.streamsMade, 1) << "the recorder saw no stream made: the setup's calls "
+                                        "did not reach it";
+    EXPECT_EQ(FAILED.eventsMade, STEP.eventsBefore);
+    EXPECT_EQ(FAILED.streamsLeft, 0) << "the failed setup left its stream";
+    EXPECT_EQ(FAILED.eventsLeft, 0) << "the failed setup left its events";
+    EXPECT_EQ(currentDevice(), CALLER);
+
+    // A new case on the same device is made, measures there, and ends with
+    // nothing it made left behind.
+    bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+    {
+      ub::PerfGpuCase perf{uniqueSuite("GpuSetupRetry") + ".Kernel", cfg_};
+      FillOnDevice fill(perf.gpuConfig().deviceId);
+      static_cast<void>(perf.cudaKernel(fill.launch(), "fill").measure());
+      static_cast<void>(lastRow());
+      EXPECT_EQ(fill.seenDevice(), perf.gpuConfig().deviceId);
+      EXPECT_EQ(fill.firstWrong(), -1) << "the new case's launch did not fill the buffer";
+    }
+    const bt::CudaHandleCounts RETRIED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(RETRIED.streamsMade, 1);
+    EXPECT_EQ(RETRIED.eventsMade, 2);
+    EXPECT_EQ(RETRIED.streamsLeft, 0) << "the new case left its stream";
+    EXPECT_EQ(RETRIED.eventsLeft, 0) << "the new case left its events";
+  }
+}
+
+/**
+ * @test With two or more devices, withDeviceId() naming another device whose
+ *       setup fails after it made its stream: the exception reaches the caller
+ *       before any hook or row, every stream and event that setup made is
+ *       destroyed, the caller's device is current again, and the retry makes
+ *       that device's resources anew (nothing half-made was kept), measures
+ *       there, and those resources end with the case
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdSetupThatFailsLeavesNoHandleAndTheRetryMeasures) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  for (const SetupStep& STEP : SETUP_STEPS) {
+    SCOPED_TRACE(STEP.name);
+    {
+      ub::PerfGpuCase perf{uniqueSuite("GpuSetupOther") + ".Kernel", cfg_};
+      const int OWN = perf.gpuConfig().deviceId;
+      const int OTHER = (OWN + 1) % count;
+      FillOnDevice fill(OTHER);
+      HookLog log;
+      installLoggingHooks(perf, log);
+      ASSERT_EQ(currentDevice(), OWN);
+
+      bt::startCudaHandleRecording(STEP.failure);
+      try {
+        static_cast<void>(perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure());
+        ADD_FAILURE() << "measured although " << STEP.name << " failed";
+      } catch (const std::runtime_error& e) {
+        EXPECT_EQ(std::string(e.what()), INJECTED);
+      }
+      const bt::CudaHandleCounts FAILED = bt::stopCudaHandleRecording();
+      EXPECT_EQ(FAILED.streamsMade, 1) << "the recorder saw no stream made: the setup's calls "
+                                          "did not reach it";
+      EXPECT_EQ(FAILED.eventsMade, STEP.eventsBefore);
+      EXPECT_EQ(FAILED.streamsLeft, 0) << "the failed setup left its stream";
+      EXPECT_EQ(FAILED.eventsLeft, 0) << "the failed setup left its events";
+      EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+      EXPECT_EQ(log.calls, "") << "the failed setup opened a profiler window";
+      EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+          << "the failed setup published a row";
+
+      bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+      const ub::PerfGpuResult RESULT =
+          perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+      static_cast<void>(lastRow());
+      const bt::CudaHandleCounts KEPT = bt::cudaHandleCounts();
+      EXPECT_EQ(KEPT.streamsMade, 1) << "the retry did not make the device's resources anew";
+      EXPECT_EQ(KEPT.eventsMade, 2);
+      EXPECT_EQ(fill.seenDevice(), OTHER);
+      EXPECT_EQ(fill.firstWrong(), -1) << "the retry did not fill the other device's buffer";
+      EXPECT_EQ(RESULT.deviceId, OTHER);
+      EXPECT_EQ(currentDevice(), OWN);
+    }
+    const bt::CudaHandleCounts ENDED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(ENDED.streamsLeft, 0) << "the other device's stream outlived the case";
+    EXPECT_EQ(ENDED.eventsLeft, 0) << "the other device's events outlived the case";
   }
 }

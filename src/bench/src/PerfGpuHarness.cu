@@ -23,6 +23,7 @@
 #include <string>
 #include <cstdio>
 #include <thread>
+#include <utility>
 
 namespace vernier {
 namespace bench {
@@ -307,6 +308,65 @@ public:
 
 private:
   CuptiCollector& collector_;
+};
+
+/**
+ * @brief Makes a stream on the current device and owns it until release()
+ *        hands it on: if the scope ends first, by exception included, the
+ *        stream is destroyed with that device still current.
+ */
+class OwnedStream {
+public:
+  /** @param highPriority Make it at the device's greatest stream priority. */
+  explicit OwnedStream(bool highPriority) {
+    if (highPriority) {
+      int leastPriority, greatestPriority;
+      CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
+      CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamNonBlocking, greatestPriority));
+    } else {
+      CUDA_CHECK(cudaStreamCreate(&stream_));
+    }
+  }
+
+  ~OwnedStream() {
+    if (stream_ != nullptr) {
+      cudaStreamDestroy(stream_);
+    }
+  }
+
+  OwnedStream(const OwnedStream&) = delete;
+  OwnedStream& operator=(const OwnedStream&) = delete;
+
+  /** @brief Hands the stream on: from here the caller destroys it. */
+  [[nodiscard]] cudaStream_t release() noexcept { return std::exchange(stream_, nullptr); }
+
+private:
+  cudaStream_t stream_ = nullptr;
+};
+
+/**
+ * @brief Makes an event on the current device and owns it until release()
+ *        hands it on: if the scope ends first, by exception included, the
+ *        event is destroyed with that device still current.
+ */
+class OwnedEvent {
+public:
+  OwnedEvent() { CUDA_CHECK(cudaEventCreate(&event_)); }
+
+  ~OwnedEvent() {
+    if (event_ != nullptr) {
+      cudaEventDestroy(event_);
+    }
+  }
+
+  OwnedEvent(const OwnedEvent&) = delete;
+  OwnedEvent& operator=(const OwnedEvent&) = delete;
+
+  /** @brief Hands the event on: from here the caller destroys it. */
+  [[nodiscard]] cudaEvent_t release() noexcept { return std::exchange(event_, nullptr); }
+
+private:
+  cudaEvent_t event_ = nullptr;
 };
 
 /** @brief Throws std::invalid_argument unless @p deviceId is a CUDA device of this process. */
@@ -803,20 +863,22 @@ private:
    */
   struct DeviceResources {
     DeviceResources(int id, bool highPriorityStream, bool captureClockSpeeds) : deviceId(id) {
-      if (highPriorityStream) {
-        int leastPriority, greatestPriority;
-        CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
-        CUDA_CHECK(cudaStreamCreateWithPriority(&stream, cudaStreamNonBlocking, greatestPriority));
-      } else {
-        CUDA_CHECK(cudaStreamCreate(&stream));
-      }
-
-      CUDA_CHECK(cudaEventCreate(&eventStart));
-      CUDA_CHECK(cudaEventCreate(&eventStop));
+      // Each handle is owned from the moment it is made. A later step that
+      // throws (an event, the properties, NVML) leaves before this object
+      // exists, so its destructor never runs; the owners then destroy what
+      // was made, on this device, still current. Once every step succeeded,
+      // the handles pass to this object.
+      OwnedStream madeStream(highPriorityStream);
+      OwnedEvent madeStart;
+      OwnedEvent madeStop;
 
       queryDeviceInfo();
 
       nvml.emplace(captureClockSpeeds, nvml_telemetry::uuidText(prop.uuid.bytes));
+
+      stream = madeStream.release();
+      eventStart = madeStart.release();
+      eventStop = madeStop.release();
     }
 
     ~DeviceResources() {
