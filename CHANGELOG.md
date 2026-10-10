@@ -701,6 +701,13 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   clang's thread-sanitizer runtime also defines, so a `-DSANITIZER=tsan` build
   failed to link them. In such a build they replace neither, and their
   counting tests skip, saying why.
+- **`withDeviceId()` measures on the device it names** --
+  `CudaKernelBuilder::withDeviceId()` put the id in the result and the CSV
+  row while the launches, copies and timing ran on the case's device
+  (`--gpu-device`). The measurement now runs on the named device and the
+  row's device, GPU model and telemetry are that device's; an id that names
+  no device fails the measurement (`std::invalid_argument`) before anything
+  is timed.
 
 ## v1.0.3 - 2026-06-28
 

@@ -1099,3 +1099,185 @@ TEST_F(PerfGpuHarnessTest, MultiGpuOccupancyCellOnlyWithALaunchConfiguration) {
   ASSERT_TRUE(ROW.occupancy.has_value());
   EXPECT_DOUBLE_EQ(*ROW.occupancy, WITH.perDevice[0].stats.occupancy.achievedOccupancy);
 }
+
+/* ----------------------------- Device Selection ----------------------------- */
+
+namespace {
+
+/// What fillKernel writes at index i: FILL_BASE + i, exact in float for ELEMENTS elements.
+constexpr float FILL_BASE = 1.0F;
+
+/** @brief out[i] = base + i over n floats. */
+__global__ void fillKernel(float* out, int n, float base) {
+  const int IDX = blockIdx.x * blockDim.x + threadIdx.x;
+  if (IDX < n) {
+    out[IDX] = base + static_cast<float>(IDX);
+  }
+}
+
+/** @brief The current CUDA device, or -1 when the runtime does not say. */
+int currentDevice() {
+  int device = -1;
+  return (cudaGetDevice(&device) == cudaSuccess) ? device : -1;
+}
+
+/**
+ * @brief A zeroed buffer of ELEMENTS floats on one device, the launch that
+ *        fills it and records the device current when it ran, and the check.
+ */
+class FillOnDevice {
+public:
+  explicit FillOnDevice(int device) : device_(device) {
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    cudaMalloc(&buffer_, bytes());
+    cudaMemset(buffer_, 0, bytes());
+    cudaSetDevice(CALLER);
+  }
+
+  ~FillOnDevice() {
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    cudaFree(buffer_);
+    cudaSetDevice(CALLER);
+  }
+
+  FillOnDevice(const FillOnDevice&) = delete;
+  FillOnDevice& operator=(const FillOnDevice&) = delete;
+
+  /** @brief The measured launch: records the current device, then fills the buffer. */
+  [[nodiscard]] ub::PerfGpuCase::KernelFn launch() {
+    return [this](cudaStream_t s) {
+      seenDevice_ = currentDevice();
+      fillKernel<<<(ELEMENTS + BLOCK - 1) / BLOCK, BLOCK, 0, s>>>(buffer_, ELEMENTS, FILL_BASE);
+    };
+  }
+
+  /** @brief The device that was current when the launch last ran; -2 before it ran. */
+  [[nodiscard]] int seenDevice() const { return seenDevice_; }
+
+  /**
+   * @brief Index of the first element that is not FILL_BASE + its index: -1
+   *        when every element is, -2 when the buffer cannot be read back.
+   */
+  [[nodiscard]] int firstWrong() const {
+    std::vector<float> host(ELEMENTS, 0.0F);
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    const cudaError_t COPIED = cudaMemcpy(host.data(), buffer_, bytes(), cudaMemcpyDeviceToHost);
+    cudaSetDevice(CALLER);
+    if (COPIED != cudaSuccess) {
+      return -2;
+    }
+    for (int i = 0; i < ELEMENTS; ++i) {
+      if (host[i] != FILL_BASE + static_cast<float>(i)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+private:
+  [[nodiscard]] static std::size_t bytes() { return ELEMENTS * sizeof(float); }
+
+  int device_;
+  float* buffer_ = nullptr;
+  int seenDevice_ = -2;
+};
+
+} // namespace
+
+/**
+ * @test withDeviceId() naming the case's own device measures there: the
+ *       launch runs with that device current and fills its buffer, and the
+ *       result and the row carry its id and GPU model
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnTheCaseDeviceMeasuresThere) {
+  ub::PerfGpuCase perf{uniqueSuite("GpuDeviceOwn") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, OWN), cudaSuccess);
+  FillOnDevice fill(OWN);
+
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OWN).measure();
+  const ub::PerfRow ROW = lastRow();
+
+  EXPECT_EQ(fill.seenDevice(), OWN);
+  EXPECT_EQ(fill.firstWrong(), -1) << "the launch did not fill the buffer";
+  EXPECT_EQ(currentDevice(), OWN);
+  EXPECT_EQ(RESULT.deviceId, OWN);
+  EXPECT_EQ(RESULT.stats.deviceInfo.name, prop.name);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OWN);
+  ASSERT_TRUE(ROW.gpuModel.has_value());
+  EXPECT_EQ(*ROW.gpuModel, prop.name);
+}
+
+/**
+ * @test withDeviceId() naming no device (the device count, or an id below -1)
+ *       throws std::invalid_argument naming the id before the measurement
+ *       starts: neither hook fires, no row is published and the current device
+ *       is unchanged
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdNamingNoDeviceThrowsBeforeMeasuring) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  SaxpyFixtureData data;
+  for (const int ID : {count, -2}) {
+    ub::PerfGpuCase perf{uniqueSuite("GpuDeviceNone") + ".Kernel", cfg_};
+    HookLog log;
+    installLoggingHooks(perf, log);
+    const int BEFORE = currentDevice();
+    try {
+      static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").withDeviceId(ID).measure());
+      ADD_FAILURE() << "withDeviceId(" << ID << ") measured";
+    } catch (const std::invalid_argument& e) {
+      const std::string WHAT = e.what();
+      EXPECT_NE(WHAT.find("withDeviceId(" + std::to_string(ID) + ")"), std::string::npos) << WHAT;
+      EXPECT_NE(WHAT.find("sees " + std::to_string(count)), std::string::npos) << WHAT;
+    }
+    EXPECT_EQ(log.calls, "") << "withDeviceId(" << ID << ") opened a profiler window";
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "withDeviceId(" << ID << ") published a row";
+    EXPECT_EQ(currentDevice(), BEFORE) << "withDeviceId(" << ID << ") changed the current device";
+  }
+}
+
+/**
+ * @test withDeviceId() naming another device measures there: the launch runs
+ *       with that device current and fills that device's buffer, the result
+ *       and the row carry its id and GPU model, and afterwards the caller's
+ *       device is current again and the case's own stream still works
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceMeasuresThere) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuDeviceOther") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int OTHER = (OWN + 1) % count;
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, OTHER), cudaSuccess);
+  FillOnDevice fill(OTHER);
+
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+  const ub::PerfRow ROW = lastRow();
+
+  EXPECT_EQ(fill.seenDevice(), OTHER);
+  EXPECT_EQ(fill.firstWrong(), -1) << "the launch did not fill the other device's buffer";
+  EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+  EXPECT_EQ(RESULT.deviceId, OTHER);
+  EXPECT_EQ(RESULT.stats.deviceInfo.name, prop.name);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OTHER);
+  ASSERT_TRUE(ROW.gpuModel.has_value());
+  EXPECT_EQ(*ROW.gpuModel, prop.name);
+
+  // The case's own stream still serves its own device
+  SaxpyFixtureData data;
+  EXPECT_NO_THROW(perf.cudaWarmup(data.launch()));
+}
