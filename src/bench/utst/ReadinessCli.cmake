@@ -10,38 +10,34 @@
 # start both fixtures; each ReadinessCli.<Case> runs ReadinessFixtureTarget
 # through ReadinessCli_test.cmake.
 #
-# Targets: ReadinessFixtureTarget, ReadinessCustomMainTarget (test fixtures:
-#          never installed, no UPX copy), TestBenchReadinessRun
+# Targets: ReadinessFixtureTarget, ReadinessCustomMainTarget (process fixtures
+#          with their own main, run only by these tests), TestBenchReadinessRun
 # Tests:  ReadinessFixtureRun.<Case> (ReadinessFixtureRun_uTest.cpp);
 #         ReadinessCli.<Case>, each a run of ReadinessCli_test.cmake
 # ==============================================================================
 
-vernier_add_app(
-  NAME
+vernier_add_gtest(
+  TARGET
   ReadinessFixtureTarget
-  SRC
+  SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/fixtures/readiness/ReadinessFixtureTarget.cpp"
   LINK
   bench
-  GTest::gtest
-  NO_INSTALL
-  NO_UPX
+  NO_REGISTER
 )
 
 # A benchmark with its own main(), written as the advanced guide shows.
-vernier_add_app(
-  NAME
+vernier_add_gtest(
+  TARGET
   ReadinessCustomMainTarget
-  SRC
+  SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/fixtures/readiness/ReadinessCustomMain.cpp"
   LINK
   bench
-  GTest::gtest
-  NO_INSTALL
-  NO_UPX
+  NO_REGISTER
 )
 
-# The helper skips apps on platforms without POSIX; the tests go with it.
+# The test helper builds nothing for bare metal; the tests go with it.
 if (NOT TARGET ReadinessFixtureTarget OR NOT TARGET ReadinessCustomMainTarget)
   return()
 endif ()
