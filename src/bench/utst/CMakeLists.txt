@@ -263,9 +263,9 @@ include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 # the evidence a C++ check asks of it. A test fixture, never installed.
 # ------------------------------------------------------------------------------
 
-vernier_add_app(
-  NAME ValgrindReaderAssertionCli SRC "${CMAKE_CURRENT_LIST_DIR}/ValgrindReaderAssertionCli.cpp"
-  NO_INSTALL NO_UPX
+vernier_add_test_program(
+  TARGET ValgrindReaderAssertionCli SOURCES
+  "${CMAKE_CURRENT_LIST_DIR}/ValgrindReaderAssertionCli.cpp"
 )
 
 # ------------------------------------------------------------------------------
