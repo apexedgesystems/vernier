@@ -479,6 +479,47 @@ TEST(NvtxTraceTest, ReportsATestRangeLeftOpen) {
   EXPECT_TRUE(mentions(PROBLEMS, "the range before it was still open")) << PROBLEMS.size();
 }
 
+/** @test A phase still open when the next phase opens is reported */
+TEST(NvtxTraceTest, ReportsAPhaseLeftOpen) {
+  Trace t = demoTrace(MEASURED_CALLS, WARMUP_CALLS);
+  NvtxRange& in = nthRange(t, phase::COPY_IN, WARMUP_CALLS + 1);
+  in.end = nthRange(t, phase::KERNEL, WARMUP_CALLS + 1).start + 1;
+
+  const std::vector<std::string> PROBLEMS =
+      assessRanges(t.ranges, t.ops, MEASURED_CALLS, WARMUP_CALLS);
+
+  EXPECT_TRUE(mentions(PROBLEMS, "call 1, range copy_in: still open when the next range opened"))
+      << PROBLEMS.size();
+}
+
+/** @test A warmup phase still open when the annotated test's range opens is reported */
+TEST(NvtxTraceTest, ReportsAWarmupPhaseLeftOpen) {
+  Trace t = demoTrace(MEASURED_CALLS, WARMUP_CALLS);
+  NvtxRange& out = nthRange(t, phase::COPY_OUT, WARMUP_CALLS - 1);
+  out.end = nthRange(t, ANNOTATED, 0).start + 1;
+
+  const std::vector<std::string> PROBLEMS =
+      assessRanges(t.ranges, t.ops, MEASURED_CALLS, WARMUP_CALLS);
+
+  EXPECT_TRUE(
+      mentions(PROBLEMS, "warmup range copy_out is out of order or after the test's range opened"))
+      << PROBLEMS.size();
+}
+
+/** @test The unannotated test's range opened before its warmup call is reported */
+TEST(NvtxTraceTest, ReportsTheWarmupInsideTheUnannotatedTest) {
+  Trace t = demoTrace(MEASURED_CALLS, WARMUP_CALLS);
+  NvtxRange& g1 = nthRange(t, UNANNOTATED, 0);
+  g1.start = t.ops.front().start;
+
+  const std::vector<std::string> PROBLEMS =
+      assessRanges(t.ranges, t.ops, MEASURED_CALLS, WARMUP_CALLS);
+
+  EXPECT_TRUE(mentions(
+      PROBLEMS, "NvtxAnnotation.G1's range holds 9 kernels, not the 8 of its measured calls"))
+      << PROBLEMS.size();
+}
+
 /* ----------------------------- Capture Controls ----------------------------- */
 
 // What RecordedByNsightSystems does with a capture that does not end in a
