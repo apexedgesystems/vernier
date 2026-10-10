@@ -38,6 +38,7 @@
  */
 
 #include <gtest/gtest.h>
+#include <atomic>
 #include <cstdint>
 #include <vector>
 #include <thread>
@@ -103,6 +104,7 @@ PERF_TEST(ThreadScaling, SingleThreadBaseline) {
  * @test EfficiencyValidation
  *
  * Validates:
+ *  - Every call computes the right sum, with no shared write on the way
  *  - Multi-threaded performance exceeds single-threaded
  *  - Speedup calculation is reasonable
  *  - Efficiency >50% for embarrassingly parallel work
@@ -120,24 +122,29 @@ PERF_TEST(ThreadScaling, EfficiencyValidation) {
 
   const std::size_t DATA_SIZE = 8192;
 
-  // First measure single-threaded baseline
-  auto data1 = test::makeTestData(DATA_SIZE);
+  // One vector, read by every worker, and its sum taken once. Each call sums
+  // the vector again and writes to shared memory only when its sum is wrong,
+  // so the workers' calls stay independent: no shared result variable and no
+  // shared cache line written on the measured path.
+  const auto data = test::makeTestData(DATA_SIZE);
+  const std::uint64_t EXPECTED_SUM = test::sumBytes(data.data(), data.size());
+  std::atomic<std::uint64_t> mismatches{0};
+  const auto sumAndCheck = [&] {
+    if (test::sumBytes(data.data(), data.size()) != EXPECTED_SUM) {
+      mismatches.fetch_add(1, std::memory_order_relaxed);
+    }
+  };
 
   perf.warmup([&] {
-    volatile auto result = test::sumBytes(data1.data(), data1.size());
+    volatile auto result = test::sumBytes(data.data(), data.size());
     (void)result;
   });
 
-  volatile std::uint64_t sink1 = 0;
-  auto baseline = perf.throughputLoop(
-      [&] { sink1 = sink1 + test::sumBytes(data1.data(), data1.size()); }, "baseline");
+  // The same calls, first on the test's own thread, then on every worker
+  auto baseline = perf.throughputLoop(sumAndCheck, "baseline");
+  auto multithread = perf.contentionRun(sumAndCheck, "multithread");
 
-  // Now measure with contentionRun (2 threads)
-  auto data2 = test::makeTestData(DATA_SIZE);
-  volatile std::uint64_t sink2 = 0;
-
-  auto multithread = perf.contentionRun(
-      [&] { sink2 = sink2 + test::sumBytes(data2.data(), data2.size()); }, "multithread");
+  EXPECT_EQ(mismatches.load(), 0u) << "Calls computed a wrong sum";
 
   // Calculate speedup (ratio of throughputs)
   const double speedup = multithread.callsPerSecond / baseline.callsPerSecond;
@@ -151,7 +158,4 @@ PERF_TEST(ThreadScaling, EfficiencyValidation) {
 
   // Validate measurements are stable
   EXPECT_LT(multithread.stats.cv, 0.30) << "High variance in multi-threaded measurements";
-
-  (void)sink1;
-  (void)sink2;
 }
