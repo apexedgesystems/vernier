@@ -708,6 +708,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   row's device, GPU model and telemetry are that device's; an id that names
   no device fails the measurement (`std::invalid_argument`) before anything
   is timed.
+- **A GPU measurement that throws closes its CUPTI window** -- when a kernel
+  callback (or a CUDA call) threw inside `cudaKernel(...).measure()`, the
+  in-process CUPTI collector kept recording, and the case's next measurement
+  counted the failed window's kernel launches in its CUPTI cells. The window
+  closes when the measurement throws, so the next one counts only its own.
 
 ## v1.0.3 - 2026-06-28
 

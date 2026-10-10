@@ -292,6 +292,23 @@ private:
   bool active_ = false;
 };
 
+/**
+ * @brief Stops a CUPTI collector's window when the scope ends, by return or by
+ *        exception; stopping a stopped or unavailable collector does nothing.
+ */
+class CuptiWindowCloser {
+public:
+  explicit CuptiWindowCloser(CuptiCollector& collector) : collector_(collector) {}
+
+  ~CuptiWindowCloser() { collector_.stop(); }
+
+  CuptiWindowCloser(const CuptiWindowCloser&) = delete;
+  CuptiWindowCloser& operator=(const CuptiWindowCloser&) = delete;
+
+private:
+  CuptiCollector& collector_;
+};
+
 /** @brief Throws std::invalid_argument unless @p deviceId is a CUDA device of this process. */
 void requireDevice(int deviceId) {
   int count = 0;
@@ -419,6 +436,10 @@ public:
                            "(external Nsight session or VERNIER_DISABLE_CUPTI); "
                            "CUPTI CSV columns will be empty.\n");
     }
+    // A callback or a CUDA call that throws leaves before the window's stop
+    // below; the window then stops here, so this case's next window counts
+    // only its own launches.
+    const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
 
     UnifiedMemoryProfile umProfile{};
     UMSnapshot umBefore, umAfter;

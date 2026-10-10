@@ -1185,6 +1185,22 @@ private:
   int seenDevice_ = -2;
 };
 
+/// What a failing callback throws, so the test can tell it from the harness's own errors.
+constexpr const char* CALLBACK_FAILED = "callback failed";
+
+/**
+ * @brief A measured launch that runs @p launch and throws CALLBACK_FAILED on
+ *        its third call, inside the measured window, after kernels are queued.
+ */
+ub::PerfGpuCase::KernelFn throwingOnThirdCall(ub::PerfGpuCase::KernelFn launch, int& calls) {
+  return [launch = std::move(launch), &calls](cudaStream_t s) {
+    launch(s);
+    if (++calls == 3) {
+      throw std::runtime_error(CALLBACK_FAILED);
+    }
+  };
+}
+
 } // namespace
 
 /**
@@ -1280,4 +1296,144 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceMeasuresThere) {
   // The case's own stream still serves its own device
   SaxpyFixtureData data;
   EXPECT_NO_THROW(perf.cudaWarmup(data.launch()));
+}
+
+/**
+ * @test A kernel callback that throws in the measured window: the exception
+ *       reaches the caller, no row is published, and the window is closed, so
+ *       the case's next measurement and a new case's count only their own
+ *       launches and compute the right result
+ */
+TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  FillOnDevice fill(currentDevice());
+  {
+    ub::PerfGpuCase perf{uniqueSuite("GpuThrowDefault") + ".Kernel", cfg_};
+    int calls = 0;
+    try {
+      static_cast<void>(
+          perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill").measure());
+      ADD_FAILURE() << "the callback's exception did not reach the caller";
+    } catch (const std::runtime_error& e) {
+      EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+    }
+    EXPECT_EQ(calls, 3);
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "the failed measurement published a row";
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+
+    const ub::PerfGpuResult NEXT = perf.cudaKernel(fill.launch(), "fill").measure();
+    static_cast<void>(lastRow());
+    EXPECT_EQ(fill.firstWrong(), -1);
+    if (COUNTS) {
+      EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+          << "the case's next window counted the failed window's launches";
+    }
+  }
+
+  ub::PerfGpuCase fresh{uniqueSuite("GpuThrowDefault") + ".Fresh", cfg_};
+  const ub::PerfGpuResult FRESH = fresh.cudaKernel(fill.launch(), "fill").measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(fill.firstWrong(), -1);
+  if (COUNTS) {
+    EXPECT_EQ(FRESH.stats.cupti.kernelLaunches, LAUNCHES);
+  }
+}
+
+/**
+ * @test A callback that throws after withDeviceId() made the case's device
+ *       current: the exception reaches the caller, no row is published, the
+ *       caller's device is current again, and the case's next measurement on
+ *       that device is clean and correct. With one GPU the named device is the
+ *       caller's, so this covers the failure path's cleanup and a restoration
+ *       to the same device, not a return from another device
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackThrows) {
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  ub::PerfGpuCase perf{uniqueSuite("GpuThrowOwn") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int CALLER = currentDevice();
+  FillOnDevice fill(OWN);
+
+  int calls = 0;
+  try {
+    static_cast<void>(perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill")
+                          .withDeviceId(OWN)
+                          .measure());
+    ADD_FAILURE() << "the callback's exception did not reach the caller";
+  } catch (const std::runtime_error& e) {
+    EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+  }
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(fill.seenDevice(), OWN);
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+  EXPECT_EQ(currentDevice(), CALLER) << "the caller's device is not current again";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+
+  const ub::PerfGpuResult NEXT = perf.cudaKernel(fill.launch(), "fill").withDeviceId(OWN).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(NEXT.deviceId, OWN);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OWN);
+  EXPECT_EQ(currentDevice(), CALLER);
+  if (COUNTS) {
+    EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+        << "the case's next window counted the failed window's launches";
+  }
+}
+
+/**
+ * @test With two or more devices, a callback that throws after withDeviceId()
+ *       made another device current: the caller's device is current again, no
+ *       row is published, and the case's next measurement on that device is
+ *       clean and correct
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThrows) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  ub::PerfGpuCase perf{uniqueSuite("GpuThrowOther") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int OTHER = (OWN + 1) % count;
+  FillOnDevice fill(OTHER);
+  ASSERT_EQ(currentDevice(), OWN);
+
+  int calls = 0;
+  try {
+    static_cast<void>(perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill")
+                          .withDeviceId(OTHER)
+                          .measure());
+    ADD_FAILURE() << "the callback's exception did not reach the caller";
+  } catch (const std::runtime_error& e) {
+    EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+  }
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(fill.seenDevice(), OTHER);
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+  EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+
+  const ub::PerfGpuResult NEXT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(NEXT.deviceId, OTHER);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OTHER);
+  EXPECT_EQ(currentDevice(), OWN);
+  if (COUNTS) {
+    EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+        << "the case's next window counted the failed window's launches";
+  }
 }
