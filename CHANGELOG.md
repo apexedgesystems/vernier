@@ -224,16 +224,17 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
 - **A profiler request that fails fails the run** -- an unknown profiler, a
-  request its tool cannot collect and a requested analysis that fails are
-  reported when found and again when the run ends, also for a profiler built
-  by its backend's own constructor or factory (which creates no folder for a
-  request it refuses), and the run then exits with status 4 if its tests
-  passed; `bench run` names that status, or the signal, where it reported a
-  parse error. **Action needed:** a CI job that passed
-  without its requested profile now fails; a benchmark with its own `main()`
-  returns `vernier::bench::ProfilerRegistry::finishRun()` as the
+  request its tool cannot collect (which creates no folder) and a requested
+  analysis that fails (which keeps the capture) are reported, and the run
+  exits with status 4 if its tests passed, also for a profiler built by its
+  backend's own constructor or factory, bpftrace's and offcpu's aside
+  ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
+  **Action needed:** a CI job that passed without its requested profile now
+  fails; a benchmark with its own `main()` returns
+  `vernier::bench::ProfilerRegistry::finishRun()` as the
   [advanced guide](src/bench/docs/ADVANCED_GUIDE.md#perf_main-macro) shows; a
-  script that matched `parse error` matches `the benchmark exited with status`.
+  script that matched `bench run`'s `parse error` matches
+  `the benchmark exited with status`.
 - **`--profile-check` also checks one selected request** -- given
   `--profile <name>` and that request's options, it adds a `Selected request`
   row with the report a run of the request prints, `--profile-check-json` adds
@@ -257,13 +258,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `record`, `mem` and `c2c` are checked only for that counting access and
   reported `unverified`.
 - **gperf checks the requested mode and runs the analyzer it finds** -- a mode
-  the build lacks is an error, a word other than `cpu`, `heap` and `both` is
-  refused (it was matched as a substring, and an unknown word ran nothing), a
-  capture gperftools does not start or that leaves no file fails the run, and
-  `--profile-analyze` runs the first of `google-pprof` and `pprof` on
-  `PATH` (it always ran `google-pprof`, so a `pprof`-only installation printed
-  empty analysis). An analyzer that is missing, does not run or fails on the
-  profile is reported, and the capture and its `cpu.prof` are kept.
+  word other than `cpu`, `heap` and `both`, a mode the build lacks and a
+  capture gperftools does not start or that writes no profile fail the run,
+  and `--profile-analyze` runs the first of `google-pprof` and `pprof` on
+  `PATH`, whose absence or failure fails the run and keeps the capture.
   **Action needed:** give gperf's `--profile-args` its modes alone.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
@@ -291,114 +289,106 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 ### Fixed
 
 - **`bench run` runs the tool and mode a request names** -- `--profile nsys`
-  ran unwrapped, and the modes of wrapped profiles (massif `pages`, memcheck
-  `track-origins`, helgrind `drd`, compute-sanitizer's tools, nsight
-  `compute`) never reached their tool; they do now, also when given after
-  `--`, and a word a profile does not take, or a profile field given twice
-  with different values, is refused before anything starts. **Action
-  needed:** correct or drop a `--profile-args` value that `bench run` used to
-  ignore; the [tools README](tools/README.md#run---execute-benchmark-binary)
-  lists the modes.
+  is wrapped as `nsight` is, and a wrapped profile's `--profile-args` mode
+  reaches its tool, also from a request given after `--`; a word the profile
+  does not take, or a request field given twice with different values, is
+  refused before anything starts. **Action needed:** correct or drop a
+  `--profile-args` value that `bench run` used to ignore; the
+  [tools README](tools/README.md#run---execute-benchmark-binary) lists the
+  modes.
 - **A wrapped profile fails without its tool, and the doctor runs the tool**
-  -- a request for callgrind, massif, memcheck, helgrind, heaptrack, rocprof,
-  nsight, ncu or compute-sanitizer passed with nothing collected when its tool
-  had not started the process, and the doctor reported the tool's presence as
-  ready. Such a run fails (exit status 4) printing the command that collects
-  it, and the doctor starts the requested tool (nsys, ncu and
-  compute-sanitizer `unverified`, rocprof never ready), in builds with and
-  without CUDA. **Action needed:** run these profiles through
-  `bench run --profile <tool>` or the printed command.
+  -- a benchmark run with `--profile` callgrind, massif, memcheck, helgrind,
+  heaptrack, rocprof, nsight, ncu or compute-sanitizer outside that tool
+  fails with status 4 and prints the command that collects it; the doctor
+  calls the valgrind tools and heaptrack ready only when they run here, and
+  nsight, ncu, compute-sanitizer and rocprof at best `unverified`, which
+  `--require` does not accept. **Action needed:** run these profiles through
+  `bench run --profile <tool>` or the printed command
+  ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#a-profile-that-runs-under-its-tool-fails-without-it)).
 - **`--profile perf` measures between perf's start and its report** -- perf
-  had a fixed 200 ms to start and a fixed second to stop, so the start of the
-  measured phase could go unprofiled and an incomplete capture passed. The
-  phase starts once perf answers a ping on its `--control` fifo (a perf
-  without it and `perf mem` keep the 200 ms), the stop waits for perf's
-  report, and a perf that ends early, needs SIGTERM or SIGKILL, ends after
-  SIGINT otherwise than by it or with status 130 or 0, or counts no event (a
-  heading or an error is no count) fails the run (exit status 4).
+  profiles the measured phase from its first iteration when it can confirm
+  that it is counting
+  ([API reference](src/bench/docs/API_REFERENCE.md#profilerperf)), and a perf
+  that ends early, does not finish its report or leaves no usable counts or
+  profile fails the run with status 4
+  ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#perf-not-working)).
 - **`--profile callgrind --profile-analyze` annotates the finished profile**
-  -- the benchmark annotated the profile from its own hook before valgrind
-  had written it; `bench run --profile-analyze` runs `callgrind_annotate`
-  after valgrind exits, bounded at 120 s, and fails the run when it is
-  missing or fails. **Action needed:** under a manual
-  `valgrind --tool=callgrind` wrap, run `callgrind_annotate` on the profile
-  after the process exits.
+  -- `bench run` runs `callgrind_annotate` after valgrind exits, on the
+  profile it wrote, and a missing or failing annotator fails the run.
+  **Action needed:** under a `valgrind --tool=callgrind` wrap typed by hand,
+  drop `--profile-analyze`, which fails such a run, and run
+  `callgrind_annotate` on the profile after the process exits.
 - **`bench validate` reports facts, and a binary's own rows when given
-  one** -- it reported a tool's presence as readiness and marked absent tools
-  `[FAIL]` while exiting 0; it lists each tool's path and version and, given a
-  binary, that binary's default-mode rows as advice, exiting 0 unless the
-  binary is missing, does not start or prints no doctor document.
+  one** -- it lists each profiling tool's path and version instead of judging
+  readiness from a tool's presence, or, given a binary, that binary's
+  default-mode doctor rows, and exits 0 whatever the rows say: 1 only when
+  the binary is missing, does not start or prints no doctor document.
   **Action needed:** gate a lane on
-  `bench doctor <binary> --require <backends>`; `bench validate` never fails
-  on its rows.
+  `bench doctor <binary> --require <backends>`
+  ([tools README](tools/README.md#validate---profiling-tools-on-this-host)).
 - **A bare binary name is the working directory's, and a program needs its
   execute bit** -- `bench doctor`, `bench validate`, `bench run` and
-  `bench profile-all` started a binary named without a directory as found on
-  PATH, so `bench run mybench` could run another program than the doctor
-  checked; they start it as `./mybench`, also under taskset and a wrapping
-  tool, and a PATH lookup skips a file without an execute bit.
-  **Action needed:** give the full path of a program on PATH whose name is
-  also a file in the working directory.
-- **`bench doctor` checks the request a lane runs** -- `--require` judged
-  every backend by its default mode, so a lane running
-  `--profile massif --profile-args pages` could pass while its mode could not
-  run; the doctor takes `--profile`, `--profile-args`, `--profile-analyze` and
-  arguments after `--`, and judges that request's row, which must be for that
-  backend and mode. **Action needed:** rebuild a binary built before this
-  release, or drop `--profile`, to meet such a requirement.
-- **`bench doctor --json --require` prints one JSON document** -- the
-  verdict followed the document on stdout, so the output did not parse; with
-  `--json` the verdict goes to stderr, and a document that does not parse is
-  an error. **Action needed:** read the `[require]` lines from stderr when
-  `--json` is given.
+  `bench profile-all` start a binary named without a directory that is a file
+  in the working directory as `./<name>`, the file the doctor checks, not as
+  a program of that name on PATH, and a PATH lookup skips a file without an
+  execute bit. **Action needed:** give the full path of a program on PATH
+  whose name is also a file in the working directory.
+- **`bench doctor` checks the request a lane runs** -- given `--profile`,
+  `--profile-args`, `--profile-analyze` or a request after `--`, it checks
+  that request as `bench run` would make it, and `--require` judges the
+  requested backend by the binary's row for that backend and mode instead of
+  its default mode. **Action needed:** rebuild a binary built before this
+  release, or drop `--profile`, to meet such a requirement
+  ([tools README](tools/README.md#doctor---backend-environment-check)).
+- **`bench doctor --json --require` prints one JSON document** -- with
+  `--json` the `[require]` verdict goes to stderr, so stdout holds the
+  binary's document alone, and a document that does not parse is an error.
+  **Action needed:** read the `[require]` lines from stderr when `--json` is
+  given.
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
-  `0`, a negative value and a non-number all meant 300 s; an omitted value is
-  300 s, `0` is off, and a value that is not a whole number of seconds stops
-  the run before any test (exit status 2). **Action needed:** a benchmark that
-  sets `PerfConfig::profileTestTimeoutSecs = 0` to mean the default leaves the
+  an omitted value is 300 s, `0` is off, and a value that is not a whole
+  number of seconds stops the run before any test with exit status 2, where
+  `0`, a negative value and a non-number all meant 300 s
+  ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#test-hangs--never-completes)).
+  **Action needed:** a benchmark that sets
+  `PerfConfig::profileTestTimeoutSecs = 0` to mean the default leaves the
   field alone (it defaults to -1, not given) or sets 300.
 - **A measured callback that throws leaves no watchdog or capture behind** --
-  under `--profile` the watchdog stayed armed, so it could end a later test of
-  the process with exit status 2, and a gperf capture stayed on, so the next
-  case's could not start; the watchdog is turned off, the capture stops with
-  its case without analysis, no row is published and the exception reaches the
-  caller unchanged.
-- **A profiled run takes its metadata before any profiler starts** -- the
-  first measured case ran `git describe` while its profiler was recording; the
-  metadata is taken when the first profiler is created.
+  under `--profile`, the watchdog is turned off and the case's gperf capture
+  stopped without analysis, so neither can end or block a later test of the
+  process; the case publishes no row, and the exception reaches the caller
+  unchanged.
+- **An in-process profile of the first case leaves out the run's metadata**
+  -- with `--profile`, the run's metadata is taken when the first profiler is
+  created, so its `git describe` no longer runs while the first case's perf,
+  gperf or other in-process profiler records; a tool that runs the whole
+  process, as a `bench run` wrap does, still covers it.
 - **An output folder holding `%` reaches the wrapping tool as written** --
-  valgrind, nsys, ncu and compute-sanitizer read `%` in their output options,
-  so a folder such as `out%p` sent the output elsewhere or failed the run;
-  `bench run` doubles each `%` for them and refuses, before anything starts, a
-  heaptrack folder holding `%h` or `%p`, which heaptrack replaces with no
-  escape. **Action needed:** give heaptrack an output folder without `%h` or
-  `%p`.
+  valgrind, nsys, ncu and compute-sanitizer write into the folder as named,
+  `%` included, and a heaptrack folder holding `%h` or `%p`, which heaptrack
+  expands, is refused before anything starts. **Action needed:** give
+  heaptrack an output folder without `%h` or `%p`.
 - **`bench run --profile compute-sanitizer` fails when the tool reports
-  errors** -- the tool exits 0 by default, so a benchmark whose kernels it
-  reported passed; `bench run` passes `--error-exitcode 5` and fails, naming
-  the report, when this run's report counts errors (racecheck's errors, not
-  its warnings). **Action needed:** a job that passed with sanitizer findings
-  now fails; a manual wrap passes `--error-exitcode` itself.
+  errors** -- a run whose report counts errors (racecheck's errors, not its
+  warnings) fails, naming the report, where the tool's default exit status 0
+  passed it. **Action needed:** a job that passed with sanitizer findings now
+  fails; a wrap typed by hand passes `--error-exitcode`, as `bench run` does.
 - **`bench profile-all` fails when a profiler fails** -- it exited 0
   whatever happened; it still runs every profiler, then prints one line per
   run and exits 1 when any failed. **Action needed:** name with `--profilers`
   only the profilers that work on the machine (the default is gperf, perf and
   callgrind).
 - **A `BENCH_SUDO=1` tracer is the process its stop signals** -- the stop of
-  a bpftrace or off-CPU tracer started through sudo could signal sudo or its
-  monitor process (on a kernel without a children list, such as the Jetson
-  AGX Thor's, and wherever sudo keeps a monitor), or a child of the tracer
-  when sudo had executed the tracer in its own process; it signals the
-  tracer.
+  a bpftrace or off-CPU tracer started through sudo signals the tracer,
+  however the host's sudo runs it.
 - **A wrapped `bench run` checks this run's output after exit** -- a wrap
-  folder that could not be created ran the benchmark unwrapped, a wrap that
-  wrote nothing, or left a previous run's file, passed, and a failing or
-  hanging `nsys stats` was ignored or waited for. The run fails at completion
-  when the output is missing or empty, and at analysis when a summary fails
-  or runs past 300 s (the report kept). **Action needed:** a rerun into the
-  same `--profile-output-dir` first removes that wrap's files from the
-  previous run in `<binary>.<tool>/` (for example `callgrind.out` or
-  `run.zst`); copy them first to keep them.
+  folder that cannot be created stops the run before anything starts, and the
+  run fails when the wrap wrote no output or an empty one, or when an
+  `nsys stats` summary fails or hangs (the report is kept). **Action needed:**
+  a rerun into the same `--profile-output-dir` first removes that wrap's files
+  from the previous run in `<binary>.<tool>/` (for example `callgrind.out` or
+  `run.zst`); copy them first to keep them
+  ([tools README](tools/README.md#run---execute-benchmark-binary)).
 - **`contentionRun`'s start gate stays out of helgrind's reports** -- the
   gate that releases a contention test's threads together spins on two atomic
   flags, which helgrind reported as data races whenever it checked a contention
@@ -458,14 +448,14 @@ runs the benchmark under it. ...` and a non-zero exit, and points at
   family heaptrack records, so a heaptrack trace of that process holds almost
   none of them. `bench doctor <binary>`, which checks the benchmark's own
   process, reported heaptrack `[OK]` there, and `bench doctor --require
-heaptrack` passed. It reports `[WARN] heaptrack  heaptrack available, but
-libtcmalloc is loaded: C++ allocations will be missing`, followed by the
-  build option that removes tcmalloc, and `--require heaptrack` fails, as it
-  does for any warning. The default build does not link tcmalloc and reports
-  `[OK]` as before. The hint a benchmark prints when `--profile heaptrack` runs
-  outside heaptrack names the trace `run.heaptrack.*` instead of
-  `run.heaptrack.zst`: heaptrack writes `.zst` when it was built with zstd
-  support and the `zstd` program is installed, and `.gz` otherwise. The
+heaptrack` passed. It reports
+  `[WARN] heaptrack  heaptrack records /bin/true, but libtcmalloc is loaded in this process: C++ allocations will be missing from its trace`,
+  followed by the build option that removes tcmalloc, and `--require heaptrack`
+  fails, as it does for any warning. The default build does not link tcmalloc
+  and reports `[OK]` as before. The command a benchmark prints when
+  `--profile heaptrack` runs outside heaptrack names its output `./run`, which
+  heaptrack writes as `run.zst` when it was built with zstd support and the
+  `zstd` program is installed, and as `run.gz` otherwise. The
   backend's header says heaptrack's cost grows with the allocation rate, where
   it gave a flat 1.5x; walkthrough 21 shows it measured.
 - **The Python tools wheel follows its inputs** -- the rule that builds the

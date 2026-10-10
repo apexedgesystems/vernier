@@ -52,7 +52,8 @@ public:
    * No-Op if cfg.profileTool is empty, or if the registry's readiness decision
    * for the request says collection cannot run (the report is printed once).
    * With a request, the run's metadata is taken first (captureMetadata()), so
-   * its `git describe` never runs while a profiler records.
+   * its `git describe` never runs while a profiler this process starts
+   * records; a tool that runs the whole process still covers it.
    */
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
 };
@@ -89,7 +90,7 @@ inline std::unique_ptr<Profiler> Profiler::make(const PerfConfig& cfg,
   // The run's metadata is cached on first use, and that first use runs
   // `git describe` as a child process. Left to the first row, it would run
   // after the first measured loop, while that case's profiler still records;
-  // taken here, it runs before any profiler starts.
+  // taken here, it runs before this process starts any profiler.
   (void)captureMetadata(/*cacheMetadata=*/true);
   // Dispatch via registry. Backends self-register at static init via
   // VERNIER_REGISTER_PROFILER_BACKEND in their translation units.
