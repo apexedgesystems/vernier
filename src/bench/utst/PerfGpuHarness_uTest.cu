@@ -4,7 +4,8 @@
  *
  * These need a CUDA device: they run a small kernel through the public
  * PerfGpuCase API and check the result and the row the harness leaves in
- * PerfRegistry. Without a device every test skips.
+ * PerfRegistry, and one opens the harness's private NVML helper for the device
+ * as the harness does. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -15,11 +16,14 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <cctype>
 #include <cstddef>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -30,6 +34,7 @@
 #include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/src/NvmlTelemetry.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -402,9 +407,11 @@ TEST_F(PerfGpuHarnessTest, AmbiguousSuiteBaselineIsReportedOncePerSuite) {
     captured = capture.text();
   }
 
+  // The report itself is counted: other lines of the run name the suite's tests.
+  const std::string REPORT = "suite " + SUITE + " measures a CPU baseline";
   std::size_t mentions = 0;
-  for (std::size_t at = captured.find(SUITE); at != std::string::npos;
-       at = captured.find(SUITE, at + SUITE.size())) {
+  for (std::size_t at = captured.find(REPORT); at != std::string::npos;
+       at = captured.find(REPORT, at + REPORT.size())) {
     ++mentions;
   }
   EXPECT_EQ(mentions, 1U) << "stderr said:\n" << captured;
@@ -877,4 +884,342 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
     EXPECT_FALSE(vernier::bench::CuptiCollector(true).isAvailable())
         << "forceDisabled must win without reading the value";
   }
+}
+
+/* ----------------------------- CUPTI Statements ----------------------------- */
+
+namespace {
+
+/// The CSV columns filled from CUPTI, as the run names them when they stay empty.
+constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, "
+                                    "cuptiRegistersMax, cuptiStaticSmemBytes and "
+                                    "cuptiDynamicSmemBytes";
+
+/**
+ * @brief Measures the kernel in two cases of this process, then writes to
+ *        stderr how many lines were @p statement, how many stderr lines said
+ *        the CUPTI cells stay empty, and how many rows had CUPTI cells, and
+ *        exits 0.
+ */
+[[noreturn]] void reportCuptiStatements(const ub::PerfConfig& cfg, const std::string& statement) {
+  std::size_t filledRows = 0;
+  std::string captured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    for (int i = 0; i < 2; ++i) {
+      ub::PerfGpuCase perf{uniqueSuite("GpuCuptiStatement") + ".Kernel", cfg};
+      perf.cudaWarmup(data.launch());
+      static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+      const std::optional<ub::PerfRow> ROW = ub::PerfRegistry::instance().take();
+      if (ROW.has_value() && ROW->cuptiKernelLaunches.has_value()) {
+        ++filledRows;
+      }
+    }
+    captured = capture.text();
+  }
+  std::size_t statements = 0;
+  std::size_t emptyCuptiLines = 0;
+  std::size_t from = 0;
+  while (from < captured.size()) {
+    std::size_t end = captured.find('\n', from);
+    if (end == std::string::npos) {
+      end = captured.size();
+    }
+    const std::string LINE = captured.substr(from, end - from);
+    statements += (LINE == statement) ? 1 : 0;
+    emptyCuptiLines +=
+        (LINE.find(std::string(CUPTI_CELLS) + " stay empty.") != std::string::npos) ? 1 : 0;
+    from = end + 1;
+  }
+  std::fprintf(stderr, "statements=%zu emptyCuptiLines=%zu filledRows=%zu\n", statements,
+               emptyCuptiLines, filledRows);
+  std::exit(0);
+}
+
+} // namespace
+
+/**
+ * @test A measured window in which CUPTI recorded no kernel launch is said for
+ *       its test, naming the cells it leaves empty, and they are empty
+ */
+TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const std::string NAME = uniqueSuite("GpuCuptiNoLaunch") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernel([](cudaStream_t) {}, "nothing").measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.cuptiKernelLaunches.has_value());
+  EXPECT_FALSE(ROW.cuptiRegistersMedian.has_value());
+  const std::string LINE = "[gpu] CUPTI recorded no kernel launch in " + NAME +
+                           "'s measured window, so its " + CUPTI_CELLS + " stay empty.";
+  EXPECT_NE(captured.find(LINE), std::string::npos) << "stderr said:\n" << captured;
+}
+
+/** @brief Same fixture, named so GoogleTest schedules the death test first. */
+using PerfGpuHarnessDeathTest = PerfGpuHarnessTest;
+
+/**
+ * @test A collector that cannot collect is stated once per process, in the
+ *       collector's words and naming the cells it leaves empty, and those cells
+ *       are empty; a collector that can collect fills them and states nothing
+ */
+TEST_F(PerfGpuHarnessDeathTest, ACollectorThatCannotCollectIsStatedOnce) {
+  const YieldEnvCleared CLEARED;
+  const ub::CuptiCollector PROBE(false);
+  const std::string STATEMENT =
+      "[gpu] " + PROBE.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.";
+  const std::string EXPECTED = PROBE.isAvailable() ? "statements=0 emptyCuptiLines=0 filledRows=2"
+                                                   : "statements=1 emptyCuptiLines=1 filledRows=0";
+
+  // "threadsafe" re-executes the test binary for the child, so the
+  // once-per-process state starts clear whatever ran before in this process;
+  // the default style forks, which would also inherit an initialised CUDA.
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportCuptiStatements(cfg_, STATEMENT), ::testing::ExitedWithCode(0), EXPECTED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/* ----------------------------- NVML Cells ----------------------------- */
+
+namespace {
+
+/** @brief True when @p line names @p column as a whole word. */
+bool namesColumn(const std::string& line, const std::string& column) {
+  const auto WORD = [](char c) { return std::isalnum(static_cast<unsigned char>(c)) != 0; };
+  for (std::size_t at = line.find(column); at != std::string::npos;
+       at = line.find(column, at + 1)) {
+    const std::size_t END = at + column.size();
+    if ((at == 0 || !WORD(line[at - 1])) && (END == line.size() || !WORD(line[END]))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief True when @p text ends with @p tail. */
+bool endsWith(const std::string& text, const std::string& tail) {
+  return text.size() >= tail.size() &&
+         text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
+}
+
+/**
+ * @brief True when @p text has a "[gpu] ... stay empty." (or "stays empty.")
+ *        line naming @p column.
+ */
+bool statedEmpty(const std::string& text, const std::string& column) {
+  std::size_t from = 0;
+  while (from < text.size()) {
+    std::size_t end = text.find('\n', from);
+    if (end == std::string::npos) {
+      end = text.size();
+    }
+    const std::string LINE = text.substr(from, end - from);
+    const bool STATEMENT = LINE.rfind("[gpu] ", 0) == 0 &&
+                           (endsWith(LINE, " stay empty.") || endsWith(LINE, " stays empty."));
+    if (STATEMENT && namesColumn(LINE, column)) {
+      return true;
+    }
+    from = end + 1;
+  }
+  return false;
+}
+
+/**
+ * @brief Measures the kernel in a case of this process and writes to stderr
+ *        what is wrong with the row's NVML cells, then exits 0: a cell that is
+ *        0 where 0 is not a reading, an empty cell no statement names, or a
+ *        named cell that is filled.
+ */
+[[noreturn]] void reportNvmlCells(const ub::PerfConfig& cfg) {
+  std::optional<ub::PerfRow> row;
+  std::string captured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    ub::PerfGpuCase perf{uniqueSuite("GpuNvmlCells") + ".Kernel", cfg};
+    perf.cudaWarmup(data.launch());
+    static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+    row = ub::PerfRegistry::instance().take();
+    captured = capture.text();
+  }
+  std::vector<std::string> problems;
+  if (!row.has_value()) {
+    problems.emplace_back("no row");
+  } else {
+    const auto CHECK = [&](const char* column, bool filled, bool zero) {
+      const bool STATED = statedEmpty(captured, column);
+      if (filled && zero) {
+        problems.push_back(std::string(column) + " is 0");
+      }
+      if (filled && STATED) {
+        problems.push_back(std::string(column) + " is filled and stated empty");
+      }
+      if (!filled && !STATED) {
+        problems.push_back(std::string(column) + " is empty and unstated");
+      }
+    };
+    CHECK("smClockMHz", row->smClockMHz.has_value(), row->smClockMHz.value_or(1) == 0);
+    CHECK("throttling", row->throttling.has_value(), false);
+    CHECK("powerDrawW", row->powerDrawW.has_value(), row->powerDrawW.value_or(1.0) == 0.0);
+    CHECK("powerLimitW", row->powerLimitW.has_value(), row->powerLimitW.value_or(1.0) == 0.0);
+    CHECK("temperatureC", row->temperatureC.has_value(), row->temperatureC.value_or(1) == 0);
+    CHECK("temperatureDeltaC", row->temperatureDeltaC.has_value(), false);
+  }
+  std::string summary;
+  for (const std::string& p : problems) {
+    summary += (summary.empty() ? "" : "; ") + p;
+  }
+  std::fprintf(stderr, "nvml cell problems: %s\n", summary.empty() ? "none" : summary.c_str());
+  std::exit(0);
+}
+
+} // namespace
+
+/**
+ * @test A kernel row's NVML cells are readings or stated empty: none is 0
+ *       where 0 is not a reading, every empty one is named by a statement of
+ *       the run, and no named one is filled
+ */
+TEST_F(PerfGpuHarnessDeathTest, NvmlCellsAreReadingsOrStatedEmpty) {
+  // A fresh process, so this run's once-per-process statements are its own.
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportNvmlCells(cfg_), ::testing::ExitedWithCode(0), "nvml cell problems: none");
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test NVML, where this build has it and it initializes, finds the CUDA
+ *       device by the UUID the harness looks it up by
+ */
+TEST_F(PerfGpuHarnessTest, NvmlFindsTheCudaDeviceByItsUuid) {
+  // Device 0: the one the harness measures on unless --gpu-device says otherwise.
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, 0), cudaSuccess);
+  const std::string UUID = ub::nvml_telemetry::uuidText(prop.uuid.bytes);
+  const ub::nvml_telemetry::Session SESSION(true, UUID);
+  const std::string& REASON = SESSION.unavailableReason();
+  if (COMPAT_NVML_AVAILABLE == 0 || REASON.rfind("NVML did not initialize", 0) == 0) {
+    GTEST_SKIP() << REASON;
+  }
+  EXPECT_TRUE(SESSION.ready()) << UUID << ": " << REASON;
+}
+
+/* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
+
+namespace {
+
+/// The launch shape the tests' saxpyKernel launch uses.
+const dim3 GRID((ELEMENTS + BLOCK - 1) / BLOCK);
+const dim3 BLOCK_DIM(BLOCK);
+
+/** @brief The line the run writes for @p testName's measurement without a launch configuration. */
+std::string noLaunchConfigLine(const std::string& testName) {
+  return "[gpu] " + testName +
+         " declares no launch configuration (.withLaunchConfig(grid, block)), so its occupancy "
+         "stays empty.";
+}
+
+} // namespace
+
+/**
+ * @test The bandwidth cell is the declared transfers' rate, and a kernel-only
+ *       row has none: a rate over no bytes is not a measurement
+ */
+TEST_F(PerfGpuHarnessTest, BandwidthCellOnlyWhenBytesMoved) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuBandwidth") + ".Kernel", cfg_};
+  perf.cudaWarmup(data.launch());
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+  const ub::PerfRow KERNEL_ONLY = lastRow();
+  EXPECT_FALSE(KERNEL_ONLY.memBandwidthGBs.has_value())
+      << "a kernel-only row's bandwidth cell holds " << KERNEL_ONLY.memBandwidthGBs.value_or(-1.0);
+
+  const ub::PerfGpuResult MOVED =
+      perf.cudaKernel(data.launch(), "saxpy")
+          .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+          .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+          .measure();
+  const ub::PerfRow TRANSFERRING = lastRow();
+  ASSERT_EQ(MOVED.stats.transfers.h2dBytes + MOVED.stats.transfers.d2hBytes,
+            2 * SaxpyFixtureData::bytes());
+  ASSERT_TRUE(TRANSFERRING.memBandwidthGBs.has_value());
+  EXPECT_DOUBLE_EQ(*TRANSFERRING.memBandwidthGBs, MOVED.stats.transfers.bandwidthGBs());
+}
+
+/**
+ * @test A row without a launch configuration has no occupancy cell and the run
+ *       names its test; with one, the cell is the harness's estimate, the warps
+ *       the shape keeps resident over the SM's maximum
+ */
+TEST_F(PerfGpuHarnessTest, OccupancyCellOnlyWithALaunchConfiguration) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuOccupancy") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  perf.cudaWarmup(data.launch());
+
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow WITHOUT = lastRow();
+  EXPECT_FALSE(WITHOUT.occupancy.has_value())
+      << "the occupancy cell holds " << WITHOUT.occupancy.value_or(-1.0);
+  EXPECT_NE(captured.find(noLaunchConfigLine(NAME)), std::string::npos) << "stderr said:\n"
+                                                                        << captured;
+
+  const ub::PerfGpuResult WITH =
+      perf.cudaKernel(data.launch(), "saxpy").withLaunchConfig(GRID, BLOCK_DIM).measure();
+  const ub::PerfRow ROW = lastRow();
+  const ub::OccupancyMetrics& OCC = WITH.stats.occupancy;
+  ASSERT_EQ(OCC.blockSize, BLOCK);
+  ASSERT_GT(OCC.maxWarpsPerSM, 0);
+  ASSERT_TRUE(ROW.occupancy.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, OCC.achievedOccupancy);
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, static_cast<double>(OCC.activeWarpsPerSM) / OCC.maxWarpsPerSM);
+}
+
+/**
+ * @test The multi-GPU row follows the same rule: no occupancy cell without a
+ *       launch configuration, with the run naming its test, and the estimate
+ *       with one
+ */
+TEST_F(PerfGpuHarnessTest, MultiGpuOccupancyCellOnlyWithALaunchConfiguration) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuMultiOccupancy") + ".MultiGpu";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  const auto ON_DEVICE = [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); };
+
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    static_cast<void>(perf.cudaKernelMultiGpu(1, ON_DEVICE).measure());
+    captured = capture.text();
+  }
+  const ub::PerfRow WITHOUT = lastRow();
+  EXPECT_FALSE(WITHOUT.occupancy.has_value())
+      << "the occupancy cell holds " << WITHOUT.occupancy.value_or(-1.0);
+  EXPECT_NE(captured.find(noLaunchConfigLine(NAME)), std::string::npos) << "stderr said:\n"
+                                                                        << captured;
+
+  const ub::MultiGpuResult WITH =
+      perf.cudaKernelMultiGpu(1, ON_DEVICE).withLaunchConfig(GRID, BLOCK_DIM).measure();
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_EQ(WITH.perDevice.size(), 1U);
+  ASSERT_TRUE(ROW.occupancy.has_value());
+  EXPECT_DOUBLE_EQ(*ROW.occupancy, WITH.perDevice[0].stats.occupancy.achievedOccupancy);
 }

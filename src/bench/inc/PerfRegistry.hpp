@@ -90,20 +90,25 @@ struct PerfRow {
   std::optional<size_t> h2dBytes;
   std::optional<size_t> d2hBytes;
   std::optional<double> speedupVsCpu;
+  // The declared transfers' bytes over their time (empty when a test declares
+  // none) and the harness's occupancy estimate (empty without a launch
+  // configuration; not a measured occupancy).
   std::optional<double> memBandwidthGBs;
   std::optional<double> occupancy;
+
+  // NVML samples at a kernel measurement's start and end (multi-GPU rows carry
+  // none). Each cell is empty unless NVML reported every reading it needs, and
+  // the run names the readings it did not report.
   std::optional<int> smClockMHz;
   std::optional<bool> throttling;
-
-  // Power + thermal (NVML; non-empty when capture is enabled)
-  std::optional<double> powerDrawW;  ///< Avg power draw across the measured window (W)
+  std::optional<double> powerDrawW;  ///< Mean of the power draw sampled at both ends (W)
   std::optional<double> powerLimitW; ///< Configured power limit (W)
   std::optional<int> temperatureC;   ///< End-of-measure GPU core temperature (C)
   std::optional<int>
       temperatureDeltaC; ///< Delta over the measured window (C, positive = warmed up)
 
-  // CUPTI in-process kernel metrics (non-empty when libcupti is linked
-  // and the toolkit is recent enough to expose CUpti_ActivityKernel9).
+  // CUPTI in-process kernel records (empty when CUPTI recorded no launch for
+  // the row: a build without CUPTI, a collector that stood down, or a failure).
   std::optional<std::size_t> cuptiKernelLaunches;
   std::optional<int> cuptiRegistersMedian;
   std::optional<int> cuptiRegistersMax;

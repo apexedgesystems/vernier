@@ -22,12 +22,16 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 
 #include <array>
 #include <atomic>
+#include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -38,6 +42,7 @@
 #include <vector>
 
 using vernier::bench::buildPerfRow;
+using vernier::bench::installPerfEventListener;
 using vernier::bench::makePerfCaseWithProfiler;
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
@@ -685,4 +690,87 @@ TEST_F(GpuCsvListenerTest, ProfileMetadataStaysUnderItsHeaders) {
   EXPECT_EQ(CSV.at(0, "profileTool"), "nsight");
   EXPECT_EQ(CSV.at(0, "profileDir"), "/tmp/bench-out/GpuSuite.GpuKernelOnly.nsight");
   EXPECT_EQ(CSV.at(0, "gpuModel"), "Test Device");
+}
+
+/* ----------------------------- Unwritable --csv ----------------------------- */
+
+/** @test Opens a writable path, with no error, and writes the header there */
+TEST_F(CsvListenerTest, OpensAWritablePathWithItsHeader) {
+  {
+    const CsvListener LISTENER(path_, /*includeProfile=*/false, /*includeGpu=*/false);
+    EXPECT_TRUE(LISTENER.isOpen());
+    EXPECT_EQ(LISTENER.openError(), 0);
+  }
+  std::ifstream in(path_);
+  std::string header;
+  ASSERT_TRUE(std::getline(in, header));
+  EXPECT_EQ(header.rfind("test,", 0), 0U) << header;
+}
+
+namespace {
+
+namespace fs = std::filesystem;
+
+/// A directory under the temp directory that no test creates.
+const char* const MISSING_DIR = "vernier_listener_csv_no_such_dir";
+
+/**
+ * @brief Installs the listeners for --csv @p path as PERF_MAIN does, then
+ *        writes "installed" to stderr, removes what the install created and
+ *        exits 0: the outcome of a run that goes on to its tests.
+ */
+[[noreturn]] void installThenExit(const std::string& path) {
+  PerfConfig cfg{};
+  cfg.csv = path;
+  installPerfEventListener(cfg);
+  std::fprintf(stderr, "installed\n");
+  std::remove(path.c_str());
+  std::exit(0);
+}
+
+} // namespace
+
+/**
+ * @brief Each test installs the listeners in a fresh process ("threadsafe"
+ *        re-executes the test binary), so this process keeps its own.
+ */
+class CsvOpenFailureDeathTest : public ::testing::Test {
+protected:
+  std::string savedStyle_;
+
+  void SetUp() override {
+    savedStyle_ = GTEST_FLAG_GET(death_test_style);
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+  }
+
+  void TearDown() override { GTEST_FLAG_SET(death_test_style, savedStyle_); }
+};
+
+/** @test A --csv into a missing directory stops the run with status 2, naming the path and why */
+TEST_F(CsvOpenFailureDeathTest, AMissingDirectoryStopsTheRun) {
+  const fs::path DIR = fs::temp_directory_path() / MISSING_DIR;
+  ASSERT_FALSE(fs::exists(DIR)) << DIR;
+  EXPECT_EXIT(installThenExit((DIR / "rows.csv").string()), ::testing::ExitedWithCode(2),
+              "\\[csv\\] cannot write --csv '.*/vernier_listener_csv_no_such_dir/rows\\.csv': "
+              "No such file or directory");
+}
+
+/** @test A --csv naming a directory stops the run with status 2 */
+TEST_F(CsvOpenFailureDeathTest, ADirectoryAsThePathStopsTheRun) {
+  EXPECT_EXIT(installThenExit(fs::temp_directory_path().string()), ::testing::ExitedWithCode(2),
+              "\\[csv\\] cannot write --csv '.*': Is a directory");
+}
+
+/** @test An empty --csv path stops the run with status 2 */
+TEST_F(CsvOpenFailureDeathTest, AnEmptyPathStopsTheRun) {
+  EXPECT_EXIT(installThenExit(""), ::testing::ExitedWithCode(2),
+              "\\[csv\\] cannot write --csv '': No such file or directory");
+}
+
+/** @test A writable --csv path installs the listener and the run goes on */
+TEST_F(CsvOpenFailureDeathTest, AWritablePathGoesOn) {
+  const std::string PATH =
+      (fs::temp_directory_path() / ("vernier_listener_csv_" + std::to_string(::getpid()) + ".csv"))
+          .string();
+  EXPECT_EXIT(installThenExit(PATH), ::testing::ExitedWithCode(0), "installed");
 }

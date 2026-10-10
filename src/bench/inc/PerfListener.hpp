@@ -10,7 +10,10 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -46,9 +49,12 @@ class CsvListener : public ::testing::EmptyTestEventListener {
 public:
   explicit CsvListener(std::string path, bool includeProfile, bool includeGpu)
       : path_(std::move(path)), includeProfile_(includeProfile), includeGpu_(includeGpu) {
+    errno = 0;
     out_.open(path_, std::ios::out | std::ios::trunc);
     if (out_) {
       writeCsvHeader(out_, includeProfile_, /*includeMetadata=*/true, includeGpu_);
+    } else {
+      openError_ = errno;
     }
   }
   ~CsvListener() override {
@@ -79,11 +85,18 @@ public:
     }
   }
 
+  /** @return true when the file was opened for writing. */
+  [[nodiscard]] bool isOpen() const { return static_cast<bool>(out_); }
+
+  /** @return Why the file could not be opened: errno of the open, 0 if open or unknown. */
+  [[nodiscard]] int openError() const noexcept { return openError_; }
+
 private:
   std::string path_;
   std::ofstream out_{};
   bool includeProfile_{false};
   bool includeGpu_{false};
+  int openError_{0};
 };
 
 } // namespace detail
@@ -278,7 +291,16 @@ inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest*
     }
   }
 
-  listeners.Append(new detail::CsvListener(*cfg.csv, INCLUDE_PROFILE, hasGpuTests));
+  // A file that cannot be written is a usage error, stated before any test
+  // runs: a run whose rows go nowhere would otherwise look like a success.
+  auto csv = std::make_unique<detail::CsvListener>(*cfg.csv, INCLUDE_PROFILE, hasGpuTests);
+  if (!csv->isOpen()) {
+    const int ERR = csv->openError();
+    std::fprintf(stderr, "[csv] cannot write --csv '%s': %s\n", cfg.csv->c_str(),
+                 (ERR != 0) ? std::strerror(ERR) : "the file could not be opened for writing");
+    std::exit(2);
+  }
+  listeners.Append(csv.release());
 }
 
 } // namespace bench
