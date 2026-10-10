@@ -67,10 +67,13 @@ constexpr int MEMCHECK_ERROR_EXIT = 99;
 constexpr const char* OFF_BY_ONE_FUNCTION = "memcheck_demo::joinOffByOne";
 constexpr const char* OFF_BY_ONE_FILE = "12_MemcheckProfiler_OffByOne.cpp";
 
-/// The statements the report's two frames must name, found in the wrong
-/// join's source, so an edit that moves one moves the expectation: the write
-/// of the terminator one byte past the buffer, and the buffer's allocation, by
-/// its start, which giving the buffer room for the terminator keeps.
+/// What the report's two frames must name, found in the wrong join's source,
+/// so an edit that moves one moves the expectation: the function's lines, from
+/// the line its definition opens on to its closing brace, where the write must
+/// be; the write of the terminator one byte past the buffer, which a frame at
+/// it reads at the statement; and the buffer's allocation, by its start, which
+/// giving the buffer room for the terminator keeps.
+constexpr const char* FUNCTION_OPENING = "std::string joinOffByOne(";
 constexpr const char* WRITE_STATEMENT = "*at = '\\0';";
 constexpr const char* ALLOCATION_STATEMENT = "char* buf = new char[";
 
@@ -86,13 +89,22 @@ constexpr const char* ALLOCATION_STATEMENT = "char* buf = new char[";
  * end and whose report must count one invalid write of one byte per call (in
  * one context, or in one per call where the compiler unrolled the loop) and
  * place every one right after a block the size of the joined string, the write
- * in joinOffByOne at the line that writes the terminator and the block
- * allocated by joinOffByOne at the line that allocates it (both lines found in
+ * in joinOffByOne at one of its lines and the block allocated by joinOffByOne
+ * at the line that allocates it (the function's lines and that line found in
  * the wrong join's source), with valgrind exiting with the error status it was
  * given; then on JoinV1 with one call per phase, which must run to its end,
  * whose summary must count no error and whose valgrind must exit 0. One report
  * is suppressed in both runs, a start-up memory probe of gperftools' profiler
  * library that is not the program's (the check header says which).
+ *
+ * The write is looked for at any line of joinOffByOne, not only the
+ * terminator's: the address valgrind gives a write can be the instruction
+ * before the store, at another line (in clang 21's Release build valgrind 3.22
+ * reports the loop's exit jump, at line 27, where the compiler credits the
+ * store to line 32), so the check reads the frame of joinOffByOne at that
+ * address, past the frames of code inlined there, and prints whether it named
+ * the terminator's line. The allocation's frame is a return address, which
+ * valgrind does not move: it is looked for at its line alone.
  *
  * Skipped in a build with the address or the thread sanitizer (which valgrind
  * cannot check), without valgrind, where valgrind gives up reading the demo
@@ -119,15 +131,20 @@ TEST(Memcheck, FindsTheOffByOne) {
   const std::string DEMO = fs::canonical(DEMO_BINARY, found).string();
   ASSERT_FALSE(found) << "the demo binary is missing: " << DEMO_BINARY;
   const std::string SOURCE = check::readText(OFF_BY_ONE_SOURCE);
+  const check::LineRange FUNCTION_LINES = check::functionLines(SOURCE, FUNCTION_OPENING);
   const std::size_t WRITE_LINE = check::lineOf(SOURCE, WRITE_STATEMENT);
   const std::size_t ALLOCATION_LINE = check::lineOf(SOURCE, ALLOCATION_STATEMENT);
+  ASSERT_NE(FUNCTION_LINES.first, 0u)
+      << "the wrong join's source does not hold \"" << FUNCTION_OPENING
+      << "\" on exactly one line with a line after it that starts with '}': " << OFF_BY_ONE_SOURCE;
   ASSERT_NE(WRITE_LINE, 0u) << "the wrong join's source does not hold \"" << WRITE_STATEMENT
                             << "\" on exactly one line: " << OFF_BY_ONE_SOURCE;
   ASSERT_NE(ALLOCATION_LINE, 0u) << "the wrong join's source does not hold \""
                                  << ALLOCATION_STATEMENT
                                  << "\" on exactly one line: " << OFF_BY_ONE_SOURCE;
-  const std::string WRITE_LOCATION =
-      std::string(OFF_BY_ONE_FILE) + ":" + std::to_string(WRITE_LINE);
+  const std::string FUNCTION_LOCATIONS = std::string(OFF_BY_ONE_FILE) + ":" +
+                                         std::to_string(FUNCTION_LINES.first) + " to " +
+                                         std::to_string(FUNCTION_LINES.last);
   const std::string ALLOCATION_LOCATION =
       std::string(OFF_BY_ONE_FILE) + ":" + std::to_string(ALLOCATION_LINE);
 
@@ -182,11 +199,12 @@ TEST(Memcheck, FindsTheOffByOne) {
                                << " contexts): the wrong join has stopped being wrong (log "
                                << DIR / "off_by_one" / "memcheck.log" << ")";
   EXPECT_EQ(WRITE_COUNT, OFF_BY_ONE_CALLS) << "one invalid write per call was expected";
-  // The write's own frame and its block's allocation frame are read each on
-  // its own. One that valgrind left unnamed in the demo binary, where its log
-  // says it could not read that binary's symbols, is not looked for, and the
-  // test skips at its end on valgrind's lines; any other frame must name its
-  // statement.
+  // The write's frame in joinOffByOne and its block's allocation frame are
+  // read each on its own. One that valgrind left unnamed in the demo binary,
+  // where its log says it could not read that binary's symbols, is not looked
+  // for, and the test skips at its end on valgrind's lines; any other write
+  // frame must name a line of the function, and any other allocation frame the
+  // allocation's line.
   const std::string SYMBOLS_UNREADABLE = check::symbolsUnreadable(WRONG.log, DEMO);
   bool namesUnreadable = false;
   for (const check::ReportedError* write : WRITES) {
@@ -197,11 +215,13 @@ TEST(Memcheck, FindsTheOffByOne) {
         << "the block memcheck describes is not the joined string's buffer:\n"
         << write->text;
     const check::WriteFrames FRAMES =
-        check::readWriteFrames(*write, OFF_BY_ONE_FUNCTION, WRITE_LOCATION, ALLOCATION_LOCATION,
-                               DEMO, !SYMBOLS_UNREADABLE.empty());
+        check::readWriteFrames(*write, OFF_BY_ONE_FUNCTION, OFF_BY_ONE_FILE, FUNCTION_LINES,
+                               WRITE_LINE, ALLOCATION_LINE, DEMO, !SYMBOLS_UNREADABLE.empty());
+    std::printf("[Memcheck.FindsTheOffByOne]  write frame %s; allocation frame %s\n",
+                check::toString(FRAMES.write), check::toString(FRAMES.allocation));
     EXPECT_NE(FRAMES.write, check::FrameReading::WRONG)
-        << "the write is not reported at " << WRITE_LOCATION << " in " << OFF_BY_ONE_FUNCTION
-        << ":\n"
+        << "the write is not reported in " << OFF_BY_ONE_FUNCTION << " at one of its lines, "
+        << FUNCTION_LOCATIONS << ":\n"
         << write->text;
     EXPECT_NE(FRAMES.allocation, check::FrameReading::WRONG)
         << "the block is not reported allocated at " << ALLOCATION_LOCATION << " in "
@@ -240,8 +260,8 @@ TEST(Memcheck, FindsTheOffByOne) {
   if (namesUnreadable) {
     GTEST_SKIP() << "memcheck reported the write as expected, and nothing for JoinV1, but "
                     "valgrind could not read the demo binary's symbols, so the report's frames in "
-                    "it name no function or line: "
-                 << WRITE_LOCATION << " and " << ALLOCATION_LOCATION
+                    "it name no function or line: the write in "
+                 << FUNCTION_LOCATIONS << " and the allocation at " << ALLOCATION_LOCATION
                  << " were checked only in the frames it named. It printed:\n"
                  << SYMBOLS_UNREADABLE;
   }
@@ -256,12 +276,15 @@ TEST(Memcheck, FindsTheOffByOne) {
 // that mold linked, before a program started and after one had, a program's
 // own failed assertion, and the write's frames in its GCC 11.4 Release builds,
 // named with GNU ld and unnamed with mold; the Pi's valgrind 3.24.0: a write's
-// whole entry), with a short binary path and process id and the function's
-// argument list shortened. The other assertion lines, the named frames moved
-// to another function or line, the unnamed frame in a library and the write
-// on a stack are shaped as valgrind prints them; no run printed them. The
-// mixed-frame cases pair frames of real reports that no one run printed
-// together: each frame is judged on its own.
+// whole entry; valgrind 3.22.0 in this project's container: a write's whole
+// entry in a clang 21.1.8 Release build, given the address of the loop's
+// exit jump), with a short binary path and process id and the function's
+// argument list and the iterator's template arguments shortened. The other
+// assertion lines, the named frames moved to another function or line, the
+// unnamed frame in a library, the write in a function the wrong join calls
+// and the write on a stack are shaped as valgrind prints them; no run printed
+// them. The mixed-frame cases pair frames of real reports that no one run
+// printed together: each frame is judged on its own.
 
 namespace {
 
@@ -353,14 +376,55 @@ std::string allocationUnnamed() {
   return std::string("by 0x127506: ??? (in ") + SNIPPET_BINARY + ")";
 }
 
-/// Write frames that are not the write's statement, none of which may be
-/// excused: another function at its line, joinOffByOne at the line that reads
-/// the buffer back, an unnamed frame in a library, and no frame at all.
+/// The first frame valgrind 3.22.0 printed for the write in clang 21.1.8's
+/// Release build: the address it gave is the loop's exit jump, before the
+/// store, which the compiler credits to the iterator comparison it inlined at
+/// line 27.
+constexpr const char* INLINED_COMPARISON = "at 0x12741A: operator==<...> (stl_iterator.h:1203)";
+
+/// joinOffByOne's frame below the comparison, at the same address, at @p line;
+/// valgrind named line 27 there, and the file with clang's directory.
+std::string functionFrameAtTheJump(int line) {
+  return "by 0x12741A: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> "
+         "const&, char) (src/bench/demo/cpu/12_MemcheckProfiler_OffByOne.cpp:" +
+         std::to_string(line) + ")";
+}
+
+/// The test's frame below them, at another address: the caller's.
+std::string testBodyFrame() {
+  return std::string("by 0x115111: Memcheck_JoinOffByOne_Test::TestBody() (in ") + SNIPPET_BINARY +
+         ")";
+}
+
+/// The error list's entry for that write as valgrind 3.22.0 printed it there,
+/// most frames cut.
+std::string inlinedComparisonEntry() {
+  return std::string("==7== 1 errors in context 2 of 6:\n"
+                     "==7== Invalid write of size 1\n"
+                     "==7==    ") +
+         INLINED_COMPARISON + "\n==7==    " + functionFrameAtTheJump(27) +
+         "\n==7==    " + testBodyFrame() +
+         "\n"
+         "==7==  Address 0x4fc3682 is 0 bytes after a block of size 7,490 alloc'd\n"
+         "==7==    at 0x48485C3: operator new[](unsigned long) (in "
+         "/usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)\n"
+         "==7==    by 0x1273E7: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> "
+         "const&, char) (src/bench/demo/cpu/12_MemcheckProfiler_OffByOne.cpp:25)\n"
+         "==7==    " +
+         testBodyFrame() + "\n==7== \n";
+}
+
+/// Write frames that name no line of joinOffByOne, none of which may be
+/// excused: another function at the write's line, joinOffByOne at the line
+/// after its closing brace, the inlined comparison with no frame of
+/// joinOffByOne at its address, an unnamed frame in a library, and no frame
+/// at all.
 std::vector<std::string> writeFramesElsewhere() {
   return {
       "at 0x1240E9: vernier::bench::demo::memcheck_demo::joinOther(std::vector<...> const&, char) "
       "(12_MemcheckProfiler_OffByOne.cpp:32)",
-      writeFrameAt(36),
+      writeFrameAt(40),
+      INLINED_COMPARISON,
       "at 0x4A1D252: ??? (in /b/lib/libbench.so.2.0.3)",
       "",
   };
@@ -379,15 +443,18 @@ std::vector<std::string> allocationFramesElsewhere() {
   };
 }
 
-/// The error list's entry for one write of the wrong join, with @p writeFrame
-/// as the write's own frame and @p allocationFrame below valgrind's allocator
-/// in the block's allocation stack; an empty frame leaves its line out, as a
-/// report that shows no such frame would.
-std::string writeEntry(const std::string& writeFrame, const std::string& allocationFrame) {
+/// The error list's entry for one write of the wrong join, with
+/// @p writeFrames as the write's own stack and @p allocationFrame below
+/// valgrind's allocator in the block's allocation stack; an empty frame leaves
+/// its line out, as a report that shows no such frame would.
+std::string writeEntryWithFrames(const std::vector<std::string>& writeFrames,
+                                 const std::string& allocationFrame) {
   std::string text = "==7== 3 errors in context 2 of 2:\n"
                      "==7== Invalid write of size 1\n";
-  if (!writeFrame.empty()) {
-    text += "==7==    " + writeFrame + "\n";
+  for (const std::string& frame : writeFrames) {
+    if (!frame.empty()) {
+      text += "==7==    " + frame + "\n";
+    }
   }
   text += "==7==  Address 0x4f12c72 is 0 bytes after a block of size 7,490 alloc'd\n"
           "==7==    at 0x484A2F3: operator new[](unsigned long) (in "
@@ -398,16 +465,21 @@ std::string writeEntry(const std::string& writeFrame, const std::string& allocat
   return text + "==7== \n";
 }
 
+/// The same, with @p writeFrame alone as the write's own stack.
+std::string writeEntry(const std::string& writeFrame, const std::string& allocationFrame) {
+  return writeEntryWithFrames({writeFrame}, allocationFrame);
+}
+
 /// The two frames of the one write entry in @p log, read as FindsTheOffByOne
-/// reads them, at the lines the wrong join's source gives them.
+/// reads them, against what the wrong join's source gives: the function at
+/// lines 18 to 39, the write at 32 and the allocation at 25.
 check::WriteFrames framesOf(const std::string& log, bool symbolsUnreadable) {
   const std::vector<check::ReportedError> ERRORS = check::errorList(log);
   EXPECT_EQ(ERRORS.size(), 1u) << log;
-  return ERRORS.empty() ? check::WriteFrames{}
-                        : check::readWriteFrames(ERRORS[0], OFF_BY_ONE_FUNCTION,
-                                                 "12_MemcheckProfiler_OffByOne.cpp:32",
-                                                 "12_MemcheckProfiler_OffByOne.cpp:25",
-                                                 SNIPPET_BINARY, symbolsUnreadable);
+  return ERRORS.empty()
+             ? check::WriteFrames{}
+             : check::readWriteFrames(ERRORS[0], OFF_BY_ONE_FUNCTION, OFF_BY_ONE_FILE, {18, 39}, 32,
+                                      25, SNIPPET_BINARY, symbolsUnreadable);
 }
 
 } // namespace
@@ -445,7 +517,7 @@ TEST(MemcheckLogTest, SymbolsUnreadableIsEmptyWithoutALog) {
   EXPECT_TRUE(check::symbolsUnreadable("", SNIPPET_BINARY).empty());
 }
 
-/** @test The write's own first frame and the call below valgrind's allocator are the frames read */
+/** @test The frames at the write's address and the call below valgrind's allocator are read */
 TEST(MemcheckLogTest, WriteAndAllocationFramesAreTheOnesRead) {
   // As valgrind 3.24.0 printed the entry on the Pi, most frames cut
   const std::vector<check::ReportedError> ERRORS = check::errorList(
@@ -465,12 +537,20 @@ TEST(MemcheckLogTest, WriteAndAllocationFramesAreTheOnesRead) {
       "==7== \n");
 
   ASSERT_EQ(ERRORS.size(), 1u);
-  EXPECT_EQ(check::accessFrame(ERRORS[0]),
-            "at 0x11C424: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> "
-            "const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)");
+  EXPECT_EQ(check::accessFrames(ERRORS[0]),
+            std::vector<std::string>{
+                "at 0x11C424: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> "
+                "const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)"});
   EXPECT_EQ(check::allocationFrame(ERRORS[0]),
             "by 0x11C3EB: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> "
             "const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)");
+
+  // Where code was inlined at the write's address, its frames there come
+  // first, then the function's, and the caller's below them is not one of them
+  const std::vector<check::ReportedError> INLINED = check::errorList(inlinedComparisonEntry());
+  ASSERT_EQ(INLINED.size(), 1u);
+  EXPECT_EQ(check::accessFrames(INLINED[0]),
+            (std::vector<std::string>{INLINED_COMPARISON, functionFrameAtTheJump(27)}));
 }
 
 /** @test Frames at their statements read so, whether or not valgrind read the symbols */
@@ -483,19 +563,116 @@ TEST(MemcheckLogTest, NamedFramesReadAtTheirStatements) {
   }
 }
 
-/** @test A frame valgrind named at another line is wrong, warning or not */
-TEST(MemcheckLogTest, NamedFramesAtAnotherLineAreWrong) {
-  for (const bool symbolsUnreadable : {false, true}) {
-    const check::WriteFrames WRITE_MOVED =
-        framesOf(writeEntry(writeFrameAt(31), allocationFrameAt(25)), symbolsUnreadable);
-    EXPECT_EQ(WRITE_MOVED.write, check::FrameReading::WRONG);
-    EXPECT_EQ(WRITE_MOVED.allocation, check::FrameReading::AT_STATEMENT);
+/** @test A write given the address of code inlined into joinOffByOne is in the function */
+TEST(MemcheckLogTest, AWriteAtCodeInlinedIntoTheFunctionIsInIt) {
+  // clang 21.1.8's Release build: valgrind 3.22.0 gave the write the address of
+  // the loop's exit jump, the iterator comparison inlined at line 27, and
+  // printed joinOffByOne's frame below the comparison's, at that address
+  const check::WriteFrames FRAMES = framesOf(inlinedComparisonEntry(), false);
 
-    const check::WriteFrames ALLOCATION_MOVED =
-        framesOf(writeEntry(writeFrameAt(32), allocationFrameAt(24)), symbolsUnreadable);
-    EXPECT_EQ(ALLOCATION_MOVED.write, check::FrameReading::AT_STATEMENT);
-    EXPECT_EQ(ALLOCATION_MOVED.allocation, check::FrameReading::WRONG);
+  EXPECT_EQ(FRAMES.write, check::FrameReading::IN_FUNCTION);
+  EXPECT_EQ(FRAMES.allocation, check::FrameReading::AT_STATEMENT);
+}
+
+/** @test A write frame valgrind named at another line of joinOffByOne is in it, warning or not */
+TEST(MemcheckLogTest, AWriteFrameAtAnotherLineOfTheFunctionIsInIt) {
+  for (const bool symbolsUnreadable : {false, true}) {
+    for (const int line : {18, 27, 31, 36, 39}) {
+      const check::WriteFrames FRAMES =
+          framesOf(writeEntry(writeFrameAt(line), allocationFrameAt(25)), symbolsUnreadable);
+      EXPECT_EQ(FRAMES.write, check::FrameReading::IN_FUNCTION) << "line " << line;
+      EXPECT_EQ(FRAMES.allocation, check::FrameReading::AT_STATEMENT) << "line " << line;
+    }
   }
+}
+
+/** @test A write frame outside joinOffByOne's lines or its file is wrong, warning or not */
+TEST(MemcheckLogTest, AWriteFrameOutsideTheFunctionIsWrong) {
+  const std::vector<std::string> OUTSIDE = {
+      writeFrameAt(17),
+      writeFrameAt(40),
+      "at 0x1240E9: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, "
+      "char) (Join.cpp:32)",
+  };
+  for (const bool symbolsUnreadable : {false, true}) {
+    for (const std::string& write : OUTSIDE) {
+      const check::WriteFrames FRAMES =
+          framesOf(writeEntry(write, allocationFrameAt(25)), symbolsUnreadable);
+      EXPECT_EQ(FRAMES.write, check::FrameReading::WRONG) << write;
+      EXPECT_EQ(FRAMES.allocation, check::FrameReading::AT_STATEMENT) << write;
+    }
+  }
+}
+
+/** @test Only the frames at the write's address stand for joinOffByOne's: not a caller's frame */
+TEST(MemcheckLogTest, OnlyFramesAtTheWritesAddressStandForTheFunction) {
+  // Below the inlined comparison at its address, joinOffByOne's frame is read
+  // as any write frame is: at the statement, or outside the function
+  EXPECT_EQ(framesOf(writeEntryWithFrames({INLINED_COMPARISON, functionFrameAtTheJump(32)},
+                                          allocationFrameAt(25)),
+                     false)
+                .write,
+            check::FrameReading::AT_STATEMENT);
+  EXPECT_EQ(framesOf(writeEntryWithFrames({INLINED_COMPARISON, functionFrameAtTheJump(40)},
+                                          allocationFrameAt(25)),
+                     false)
+                .write,
+            check::FrameReading::WRONG);
+  // The comparison with only the test's frame below it, at another address
+  EXPECT_EQ(
+      framesOf(writeEntryWithFrames({INLINED_COMPARISON, testBodyFrame()}, allocationFrameAt(25)),
+               false)
+          .write,
+      check::FrameReading::WRONG);
+  // A write made in a function joinOffByOne calls: its frame is the caller's,
+  // at the return address, not at the write's
+  EXPECT_EQ(framesOf(writeEntryWithFrames(
+                         {"at 0x4852A13: memcpy@GLIBC_2.2.5 (in "
+                          "/usr/libexec/valgrind/vgpreload_memcheck-amd64-linux.so)",
+                          "by 0x1273F5: vernier::bench::demo::memcheck_demo::joinOffByOne("
+                          "std::vector<...> const&, char) "
+                          "(src/bench/demo/cpu/12_MemcheckProfiler_OffByOne.cpp:28)"},
+                         allocationFrameAt(25)),
+                     false)
+                .write,
+            check::FrameReading::WRONG);
+}
+
+/** @test An allocation frame at another line, of joinOffByOne or not, is wrong, warning or not */
+TEST(MemcheckLogTest, AnAllocationFrameAtAnotherLineIsWrong) {
+  for (const bool symbolsUnreadable : {false, true}) {
+    for (const int line : {24, 26, 32}) {
+      const check::WriteFrames FRAMES =
+          framesOf(writeEntry(writeFrameAt(32), allocationFrameAt(line)), symbolsUnreadable);
+      EXPECT_EQ(FRAMES.write, check::FrameReading::AT_STATEMENT) << "line " << line;
+      EXPECT_EQ(FRAMES.allocation, check::FrameReading::WRONG) << "line " << line;
+    }
+  }
+}
+
+/** @test A function's lines run from the line its definition opens on to its closing brace */
+TEST(MemcheckLogTest, FunctionLinesRunFromItsOpeningToItsClosingBrace) {
+  const std::string SOURCE = "namespace memcheck_demo {\n"
+                             "\n"
+                             "std::string joinOffByOne(const std::vector<std::string>& parts, "
+                             "char sep) {\n"
+                             "  for (const std::string& part : parts) {\n"
+                             "  }\n"
+                             "  return out;\n"
+                             "}\n"
+                             "\n"
+                             "} // namespace memcheck_demo\n";
+
+  const check::LineRange LINES = check::functionLines(SOURCE, FUNCTION_OPENING);
+  EXPECT_EQ(LINES.first, 3u);
+  EXPECT_EQ(LINES.last, 7u);
+  // No such function, the opening on two lines, no closing brace
+  EXPECT_EQ(check::functionLines(SOURCE, "std::string joinOther(").first, 0u);
+  EXPECT_EQ(check::functionLines(SOURCE + SOURCE, FUNCTION_OPENING).first, 0u);
+  EXPECT_EQ(check::functionLines("std::string joinOffByOne(char sep) {\n  return out;\n",
+                                 FUNCTION_OPENING)
+                .first,
+            0u);
 }
 
 /** @test Unnamed frames in the binary are excused only on valgrind's word about its symbols */

@@ -10,8 +10,9 @@
  * memcheck's log: whether valgrind could read the binary's symbols, the error
  * summary and, from the error list valgrind prints with --show-error-list=yes,
  * each reported error with its count, its address and its stacks, and what
- * each frame the check requires says: at the statement it must name, unnamed
- * in a binary valgrind could not read the symbols of, or wrong. These are the
+ * each frame the check requires says: at the statement it must name, at
+ * another line of the function where any of its lines will do, unnamed in a
+ * binary valgrind could not read the symbols of, or wrong. These are the
  * helpers it does that with; demo 14's helgrind check reads its frames with
  * the same ones. Whether an assertion of valgrind's reader stopped it before
  * the program started, and valgrind's line helpers, are the shared test
@@ -477,6 +478,8 @@ inline bool frameUnnamedIn(const std::string& frame, const std::string& binary) 
 /// What one access's frame says about where the access was made.
 enum class FrameReading : std::uint8_t {
   AT_STATEMENT,      ///< In the function looked for, at the file and line looked for
+  IN_FUNCTION,       ///< In the function looked for and its file, at another of its lines; read
+                     ///< only where any of its lines will do (readFrameInFunction)
   UNNAMED_IN_BINARY, ///< Unnamed, in a binary valgrind said it could not read symbols of
   WRONG              ///< Another function, file, line or object, or no frame at all
 };
@@ -486,6 +489,8 @@ inline const char* toString(FrameReading reading) noexcept {
   switch (reading) {
   case FrameReading::AT_STATEMENT:
     return "at the statement";
+  case FrameReading::IN_FUNCTION:
+    return "in the function, at another of its lines";
   case FrameReading::UNNAMED_IN_BINARY:
     return "unnamed in the binary";
   case FrameReading::WRONG:
@@ -536,19 +541,98 @@ inline std::size_t lineOf(const std::string& source, const std::string& statemen
   return matches == 1 ? found : 0;
 }
 
+/// The lines of a function in its source, its first and its last; both 0 when
+/// the function was not found.
+struct LineRange {
+  std::size_t first = 0;
+  std::size_t last = 0;
+};
+
+/// The lines of the function whose definition opens on the one line of
+/// @p source that contains @p opening ("std::string joinOffByOne("): from that
+/// line to its closing brace, the first line after it that starts with '}', as
+/// clang-format lays out a function defined in a namespace. Both 0 when no line
+/// or more than one line contains @p opening, or no line closes it.
+inline LineRange functionLines(const std::string& source, const std::string& opening) {
+  const std::size_t FIRST = lineOf(source, opening);
+  if (FIRST == 0) {
+    return {};
+  }
+  std::istringstream in(source);
+  std::string line;
+  std::size_t number = 0;
+  while (std::getline(in, line)) {
+    ++number;
+    if (number > FIRST && line.rfind('}', 0) == 0) {
+      return {FIRST, number};
+    }
+  }
+  return {};
+}
+
+/// True when @p frame is in a function whose name contains @p function, in
+/// @p file at one of @p lines, each location read as frameAt reads it.
+inline bool frameWithin(const std::string& frame, const std::string& function,
+                        const std::string& file, LineRange lines) {
+  for (std::size_t line = lines.first; line != 0 && line <= lines.last; ++line) {
+    if (frameAt(frame, function, file + ":" + std::to_string(line))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief Reads @p frame against @p function wherever in its @p lines: at
+ *        @p statement of @p file, or at another of the function's lines.
+ *
+ * As readFrame reads it at the statement; a frame valgrind named in the
+ * function and its file at another of @p lines reads IN_FUNCTION. Any other
+ * frame is wrong, a frame unnamed in @p binary excepted as readFrame excepts it.
+ */
+inline FrameReading readFrameInFunction(const std::string& frame, const std::string& function,
+                                        const std::string& file, std::size_t statement,
+                                        LineRange lines, const std::string& binary,
+                                        bool symbolsUnreadable) {
+  const FrameReading AT_LINE =
+      readFrame(frame, function, file + ":" + std::to_string(statement), binary, symbolsUnreadable);
+  if (AT_LINE != FrameReading::WRONG) {
+    return AT_LINE;
+  }
+  return frameWithin(frame, function, file, lines) ? FrameReading::IN_FUNCTION
+                                                   : FrameReading::WRONG;
+}
+
 /* ----------------------------- Reading a Write's Frames ----------------------------- */
 
-/// The first frame of the error's own stack, the line after its kind, without
-/// its indent ("at 0x...: <function> (<where>)"); empty when that line is not
-/// a frame.
-inline std::string accessFrame(const ReportedError& error) {
+/// The frames valgrind printed for the access itself, without their indent:
+/// the first frame of the error's own stack, the line after its kind ("at
+/// 0x...: <function> (<where>)"), then each frame below it at the same
+/// address. Where the compiler inlined code at the instruction, valgrind
+/// prints one frame for each function it was inlined from, the innermost
+/// first and the function that holds the instruction last, all at the
+/// instruction's address; a frame at another address is a caller's. Empty when
+/// the line after the kind is not a frame.
+inline std::vector<std::string> accessFrames(const ReportedError& error) {
+  std::vector<std::string> frames;
   std::istringstream in(error.text);
   std::string line;
   if (!std::getline(in, line) || !std::getline(in, line)) {
-    return "";
+    return frames;
   }
-  const std::string FRAME = trimmedStart(line);
-  return FRAME.rfind("at 0x", 0) == 0 ? FRAME : "";
+  const std::string FIRST = trimmedStart(line);
+  const std::size_t ADDRESS_END = FIRST.find(": ");
+  if (FIRST.rfind("at 0x", 0) != 0 || ADDRESS_END == std::string::npos) {
+    return frames;
+  }
+  frames.push_back(FIRST);
+  // "at 0x12741A: ..." is followed by "by 0x12741A: ..." for each function the
+  // instruction's code was inlined into
+  const std::string SAME_ADDRESS = "by " + FIRST.substr(3, ADDRESS_END - 3) + ": ";
+  while (std::getline(in, line) && trimmedStart(line).rfind(SAME_ADDRESS, 0) == 0) {
+    frames.push_back(trimmedStart(line));
+  }
+  return frames;
 }
 
 /// The frame below valgrind's allocator in the stack of the block the error's
@@ -578,21 +662,40 @@ inline std::string allocationFrame(const ReportedError& error) {
 
 /// The readings of the two frames a write's report must name.
 struct WriteFrames {
-  FrameReading write = FrameReading::WRONG;      ///< The write's own first frame
+  FrameReading write = FrameReading::WRONG;      ///< The access's frame in the function
   FrameReading allocation = FrameReading::WRONG; ///< The call that allocated the block
 };
 
-/// Reads the write's frame at @p writeLocation and the block's allocation
-/// frame at @p allocationLocation, both in @p function, each on its own: the
-/// excuse one frame has never covers the other.
+/**
+ * @brief Reads a write's frame and its block's allocation frame, both in
+ *        @p function in @p file, each on its own: the excuse one frame has
+ *        never covers the other.
+ *
+ * The write is looked for at any of the function's @p lines, at @p writeLine
+ * or elsewhere (IN_FUNCTION), in the first of the access's frames that names
+ * it there (accessFrames): the frames of code inlined at the instruction come
+ * first. Any line, because the address valgrind gives a write can be the
+ * instruction before the store: in clang 21's Release build valgrind 3.22
+ * followed the loop's exit jump into the store and reported the jump, the
+ * loop's comparison inlined at line 27, while the compiler credits the store
+ * to line 32. The allocation is looked for at @p allocationLine alone: its
+ * frame is a return address, the call's, which valgrind takes as it is.
+ */
 inline WriteFrames readWriteFrames(const ReportedError& error, const std::string& function,
-                                   const std::string& writeLocation,
-                                   const std::string& allocationLocation, const std::string& binary,
+                                   const std::string& file, LineRange lines, std::size_t writeLine,
+                                   std::size_t allocationLine, const std::string& binary,
                                    bool symbolsUnreadable) {
   WriteFrames frames;
-  frames.write = readFrame(accessFrame(error), function, writeLocation, binary, symbolsUnreadable);
+  for (const std::string& frame : accessFrames(error)) {
+    frames.write =
+        readFrameInFunction(frame, function, file, writeLine, lines, binary, symbolsUnreadable);
+    if (frames.write != FrameReading::WRONG) {
+      break;
+    }
+  }
   frames.allocation =
-      readFrame(allocationFrame(error), function, allocationLocation, binary, symbolsUnreadable);
+      readFrame(allocationFrame(error), function, file + ":" + std::to_string(allocationLine),
+                binary, symbolsUnreadable);
   return frames;
 }
 

@@ -707,10 +707,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   Debug builds linked by mold), `Memcheck.FindsTheOffByOne`,
   `Helgrind.FindsTheRace` and `Helgrind.LockedTotalReportsNothing` skip and
   quote valgrind's line instead of failing. The memcheck check checks the
-  write's frame and the block's allocation frame each for its function and
-  line, and where valgrind cannot read the demo binary's symbols only a frame
-  left unnamed in that binary goes unchecked, so a wrong frame beside an
-  unnamed one fails instead of skipping.
+  write's frame for its function and the block's allocation frame for its
+  function and line, each on its own, and where valgrind cannot read the demo
+  binary's symbols only a frame left unnamed in that binary goes unchecked, so
+  a wrong frame beside an unnamed one fails instead of skipping.
 - **Walkthrough 07's callgrind checks skip on valgrind's reader assertion only
   before the program started** -- `JoinInstructionCounts.UnderCallgrind`, the
   callgrind window tests and their two startup-fault controls skipped on any
