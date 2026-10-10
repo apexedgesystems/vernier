@@ -9,6 +9,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 04 measures the shared SAXPY kernel and carries a copy without its
+  bounds guard for Compute Sanitizer to find** -- the copy runs only under
+  the tool, and a check registered with `ctest` under the `compute-sanitizer`
+  label fails if the tool stops reporting its out-of-bounds read. Its
+  walkthrough and reference CSV are captured on the Jetson AGX Thor rig. The
+  demo's test names change, so CSVs captured from it before this release do
+  not join with newer ones.
 - **Demo 07 counts the instructions of the shared join example** --
   `BenchDemo_07_CallgrindProfiler` timed a linear against a binary search, and
   its walkthrough quoted instruction counts that workload cannot produce. It
@@ -298,6 +305,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
+- **`--profile compute-sanitizer` tells the tool apart from the binary's
+  name, and its printed wrap command keeps its log** -- the backend decides
+  it is running under the tool from what the tool exports to the process and
+  maps into it, not from a name in a path; the commands it prints run the
+  tool `--profile-args` asks for, memcheck by default, and the by-hand one
+  quotes its paths and makes the log's folder first.
 - **The callgrind backend's wrap hint records the measured window** -- the
   `valgrind --tool=callgrind --instr-atstart=no ...` command that
   `--profile callgrind` prints outside valgrind recorded nothing

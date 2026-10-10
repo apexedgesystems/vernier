@@ -97,17 +97,17 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                       | Walkthrough                                               |
-| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers     | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block       | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts, counted by Nsight Compute     | Transpose through a 32-wide shared tile     | The same tile with each row padded by one float | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                            | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                       | Slow Path                                            | Fast Path                                       | Walkthrough                                               |
+| --- | ------------------ | --------------------------------------------- | ---------------------------------------------------- | ----------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                              | Same kernel, with and without its transfers     | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block          | SAXPY G1: buffers once, 256 threads/block       | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts, counted by Nsight Compute     | Transpose through a 32-wide shared tile              | The same tile with each row padded by one float | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | A kernel past the end of its buffer           | SAXPY kernel without its guard (under the tool only) | The shared SAXPY kernel                         | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demos 01 and 02 measure the shared SAXPY example (see
-[Shared Examples](#shared-examples)); the other two carry their own kernels.
+Demos 01, 02 and 04 measure the shared SAXPY example (see
+[Shared Examples](#shared-examples)); demo 03 carries its own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
@@ -193,7 +193,7 @@ demos that use each example.
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 12, 14, 21 |
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 19                     |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 17, 19                 |
 
 The saxpy library and its device tests are built only where the GPU demos are;
 its host tests on a stand-in runtime are built everywhere.
@@ -239,7 +239,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
 17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
 18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- the GPU columns of a kernel test, and where each comes from
-19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
+19. [17](docs/17_COMPUTE_SANITIZER.md) -- a kernel past the end of its buffer, found by Compute Sanitizer
 20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared-memory bank conflicts, read from Nsight Compute's counter (advanced)
 
 ---

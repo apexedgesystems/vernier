@@ -24,31 +24,9 @@ bool isComputeSanitizerOnPath() {
   return std::system("command -v compute-sanitizer >/dev/null 2>&1") == 0;
 }
 
-// Heuristic detection that this process is running under compute-sanitizer.
-// compute-sanitizer injects a launch hook via this env var. Not guaranteed
-// to be stable across CUDA releases, but reliable on 2025.x.
-bool detectUnderSanitizer() {
-  const char* p = std::getenv("CUDA_INJECTION64_PATH");
-  if (p && (std::strstr(p, "sanitizer") != nullptr || std::strstr(p, "Sanitizer") != nullptr))
-    return true;
-  // Fallback: the injection library is mapped into the process whenever
-  // compute-sanitizer is actually instrumenting. The env-var name/value has
-  // drifted across CUDA releases, so scanning /proc/self/maps is the reliable
-  // signal (and avoids a false "NOT running" hint when the auto-wrap ran).
-  std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp)
-    return false;
-  char line[512];
-  bool found = false;
-  while (std::fgets(line, sizeof(line), fp)) {
-    if (std::strstr(line, "sanitizer") || std::strstr(line, "Sanitizer")) {
-      found = true;
-      break;
-    }
-  }
-  std::fclose(fp);
-  return found;
-}
+// Whether compute-sanitizer started this process: decided as the shared
+// helper decides it, from what the tool exports and maps, never from a name.
+bool detectUnderSanitizer() { return profiler_env::isRunningUnderComputeSanitizer(); }
 
 std::string sanitizerToolFromArgs(const std::string& profileArgs) {
   static const char* const TOOLS[] = {"memcheck", "racecheck", "synccheck", "initcheck"};
@@ -58,6 +36,82 @@ std::string sanitizerToolFromArgs(const std::string& profileArgs) {
     }
   }
   return "memcheck"; // default
+}
+
+// @p path with each '%' written "%%": compute-sanitizer expands %p, %q{VAR}
+// and %% in its --log-file name and refuses any other '%'.
+std::string escapePercent(const std::string& path) {
+  std::string out;
+  for (const char CH : path) {
+    out += CH;
+    if (CH == '%') {
+      out += '%';
+    }
+  }
+  return out;
+}
+
+// @p word as one POSIX shell word: unchanged when every character is safe,
+// otherwise in single quotes with each quote written '\'' (the rule the
+// Nsight backend's printed commands follow).
+std::string shellQuote(const std::string& word) {
+  static constexpr const char* SAFE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                                      "0123456789_@%+=:,./-";
+  if (!word.empty() && word.find_first_not_of(SAFE) == std::string::npos) {
+    return word;
+  }
+  std::string quoted = "'";
+  for (const char C : word) {
+    if (C == '\'') {
+      quoted += "'\\''";
+    } else {
+      quoted += C;
+    }
+  }
+  quoted += "'";
+  return quoted;
+}
+
+// The mode argument the commands carry: none for memcheck, the default the
+// registry checks; a tool asked for by name is passed on.
+std::string toolArguments(const std::string& tool) {
+  return tool == "memcheck" ? std::string() : " --profile-args " + tool;
+}
+
+// What the backend prints when the process is not under the tool: the ways
+// to check it with the tool it was asked for. `bench run --profile
+// compute-sanitizer` wraps the process with memcheck whatever --profile-args
+// says, so it is offered for memcheck only, first, since it makes the folder
+// its wrap logs into; any tool runs by hand. The tool opens its log before
+// this program starts and drops it silently when the folder is missing, so
+// the by-hand command makes the folder first. The folder and the log are one
+// shell word each, quoted where they need it; the log's '%' is written "%%"
+// for the tool before it is quoted for the shell.
+std::string notWrappedHint(const std::string& tool, const std::string& artifactDir) {
+  const char* const ROUTES =
+      tool == "memcheck"
+          ? "[compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer -- [...]\n"
+            "[compute-sanitizer] or by hand, making the folder first (the tool opens its log "
+            "before this program starts):\n"
+          : "[compute-sanitizer] by hand, making the folder first (the tool opens its log before "
+            "this program starts):\n";
+  return "\n[compute-sanitizer] not running under compute-sanitizer: this measurement runs "
+         "unchecked. To check it:\n" +
+         std::string(ROUTES) + "[compute-sanitizer]   mkdir -p " + shellQuote(artifactDir) +
+         " && compute-sanitizer --tool=" + tool +
+         " --log-file=" + shellQuote(escapePercent(artifactDir) + "/sanitizer.log") +
+         " \\\n"
+         "[compute-sanitizer]       <this-binary> --profile compute-sanitizer" +
+         toolArguments(tool) + " [...]\n\n";
+}
+
+// What the backend prints when the process is under the tool, which reports
+// at process exit into its --log-file, or on its stdout without one.
+std::string wrappedNotice(const std::string& tool, const std::string& artifactDir) {
+  return "[compute-sanitizer] tool=" + tool +
+         " -- wrapping detected; compute-sanitizer reports at process exit, in its --log-file "
+         "or on its stdout. Artifact directory: " +
+         artifactDir + "\n";
 }
 
 } // namespace
@@ -75,22 +129,13 @@ ComputeSanitizerProfiler::ComputeSanitizerProfiler(const PerfConfig& cfg, std::s
 
 void ComputeSanitizerProfiler::beforeMeasure() {
   if (runningUnderSanitizer_) {
-    std::fprintf(stderr,
-                 "[compute-sanitizer] tool=%s -- wrapping detected; errors will be reported on "
-                 "stderr at process exit. Artifact directory: %s\n",
-                 sanitizerTool_.c_str(), artifactDir_.c_str());
+    std::fputs(wrappedNotice(sanitizerTool_, artifactDir_).c_str(), stderr);
     return;
   }
-  // Not wrapped: print the exact invocation the user should run instead.
-  // We DO NOT re-exec the parent here; that would surprise long-running test
-  // binaries. The friendly hint is more predictable.
-  std::fprintf(stderr,
-               "\n[compute-sanitizer] NOT running under compute-sanitizer; this measurement\n"
-               "[compute-sanitizer] will execute normally but no checking happens. To check:\n"
-               "[compute-sanitizer]   compute-sanitizer --tool=%s --log-file=%s/sanitizer.log \\\n"
-               "[compute-sanitizer]       <this-binary> --profile compute-sanitizer "
-               "--profile-args %s [...]\n\n",
-               sanitizerTool_.c_str(), artifactDir_.c_str(), sanitizerTool_.c_str());
+  // Not wrapped: print the exact invocations the user should run instead.
+  // The parent is not re-executed here; that would surprise long-running
+  // test binaries.
+  std::fputs(notWrappedHint(sanitizerTool_, artifactDir_).c_str(), stderr);
 }
 
 void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {

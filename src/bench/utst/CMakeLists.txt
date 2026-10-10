@@ -168,6 +168,25 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
+# Compute Sanitizer Session Tests (1 file)
+# ------------------------------------------------------------------------------
+# The detection the compute-sanitizer backend and the demos decide with, on
+# snapshots and map texts: CPU-only, so every lane checks it. A target of its
+# own, apart from TestBench's source list.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchSanitizerSession
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerComputeSanitizerSession_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+
+# ------------------------------------------------------------------------------
 # Consumer Warning Check
 # ------------------------------------------------------------------------------
 # Compiles a consumer-style benchmark file against the public headers with
