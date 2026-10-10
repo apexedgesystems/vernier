@@ -746,6 +746,29 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   it. They skip on it only where it stopped valgrind before the program
   started, read as the memcheck and helgrind checks read it, and fail
   otherwise.
+- **A single-thread measurement's row records one thread** -- a `measured()` or
+  `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
+  `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
+  number of workers it started.
+- **A test name with a comma, a quote or a line break stays one CSV cell** --
+  the CSV writer quotes such a name and doubles each quote inside it, so
+  `bench summary`, `bench compare` and pandas read the row whole.
+- **Each completed measurement is its own CSV row** -- a test that measured
+  more than once wrote only its last measurement; now every completed
+  measurement writes its own row, a case measured more than once in a test
+  names its rows `<case>/<label>` (with `#n` after an empty or repeated label),
+  and a test that measures once keeps its name. **Migration:** re-record a
+  baseline taken from a test that measured more than once, since
+  `bench compare --fail-on-regression` reports its single old row missing, and
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 2).
+- **The end-of-run table counts rows and tests apart** -- when a test published
+  more than one row the footer reads like
+  `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
+  counts being rows; when every test published one row it is unchanged.
+- **The dev images keep their baked Rust crates** -- the base and CUDA dev
+  images set `CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`, so an online cargo
+  build or test in an image older than three months keeps the baked crates
+  that a later offline build or test in the same container needs.
 
 ## v1.0.3 - 2026-06-28
 
