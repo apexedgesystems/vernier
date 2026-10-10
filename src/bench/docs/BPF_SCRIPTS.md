@@ -120,9 +120,15 @@ before its arm or its stop line, prints neither within its bound, prints either
 with other ids or out of order (a stop line before the arm, or before the stop
 was asked for), cannot be stopped, or leaves no output, an empty one or one
 without the two lines, and when the measured repeats end on another thread
-than the one they started on. A report that holds nothing but the two lines is
-a complete capture whose script printed no data of its own: the run says so
-with a `[bpftrace]` line, and the capture counts as a caveat, not as a zero.
+than the one they started on. It fails too when a tracer does not end its stop
+with status 0, as bpftrace does once it has printed its maps, whatever it
+acknowledged and printed before: one that exits with another status, with an
+error or without, or dies of a stop signal it does not handle. The `[bpftrace]`
+line says how it ended and quotes the line of its error output that says why;
+a warning there does not fail a tracer that exits with status 0. A report that
+holds nothing but the two lines is a complete capture whose script printed no
+data of its own: the run says so with a `[bpftrace]` line, and the capture
+counts as a caveat, not as a zero.
 
 What a script must leave alone: maps whose names start with `@vernier_`, and
 the lines `bpftrace armed` and `bpftrace disarmed`, which it must not print;

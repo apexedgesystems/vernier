@@ -336,6 +336,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   SIGINT, and the tracers and probes it started inherited the ignore, so one
   stopped before it had set its own handler ignored the stop; each helper now
   starts with SIGINT and SIGTERM at their default action.
+- **bpftrace and offcpu report a tracer that fails when it is stopped** -- a
+  tracer that exited with an error or another status than 0 at the stop, or
+  died of a stop signal it does not handle, passed as one that had printed its
+  maps; the run now says how it ended and quotes its error, a bpftrace capture
+  so ended counts as failed with its files kept, and offcpu no longer says its
+  stacks were written.
 - **`PERF_BPF` reads like every other boolean setting** -- `yes` and `on` turn
   it on, where they left it off, and a value that is no boolean is a
   configuration error instead of off. **Action needed:** fix an invalid

@@ -31,13 +31,14 @@
  *  - In afterMeasure(), on the thread that called beforeMeasure(), waits up
  *    to the plan's disarmWaitMs for every armed tracer to acknowledge the
  *    stop, then stops each with SIGINT, then SIGTERM, then SIGKILL through
- *    the same route, and reports each refused delivery, and a tracer that
- *    ended by itself before the stop.
+ *    the same route, and reports each refused delivery, a tracer that ended
+ *    by itself before the stop, and one that did not end with status 0.
  *  - captureOutcome() says whether the capture is complete, and whether the
  *    scripts emitted anything: READY for tracers that acknowledged both ends
- *    of the capture with the ids they were bound to, stopped on a signal
- *    that flushes their output, and printed more than the capture window's
- *    lines; CAVEAT when one printed nothing else.
+ *    of the capture with the ids they were bound to, ended their stop with
+ *    status 0, as bpftrace does once it has printed its maps, and printed
+ *    more than the capture window's lines; CAVEAT when one printed nothing
+ *    else.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n`; PERF_BPF_SUDO is a deprecated alias that BENCH_SUDO overrides.
@@ -202,11 +203,24 @@ std::string optInRemedy(const BpftraceRoute& route, const ReadinessContext& ctx)
 std::string grantRemedy(const BpftraceRoute& route, const ReadinessContext& ctx);
 
 /**
- * @brief Print how a run's tracer stop went, prefixed "[<tag>]".
- * @return True when the tracer ended on SIGINT or SIGTERM (its output flushed).
+ * @brief Judge how a run's tracer ended at its stop, and print it prefixed
+ * "[<tag>]".
+ *
+ * How the tracer ended decides, as for the readiness probe, not the signal it
+ * ended after: bpftrace exits with status 0 once it has printed its maps, on
+ * SIGINT or SIGTERM. A tracer that so ended, at the stop or before it, is
+ * complete, whatever its stderr holds (warnings included). Any other end is
+ * not, and is printed: one still running, killed, ended by a signal it did
+ * not handle, or exited with another status, named with the line of its
+ * error output at @p errorPath ("" when none is kept) that says why, or with
+ * "nothing on its stderr". Each refused delivery is printed too, and a tracer
+ * that ended only on SIGTERM.
+ * @return nullopt when the tracer ended with status 0; otherwise the Error
+ *         (UNUSABLE) whose message, after its cause word, is the line printed.
  */
-bool reportStop(const char* tag, const std::string& what, const HelperStopResult& stop,
-                const BpftraceRoute& route);
+std::optional<ReadinessResult> reportStop(const char* tag, const std::string& what,
+                                          const HelperStopResult& stop, const BpftraceRoute& route,
+                                          const std::string& errorPath = {});
 
 /* ----------------------------- The capture window ----------------------------- */
 
@@ -489,10 +503,11 @@ public:
    * incomplete: a tracer that could not start, ended before its arm or its
    * stop acknowledgement, did not acknowledge either within its bound (named
    * UNSUPPORTED, with the PID namespace, in one other than the host's),
-   * acknowledged either with other ids or out of order, was killed or could
-   * not be stopped, or left no output, an empty one, or one without the
+   * acknowledged either with other ids or out of order, could not be
+   * stopped or did not end its stop with status 0 (reportStop() names how
+   * it ended), or left no output, an empty one, or one without the
    * acknowledgements; or measured repeats that ended on another thread than
-   * they started on. The first failure is kept.
+   * they started on. The first failure is kept, and the capture's files stay.
    */
   [[nodiscard]] const std::optional<ReadinessResult>& captureOutcome() const noexcept;
 

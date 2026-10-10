@@ -436,8 +436,9 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   return std::nullopt;
 }
 
-bool reportStop(const char* tag, const std::string& what, const HelperStopResult& stop,
-                const BpftraceRoute& route) {
+std::optional<ReadinessResult> reportStop(const char* tag, const std::string& what,
+                                          const HelperStopResult& stop, const BpftraceRoute& route,
+                                          const std::string& errorPath) {
   for (const StopDelivery& delivery : stop.deliveries) {
     if (!delivery.delivered) {
       std::fprintf(stderr, "[%s] %s: could not deliver %s to tracer %d: %s: %s\n", tag,
@@ -445,38 +446,49 @@ bool reportStop(const char* tag, const std::string& what, const HelperStopResult
                    delivery.command.c_str(), delivery.detail.c_str());
     }
   }
+  std::string detail;
+  std::string remedy;
   if (stop.stillAlive) {
     const std::string MANUAL = route.privilege.route == PrivilegeRoute::SCOPED_SUDO
                                    ? route.sudo + " -n " + route.kill + " -9 <pid>"
                                    : std::string{"kill -9 <pid>"};
-    std::fprintf(stderr,
-                 "[%s] %s: the tracer is still running and its output may be incomplete; stop "
-                 "it with: %s\n",
-                 tag, what.c_str(), MANUAL.c_str());
-    return false;
-  }
-  if (!stop.wasRunning) {
-    if (WIFEXITED(stop.waitStatus) && WEXITSTATUS(stop.waitStatus) == 0) {
-      return true;
+    detail =
+        "the tracer is still running and its output may be incomplete; stop it with: " + MANUAL;
+    remedy = "Stop it by hand, then run the script by hand to see why it did not stop.";
+  } else if (stop.stoppedBy == SIGKILL) {
+    detail = "the tracer ignored SIGINT and SIGTERM and was killed; its output is incomplete";
+    remedy = "bpftrace prints its maps on SIGINT; check that this build handles it.";
+  } else if (!exitedCleanly(stop.waitStatus)) {
+    // How the tracer ended decides, as for the readiness probe, not the
+    // signal it ended after: bpftrace exits with status 0 once it has printed
+    // its maps. Its error output only says why it did not.
+    const std::string ERR = errorPath.empty() ? std::string{} : fileText(errorPath);
+    std::string after = " during the stop";
+    if (!stop.wasRunning) {
+      after = " before the stop";
+    } else if (stop.stoppedBy != 0) {
+      after = std::string{" after "} + signalName(stop.stoppedBy);
     }
-    std::fprintf(stderr, "[%s] %s: the tracer ended before the stop (wait status %d)\n", tag,
-                 what.c_str(), stop.waitStatus);
-    return false;
+    detail = std::string{"the tracer "} +
+             (stop.stoppedBy == SIGTERM ? "ignored SIGINT, then " : "") +
+             endedWith(stop.waitStatus) + after +
+             (saysSomething(ERR) ? ": " + failureLine(ERR)
+                                 : std::string{", with nothing on its stderr"}) +
+             "; its output may be incomplete";
+    remedy = "bpftrace exits with status 0 once it has printed its maps; " +
+             (errorPath.empty() ? std::string{"run the script by hand to see why this one did not."}
+                                : "its error output is in " + errorPath + ".");
+  } else {
+    if (stop.stoppedBy == SIGTERM) {
+      std::fprintf(stderr,
+                   "[%s] %s: the tracer did not stop on SIGINT, and stopped on SIGTERM "
+                   "with status 0\n",
+                   tag, what.c_str());
+    }
+    return std::nullopt;
   }
-  if (stop.stoppedBy == SIGKILL) {
-    std::fprintf(stderr,
-                 "[%s] %s: the tracer ignored SIGINT and SIGTERM and was killed; its output is "
-                 "incomplete\n",
-                 tag, what.c_str());
-    return false;
-  }
-  if (stop.stoppedBy == SIGTERM) {
-    std::fprintf(stderr,
-                 "[%s] %s: the tracer ignored SIGINT and stopped on SIGTERM; its output may be "
-                 "incomplete\n",
-                 tag, what.c_str());
-  }
-  return true;
+  std::fprintf(stderr, "[%s] %s: %s\n", tag, what.c_str(), detail.c_str());
+  return readinessResult(ReadinessCause::UNUSABLE, what + ": " + detail, remedy);
 }
 
 /* ----------------------------- The capture window ----------------------------- */
@@ -955,13 +967,14 @@ std::string runCopyPath(const std::string& outdir, const std::string& stem) {
 }
 
 /**
- * @brief What a tracer's stop says about its capture: READY when it stopped on
- * SIGINT or SIGTERM and flushed its output, else the Error that leaves the
- * capture incomplete. A tracer that ended with status 0 before the stop ran
- * its own exit() while the measured repeats went on; that case is printed
- * here, the others by reportStop().
+ * @brief What a tracer's stop says about its capture: READY when the tracer
+ * ended with status 0 at the stop, having printed its maps; else the Error
+ * that leaves the capture incomplete, @p incomplete as reportStop() judged and
+ * printed it. A tracer that ended with status 0 before the stop ran its own
+ * exit() while the measured repeats went on; that case is printed here.
  */
-ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& stop, bool flushed) {
+ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& stop,
+                            const std::optional<ReadinessResult>& incomplete) {
   if (!stop.stillAlive && !stop.wasRunning && WIFEXITED(stop.waitStatus) &&
       WEXITSTATUS(stop.waitStatus) == 0) {
     const std::string DETAIL = what +
@@ -973,25 +986,10 @@ ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& sto
                            "(sched_process_exit filtered on tid == {{PID}}); the backend stops it "
                            "when the measured repeats finish.");
   }
-  if (flushed) {
-    return readinessResult(ReadinessCause::READY, what + " stopped and flushed its output", "");
+  if (incomplete) {
+    return *incomplete;
   }
-  if (stop.stillAlive) {
-    return readinessResult(ReadinessCause::UNUSABLE,
-                           what + ": the tracer is still running; its output may be incomplete",
-                           "Stop it by hand, then run the script by hand to see why it did not "
-                           "stop.");
-  }
-  if (!stop.wasRunning) {
-    return readinessResult(ReadinessCause::UNUSABLE,
-                           what + " ended before the stop (wait status " +
-                               std::to_string(stop.waitStatus) + ")",
-                           "Run the script by hand with bpftrace to see why it ended.");
-  }
-  return readinessResult(ReadinessCause::UNUSABLE,
-                         what + ": the tracer ignored SIGINT and SIGTERM and was killed; its "
-                                "output is incomplete",
-                         "bpftrace prints its maps on SIGINT; check that this build handles it.");
+  return readinessResult(ReadinessCause::READY, what + " stopped and flushed its output", "");
 }
 
 /**
@@ -1195,12 +1193,13 @@ public:
       return;
     }
     // The stop acknowledged, or the tracer ended before it: stop it, judge
-    // the stop, then the output it left.
+    // how it ended, then the output it left.
     const HelperStopResult STOPPED = helper_->stop();
-    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+    const std::optional<ReadinessResult> INCOMPLETE =
+        bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
     helper_.reset();
     phase_ = Phase::DONE;
-    ReadinessResult result = stopOutcome(what_, STOPPED, FLUSHED);
+    ReadinessResult result = stopOutcome(what_, STOPPED, INCOMPLETE);
     if (result.report.status == EnvReport::Status::Ok) {
       result = judgeOutput(pid);
     }
@@ -1219,9 +1218,10 @@ private:
       return;
     }
     const HelperStopResult STOPPED = helper_->stop();
-    const bool FLUSHED = bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+    const std::optional<ReadinessResult> INCOMPLETE =
+        bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
     if (!outcome_) {
-      outcome_ = stopOutcome(what_, STOPPED, FLUSHED);
+      outcome_ = stopOutcome(what_, STOPPED, INCOMPLETE);
     }
     helper_.reset();
     phase_ = Phase::DONE;
@@ -1237,7 +1237,7 @@ private:
     phase_ = Phase::FAILED;
     if (helper_) {
       const HelperStopResult STOPPED = helper_->stop();
-      (void)bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route);
+      (void)bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
       helper_.reset();
     }
   }

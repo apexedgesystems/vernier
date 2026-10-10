@@ -403,6 +403,12 @@ protected:
     return captures() + "/" + testName + ".bpf/" + stem + ".out.text";
   }
 
+  /** @brief The error output a planned run of the script with @p stem keeps for @p testName. */
+  std::string errorPath(const std::string& testName,
+                        const std::string& stem = "probe_script") const {
+    return captures() + "/" + testName + ".bpf/" + stem + ".err.txt";
+  }
+
   /** @brief The run's copy of the script with @p stem for @p testName, as written. */
   std::string runCopy(const std::string& testName, const std::string& stem = "probe_script") const {
     std::ifstream in(captures() + "/" + testName + ".bpf/" + stem + ".tmp.bt");
@@ -1186,6 +1192,103 @@ TEST_F(BpfCheckTest, BpftraceKilledTracerIsAFailedCapture) {
   for (const pid_t PID : tracerPids(dir_)) {
     EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the run";
     endIfLeft(PID);
+  }
+}
+
+/**
+ * @test A capture is complete only when its tracer ends the stop as bpftrace
+ * does once it has printed its maps, with status 0, whatever it acknowledged
+ * and printed before: a tracer that acknowledges both ends and prints its
+ * data, then exits 42 with an error at the stop; one that exits 3 at the stop
+ * and says nothing; and one that ignores SIGINT and dies of the SIGTERM that
+ * follows each fail the capture, which names how the tracer ended and keeps
+ * its files. Beside them a clean stop is READY, one that prints a warning on
+ * stderr and still exits 0 too, and a report of only the window's lines is
+ * the caveat it was.
+ */
+TEST_F(BpfCheckTest, BpftraceCaptureIsCompleteOnlyWhenItsTracerExitsCleanly) {
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const std::string PID = std::to_string(::getpid());
+  const std::string CAPTURED = "its tracer acknowledged their start and their end for pid " + PID +
+                               " and flushed its output";
+  struct Case {
+    std::string test;
+    std::map<std::string, std::string> env;
+    ReadinessCause cause;
+    std::string message;
+  };
+  const std::vector<Case> CASES{
+      {"Bpf.FlushError",
+       {{"FAKE_WINDOW", "flush-error"}},
+       ReadinessCause::UNUSABLE,
+       "unusable: script 'probe_script': the tracer exited with status 42 after SIGINT: ERROR: "
+       "failed to flush report; its output may be incomplete"},
+      {"Bpf.SilentStatus",
+       {{"FAKE_BPFTRACE_MODE", "silent-status"}},
+       ReadinessCause::UNUSABLE,
+       "unusable: script 'probe_script': the tracer exited with status 3 after SIGINT, with "
+       "nothing on its stderr; its output may be incomplete"},
+      {"Bpf.TermNotHandled",
+       {{"FAKE_BPFTRACE_MODE", "ignore-int-run"}},
+       ReadinessCause::UNUSABLE,
+       "unusable: script 'probe_script': the tracer ignored SIGINT, then ended on signal " +
+           std::to_string(SIGTERM) +
+           " after SIGTERM, with nothing on its stderr; its output may be incomplete"},
+      {"Bpf.CleanStop",
+       {},
+       ReadinessCause::READY,
+       "script 'probe_script' captured the measured repeats: " + CAPTURED},
+      {"Bpf.WarningAtTheStop",
+       {{"FAKE_WINDOW", "stop-warning"}},
+       ReadinessCause::READY,
+       "script 'probe_script' captured the measured repeats: " + CAPTURED},
+      {"Bpf.WindowLinesOnly",
+       {{"FAKE_WINDOW", "marker-only"}},
+       ReadinessCause::CAVEAT,
+       "script 'probe_script' captured the measured repeats (" + CAPTURED +
+           "), but printed no data of its own: its output holds only the capture window's lines"},
+  };
+  for (const Case& C : CASES) {
+    const WindowRun RUN = runWindowed(R, C.test, C.env);
+    ASSERT_TRUE(RUN.outcome.has_value()) << C.test << ": " << RUN.err;
+    EXPECT_EQ(RUN.outcome->cause, C.cause) << C.test << ": " << RUN.outcome->report.message;
+    EXPECT_EQ(RUN.outcome->report.message, C.message) << C.test;
+    if (C.cause == ReadinessCause::UNUSABLE) {
+      // An Error at the collection stage, as every failed capture is.
+      EXPECT_EQ(RUN.outcome->report.status, EnvReport::Status::Error) << C.test;
+      EXPECT_FALSE(RUN.outcome->collectionReady()) << C.test;
+      EXPECT_EQ(RUN.outcome->report.hint,
+                "bpftrace exits with status 0 once it has printed its maps; its error output is "
+                "in " +
+                    errorPath(C.test) + ".")
+          << C.test;
+      const std::string LINE = "[bpftrace] " + C.message.substr(std::string("unusable: ").size());
+      EXPECT_NE(RUN.err.find(LINE + "\n"), std::string::npos) << C.test << ":\n" << RUN.err;
+    } else if (C.cause == ReadinessCause::READY) {
+      EXPECT_EQ(RUN.err.find("[bpftrace]"), std::string::npos) << C.test << ":\n" << RUN.err;
+    }
+    // The capture's files stay whatever its outcome: the copy, the report
+    // with the window's two lines, the error output.
+    EXPECT_FALSE(runCopy(C.test).empty()) << C.test;
+    const std::string REPORT = fileText(reportPath(C.test));
+    EXPECT_NE(REPORT.find("bpftrace armed " + PID + " "), std::string::npos) << C.test << ":\n"
+                                                                             << REPORT;
+    EXPECT_NE(REPORT.find("bpftrace disarmed " + PID + " "), std::string::npos) << C.test << ":\n"
+                                                                                << REPORT;
+    EXPECT_TRUE(std::filesystem::is_regular_file(errorPath(C.test))) << C.test;
+  }
+  // The failed flush kept the data it printed and its error; the warning
+  // stays in the error output of the capture it did not fail.
+  EXPECT_NE(fileText(reportPath("Bpf.FlushError")).find("@c: 1"), std::string::npos);
+  EXPECT_NE(fileText(errorPath("Bpf.FlushError")).find("ERROR: failed to flush report"),
+            std::string::npos);
+  EXPECT_NE(fileText(errorPath("Bpf.WarningAtTheStop"))
+                .find("WARNING: a warning at the stop, which still ends with status 0"),
+            std::string::npos);
+  for (const pid_t TRACER : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(TRACER)) << "tracer " << TRACER << " outlived the run";
+    endIfLeft(TRACER);
   }
 }
 
@@ -2314,6 +2417,45 @@ TEST_F(BpfCheckTest, OffCpuProbeAllowedRunRefused) {
             std::string::npos)
       << ERR;
   EXPECT_EQ(ERR.find("stacks written"), std::string::npos) << ERR;
+}
+
+/**
+ * @test offcpu judges its tracer's stop by the same rule as bpftrace: stacks
+ * are written only when the tracer exits with status 0. One that exits 42
+ * with an error at the stop, or ignores SIGINT and dies of the SIGTERM that
+ * follows, is reported with how it ended, and no stacks are claimed.
+ */
+TEST_F(BpfCheckTest, OffCpuStacksWrittenOnlyWhenTheTracerExitsCleanly) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string FLUSH_ERROR =
+      runPlanned("offcpu", R, "OffCpu.FlushError", {{"FAKE_WINDOW", "flush-error"}});
+  EXPECT_NE(FLUSH_ERROR.find("[offcpu] the off-CPU script: the tracer exited with status 42 after "
+                             "SIGINT: ERROR: failed to flush report; its output may be "
+                             "incomplete\n"),
+            std::string::npos)
+      << FLUSH_ERROR;
+  EXPECT_EQ(FLUSH_ERROR.find("stacks written"), std::string::npos) << FLUSH_ERROR;
+  const std::string NOT_HANDLED =
+      runPlanned("offcpu", R, "OffCpu.TermNotHandled", {{"FAKE_BPFTRACE_MODE", "ignore-int-run"}});
+  EXPECT_NE(NOT_HANDLED.find("[offcpu] the off-CPU script: the tracer ignored SIGINT, then ended "
+                             "on signal " +
+                             std::to_string(SIGTERM) +
+                             " after SIGTERM, with nothing on its stderr; its output may be "
+                             "incomplete\n"),
+            std::string::npos)
+      << NOT_HANDLED;
+  EXPECT_EQ(NOT_HANDLED.find("stacks written"), std::string::npos) << NOT_HANDLED;
+  const std::string CLEAN = runPlanned("offcpu", R, "OffCpu.CleanStop");
+  EXPECT_NE(CLEAN.find("[offcpu] stacks written to " + captures() +
+                       "/OffCpu.CleanStop.offcpu/offcpu.txt\n"),
+            std::string::npos)
+      << CLEAN;
+  EXPECT_EQ(CLEAN.find("the tracer"), std::string::npos) << CLEAN;
+  for (const InlineCall& CALL : inlineCalls(dir_, "bpftrace")) {
+    EXPECT_TRUE(exited(CALL.pid)) << "tracer " << CALL.pid << " outlived the run";
+    endIfLeft(CALL.pid);
+  }
 }
 
 /**

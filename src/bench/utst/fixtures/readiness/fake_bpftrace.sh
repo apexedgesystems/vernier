@@ -7,7 +7,8 @@
 #   ok           run until signalled; a program with an interval:s:N or
 #                interval:ms:N probe (a readiness probe's self-exit) ends by
 #                itself then; one without that exits on sched_process_exit
-#                ends when its target pid does (at most 30 s otherwise)
+#                ends when its target pid does, printing FAKE_BPFTRACE_EXIT
+#                (at most 30 s otherwise)
 #   ignore-int   like ok, but ignore SIGINT
 #   ignore-target
 #                like ok, but a program never ends with its target (a pid
@@ -78,6 +79,12 @@
 #   empty-output   on SIGINT, empty the output file, then exit 0
 #   replace-output on SIGINT, write the output file anew with FAKE_BPFTRACE_EXIT
 #                  alone, then exit 0
+#   flush-error    on SIGINT, print FAKE_BPFTRACE_EXIT, then an error on
+#                  stderr, and exit 42: a report that fails at the stop
+#   stop-warning   on SIGINT, print a warning on stderr, then as ok
+# A run's launch without the capture window (the offcpu backend's) answers
+# SIGINT the same way: FAKE_BPFTRACE_EXIT and exit 0, or the mode's or
+# FAKE_WINDOW's answer at SIGINT.
 # Every invocation is recorded in FAKE_LOG with the fake's pid.
 
 PATH=/usr/bin:/bin
@@ -197,26 +204,87 @@ fi
 # A readiness probe's attach line.
 attach_line=$(printf '%s\n' "$program" | sed -n 's/^interval:ms:[0-9][0-9]* { printf("\([^"\\]*\)\\n"); }$/\1/p' | head -n 1)
 
-if [ "$has_window" = no ] && [ "$run_launch" = yes ]; then
-  if [ "$mode" = "slow-attach" ]; then
-    sleep "${FAKE_ATTACH_S:-3}"
-  fi
-  # bpftrace's exit() on the target's sched_process_exit: a launch ends with
-  # its target.
-  if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
-    printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
-    exec tail -s 0.1 -f /dev/null --pid="$target"
-  fi
-  exec sleep "$limit"
+# The output file, for the modes that remove or empty it: only a regular
+# file, never a device such as /dev/null.
+output=$(readlink /proc/$$/fd/1)
+if [ ! -f "$output" ]; then
+  output=""
 fi
+window=${FAKE_WINDOW:-}
+if [ -n "${FAKE_WINDOW_FOR:-}" ]; then
+  case "$script_path" in
+  *"$FAKE_WINDOW_FOR"*) ;;
+  *) window="" ;;
+  esac
+fi
+on_interrupt() {
+  case "$mode" in
+  silent-status) exit 3 ;;
+  int-error)
+    echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
+    exit 1
+    ;;
+  esac
+  case "$window" in
+  remove-output) [ -n "$output" ] && rm -f "$output" ;;
+  empty-output) [ -n "$output" ] && : >"$output" ;;
+  replace-output) [ -n "$output" ] && printf '%s\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}" >"$output" ;;
+  marker-only) printf '\n\n\n' ;;
+  flush-error)
+    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+    echo "ERROR: failed to flush report" >&2
+    exit 42
+    ;;
+  *)
+    if [ "$window" = slow-drain ]; then
+      sleep "${FAKE_DRAIN_S:-1}"
+    elif [ "$window" = stop-warning ]; then
+      echo "WARNING: a warning at the stop, which still ends with status 0" >&2
+    fi
+    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+    ;;
+  esac
+  exit 0
+}
 
 # On the sudo route the backend signals the only child of the process it
 # started, when there is exactly one (sudo's monitor keeps the tool as its
 # only child). This fake is sudo and tool in one process, and its naps and
-# its loop start short-lived children; two children that live as long as it
+# its loops start short-lived children; two children that live as long as it
 # does keep that choice on the fake itself. They hold none of its output.
 tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
 tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
+
+# A run's launch without the capture window, as the offcpu backend runs it:
+# SIGINT is answered as bpftrace answers it, and bpftrace's exit() on the
+# target's sched_process_exit ends the launch with its target, printing its
+# maps. Short naps, so a SIGINT is taken at once.
+if [ "$has_window" = no ] && [ "$run_launch" = yes ]; then
+  if [ "$mode" = "slow-attach" ]; then
+    sleep "${FAKE_ATTACH_S:-3}"
+  fi
+  if [ "$int_ignored" = no ]; then
+    trap on_interrupt INT
+  fi
+  follows_target=no
+  if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+    printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
+    follows_target=yes
+  fi
+  limit_ms=$(printf '%s\n' "$limit" | awk '{ printf "%d", $1 * 1000 }')
+  started=$(date +%s%N)
+  while :; do
+    if [ "$follows_target" = yes ] && [ ! -d "/proc/$target" ]; then
+      printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+      exit 0
+    fi
+    now=$(date +%s%N)
+    if [ $(((now - started) / 1000000)) -ge "$limit_ms" ]; then
+      exit 0
+    fi
+    sleep 0.05
+  done
+fi
 
 if [ "$mode" = "late-unsupported" ]; then
   if [ "${FAKE_INT:-}" = ignore ]; then
@@ -281,41 +349,6 @@ if printf '%s\n' "$program" | grep -q 'disarmed %d %d %d'; then
   stop_count=" 0"
 fi
 
-# The output file, for the modes that remove or empty it: only a regular
-# file, never a device such as /dev/null.
-output=$(readlink /proc/$$/fd/1)
-if [ ! -f "$output" ]; then
-  output=""
-fi
-window=${FAKE_WINDOW:-}
-if [ -n "${FAKE_WINDOW_FOR:-}" ]; then
-  case "$script_path" in
-  *"$FAKE_WINDOW_FOR"*) ;;
-  *) window="" ;;
-  esac
-fi
-on_interrupt() {
-  case "$mode" in
-  silent-status) exit 3 ;;
-  int-error)
-    echo "stdin:1:1-36: ERROR: tracepoint not found: syscalls:sys_enter_write" >&2
-    exit 1
-    ;;
-  esac
-  case "$window" in
-  remove-output) [ -n "$output" ] && rm -f "$output" ;;
-  empty-output) [ -n "$output" ] && : >"$output" ;;
-  replace-output) [ -n "$output" ] && printf '%s\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}" >"$output" ;;
-  marker-only) printf '\n\n\n' ;;
-  *)
-    if [ "$window" = slow-drain ]; then
-      sleep "${FAKE_DRAIN_S:-1}"
-    fi
-    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
-    ;;
-  esac
-  exit 0
-}
 if [ "$int_ignored" = no ]; then
   trap on_interrupt INT
 fi
