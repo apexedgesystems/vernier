@@ -43,6 +43,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`NsightProfiler.G0`, `G1`, `KernelOneThreadPerBlock`,
   `Kernel256ThreadsPerBlock`, `LaunchShapeSpeedup`), so capture a new baseline:
   demo 02 CSVs from earlier releases do not join with newer ones.
+- **Demo 13 (NVTX) is a GPU demo on the shared SAXPY example** --
+  `BenchDemo_Gpu_05_NvtxAnnotation` times the example's `G1` as it is and in
+  three named NVTX ranges, with a check registered with `ctest` under the
+  `demo` and `nsight` labels, and its walkthrough and reference CSV are
+  captured on the documented Jetson AGX Thor rig. It replaces
+  `BenchDemo_10_NvtxAnnotation` and its test `Nvtx.PhasedWorkload`, so CSVs
+  captured from that demo before this release do not join with newer ones.
 - **The GPU harness's CUPTI collector stands down only inside an Nsight session
   or on request** -- it stands down when nsys or ncu started the process
   (`bench run --profile nsight|ncu`, or a wrap typed by hand, recognised from
