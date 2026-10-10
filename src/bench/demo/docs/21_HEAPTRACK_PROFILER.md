@@ -461,7 +461,10 @@ Two things check what this page shows, and both fail loudly:
   every C++ allocation to `malloc`, so in the demo heaptrack would see them
   even in a build with tcmalloc, and the demo would stop behaving like a
   program of your own; and under heaptrack, the counter also counts
-  heaptrack's own bookkeeping.
+  heaptrack's own bookkeeping. A build with the thread sanitizer
+  (`-DSANITIZER=tsan`) has no counter: the sanitizer's runtime defines
+  `operator new` itself, and clang's cannot link beside a replacement, so there
+  these tests skip and say why.
 
 - `bench doctor` reports heaptrack as a warning whenever tcmalloc is loaded
   into the benchmark, and `bench doctor --require heaptrack` then fails. The

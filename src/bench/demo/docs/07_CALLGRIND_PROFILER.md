@@ -253,7 +253,7 @@ The count per call comes from the join example's check, which `ctest` also runs
 ([What Keeps This Page True](#what-keeps-this-page-true)):
 
 ```bash
-./build/bin/JoinInstructionCounts --gtest_filter=JoinInstructionCounts.UnderCallgrind
+./build/bin/tests/JoinInstructionCounts --gtest_filter=JoinInstructionCounts.UnderCallgrind
 ```
 
 Captured output, trimmed where marked:
