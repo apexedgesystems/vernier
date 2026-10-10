@@ -121,6 +121,97 @@ inline bool isRunningUnderValgrind() {
   return found;
 }
 
+/* ----------------------------- computeSanitizerSession ----------------------------- */
+
+/**
+ * @brief True when Compute Sanitizer started the process @p ctx describes.
+ *
+ * compute-sanitizer cannot attach to a running process, so a session exists
+ * only when the tool started this one. `bench run --profile
+ * compute-sanitizer` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by
+ * hand is recognised from what the tool exports to the process it starts:
+ * NV_SANITIZER_INJECTION_PORT_BASE, as exported by compute-sanitizer 2025.3
+ * and 2025.4, or CUDA_INJECTION64_PATH naming its collection library, the
+ * injection variable a toolkit may use instead. A name in a path decides
+ * nothing: the process's own binary or a directory may be called after the
+ * tool. Reads only the snapshot.
+ */
+inline bool computeSanitizerSession(const ReadinessContext& ctx) {
+  if (ctx.get("VERNIER_EXTERNAL_WRAP").value_or("") == "compute-sanitizer") {
+    return true;
+  }
+  if (ctx.get("NV_SANITIZER_INJECTION_PORT_BASE")) {
+    return true;
+  }
+  const std::string INJECTION = ctx.get("CUDA_INJECTION64_PATH").value_or("");
+  const std::size_t SLASH = INJECTION.rfind('/');
+  const std::string_view FILE = SLASH == std::string::npos
+                                    ? std::string_view{INJECTION}
+                                    : std::string_view{INJECTION}.substr(SLASH + 1);
+  return FILE == "libsanitizer-collection.so";
+}
+
+/** @brief computeSanitizerSession() on a snapshot of this process, taken now. */
+inline bool computeSanitizerSession() {
+  return computeSanitizerSession(ReadinessContext::capture());
+}
+
+/**
+ * @brief True when @p mapsText, the text of a /proc/<pid>/maps, shows one of
+ * compute-sanitizer's own libraries mapped into the process.
+ *
+ * Those are libsanitizer-collection.so and libsanitizer-public.so, matched as
+ * the file name at the end of a line (compute-sanitizer 2025.3 and 2025.4
+ * map both). The bare word "sanitizer" would also match a binary or a
+ * directory named after the tool, and the launcher libraries the tool maps
+ * beside its own (libTreeLauncher*, libInterceptorInjectionTarget) ship with
+ * Nsight too, so neither decides.
+ */
+inline bool mapsShowComputeSanitizer(std::string_view mapsText) {
+  std::size_t from = 0;
+  while (from < mapsText.size()) {
+    std::size_t end = mapsText.find('\n', from);
+    if (end == std::string_view::npos) {
+      end = mapsText.size();
+    }
+    const std::string_view LINE = mapsText.substr(from, end - from);
+    from = end + 1;
+    const std::size_t SLASH = LINE.rfind('/');
+    if (SLASH == std::string_view::npos) {
+      continue;
+    }
+    const std::string_view FILE = LINE.substr(SLASH + 1);
+    if (FILE == "libsanitizer-collection.so" || FILE == "libsanitizer-public.so") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief True when this process runs under compute-sanitizer: the session
+ * a snapshot of it shows (computeSanitizerSession()), or, for a tool
+ * version that exports nothing, the tool's library mapped into the process
+ * (mapsShowComputeSanitizer() on /proc/self/maps).
+ * @note NOT RT-safe: reads /proc/self/maps.
+ */
+inline bool isRunningUnderComputeSanitizer() {
+  if (computeSanitizerSession()) {
+    return true;
+  }
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp) {
+    return false;
+  }
+  std::string maps;
+  char buf[4096];
+  while (const std::size_t GOT = std::fread(buf, 1, sizeof(buf), fp)) {
+    maps.append(buf, GOT);
+  }
+  std::fclose(fp);
+  return mapsShowComputeSanitizer(maps);
+}
+
 /* ----------------------------- externalWrapTool ----------------------------- */
 
 /**
