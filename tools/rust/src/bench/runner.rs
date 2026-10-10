@@ -68,6 +68,8 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
             cfg.binary.display()
         )));
     }
+    // One request decides the wrap, the benchmark's arguments and the folder.
+    let cfg = &effective_request(cfg, "bench run")?;
 
     let mut args: Vec<String> = Vec::new();
 
@@ -241,11 +243,101 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     Ok(cfg.csv.clone())
 }
 
+/// The fields of a profile request that `bench run` routes on, as the
+/// benchmark spells them after `--`: each takes the word after it, and
+/// `--artifact-root` is the benchmark's other name for the output folder.
+const ROUTED_FIELDS: [&str; 4] = [
+    "--profile",
+    "--profile-args",
+    "--profile-output-dir",
+    "--artifact-root",
+];
+
+/// The one profile request @p cfg makes, for `bench run` and `bench doctor`
+/// (@p command, for messages) alike: its `--profile`, `--profile-args` and
+/// `--profile-output-dir`, each also taken from the arguments after `--`,
+/// where the benchmark would read it, and those arguments without them. The
+/// wrap, the folder, the benchmark's arguments and the doctor's row all come
+/// from this request, and the benchmark receives each field once. A field
+/// given twice with different values (to the command and after `--`, or
+/// twice after `--`) is refused, as is one after `--` without its value,
+/// before anything is created or started; the same value twice is one
+/// request (`nsys` is `nsight`). Every other argument after `--`,
+/// `--profile-analyze` among them, stays as it is, in its place.
+pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Error> {
+    let mut forwarded: Vec<(&str, &str)> = Vec::new();
+    let mut rest = Vec::with_capacity(cfg.extra_args.len());
+    let mut args = cfg.extra_args.iter();
+    while let Some(arg) = args.next() {
+        let Some(field) = ROUTED_FIELDS.iter().find(|f| **f == arg) else {
+            rest.push(arg.clone());
+            continue;
+        };
+        let Some(value) = args.next() else {
+            return Err(Error::InvalidArgs(format!("{field} after -- has no value")));
+        };
+        let field = if *field == "--artifact-root" {
+            "--profile-output-dir"
+        } else {
+            field
+        };
+        forwarded.push((field, value));
+    }
+    // The value of @p field: the command's own and every one after `--`
+    // (each marked true), which must agree by @p same.
+    let one = |field: &str,
+               own: Option<String>,
+               same: &dyn Fn(&str, &str) -> bool|
+     -> Result<Option<String>, Error> {
+        let mut values: Vec<(String, bool)> = own.into_iter().map(|v| (v, false)).collect();
+        values.extend(
+            forwarded
+                .iter()
+                .filter(|(f, _)| *f == field)
+                .map(|(_, v)| (v.to_string(), true)),
+        );
+        if values.iter().any(|(v, _)| !same(v, &values[0].0)) {
+            let each = values
+                .iter()
+                .map(|(v, after)| {
+                    if *after {
+                        format!("'{v}' after --")
+                    } else {
+                        format!("'{v}' to {command}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(Error::InvalidArgs(format!(
+                "{field} is given more than once with different values ({each}); give it once"
+            )));
+        }
+        Ok(values.into_iter().next().map(|(v, _)| v))
+    };
+    let exact = |a: &str, b: &str| a == b;
+    let mut out = cfg.clone();
+    out.profile = one("--profile", cfg.profile.clone(), &|a, b| {
+        canonical_backend(a) == canonical_backend(b)
+    })?;
+    out.profile_args = one("--profile-args", cfg.profile_args.clone(), &exact)?;
+    out.profile_output_dir = one(
+        "--profile-output-dir",
+        cfg.profile_output_dir
+            .as_ref()
+            .map(|d| d.display().to_string()),
+        &exact,
+    )?
+    .map(PathBuf::from);
+    out.extra_args = rest;
+    Ok(out)
+}
+
 /// The profile request as the benchmark reads it: `--profile` by its
 /// canonical name, `--profile-args`, `--profile-test-timeout`,
 /// `--profile-output-dir`, and `--profile-analyze` unless it is among the
 /// arguments forwarded after `--` (which the caller appends after these).
-/// `bench run` and `bench doctor` spell a request with this one function.
+/// `bench run` and `bench doctor` spell a request with this one function,
+/// for the request `effective_request` made.
 pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(tool) = cfg.profile.as_deref().map(canonical_backend) {
@@ -1772,6 +1864,117 @@ mod tests {
         }
         let default_root = wrap_child_env("ncu", Path::new("./my_test"), None);
         assert_eq!(default_root[1].1, "bench-out/my_test.ncu");
+    }
+
+    /// A request with @p profile and @p args given to the command and
+    /// @p extra after `--`.
+    fn request(profile: Option<&str>, args: Option<&str>, extra: &[&str]) -> RunConfig {
+        RunConfig {
+            binary: PathBuf::from("./my_test"),
+            profile: profile.map(str::to_string),
+            profile_args: args.map(str::to_string),
+            extra_args: extra.iter().map(|a| a.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// @test A routed field given only after `--` is the request's: the mode,
+    /// the profile itself and the output folder (by either of its names) are
+    /// taken in and removed from the arguments after `--`, whose other words,
+    /// --profile-analyze among them, stay in their order.
+    #[test]
+    fn effective_request_takes_in_the_fields_after_the_separator() {
+        let r = effective_request(
+            &request(
+                Some("helgrind"),
+                None,
+                &[
+                    "--gtest_filter=A.*",
+                    "--profile-args",
+                    "drd",
+                    "--profile-analyze",
+                ],
+            ),
+            "bench run",
+        )
+        .expect("one request");
+        assert_eq!(r.profile.as_deref(), Some("helgrind"));
+        assert_eq!(r.profile_args.as_deref(), Some("drd"));
+        assert_eq!(r.extra_args, ["--gtest_filter=A.*", "--profile-analyze"]);
+        let r = effective_request(
+            &request(
+                None,
+                None,
+                &[
+                    "--profile",
+                    "massif",
+                    "--artifact-root",
+                    "out",
+                    "--profile-test-timeout",
+                    "0",
+                ],
+            ),
+            "bench run",
+        )
+        .expect("one request");
+        assert_eq!(r.profile.as_deref(), Some("massif"));
+        assert_eq!(r.profile_output_dir, Some(PathBuf::from("out")));
+        assert_eq!(r.extra_args, ["--profile-test-timeout", "0"]);
+        let plain = request(Some("perf"), Some("-e cycles"), &["--cycles", "5"]);
+        let r = effective_request(&plain, "bench run").expect("one request");
+        assert_eq!(
+            (r.profile, r.profile_args, r.extra_args),
+            (plain.profile, plain.profile_args, plain.extra_args)
+        );
+    }
+
+    /// @test A routed field given twice with different values is refused,
+    /// naming both and where each was given; the same value twice, nsys for
+    /// nsight included, is one request; a field after `--` without its value
+    /// is refused.
+    #[test]
+    fn effective_request_refuses_a_field_given_twice() {
+        for (cfg, expected) in [
+            (
+                request(Some("massif"), Some("pages"), &["--profile-args", "stacks"]),
+                "--profile-args is given more than once with different values ('pages' to \
+                 bench run, 'stacks' after --); give it once",
+            ),
+            (
+                request(Some("perf"), None, &["--profile", "gperf"]),
+                "--profile is given more than once with different values ('perf' to bench \
+                 run, 'gperf' after --); give it once",
+            ),
+            (
+                request(
+                    None,
+                    None,
+                    &["--profile-output-dir", "a", "--artifact-root", "b"],
+                ),
+                "--profile-output-dir is given more than once with different values ('a' \
+                 after --, 'b' after --); give it once",
+            ),
+            (
+                request(Some("massif"), None, &["--profile-args"]),
+                "--profile-args after -- has no value",
+            ),
+        ] {
+            let err = effective_request(&cfg, "bench run").expect_err("refused");
+            assert!(matches!(err, Error::InvalidArgs(_)), "{err:?}");
+            assert_eq!(err.to_string(), format!("invalid arguments: {expected}"));
+        }
+        let r = effective_request(
+            &request(
+                Some("nsys"),
+                Some("compute"),
+                &["--profile", "nsight", "--profile-args", "compute"],
+            ),
+            "bench run",
+        )
+        .expect("the same request twice");
+        assert_eq!(r.profile.as_deref(), Some("nsys"));
+        assert_eq!(r.profile_args.as_deref(), Some("compute"));
+        assert!(r.extra_args.is_empty());
     }
 
     /// @test A route decides without creating its folder.

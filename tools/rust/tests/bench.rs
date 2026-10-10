@@ -2047,6 +2047,98 @@ fn run_helgrind_drd() {
     );
 }
 
+/// @test A mode given after `--` is the request's: the wrap runs it, and the
+/// benchmark receives the request once, so the tool and the benchmark agree.
+#[test]
+fn run_forwarded_mode_selects_the_wrap() {
+    let rig = route_rig(&["valgrind"]);
+    let (code, err, log) = run_rig(
+        &rig,
+        &["--profile", "helgrind", "--", "--profile-args", "drd"],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "valgrind wrap=helgrind --tool=drd --log-file=bench-out/fake_bench.helgrind/helgrind.log \
+             {} --profile helgrind --profile-args drd\n",
+            rig.bench.display()
+        )
+    );
+}
+
+/// @test A whole request after `--`, profile, mode and output folder, is
+/// routed as if bench run had been given it, and the benchmark's other
+/// arguments follow it unchanged.
+#[test]
+fn run_forwarded_request_is_routed() {
+    let rig = route_rig(&["valgrind"]);
+    let (code, err, log) = run_rig(
+        &rig,
+        &[
+            "--",
+            "--profile",
+            "massif",
+            "--profile-args",
+            "pages",
+            "--artifact-root",
+            "out",
+            "--repeats",
+            "2",
+        ],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "valgrind wrap=massif --tool=massif --pages-as-heap=yes \
+             --massif-out-file=out/fake_bench.massif/massif.out {} --profile massif \
+             --profile-args pages --profile-output-dir out --repeats 2\n",
+            rig.bench.display()
+        )
+    );
+}
+
+/// @test A routed field given to bench run and again after `--` with another
+/// value, or twice after `--`, is refused before anything starts or is
+/// created.
+#[test]
+fn run_refuses_a_forwarded_field_that_conflicts() {
+    for (args, expected) in [
+        (
+            &[
+                "--profile",
+                "massif",
+                "--profile-args",
+                "pages",
+                "--",
+                "--profile-args",
+                "stacks",
+            ][..],
+            "--profile-args is given more than once with different values ('pages' to bench run, \
+             'stacks' after --); give it once",
+        ),
+        (
+            &["--profile", "massif", "--", "--profile", "memcheck"][..],
+            "--profile is given more than once with different values ('massif' to bench run, \
+             'memcheck' after --); give it once",
+        ),
+    ] {
+        let rig = route_rig(&["valgrind"]);
+        let (code, err, log) = run_rig(&rig, args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(
+            err.contains(&format!("Error: invalid arguments: {expected}")),
+            "{args:?}: {err}"
+        );
+        assert_eq!(log, "", "{args:?}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{args:?}: a folder was created"
+        );
+    }
+}
+
 /// @test compute-sanitizer's tools reach it.
 #[test]
 fn run_compute_sanitizer_tools() {
@@ -3680,5 +3772,47 @@ fn doctor_require_old_binary_is_unmet() {
              against this vernier, or drop --profile"
         ),
         "{out}"
+    );
+}
+
+/// @test The doctor checks the request bench run would make of the same
+/// arguments: a profile given after `--` selects the row it judges, and one
+/// that conflicts with --profile is refused before the binary runs, with
+/// nothing on stdout.
+#[test]
+fn doctor_checks_the_request_bench_run_makes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let doc = DOCTOR_DOC.trim_end().trim_end_matches('}').to_string()
+        + r#", "selected": {"name": "gperf", "profileArgs": "", "status": "ok", "message": "gperftools profiles cpu", "hint": ""}}"#
+        + "\n";
+    let bench = doctor_stand_in(dir.path(), &doc);
+    let b = bench.to_string_lossy().into_owned();
+    let (rc, out, err) = run_doctor(&[&b, "--require", "gperf", "--", "--profile", "gperf"]);
+    assert_eq!(rc, 0, "{out}{err}");
+    assert_eq!(out, "[require] gperf (--profile gperf): OK\n");
+    let (rc, out, err) = run_doctor(&[
+        &b,
+        "--profile",
+        "perf",
+        "--require",
+        "perf",
+        "--json",
+        "--",
+        "--profile",
+        "gperf",
+    ]);
+    assert_eq!(rc, 1, "{err}");
+    assert_eq!(out, "", "nothing on stdout");
+    assert!(
+        err.contains(
+            "Error: invalid arguments: --profile is given more than once with different values \
+             ('perf' to bench doctor, 'gperf' after --); give it once"
+        ),
+        "{err}"
+    );
+    let argv = std::fs::read_to_string(dir.path().join("argv.log")).unwrap_or_default();
+    assert_eq!(
+        argv, "--profile-check-json --profile gperf\n",
+        "the refused request reached the binary"
     );
 }

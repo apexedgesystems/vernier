@@ -239,6 +239,13 @@ kernels. In-process backends
 reads `--profile-args` itself, and the C++ harness manages its own per-test
 artifact subdirs.
 
+Arguments after `--` reach the binary as they are, except the request's own
+fields: `--profile`, `--profile-args` and `--profile-output-dir` (or the
+binary's `--artifact-root`) given there are the request `bench run` routes, as
+if given to it, and reach the binary once. A field given twice with
+different values, to `bench run` and after `--`, is refused before anything
+starts.
+
 **A wrapped run's output.** Before it starts the benchmark, `bench run`
 creates the wrap's folder (a folder it cannot create stops the run before
 anything starts) and removes from that folder the files a previous run of
@@ -321,8 +328,8 @@ given, so that stdout stays one document, and on stdout otherwise. A binary
 whose doctor prints no valid document is an error (exit 1).
 
 `--profile`, `--profile-args`, `--profile-analyze` and the arguments after
-`--` are passed to the binary as `bench run` passes them, and the doctor adds
-a row for that request. `--require` judges the requested backend by that row
+`--` make the request `bench run` would make of them, and are passed to the
+binary as `bench run` passes them; the doctor adds a row for that request. `--require` judges the requested backend by that row
 and every other backend by its default mode's row, so a requirement on
 `massif` with `--profile-args pages` is met only when that mode is ready. A
 binary built before the requested row existed cannot answer such a

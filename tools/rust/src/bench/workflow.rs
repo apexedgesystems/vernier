@@ -134,7 +134,8 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 
 /// Run a binary's `--profile-check` (binary readiness + backend doctor),
 /// with @p request's profile flags spelled as `bench run` passes them
-/// (`runner::profile_request_args`, then its arguments after `--`), and
+/// (`runner::effective_request`, `runner::profile_request_args`, then its
+/// other arguments after `--`), and
 /// @p env added to the binary's environment. Text mode streams the human
 /// report. `json` prints the binary's JSON document, once it parses, and
 /// nothing else on stdout (fleet capability records). `require` reads that
@@ -151,6 +152,9 @@ pub fn doctor(
     require: &[String],
 ) -> Result<i32, Error> {
     let bin = require_binary(binary)?;
+    // The request bench run would make of the same arguments: its fields
+    // given after -- are taken in, and a conflict between them is refused.
+    let request = &super::runner::effective_request(request, "bench doctor")?;
     let mut request_args = super::runner::profile_request_args(request);
     request_args.extend(request.extra_args.iter().cloned());
     let selected = request.profile.as_deref().map(canonical_backend);

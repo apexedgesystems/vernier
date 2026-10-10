@@ -291,11 +291,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - **`bench run` runs the tool and mode a request names** -- `--profile nsys`
   ran unwrapped, and the modes of wrapped profiles (massif `pages`, memcheck
   `track-origins`, helgrind `drd`, compute-sanitizer's tools, nsight
-  `compute`) never reached their tool; they do now, and a word a profile does
-  not take is refused before anything starts. **Action needed:** correct or
-  drop a `--profile-args` value that `bench run` used to ignore; the
-  [tools README](tools/README.md#run---execute-benchmark-binary) lists the
-  modes.
+  `compute`) never reached their tool; they do now, also when given after
+  `--`, and a word a profile does not take, or a profile field given twice
+  with different values, is refused before anything starts. **Action
+  needed:** correct or drop a `--profile-args` value that `bench run` used to
+  ignore; the [tools README](tools/README.md#run---execute-benchmark-binary)
+  lists the modes.
 - **A wrapped profile fails without its tool, and the doctor runs the tool**
   -- a request for callgrind, massif, memcheck, helgrind, heaptrack, rocprof,
   nsight, ncu or compute-sanitizer passed with nothing collected when its tool
