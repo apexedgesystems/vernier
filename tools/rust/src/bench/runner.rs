@@ -1063,14 +1063,16 @@ fn run_owned(
     }
 }
 
-/// A helper program bench run owns until it returns. The program runs in a
-/// process group of its own, made when it is spawned, so the processes it
-/// starts stay in that group after it exits. When the program exits, outruns
-/// its bound or bench run is interrupted, the whole group is ended, the run
-/// waits (up to `GONE_WAIT`) until no process of the group runs, and the
-/// program's output is read to its end; a pipe still held open after that (by
-/// a process that left the group, which the run does not own) is read only as
-/// far as it has been written, never waited on.
+/// A helper program a bench command owns until it returns: bench run's
+/// annotator and `nsys stats` (`run_owned`), and bench validate's version
+/// probes (`validate::run_version`), each with its own caller policy. The
+/// program runs in a process group of its own, made when it is spawned, so
+/// the processes it starts stay in that group after it exits. When the
+/// program exits, outruns its bound or the command is interrupted, the whole
+/// group is ended, the run waits (up to `GONE_WAIT`) until no process of the
+/// group runs, and the program's output is read to its end; a pipe still held
+/// open after that (by a process that left the group, which the run does not
+/// own) is read only as far as it has been written, never waited on.
 ///
 /// The invariants the `unsafe` calls below rely on:
 /// - The group's id is the program's process id, reserved while the program
@@ -1079,7 +1081,7 @@ fn run_owned(
 ///   reap it.
 /// - The signal handler only stores the signal's number in an atomic.
 /// - Only the read ends of the program's own pipes are made non-blocking.
-mod owned_run {
+pub(crate) mod owned_run {
     use std::io::{self, Read};
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -1094,27 +1096,27 @@ mod owned_run {
     const GONE_WAIT: Duration = Duration::from_secs(2);
 
     /// How the program's run ended.
-    pub(super) enum Ending {
+    pub(crate) enum Ending {
         /// The program exited by itself.
         Exited(ExitStatus),
         /// The bound passed first; the group was ended.
         TimedOut,
-        /// bench run received this signal; the group was ended.
+        /// The command received this signal; the group was ended.
         Interrupted(i32),
     }
 
     /// A finished run: how it ended, the program's output, and how many
     /// processes of its group still ran when it exited (ended by the run).
-    pub(super) struct Finished {
-        pub(super) ending: Ending,
-        pub(super) stdout: String,
-        pub(super) stderr: String,
-        pub(super) left_running: usize,
+    pub(crate) struct Finished {
+        pub(crate) ending: Ending,
+        pub(crate) stdout: String,
+        pub(crate) stderr: String,
+        pub(crate) left_running: usize,
     }
 
     /// Start @p command with stdin closed and both outputs piped, in a
     /// process group of its own.
-    pub(super) fn spawn(command: &mut Command) -> io::Result<Child> {
+    pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
         command
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -1130,7 +1132,7 @@ mod owned_run {
     /// Wait for @p child (from `spawn`) until it exits, @p bound passes or
     /// @p interrupted holds a signal's number; then end its group, wait for
     /// the group to be gone and collect the output.
-    pub(super) fn finish(
+    pub(crate) fn finish(
         mut child: Child,
         bound: Duration,
         interrupted: &AtomicI32,
@@ -1321,16 +1323,16 @@ mod owned_run {
 
     /// While it lives, SIGINT, SIGTERM and SIGHUP are recorded for the run to
     /// end its group: the group is not the terminal's foreground group, so a
-    /// Ctrl-C reaches bench run alone. A signal whose action is not the
+    /// Ctrl-C reaches the bench command alone. A signal whose action is not the
     /// default (ignored, as under nohup, or handled) is left as it is.
     /// Dropping it restores each action it replaced.
-    pub(super) struct Watch {
+    pub(crate) struct Watch {
         #[cfg(unix)]
         replaced: Vec<(libc::c_int, libc::sigaction)>,
     }
 
     impl Watch {
-        pub(super) fn start() -> Self {
+        pub(crate) fn start() -> Self {
             PENDING.store(0, Ordering::SeqCst);
             Self {
                 #[cfg(unix)]
@@ -1339,7 +1341,7 @@ mod owned_run {
         }
 
         /// The flag the recorded signal's number is stored in.
-        pub(super) fn flag(&self) -> &'static AtomicI32 {
+        pub(crate) fn flag(&self) -> &'static AtomicI32 {
             &PENDING
         }
     }
@@ -1388,10 +1390,10 @@ mod owned_run {
         }
     }
 
-    /// End bench run by @p signal, after the `Watch` that recorded it is
-    /// dropped (its default action restored), so whoever sent it sees the
-    /// run ended by it.
-    pub(super) fn end_by(signal: i32) -> ! {
+    /// End the bench command by @p signal, after the `Watch` that recorded it
+    /// is dropped (its default action restored), so whoever sent it sees the
+    /// command ended by it.
+    pub(crate) fn end_by(signal: i32) -> ! {
         use std::io::Write;
         let _ = std::io::stdout().flush();
         let _ = std::io::stderr().flush();

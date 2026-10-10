@@ -12,12 +12,11 @@
 //! on `bench doctor <binary> --require <backends>`. A binary that is missing,
 //! does not start or prints no usable doctor document is an error (exit 1).
 
-use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
+use super::runner::owned_run;
 use super::{lookup_in_path, CheckStatus, Error, InPath};
 
 /* ----------------------------- Row ----------------------------- */
@@ -215,62 +214,42 @@ enum VersionRun {
     /// It exited: whether with status 0, and its stdout followed by its
     /// stderr.
     Exited { success: bool, output: String },
-    /// It did not start, or did not finish in time and was stopped.
+    /// It did not start, could not be waited for, or did not finish in time
+    /// and was stopped with its process group.
     Failed,
 }
 
 /// Run `<path> --version`, bounded by `VERSION_TIMEOUT`.
 fn run_version(path: &Path) -> VersionRun {
-    let Ok(mut child) = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    else {
+    let mut command = Command::new(path);
+    command.arg("--version");
+    run_probe(command, VERSION_TIMEOUT)
+}
+
+/// Run a version probe, @p command, as an owned run (`runner::owned_run`)
+/// bounded by @p bound: whatever the tool starts and leaves running in its
+/// process group is ended when the tool exits or the bound passes, and its
+/// output is read to its end without waiting on a process that left the
+/// group. A SIGINT, SIGTERM or SIGHUP that validate receives meanwhile ends
+/// the group, then validate itself by that signal. A probe that leaves a
+/// process is not reported: validate only reads the version.
+fn run_probe(mut command: Command, bound: Duration) -> VersionRun {
+    let watch = owned_run::Watch::start();
+    let Ok(child) = owned_run::spawn(&mut command) else {
         return VersionRun::Failed;
     };
-    // Each pipe is read on its own thread, so neither can fill. A process
-    // the tool leaves behind can hold a pipe open, so the reads are awaited
-    // with a bound instead of joined.
-    let (tx, rx) = mpsc::channel();
-    let pipes: [(usize, Box<dyn Read + Send>); 2] = [
-        (0, Box::new(child.stdout.take().expect("piped stdout"))),
-        (1, Box::new(child.stderr.take().expect("piped stderr"))),
-    ];
-    for (index, mut pipe) in pipes {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let _ = pipe.read_to_end(&mut bytes);
-            let _ = tx.send((index, String::from_utf8_lossy(&bytes).into_owned()));
-        });
-    }
-    drop(tx);
-    let started = Instant::now();
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if started.elapsed() < VERSION_TIMEOUT => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return VersionRun::Failed;
-            }
-        }
+    let run = owned_run::finish(child, bound, watch.flag());
+    drop(watch);
+    let Ok(run) = run else {
+        return VersionRun::Failed;
     };
-    let mut texts = [String::new(), String::new()];
-    for _ in 0..2 {
-        match rx.recv_timeout(Duration::from_millis(500)) {
-            Ok((index, text)) => texts[index] = text,
-            Err(_) => break,
-        }
-    }
-    VersionRun::Exited {
-        success: status.success(),
-        output: texts.concat(),
+    match run.ending {
+        owned_run::Ending::Exited(status) => VersionRun::Exited {
+            success: status.success(),
+            output: run.stdout + &run.stderr,
+        },
+        owned_run::Ending::TimedOut => VersionRun::Failed,
+        owned_run::Ending::Interrupted(signal) => owned_run::end_by(signal),
     }
 }
 
@@ -638,6 +617,125 @@ mod tests {
         );
         assert_eq!(version_line("usage: tool [options]\n"), None);
         assert_eq!(version_line(&"9.9 ".repeat(40)).map(|v| v.len()), Some(80));
+    }
+
+    /* ----------------------------- Version probe ----------------------------- */
+
+    /// Whether process @p pid still runs: listed in /proc, not a zombie.
+    fn still_runs(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| {
+                let state = stat.rsplit_once(')')?.1.split_whitespace().next()?;
+                Some(state != "Z" && state != "X")
+            })
+            .unwrap_or(false)
+    }
+
+    /// The process id a script wrote to @p path.
+    fn written_pid(path: &Path) -> u32 {
+        std::fs::read_to_string(path)
+            .expect("the script wrote its process id")
+            .trim()
+            .parse()
+            .expect("a process id")
+    }
+
+    /// `sh -c <script>` as a version probe bounded by @p bound; the run and
+    /// how long it took.
+    fn probe_sh(script: &str, bound: Duration) -> (VersionRun, Duration) {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]);
+        let started = std::time::Instant::now();
+        let run = run_probe(command, bound);
+        (run, started.elapsed())
+    }
+
+    /// @test A tool that prints its version and exits, leaving a process of
+    /// its own that holds its output: the probe returns at once with the
+    /// version, and that process is gone when it does.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn version_probe_ends_what_the_tool_leaves() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let left = dir.path().join("left.pid");
+        let (run, took) = probe_sh(
+            &format!(
+                "/bin/sleep 60 & echo $! > '{}'; echo 'tool 1.2.3'; exit 0",
+                left.display()
+            ),
+            Duration::from_secs(30),
+        );
+        let left = written_pid(&left);
+        let left_runs = still_runs(left);
+        assert!(!left_runs, "the process the tool left, {left}, still runs");
+        assert!(took < Duration::from_secs(5), "{took:?}");
+        let VersionRun::Exited { success, output } = run else {
+            panic!("the probe did not report the tool's exit");
+        };
+        assert!(success);
+        assert_eq!(version_line(&output).as_deref(), Some("tool 1.2.3"));
+    }
+
+    /// @test A tool still running at the bound: the probe fails at the bound,
+    /// and the tool and the process it started are both gone.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn version_probe_bound_ends_the_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (started, tool) = (dir.path().join("started.pid"), dir.path().join("tool.pid"));
+        let (run, took) = probe_sh(
+            &format!(
+                "/bin/sleep 60 & echo $! > '{}'; echo $$ > '{}'; wait",
+                started.display(),
+                tool.display()
+            ),
+            Duration::from_millis(500),
+        );
+        let (started, tool) = (written_pid(&started), written_pid(&tool));
+        let (started_runs, tool_runs) = (still_runs(started), still_runs(tool));
+        assert!(matches!(run, VersionRun::Failed));
+        assert!(
+            took >= Duration::from_millis(500) && took < Duration::from_secs(5),
+            "{took:?}"
+        );
+        assert!(
+            !started_runs && !tool_runs,
+            "still running: the tool {tool} {tool_runs}, its process {started} {started_runs}"
+        );
+    }
+
+    /// @test The held-pipe control: a process that leaves the tool's group
+    /// (setsid) and keeps its output open is not the probe's: the probe
+    /// neither ends it nor waits on it, and returns with what the tool wrote.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn version_probe_does_not_wait_on_a_process_outside_its_group() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = dir.path().join("outside.pid");
+        let (run, took) = probe_sh(
+            &format!(
+                "echo 'tool 4.5.6'; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; exit 0",
+                outside.display()
+            ),
+            Duration::from_secs(30),
+        );
+        let outside = written_pid(&outside);
+        let outside_runs = still_runs(outside);
+        // This test started that process, through the script, and ends it.
+        let _ = Command::new("/bin/sh")
+            .args(["-c", &format!("kill -KILL {outside}")])
+            .status();
+        assert!(outside_runs, "a process outside the tool's group was ended");
+        assert!(
+            took < Duration::from_secs(5),
+            "the probe waited on a pipe held outside its group: {took:?}"
+        );
+        let VersionRun::Exited { success, output } = run else {
+            panic!("the probe did not report the tool's exit");
+        };
+        assert!(success);
+        assert_eq!(version_line(&output).as_deref(), Some("tool 4.5.6"));
     }
 
     /// @test perf_event_paranoid: OK up to 1, WARN above, each value named

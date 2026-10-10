@@ -158,9 +158,11 @@ path and the version its `--version` prints (`ncu` has a row of its own, and
 the `gperftools` row names the analyzer `--profile-analyze` runs), the msr
 device `rapl` reads, ASLR, the FlameGraph scripts, and
 `kernel.perf_event_paranoid` with what the kernel allows at its value. A tool
-PATH does not find, or finds without an execute bit, is `[WARN]`. Whether a
-profiler can run here, and in which modes, is what `bench doctor <binary>`
-checks.
+PATH does not find, or finds without an execute bit, is `[WARN]`. Each
+`--version` runs for at most 5 s in a process group of its own, which
+`bench validate` ends before it moves on, so nothing a tool starts outlives
+it. Whether a profiler can run here, and in which modes, is what
+`bench doctor <binary>` checks.
 
 ```bash
 bench validate

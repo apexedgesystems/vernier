@@ -1055,6 +1055,45 @@ fn validate_row<'a>(rows: &'a serde_json::Value, label: &str) -> &'a serde_json:
         .unwrap_or_else(|| panic!("no row {label}: {rows}"))
 }
 
+/// @test A tool whose --version starts a process that holds its output and
+/// then exits (a bpftrace stand-in, as the owner's reviewer wrote it):
+/// validate returns at once with the tool's version, and that process is
+/// gone when it does.
+#[test]
+#[cfg(target_os = "linux")]
+fn validate_version_probe_leaves_nothing_running() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pid_file = dir.path().join("child.pid");
+    write_executable(
+        &dir.path().join("bpftrace"),
+        &format!(
+            "#!/bin/sh\n/bin/sleep 60 &\nprintf '%s\\n' \"$!\" > '{}'\nprintf 'bpftrace 1.2.3\\n'\nexit 0\n",
+            pid_file.display()
+        ),
+    );
+    let started = std::time::Instant::now();
+    let (code, out, err) = run_validate_with_path(dir.path(), &["--json"]);
+    let took = started.elapsed();
+    let child: u32 = std::fs::read_to_string(&pid_file)
+        .expect("the stand-in ran")
+        .trim()
+        .parse()
+        .expect("a process id");
+    let alive = still_running(child);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !alive,
+        "the version probe's process {child} outlived bench validate"
+    );
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    let rows: serde_json::Value = serde_json::from_str(&out).expect("one JSON array");
+    let detail = validate_row(&rows, "bpftrace")["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("(bpftrace 1.2.3)"), "{detail}");
+}
+
 /// @test Without a binary validate reports tool-presence facts: a found
 /// tool is OK with its path and the version its --version prints, a file
 /// without an execute bit and an absent tool are WARN, perf that does not
@@ -3871,4 +3910,96 @@ fn doctor_require_needs_the_requests_own_row() {
         assert_eq!(out, doc, "selected {name}: stdout is the document");
         assert!(err.contains(verdict), "selected {name}: {err}");
     }
+}
+
+/// `bench validate <args>` with PATH set to @p path and SIGINT at its default
+/// action, given @p bound to return; past it, validate is killed and the
+/// result says so. @p during runs once validate has started, with its pid.
+fn run_validate_bounded(
+    path: &Path,
+    args: &[&str],
+    bound: std::time::Duration,
+    during: impl FnOnce(u32),
+) -> BoundedRun {
+    use std::os::unix::process::ExitStatusExt;
+
+    let mut command = Command::new(bin());
+    command
+        .arg("validate")
+        .args(args)
+        .env("PATH", path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    start_with_sigint(&mut command, Sigint::Default);
+    let started = std::time::Instant::now();
+    let mut child = {
+        let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
+        command.spawn().expect("spawn bench validate")
+    };
+    during(child.id());
+    let mut returned = true;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("wait for bench validate") {
+            break status;
+        }
+        if started.elapsed() >= bound {
+            returned = false;
+            let _ = child.kill();
+            break child.wait().expect("reap bench validate");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    BoundedRun {
+        returned,
+        elapsed: started.elapsed(),
+        code: status.code(),
+        signal: status.signal(),
+        stdout: String::new(),
+        stderr: String::new(),
+    }
+}
+
+/// @test SIGINT to bench validate while a version probe runs ends the
+/// probe's process group, the tool and the process it started, and then
+/// validate itself by SIGINT: the probe runs in a group of its own, which a
+/// terminal's Ctrl-C does not reach.
+#[test]
+#[cfg(target_os = "linux")]
+fn validate_interrupted_ends_the_version_probe() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (tool, started) = (dir.path().join("tool.pid"), dir.path().join("started.pid"));
+    write_executable(
+        &dir.path().join("bpftrace"),
+        &format!(
+            "#!/bin/sh\n/bin/sleep 60 &\necho $! > '{}'\necho $$ > '{}'\nwait\n",
+            started.display(),
+            tool.display()
+        ),
+    );
+    let run = run_validate_bounded(
+        dir.path(),
+        &[],
+        std::time::Duration::from_secs(20),
+        |bench| {
+            pid_written(&tool);
+            let out =
+                output_of(Command::new("/bin/sh").args(["-c", &format!("kill -INT {bench}")]));
+            assert!(out.status.success(), "kill -INT {bench} failed");
+        },
+    );
+    let (tool, started) = (pid_written(&tool), pid_written(&started));
+    let (tool_running, started_running) = (still_running(tool), still_running(started));
+    assert!(
+        run.returned && run.elapsed < std::time::Duration::from_secs(10),
+        "bench validate did not end on SIGINT: returned {} after {:?}",
+        run.returned,
+        run.elapsed
+    );
+    assert_eq!(run.signal, Some(2), "bench validate did not end by SIGINT");
+    assert!(
+        !tool_running && !started_running,
+        "still running after bench validate ended: the tool {tool} {tool_running}, its process \
+         {started} {started_running}"
+    );
 }
