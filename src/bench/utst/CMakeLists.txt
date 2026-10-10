@@ -242,6 +242,14 @@ if (TARGET TestBench)
   target_compile_definitions(
     TestBench PRIVATE VERNIER_SHARED_FIXTURE_DIR="${PROJECT_SOURCE_DIR}/tools/rust/tests/fixtures"
   )
+  # The gperf lifecycle tests ask gperftools which captures run, so TestBench
+  # links what libbench links for them.
+  if (GPERF_PROFILER_LIB)
+    target_link_libraries(TestBench PRIVATE ${GPERF_PROFILER_LIB})
+  endif ()
+  if (VERNIER_LINK_TCMALLOC)
+    target_link_libraries(TestBench PRIVATE ${GPERF_TCMALLOC_LIB})
+  endif ()
 endif ()
 
 include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")

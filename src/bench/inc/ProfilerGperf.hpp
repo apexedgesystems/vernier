@@ -16,6 +16,12 @@
  * analyzer is an analysis error, and the capture still runs and keeps
  * cpu.prof. The analysis runs exactly the analyzer the check found.
  *
+ * A run fails a case whose capture gperftools does not start (another
+ * profile of the same kind already runs in the process, or the file cannot
+ * be written), and one whose stopped capture leaves no file of this run, or
+ * an empty one, whether or not an analysis follows; only a capture that left
+ * its file is analyzed. A profiler stops only the captures it started.
+ *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
  *  - Heap profiling additionally requires a build with
@@ -142,6 +148,9 @@ private:
   void runPprofAnalysis() const;
   /// Stop the captures this profiler started, without analysis.
   void stopCapture() noexcept;
+  /// Record this case's failure, for the run's exit status.
+  void fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
+            ReadinessStage stage) const;
 
   bool wantCpu_{false};
   bool wantHeap_{false};

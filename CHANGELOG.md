@@ -256,8 +256,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   reported `unverified`.
 - **gperf checks the requested mode and runs the analyzer it finds** -- a mode
   the build lacks is an error, a word other than `cpu`, `heap` and `both` is
-  refused (it was matched as a substring, and an unknown word ran nothing),
-  and `--profile-analyze` runs the first of `google-pprof` and `pprof` on
+  refused (it was matched as a substring, and an unknown word ran nothing), a
+  capture gperftools does not start or that leaves no file fails the run, and
+  `--profile-analyze` runs the first of `google-pprof` and `pprof` on
   `PATH` (it always ran `google-pprof`, so a `pprof`-only installation printed
   empty analysis). An analyzer that is missing, does not run or fails on the
   profile is reported, and the capture and its `cpu.prof` are kept.

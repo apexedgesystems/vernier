@@ -218,6 +218,40 @@ GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
 
 namespace {
 
+#if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
+/** @brief The size of @p path, or -1 when there is no such file. */
+long long fileSize(const std::string& path) {
+  std::error_code ec;
+  const auto SIZE = std::filesystem::file_size(path, ec);
+  return ec ? -1 : static_cast<long long>(SIZE);
+}
+
+/** @brief Remove each of @p paths that exists; a missing one is fine. */
+void removeFiles(const std::vector<std::string>& paths) {
+  for (const std::string& PATH : paths) {
+    std::error_code ec;
+    std::filesystem::remove(PATH, ec);
+  }
+}
+#endif
+
+#if UB_HAS_GPERF_HEAP
+/** @brief The heap dumps in @p dir named by HeapProfilerStart's @p prefix: <prefix>.<N>.heap. */
+std::vector<std::string> heapDumps(const std::string& dir, const std::string& prefix) {
+  std::vector<std::string> dumps;
+  const std::string STEM = std::filesystem::path(prefix).filename().string() + ".";
+  std::error_code ec;
+  for (const auto& ENTRY : std::filesystem::directory_iterator(dir, ec)) {
+    const std::string NAME = ENTRY.path().filename().string();
+    if (NAME.size() > STEM.size() + 5 && NAME.compare(0, STEM.size(), STEM) == 0 &&
+        NAME.compare(NAME.size() - 5, 5, ".heap") == 0) {
+      dumps.push_back(ENTRY.path().string());
+    }
+  }
+  return dumps;
+}
+#endif
+
 std::shared_ptr<const GperfPlan> readyPlan(const ReadinessResult& result) {
   if (!result.collectionReady()) {
     return nullptr;
@@ -290,19 +324,49 @@ void GperfProfiler::beforeMeasure() {
     ::setenv("CPUPROFILE_FREQUENCY", freq.c_str(), /*overwrite=*/1);
   }
 
+  // gperftools runs one CPU profile and one heap profile per process. A
+  // start it refuses is this case's failure, and the other profile is left
+  // alone: a capture is stopped only by the profiler that started it. A
+  // previous run's files are removed first, so what is there afterwards is
+  // this run's.
   if (wantHeap_) {
 #if UB_HAS_GPERF_HEAP
     // HeapProfilerStart uses a prefix (it creates <prefix>.<N>.heap files)
     heapPrefix_ = artifactDir_ + "/heap";
-    HeapProfilerStart(heapPrefix_.c_str());
-    heapActive_ = true;
+    if (IsHeapProfilerRunning() != 0) {
+      fail(ReadinessCause::UNUSABLE,
+           "a gperftools heap profile already runs in this process, so this case's could not "
+           "start; its heap is not profiled",
+           "Unset HEAPPROFILE (it starts a heap profile at launch), and profile one case at a "
+           "time.",
+           ReadinessStage::COLLECTION);
+    } else {
+      removeFiles(heapDumps(artifactDir_, heapPrefix_));
+      HeapProfilerStart(heapPrefix_.c_str());
+      heapActive_ = IsHeapProfilerRunning() != 0;
+      if (!heapActive_) {
+        fail(ReadinessCause::UNUSABLE,
+             "gperftools did not start a heap profile into " + heapPrefix_ +
+                 "; this case's heap is not profiled",
+             "", ReadinessStage::COLLECTION);
+      }
+    }
 #endif
   }
   if (wantCpu_) {
 #if UB_HAS_GPERF_CPU
     cpuPath_ = artifactDir_ + "/cpu.prof";
-    ProfilerStart(cpuPath_.c_str());
-    cpuActive_ = true;
+    removeFiles({cpuPath_});
+    cpuActive_ = ProfilerStart(cpuPath_.c_str()) != 0;
+    if (!cpuActive_) {
+      fail(ReadinessCause::UNUSABLE,
+           "gperftools did not start a CPU profile into " + cpuPath_ +
+               " (ProfilerStart returned 0): another one already runs in this process, or the "
+               "file cannot be written; this case is not profiled",
+           "Unset CPUPROFILE (it starts a profile at launch), profile one case at a time, and "
+           "give --profile-output-dir a folder this user can write.",
+           ReadinessStage::COLLECTION);
+    }
 #endif
   }
 #endif
@@ -315,8 +379,16 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
     ProfilerStop();
     cpuActive_ = false;
 
-    // Auto-analyze: run the analyzer the check found and print top functions
-    if (cfg_.profileAnalyze && !cpuPath_.empty()) {
+    // The capture is this run's file, whether or not an analysis follows;
+    // only a file that holds one is analyzed.
+    const long long SIZE = fileSize(cpuPath_);
+    if (SIZE <= 0) {
+      fail(SIZE < 0 ? ReadinessCause::MISSING : ReadinessCause::UNUSABLE,
+           cpuPath_ + (SIZE < 0 ? " was not written" : " is empty") +
+               ": gperftools stopped the CPU profile and left no capture there",
+           "", ReadinessStage::COMPLETION);
+    } else if (cfg_.profileAnalyze) {
+      // Auto-analyze: run the analyzer the check found and print top functions
       runPprofAnalysis();
     }
   }
@@ -327,8 +399,25 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
     HeapProfilerDump("final");
     HeapProfilerStop();
     heapActive_ = false;
+
+    bool written = false;
+    for (const std::string& DUMP : heapDumps(artifactDir_, heapPrefix_)) {
+      written = written || fileSize(DUMP) > 0;
+    }
+    if (!written) {
+      fail(ReadinessCause::MISSING,
+           "no heap dump (" + heapPrefix_ +
+               ".NNNN.heap) was written: gperftools stopped the heap profile and left none",
+           "", ReadinessStage::COMPLETION);
+    }
   }
 #endif
+}
+
+void GperfProfiler::fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
+                         ReadinessStage stage) const {
+  ProfilerRegistry::instance().reportFailure("gperf", testName_,
+                                             readinessResult(cause, detail, remedy, stage));
 }
 
 void GperfProfiler::stopCapture() noexcept {
