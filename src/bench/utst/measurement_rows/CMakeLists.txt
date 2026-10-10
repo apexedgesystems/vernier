@@ -19,16 +19,14 @@ include(vernier/All)
 # takes its path from the target.
 # ------------------------------------------------------------------------------
 
-vernier_add_app(
-  NAME
+vernier_add_gtest(
+  TARGET
   MeasurementRowsProbe
-  SRC
+  SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/MeasurementRowsProbe.cpp"
   LINK
   bench
-  GTest::gtest
-  NO_INSTALL
-  NO_UPX
+  NO_REGISTER
 )
 
 # The helper skips programs where POSIX is missing; the checks go with them.
