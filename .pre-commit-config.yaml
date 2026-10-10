@@ -14,6 +14,7 @@ files: |
      ExternalDependencies\.cmake|
      Makefile|
      README\.md|
+     CHANGELOG\.md|
      LICENSE(\.txt)?|
      Dockerfile(\..*)?|
      \.pre-commit-config\.yaml|

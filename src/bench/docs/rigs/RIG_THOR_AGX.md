@@ -55,16 +55,11 @@ administrators on Jetson, so `--profile ncu` runs under `sudo`.
 
 **Rust toolchain.** Needed once to build the `bench` CLI (`cargo` on PATH).
 
-**Python tools.** This board has no Poetry, so its build (tools on) makes the
-Rust `bench` CLI but not `bench-plot` or `nsight-parse`: the build makes the
-Python tools only when it finds Poetry and pip. `nsys` and `ncu` read their
-own reports without them. Walkthrough 11 checked `nsight-parse` on this board
-with a wheel of the same tree built on another machine
-(`poetry build --format wheel` in `tools/py`), installed with
-`pip3 install --no-deps --target <dir>`, `<dir>/bin` put on `PATH` and `<dir>`
-on `PYTHONPATH`. That gives `nsight-parse`, which needs only Python's standard
-library (`bench-plot` would need its dependencies too); it is optional and not
-part of this rig's build.
+**Python tools.** The build (tools on) makes the Python tools, `bench-plot` for
+plotting, only when it finds Poetry and pip on `PATH`; otherwise it makes the
+Rust `bench` CLI alone. `bench` reads Nsight reports into CSV itself
+(`bench nsight-parse`, walkthrough 11) with this board's `nsys` and `ncu`
+and needs no Python; `bench-plot` is optional.
 
 ## 3. Build
 

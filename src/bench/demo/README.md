@@ -38,14 +38,13 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench summary run1.csv
 ```
 
-Captured on the Raspberry Pi 4 rig, 2026-09-20, Release build. The three
+Captured on the Raspberry Pi 4 rig, 2026-09-28 (UTC), Release build. The two
 result lines, without GoogleTest's framing, the harness's calibration lines
 and the end-of-run table:
 
 ```
-[BasicWorkflow.JoinV0]  927.611 us/call  CV=0.1%  ~1.1K calls/s  (p10=927.056 p90=928.317 sd=0.544)
-[BasicWorkflow.JoinV1]  21.044 us/call  CV=0.7%  ~47.5K calls/s  (p10=20.752 p90=21.123 sd=0.149)
-[BasicWorkflow.JoinSpeedup]  V0 927.564 us/call  V1 20.511 us/call  45.2x
+[BasicWorkflow.JoinV0]  1000.531 us/call  CV=0.1%  ~999 calls/s  (p10=999.845 p90=1001.631 sd=0.879)
+[BasicWorkflow.JoinV1]  20.003 us/call  CV=0.1%  ~50.0K calls/s  (p10=19.975 p90=20.022 sd=0.023)
 ```
 
 Then the CSV, read back:
@@ -53,21 +52,20 @@ Then the CSV, read back:
 ```
 Test                   Median (us)       P10       P90        CV       Calls/sec  Stable
 --------------------  ------------  --------  --------  --------  --------------  ------
-BasicWorkflow.JoinV0     927.61100  927.05600  928.31700      0.1%            1078  yes
-BasicWorkflow.JoinV1      21.04410  20.75180  21.12340      0.7%           47519  yes
+BasicWorkflow.JoinV0    1000.53000  999.84500  1001.63000      0.1%             999  yes
+BasicWorkflow.JoinV1      20.00320  19.97520  20.02200      0.1%           49992  yes
 
   2 tests, sorted by name
 ```
 
-Reserving the result once instead of copying it per part is 44 times faster
-in this capture. The third test fails if the speedup falls to three times or
-less. The framework measured both versions, wrote the CSV, and `bench summary`
-read it back. Every demo follows the same pattern: measure something slow,
-measure something fast, compare.
+Reserving the result once instead of copying it per part is 50 times faster
+in this capture. The framework measured both versions, wrote the CSV, and
+`bench summary` read it back. Every demo follows the same pattern: measure
+something slow, measure something fast, compare.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
-walkthrough: how to read those lines, what reproduces on another machine, and
-how to compare two runs.
+walkthrough: how to read those lines, what reproduces on another machine, how
+to compare two runs, and how to measure your own code the same way.
 
 ---
 
@@ -113,10 +111,10 @@ Demos 01 and 02 measure the shared SAXPY example (see
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
-| Profiler        | Wraps                                   | When to use                                             | Walkthrough                                                   |
-| --------------- | --------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------- |
-| rocprof (AMD)   | AMD GPU + HIP kernels                   | Wraps an AMD GPU run; not validated on AMD hardware     | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
-| CUPTI (in-proc) | Tests timed with the GPU kernel builder | Per-kernel launch count, register and shared-memory use | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
+| Profiler                 | Wraps                      | When to use                                                       | Walkthrough                                                   |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)            | AMD GPU + HIP kernels      | Wraps an AMD GPU run; not validated on AMD hardware               | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI and NVML (in-proc) | Demo 02's two kernel tests | What each GPU column of a kernel test's row holds, and its source | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -183,19 +181,22 @@ and dependency chains), and designed to show measurable differences.
 ### Shared Examples
 
 Code a walkthrough teaches from lives in its own directory beside these
-helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
-and unit tests that hold the example's versions to the same answers,
-registered under the `demo` label (`ctest --test-dir build -L demo`). The
-first is [examples/join](examples/join/inc/Join.hpp), and the table below names
-the demos that use each example.
+helpers, as `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its
+own: a small library the demo links, and unit tests that hold the example's
+versions to the same answers, registered under the `demo` label
+(`ctest --test-dir build -L demo`). An example's performance tests, run by
+hand on the rig and never registered, are in its `ptst` directory. The first
+is [examples/join](examples/join/inc/Join.hpp), and the table below names the
+demos that use each example.
 
 | Example                                  | Versions                                                                                                                                           | Used In                              |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 12, 14, 21 |
 | [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                              |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                         |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 19                     |
 
-The saxpy example and its tests are built only where the GPU demos are.
+The saxpy library and its device tests are built only where the GPU demos are;
+its host tests on a stand-in runtime are built everywhere.
 
 ---
 
@@ -237,7 +238,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 15. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
 16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
 17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
-18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
+18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- the GPU columns of a kernel test, and where each comes from
 19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
 20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
 
