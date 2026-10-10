@@ -476,5 +476,3 @@ PERF_GPU_TEST(GpuMultiDevice, DeviceSelection) {
   EXPECT_EQ(cudaFree(d_b), cudaSuccess);
   EXPECT_EQ(cudaFree(d_c), cudaSuccess);
 }
-
-// Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary

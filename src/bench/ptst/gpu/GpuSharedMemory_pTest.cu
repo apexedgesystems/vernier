@@ -348,5 +348,3 @@ PERF_GPU_TEST(GpuSharedMemory, ReductionSharedMemory) {
   cudaFree(d_input);
   cudaFree(d_output);
 }
-
-// Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary

@@ -4,8 +4,9 @@
 # CTest wrappers for unit tests and timing-sensitive tests.
 # Supports both serial and parallel execution modes with TTY output and logging.
 #
-# Note: Performance tests (ptst/) are not in CTest. Run directly:
-#   ./build/native-linux-debug/bin/ptests/Benchmarking_PTEST
+# Note: Performance tests (ptst/) are not in CTest. Run them directly:
+#   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST
+#   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST
 # ==============================================================================
 
 ifndef TEST_MK_GUARD
