@@ -376,11 +376,14 @@ struct PerfResult {
  *
  * Centralizes PerfRow construction so callers don't need 38 positional fields.
  * GPU/multi-GPU/Unified Memory fields remain at default (nullopt) for CPU tests.
+ * @p label is the measurement's label, which names the row when its case
+ * measures more than once in a test.
  *
  * @note NOT RT-safe (captures metadata via subprocess).
  */
 inline PerfRow buildPerfRow(const std::string& testName, const PerfConfig& cfg, int actualWarmup,
-                            int threadCount, const Stats& stats, double callsPerSecond) {
+                            int threadCount, const Stats& stats, double callsPerSecond,
+                            std::string label = {}) {
   auto [timestamp, gitHash, hostname, platform] = captureMetadata(/*cache=*/true);
 
   const double CV_THRESHOLD = recommendedCVThreshold(cfg);
@@ -403,6 +406,7 @@ inline PerfRow buildPerfRow(const std::string& testName, const PerfConfig& cfg, 
   row.platform = platform;
   row.stable = stats.cv < CV_THRESHOLD;
   row.cvThreshold = CV_THRESHOLD;
+  row.label = std::move(label);
   return row;
 }
 
@@ -497,6 +501,14 @@ public:
    * @brief Measure repeats. User-provided body should perform exactly `cycles()` ops.
    * Records wall us per call per repeat, then summarizes.
    *
+   * The body runs on the calling thread, so the row records one thread
+   * whatever `threads()` says; contentionRun() is the construct that starts
+   * threads.
+   *
+   * Each completed call publishes its own row. When the case measures more
+   * than once in a test, each row is named `<case>/<label>` (see
+   * PerfRegistry); a body that throws publishes nothing.
+   *
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
    *
    * An exception from @p fn ends the measurement: the watchdog is turned off,
@@ -572,7 +584,8 @@ public:
     const std::string LABEL_STR = "[" + testName_ + "]";
     printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
 
-    PerfRegistry::instance().set(buildPerfRow(testName_, cfg_, actualWarmup_, threads(), S, CPS));
+    PerfRegistry::instance().set(
+        buildPerfRow(testName_, cfg_, actualWarmup_, /*threadCount=*/1, S, CPS, label));
 
     if (afterHook_) {
       afterHook_(*this, S);
@@ -680,6 +693,8 @@ public:
    * @brief Contention run: start `threads()` workers simultaneously, each doing `cycles()` ops.
    * The `worker` lambda is invoked in each thread. Caller is free to compute extras (e.g., drop%).
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
+   * Publishes its own row, which records the workers it started, named as measured() names its
+   * rows.
    */
   PerfResult contentionRun(const std::function<void()>& worker, std::string label = "contention") {
     // Calibrates from one uncontended call; contention only lengthens the
@@ -746,7 +761,7 @@ public:
     printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
 
     PerfRegistry::instance().set(
-        buildPerfRow(testName_, cfg_, actualWarmup_, THREAD_COUNT, S, CPS));
+        buildPerfRow(testName_, cfg_, actualWarmup_, THREAD_COUNT, S, CPS, label));
 
     if (afterHook_) {
       afterHook_(*this, S);
@@ -758,6 +773,7 @@ public:
   // Accessors
   [[nodiscard]] int cycles() const noexcept { return cfg_.cycles; }
   [[nodiscard]] int repeats() const noexcept { return cfg_.repeats; }
+  /// Workers contentionRun() starts: the case's thread count (`--threads`), at least 1.
   [[nodiscard]] int threads() const noexcept { return (cfg_.threads > 0) ? cfg_.threads : 1; }
   [[nodiscard]] int warmup() const noexcept { return actualWarmup_; }
   [[nodiscard]] const PerfConfig& config() const noexcept { return cfg_; }

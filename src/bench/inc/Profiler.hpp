@@ -109,7 +109,7 @@ inline void attachProfilerHooks(PerfCase& pc, const PerfConfig& cfg) {
   pc.setBeforeMeasureHook([prof](const PerfCase&) { prof->beforeMeasure(); });
   pc.setAfterMeasureHook([prof](const PerfCase&, const Stats& s) {
     prof->afterMeasure(s);
-    // Stamp CSV metadata for this test
+    // Stamp the row this measurement just published from this thread
     PerfRegistry::instance().updateProfileMeta(prof->toolName(), prof->artifactDir());
   });
 }

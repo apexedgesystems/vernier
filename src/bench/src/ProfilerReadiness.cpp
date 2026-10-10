@@ -776,6 +776,17 @@ std::string detail::shellQuote(const std::string& word) {
   return quoted;
 }
 
+std::string detail::escapePercent(const std::string& path) {
+  std::string out;
+  for (const char CH : path) {
+    out += CH;
+    if (CH == '%') {
+      out += '%';
+    }
+  }
+  return out;
+}
+
 std::string outputTail(const std::string& text, std::size_t maxLines) {
   constexpr std::size_t MAX_LINE = 300;
   std::vector<std::string> lines;

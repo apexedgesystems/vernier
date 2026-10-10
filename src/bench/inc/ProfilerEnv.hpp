@@ -188,6 +188,30 @@ inline bool mapsShowComputeSanitizer(std::string_view mapsText) {
   return false;
 }
 
+/**
+ * @brief True when this process runs under compute-sanitizer: the session
+ * a snapshot of it shows (computeSanitizerSession()), or, for a tool
+ * version that exports nothing, the tool's library mapped into the process
+ * (mapsShowComputeSanitizer() on /proc/self/maps).
+ * @note NOT RT-safe: reads /proc/self/maps.
+ */
+inline bool isRunningUnderComputeSanitizer() {
+  if (computeSanitizerSession()) {
+    return true;
+  }
+  std::FILE* fp = std::fopen("/proc/self/maps", "r");
+  if (!fp) {
+    return false;
+  }
+  std::string maps;
+  char buf[4096];
+  while (const std::size_t GOT = std::fread(buf, 1, sizeof(buf), fp)) {
+    maps.append(buf, GOT);
+  }
+  std::fclose(fp);
+  return mapsShowComputeSanitizer(maps);
+}
+
 /* ----------------------------- externalWrapTool ----------------------------- */
 
 /**

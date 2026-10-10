@@ -377,6 +377,13 @@ namespace detail {
  */
 [[nodiscard]] std::string shellQuote(const std::string& word);
 
+/**
+ * @brief @p path as a tool that expands macros in its output names reads it:
+ * each '%' written "%%". compute-sanitizer's --log-file takes %p, %q{VAR} and
+ * %% and refuses any other '%'.
+ */
+[[nodiscard]] std::string escapePercent(const std::string& path);
+
 } // namespace detail
 
 /**

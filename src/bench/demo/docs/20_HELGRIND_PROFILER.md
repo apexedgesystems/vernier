@@ -634,8 +634,16 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
 
 - **`Helgrind.FindsTheRace` reports `SKIPPED`, quoting valgrind.** valgrind
   could not read the demo binary: it gave up reading its debug information
-  before the program ran, or it could not read its symbols. For a GCC 11.4
-  Release build linked by mold 1.0.3 on an x86-64 laptop, valgrind 3.18.1
+  before the program ran, an assertion in its debug-information reader
+  stopped it before the program started, or it could not read its symbols.
+  The assertion is what valgrind 3.18.1 printed for GCC 11.4 Debug builds
+  linked by mold, with UBSan and without, before it was killed by SIGSEGV:
+  `valgrind: m_debuginfo/readelf.c:2478 (vgModuleLocal_read_elf_debug_info): Assertion 'di->bss_svma + di->bss_size == svma' failed.`
+  Both helgrind checks skip on it, saying helgrind checked nothing, only when
+  nothing of the run came first: the program wrote nothing, only blank lines
+  stand between valgrind's opening lines and the line and after it, and
+  valgrind was killed by a signal. For a GCC 11.4 Release build linked by
+  mold 1.0.3 on an x86-64 laptop, valgrind 3.18.1
   printed `Can't make sense of .rodata section mapping` about the binary, and
   its report gave the racy frame as `???` while still counting 6 errors from 2
   contexts. The check asserts everything else, and the function and the line
@@ -728,8 +736,10 @@ Three things check what this page shows, and all fail loudly:
   `Helgrind.RacyTotalSkipsOutsideValgrind` runs the racy case without valgrind
   and fails unless it reports `SKIPPED`, says how to run it, and does not run.
   The first two skip in a build with the address or the thread sanitizer
-  (which valgrind cannot check), where valgrind is not installed, and where
-  valgrind gives up reading the demo binary. `FindsTheRace` also skips where
+  (which valgrind cannot check), where valgrind is not installed, where
+  valgrind gives up reading the demo binary, and where an assertion in its
+  debug-information reader stops it before the program starts.
+  `FindsTheRace` also skips where
   valgrind cannot read the binary's symbols, once every other check has
   passed: it reads each frame on its own, looks for the function and the line
   in every frame valgrind named, and excuses only a frame left unnamed in that
@@ -739,7 +749,9 @@ Three things check what this page shows, and all fail loudly:
   `HelgrindReportTest` holds the report reading to its cases (a lock held, a
   frame at another line or in another function, a file named with its
   directory, a frame valgrind could not name, a wrong frame beside an unnamed
-  one, a log without a race).
+  one, a log without a race), and `HelgrindLogTest` holds each check's
+  start-up log to the reader's assertion before the program started, and not
+  after a race report.
 - `StartGateHelgrindTest.GateReportsNothing` and
   `StartGateHelgrindTest.WorkerRaceIsStillReported`, the harness's own test of
   the gate

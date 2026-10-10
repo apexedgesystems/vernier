@@ -6,6 +6,8 @@
  *  - A row describes what its case ran. The cases here deliberately run
  *    with a config that differs from the process-wide one.
  *  - Columns are located by header name, so column order is free to change.
+ *  - A test that measures more than once checks each row against the result
+ *    of its own measurement, formatted the way the writer formats it.
  */
 
 #include "src/bench/inc/PerfListener.hpp"
@@ -14,33 +16,68 @@
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/Profiler.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 
 #include <gtest/gtest.h>
 
 #include <unistd.h>
 
+#include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 
+#include <array>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <memory>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 using vernier::bench::buildPerfRow;
 using vernier::bench::installPerfEventListener;
+using vernier::bench::makePerfCaseWithProfiler;
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
 using vernier::bench::PerfRow;
+using vernier::bench::PerfSummaryEntry;
+using vernier::bench::printSummaryTable;
+using vernier::bench::Profiler;
+using vernier::bench::ProfilerRegistry;
+using vernier::bench::ReadinessCause;
+using vernier::bench::ReadinessContext;
+using vernier::bench::ReadinessRequest;
+using vernier::bench::ReadinessResult;
+using vernier::bench::readinessResult;
 using vernier::bench::setGlobalPerfConfig;
 using vernier::bench::Stats;
 using vernier::bench::detail::CsvListener;
 
 namespace {
+
+/** @brief A number as the CSV writer formats it (the stream's default format). */
+std::string csvNumber(double value) {
+  std::ostringstream out;
+  out << value;
+  return out.str();
+}
+
+/** @brief Work in proportion to @p n, kept from the optimizer by a volatile sink. */
+void spin(int n) {
+  static volatile std::uint64_t sink = 0;
+  for (int i = 0; i < n; ++i) {
+    sink = sink + static_cast<std::uint64_t>(i);
+  }
+}
 
 /** @brief Split a CSV line, keeping empty cells including a trailing one. */
 std::vector<std::string> splitCsvLine(const std::string& line) {
@@ -113,6 +150,37 @@ protected:
     }
     return out;
   }
+
+  /** @brief Emit every pending registry row through one listener; read every row back. */
+  std::vector<std::map<std::string, std::string>> emitAndReadAll(bool includeProfile = false) {
+    {
+      CsvListener listener(path_, includeProfile, /*includeGpu=*/false);
+      listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+    }
+    return readRows();
+  }
+
+  /** @brief Every data row of the file, column -> cell, in file order. */
+  std::vector<std::map<std::string, std::string>> readRows() const {
+    std::ifstream in(path_);
+    std::string header;
+    std::getline(in, header);
+    const std::vector<std::string> names = splitCsvLine(header);
+    std::vector<std::map<std::string, std::string>> rows;
+    std::string line;
+    while (std::getline(in, line)) {
+      if (line.empty()) {
+        continue;
+      }
+      const std::vector<std::string> cells = splitCsvLine(line);
+      std::map<std::string, std::string> row;
+      for (std::size_t i = 0; i < names.size() && i < cells.size(); ++i) {
+        row[names[i]] = cells[i];
+      }
+      rows.push_back(std::move(row));
+    }
+    return rows;
+  }
 };
 
 /* ----------------------------- API Tests ----------------------------- */
@@ -172,6 +240,258 @@ TEST_F(CsvListenerTest, RowKeepsCalibratedCycles) {
 TEST_F(CsvListenerTest, NoRowWithoutResult) {
   const std::map<std::string, std::string> cols = emitAndRead();
   EXPECT_TRUE(cols.empty());
+}
+
+/* ----------------------------- Thread Count Tests ----------------------------- */
+
+/**
+ * @test Writes one thread for throughputLoop() and measured(), whose calls run
+ *       on the calling thread, however many threads the case is configured for
+ */
+TEST_F(CsvListenerTest, SingleThreadRowRecordsOneThread) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  ASSERT_EQ(caseCfg.threads, 4);
+
+  int calls = 0;
+  PerfCase loop{"Listener.SingleThreadLoop", caseCfg};
+  (void)loop.throughputLoop([&] { ++calls; });
+  EXPECT_EQ(calls, caseCfg.cycles * caseCfg.repeats);
+  std::map<std::string, std::string> cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "1") << "throughputLoop() row";
+
+  calls = 0;
+  PerfCase body{"Listener.SingleThreadMeasured", caseCfg};
+  (void)body.measured([&] { ++calls; });
+  EXPECT_EQ(calls, caseCfg.repeats);
+  cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "1") << "measured() row";
+}
+
+/** @test Writes the number of workers contentionRun() started, each making every call */
+TEST_F(CsvListenerTest, ContentionRowRecordsItsWorkers) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  ASSERT_EQ(caseCfg.threads, 4);
+
+  std::atomic<int> calls{0};
+  PerfCase perf{"Listener.Contention", caseCfg};
+  (void)perf.contentionRun([&] { calls.fetch_add(1, std::memory_order_relaxed); });
+  EXPECT_EQ(calls.load(), caseCfg.threads * caseCfg.cycles * caseCfg.repeats);
+
+  const std::map<std::string, std::string> cols = emitAndRead();
+  ASSERT_EQ(cols.count("threads"), 1u);
+  EXPECT_EQ(cols.at("threads"), "4");
+}
+
+/* ----------------------------- Measurement Row Tests ----------------------------- */
+
+namespace {
+
+/**
+ * @brief A profiler whose folder is its case's and, like a backend that keeps
+ *        one capture per measurement, a new one for every measurement.
+ */
+class RowFixtureProfiler final : public Profiler {
+public:
+  explicit RowFixtureProfiler(std::string testName) : testName_(std::move(testName)) {}
+  std::string toolName() const noexcept override { return "rows-fixture"; }
+  std::string artifactDir() const noexcept override {
+    return testName_ + ".capture" + std::to_string(measurements_);
+  }
+  void afterMeasure(const Stats& /*s*/) override { ++measurements_; }
+
+private:
+  std::string testName_;
+  int measurements_{0};
+};
+
+/** @brief Registers, for one test, a backend whose request always runs. */
+class RowFixtureBackend {
+public:
+  static constexpr const char* NAME = "rows-fixture";
+  RowFixtureBackend() {
+    ProfilerRegistry::instance().registerReadinessBackend(
+        NAME,
+        [](const ReadinessRequest&, const ReadinessContext&) {
+          return readinessResult(ReadinessCause::READY, "always ready", "");
+        },
+        [](const PerfConfig&, const std::string& testName, const ReadinessResult&) {
+          return std::unique_ptr<Profiler>(std::make_unique<RowFixtureProfiler>(testName));
+        },
+        "");
+  }
+  ~RowFixtureBackend() { ProfilerRegistry::instance().unregisterBackend(NAME); }
+  RowFixtureBackend(const RowFixtureBackend&) = delete;
+  RowFixtureBackend& operator=(const RowFixtureBackend&) = delete;
+};
+
+} // namespace
+
+/** @test Writes one row per measurement of a case measured three times, each with its median */
+TEST_F(CsvListenerTest, ThreeMeasurementsOfOneCaseWriteThreeRows) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 20;
+  caseCfg.repeats = 3;
+  PerfCase perf{"Listener.Sweep", caseCfg};
+  std::vector<std::string> medians;
+  for (const int size : {64, 256, 1024}) {
+    medians.push_back(
+        csvNumber(perf.throughputLoop([size] { spin(size); }, std::to_string(size)).stats.median));
+  }
+
+  const std::vector<std::map<std::string, std::string>> rows = emitAndReadAll();
+
+  const std::array<const char*, 3> names = {"Listener.Sweep/64", "Listener.Sweep/256",
+                                            "Listener.Sweep/1024"};
+  ASSERT_EQ(rows.size(), names.size());
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].at("test"), names[i]);
+    EXPECT_EQ(rows[i].at("wallMedian"), medians[i]) << names[i];
+    EXPECT_EQ(rows[i].at("cycles"), "20") << names[i];
+  }
+}
+
+/** @test Writes separately named cases of one test under their own names and config */
+TEST_F(CsvListenerTest, SeparateCasesWriteTheirOwnConfig) {
+  constexpr std::array<int, 3> SIZES = {64, 256, 1024};
+  for (const int size : SIZES) {
+    PerfConfig caseCfg = global_;
+    caseCfg.msgBytes = size;
+    caseCfg.cycles = size / 8;
+    caseCfg.repeats = 2;
+    PerfCase perf{"Listener.Size/" + std::to_string(size), caseCfg};
+    (void)perf.throughputLoop([size] { spin(size); });
+  }
+
+  const std::vector<std::map<std::string, std::string>> rows = emitAndReadAll();
+
+  ASSERT_EQ(rows.size(), SIZES.size());
+  for (std::size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(rows[i].at("test"), "Listener.Size/" + std::to_string(SIZES[i]));
+    EXPECT_EQ(rows[i].at("msgBytes"), std::to_string(SIZES[i]));
+    EXPECT_EQ(rows[i].at("cycles"), std::to_string(SIZES[i] / 8));
+  }
+}
+
+/** @test A second drain at the same test's end writes nothing more and leaves nothing waiting */
+TEST_F(CsvListenerTest, SecondDrainWritesNothing) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  PerfCase perf{"Listener.Drained", caseCfg};
+  (void)perf.throughputLoop([] { spin(8); }, "a");
+  (void)perf.throughputLoop([] { spin(8); }, "b");
+  {
+    CsvListener listener(path_, /*includeProfile=*/false, /*includeGpu=*/false);
+    listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+    listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+  }
+
+  const std::vector<std::map<std::string, std::string>> rows = readRows();
+
+  ASSERT_EQ(rows.size(), 2U);
+  EXPECT_EQ(rows[0].at("test"), "Listener.Drained/a");
+  EXPECT_EQ(rows[1].at("test"), "Listener.Drained/b");
+  EXPECT_FALSE(PerfRegistry::instance().take().has_value());
+}
+
+/** @test A measurement whose body throws publishes no row; the completed one is written alone */
+TEST_F(CsvListenerTest, MeasurementThatThrowsPublishesNothing) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  PerfCase perf{"Listener.Throws", caseCfg};
+  const std::string completed =
+      csvNumber(perf.throughputLoop([] { spin(8); }, "completed").stats.median);
+  EXPECT_THROW(
+      (void)perf.throughputLoop([] { throw std::runtime_error("measured body failed"); }, "failed"),
+      std::runtime_error);
+
+  const std::vector<std::map<std::string, std::string>> rows = emitAndReadAll();
+
+  ASSERT_EQ(rows.size(), 1U);
+  EXPECT_EQ(rows[0].at("test"), "Listener.Throws");
+  EXPECT_EQ(rows[0].at("wallMedian"), completed);
+}
+
+/** @test Each row carries the profiler folder of its own case and its own measurement */
+TEST_F(CsvListenerTest, ProfilerIdentityStaysWithItsMeasurement) {
+  const RowFixtureBackend backend;
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  caseCfg.profileTool = RowFixtureBackend::NAME;
+  PerfCase first = makePerfCaseWithProfiler("Listener.ProfiledA", caseCfg);
+  PerfCase second = makePerfCaseWithProfiler("Listener.ProfiledB", caseCfg);
+
+  (void)first.throughputLoop([] { spin(8); }, "one");
+  (void)second.throughputLoop([] { spin(8); }, "only");
+  (void)first.throughputLoop([] { spin(8); }, "two");
+
+  const std::vector<std::map<std::string, std::string>> rows =
+      emitAndReadAll(/*includeProfile=*/true);
+
+  ASSERT_EQ(rows.size(), 3U);
+  EXPECT_EQ(rows[0].at("test"), "Listener.ProfiledA/one");
+  EXPECT_EQ(rows[0].at("profileDir"), "Listener.ProfiledA.capture1");
+  EXPECT_EQ(rows[1].at("test"), "Listener.ProfiledB");
+  EXPECT_EQ(rows[1].at("profileDir"), "Listener.ProfiledB.capture1");
+  EXPECT_EQ(rows[2].at("test"), "Listener.ProfiledA/two");
+  EXPECT_EQ(rows[2].at("profileDir"), "Listener.ProfiledA.capture2");
+  for (const auto& row : rows) {
+    EXPECT_EQ(row.at("profileTool"), "rows-fixture") << row.at("test");
+  }
+}
+
+/* ----------------------------- Summary Table Tests ----------------------------- */
+
+namespace {
+
+/** @brief The table printSummaryTable() prints for @p entries and @p tests. */
+std::string summaryTable(const std::vector<PerfSummaryEntry>& entries, std::size_t tests) {
+  ::testing::internal::CaptureStdout();
+  printSummaryTable(entries, tests);
+  std::fflush(stdout);
+  return ::testing::internal::GetCapturedStdout();
+}
+
+/** @brief The last line of @p text, without its line break. */
+std::string lastLine(const std::string& text) {
+  const std::string body = text.substr(0, text.find_last_not_of('\n') + 1);
+  return body.substr(body.find_last_of('\n') + 1);
+}
+
+PerfSummaryEntry summaryEntry(const std::string& name, bool stable) {
+  return PerfSummaryEntry{name, 1.5, stable ? 0.01 : 0.4, 1e6, stable, 0.05};
+}
+
+} // namespace
+
+/** @test Keeps the footer of one row per test byte for byte */
+TEST(PrintSummaryTableTest, FooterIsUnchangedWhenEachTestPublishedOneRow) {
+  const std::vector<PerfSummaryEntry> entries = {summaryEntry("Suite.First", true),
+                                                 summaryEntry("Suite.Second", false)};
+
+  const std::string table = summaryTable(entries, 2);
+
+  EXPECT_EQ(lastLine(table), "2 tests | 1 stable | 1 unstable");
+  EXPECT_EQ(table, summaryTable(entries, 0)) << "a caller that passes no test count";
+}
+
+/** @test Names rows and tests when a test published more than one row */
+TEST(PrintSummaryTableTest, FooterNamesRowsAndTestsWhenATestPublishedSeveral) {
+  const std::vector<PerfSummaryEntry> entries = {
+      summaryEntry("Suite.Sweep/64", true), summaryEntry("Suite.Sweep/256", true),
+      summaryEntry("Suite.Sweep/1024", false), summaryEntry("Suite.Other", true),
+      summaryEntry("Suite.Last", true)};
+
+  EXPECT_EQ(lastLine(summaryTable(entries, 3)), "5 rows from 3 tests | 4 stable | 1 unstable");
+  EXPECT_EQ(lastLine(summaryTable(entries, 1)), "5 rows from 1 test | 4 stable | 1 unstable");
 }
 
 /* ----------------------------- Row Width Tests ----------------------------- */
@@ -454,4 +774,35 @@ TEST_F(CsvOpenFailureDeathTest, AWritablePathGoesOn) {
       (fs::temp_directory_path() / ("vernier_listener_csv_" + std::to_string(::getpid()) + ".csv"))
           .string();
   EXPECT_EXIT(installThenExit(PATH), ::testing::ExitedWithCode(0), "installed");
+}
+
+/**
+ * @test A listener whose file did not open keeps the open's error, which the
+ *       run names before it stops (AMissingDirectoryStopsTheRun, the same
+ *       directory), and still takes its test's rows: the next test's file
+ *       holds that test's row once and none of them
+ */
+TEST_F(CsvListenerTest, AFailedOpenStillTakesItsTestsRows) {
+  const fs::path DIR = fs::temp_directory_path() / MISSING_DIR;
+  ASSERT_FALSE(fs::exists(DIR)) << DIR;
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  PerfCase unwritten{"Listener.Unwritten", caseCfg};
+  (void)unwritten.throughputLoop([] { spin(8); }, "a");
+  (void)unwritten.throughputLoop([] { spin(8); }, "b");
+  {
+    CsvListener listener((DIR / "rows.csv").string(), /*includeProfile=*/false,
+                         /*includeGpu=*/false);
+    EXPECT_FALSE(listener.isOpen());
+    EXPECT_EQ(listener.openError(), ENOENT);
+    listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+  }
+
+  PerfCase next{"Listener.Next", caseCfg};
+  (void)next.throughputLoop([] { spin(8); });
+  const std::vector<std::map<std::string, std::string>> rows = emitAndReadAll();
+
+  ASSERT_EQ(rows.size(), 1U) << "a row of the test whose file did not open reached the next test";
+  EXPECT_EQ(rows[0].at("test"), "Listener.Next");
 }

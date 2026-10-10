@@ -8,10 +8,12 @@
 #include "src/bench/inc/ProfilerComputeSanitizerChecks.hpp"
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -71,12 +73,26 @@ ReadinessResult missingTool() {
                          "folder (for example /usr/local/cuda/bin) to PATH.");
 }
 
+/**
+ * @brief The by-hand wrap's log: sanitizer.log in this process's working
+ * directory, named whole. compute-sanitizer joins a relative log name to its
+ * own working directory and reads a '%' in the result as a macro, so a
+ * relative name fails wherever that directory's path holds one; the whole
+ * name is written with each '%' doubled for the tool and quoted for the shell.
+ */
+std::string byHandLog() {
+  std::error_code ec;
+  const std::filesystem::path HERE = std::filesystem::current_path(ec);
+  const std::string LOG = ec ? std::string("./sanitizer.log") : (HERE / "sanitizer.log").string();
+  return detail::shellQuote(detail::escapePercent(LOG));
+}
+
 /** @brief The remedy of a request compute-sanitizer did not start: the wrap, by hand or by bench
  * run. */
 std::string wrapRemedy(const std::string& tool, const std::string& profileArgs) {
   const std::string REQUEST = requestText(profileArgs);
   return "Wrap it: compute-sanitizer --tool=" + tool + " --error-exitcode " +
-         std::to_string(FINDINGS_EXIT_CODE) + " --log-file=./sanitizer.log <this-binary> " +
+         std::to_string(FINDINGS_EXIT_CODE) + " --log-file=" + byHandLog() + " <this-binary> " +
          REQUEST + " [...]; or run it with bench run " + REQUEST +
          ", which wraps it and reads the report.";
 }

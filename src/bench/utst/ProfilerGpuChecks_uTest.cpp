@@ -26,12 +26,14 @@
 
 #include <unistd.h>
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #ifndef VERNIER_SHARED_FIXTURE_DIR
@@ -444,11 +446,14 @@ TEST(GpuRuntime, SanitizerSessionIsUnverified) {
   EXPECT_EQ(NONE.report.message,
             "missing: compute-sanitizer checks a process only when it starts it, and it did not "
             "start this one");
+  // The by-hand log is sanitizer.log in the working directory, named whole.
+  const std::string LOG = vernier::bench::detail::shellQuote(vernier::bench::detail::escapePercent(
+      (std::filesystem::current_path() / "sanitizer.log").string()));
   EXPECT_EQ(NONE.report.hint,
-            "Wrap it: compute-sanitizer --tool=racecheck --error-exitcode 5 "
-            "--log-file=./sanitizer.log <this-binary> --profile compute-sanitizer --profile-args "
-            "racecheck [...]; or run it with bench run --profile compute-sanitizer --profile-args "
-            "racecheck, which wraps it and reads the report.");
+            "Wrap it: compute-sanitizer --tool=racecheck --error-exitcode 5 --log-file=" + LOG +
+                " <this-binary> --profile compute-sanitizer --profile-args racecheck [...]; or "
+                "run it with bench run --profile compute-sanitizer --profile-args racecheck, "
+                "which wraps it and reads the report.");
   EXPECT_EQ(dir.log(), "") << "a run's check started the tool";
 }
 
@@ -463,6 +468,37 @@ TEST(GpuRuntime, SanitizerRemedyUsesTheReservedStatus) {
   const ReadinessResult R = checkComputeSanitizerRequestWithMaps(
       request("compute-sanitizer", "", ReadinessScope::RUNTIME), dir.context({}, 0), "");
   EXPECT_NE(R.report.hint.find(" --error-exitcode " + EXITS[1][2] + " "), std::string::npos)
+      << R.report.hint;
+}
+
+/**
+ * @test The by-hand wrap names its log whole, in the working directory, with
+ *       each '%' doubled for the tool and the name quoted for the shell.
+ *
+ * compute-sanitizer joins a relative log name to its own working directory
+ * and reads a '%' in the result as a macro, so from a directory whose path
+ * holds one, `--log-file=./sanitizer.log` fails before the program starts.
+ */
+TEST(GpuRuntime, SanitizerRemedyNamesItsLogWhole) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_nvidia_tool.sh", "compute-sanitizer");
+  std::string base = (std::filesystem::temp_directory_path() / "vernier-remedy-XXXXXX").string();
+  ASSERT_NE(::mkdtemp(base.data()), nullptr);
+  const std::filesystem::path HERE = std::filesystem::path(base) / "a%b c'd";
+  std::error_code ec;
+  std::filesystem::create_directories(HERE, ec);
+  ASSERT_FALSE(ec) << ec.message();
+  const std::filesystem::path BEFORE = std::filesystem::current_path();
+  std::filesystem::current_path(HERE);
+  const ReadinessResult R = checkComputeSanitizerRequestWithMaps(
+      request("compute-sanitizer", "", ReadinessScope::RUNTIME), dir.context({}, 0), "");
+  std::filesystem::current_path(BEFORE);
+  std::filesystem::remove_all(base, ec);
+  EXPECT_NE(R.report.hint.find(" --log-file='" + base +
+                               "/a%%b c'\\''d/sanitizer.log' <this-binary> --profile "
+                               "compute-sanitizer [...]; "),
+            std::string::npos)
       << R.report.hint;
 }
 

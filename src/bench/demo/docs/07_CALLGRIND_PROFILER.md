@@ -408,9 +408,13 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
 - **valgrind stops with `Possibly corrupted debuginfo file`, or on an
   assertion in `m_debuginfo`.** valgrind cannot read the program's debug
   information: seen with valgrind 3.18 and a binary built by clang 21 with `-g`
-  throughout, or by GCC 11.4 for Debug (the assertion where mold linked it).
-  Step 4's check and the window tests skip in that case, quoting valgrind;
-  valgrind 3.22 reads clang 21's builds.
+  throughout, or by GCC 11.4 for Debug (the assertion where mold linked it:
+  `valgrind: m_debuginfo/readelf.c:2478 (vgModuleLocal_read_elf_debug_info): Assertion 'di->bss_svma + di->bss_size == svma' failed.`).
+  Step 4's check and the window tests skip in that case, quoting valgrind: on
+  the reader giving up, and on that assertion only where it stopped valgrind
+  before the program started, with nothing of the run printed before it,
+  nothing after it, and valgrind killed by a signal; the same line anywhere
+  else fails them. valgrind 3.22 reads clang 21's builds.
 - **Step 4's check skips in a sanitizer build.** A build configured with
   `-DSANITIZER=asan`, `tsan` or `ubsan` instruments the program, and the check
   would count the instrumentation too, so it skips and says what was seen when

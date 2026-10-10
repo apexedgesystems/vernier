@@ -646,6 +646,15 @@ TEST(ReadinessShellQuote, OneWordTheShellReadsBack) {
   }
 }
 
+/** @test A path as a macro-expanding tool reads it: each '%' doubled, nothing else changed. */
+TEST(ReadinessEscapePercent, DoublesEachPercent) {
+  using vernier::bench::detail::escapePercent;
+  EXPECT_EQ(escapePercent("/tmp/out/sanitizer.log"), "/tmp/out/sanitizer.log");
+  EXPECT_EQ(escapePercent("/tmp/a%b/x.log"), "/tmp/a%%b/x.log");
+  EXPECT_EQ(escapePercent("%%q{X}%"), "%%%%q{X}%%");
+  EXPECT_EQ(escapePercent(""), "");
+}
+
 /** @test Output beyond the limit is dropped, and the probe still ends. */
 TEST(ReadinessProbes, OutputIsBounded) {
   FakeToolDir dir;

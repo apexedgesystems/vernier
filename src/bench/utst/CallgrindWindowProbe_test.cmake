@@ -2,12 +2,14 @@
 # CallgrindWindowProbe_test.cmake - Runs CallgrindWindowProbe under callgrind
 # and checks which of its phases the profile holds
 #
-# Run with: cmake -DPROBE=<exe> -DCASE=hint|runner -DWORK_DIR=<dir>
+# Run with: cmake -DPROBE=<exe> -DREADER=<exe> -DCASE=hint|runner -DWORK_DIR=<dir>
 #                 [-DPROBE_SANITIZER=asan|tsan|ubsan]
 #                 -P CallgrindWindowProbe_test.cmake
 #
 # PROBE_SANITIZER is the build's sanitizer setting (-DSANITIZER), with which
-# the probe was compiled.
+# the probe was compiled. READER is ValgrindReaderAssertionCli, which reads
+# valgrind's text for an assertion of its reader before the probe started,
+# with the evidence every check asks of it (ValgrindReaderAssertion.hpp).
 #
 # hint:   run the probe without valgrind, then under the valgrind command the
 #         callgrind backend printed, and expect the profile to hold the
@@ -26,7 +28,8 @@
 # each with valgrind's own words where it has them: the probe is built with the
 # address sanitizer (PROBE_SANITIZER=asan); valgrind is not installed;
 # valgrind stopped reading debug information before the probe ran (its reader
-# gave up, or failed an assertion); or valgrind ran the probe without reading
+# gave up, or failed an assertion before the probe started, as READER reads
+# it); or valgrind ran the probe without reading
 # its symbols, so the profile names none of the probe's functions and valgrind
 # warned about the probe's debug information. Anything else that keeps the
 # probe's tests from starting under valgrind fails with the run's output: a
@@ -66,7 +69,10 @@ endif ()
 
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
-set(_clean_env --unset=VERNIER_EXTERNAL_WRAP --unset=VERNIER_EXTERNAL_WRAP_DIR)
+# The runs go through env, which runs the command in its own place, so how the
+# command ended reaches execute_process as it is: a signal by its name. (cmake
+# -E env reports a child's signal as exit status 1 and a line of its own.)
+set(_clean_env -u VERNIER_EXTERNAL_WRAP -u VERNIER_EXTERNAL_WRAP_DIR)
 
 if (CASE STREQUAL "hint")
   # The plain run prints the command, continued over lines ending in '\':
@@ -74,7 +80,7 @@ if (CASE STREQUAL "hint")
   #   [callgrind]     --callgrind-out-file=<file> \
   #   [callgrind]     <this-binary> --profile callgrind [...]
   execute_process(
-    COMMAND "${CMAKE_COMMAND}" -E env ${_clean_env} "${PROBE}" ${_probe_args}
+    COMMAND env ${_clean_env} "${PROBE}" ${_probe_args}
     WORKING_DIRECTORY "${WORK_DIR}"
     OUTPUT_VARIABLE _plain
     ERROR_VARIABLE _plain
@@ -131,13 +137,19 @@ endif ()
 
 message(STATUS "running: ${_env} ${_wrap} ${PROBE} ${_probe_args}")
 execute_process(
-  COMMAND "${CMAKE_COMMAND}" -E env ${_env} ${_wrap} "${PROBE}" ${_probe_args}
+  COMMAND env ${_env} ${_wrap} "${PROBE}" ${_probe_args}
   WORKING_DIRECTORY "${WORK_DIR}"
   RESULT_VARIABLE _rc
   OUTPUT_VARIABLE _out
   ERROR_VARIABLE _out
 )
-message(STATUS "exit status: ${_rc}\n${_out}")
+if (_rc MATCHES "^[0-9]+$")
+  set(_ended exit)
+  message(STATUS "exit status: ${_rc}\n${_out}")
+else ()
+  set(_ended signal)
+  message(STATUS "killed: ${_rc}\n${_out}")
+endif ()
 
 # GoogleTest's banner says the probe reached its tests under valgrind.
 # Without it, the one reason that skips is valgrind's own: its debug
@@ -157,9 +169,16 @@ if (_started EQUAL -1)
   )
   if (_gave_up STREQUAL "")
     # The other way valgrind stops: an assertion failing in its debug
-    # information reader, printed as a line of its own.
-    string(REGEX MATCH "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\." _gave_up
-                 "${_out}"
+    # information reader, taken only with the evidence that it stopped valgrind
+    # before the probe started. valgrind and the probe share one stream here.
+    if (NOT EXISTS "${READER}")
+      message(FATAL_ERROR "CallgrindWindowProbe (${CASE}): READER is not a program: '${READER}'")
+    endif ()
+    file(WRITE "${WORK_DIR}/run.txt" "${_out}")
+    execute_process(
+      COMMAND "${READER}" ${_ended} - "${WORK_DIR}/run.txt"
+      OUTPUT_VARIABLE _gave_up
+      OUTPUT_STRIP_TRAILING_WHITESPACE
     )
   endif ()
   if (NOT _gave_up STREQUAL "")
@@ -178,6 +197,8 @@ if (_started EQUAL -1)
   )
   if (NOT _signal STREQUAL "")
     set(_how "${_signal}")
+  elseif (_ended STREQUAL "signal")
+    set(_how "killed: ${_rc}")
   elseif (_out STREQUAL "")
     set(_how "no output at all, exit status ${_rc}")
   else ()
