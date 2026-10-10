@@ -1701,3 +1701,69 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdSetupThatFailsLeavesNoHandleAndTheRetryMe
     EXPECT_EQ(ENDED.eventsLeft, 0) << "the other device's events outlived the case";
   }
 }
+
+namespace {
+
+/** @brief The GPU config's stream priority rule set for a scope, the old one back after. */
+class StreamPriorityRule {
+public:
+  explicit StreamPriorityRule(bool highPriority)
+      : saved_(ub::detail::getGlobalGpuConfig().useHighPriorityStream) {
+    ub::detail::gpuConfigSingleton().useHighPriorityStream = highPriority;
+  }
+
+  ~StreamPriorityRule() { ub::detail::gpuConfigSingleton().useHighPriorityStream = saved_; }
+
+  StreamPriorityRule(const StreamPriorityRule&) = delete;
+  StreamPriorityRule& operator=(const StreamPriorityRule&) = delete;
+
+private:
+  bool saved_;
+};
+
+} // namespace
+
+/**
+ * @test The recorder forwards each of its six calls to the symbol the
+ *       harness's call is linked to. Once the harness has run all six (a case
+ *       with a high-priority stream and one with a plain one, each made and
+ *       ended while recording), each call's definition is exported under a
+ *       symbol, its forward looked that same symbol up, this process resolves
+ *       it to the recorder, and the definition the forward found is that
+ *       symbol in another file. Its lines name the toolkit the run exercised
+ */
+TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  for (const bool HIGH_PRIORITY : {true, false}) {
+    SCOPED_TRACE(HIGH_PRIORITY ? "a high-priority stream" : "a plain stream");
+    const StreamPriorityRule RULE(HIGH_PRIORITY);
+    bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+    {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuRecorderForward") + ".Case", cfg_};
+    }
+    const bt::CudaHandleCounts MADE = bt::stopCudaHandleRecording();
+    EXPECT_EQ(MADE.streamsMade, 1);
+    EXPECT_EQ(MADE.eventsMade, 2);
+    EXPECT_EQ(MADE.streamsLeft, 0);
+    EXPECT_EQ(MADE.eventsLeft, 0);
+  }
+
+  const std::vector<bt::CudaForwardedCall> CALLS = bt::cudaHandleRecorderForwarding();
+  ASSERT_EQ(CALLS.size(), 6U);
+  for (const bt::CudaForwardedCall& CALL : CALLS) {
+    SCOPED_TRACE(CALL.api);
+    std::printf("[recorder] CUDART_VERSION %d: %s is %s, forwarded to %s in %s\n", CUDART_VERSION,
+                CALL.api.c_str(), CALL.definedAs.c_str(), CALL.forwardedTo.c_str(),
+                CALL.forwardFile.c_str());
+    EXPECT_TRUE(CALL.forwarded) << "the call never ran";
+    EXPECT_EQ(CALL.symbol, CALL.definedAs)
+        << "the forward looks up another symbol than the one the recorder defines";
+    EXPECT_TRUE(CALL.resolvedHere) << "this process resolves " << CALL.symbol << " elsewhere";
+    EXPECT_EQ(CALL.forwardedTo, CALL.symbol) << "the forward found another symbol";
+    EXPECT_FALSE(CALL.forwardFile.empty());
+    EXPECT_NE(CALL.forwardFile, CALL.definedIn)
+        << "the forward found the recorder's own definition";
+  }
+}
