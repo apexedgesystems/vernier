@@ -193,6 +193,22 @@ public:
   void reportFailure(const std::string& backend, const std::string& test,
                      const ReadinessResult& failure) const noexcept;
 
+  /**
+   * @brief Report a decision a backend's own constructor or factory made, as
+   * make() reports its own: a Warning or an Error is printed once with its
+   * cause and remedy, and an Error is recorded as the run's failure.
+   * @param backend  Canonical backend name.
+   * @param decision The backend's decision for the request it was given.
+   * @return The decision's collectionReady(): true when the caller may build
+   *         its profiler and create its folder, false when it must create
+   *         nothing.
+   *
+   * So a request a directly built profiler refuses fails the run as it does
+   * through make(), with the same words. Callable from any thread; never
+   * throws.
+   */
+  bool reportDecision(const std::string& backend, const ReadinessResult& decision) const noexcept;
+
   /** @brief Every failure recorded since the last resetFailures(), in order. */
   std::vector<ProfileFailure> failures() const;
 
@@ -290,6 +306,13 @@ private:
   /** @brief Record @p failure; true for its first report (the caller prints it). */
   bool recordFailure(const std::string& backend, const std::string& test,
                      const ReadinessResult& failure) const;
+
+  /**
+   * @brief What make() and reportDecision() do with a decision: print it
+   * once per @p noticeKey unless it is Ok, and record it when it is an Error.
+   */
+  void announce(const std::string& backend, const ReadinessResult& decision,
+                const std::string& noticeKey) const;
 
   /** @brief The decision for a name no backend is registered under. */
   ReadinessResult unknownResult(const std::string& name, const ReadinessContext& ctx) const;

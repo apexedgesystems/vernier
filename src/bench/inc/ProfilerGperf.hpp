@@ -29,8 +29,8 @@
  *    tcmalloc replaces the allocator for the whole process, so it is never
  *    linked implicitly. Without it, a heap request is a readiness error that
  *    says how to enable it.
- *  - If unavailable, makeGperfProfiler(...) returns nullptr and the factory
- *    in Profiler.hpp will produce a named no-op.
+ *  - If unavailable, makeGperfProfiler(...) returns nullptr, reporting why
+ *    as the registry does.
  */
 
 #include <filesystem>
@@ -118,8 +118,9 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
 class GperfProfiler final : public Profiler {
 public:
   /**
-   * @brief Construct, deciding the request itself; when it cannot run,
-   * prints why and does nothing in the hooks.
+   * @brief Construct, deciding the request itself and reporting it as the
+   * registry does: one that cannot run fails the run, creates no folder and
+   * does nothing in the hooks.
    */
   GperfProfiler(const PerfConfig& cfg, std::string testName);
 
@@ -174,8 +175,10 @@ private:
 /**
  * @brief Factory function for gperftools profiler.
  *
- * Decides the request in a snapshot of this process first.
- * @return Profiler instance, or nullptr if collection cannot run here.
+ * Decides the request in a snapshot of this process first and reports it
+ * as the registry does.
+ * @return Profiler instance, or nullptr (the run then fails) if collection
+ *         cannot run here.
  */
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName);
 

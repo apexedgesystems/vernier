@@ -10,7 +10,6 @@
 #include "src/bench/inc/ProfilerRocprof.hpp"
 
 #include <algorithm>
-#include <cstdio>
 #include <string>
 #include <utility>
 #include <vector>
@@ -150,14 +149,14 @@ ReadinessResult checkRocprofRequest(const ReadinessRequest& request, const Readi
 
 RocprofProfiler::RocprofProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
+  // Reported as the registry reports its own decisions. An empty folder is
+  // not capture evidence: a request that cannot collect creates none.
   const ReadinessResult DECISION = decideNow(cfg_);
+  if (!ProfilerRegistry::instance().reportDecision("rocprof", DECISION)) {
+    return;
+  }
   plan_ = readyPlan(DECISION);
   if (!plan_) {
-    // An empty folder is not capture evidence: none is created.
-    std::fprintf(stderr, "[rocprof] no profile: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[rocprof] %s\n", DECISION.report.hint.c_str());
-    }
     return;
   }
   artifactDir_ =

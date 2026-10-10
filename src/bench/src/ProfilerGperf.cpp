@@ -270,14 +270,14 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 
 GperfProfiler::GperfProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
+  // Reported as the registry reports its own decisions; a rejected request
+  // leaves no folder behind.
   const ReadinessResult DECISION = decideNow(cfg_);
+  if (!ProfilerRegistry::instance().reportDecision("gperf", DECISION)) {
+    return;
+  }
   plan_ = readyPlan(DECISION);
   if (!plan_) {
-    // A rejected request leaves no folder behind.
-    std::fprintf(stderr, "[gperf] not started: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[gperf] %s\n", DECISION.report.hint.c_str());
-    }
     return;
   }
   artifactDir_ =
@@ -517,7 +517,9 @@ void GperfProfiler::runPprofAnalysis() const {
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName) {
-  auto plan = readyPlan(decideNow(cfg));
+  const ReadinessResult DECISION = decideNow(cfg);
+  auto plan = ProfilerRegistry::instance().reportDecision("gperf", DECISION) ? readyPlan(DECISION)
+                                                                             : nullptr;
   if (!plan) {
     return nullptr; // not compiled in, or an unsupported mode -> the factory falls back to no-op
   }

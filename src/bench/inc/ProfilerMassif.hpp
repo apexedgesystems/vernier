@@ -43,7 +43,10 @@ namespace bench {
 
 class MassifProfiler final : public Profiler {
 public:
-  /** @brief Decide the request now; prints the decision when it cannot collect. */
+  /**
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot collect fails the run and creates nothing.
+   */
   MassifProfiler(const PerfConfig& cfg, std::string testName);
 
   /** @brief Build from a decision that lets the request run. */

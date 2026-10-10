@@ -57,7 +57,10 @@ struct HeaptrackPlan final : ReadinessPlan {
 
 class HeaptrackProfiler final : public Profiler {
 public:
-  /** @brief Decide the request now; prints the decision when it cannot record. */
+  /**
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot record fails the run and creates nothing.
+   */
   HeaptrackProfiler(const PerfConfig& cfg, std::string testName);
 
   /** @brief Build from a decision that lets the request run. */

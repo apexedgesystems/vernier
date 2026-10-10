@@ -46,7 +46,10 @@ namespace bench {
 
 class HelgrindProfiler final : public Profiler {
 public:
-  /** @brief Decide the request now; prints the decision when it cannot check. */
+  /**
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot check fails the run and creates nothing.
+   */
   HelgrindProfiler(const PerfConfig& cfg, std::string testName);
 
   /** @brief Build from a decision that lets the request run. */

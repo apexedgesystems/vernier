@@ -941,7 +941,10 @@ TEST(RocprofCheck, AnalyzeFailsTheAnalysisStage) {
   EXPECT_TRUE(RESULT.collectionReady());
 }
 
-/** @test A rocprof profiler built directly for a request that cannot run creates no folder. */
+/**
+ * @test A rocprof profiler built directly for a request that cannot run
+ * creates no folder and fails the run, as the registry would.
+ */
 TEST(RocprofCheck, RefusedDirectConstructionCreatesNoFolder) {
   for (const char* NAME : {"ROCP_TOOL_LIB", "ROCPROFILER_LIBRARY"}) {
     if (std::getenv(NAME) != nullptr) {
@@ -954,7 +957,16 @@ TEST(RocprofCheck, RefusedDirectConstructionCreatesNoFolder) {
   cfg.profileTool = "rocprof";
   cfg.artifactRoot = ROOT.path();
   const vernier::bench::test::StderrCapture QUIET;
+  ProfilerRegistry::instance().resetFailures();
+  ProfilerRegistry::instance().resetReadiness();
   const vernier::bench::RocprofProfiler PROFILER(cfg, "Suite.Case");
+  const auto FAILED = ProfilerRegistry::instance().failures();
+  const int STATUS = ProfilerRegistry::instance().finishRun(cfg, 0, 1);
+  ProfilerRegistry::instance().resetFailures();
+  ProfilerRegistry::instance().resetReadiness();
   EXPECT_EQ(PROFILER.artifactDir(), "");
   EXPECT_FALSE(std::filesystem::exists(ROOT.path() + "/Suite.Case.rocprof"));
+  ASSERT_EQ(FAILED.size(), 1U) << "the refusal was not recorded";
+  EXPECT_EQ(FAILED[0].backend, "rocprof");
+  EXPECT_EQ(STATUS, 4);
 }

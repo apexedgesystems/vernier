@@ -3,9 +3,10 @@
  * @brief Unit tests for where profiler backends put their artifacts.
  *
  * Notes:
- *  - Backends are constructed directly, or given a decision that lets them
- *    run, or registered as a fixture whose request always runs, so the tests
- *    do not depend on which profiling tools are installed.
+ *  - Backends are given a decision that lets them run, or registered as a
+ *    fixture whose request always runs, so the tests do not depend on which
+ *    profiling tools are installed; built directly, a backend decides its own
+ *    request, and one it refuses creates nothing (the rejection tests).
  *  - Every test works in its own temporary directory and restores the wrap
  *    environment variables it sets.
  */
@@ -26,6 +27,8 @@
 #include "src/bench/inc/ProfilerOffCpu.hpp"
 #include "src/bench/inc/ProfilerPerf.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/inc/ProfilerRocprof.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -51,6 +54,7 @@ using vernier::bench::PerfConfig;
 using vernier::bench::PerfPlan;
 using vernier::bench::PerfRegistry;
 using vernier::bench::PerfRow;
+using vernier::bench::ProfileFailure;
 using vernier::bench::Profiler;
 using vernier::bench::ProfilerRegistry;
 using vernier::bench::profiler_env::artifactDirName;
@@ -118,27 +122,33 @@ protected:
   }
 };
 
-/// Backends `bench run` wraps, with the suffix of their per-test folder. The
-/// GPU ones live in libbench_cuda and are covered by the same shared function.
+/// Backends `bench run` wraps, with the suffix of their per-test folder,
+/// each built from a decision that lets it run (jemalloc decides nothing).
+/// The GPU ones live in libbench_cuda and are covered by the same shared
+/// function.
 struct WrappedBackend {
   const char* tool;
   const char* suffix;
   std::function<std::unique_ptr<Profiler>(const PerfConfig&, const std::string&)> construct;
 };
 
-template <typename T> WrappedBackend wrapped(const char* tool, const char* suffix) {
+template <typename T, typename Plan> WrappedBackend wrapped(const char* tool, const char* suffix) {
   return {tool, suffix, [](const PerfConfig& cfg, const std::string& name) {
-            return std::unique_ptr<Profiler>(new T(cfg, name));
+            return std::unique_ptr<Profiler>(new T(cfg, name, std::make_shared<const Plan>()));
           }};
 }
 
 static std::vector<WrappedBackend> wrappedBackends() {
-  return {wrapped<vernier::bench::CallgrindProfiler>("callgrind", "callgrind"),
-          wrapped<vernier::bench::MassifProfiler>("massif", "massif"),
-          wrapped<vernier::bench::MemcheckProfiler>("memcheck", "memcheck"),
-          wrapped<vernier::bench::HelgrindProfiler>("helgrind", "helgrind"),
-          wrapped<vernier::bench::HeaptrackProfiler>("heaptrack", "heaptrack"),
-          wrapped<vernier::bench::JemallocProfiler>("jemalloc", "jemalloc")};
+  using vernier::bench::valgrind_tool::ValgrindPlan;
+  return {wrapped<vernier::bench::CallgrindProfiler, ValgrindPlan>("callgrind", "callgrind"),
+          wrapped<vernier::bench::MassifProfiler, ValgrindPlan>("massif", "massif"),
+          wrapped<vernier::bench::MemcheckProfiler, ValgrindPlan>("memcheck", "memcheck"),
+          wrapped<vernier::bench::HelgrindProfiler, ValgrindPlan>("helgrind", "helgrind"),
+          wrapped<vernier::bench::HeaptrackProfiler, vernier::bench::HeaptrackPlan>("heaptrack",
+                                                                                    "heaptrack"),
+          {"jemalloc", "jemalloc", [](const PerfConfig& cfg, const std::string& name) {
+             return std::unique_ptr<Profiler>(new vernier::bench::JemallocProfiler(cfg, name));
+           }}};
 }
 
 /// A perf decision that lets the profiler run; its tool is never launched here.
@@ -233,7 +243,9 @@ TEST_F(ProfilerArtifactDirTest, ParameterizedNameGetsOneFlatFolder) {
   const vernier::bench::test::StderrCapture QUIET;
   const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Parts/Join.V0/n1000",
                                               perfThatRuns());
-  const vernier::bench::MassifProfiler MASSIF(configFor("massif"), "Parts/Join.V0/n1000");
+  const vernier::bench::MassifProfiler MASSIF(
+      configFor("massif"), "Parts/Join.V0/n1000",
+      std::make_shared<const vernier::bench::valgrind_tool::ValgrindPlan>());
 
   EXPECT_EQ(entries(), (std::vector<std::string>{"Parts+2FJoin.V0+2Fn1000.massif",
                                                  "Parts+2FJoin.V0+2Fn1000.perf"}));
@@ -241,7 +253,7 @@ TEST_F(ProfilerArtifactDirTest, ParameterizedNameGetsOneFlatFolder) {
   EXPECT_EQ(MASSIF.artifactDir(), (root_ / "Parts+2FJoin.V0+2Fn1000.massif").string());
 }
 
-/** @test Outside a wrap every wrapped backend keeps its per-test folder and reports it */
+/** @test Outside a wrap every wrapped backend that may run keeps its per-test folder */
 TEST_F(ProfilerArtifactDirTest, UnwrappedBackendOwnsPerTestFolder) {
   const vernier::bench::test::StderrCapture QUIET;
   for (const auto& backend : wrappedBackends()) {
@@ -308,6 +320,7 @@ TEST_F(ProfilerArtifactDirTest, RejectedRequestCreatesNoFolder) {
   ASSERT_TRUE(empty.ok());
   const vernier::bench::test::ScopedEnv path("PATH", empty.path());
   const vernier::bench::test::StderrCapture QUIET;
+  ProfilerRegistry::instance().resetFailures();
   const vernier::bench::PerfStatProfiler PERF(configFor("perf"), "Suite.Perf");
   const vernier::bench::BpftraceProfiler BPF(configFor("bpftrace"), "Suite.Bpf");
   const vernier::bench::OffCpuProfiler OFFCPU(configFor("offcpu"), "Suite.OffCpu");
@@ -322,6 +335,130 @@ TEST_F(ProfilerArtifactDirTest, RejectedRequestCreatesNoFolder) {
     EXPECT_EQ(GPERF.artifactDir(), "");
   }
   EXPECT_TRUE(entries().empty()) << "a rejected request left '" << entries().front() << "'";
+  ProfilerRegistry::instance().resetFailures();
+  ProfilerRegistry::instance().resetReadiness();
+}
+
+namespace {
+
+/// A backend's own constructor or factory, built directly instead of by the registry.
+struct DirectBackend {
+  std::string name;
+  std::function<std::unique_ptr<Profiler>(const PerfConfig&, const std::string&)> make;
+};
+
+template <typename T> DirectBackend constructed(const std::string& name) {
+  return {name + " (constructor)", [](const PerfConfig& cfg, const std::string& test) {
+            return std::unique_ptr<Profiler>(new T(cfg, test));
+          }};
+}
+
+/// Every backend whose direct construction decides its own request.
+std::vector<DirectBackend> directBackends() {
+  using namespace vernier::bench;
+  return {{"callgrind", makeCallgrindProfiler},
+          {"massif", makeMassifProfiler},
+          {"memcheck", makeMemcheckProfiler},
+          {"helgrind", makeHelgrindProfiler},
+          {"heaptrack", makeHeaptrackProfiler},
+          {"rocprof", makeRocprofProfiler},
+          {"perf", makePerfProfiler},
+          {"gperf", makeGperfProfiler},
+          constructed<PerfStatProfiler>("perf"),
+          constructed<GperfProfiler>("gperf")};
+}
+
+/// What one way of building a profiler for a request led to.
+struct Built {
+  std::vector<std::string> failures; ///< "<backend>|<test>|<stage>|<message>|<hint>" each.
+  int status = -1;                   ///< finishRun()'s status with the tests passed.
+  bool profiler = false;             ///< A profiler that may collect was built.
+};
+
+/// Build a profiler for @p cfg through @p make, run its hooks and end the run.
+Built build(const PerfConfig& cfg,
+            const std::function<std::unique_ptr<Profiler>(const PerfConfig&)>& make) {
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  registry.resetReadiness();
+  Built out;
+  const std::unique_ptr<Profiler> PROFILER = make(cfg);
+  out.profiler = PROFILER != nullptr && !PROFILER->artifactDir().empty();
+  if (PROFILER) {
+    PROFILER->beforeMeasure();
+    PROFILER->afterMeasure(vernier::bench::Stats{});
+  }
+  for (const ProfileFailure& F : registry.failures()) {
+    out.failures.push_back(F.backend + "|" + F.test + "|" +
+                           std::to_string(static_cast<int>(F.result.stage)) + "|" +
+                           F.result.report.message + "|" + F.result.report.hint);
+  }
+  out.status = registry.finishRun(cfg, 0, 1);
+  registry.resetFailures();
+  registry.resetReadiness();
+  return out;
+}
+
+} // namespace
+
+/**
+ * @test A request a backend's own constructor or factory refuses is refused as
+ * the registry refuses it: the same recorded failure (cause, message, remedy),
+ * no folder, and a run that exits 4; for every backend that decides its own
+ * request. The tools are made absent with an empty PATH, and the mode is a
+ * word no backend takes.
+ */
+TEST_F(ProfilerArtifactDirTest, DirectRejectionIsTheRegistrys) {
+  const vernier::bench::test::FakeToolDir empty;
+  ASSERT_TRUE(empty.ok());
+  const vernier::bench::test::ScopedEnv path("PATH", empty.path());
+  const vernier::bench::test::StderrCapture QUIET;
+  for (const DirectBackend& BACKEND : directBackends()) {
+    const std::string NAME = BACKEND.name.substr(0, BACKEND.name.find(' '));
+    PerfConfig cfg = configFor(NAME);
+    cfg.profileArgs = "review-invalid";
+    const Built REGISTRY = build(cfg, [&](const PerfConfig& c) {
+      return ProfilerRegistry::instance().make(NAME, c, "Pair.Registry");
+    });
+    const Built DIRECT =
+        build(cfg, [&](const PerfConfig& c) { return BACKEND.make(c, "Pair.Direct"); });
+    EXPECT_EQ(REGISTRY.failures.size(), 1U) << BACKEND.name;
+    EXPECT_EQ(DIRECT.failures, REGISTRY.failures) << BACKEND.name;
+    EXPECT_EQ(REGISTRY.status, 4) << BACKEND.name;
+    EXPECT_EQ(DIRECT.status, 4) << BACKEND.name;
+    EXPECT_FALSE(DIRECT.profiler) << BACKEND.name << ": a refused request may collect";
+    EXPECT_TRUE(entries().empty()) << BACKEND.name << " left '" << entries().front() << "'";
+  }
+}
+
+/**
+ * @test A request whose analysis only cannot run still collects when built
+ * directly, as through the registry: the folder, and the same recorded
+ * analysis failure; the control, the same request without the analysis,
+ * collects and records nothing. rocprof's injection marks the process as one
+ * rocprof runs.
+ */
+TEST_F(ProfilerArtifactDirTest, DirectAnalysisFailureAndSuccessAreTheRegistrys) {
+  const vernier::bench::test::ScopedEnv injected("ROCPROFILER_LIBRARY", "librocprofiler64.so");
+  const vernier::bench::test::StderrCapture QUIET;
+  for (const bool ANALYZE : {true, false}) {
+    PerfConfig cfg = configFor("rocprof");
+    cfg.profileAnalyze = ANALYZE;
+    const Built REGISTRY = build(cfg, [](const PerfConfig& c) {
+      return ProfilerRegistry::instance().make("rocprof", c, "Pair.Registry");
+    });
+    const Built DIRECT = build(cfg, [](const PerfConfig& c) {
+      return vernier::bench::makeRocprofProfiler(c, "Pair.Direct");
+    });
+    EXPECT_TRUE(REGISTRY.profiler && DIRECT.profiler) << "analyze " << ANALYZE;
+    EXPECT_EQ(DIRECT.failures, REGISTRY.failures) << "analyze " << ANALYZE;
+    EXPECT_EQ(REGISTRY.failures.size(), ANALYZE ? 1U : 0U) << "analyze " << ANALYZE;
+    EXPECT_EQ(DIRECT.status, ANALYZE ? 4 : 0) << "analyze " << ANALYZE;
+    EXPECT_EQ(entries(), (std::vector<std::string>{"Pair.Direct.rocprof", "Pair.Registry.rocprof"}))
+        << "analyze " << ANALYZE;
+    fs::remove_all(root_ / "Pair.Direct.rocprof");
+    fs::remove_all(root_ / "Pair.Registry.rocprof");
+  }
 }
 
 /** @test A wrap that does not say where it writes yields no folder and no claim about one */

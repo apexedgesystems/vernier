@@ -225,9 +225,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   its labels will start failing on the changes it was always meant to catch.
 - **A profiler request that fails fails the run** -- an unknown profiler, a
   request its tool cannot collect and a requested analysis that fails are
-  reported when found and again when the run ends, and the run then exits with
-  status 4 if its tests passed; `bench run` names that status, or the signal,
-  where it reported a parse error. **Action needed:** a CI job that passed
+  reported when found and again when the run ends, also for a profiler built
+  by its backend's own constructor or factory (which creates no folder for a
+  request it refuses), and the run then exits with status 4 if its tests
+  passed; `bench run` names that status, or the signal, where it reported a
+  parse error. **Action needed:** a CI job that passed
   without its requested profile now fails; a benchmark with its own `main()`
   returns `vernier::bench::ProfilerRegistry::finishRun()` as the
   [advanced guide](src/bench/docs/ADVANCED_GUIDE.md#perf_main-macro) shows; a

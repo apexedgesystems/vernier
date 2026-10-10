@@ -54,8 +54,8 @@ struct RocprofPlan final : ReadinessPlan {
 class RocprofProfiler final : public Profiler {
 public:
   /**
-   * @brief Decide the request now; prints the decision when it cannot run,
-   * and creates no folder then.
+   * @brief Decide the request now and report it as the registry does: one
+   * that cannot run fails the run and creates no folder.
    */
   RocprofProfiler(const PerfConfig& cfg, std::string testName);
 

@@ -329,6 +329,24 @@ void ProfilerRegistry::reportFailure(const std::string& backend, const std::stri
   }
 }
 
+void ProfilerRegistry::announce(const std::string& backend, const ReadinessResult& decision,
+                                const std::string& noticeKey) const {
+  if (decision.report.status != EnvReport::Status::Ok && memo_.claimNotice(noticeKey)) {
+    printNotice(backend, decision);
+  }
+  (void)recordFailure(backend, "", decision);
+}
+
+bool ProfilerRegistry::reportDecision(const std::string& backend,
+                                      const ReadinessResult& decision) const noexcept {
+  try {
+    announce(backend, decision, "direct;" + backend + ";" + decision.report.message);
+  } catch (...) {
+    // As reportFailure(): a report that cannot be made does not end the run.
+  }
+  return decision.collectionReady();
+}
+
 std::vector<ProfileFailure> ProfilerRegistry::failures() const {
   const std::lock_guard<std::mutex> LOCK(outcome_->mutex);
   return outcome_->failures;
@@ -427,10 +445,7 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
   const std::string KEY = memoKey(REQUEST, ctx.fingerprint(entry.contextKeys), generation_);
   const ReadinessResult RESULT =
       memo_.getOrCompute(KEY, [&] { return decide(name, entry, REQUEST, ctx); });
-  if (RESULT.report.status != EnvReport::Status::Ok && memo_.claimNotice(KEY)) {
-    printNotice(name, RESULT);
-  }
-  (void)recordFailure(name, "", RESULT);
+  announce(name, RESULT, KEY);
   if (!RESULT.collectionReady()) {
     return std::make_unique<detail::NoOpProfiler>();
   }

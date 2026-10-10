@@ -398,14 +398,14 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 
 PerfStatProfiler::PerfStatProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
+  // Reported as the registry reports its own decisions; a rejected request
+  // leaves no folder behind.
   const ReadinessResult DECISION = decideNow(cfg_);
+  if (!ProfilerRegistry::instance().reportDecision("perf", DECISION)) {
+    return;
+  }
   plan_ = readyPlan(DECISION);
   if (!plan_) {
-    // A rejected request leaves no folder behind.
-    std::fprintf(stderr, "[perf] not started: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[perf] %s\n", DECISION.report.hint.c_str());
-    }
     return;
   }
 #ifdef __linux__
@@ -751,7 +751,9 @@ void PerfStatProfiler::checkOutput() const {
 
 // Factory implementation
 std::unique_ptr<Profiler> makePerfProfiler(const PerfConfig& cfg, const std::string& testName) {
-  auto plan = readyPlan(decideNow(cfg));
+  const ReadinessResult DECISION = decideNow(cfg);
+  auto plan =
+      ProfilerRegistry::instance().reportDecision("perf", DECISION) ? readyPlan(DECISION) : nullptr;
   if (!plan) {
     return nullptr;
   }

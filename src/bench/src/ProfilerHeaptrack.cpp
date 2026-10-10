@@ -200,15 +200,13 @@ ReadinessResult checkHeaptrackRequestWithMaps(const ReadinessRequest& request,
 
 HeaptrackProfiler::HeaptrackProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
-  artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "heaptrack");
+  // Decided first and reported as the registry reports its own decisions; a
+  // request that cannot collect creates nothing.
   const ReadinessResult DECISION = decideNow(cfg_);
-  plan_ = readyPlan(DECISION);
-  if (!plan_) {
-    std::fprintf(stderr, "[heaptrack] no heap profile: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[heaptrack] %s\n", DECISION.report.hint.c_str());
-    }
+  if (ProfilerRegistry::instance().reportDecision("heaptrack", DECISION)) {
+    plan_ = readyPlan(DECISION);
+    artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
+                                                    "heaptrack");
   }
 }
 
