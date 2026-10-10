@@ -16,7 +16,6 @@
 #ifndef VERNIER_DEMO_WORKLOADS_HPP
 #define VERNIER_DEMO_WORKLOADS_HPP
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -40,23 +39,6 @@ inline std::vector<double> makeRandomDoubles(std::size_t count, std::uint32_t se
     x = dist(rng);
   }
   return v;
-}
-
-/** @brief Generate deterministic random int32 in [-1000, 1000]. */
-inline std::vector<std::int32_t> makeRandomInts(std::size_t count, std::uint32_t seed = 42) {
-  std::vector<std::int32_t> v(count);
-  std::mt19937 rng(seed);
-  std::uniform_int_distribution<std::int32_t> dist(-1000, 1000);
-  for (auto& x : v) {
-    x = dist(rng);
-  }
-  return v;
-}
-
-/** @brief Generate a sorted copy of input data. */
-inline std::vector<double> makeSorted(std::vector<double> data) {
-  std::sort(data.begin(), data.end());
-  return data;
 }
 
 /* ----------------------------- Dot Product Workloads ----------------------------- */
