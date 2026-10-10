@@ -22,12 +22,16 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <unistd.h>
 
 #include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
@@ -434,6 +438,126 @@ TEST_F(PerfGpuHarnessTest, RowCarriesTheStabilityVerdict) {
   EXPECT_DOUBLE_EQ(ROW.cvThreshold, THRESHOLD);
   EXPECT_EQ(ROW.stable, RESULT.stats.cpuStats.cv < THRESHOLD);
   EXPECT_DOUBLE_EQ(ROW.stats.cv, RESULT.stats.cpuStats.cv);
+}
+
+/* ----------------------------- Rows ----------------------------- */
+
+/** @test A CPU baseline runs on the calling thread: its row records one thread at --threads 4 */
+TEST_F(PerfGpuHarnessTest, BaselineRowRecordsOneThread) {
+  ub::PerfConfig cfg = cfg_;
+  cfg.threads = 4;
+  ub::PerfGpuCase perf{uniqueSuite("GpuRowThreads") + ".CpuBaseline", cfg};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+
+  (void)perf.cpuBaseline([&] {
+    for (int i = 0; i < ELEMENTS; ++i) {
+      y[i] = 2.0F * x[i] + y[i];
+    }
+  });
+
+  EXPECT_EQ(lastRow().threads, 1);
+}
+
+/** @test A kernel row keeps the one host thread that drove it at --threads 4 */
+TEST_F(PerfGpuHarnessTest, KernelRowRecordsOneHostThread) {
+  SaxpyFixtureData data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.threads = 4;
+  ub::PerfGpuCase perf{uniqueSuite("GpuRowThreads") + ".Kernel", cfg};
+  perf.cudaWarmup(data.launch());
+
+  (void)perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  EXPECT_EQ(lastRow().threads, 1);
+}
+
+namespace {
+
+/** @brief Split a CSV line on commas (the names written here hold none). */
+std::vector<std::string> splitCells(const std::string& line) {
+  std::vector<std::string> cells(1);
+  for (const char C : line) {
+    if (C == ',') {
+      cells.emplace_back();
+    } else {
+      cells.back() += C;
+    }
+  }
+  return cells;
+}
+
+/**
+ * @brief Write every waiting row through the CSV listener, as GoogleTest does
+ *        at a test's end, and read the file back: one column -> cell map per row.
+ */
+std::vector<std::map<std::string, std::string>> writeRowsAndRead() {
+  static std::atomic<int> files{0};
+  const std::string PATH = "/tmp/vernier_gpu_rows_" + std::to_string(::getpid()) + "_" +
+                           std::to_string(files.fetch_add(1)) + ".csv";
+  {
+    ub::detail::CsvListener listener(PATH, /*includeProfile=*/false, /*includeGpu=*/true);
+    listener.OnTestEnd(*::testing::UnitTest::GetInstance()->current_test_info());
+  }
+  std::ifstream in(PATH);
+  std::string line;
+  std::getline(in, line);
+  const std::vector<std::string> NAMES = splitCells(line);
+  std::vector<std::map<std::string, std::string>> rows;
+  while (std::getline(in, line)) {
+    const std::vector<std::string> CELLS = splitCells(line);
+    std::map<std::string, std::string> row;
+    for (std::size_t i = 0; i < NAMES.size() && i < CELLS.size(); ++i) {
+      row[NAMES[i]] = CELLS[i];
+    }
+    rows.push_back(row);
+  }
+  std::remove(PATH.c_str());
+  return rows;
+}
+
+/** @brief A number as the CSV writer formats a row's statistics. */
+std::string csvNumber(double value) {
+  std::ostringstream out;
+  out << value;
+  return out.str();
+}
+
+} // namespace
+
+/** @test A CPU baseline and a kernel measured by one case are written as two rows, each its own */
+TEST_F(PerfGpuHarnessTest, BaselineAndKernelAreTwoRows) {
+  SaxpyFixtureData data;
+  const std::string CASE = uniqueSuite("GpuRows") + ".BaselineAndKernel";
+  ub::PerfGpuCase perf{CASE, cfg_};
+  std::vector<float> x(ELEMENTS, 1.0F);
+  std::vector<float> y(ELEMENTS, 2.0F);
+
+  const ub::PerfResult CPU = perf.cpuBaseline(
+      [&] {
+        for (int i = 0; i < ELEMENTS; ++i) {
+          y[i] = 2.0F * x[i] + y[i];
+        }
+      },
+      "cpu");
+  perf.cudaWarmup(data.launch());
+  const ub::PerfGpuResult GPU = perf.cudaKernel(data.launch(), "saxpy").measure();
+
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+
+  ASSERT_EQ(ROWS.size(), 2U);
+  EXPECT_EQ(ROWS[0].at("test"), CASE + "/cpu");
+  EXPECT_EQ(ROWS[0].at("threads"), "1");
+  EXPECT_EQ(ROWS[0].at("wallMedian"), csvNumber(CPU.stats.median));
+  EXPECT_EQ(ROWS[0].at("gpuModel"), "") << "the baseline row carries no GPU cells";
+  EXPECT_EQ(ROWS[0].at("kernelTimeUs"), "");
+  EXPECT_EQ(ROWS[1].at("test"), CASE + "/saxpy");
+  EXPECT_EQ(ROWS[1].at("threads"), "1");
+  EXPECT_EQ(ROWS[1].at("wallMedian"), csvNumber(GPU.stats.cpuStats.median));
+  EXPECT_NE(ROWS[1].at("gpuModel"), "");
+  // The kernel's speedup is over this case's own baseline, the first row.
+  EXPECT_DOUBLE_EQ(GPU.speedupVsCpu, CPU.stats.median / GPU.totalTimeUs);
+  EXPECT_EQ(ROWS[1].at("speedupVsCpu"), std::to_string(GPU.speedupVsCpu));
 }
 
 /* ----------------------------- Profiler Hooks ----------------------------- */

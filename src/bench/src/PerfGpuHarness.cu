@@ -1016,7 +1016,7 @@ private:
     // columns of a GPU row are then the same columns, filled the same way,
     // and the CSV `stable` verdict is the one the console printed.
     PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
-                               result.stats.cpuStats, result.callsPerSecond);
+                               result.stats.cpuStats, result.callsPerSecond, result.label);
 
     row.gpuModel = result.stats.deviceInfo.name;
     row.computeCapability = std::to_string(result.stats.deviceInfo.computeCapability[0]) + "." +
@@ -1084,7 +1084,7 @@ private:
     const auto& firstDev = result.perDevice[0];
 
     PerfRow row = buildPerfRow(testName_, cpuCfg_, cpuCfg_.warmup, /*threadCount=*/1,
-                               firstDev.stats.cpuStats, firstDev.callsPerSecond);
+                               firstDev.stats.cpuStats, firstDev.callsPerSecond, result.label);
 
     row.gpuModel = firstDev.stats.deviceInfo.name;
     row.computeCapability = std::to_string(firstDev.stats.deviceInfo.computeCapability[0]) + "." +

@@ -135,10 +135,14 @@ RUN wget --progress=dot:giga --tries=5 --retry-connrefused \
 # ==============================================================================
 # Installed to /opt for system-wide access. Includes clippy + rustfmt;
 # llvm-tools-preview supplies the profdata tooling the coverage driver
-# (cargo-llvm-cov, added in dev-base) needs.
+# (cargo-llvm-cov, added in dev-base) needs. Cargo's automatic cache cleaning
+# is off: an online cargo build or test deletes downloaded crates unused for
+# three months, the baked ones below among them once the image is that old,
+# and an offline build or test after it cannot fetch them again.
 ARG RUST_VERSION=stable
 ENV RUSTUP_HOME=/opt/rust/rustup \
-    CARGO_HOME=/opt/rust/cargo
+    CARGO_HOME=/opt/rust/cargo \
+    CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
     sh -s -- -y --default-toolchain ${RUST_VERSION} --profile minimal && \
     /opt/rust/cargo/bin/rustup component add clippy rustfmt llvm-tools-preview && \

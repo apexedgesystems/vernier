@@ -535,3 +535,9 @@ foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateR
                                    "\\[  SKIPPED \\] ${_start_gate_pattern}"
   )
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# Subdirectories
+# ------------------------------------------------------------------------------
+
+add_subdirectory(measurement_rows)
