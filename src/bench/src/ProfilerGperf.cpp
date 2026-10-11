@@ -226,12 +226,20 @@ long long fileSize(const std::string& path) {
   return ec ? -1 : static_cast<long long>(SIZE);
 }
 
-/** @brief Remove each of @p paths that exists; a missing one is fine. */
-void removeFiles(const std::vector<std::string>& paths) {
+/**
+ * @brief Remove each of @p paths that exists; a missing one is fine.
+ * @return "" when none is left, or "<path>: <why>" for the first that could
+ * not be removed (the rest are left as they are).
+ */
+std::string removeFiles(const std::vector<std::string>& paths) {
   for (const std::string& PATH : paths) {
     std::error_code ec;
     std::filesystem::remove(PATH, ec);
+    if (ec) {
+      return PATH + ": " + ec.message();
+    }
   }
+  return {};
 }
 #endif
 
@@ -332,7 +340,8 @@ void GperfProfiler::beforeMeasure() {
   // profiler's capture running, which is this case's failure and is left
   // alone: a capture is stopped only by the profiler that started it. A
   // previous run's files are removed first, so what is there afterwards is
-  // this run's.
+  // this run's; a capture whose previous files cannot all be removed does
+  // not start, since what it wrote could not be told from them.
   stopCapture();
   if (wantHeap_) {
 #if UB_HAS_GPERF_HEAP
@@ -345,8 +354,14 @@ void GperfProfiler::beforeMeasure() {
            "Unset HEAPPROFILE (it starts a heap profile at launch), and profile one case at a "
            "time.",
            ReadinessStage::COLLECTION);
+    } else if (const std::string LEFT = removeFiles(heapDumps(artifactDir_, heapPrefix_));
+               !LEFT.empty()) {
+      fail(ReadinessCause::UNUSABLE,
+           "the previous run's heap dumps could not be cleared (" + LEFT +
+               "), so this case's could not be told from them; its heap is not profiled",
+           "Remove them, or give --profile-output-dir a folder this user can write.",
+           ReadinessStage::COLLECTION);
     } else {
-      removeFiles(heapDumps(artifactDir_, heapPrefix_));
       HeapProfilerStart(heapPrefix_.c_str());
       heapActive_ = IsHeapProfilerRunning() != 0;
       if (!heapActive_) {
@@ -361,16 +376,23 @@ void GperfProfiler::beforeMeasure() {
   if (wantCpu_) {
 #if UB_HAS_GPERF_CPU
     cpuPath_ = artifactDir_ + "/cpu.prof";
-    removeFiles({cpuPath_});
-    cpuActive_ = ProfilerStart(cpuPath_.c_str()) != 0;
-    if (!cpuActive_) {
+    if (const std::string LEFT = removeFiles({cpuPath_}); !LEFT.empty()) {
       fail(ReadinessCause::UNUSABLE,
-           "gperftools did not start a CPU profile into " + cpuPath_ +
-               " (ProfilerStart returned 0): another one already runs in this process, or the "
-               "file cannot be written; this case is not profiled",
-           "Unset CPUPROFILE (it starts a profile at launch), profile one case at a time, and "
-           "give --profile-output-dir a folder this user can write.",
+           "the previous run's CPU profile could not be cleared (" + LEFT +
+               "), so this case's could not be told from it; this case is not profiled",
+           "Remove it, or give --profile-output-dir a folder this user can write.",
            ReadinessStage::COLLECTION);
+    } else {
+      cpuActive_ = ProfilerStart(cpuPath_.c_str()) != 0;
+      if (!cpuActive_) {
+        fail(ReadinessCause::UNUSABLE,
+             "gperftools did not start a CPU profile into " + cpuPath_ +
+                 " (ProfilerStart returned 0): another one already runs in this process, or "
+                 "the file cannot be written; this case is not profiled",
+             "Unset CPUPROFILE (it starts a profile at launch), profile one case at a time, "
+             "and give --profile-output-dir a folder this user can write.",
+             ReadinessStage::COLLECTION);
+      }
     }
 #endif
   }

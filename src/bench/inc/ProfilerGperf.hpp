@@ -18,7 +18,9 @@
  *
  * A run fails a case whose capture gperftools does not start (another
  * profile of the same kind already runs in the process, or the file cannot
- * be written), and one whose stopped capture leaves no file of this run, or
+ * be written), one whose previous run's files cannot all be removed before
+ * it starts (it then does not start, since what it wrote could not be told
+ * from them), and one whose stopped capture leaves no file of this run, or
  * an empty one, whether or not an analysis follows; only a capture that left
  * its file is analyzed. A profiler stops only the captures it started: when
  * its measured window ends (afterMeasure()), at once when the window ends by

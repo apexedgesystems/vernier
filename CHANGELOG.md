@@ -281,9 +281,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   reported `unverified`.
 - **gperf checks the requested mode and runs the analyzer it finds** -- a mode
   word other than `cpu`, `heap` and `both`, a mode the build lacks and a
-  capture gperftools does not start or that writes no profile fail the run,
-  and `--profile-analyze` runs the first of `google-pprof` and `pprof` on
-  `PATH`, whose absence or failure fails the run and keeps the capture.
+  capture that cannot first remove the previous run's profile, that
+  gperftools does not start or that writes no profile fail the run, and
+  `--profile-analyze` runs the first of `google-pprof` and `pprof` on `PATH`,
+  whose absence or failure fails the run and keeps the capture.
   **Action needed:** give gperf's `--profile-args` its modes alone.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML

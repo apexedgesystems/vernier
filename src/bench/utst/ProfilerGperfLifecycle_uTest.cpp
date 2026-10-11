@@ -19,6 +19,8 @@
 
 #include <gtest/gtest.h>
 
+#include <unistd.h>
+
 #if UB_HAS_GPERF_CPU
 #include <gperftools/profiler.h>
 #endif
@@ -26,13 +28,16 @@
 #include <gperftools/heap-profiler.h>
 #endif
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -74,6 +79,59 @@ long long fileSize(const std::string& path) {
   const auto SIZE = std::filesystem::file_size(path, ec);
   return ec ? -1 : static_cast<long long>(SIZE);
 }
+
+/** @brief What @p path holds; "" when it cannot be read. */
+std::string contents(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/** @brief The heap dumps (*.heap) in @p dir, sorted. */
+std::vector<std::string> heapDumpsIn(const std::string& dir) {
+  std::vector<std::string> out;
+  std::error_code ec;
+  for (const auto& ENTRY : std::filesystem::directory_iterator(dir, ec)) {
+    if (ENTRY.path().extension() == ".heap") {
+      out.push_back(ENTRY.path().string());
+    }
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+/**
+ * @brief Makes a folder read-only (mode 0555) while it lives, and gives it
+ * its mode back after.
+ */
+class ReadOnlyFolder {
+public:
+  explicit ReadOnlyFolder(std::string dir) : dir_(std::move(dir)) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    mode_ = fs::status(dir_, ec).permissions();
+    if (!ec) {
+      fs::permissions(dir_,
+                      fs::perms::owner_read | fs::perms::owner_exec | fs::perms::group_read |
+                          fs::perms::group_exec | fs::perms::others_read | fs::perms::others_exec,
+                      fs::perm_options::replace, ec);
+    }
+    ok_ = !ec;
+  }
+  ~ReadOnlyFolder() {
+    std::error_code ec;
+    std::filesystem::permissions(dir_, mode_, std::filesystem::perm_options::replace, ec);
+  }
+  ReadOnlyFolder(const ReadOnlyFolder&) = delete;
+  ReadOnlyFolder& operator=(const ReadOnlyFolder&) = delete;
+
+  /** @brief True when the folder was made read-only. */
+  [[nodiscard]] bool ok() const { return ok_; }
+
+private:
+  std::string dir_;
+  std::filesystem::perms mode_{std::filesystem::perms::unknown};
+  bool ok_ = false;
+};
 
 /** @brief Work for a measured window: enough to be sampled now and then. */
 void work() {
@@ -408,6 +466,112 @@ TEST_F(GperfLifecycleTest, CaptureWritesItsFileAndIsAnalyzed) {
   EXPECT_GT(fileSize(cpuProf("Gperf.Kept")), 0);
   EXPECT_TRUE(analyzed("Gperf.Kept")) << dir_.log();
   EXPECT_TRUE(failures().empty()) << failures().front();
+}
+
+/**
+ * @test The writable-reuse control: a previous run's CPU profile in a folder
+ * this user can write is removed first, and this capture's file takes its
+ * place and is analyzed.
+ */
+TEST_F(GperfLifecycleTest, PreviousCaptureIsReplaced) {
+  ScopedEnv log("FAKE_LOG", dir_.logPath());
+  StderrCapture quiet;
+  ASSERT_TRUE(std::filesystem::create_directories(dir_.path() + "/Gperf.Reused.gperf"));
+  std::ofstream(cpuProf("Gperf.Reused")) << "a previous run's profile\n";
+  {
+    GperfProfiler profiler(config(), "Gperf.Reused", plan(true));
+    profiler.beforeMeasure();
+    EXPECT_EQ(runningCpuProfile(), cpuProf("Gperf.Reused"));
+    work();
+    profiler.afterMeasure(Stats{});
+  }
+  const std::string NOW = contents(cpuProf("Gperf.Reused"));
+  EXPECT_FALSE(NOW.empty());
+  EXPECT_NE(NOW, "a previous run's profile\n") << "the previous run's profile is still there";
+  EXPECT_TRUE(analyzed("Gperf.Reused")) << dir_.log();
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+}
+
+/**
+ * @test A previous run's CPU profile that cannot be removed (its folder made
+ * read-only) fails the case at collection before a capture starts, naming
+ * the file and why; the previous profile is left as it was, and nothing is
+ * captured or analyzed, so it is never taken for this run's.
+ */
+TEST_F(GperfLifecycleTest, PreviousCaptureThatCannotBeRemovedFailsTheStart) {
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "root removes files from a read-only folder";
+  }
+  ScopedEnv log("FAKE_LOG", dir_.logPath());
+  StderrCapture quiet;
+  const std::string CASE_DIR = dir_.path() + "/Gperf.Stale.gperf";
+  ASSERT_TRUE(std::filesystem::create_directories(CASE_DIR));
+  std::ofstream(cpuProf("Gperf.Stale")) << "a previous run's profile\n";
+  {
+    const ReadOnlyFolder LOCKED(CASE_DIR);
+    ASSERT_TRUE(LOCKED.ok());
+    GperfProfiler profiler(config(), "Gperf.Stale", plan(true));
+    profiler.beforeMeasure();
+    EXPECT_EQ(runningCpuProfile(), "") << "a capture started over the previous run's profile";
+    work();
+    profiler.afterMeasure(Stats{});
+  }
+  EXPECT_EQ(contents(cpuProf("Gperf.Stale")), "a previous run's profile\n");
+  EXPECT_FALSE(analyzed("Gperf.Stale")) << dir_.log();
+  EXPECT_EQ(failures(), std::vector<std::string>{
+                            "Gperf.Stale: unusable: the previous run's CPU profile could not be "
+                            "cleared (" +
+                            cpuProf("Gperf.Stale") +
+                            ": Permission denied), so this case's could not be told from it; this "
+                            "case is not profiled"});
+}
+
+/**
+ * @test In a build with heap profiling, the reviewer's sequence on one case:
+ * its first heap capture writes a dump (the fresh control); its second, in
+ * the same folder, removes that dump and writes its own (the writable-reuse
+ * control); with the folder then made read-only, its third fails at
+ * collection before the heap profile starts, naming the dump it could not
+ * remove, which is left as it was and never taken for this attempt's.
+ */
+TEST_F(GperfLifecycleTest, PreviousHeapDumpThatCannotBeRemovedFailsTheStart) {
+  if (UB_HAS_GPERF_HEAP == 0) {
+    GTEST_SKIP() << "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  }
+  if (::geteuid() == 0) {
+    GTEST_SKIP() << "root removes files from a read-only folder";
+  }
+  StderrCapture quiet;
+  const std::string CASE_DIR = dir_.path() + "/Gperf.HeapStale.gperf";
+  GperfProfiler profiler(config(false), "Gperf.HeapStale", plan(false, true));
+  profiler.beforeMeasure();
+  profiler.afterMeasure(Stats{});
+  const std::vector<std::string> FIRST = heapDumpsIn(CASE_DIR);
+  ASSERT_EQ(FIRST.size(), 1U) << "the first capture wrote no dump";
+  profiler.beforeMeasure();
+  profiler.afterMeasure(Stats{});
+  const std::vector<std::string> SECOND = heapDumpsIn(CASE_DIR);
+  ASSERT_EQ(SECOND.size(), 1U) << "the second capture did not replace the first's dump";
+  ASSERT_GT(fileSize(SECOND[0]), 0);
+  {
+    const std::vector<std::string> FAILED = failures();
+    ASSERT_TRUE(FAILED.empty()) << FAILED.front();
+  }
+  {
+    const ReadOnlyFolder LOCKED(CASE_DIR);
+    ASSERT_TRUE(LOCKED.ok());
+    profiler.beforeMeasure();
+    EXPECT_FALSE(heapProfileRuns()) << "a heap capture started over the previous run's dump";
+    profiler.afterMeasure(Stats{});
+  }
+  EXPECT_EQ(heapDumpsIn(CASE_DIR), SECOND) << "the previous run's dump was not left as it was";
+  EXPECT_EQ(failures(), std::vector<std::string>{
+                            "Gperf.HeapStale: unusable: the previous run's heap dumps could not be "
+                            "cleared (" +
+                            SECOND[0] +
+                            ": Permission denied), so this case's could not be told from them; "
+                            "its heap is not profiled"});
 }
 
 /**
