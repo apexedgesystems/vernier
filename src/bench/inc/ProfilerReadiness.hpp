@@ -16,8 +16,9 @@
  *    and privilege route its launch and cleanup then use);
  *  - the report formatter (readinessResult), the privilege policy
  *    (decidePrivilege), executable resolution (resolveExecutable), bounded
- *    probes (runBoundedProbe), owned helper processes (OwnedHelper) and the
- *    result memo (ReadinessMemo).
+ *    probes (runBoundedProbe), owned helper processes (OwnedHelper), what
+ *    became of a child's exit status (StatusLoss) and the result memo
+ *    (ReadinessMemo).
  * Each backend owns its check, its mode parsing and its plan in its own
  * source file; nothing here names a backend, a mode or a tool.
  *
@@ -305,27 +306,97 @@ struct ResolvedTool {
 [[nodiscard]] std::optional<ResolvedTool> resolveExecutable(std::string_view name,
                                                             const ReadinessContext& ctx);
 
+/* ------------------------------ Child Exit Statuses ------------------------------ */
+
+/**
+ * @brief Why a child's exit status did not reach this process, which then
+ * cannot tell how the child ended: a status it did not read is no exit, clean
+ * or not.
+ */
+enum class StatusLoss : std::uint8_t {
+  NONE,            ///< Nothing lost: the status was read here, or the child was not reaped.
+  SIGCHLD_IGNORED, ///< This process ignores SIGCHLD: the system discards children's statuses.
+  NO_CHILD_WAIT,   ///< SIGCHLD carries SA_NOCLDWAIT: the same.
+  ANOTHER_WAIT     ///< Neither: another wait in this process reaped the child first.
+};
+
+/**
+ * @brief Why a child of this process is gone without its status, read from
+ * this process's SIGCHLD action as it stands: a reap that finds the child
+ * gone calls it at once. Never NONE.
+ */
+[[nodiscard]] StatusLoss currentStatusLoss();
+
+/**
+ * @brief @p loss as reports name it: "this process ignores SIGCHLD, so the
+ * system discards its children's exit statuses", "this process sets
+ * SA_NOCLDWAIT for SIGCHLD, so ...", "another wait in this process reaped it
+ * first"; empty for NONE.
+ */
+[[nodiscard]] std::string describeStatusLoss(StatusLoss loss);
+
 /* ------------------------------ Bounded Probes ------------------------------ */
 
-/** @brief Outcome of one bounded probe. */
+/**
+ * @brief Outcome of one bounded probe.
+ *
+ * A program reaped elsewhere (this process ignores SIGCHLD, sets
+ * SA_NOCLDWAIT, or another wait took it) leaves no exit status to read: its
+ * end is unobserved (statusObtained false, statusLoss saying why), and it
+ * neither exited nor was signalled as far as this result says. Such an end
+ * is neither a success nor a failure: a consumer that needs a proven success
+ * (a readiness check) reads it as none, and says so (unobservedProbe()); one
+ * that needs a proven failure (a refused stop signal) reads it as none
+ * either.
+ */
 struct ProbeResult {
-  bool started = false;    ///< The program was executed.
-  int spawnErrno = 0;      ///< errno of a failed fork or exec.
-  bool exited = false;     ///< Ended normally; exitCode is valid.
-  int exitCode = -1;       ///< Exit status when exited.
-  int termSignal = 0;      ///< Signal that ended it, 0 if it exited.
-  bool timedOut = false;   ///< Killed at the bound.
+  bool started = false;                     ///< The program was executed.
+  int spawnErrno = 0;                       ///< errno of a failed fork or exec.
+  bool exited = false;                      ///< Ended normally; exitCode is valid.
+  int exitCode = -1;                        ///< Exit status when exited.
+  int termSignal = 0;                       ///< Signal that ended it, 0 if it exited.
+  bool timedOut = false;                    ///< Killed at the bound.
+  bool statusObtained = false;              ///< Its wait status was read here.
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why it ended without its status.
   std::string output;      ///< stdout (and stderr when MERGED), truncated at PROBE_OUTPUT_LIMIT.
   std::string errorOutput; ///< stderr when SEPARATE, truncated likewise.
 
-  /** @brief Started, exited with status 0 and did not time out. */
+  /** @brief A proven success: its status read here, an exit with status 0, within the bound. */
   [[nodiscard]] bool succeeded() const noexcept {
-    return started && exited && exitCode == 0 && !timedOut;
+    return started && statusObtained && exited && exitCode == 0 && !timedOut;
   }
 
-  /** @brief One phrase: "exit status 2", "killed by signal 9", "timed out after the bound", ... */
+  /** @brief It ended within the bound, but its status was not read here. */
+  [[nodiscard]] bool endUnobserved() const noexcept {
+    return started && !timedOut && !statusObtained;
+  }
+
+  /**
+   * @brief One phrase: "exit status 2", "ended by signal 9", "did not finish
+   * within its bound and was killed", "ended without an exit status this
+   * process could read: <why>", ...
+   */
   [[nodiscard]] std::string describe() const;
 };
+
+/**
+ * @brief What a readiness check, or a run, that needs a proven success from
+ * its probe does when the probe's end is unobserved: leave SIGCHLD alone.
+ */
+inline constexpr const char* CHILD_STATUS_REMEDY =
+    "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for this program's "
+    "own children while it is profiled, so the end of each program the profiler runs can be read.";
+
+/**
+ * @brief For a check that needs @p probe's proven success: when the probe's
+ * end is unobserved (ProbeResult::endUnobserved()), an UNUSABLE result at
+ * @p stage that says so: "<what>: ended without an exit status this process
+ * could read: <why>[: <the end of its output>]", with CHILD_STATUS_REMEDY;
+ * otherwise nothing, and the check reads the probe as it does.
+ */
+[[nodiscard]] std::optional<ReadinessResult>
+unobservedProbe(const std::string& what, const ProbeResult& probe,
+                ReadinessStage stage = ReadinessStage::COLLECTION);
 
 /** @brief Bytes of output a probe keeps, per stream. */
 inline constexpr std::size_t PROBE_OUTPUT_LIMIT = 64 * 1024;
@@ -441,9 +512,14 @@ struct HelperStart {
 struct StopDelivery {
   int signal = 0;
   pid_t target = -1;
-  bool delivered = false;
-  std::string command; ///< "kill(2)" or the exact sudo command line.
-  std::string detail;  ///< errno text or the refusing command's output.
+  bool delivered = false; ///< Proven: kill(2) returned 0, or the sudo kill exited 0.
+  /// The sudo kill's end was read; false when it was reaped elsewhere
+  /// (statusLoss says why): then the signal is neither proven delivered nor
+  /// proven refused, and the stop waits for the helper as after a delivery.
+  bool statusObtained = true;
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why the sudo kill's status was not read.
+  std::string command;                      ///< "kill(2)" or the exact sudo command line.
+  std::string detail; ///< errno text, the refusing command's output, or why it is not known.
 };
 
 /** @brief How an owned helper's stop went. */
@@ -455,7 +531,10 @@ struct HelperStopResult {
   bool stillAlive = false; ///< Every step was tried and it still runs.
   int waitStatus = 0;      ///< Its wait status when reaped.
 
-  /** @brief True when every delivery succeeded; false names a refused one. */
+  /**
+   * @brief True when every delivery is proven; false names one refused, or
+   * one whose outcome is not known (statusObtained false).
+   */
   [[nodiscard]] bool allDelivered() const noexcept;
 };
 

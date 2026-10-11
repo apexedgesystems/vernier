@@ -37,6 +37,7 @@
 
 using vernier::bench::childProcesses;
 using vernier::bench::decidePrivilege;
+using vernier::bench::describeStatusLoss;
 using vernier::bench::EnvBool;
 using vernier::bench::EnvReport;
 using vernier::bench::HelperStart;
@@ -64,6 +65,8 @@ using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
 using vernier::bench::resolveExecutable;
 using vernier::bench::runBoundedProbe;
+using vernier::bench::StatusLoss;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 
 namespace {
@@ -607,6 +610,66 @@ TEST(ReadinessProbes, ExitStatusAndOutput) {
   EXPECT_EQ(FAIL.describe(), "exit status 3");
 }
 
+/**
+ * @test A probe reaped elsewhere, as an application that ignores SIGCHLD or
+ * sets SA_NOCLDWAIT reaps it, leaves no exit status to read: whether it
+ * exited 0 or 42, it neither exited nor succeeded as far as its result says,
+ * its end is unobserved and the result says why, and its output is still
+ * read. Reaped here, with SIGCHLD at its default action, each status is read.
+ */
+TEST(ReadinessProbes, StatusReapedElsewhereIsNeitherSuccessNorFailure) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::NO_CHILD_WAIT, Policy::DEFAULT}) {
+    const std::string NAME = POLICY == Policy::IGNORED         ? "SIGCHLD ignored"
+                             : POLICY == Policy::NO_CHILD_WAIT ? "SA_NOCLDWAIT"
+                                                               : "the default action";
+    const StatusLoss LOSS = POLICY == Policy::IGNORED         ? StatusLoss::SIGCHLD_IGNORED
+                            : POLICY == Policy::NO_CHILD_WAIT ? StatusLoss::NO_CHILD_WAIT
+                                                              : StatusLoss::NONE;
+    ProbeResult zero;
+    ProbeResult failed;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      zero = runBoundedProbe({HELPER, "exit", "0"}, 5000, CTX);
+      failed = runBoundedProbe({HELPER, "exit", "42"}, 5000, CTX);
+    }
+    for (const ProbeResult* R : {&zero, &failed}) {
+      EXPECT_TRUE(R->started) << NAME;
+      EXPECT_FALSE(R->timedOut) << NAME;
+      EXPECT_EQ(R->statusLoss, LOSS) << NAME;
+    }
+    EXPECT_NE(failed.output.find("args: exit 42"), std::string::npos)
+        << NAME << ": " << failed.output;
+    if (POLICY == Policy::DEFAULT) {
+      EXPECT_TRUE(zero.statusObtained);
+      EXPECT_TRUE(zero.succeeded()) << zero.describe();
+      EXPECT_TRUE(failed.statusObtained);
+      EXPECT_TRUE(failed.exited);
+      EXPECT_EQ(failed.exitCode, 42);
+      EXPECT_FALSE(failed.succeeded());
+      EXPECT_FALSE(failed.endUnobserved());
+      EXPECT_EQ(failed.describe(), "exit status 42");
+      continue;
+    }
+    for (const ProbeResult* R : {&zero, &failed}) {
+      EXPECT_FALSE(R->statusObtained) << NAME;
+      EXPECT_FALSE(R->exited) << NAME << ": an exit status not read was read as an exit";
+      EXPECT_EQ(R->exitCode, -1) << NAME;
+      EXPECT_EQ(R->termSignal, 0) << NAME;
+      EXPECT_FALSE(R->succeeded()) << NAME << ": an exit status not read passes for a success";
+      EXPECT_TRUE(R->endUnobserved()) << NAME;
+      EXPECT_EQ(R->describe(),
+                "ended without an exit status this process could read: " + describeStatusLoss(LOSS))
+          << NAME;
+    }
+  }
+}
+
 /** @test stderr is interleaved by default and kept apart on request. */
 TEST(ReadinessProbes, SeparateStreams) {
   FakeToolDir dir;
@@ -896,6 +959,91 @@ TEST(ReadinessOwnedHelper, RefusedDeliveryIsReported) {
   EXPECT_TRUE(STOP.deliveries[1].delivered) << "SIGTERM is still tried";
   EXPECT_EQ(STOP.stoppedBy, SIGTERM);
   EXPECT_TRUE(STOP.reaped);
+}
+
+/**
+ * @test On the sudo route, a `sudo -n kill` reaped elsewhere (this process
+ * ignores SIGCHLD) shows neither a delivery nor a refusal: the stop records
+ * it as not known, and still waits for the helper as after a delivery, so a
+ * SIGINT that did arrive gets its flush. With SIGCHLD at its default action
+ * the delivery is proven. A refused SIGINT under the same loss is not known
+ * either: the stop waits its bounded time, then goes on to SIGTERM.
+ */
+TEST(ReadinessOwnedHelper, SudoDeliveryNotSeenIsWaitedOn) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string SUDO = dir.install("fake_sudo.sh", "sudo");
+  const std::string KILL = dir.install("fake_kill.sh", "kill");
+  const std::string FLUSH =
+      "trap 'sleep 0.2; echo flushed > \"$0\"; exit 0' INT; while :; do sleep 0.05; done";
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::DEFAULT}) {
+    for (const bool REFUSE_INT : {false, true}) {
+      if (REFUSE_INT && POLICY == Policy::DEFAULT) {
+        continue; // RefusedDeliveryIsReported holds the refusal seen
+      }
+      const std::string NAME =
+          std::string(POLICY == Policy::IGNORED ? "SIGCHLD ignored" : "the default action") +
+          (REFUSE_INT ? ", SIGINT refused" : "");
+      const std::string FLUSHED = dir.path() + "/flushed" + (REFUSE_INT ? "-refused" : "") +
+                                  (POLICY == Policy::IGNORED ? "-ignored" : "-default");
+      auto ctx = std::make_shared<const ReadinessContext>(
+          REFUSE_INT ? dir.context({{"FAKE_SUDO_DENY", "kill -2"}}) : dir.context());
+      HelperStopPolicy policy = quickPolicy(PrivilegeRoute::SCOPED_SUDO);
+      policy.interruptWaitMs = 3000;
+      policy.terminateWaitMs = 3000;
+      policy.sudoPath = SUDO;
+      policy.killPath = KILL;
+      policy.context = ctx;
+      OwnedHelper helper(policy);
+      // Started with SIGCHLD at its default action, so the helper's own
+      // shell reaps its children as it always does.
+      ASSERT_TRUE(
+          helper.start({SUDO, "-n", "--", "/bin/sh", "-c", FLUSH, FLUSHED}, "", "", 300, ctx.get())
+              .running())
+          << NAME;
+      HelperStopResult stop;
+      std::chrono::steady_clock::duration took{};
+      {
+        const ChildReaping REAPING(POLICY);
+        ASSERT_TRUE(REAPING.ok());
+        const auto START = std::chrono::steady_clock::now();
+        stop = helper.stop();
+        took = std::chrono::steady_clock::now() - START;
+      }
+      EXPECT_TRUE(stop.wasRunning) << NAME;
+      EXPECT_TRUE(stop.reaped) << NAME;
+      EXPECT_FALSE(stop.stillAlive) << NAME;
+      if (REFUSE_INT) {
+        ASSERT_EQ(stop.deliveries.size(), 2U) << NAME;
+        EXPECT_EQ(stop.stoppedBy, SIGTERM) << NAME;
+        EXPECT_GE(took, std::chrono::milliseconds(policy.interruptWaitMs))
+            << NAME << ": the stop did not wait after a SIGINT whose refusal it could not see";
+        EXPECT_FALSE(std::filesystem::exists(FLUSHED)) << NAME;
+      } else {
+        ASSERT_EQ(stop.deliveries.size(), 1U) << NAME;
+        EXPECT_EQ(stop.stoppedBy, SIGINT) << NAME;
+        std::ifstream in(FLUSHED);
+        std::string line;
+        std::getline(in, line);
+        EXPECT_EQ(line, "flushed") << NAME << ": the helper did not get its flush on SIGINT";
+      }
+      for (const auto& D : stop.deliveries) {
+        if (POLICY == Policy::DEFAULT) {
+          EXPECT_TRUE(D.statusObtained) << NAME;
+          EXPECT_TRUE(D.delivered) << NAME;
+          continue;
+        }
+        EXPECT_FALSE(D.statusObtained) << NAME;
+        EXPECT_FALSE(D.delivered) << NAME << ": a delivery not seen passes for one proven";
+        EXPECT_EQ(D.statusLoss, StatusLoss::SIGCHLD_IGNORED) << NAME;
+        EXPECT_EQ(D.detail, "ended without an exit status this process could read: " +
+                                describeStatusLoss(StatusLoss::SIGCHLD_IGNORED))
+            << NAME;
+      }
+      EXPECT_EQ(stop.allDelivered(), POLICY == Policy::DEFAULT) << NAME;
+    }
+  }
 }
 
 /** @test When every stop signal is refused the helper is reported alive, not flushed. */

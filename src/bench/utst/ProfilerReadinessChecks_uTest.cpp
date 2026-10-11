@@ -40,7 +40,9 @@
 
 using vernier::bench::BpftracePlan;
 using vernier::bench::BpftraceProfiler;
+using vernier::bench::CHILD_STATUS_REMEDY;
 using vernier::bench::decideGperfAnalysis;
+using vernier::bench::describeStatusLoss;
 using vernier::bench::EnvReport;
 using vernier::bench::GperfAnalysis;
 using vernier::bench::GperfModes;
@@ -58,6 +60,8 @@ using vernier::bench::ReadinessContext;
 using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
+using vernier::bench::StatusLoss;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -1011,6 +1015,39 @@ TEST_F(PerfCheckTest, BrokenPerfIsNeverRun) {
   EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
 }
 
+/**
+ * @test A probe whose exit status this process could not read proves
+ * nothing: in a process that ignores SIGCHLD or sets SA_NOCLDWAIT, perf's
+ * --version shows neither a perf that runs nor one that fails, so the check
+ * is not ready, says why and how to let the status through, and never asks
+ * that perf to count, whatever its --version did.
+ */
+TEST_F(PerfCheckTest, ProbeWithoutItsStatusProvesNothing) {
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::NO_CHILD_WAIT}) {
+    const StatusLoss LOSS =
+        POLICY == Policy::IGNORED ? StatusLoss::SIGCHLD_IGNORED : StatusLoss::NO_CHILD_WAIT;
+    for (const std::string MODE : {"ok", "broken"}) {
+      ReadinessResult r;
+      {
+        const ChildReaping REAPING(POLICY);
+        ASSERT_TRUE(REAPING.ok());
+        r = check({{"FAKE_PERF_MODE", MODE}});
+      }
+      EXPECT_EQ(r.cause, ReadinessCause::UNUSABLE) << MODE << ": " << r.report.message;
+      EXPECT_EQ(r.report.message.rfind("unusable: " + perf_ +
+                                           " --version: ended without an exit status this "
+                                           "process could read: " +
+                                           describeStatusLoss(LOSS),
+                                       0),
+                0U)
+          << r.report.message;
+      EXPECT_EQ(r.report.hint, CHILD_STATUS_REMEDY);
+      EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
+    }
+  }
+}
+
 /** @test Refused counter access is denied, with the remedies and no elevation. */
 TEST_F(PerfCheckTest, DeniedAccessNamesTheRemedy) {
   const ReadinessResult R = check({{"FAKE_PERF_MODE", "denied"}}, "", 1000);
@@ -1468,6 +1505,33 @@ TEST(GperfAnalysisTest, BrokenAnalyzerIsAnalysisError) {
   EXPECT_FALSE(OFF.error.has_value());
   EXPECT_EQ(OFF.analyzer, PPROF) << "the analyzer is still named";
   EXPECT_EQ(dir.logLines("pprof ").size(), RUNS) << "without the promise it is not run";
+}
+
+/**
+ * @test An analyzer whose --help exit status this process could not read is
+ * not known to run: a promised analysis is an analysis-stage Error that says
+ * why, and the capture still runs.
+ */
+TEST(GperfAnalysisTest, AnalyzerWithoutItsStatusIsNotKnownToRun) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  GperfAnalysis on;
+  {
+    const ChildReaping REAPING(ChildReaping::Policy::IGNORED);
+    ASSERT_TRUE(REAPING.ok());
+    on = analysisIn(dir, true);
+  }
+  ASSERT_TRUE(on.error.has_value()) << "an analyzer not seen to run must not be ready";
+  EXPECT_EQ(on.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(on.error->cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(on.error->collectionReady()) << "the capture still runs";
+  EXPECT_EQ(on.error->report.message,
+            "analysis: unusable: --profile-analyze would run " + PPROF +
+                ", whose --help ended without an exit status this process could read: " +
+                describeStatusLoss(StatusLoss::SIGCHLD_IGNORED) +
+                "; the cpu capture still runs and cpu.prof is kept");
+  EXPECT_EQ(on.error->report.hint, CHILD_STATUS_REMEDY);
 }
 
 /** @test Either spelling is found, google-pprof first, and only the selected one is probed. */

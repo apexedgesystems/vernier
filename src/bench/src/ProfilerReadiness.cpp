@@ -546,6 +546,36 @@ std::optional<ResolvedTool> resolveExecutable(std::string_view name, const Readi
   return notExecutable;
 }
 
+/* ----------------------------- Child Exit Statuses ----------------------------- */
+
+StatusLoss currentStatusLoss() {
+  struct sigaction current{};
+  if (::sigaction(SIGCHLD, nullptr, &current) == 0) {
+    if ((current.sa_flags & SA_SIGINFO) == 0 && current.sa_handler == SIG_IGN) {
+      return StatusLoss::SIGCHLD_IGNORED;
+    }
+    if ((current.sa_flags & SA_NOCLDWAIT) != 0) {
+      return StatusLoss::NO_CHILD_WAIT;
+    }
+  }
+  return StatusLoss::ANOTHER_WAIT;
+}
+
+std::string describeStatusLoss(StatusLoss loss) {
+  switch (loss) {
+  case StatusLoss::SIGCHLD_IGNORED:
+    return "this process ignores SIGCHLD, so the system discards its children's exit statuses";
+  case StatusLoss::NO_CHILD_WAIT:
+    return "this process sets SA_NOCLDWAIT for SIGCHLD, so the system discards its children's "
+           "exit statuses";
+  case StatusLoss::ANOTHER_WAIT:
+    return "another wait in this process reaped it first";
+  case StatusLoss::NONE:
+    break;
+  }
+  return "";
+}
+
 /* ----------------------------- Bounded Probes ----------------------------- */
 
 std::string ProbeResult::describe() const {
@@ -561,7 +591,23 @@ std::string ProbeResult::describe() const {
   if (termSignal != 0) {
     return "ended by signal " + std::to_string(termSignal);
   }
+  if (!statusObtained) {
+    return "ended without an exit status this process could read: " +
+           (statusLoss == StatusLoss::NONE ? std::string{"it was not reaped within the bound"}
+                                           : describeStatusLoss(statusLoss));
+  }
   return "ended in an unknown state";
+}
+
+std::optional<ReadinessResult> unobservedProbe(const std::string& what, const ProbeResult& probe,
+                                               ReadinessStage stage) {
+  if (!probe.endUnobserved()) {
+    return std::nullopt;
+  }
+  const std::string TAIL = outputTail(probe.output.empty() ? probe.errorOutput : probe.output);
+  return readinessResult(ReadinessCause::UNUSABLE,
+                         what + ": " + probe.describe() + (TAIL.empty() ? "" : ": " + TAIL),
+                         CHILD_STATUS_REMEDY, stage);
 }
 
 ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutMs,
@@ -728,14 +774,22 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     (void)PUMP(static_cast<int>(std::min<long long>(LEFT, 50)));
   }
 
-  // Reap the program, then wait for the rest of its group; both bounded.
+  // Reap the program, then wait for the rest of its group; both bounded. A
+  // program reaped elsewhere (ECHILD) is gone without a status: its end is
+  // unobserved, never read as an exit.
   int status = 0;
-  bool reaped = leader == LeaderState::GONE; // ECHILD: reaped elsewhere; the status reads as 0
+  bool reaped = leader == LeaderState::GONE;
+  bool lost = reaped;
   const auto REAP_END = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
   while (!reaped) {
     const pid_t W = ::waitpid(CHILD, &status, WNOHANG);
-    if (W == CHILD || (W < 0 && errno != EINTR)) {
+    if (W == CHILD) {
       reaped = true;
+      break;
+    }
+    if (W < 0 && errno != EINTR) {
+      reaped = true;
+      lost = true;
       break;
     }
     if (Clock::now() >= REAP_END) {
@@ -747,7 +801,11 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     waitForGroup(CHILD, REAP_END);
   }
   CLOSE_ALL();
-  if (reaped && !result.timedOut) {
+  result.statusObtained = reaped && !lost;
+  if (lost) {
+    result.statusLoss = currentStatusLoss();
+  }
+  if (result.statusObtained && !result.timedOut) {
     if (WIFEXITED(status)) {
       result.exited = true;
       result.exitCode = WEXITSTATUS(status);
@@ -1157,7 +1215,14 @@ HelperStopResult OwnedHelper::stop() {
       const ReadinessContext CTX = policy_.context ? *policy_.context : ReadinessContext::capture();
       const ProbeResult PROBE = runBoundedProbe(ARGV, 5000, CTX);
       delivery.delivered = PROBE.succeeded();
-      if (!delivery.delivered) {
+      if (PROBE.endUnobserved()) {
+        // Neither delivered nor refused, as far as this process can see: the
+        // stop waits for the helper as after a delivery, so a signal that did
+        // arrive keeps its chance to end it (a tracer's flush on SIGINT).
+        delivery.statusObtained = false;
+        delivery.statusLoss = PROBE.statusLoss;
+        delivery.detail = PROBE.describe();
+      } else if (!delivery.delivered) {
         const std::string TAIL = outputTail(PROBE.output);
         delivery.detail = TAIL.empty() ? PROBE.describe() : TAIL;
       }
@@ -1170,7 +1235,8 @@ HelperStopResult OwnedHelper::stop() {
       }
     }
     result.deliveries.push_back(delivery);
-    if (delivery.delivered && waitGone(child_, reaped_, waitStatus_, step.waitMs)) {
+    if ((delivery.delivered || !delivery.statusObtained) &&
+        waitGone(child_, reaped_, waitStatus_, step.waitMs)) {
       result.stoppedBy = step.sig;
       break;
     }

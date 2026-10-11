@@ -109,6 +109,9 @@ ReadinessResult probeTool(const std::string& tool, const ReadinessContext& ctx) 
   }
   const ProbeResult VERSION =
       runBoundedProbe({RESOLVED->path, "--version"}, VERSION_PROBE_TIMEOUT_MS, ctx);
+  if (auto unseen = unobservedProbe(RESOLVED->path + " --version", VERSION)) {
+    return *unseen;
+  }
   if (!VERSION.succeeded()) {
     const std::string TAIL = outputTail(VERSION.output, 3);
     return readinessResult(ReadinessCause::UNUSABLE,

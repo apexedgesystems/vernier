@@ -29,8 +29,8 @@
  * When to reach for which:
  *   - massif       full timeline, lab use, ~20x overhead
  *   - heaptrack    allocation-site rank; cost grows with the allocation rate
- *   - jemalloc     sampling-based, ~5-10% overhead, requires libjemalloc
- *                  available at LD_PRELOAD time (see ProfilerJemalloc.hpp)
+ *   - jemalloc     sampling-based; requires libjemalloc available at
+ *                  LD_PRELOAD time (see ProfilerJemalloc.hpp)
  */
 
 #include <memory>

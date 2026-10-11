@@ -381,6 +381,14 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   stopped without analysis as soon as the callback throws, so neither can end
   or block a later test of the process or the same case measuring again; the
   case publishes no row, and the exception reaches the caller unchanged.
+- **A probe whose exit status is discarded proves nothing** -- in a benchmark
+  that ignores SIGCHLD or sets `SA_NOCLDWAIT`, the system discards the exit
+  status of each program a readiness check runs, and the check took it for an
+  exit with status 0, however the program ended; such a check now fails,
+  saying why, and a stop signal sent through `sudo -n kill` is recorded as not
+  known while the stop still waits for the tracer. **Action needed:** leave
+  SIGCHLD at its default action, without `SA_NOCLDWAIT`, and wait only for the
+  benchmark's own children while it is profiled.
 - **An in-process profile of the first case leaves out the run's metadata**
   -- with `--profile`, the run's metadata is taken when the first profiler is
   created, so its `git describe` no longer runs while the first case's perf,

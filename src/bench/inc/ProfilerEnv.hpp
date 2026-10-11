@@ -427,7 +427,9 @@ inline bool benchSudoActive() {
 /* ----------------------------- sudoBpftraceUsable ----------------------------- */
 
 /**
- * @brief True when `sudo -n <bpftrace> --version` works for this user.
+ * @brief True when `sudo -n <bpftrace> --version` works for this user: a
+ * proven success, which a probe whose exit status this process could not
+ * read is not.
  *
  * Proves that one invocation only: a grant restricted to other arguments can
  * refuse an attach this allows. The bpftrace and offcpu backends decide with
@@ -448,7 +450,9 @@ inline bool sudoBpftraceUsable() {
 /**
  * @brief Live viability probe: can bpftrace actually attach here?
  *
- * Presence on PATH is not health -- stripped builds break BEGIN/END,
+ * True only for a proven success: a probe whose exit status this process
+ * could not read is none. Presence on PATH is not health -- stripped builds
+ * break BEGIN/END,
  * missing tracefs breaks attachment, and both fail this real probe in
  * well under its 3s bound where a lookup-based check reports a false OK.
  * The bound is runBoundedProbe()'s own; no timeout(1) is needed.
@@ -517,7 +521,9 @@ inline pid_t tracerPid(pid_t child) {
  *
  * A child spawned through sudo runs as root, and a plain ::kill from its
  * unprivileged parent fails with EPERM -- silently losing e.g. bpftrace's
- * SIGINT-triggered END-block flush. @return true when delivery succeeded.
+ * SIGINT-triggered END-block flush. @return true when delivery is proven:
+ * false when it was refused, and when the sudo kill's exit status could not
+ * be read, which proves neither (OwnedHelper::stop() tells the two apart).
  */
 inline bool sudoKill(pid_t pid, int sig) {
   if (::geteuid() == 0)

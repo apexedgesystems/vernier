@@ -201,7 +201,12 @@ GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
   // The analyzer runs: both google-pprof and Go's pprof answer --help.
   const ProbeResult HELP =
       runBoundedProbe({analysis.analyzer, "--help"}, ANALYZER_PROBE_TIMEOUT_MS, ctx);
-  if (!HELP.succeeded()) {
+  if (HELP.endUnobserved()) {
+    analysis.error = readinessResult(ReadinessCause::UNUSABLE,
+                                     "--profile-analyze would run " + analysis.analyzer +
+                                         ", whose --help " + HELP.describe() + KEPT,
+                                     CHILD_STATUS_REMEDY, ReadinessStage::ANALYSIS);
+  } else if (!HELP.succeeded()) {
     const std::string TAIL = outputTail(HELP.output);
     analysis.error = readinessResult(
         ReadinessCause::UNUSABLE,
@@ -506,6 +511,12 @@ void GperfProfiler::runPprofAnalysis() const {
     argv.push_back(EXE);
     argv.push_back(cpuPath_);
     const ProbeResult RUN = runBoundedProbe(argv, ANALYZER_TIMEOUT_MS, CTX, ProbeStreams::SEPARATE);
+    if (auto unseen = unobservedProbe(plan_->analyzer + " on the profile (raw profile kept at " +
+                                          cpuPath_ + ")",
+                                      RUN, ReadinessStage::ANALYSIS)) {
+      ProfilerRegistry::instance().reportFailure("gperf", testName_, *unseen);
+      return false;
+    }
     if (!RUN.succeeded()) {
       const std::string TAIL = outputTail(RUN.errorOutput);
       std::string command;

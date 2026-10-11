@@ -153,6 +153,9 @@ ReadinessResult probeTool(const std::string& backend, const ValgrindMode& mode,
   argv.push_back(TRUE_PROGRAM->path);
   const std::string COMMAND = join(argv, " ");
   const ProbeResult PROBE = runBoundedProbe(argv, PROBE_TIMEOUT_MS, ctx);
+  if (auto unseen = unobservedProbe("valgrind's start probe, " + COMMAND, PROBE)) {
+    return *unseen;
+  }
   if (!PROBE.succeeded()) {
     const std::string TAIL = outputTail(PROBE.output);
     return readinessResult(ReadinessCause::UNUSABLE,

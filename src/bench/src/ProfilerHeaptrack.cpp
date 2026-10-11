@@ -76,6 +76,9 @@ ReadinessResult probeHeaptrack(const ReadinessContext& ctx, std::string& heaptra
   const std::vector<std::string> ARGV{TOOL->path, "-o", OUTPUT, TRUE_PROGRAM->path};
   const std::string COMMAND = TOOL->path + " -o <private directory>/probe " + TRUE_PROGRAM->path;
   const ProbeResult PROBE = runBoundedProbe(ARGV, HEAPTRACK_PROBE_TIMEOUT_MS, ctx);
+  if (auto unseen = unobservedProbe("heaptrack's probe, " + COMMAND, PROBE)) {
+    return *unseen;
+  }
   if (!PROBE.succeeded()) {
     const std::string TAIL = outputTail(PROBE.output);
     return readinessResult(ReadinessCause::UNUSABLE,

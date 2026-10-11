@@ -183,6 +183,9 @@ std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
 std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
                                                const ReadinessContext& ctx) {
   const ProbeResult VERSION = runBoundedProbe({route.bpftrace, "--version"}, 5000, ctx);
+  if (auto unseen = unobservedProbe(route.bpftrace + " --version", VERSION)) {
+    return unseen;
+  }
   if (VERSION.succeeded()) {
     return std::nullopt;
   }
@@ -277,7 +280,9 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
                      : std::string{});
   }
   for (const StopDelivery& delivery : STOP.deliveries) {
-    if (delivery.delivered) {
+    // Only a refusal shown is one: a delivery whose outcome is not known is
+    // neither, and the stop waited for the tracer after it.
+    if (delivery.delivered || !delivery.statusObtained) {
       continue;
     }
     // The run's stop would be refused the same way, losing the flush on SIGINT.
@@ -318,7 +323,11 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
 bool reportStop(const char* tag, const std::string& what, const HelperStopResult& stop,
                 const BpftraceRoute& route) {
   for (const StopDelivery& delivery : stop.deliveries) {
-    if (!delivery.delivered) {
+    if (!delivery.statusObtained) {
+      std::fprintf(stderr, "[%s] %s: whether %s reached tracer %d is not known: %s: %s\n", tag,
+                   what.c_str(), signalName(delivery.signal), static_cast<int>(delivery.target),
+                   delivery.command.c_str(), delivery.detail.c_str());
+    } else if (!delivery.delivered) {
       std::fprintf(stderr, "[%s] %s: could not deliver %s to tracer %d: %s: %s\n", tag,
                    what.c_str(), signalName(delivery.signal), static_cast<int>(delivery.target),
                    delivery.command.c_str(), delivery.detail.c_str());

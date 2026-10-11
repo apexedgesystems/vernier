@@ -277,6 +277,9 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
   // The executable runs: a perf wrapper without the kernel-matched build
   // fails here and is never launched.
   const ProbeResult VERSION = runBoundedProbe({plan->perf, "--version"}, 5000, ctx);
+  if (auto unseen = unobservedProbe(plan->perf + " --version", VERSION)) {
+    return *unseen;
+  }
   if (!VERSION.succeeded()) {
     const std::string TAIL = outputTail(VERSION.output, 3);
     return readinessResult(ReadinessCause::UNUSABLE,
@@ -314,6 +317,9 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
   }
   control.close();
   plan->answersPing = noAnswer.empty();
+  if (auto unseen = unobservedProbe("perf stat -p " + SELF, ACCESS)) {
+    return *unseen;
+  }
   if (!ACCESS.succeeded()) {
     if (containsAny(ACCESS.output, {"Access to performance monitoring", "Permission denied",
                                     "Operation not permitted", "No permission"})) {
