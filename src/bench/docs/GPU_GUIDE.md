@@ -210,7 +210,7 @@ struct GpuStats {
   double totalTimeMedianUs{};                       // Total time
   std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
   std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
-  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only with managed memory
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Never filled (no UM counters)
 };
 ```
 
@@ -219,7 +219,8 @@ struct GpuStats {
 - **transfers, occupancy, clocks**: Always populated (values may be zero/default)
 - **multiGpu**: Only when using `cudaKernelMultiGpu()`
 - **p2pProfile**: Only when P2P transfers are measured
-- **unifiedMemory**: Only when using managed memory
+- **unifiedMemory**: Never filled: the harness collects no unified-memory
+  counters (see [Unified Memory](#unified-memory))
 
 ### Key Metrics Explained
 
@@ -734,39 +735,44 @@ cudaFree(d_data);
 
 ### Unified Memory
 
-Automatic memory migration between CPU and GPU:
+Managed memory gives the CPU and the GPU one pointer, and CUDA makes the data
+available where it is used:
 
 ```cpp
-// Unified Memory - same pointer on CPU and GPU
 float* data;
 cudaMallocManaged(&data, SIZE);
-kernel<<<...>>>(data);  // Automatic migration!
+kernel<<<...>>>(data);
+cudaDeviceSynchronize();  // before the host reads data
 cudaFree(data);
 ```
 
-**Testing with Unified Memory:**
+**Measuring it.** The harness times a kernel on managed memory as it times any
+kernel. It does not allocate or move a test's memory, so the test chooses the
+strategy: allocate with `cudaMallocManaged()` and declare no transfer
+(`withHostToDevice()` and `withDeviceToHost()` time explicit copies, which
+managed data does not need). Kernel time is the median over the repeats of
+each repeat's time per launch. A wait for pages to reach the GPU inside the
+timed interval counts in its repeat's sample: averaging over the launches and
+taking the median can dilute or hide a one-time wait, but neither isolates it
+nor guarantees that it is left out.
 
-```bash
-# Run with UM
-./MyKernel_GPU_PTEST --gpu-memory unified --csv um_results.csv
+### Unified-Memory Counters
 
-# Compare strategies
-./MyKernel_GPU_PTEST --gpu-memory explicit --csv explicit.csv
-./MyKernel_GPU_PTEST --gpu-memory unified --csv unified.csv
-bench compare explicit.csv unified.csv
+The harness collects no unified-memory counters: it reads no page-fault or
+migration record. `GpuStats::unifiedMemory` stays empty, and the CSV keeps the
+columns `umPageFaults`, `umH2DMigrations`, `umD2HMigrations`,
+`umMigrationTimeUs` and `umThrashing` empty in every row. `--capture-um` asks
+for those counters, as does a test that sets
+`PerfGpuConfig::captureUnifiedMemory`; it changes nothing that is measured, and
+the run says so once:
+
+```text
+[gpu] --capture-um asks for unified-memory counters, which the GPU harness does not collect: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty.
 ```
 
-### Understanding UM Metrics
-
-Unified Memory CSV columns:
-
-| Column              | Meaning             | Good Value    | Bad Value     |
-| ------------------- | ------------------- | ------------- | ------------- |
-| `umPageFaults`      | GPU page faults     | <1000         | >10000        |
-| `umH2DMigrations`   | Host->device moves  | Low           | High          |
-| `umD2HMigrations`   | Device->host moves  | Low           | High          |
-| `umMigrationTimeUs` | Migration overhead  | <10% of total | >50% of total |
-| `umThrashing`       | Memory ping-ponging | false         | true          |
+`--gpu-memory unified` only records the memory strategy in the GPU
+configuration: it asks for no counters, and the harness does not change how a
+test allocates its memory.
 
 **When Unified Memory is good:**
 
@@ -782,49 +788,54 @@ Unified Memory CSV columns:
 - Need maximum performance
 - Production optimization
 
-**Example comparison:**
+**Example comparison:** the same kernel on managed and on device memory, in
+one test. Each measurement is its own CSV row,
+`MemoryStrategy.Compare/managed_memory` and
+`MemoryStrategy.Compare/device_memory`:
 
 ```cpp
 PERF_GPU_TEST(MemoryStrategy, Compare) {
   PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
+  const size_t BYTES = N * sizeof(float);
   std::vector<float> h_data(N, 1.0f);
 
   dim3 block(256);
   dim3 grid((N + 255) / 256);
 
-  // Test explicit memory
-  float* d_data;
-  cudaMalloc(&d_data, N * sizeof(float));
+  float* um_data;  // the host fills it through the same pointer
+  float* d_data;   // filled with an explicit copy
+  cudaMallocManaged(&um_data, BYTES);
+  cudaMalloc(&d_data, BYTES);
+  std::copy(h_data.begin(), h_data.end(), um_data);
+  cudaMemcpy(d_data, h_data.data(), BYTES, cudaMemcpyHostToDevice);
 
-  auto explicit_result = perf.cudaKernel([&](cudaStream_t s) {
-    myKernel<<<grid, block, 0, s>>>(d_data, N);
-  }, "explicit_memory")
-    .withHostToDevice(h_data.data(), d_data, N * sizeof(float))
-    .withDeviceToHost(d_data, h_data.data(), N * sizeof(float))
+  auto managed = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(um_data, N);
+  }, "managed_memory")
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Explicit:  kernel=%.2f ms, transfers=%.2f ms\n",
-              explicit_result.kernelTimeUs / 1000.0,
-              explicit_result.transferTimeUs / 1000.0);
+  auto device = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_data, N);
+  }, "device_memory")
+    .withLaunchConfig(grid, block)
+    .measure();
 
+  std::printf("managed/device kernel time: %.2f\n",
+              managed.kernelTimeUs / device.kernelTimeUs);
+
+  cudaFree(um_data);
   cudaFree(d_data);
-
-  // Test unified memory (if enabled with --gpu-memory unified)
-  // Results will show umPageFaults, umMigrationTimeUs, etc.
 }
 ```
 
-**Typical output:**
-
-```
-Explicit:  kernel=123.4 ms, transfers=45.6 ms
-Unified:   kernel=234.5 ms, umMigrationTimeUs=156.7 ms, umPageFaults=12450
-
-Analysis: Explicit 2x faster due to UM page fault overhead
-```
+The ratio is this machine's, and can differ with another GPU or driver, and
+where the GPU shares the host's memory. `GpuUnifiedMemory` in
+`src/bench/ptst/gpu/GpuUnifiedMemory_pTest.cu` runs this comparison with every
+result checked, and times kernels after the host wrote and after it read a
+managed buffer.
 
 ---
 

@@ -87,9 +87,8 @@ side, so remove the directory when switching between them.
   `--profile`, so such a loop that hangs while profiled fails loudly (exit
   status 2) instead of hanging the run; `contentionRun()` and GPU measurements
   are not covered
-- CUDA GPU benchmarking with multi-GPU and Unified Memory support, plus
-  in-process CUPTI kernel metrics (register / smem / launch counts) without
-  spawning ncu
+- CUDA GPU benchmarking with multi-GPU support, plus in-process CUPTI kernel
+  metrics (register / smem / launch counts) without spawning ncu
 - NVTX timeline annotation API auto-injected into Nsight Systems runs
 - Companion `vernier::monitor` library for lightweight runtime
   instrumentation in production runs (lock-free queue, env-var-driven

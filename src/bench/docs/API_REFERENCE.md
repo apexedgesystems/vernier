@@ -479,7 +479,7 @@ struct GpuStats {
   double totalTimeMedianUs{};
   std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
   std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
-  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only with managed memory
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Never filled (no UM counters)
 };
 ```
 
@@ -742,13 +742,18 @@ time; no `--profile` flag required.
 
 ### Unified Memory Columns
 
-| Column              | Type   | Description               |
-| ------------------- | ------ | ------------------------- |
-| `umPageFaults`      | int64  | GPU page faults           |
-| `umH2DMigrations`   | int64  | Host-to-device migrations |
-| `umD2HMigrations`   | int64  | Device-to-host migrations |
-| `umMigrationTimeUs` | double | Total migration overhead  |
-| `umThrashing`       | bool   | Thrashing detected        |
+| Column              | Type   | Description                       |
+| ------------------- | ------ | --------------------------------- |
+| `umPageFaults`      | int64  | Unified-memory page faults        |
+| `umH2DMigrations`   | int64  | Host-to-device page migrations    |
+| `umD2HMigrations`   | int64  | Device-to-host page migrations    |
+| `umMigrationTimeUs` | double | Time spent migrating pages (us)   |
+| `umThrashing`       | bool   | Back-and-forth migration reported |
+
+The GPU harness collects no unified-memory counters, so these cells are empty in
+every row it writes, with or without `--capture-um`; a run given `--capture-um`
+says so once. See the GPU guide's
+[Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters).
 
 ---
 

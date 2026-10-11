@@ -1014,13 +1014,17 @@ linked at build time; no `--profile` flag required. See
 
 #### Unified Memory Columns
 
-| Column              | Type   | Description               | Present When   |
-| ------------------- | ------ | ------------------------- | -------------- |
-| `umPageFaults`      | int64  | GPU page faults           | Unified memory |
-| `umH2DMigrations`   | int64  | Host->device migrations   | Unified memory |
-| `umD2HMigrations`   | int64  | Device->host migrations   | Unified memory |
-| `umMigrationTimeUs` | double | Total migration overhead  | Unified memory |
-| `umThrashing`       | bool   | Memory thrashing detected | Unified memory |
+| Column              | Type   | Description                       | Present When |
+| ------------------- | ------ | --------------------------------- | ------------ |
+| `umPageFaults`      | int64  | Unified-memory page faults        | Never        |
+| `umH2DMigrations`   | int64  | Host->device page migrations      | Never        |
+| `umD2HMigrations`   | int64  | Device->host page migrations      | Never        |
+| `umMigrationTimeUs` | double | Time spent migrating pages (us)   | Never        |
+| `umThrashing`       | bool   | Back-and-forth migration reported | Never        |
+
+The GPU harness collects no unified-memory counters: these cells are empty in
+every row it writes, with or without `--capture-um`, which only makes the run
+say so. See [GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration
 

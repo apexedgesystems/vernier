@@ -54,8 +54,9 @@ inline void writeCsvCell(std::ostream& csv, const std::string& text) {
  * @param csv            Output stream (opened in text mode).
  * @param includeProfile When true, append the columns: `profileTool,profileDir`.
  * @param includeMetadata When true, append metadata columns: `timestamp,gitHash,hostname,platform`.
- * @param includeGpu     When true, append GPU-specific columns (20 columns: device info, multi-GPU
- * metrics, and Unified Memory stats).
+ * @param includeGpu     When true, append GPU-specific columns (29 columns: device, timing and
+ * transfer, NVML, CUPTI, multi-GPU, and the five unified-memory columns, which the GPU harness
+ * leaves empty).
  * @note NOT RT-safe (file I/O).
  */
 inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
