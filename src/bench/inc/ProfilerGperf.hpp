@@ -20,7 +20,10 @@
  * profile of the same kind already runs in the process, or the file cannot
  * be written), and one whose stopped capture leaves no file of this run, or
  * an empty one, whether or not an analysis follows; only a capture that left
- * its file is analyzed. A profiler stops only the captures it started.
+ * its file is analyzed. A profiler stops only the captures it started: when
+ * its measured window ends (afterMeasure()), at once when the window ends by
+ * an exception (abortMeasure(), unanalyzed), and before it starts again if a
+ * window ended through neither.
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
@@ -127,7 +130,7 @@ public:
   /** @brief Construct from a decision already made (the registry's path). */
   GperfProfiler(const PerfConfig& cfg, std::string testName, std::shared_ptr<const GperfPlan> plan);
 
-  /** @brief Stops a capture beforeMeasure() started and afterMeasure() did not. */
+  /** @brief Stops a capture beforeMeasure() started that is still on. */
   ~GperfProfiler() override;
 
   GperfProfiler(const GperfProfiler&) = delete;
@@ -138,6 +141,8 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+  /** @brief Stops the captures beforeMeasure() started, unanalyzed. */
+  void abortMeasure() noexcept override;
 
 private:
   PerfConfig cfg_{};
@@ -157,8 +162,9 @@ private:
   bool wantHeap_{false};
 
   // True while a capture beforeMeasure() started runs, so it is stopped
-  // exactly once: by afterMeasure(), or by the destructor when the measured
-  // window ended by an exception, with no analysis.
+  // exactly once: by afterMeasure(); with no analysis, by abortMeasure() when
+  // the measured window ended by an exception, or, when a window ended
+  // through neither, by the next beforeMeasure() or the destructor.
   bool cpuActive_{false};
   bool heapActive_{false};
 

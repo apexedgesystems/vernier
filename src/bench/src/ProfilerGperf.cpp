@@ -325,10 +325,15 @@ void GperfProfiler::beforeMeasure() {
   }
 
   // gperftools runs one CPU profile and one heap profile per process. A
-  // start it refuses is this case's failure, and the other profile is left
+  // capture this profiler started for an earlier window is still on when
+  // that window ended through neither afterMeasure() nor abortMeasure()
+  // (hooks attached without the abort hook): it is this profiler's, so it is
+  // stopped first, unanalyzed. A start gperftools then refuses is another
+  // profiler's capture running, which is this case's failure and is left
   // alone: a capture is stopped only by the profiler that started it. A
   // previous run's files are removed first, so what is there afterwards is
   // this run's.
+  stopCapture();
   if (wantHeap_) {
 #if UB_HAS_GPERF_HEAP
     // HeapProfilerStart uses a prefix (it creates <prefix>.<N>.heap files)
@@ -413,6 +418,8 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
   }
 #endif
 }
+
+void GperfProfiler::abortMeasure() noexcept { stopCapture(); }
 
 void GperfProfiler::fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
                          ReadinessStage stage) const {

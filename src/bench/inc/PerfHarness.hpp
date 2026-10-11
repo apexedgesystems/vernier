@@ -447,6 +447,7 @@ public:
   using Fn = std::function<void()>;
   using BeforeHook = std::function<void(const PerfCase&)>;
   using AfterHook = std::function<void(const PerfCase&, const Stats&)>;
+  using AbortHook = std::function<void(const PerfCase&)>;
 
   PerfCase(std::string testName, PerfConfig cfg)
       : testName_(std::move(testName)), cfg_(std::move(cfg)) {}
@@ -498,6 +499,14 @@ public:
   void setAfterMeasureHook(AfterHook h) { afterHook_ = std::move(h); }
 
   /**
+   * @brief Install the hook measured() runs in place of the after hook when
+   * its callback throws (optional): it ends what the before hook started,
+   * with nothing summarized or published. An exception it throws is dropped,
+   * so the caller gets the callback's.
+   */
+  void setAbortMeasureHook(AbortHook h) { abortHook_ = std::move(h); }
+
+  /**
    * @brief Measure repeats. User-provided body should perform exactly `cycles()` ops.
    * Records wall us per call per repeat, then summarizes.
    *
@@ -512,10 +521,10 @@ public:
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
    *
    * An exception from @p fn ends the measurement: the watchdog is turned off,
-   * nothing is summarized or published, the after hook does not run, and the
-   * exception reaches the caller unchanged. What the before hook started is
-   * ended by its owner (attachProfilerHooks(): the profiler, when the case is
-   * destroyed).
+   * the abort hook runs (attachProfilerHooks(): the profiler ends what its
+   * before hook started, without analysis), nothing is summarized or
+   * published, the after hook does not run, and the exception reaches the
+   * caller unchanged. The case can then measure again.
    */
   PerfResult measured(Fn fn, std::string label = "measured") {
     if (beforeHook_) {
@@ -563,6 +572,9 @@ public:
       if (watchdogActive) {
         perf_watchdog::disarm();
       }
+      // What the before hook started ends now, not with the case: the caller
+      // may keep the case, measure it again or measure another.
+      runAbortHook();
       throw;
     }
 
@@ -780,6 +792,19 @@ public:
   [[nodiscard]] const std::string& testName() const noexcept { return testName_; }
 
 private:
+  /// Run the abort hook, if any. What it throws is dropped, so the exception
+  /// that ended the measurement is the one the caller gets.
+  void runAbortHook() noexcept {
+    if (!abortHook_) {
+      return;
+    }
+    try {
+      abortHook_(*this);
+    } catch (...) {
+      // Dropped: the measured callback's exception is the one rethrown.
+    }
+  }
+
   /**
    * @brief --target-time auto-sizing: estimate one call's cost, then set
    * this instance's cycle count so a repeat spans the requested wall time.
@@ -835,6 +860,7 @@ private:
   // Optional hooks (no-ops unless set)
   BeforeHook beforeHook_{};
   AfterHook afterHook_{};
+  AbortHook abortHook_{};
 };
 
 } // namespace bench

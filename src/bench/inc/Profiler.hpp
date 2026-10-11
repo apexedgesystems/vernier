@@ -48,6 +48,15 @@ public:
   virtual void afterMeasure(const Stats& /*s*/) {}
 
   /**
+   * Called in place of afterMeasure() when the measured window ends by an
+   * exception: end what beforeMeasure() started, with no analysis and nothing
+   * published. The default does nothing; a backend whose collection would
+   * otherwise stay on (gperftools runs one capture of each kind per process)
+   * ends it here, so the case can measure again and another case can collect.
+   */
+  virtual void abortMeasure() noexcept {}
+
+  /**
    * @brief Factory: returns a concrete profiler or a no-op based on cfg.
    * No-Op if cfg.profileTool is empty, or if the registry's readiness decision
    * for the request says collection cannot run (the report is printed once).
@@ -99,11 +108,12 @@ inline std::unique_ptr<Profiler> Profiler::make(const PerfConfig& cfg,
 
 /**
  * @brief Helper to attach profiler hooks to a PerfCase.
- * Creates a profiler instance that lives through both hooks.
+ * Creates a profiler instance that lives through the before, after and abort
+ * hooks.
  * @note NOT RT-safe (heap allocation via shared_ptr).
  */
 inline void attachProfilerHooks(PerfCase& pc, const PerfConfig& cfg) {
-  // Keep the profiler alive across both lambdas via shared_ptr.
+  // Keep the profiler alive across the lambdas via shared_ptr.
   auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
 
   pc.setBeforeMeasureHook([prof](const PerfCase&) { prof->beforeMeasure(); });
@@ -112,6 +122,7 @@ inline void attachProfilerHooks(PerfCase& pc, const PerfConfig& cfg) {
     // Stamp the row this measurement just published from this thread
     PerfRegistry::instance().updateProfileMeta(prof->toolName(), prof->artifactDir());
   });
+  pc.setAbortMeasureHook([prof](const PerfCase&) { prof->abortMeasure(); });
 }
 
 /**

@@ -83,6 +83,32 @@ void work() {
   }
 }
 
+/** @brief A measured window whose workload fails part-way. */
+void workThenThrow() {
+  work();
+  throw std::runtime_error("the workload failed");
+}
+
+/**
+ * @brief The registry's decision finds the fake analyzer first on PATH, and
+ * git, for the run's metadata, stays reachable behind it; the fake logs to
+ * the folder's log.
+ */
+class FakeAnalyzerFirst {
+public:
+  explicit FakeAnalyzerFirst(const FakeToolDir& dir)
+      : path_("PATH", dir.path() + ":" + inheritedPath()), log_("FAKE_LOG", dir.logPath()) {}
+
+private:
+  static std::string inheritedPath() {
+    const char* inherited = std::getenv("PATH");
+    return inherited != nullptr ? inherited : "/usr/bin:/bin";
+  }
+
+  ScopedEnv path_;
+  ScopedEnv log_;
+};
+
 /** @brief gperf requests into a private folder, with a fake analyzer first on PATH. */
 class GperfLifecycleTest : public ::testing::Test {
 protected:
@@ -97,6 +123,17 @@ protected:
   }
 
   void TearDown() override {
+    // A capture a failed test left on would fail the tests after it.
+#if UB_HAS_GPERF_CPU
+    if (!runningCpuProfile().empty()) {
+      ProfilerStop();
+    }
+#endif
+#if UB_HAS_GPERF_HEAP
+    if (heapProfileRuns()) {
+      HeapProfilerStop();
+    }
+#endif
     ProfilerRegistry::instance().resetFailures();
     ProfilerRegistry::instance().resetReadiness();
   }
@@ -154,9 +191,9 @@ protected:
 
 /**
  * @test A case whose measured callback throws: the profiler its hooks own
- * stops the capture when the case ends, analyzes nothing and records no
- * failure; the next case of the process starts, writes and analyzes its own
- * profile.
+ * has stopped the capture by the time the case ends, analyzes nothing and
+ * records no failure; the next case of the process starts, writes and
+ * analyzes its own profile.
  */
 TEST_F(GperfLifecycleTest, ThrowingCaseStopsItsCapture) {
   // The registry's decision finds the fake analyzer first; git, for the run's
@@ -188,6 +225,95 @@ TEST_F(GperfLifecycleTest, ThrowingCaseStopsItsCapture) {
   EXPECT_TRUE(analyzed("Gperf.Next")) << dir_.log();
   const auto FAILED = ProfilerRegistry::instance().failures();
   EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+}
+
+/**
+ * @test A case whose measured callback throws, kept by the caller that
+ * caught the exception: its capture is stopped at the throw, while the case
+ * lives, unanalyzed, and nothing is recorded as failed.
+ */
+TEST_F(GperfLifecycleTest, ThrowingCaseKeptStopsItsCaptureAtOnce) {
+  FakeAnalyzerFirst analyzer(dir_);
+  StderrCapture quiet;
+  PerfCase pc{"Gperf.ThrowsKept", config()};
+  vernier::bench::attachProfilerHooks(pc, config());
+  EXPECT_THROW(pc.measured(workThenThrow), std::runtime_error);
+  EXPECT_EQ(runningCpuProfile(), "") << "the capture is still on while its case is kept";
+  EXPECT_GT(fileSize(cpuProf("Gperf.ThrowsKept")), 0)
+      << "the capture was not stopped (an unstopped gperftools profile has written nothing)";
+  EXPECT_FALSE(analyzed("Gperf.ThrowsKept")) << "an unfinished measurement was analyzed\n"
+                                             << dir_.log();
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+}
+
+/**
+ * @test While a case whose callback threw is kept, another case of the
+ * process starts, writes and analyzes its own capture.
+ */
+TEST_F(GperfLifecycleTest, AnotherCaseCapturesWhileTheThrowingOneIsKept) {
+  FakeAnalyzerFirst analyzer(dir_);
+  StderrCapture quiet;
+  PerfCase thrown{"Gperf.ThrowsFirst", config()};
+  vernier::bench::attachProfilerHooks(thrown, config());
+  EXPECT_THROW(thrown.measured(workThenThrow), std::runtime_error);
+
+  PerfCase other{"Gperf.Other", config()};
+  vernier::bench::attachProfilerHooks(other, config());
+  other.measured(work);
+  EXPECT_EQ(runningCpuProfile(), "");
+  EXPECT_GT(fileSize(cpuProf("Gperf.Other")), 0) << "the other case's capture did not start";
+  EXPECT_TRUE(analyzed("Gperf.Other")) << dir_.log();
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+}
+
+/**
+ * @test A case whose callback threw measures again: that measurement starts,
+ * writes and analyzes its own capture, and nothing is on once the case ends.
+ */
+TEST_F(GperfLifecycleTest, ThrowingCaseMeasuresAgainAndCaptures) {
+  FakeAnalyzerFirst analyzer(dir_);
+  StderrCapture quiet;
+  {
+    PerfCase pc{"Gperf.Retried", config()};
+    vernier::bench::attachProfilerHooks(pc, config());
+    EXPECT_THROW(pc.measured(workThenThrow), std::runtime_error);
+    EXPECT_FALSE(analyzed("Gperf.Retried")) << dir_.log();
+    pc.measured(work);
+    EXPECT_EQ(runningCpuProfile(), "") << "a capture is still on after the measurement ended";
+    EXPECT_TRUE(analyzed("Gperf.Retried")) << "the measurement again was not captured\n"
+                                           << dir_.log();
+  }
+  EXPECT_EQ(runningCpuProfile(), "") << "a capture outlived its case";
+  EXPECT_GT(fileSize(cpuProf("Gperf.Retried")), 0);
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+}
+
+/**
+ * @test A window that ended through neither afterMeasure() nor
+ * abortMeasure(), as hooks attached without the abort hook leave it, leaves
+ * its capture on; the profiler's next start stops that capture first, as its
+ * own, and starts this window's. Nothing is refused, the profiler stops what
+ * it started, and nothing is on once it is done.
+ */
+TEST_F(GperfLifecycleTest, StartOverItsOwnCaptureStopsThatFirst) {
+  StderrCapture quiet;
+  {
+    GperfProfiler profiler(config(false), "Gperf.Again", plan(false));
+    profiler.beforeMeasure();
+    work();
+    profiler.beforeMeasure();
+    EXPECT_EQ(runningCpuProfile(), cpuProf("Gperf.Again"));
+    work();
+    profiler.afterMeasure(Stats{});
+    EXPECT_EQ(runningCpuProfile(), "") << "the profiler lost the capture it started";
+  }
+  EXPECT_EQ(runningCpuProfile(), "") << "a capture outlived its profiler";
+  EXPECT_GT(fileSize(cpuProf("Gperf.Again")), 0);
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
 }
 
 /**

@@ -110,6 +110,7 @@ PerfResult contentionRun(const std::function<void()>& worker,
 // Hooks (optional)
 void setBeforeMeasureHook(std::function<void(const PerfCase&)> hook);
 void setAfterMeasureHook(std::function<void(const PerfCase&, const Stats&)> hook);
+void setAbortMeasureHook(std::function<void(const PerfCase&)> hook); // runs instead of the after hook when the callback throws
 
 // Accessors
 int cycles() const noexcept;
@@ -133,6 +134,10 @@ const std::string& testName() const noexcept;
 - Framework calls `fn()` once (you do the loop inside)
 - Use for: Batch measurements, custom loop logic
 - Your lambda should perform exactly `cycles()` operations
+- If `fn()` throws, the abort hook runs in place of the after hook (a
+  profiler attached with `attachProfilerHooks()` stops what it started,
+  unanalyzed), nothing is published, and the exception reaches you
+  unchanged; the case can measure again
 
 **`contentionRun(worker, label)`**
 
@@ -533,6 +538,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
+  virtual void abortMeasure() noexcept {} // the measured window threw: stop, without analysis
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);

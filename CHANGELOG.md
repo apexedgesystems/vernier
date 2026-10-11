@@ -377,9 +377,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   field alone (it defaults to -1, not given) or sets 300.
 - **A measured callback that throws leaves no watchdog or capture behind** --
   under `--profile`, the watchdog is turned off and the case's gperf capture
-  stopped without analysis, so neither can end or block a later test of the
-  process; the case publishes no row, and the exception reaches the caller
-  unchanged.
+  stopped without analysis as soon as the callback throws, so neither can end
+  or block a later test of the process or the same case measuring again; the
+  case publishes no row, and the exception reaches the caller unchanged.
 - **An in-process profile of the first case leaves out the run's metadata**
   -- with `--profile`, the run's metadata is taken when the first profiler is
   created, so its `git describe` no longer runs while the first case's perf,
