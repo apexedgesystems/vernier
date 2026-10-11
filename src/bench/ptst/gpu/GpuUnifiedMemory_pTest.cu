@@ -9,8 +9,10 @@
  *
  * What this measures, and what it does not:
  *  - Kernel time, as for any kernel: the median over the repeats of each
- *    repeat's time per launch. A launch that waits for pages to reach the GPU
- *    raises its own repeat's time, not the median.
+ *    repeat's time per launch. A wait for pages to reach the GPU inside the
+ *    timed interval counts in that repeat's sample; averaging over the
+ *    launches and taking the median can dilute or hide a one-time wait, but
+ *    neither isolates it nor guarantees that it is left out.
  *  - No unified-memory counters. The harness reads no page-fault or migration
  *    record: GpuStats::unifiedMemory stays empty and the CSV's um* cells with
  *    it, with or without --capture-um, which only adds a line saying so.
@@ -123,10 +125,11 @@ PERF_GPU_TEST(GpuUnifiedMemory, KernelOnManagedMemory) {
  *    read it, are each timed
  *  - The host reads what each pass wrote
  *
- * Each pass's first launch is the one that can wait for the buffer's pages;
- * its median is the time with the pages in place. The pass medians are
- * printed, not compared: what a host access costs the next launch can differ
- * from one GPU to another, and where the GPU shares the host's memory.
+ * A wait for the buffer's pages after a host access falls inside the next
+ * pass's timed launches; the pass median can dilute or hide it but does not
+ * isolate it. The pass medians are printed, not compared: what a host access
+ * costs the next launch can differ from one GPU to another, and where the GPU
+ * shares the host's memory.
  */
 PERF_GPU_TEST(GpuUnifiedMemory, HostAndKernelTakeTurns) {
   PERF_GPU_GUARD(perf);

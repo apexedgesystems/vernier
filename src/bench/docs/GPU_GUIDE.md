@@ -751,8 +751,10 @@ kernel. It does not allocate or move a test's memory, so the test chooses the
 strategy: allocate with `cudaMallocManaged()` and declare no transfer
 (`withHostToDevice()` and `withDeviceToHost()` time explicit copies, which
 managed data does not need). Kernel time is the median over the repeats of
-each repeat's time per launch, so a launch that waits for pages to reach the
-GPU raises its own repeat's time, not the median.
+each repeat's time per launch. A wait for pages to reach the GPU inside the
+timed interval counts in its repeat's sample: averaging over the launches and
+taking the median can dilute or hide a one-time wait, but neither isolates it
+nor guarantees that it is left out.
 
 ### Unified-Memory Counters
 
