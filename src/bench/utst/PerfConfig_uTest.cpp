@@ -472,3 +472,46 @@ TEST(PerfConfigUnknownOptionTest, GpuParserOptionsDoNotWarn) {
   parseGpuFlags(gpuCfg, args.argc(), args.argv());
   EXPECT_EQ(*args.argc(), 1);
 }
+
+/* ----------------------------- PerfGpuConfig Tests ----------------------------- */
+
+/** @test --gpu-memory unified records the Unified strategy and no unified-memory request */
+TEST(PerfGpuConfigTest, ManagedMemoryStrategyAsksForNoCounters) {
+  PerfGpuConfig cfg;
+  ArgvBuilder args{"prog", "--gpu-memory", "unified"};
+  parseGpuFlags(cfg, args.argc(), args.argv());
+
+  EXPECT_EQ(cfg.memStrategy, PerfGpuConfig::MemoryStrategy::Unified);
+  EXPECT_FALSE(cfg.captureUnifiedMemory);
+  EXPECT_EQ(*args.argc(), 1);
+}
+
+/** @test --capture-um asks for unified-memory counters and leaves the memory strategy as it was */
+TEST(PerfGpuConfigTest, CaptureUmAsksForCounters) {
+  PerfGpuConfig cfg;
+  ArgvBuilder args{"prog", "--capture-um"};
+  parseGpuFlags(cfg, args.argc(), args.argv());
+
+  EXPECT_TRUE(cfg.captureUnifiedMemory);
+  EXPECT_EQ(cfg.memStrategy, PerfGpuConfig::MemoryStrategy::Explicit);
+}
+
+/** @test Given together, the strategy and the request each set their own field */
+TEST(PerfGpuConfigTest, StrategyAndRequestAreSeparate) {
+  PerfGpuConfig cfg;
+  ArgvBuilder args{"prog", "--gpu-memory", "unified", "--capture-um"};
+  parseGpuFlags(cfg, args.argc(), args.argv());
+
+  EXPECT_EQ(cfg.memStrategy, PerfGpuConfig::MemoryStrategy::Unified);
+  EXPECT_TRUE(cfg.captureUnifiedMemory);
+}
+
+/** @test fromPerfConfig() reads "unified" in the profile args as the Unified strategy only */
+TEST(PerfGpuConfigTest, ProfileArgsHintSelectsTheStrategyOnly) {
+  PerfConfig base;
+  base.profileArgs = "unified";
+  const PerfGpuConfig gpu = PerfGpuConfig::fromPerfConfig(base);
+
+  EXPECT_EQ(gpu.memStrategy, PerfGpuConfig::MemoryStrategy::Unified);
+  EXPECT_FALSE(gpu.captureUnifiedMemory);
+}

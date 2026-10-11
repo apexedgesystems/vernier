@@ -723,8 +723,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   `--capture-um` or `--gpu-memory unified`, a GPU test that declared
   host-to-device copies got page-fault, migration and thrashing values (and
   tuning hints) computed from the copied bytes, not observed. The harness
-  collects no unified-memory counters: the five `um*` cells stay empty, the run
-  says so once, and `um*` values in earlier CSVs should be discarded.
+  collects no unified-memory counters: the five `um*` cells stay empty, a run
+  given `--capture-um` says so once, `--gpu-memory unified` and
+  `PerfGpuConfig::fromPerfConfig()` record the memory strategy without asking
+  for counters, and `um*` values in earlier CSVs should be discarded.
 - **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
   path it could not open (in a missing directory, a directory, an empty path)
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,

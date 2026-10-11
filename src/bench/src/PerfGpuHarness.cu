@@ -206,9 +206,9 @@ void stateOnce(const std::string& line) {
 
 /// What a run that asks for unified-memory counters is told, once.
 constexpr const char* UM_NOT_COLLECTED =
-    "[gpu] --capture-um (or --gpu-memory unified) asks for unified-memory counters, which the GPU "
-    "harness does not collect: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs "
-    "and umThrashing stay empty.";
+    "[gpu] --capture-um asks for unified-memory counters, which the GPU harness does not collect: "
+    "umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay "
+    "empty.";
 
 /**
  * @brief Answers a request for unified-memory counters

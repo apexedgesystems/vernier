@@ -759,13 +759,18 @@ GPU raises its own repeat's time, not the median.
 The harness collects no unified-memory counters: it reads no page-fault or
 migration record. `GpuStats::unifiedMemory` stays empty, and the CSV keeps the
 columns `umPageFaults`, `umH2DMigrations`, `umD2HMigrations`,
-`umMigrationTimeUs` and `umThrashing` empty in every row. `--capture-um`, and
-`--gpu-memory unified`, which asks for the same counters, change nothing that
-is measured; the run says so once:
+`umMigrationTimeUs` and `umThrashing` empty in every row. `--capture-um` asks
+for those counters, as does a test that sets
+`PerfGpuConfig::captureUnifiedMemory`; it changes nothing that is measured, and
+the run says so once:
 
 ```text
-[gpu] --capture-um (or --gpu-memory unified) asks for unified-memory counters, which the GPU harness does not collect: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty.
+[gpu] --capture-um asks for unified-memory counters, which the GPU harness does not collect: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty.
 ```
+
+`--gpu-memory unified` only records the memory strategy in the GPU
+configuration: it asks for no counters, and the harness does not change how a
+test allocates its memory.
 
 **When Unified Memory is good:**
 

@@ -1125,32 +1125,44 @@ namespace {
 const std::vector<std::string> UM_COLUMNS = {"umPageFaults", "umH2DMigrations", "umD2HMigrations",
                                              "umMigrationTimeUs", "umThrashing"};
 
+/** @brief What parseGpuFlags() makes of @p flags, as a GPU benchmark's main() parses them. */
+ub::PerfGpuConfig parsedGpuFlags(const std::vector<std::string>& flags) {
+  std::vector<std::string> args{"bench"};
+  args.insert(args.end(), flags.begin(), flags.end());
+  std::vector<char*> argv;
+  argv.reserve(args.size());
+  for (std::string& arg : args) {
+    argv.push_back(arg.data());
+  }
+  int argc = static_cast<int>(argv.size());
+  ub::PerfGpuConfig parsed;
+  ub::parseGpuFlags(parsed, &argc, argv.data());
+  return parsed;
+}
+
+/** @brief A GPU config whose caller asks for unified-memory counters in code. */
+ub::PerfGpuConfig programmaticCapture() {
+  ub::PerfGpuConfig cfg;
+  cfg.captureUnifiedMemory = true;
+  return cfg;
+}
+
 /**
- * @brief Sets the process's GPU config to what parseGpuFlags() makes of
- *        @p flags, as a GPU benchmark's main() does, for a scope; the config
- *        it found is restored when the scope ends.
+ * @brief Makes @p cfg the process's GPU config, the one a GPU case reads when
+ *        it is built, for a scope; the config it found is restored when the
+ *        scope ends.
  */
-class ScopedGpuFlags {
+class ScopedGpuConfig {
 public:
-  explicit ScopedGpuFlags(const std::vector<std::string>& flags)
+  explicit ScopedGpuConfig(const ub::PerfGpuConfig& cfg)
       : saved_(ub::detail::gpuConfigSingleton()) {
-    std::vector<std::string> args{"bench"};
-    args.insert(args.end(), flags.begin(), flags.end());
-    std::vector<char*> argv;
-    argv.reserve(args.size());
-    for (std::string& arg : args) {
-      argv.push_back(arg.data());
-    }
-    int argc = static_cast<int>(argv.size());
-    ub::PerfGpuConfig parsed;
-    ub::parseGpuFlags(parsed, &argc, argv.data());
-    ub::detail::gpuConfigSingleton() = parsed;
+    ub::detail::gpuConfigSingleton() = cfg;
   }
 
-  ~ScopedGpuFlags() { ub::detail::gpuConfigSingleton() = saved_; }
+  ~ScopedGpuConfig() { ub::detail::gpuConfigSingleton() = saved_; }
 
-  ScopedGpuFlags(const ScopedGpuFlags&) = delete;
-  ScopedGpuFlags& operator=(const ScopedGpuFlags&) = delete;
+  ScopedGpuConfig(const ScopedGpuConfig&) = delete;
+  ScopedGpuConfig& operator=(const ScopedGpuConfig&) = delete;
 
 private:
   ub::PerfGpuConfig saved_;
@@ -1164,16 +1176,15 @@ bool hasUnifiedMemoryField(const ub::PerfRow& row) {
 }
 
 /**
- * @brief Under the GPU config @p flags parse to, measures the kernel in a case
- *        of this process, through the multi-GPU path on one device or as two
- *        kernel measurements (one with declared copies), then writes to stderr
- *        how many lines stated all five um* cells empty and how many rows
- *        carried a unified-memory field, and exits 0.
+ * @brief Under GPU config @p gpu, measures the kernel in a case of this
+ *        process, through the multi-GPU path on one device or as two kernel
+ *        measurements (one with declared copies), then writes to stderr how
+ *        many lines stated all five um* cells empty and how many rows carried
+ *        a unified-memory field, and exits 0.
  */
 [[noreturn]] void reportUnifiedMemoryStatements(const ub::PerfConfig& cfg,
-                                                const std::vector<std::string>& flags,
-                                                bool multiGpu) {
-  const ScopedGpuFlags FLAGS(flags);
+                                                const ub::PerfGpuConfig& gpu, bool multiGpu) {
+  const ScopedGpuConfig GPU(gpu);
   std::size_t umRows = 0;
   std::string captured;
   {
@@ -1227,7 +1238,7 @@ bool hasUnifiedMemoryField(const ub::PerfRow& row) {
  *       byte cells of the measurement
  */
 TEST_F(PerfGpuHarnessTest, CaptureUmLeavesTheUnifiedMemoryCellsEmpty) {
-  const ScopedGpuFlags CAPTURE({"--capture-um"});
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
   SaxpyFixtureData data;
   ub::PerfGpuCase perf{uniqueSuite("GpuCaptureUm") + ".Transfers", cfg_};
   ASSERT_TRUE(perf.gpuConfig().captureUnifiedMemory) << "--capture-um did not reach the case";
@@ -1253,24 +1264,41 @@ TEST_F(PerfGpuHarnessTest, CaptureUmLeavesTheUnifiedMemoryCellsEmpty) {
 }
 
 /**
- * @test A request for unified-memory counters, by --capture-um or by
- *       --gpu-memory unified, is stated once per process, naming the five
- *       cells it leaves empty, for kernel and multi-GPU measurements alike,
- *       and no row carries a unified-memory field; a run without the request
- *       states nothing
+ * @test An explicit request for unified-memory counters, by --capture-um or by
+ *       a caller setting PerfGpuConfig::captureUnifiedMemory, is stated once
+ *       per process, naming the five cells it leaves empty, for kernel and
+ *       multi-GPU measurements alike, and no row carries a unified-memory field
  */
-TEST_F(PerfGpuHarnessDeathTest, AUnifiedMemoryRequestIsStatedOnce) {
+TEST_F(PerfGpuHarnessDeathTest, AnExplicitUnifiedMemoryRequestIsStatedOnce) {
+  ASSERT_TRUE(parsedGpuFlags({"--capture-um"}).captureUnifiedMemory) << "--capture-um not read";
   // A fresh process for each run, so each run's once-per-process state is its own.
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, {"--capture-um"}, false),
+  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--capture-um"}), false),
               ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, {"--gpu-memory", "unified"}, false),
+  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, programmaticCapture(), false),
               ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, {"--capture-um"}, true),
+  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--capture-um"}), true),
               ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, {}, false), ::testing::ExitedWithCode(0),
-              "umStatements=0 umRows=0");
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test Choosing the managed-memory strategy (--gpu-memory unified) asks for
+ *       no unified-memory counters: like a run without GPU flags, it states
+ *       nothing and no row carries a unified-memory field
+ */
+TEST_F(PerfGpuHarnessDeathTest, ChoosingManagedMemoryAloneStatesNothing) {
+  ASSERT_EQ(parsedGpuFlags({"--gpu-memory", "unified"}).memStrategy,
+            ub::PerfGpuConfig::MemoryStrategy::Unified)
+      << "--gpu-memory unified not read";
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(
+      reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), false),
+      ::testing::ExitedWithCode(0), "umStatements=0 umRows=0");
+  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({}), false),
+              ::testing::ExitedWithCode(0), "umStatements=0 umRows=0");
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 
