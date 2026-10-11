@@ -37,6 +37,7 @@
 #include <string>
 #include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 using vernier::bench::BpftracePlan;
@@ -59,6 +60,7 @@ using vernier::bench::ReadinessContext;
 using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -887,6 +889,56 @@ TEST_F(BpfCheckTest, BpftraceCleanStopIsReady) {
 }
 
 /**
+ * @test A probe whose exit status this process could not read shows nothing
+ * of how it ended. With SIGCHLD ignored, or with SA_NOCLDWAIT, the system
+ * discards the probe tracer's status: a probe that stops cleanly and one that
+ * fails at the stop with bpftrace's error alike leave the check unverified,
+ * saying why the tracer's end could not be observed, quoting the error output
+ * it has, and warning that a run's captures will not count as complete
+ * either. With SIGCHLD at its default action the two are ready and refused
+ * (BpftraceCleanStopIsReady, BpftraceErrorAfterTheStopReadsAsAtTheStart).
+ */
+TEST_F(BpfCheckTest, BpftraceProbeWithoutItsStatusIsUnverified) {
+  using Policy = ChildReaping::Policy;
+  const std::vector<std::pair<Policy, std::string>> POLICIES{
+      {Policy::IGNORED,
+       "this process ignores SIGCHLD, so the system discards its children's exit statuses"},
+      {Policy::NO_CHILD_WAIT, "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
+                              "discards its children's exit statuses"}};
+  for (const auto& [POLICY, WHY] : POLICIES) {
+    for (const std::string MODE : {"ok", "int-error"}) {
+      ReadinessResult r;
+      {
+        const ChildReaping REAPING(POLICY);
+        ASSERT_TRUE(REAPING.ok());
+        r = check("bpftrace", ctx({{"FAKE_BPFTRACE_MODE", MODE}}));
+      }
+      const std::string SAYS = MODE == "ok" ? ""
+                                            : "; its error output says: stdin:1:1-36: ERROR: "
+                                              "tracepoint not found: syscalls:sys_enter_write";
+      EXPECT_EQ(r.cause, ReadinessCause::UNVERIFIED) << MODE << ": " << r.report.message;
+      EXPECT_TRUE(r.collectionReady()) << MODE;
+      EXPECT_EQ(r.report.message,
+                "unverified: script 'probe_script': the probe tracer's end could not be "
+                "observed: " +
+                    WHY + SAYS +
+                    "; a run here cannot observe its tracer's end either, so its captures will "
+                    "not count as complete")
+          << MODE;
+      EXPECT_EQ(r.report.hint,
+                "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for "
+                "this program's own children while the profiler runs, so the tracer's end can "
+                "be read.")
+          << MODE;
+    }
+  }
+  for (const pid_t PID : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(PID)) << "tracer " << PID << " outlived the check";
+    endIfLeft(PID);
+  }
+}
+
+/**
  * @test A good probe that takes past the grace to attach (a busy machine) is
  * stopped only once it prints its attach line, and is ready.
  */
@@ -1292,6 +1344,94 @@ TEST_F(BpfCheckTest, BpftraceCaptureIsCompleteOnlyWhenItsTracerExitsCleanly) {
   }
 }
 
+/**
+ * @test A capture whose tracer's exit status this process could not read is
+ * not complete. With SIGCHLD ignored, or with SA_NOCLDWAIT, as an application
+ * may set them, the system discards the tracer's status: a tracer that
+ * acknowledges both ends, prints its data, then exits 42 with an error at the
+ * stop, and one that stops cleanly alike, fail the capture, which says the
+ * tracer's end could not be observed and why, quotes its error output and
+ * names the files kept. Beside them, with SIGCHLD at its default action, the
+ * failing tracer is rejected and the clean one is READY, as before.
+ */
+TEST_F(BpfCheckTest, BpftraceCaptureWithoutItsTracersStatusIsNotComplete) {
+  using Policy = ChildReaping::Policy;
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const std::string PID = std::to_string(::getpid());
+  const std::string FLUSH_ERROR =
+      "unusable: script 'probe_script': the tracer exited with status 42 after SIGINT: ERROR: "
+      "failed to flush report; its output may be incomplete";
+  const std::string COMPLETE = "script 'probe_script' captured the measured repeats: its tracer "
+                               "acknowledged their start and their end for pid " +
+                               PID + " and flushed its output";
+  const std::string IGNORED =
+      "this process ignores SIGCHLD, so the system discards its children's exit statuses";
+  const std::string NO_WAIT = "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
+                              "discards its children's exit statuses";
+  const auto UNOBSERVED = [](const std::string& why, bool error) {
+    return "unusable: script 'probe_script': the tracer's end could not be observed: " + why +
+           "; nothing shows that it printed its maps, so its output may be incomplete" +
+           (error ? "; its error output says: ERROR: failed to flush report" : "");
+  };
+  struct Case {
+    std::string test;
+    Policy policy;
+    std::string window;
+    std::string message;
+  };
+  const std::vector<Case> CASES{
+      {"Bpf.Reaped.FlushError", Policy::DEFAULT, "flush-error", FLUSH_ERROR},
+      {"Bpf.Reaped.CleanStop", Policy::DEFAULT, "", COMPLETE},
+      {"Bpf.Ignored.FlushError", Policy::IGNORED, "flush-error", UNOBSERVED(IGNORED, true)},
+      {"Bpf.Ignored.CleanStop", Policy::IGNORED, "", UNOBSERVED(IGNORED, false)},
+      {"Bpf.NoWait.FlushError", Policy::NO_CHILD_WAIT, "flush-error", UNOBSERVED(NO_WAIT, true)},
+      {"Bpf.NoWait.CleanStop", Policy::NO_CHILD_WAIT, "", UNOBSERVED(NO_WAIT, false)},
+  };
+  for (const Case& C : CASES) {
+    std::map<std::string, std::string> env;
+    if (!C.window.empty()) {
+      env["FAKE_WINDOW"] = C.window;
+    }
+    WindowRun run{};
+    {
+      const ChildReaping REAPING(C.policy);
+      ASSERT_TRUE(REAPING.ok());
+      run = runWindowed(R, C.test, env);
+    }
+    ASSERT_TRUE(run.outcome.has_value()) << C.test << ": " << run.err;
+    EXPECT_EQ(run.outcome->report.message, C.message) << C.test;
+    EXPECT_EQ(run.outcome->cause,
+              C.message == COMPLETE ? ReadinessCause::READY : ReadinessCause::UNUSABLE)
+        << C.test;
+    if (C.policy != Policy::DEFAULT) {
+      EXPECT_EQ(run.outcome->report.hint,
+                "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for "
+                "this program's own children while the profiler runs, so the tracer's end can "
+                "be read; its output and error output are kept in " +
+                    reportPath(C.test) + " and " + errorPath(C.test) + ".")
+          << C.test;
+      const std::string LINE = "[bpftrace] " + C.message.substr(std::string("unusable: ").size());
+      EXPECT_NE(run.err.find(LINE + "\n"), std::string::npos) << C.test << ":\n" << run.err;
+    }
+    // The capture's files stay whatever its outcome.
+    const std::string REPORT = fileText(reportPath(C.test));
+    EXPECT_NE(REPORT.find("bpftrace armed " + PID + " "), std::string::npos) << C.test << ":\n"
+                                                                             << REPORT;
+    EXPECT_NE(REPORT.find("bpftrace disarmed " + PID + " "), std::string::npos) << C.test << ":\n"
+                                                                                << REPORT;
+    EXPECT_NE(REPORT.find("@c: 1"), std::string::npos) << C.test << ":\n" << REPORT;
+  }
+  for (const char* TEST : {"Bpf.Ignored.FlushError", "Bpf.NoWait.FlushError"}) {
+    EXPECT_NE(fileText(errorPath(TEST)).find("ERROR: failed to flush report"), std::string::npos)
+        << TEST;
+  }
+  for (const pid_t TRACER : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(TRACER)) << "tracer " << TRACER << " outlived the run";
+    endIfLeft(TRACER);
+  }
+}
+
 /* ----------------------------- bpftrace: the capture window ----------------------------- */
 
 /**
@@ -1530,6 +1670,64 @@ TEST_F(BpfCheckTest, BpftraceTracerEndingBeforeItsArmIsAFailedStart) {
   EXPECT_EQ(BROKEN.outcome->report.message,
             "unusable: script 'probe_script' did not stay attached: fake bpftrace: the program "
             "could not be loaded");
+}
+
+/**
+ * @test A tracer that ends before it acknowledges its arm, its status
+ * discarded (SIGCHLD ignored, or SA_NOCLDWAIT), is a failed start that says
+ * its end could not be observed, not one that ended by itself; one that says
+ * why on its stderr is read by what it says, as with its status.
+ */
+TEST_F(BpfCheckTest, BpftraceTracerEndingUnobservedBeforeItsArmIsAFailedStart) {
+  using Policy = ChildReaping::Policy;
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  const std::vector<std::tuple<Policy, std::string, std::string>> POLICIES{
+      {Policy::IGNORED, "Bpf.Ignored",
+       "this process ignores SIGCHLD, so the system discards its children's exit statuses"},
+      {Policy::NO_CHILD_WAIT, "Bpf.NoWait",
+       "this process sets SA_NOCLDWAIT for SIGCHLD, so the system discards its children's exit "
+       "statuses"}};
+  for (const auto& [POLICY, PREFIX, WHY] : POLICIES) {
+    const std::string ENDED = PREFIX + ".EndBeforeArm";
+    const std::string BROKE = PREFIX + ".BrokenStart";
+    WindowRun run{};
+    WindowRun broken{};
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      run = runWindowed(R, ENDED, {{"FAKE_WINDOW", "end-before-arm"}});
+      broken = runWindowed(R, BROKE, {{"FAKE_BPFTRACE_MODE", "broken"}});
+    }
+    ASSERT_TRUE(run.outcome.has_value()) << ENDED << ": " << run.err;
+    EXPECT_EQ(run.outcome->cause, ReadinessCause::UNUSABLE) << ENDED;
+    EXPECT_EQ(run.outcome->report.message,
+              "unusable: script 'probe_script' ended before it acknowledged its arm probe, and "
+              "its end could not be observed: " +
+                  WHY)
+        << ENDED;
+    EXPECT_EQ(run.outcome->report.hint,
+              "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for "
+              "this program's own children while the profiler runs, so the tracer's end can "
+              "be read; its error output is kept in " +
+                  errorPath(ENDED) + ".")
+        << ENDED;
+    EXPECT_NE(run.err.find("[bpftrace] the tracer exited before it acknowledged its arm probe: "
+                           "unusable: script 'probe_script' ended before it acknowledged its arm "
+                           "probe, and its end could not be observed"),
+              std::string::npos)
+        << ENDED << ":\n"
+        << run.err;
+    ASSERT_TRUE(broken.outcome.has_value()) << BROKE << ": " << broken.err;
+    EXPECT_EQ(broken.outcome->report.message,
+              "unusable: script 'probe_script' did not stay attached: fake bpftrace: the program "
+              "could not be loaded")
+        << BROKE;
+  }
+  for (const pid_t TRACER : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(TRACER)) << "tracer " << TRACER << " outlived the run";
+    endIfLeft(TRACER);
+  }
 }
 
 /** @test A tracer that ends after its arm, before the stop, leaves an incomplete capture */
@@ -2452,6 +2650,58 @@ TEST_F(BpfCheckTest, OffCpuStacksWrittenOnlyWhenTheTracerExitsCleanly) {
             std::string::npos)
       << CLEAN;
   EXPECT_EQ(CLEAN.find("the tracer"), std::string::npos) << CLEAN;
+  for (const InlineCall& CALL : inlineCalls(dir_, "bpftrace")) {
+    EXPECT_TRUE(exited(CALL.pid)) << "tracer " << CALL.pid << " outlived the run";
+    endIfLeft(CALL.pid);
+  }
+}
+
+/**
+ * @test offcpu claims its stacks only after a clean exit it observed: with
+ * SIGCHLD ignored, or with SA_NOCLDWAIT, its tracer's status is discarded, and
+ * a clean stop is reported as one whose end could not be observed, with no
+ * stacks claimed, while its check, whose probe tracer's end it cannot observe
+ * either, warns; with SIGCHLD at its default action the same stop claims
+ * them.
+ */
+TEST_F(BpfCheckTest, OffCpuStacksClaimedOnlyOnAnObservedCleanExit) {
+  using Policy = ChildReaping::Policy;
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::vector<std::pair<Policy, std::string>> POLICIES{
+      {Policy::IGNORED,
+       "this process ignores SIGCHLD, so the system discards its children's exit statuses"},
+      {Policy::NO_CHILD_WAIT, "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
+                              "discards its children's exit statuses"}};
+  int run = 0;
+  for (const auto& [POLICY, WHY] : POLICIES) {
+    std::string err;
+    ReadinessResult checked;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      checked = check("offcpu", ctx());
+      err = runPlanned("offcpu", R, "OffCpu.Unobserved" + std::to_string(run++));
+    }
+    EXPECT_EQ(checked.cause, ReadinessCause::UNVERIFIED) << checked.report.message;
+    EXPECT_EQ(
+        checked.report.message,
+        "unverified: the off-CPU script: the probe tracer's end could not be observed: " + WHY +
+            "; a run here cannot observe its tracer's end either, so its captures will not "
+            "count as complete");
+    EXPECT_EQ(checked.report.hint,
+              "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for this "
+              "program's own children while the profiler runs, so the tracer's end can be read.");
+    EXPECT_NE(
+        err.find("[offcpu] the off-CPU script: the tracer's end could not be observed: " + WHY +
+                 "; nothing shows that it printed its maps, so its output may be "
+                 "incomplete\n"),
+        std::string::npos)
+        << err;
+    EXPECT_EQ(err.find("stacks written"), std::string::npos) << err;
+  }
+  const std::string READ = runPlanned("offcpu", R, "OffCpu.Observed");
+  EXPECT_NE(READ.find("[offcpu] stacks written to "), std::string::npos) << READ;
   for (const InlineCall& CALL : inlineCalls(dir_, "bpftrace")) {
     EXPECT_TRUE(exited(CALL.pid)) << "tracer " << CALL.pid << " outlived the run";
     endIfLeft(CALL.pid);

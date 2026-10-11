@@ -125,10 +125,12 @@ with status 0, as bpftrace does once it has printed its maps, whatever it
 acknowledged and printed before: one that exits with another status, with an
 error or without, or dies of a stop signal it does not handle. The `[bpftrace]`
 line says how it ended and quotes the line of its error output that says why;
-a warning there does not fail a tracer that exits with status 0. A report that
-holds nothing but the two lines is a complete capture whose script printed no
-data of its own: the run says so with a `[bpftrace]` line, and the capture
-counts as a caveat, not as a zero.
+a warning there does not fail a tracer that exits with status 0. A status the
+benchmark could not read is none: where the system discarded it, the capture
+fails too, its files kept, and the `[bpftrace]` line says that the tracer's end
+could not be observed and why. A report that holds nothing but the two lines is
+a complete capture whose script printed no data of its own: the run says so
+with a `[bpftrace]` line, and the capture counts as a caveat, not as a zero.
 
 What a script must leave alone: maps whose names start with `@vernier_`, and
 the lines `bpftrace armed` and `bpftrace disarmed`, which it must not print;
@@ -146,7 +148,11 @@ program binds each name to that thread's id, so another thread of the
 benchmark may carry one of the names. The thread that runs the measured
 repeats must not be named `vernier-stop` while they run: a sleep of it would
 print the stop line before the stop was asked for, and the capture is reported
-as failed.
+as failed. While the profiler runs, the benchmark must leave SIGCHLD at its
+default action, without `SA_NOCLDWAIT`, and wait only for its own children:
+otherwise the system discards the tracers' exit statuses, or another wait takes
+them, and no capture is complete. The check warns of the first two before the
+run.
 
 ## Scripts
 

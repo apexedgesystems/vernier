@@ -356,6 +356,15 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   maps; the run now says how it ended and quotes its error, a bpftrace capture
   so ended counts as failed with its files kept, and offcpu no longer says its
   stacks were written.
+- **bpftrace and offcpu never read an exit status they could not obtain as 0**
+  -- in a benchmark that ignores SIGCHLD or sets `SA_NOCLDWAIT`, the system
+  discards each tracer's exit status, and the tracer passed as one that had
+  exited with status 0, however it ended. The run now says that the tracer's
+  end could not be observed and why, a bpftrace capture so ended counts as
+  failed with its files kept, offcpu does not say its stacks were written, and
+  both checks warn. **Action needed:** leave SIGCHLD at its default action,
+  without `SA_NOCLDWAIT`, and wait only for the benchmark's own children while
+  bpftrace or offcpu runs.
 - **`PERF_BPF` reads like every other boolean setting** -- `yes` and `on` turn
   it on, where they left it off, and a value that is no boolean is a
   configuration error instead of off. **Action needed:** fix an invalid

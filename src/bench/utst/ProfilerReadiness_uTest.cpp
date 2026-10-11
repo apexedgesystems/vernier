@@ -34,11 +34,13 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using vernier::bench::decidePrivilege;
 using vernier::bench::EnvBool;
 using vernier::bench::EnvReport;
+using vernier::bench::HELPER_STATUS_UNAVAILABLE;
 using vernier::bench::HelperStart;
 using vernier::bench::HelperStopPolicy;
 using vernier::bench::HelperStopResult;
@@ -64,6 +66,8 @@ using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
 using vernier::bench::resolveExecutable;
 using vernier::bench::runBoundedProbe;
+using vernier::bench::StatusLoss;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 
 namespace {
@@ -796,6 +800,80 @@ TEST(ReadinessOwnedHelper, StopsOnInterruptThatThisProcessIgnores) {
   EXPECT_EQ(STOP.stoppedBy, SIGINT);
   EXPECT_TRUE(WIFSIGNALED(STOP.waitStatus) && WTERMSIG(STOP.waitStatus) == SIGINT)
       << "wait status " << STOP.waitStatus;
+}
+
+/**
+ * @test A helper reaped elsewhere, as an application that ignores SIGCHLD or
+ * sets SA_NOCLDWAIT reaps it, leaves no exit status to read: its stop, or its
+ * start when it ended within the grace (here with status 0), says the status
+ * was not read and why, holds HELPER_STATUS_UNAVAILABLE, does not pass for a
+ * clean exit, and once the helper is gone it is never signalled again. Reaped
+ * here, with SIGCHLD at its default action, its status is read.
+ */
+TEST(ReadinessOwnedHelper, StatusReapedElsewhereIsNotACleanExit) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::NO_CHILD_WAIT, Policy::DEFAULT}) {
+    const std::string NAME = POLICY == Policy::IGNORED         ? "SIGCHLD ignored"
+                             : POLICY == Policy::NO_CHILD_WAIT ? "SA_NOCLDWAIT"
+                                                               : "the default action";
+    const StatusLoss LOSS = POLICY == Policy::IGNORED         ? StatusLoss::SIGCHLD_IGNORED
+                            : POLICY == Policy::NO_CHILD_WAIT ? StatusLoss::NO_CHILD_WAIT
+                                                              : StatusLoss::NONE;
+    OwnedHelper helper(quickPolicy());
+    OwnedHelper early(quickPolicy());
+    HelperStart start;
+    HelperStopResult stop;
+    HelperStart ended;
+    HelperStopResult afterEnd;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      start = helper.start({HELPER, "run"}, "", dir.path() + "/err.txt", 200, &CTX);
+      ASSERT_TRUE(start.running()) << NAME << ": " << start.errorTail;
+      stop = helper.stop();
+      ended = early.start({HELPER, "exit", "0"}, "", dir.path() + "/early.txt", 2000, &CTX);
+      afterEnd = early.stop();
+    }
+    EXPECT_TRUE(stop.wasRunning) << NAME;
+    EXPECT_TRUE(stop.reaped) << NAME;
+    EXPECT_FALSE(stop.stillAlive) << NAME;
+    EXPECT_EQ(stop.stoppedBy, SIGINT) << NAME;
+    ASSERT_EQ(stop.deliveries.size(), 1U) << NAME << ": a helper gone is never signalled again";
+    ASSERT_TRUE(ended.exitedEarly) << NAME;
+    EXPECT_FALSE(afterEnd.wasRunning) << NAME;
+    EXPECT_TRUE(afterEnd.deliveries.empty()) << NAME << ": a helper gone is never signalled";
+    EXPECT_EQ(stop.statusLoss, LOSS) << NAME;
+    EXPECT_EQ(ended.statusLoss, LOSS) << NAME;
+    EXPECT_EQ(afterEnd.statusLoss, LOSS) << NAME;
+    if (POLICY == Policy::DEFAULT) {
+      // Reaped here: each status is read, the SIGINT that ended the one and
+      // the other's exit with status 0.
+      EXPECT_TRUE(stop.statusObtained) << NAME;
+      EXPECT_TRUE(WIFSIGNALED(stop.waitStatus) && WTERMSIG(stop.waitStatus) == SIGINT)
+          << NAME << ": wait status " << stop.waitStatus;
+      for (const auto& [OBTAINED, STATUS] :
+           {std::pair{ended.statusObtained, ended.waitStatus},
+            std::pair{afterEnd.statusObtained, afterEnd.waitStatus}}) {
+        EXPECT_TRUE(OBTAINED) << NAME;
+        EXPECT_TRUE(WIFEXITED(STATUS) && WEXITSTATUS(STATUS) == 0)
+            << NAME << ": wait status " << STATUS;
+      }
+      continue;
+    }
+    for (const auto& [OBTAINED, STATUS] :
+         {std::pair{stop.statusObtained, stop.waitStatus},
+          std::pair{ended.statusObtained, ended.waitStatus},
+          std::pair{afterEnd.statusObtained, afterEnd.waitStatus}}) {
+      EXPECT_FALSE(OBTAINED) << NAME;
+      EXPECT_EQ(STATUS, HELPER_STATUS_UNAVAILABLE) << NAME;
+      EXPECT_FALSE(WIFEXITED(STATUS) && WEXITSTATUS(STATUS) == 0)
+          << NAME << ": an exit status not read passes for a clean exit";
+    }
+  }
 }
 
 /** @test A helper that ends within the grace is reported with its stderr and never signalled. */

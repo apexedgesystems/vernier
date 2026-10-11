@@ -35,10 +35,11 @@
  *    by itself before the stop, and one that did not end with status 0.
  *  - captureOutcome() says whether the capture is complete, and whether the
  *    scripts emitted anything: READY for tracers that acknowledged both ends
- *    of the capture with the ids they were bound to, ended their stop with
- *    status 0, as bpftrace does once it has printed its maps, and printed
- *    more than the capture window's lines; CAVEAT when one printed nothing
- *    else.
+ *    of the capture with the ids they were bound to, were seen to end their
+ *    stop with status 0, as bpftrace does once it has printed its maps, and
+ *    printed more than the capture window's lines; CAVEAT when one printed
+ *    nothing else. An end this process could not observe (it ignores
+ *    SIGCHLD or sets SA_NOCLDWAIT) never counts as status 0.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n`; PERF_BPF_SUDO is a deprecated alias that BENCH_SUDO overrides.
@@ -208,19 +209,25 @@ std::string grantRemedy(const BpftraceRoute& route, const ReadinessContext& ctx)
  *
  * How the tracer ended decides, as for the readiness probe, not the signal it
  * ended after: bpftrace exits with status 0 once it has printed its maps, on
- * SIGINT or SIGTERM. A tracer that so ended, at the stop or before it, is
+ * SIGINT or SIGTERM. A tracer seen to end so, at the stop or before it, is
  * complete, whatever its stderr holds (warnings included). Any other end is
- * not, and is printed: one still running, killed, ended by a signal it did
- * not handle, or exited with another status, named with the line of its
- * error output at @p errorPath ("" when none is kept) that says why, or with
- * "nothing on its stderr". Each refused delivery is printed too, and a tracer
- * that ended only on SIGTERM.
- * @return nullopt when the tracer ended with status 0; otherwise the Error
- *         (UNUSABLE) whose message, after its cause word, is the line printed.
+ * not, and is printed: one still running, killed, gone without a status this
+ * process could read (HelperStopResult::statusObtained false: it ignores
+ * SIGCHLD, sets SA_NOCLDWAIT, or another wait took it; said with
+ * describeStatusLoss(), and the files kept named), ended by a signal it did
+ * not handle, or exited with another status, each with the line of its error
+ * output at @p errorPath ("" when none is kept) that says why, or with
+ * "nothing on its stderr". @p outputPath, when given, is named with it among
+ * the files kept. Each refused delivery is printed too, and a tracer that
+ * ended only on SIGTERM.
+ * @return nullopt when the tracer was seen to end with status 0; otherwise
+ *         the Error (UNUSABLE) whose message, after its cause word, is the
+ *         line printed.
  */
 std::optional<ReadinessResult> reportStop(const char* tag, const std::string& what,
                                           const HelperStopResult& stop, const BpftraceRoute& route,
-                                          const std::string& errorPath = {});
+                                          const std::string& errorPath = {},
+                                          const std::string& outputPath = {});
 
 /* ----------------------------- The capture window ----------------------------- */
 
@@ -504,8 +511,9 @@ public:
    * stop acknowledgement, did not acknowledge either within its bound (named
    * UNSUPPORTED, with the PID namespace, in one other than the host's),
    * acknowledged either with other ids or out of order, could not be
-   * stopped or did not end its stop with status 0 (reportStop() names how
-   * it ended), or left no output, an empty one, or one without the
+   * stopped or was not seen to end its stop with status 0 (reportStop() names
+   * how it ended, or why its end could not be observed), or left no output,
+   * an empty one, or one without the
    * acknowledgements; or measured repeats that ended on another thread than
    * they started on. The first failure is kept, and the capture's files stay.
    */

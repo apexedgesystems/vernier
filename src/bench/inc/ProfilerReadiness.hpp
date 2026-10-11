@@ -16,8 +16,9 @@
  *    and privilege route its launch and cleanup then use);
  *  - the report formatter (readinessResult), the privilege policy
  *    (decidePrivilege), executable resolution (resolveExecutable), bounded
- *    probes (runBoundedProbe), owned helper processes (OwnedHelper) and the
- *    result memo (ReadinessMemo).
+ *    probes (runBoundedProbe), owned helper processes (OwnedHelper), what
+ *    became of a child's exit status (StatusLoss) and the result memo
+ *    (ReadinessMemo).
  * Each backend owns its check, its mode parsing and its plan in its own
  * source file; nothing here names a backend, a mode or a tool.
  *
@@ -293,6 +294,35 @@ struct ResolvedTool {
 [[nodiscard]] std::optional<ResolvedTool> resolveExecutable(std::string_view name,
                                                             const ReadinessContext& ctx);
 
+/* ------------------------------ Child Exit Statuses ------------------------------ */
+
+/**
+ * @brief Why a child's exit status did not reach this process, which then
+ * cannot tell how the child ended: a status it did not read is no exit, clean
+ * or not.
+ */
+enum class StatusLoss : std::uint8_t {
+  NONE,            ///< Nothing lost: the status was read here, or the child was not reaped.
+  SIGCHLD_IGNORED, ///< This process ignores SIGCHLD: the system discards children's statuses.
+  NO_CHILD_WAIT,   ///< SIGCHLD carries SA_NOCLDWAIT: the same.
+  ANOTHER_WAIT     ///< Neither: another wait in this process reaped the child first.
+};
+
+/**
+ * @brief Why a child of this process is gone without its status, read from
+ * this process's SIGCHLD action as it stands: a reap that finds the child
+ * gone calls it at once. Never NONE.
+ */
+[[nodiscard]] StatusLoss currentStatusLoss();
+
+/**
+ * @brief @p loss as reports name it: "this process ignores SIGCHLD, so the
+ * system discards its children's exit statuses", "this process sets
+ * SA_NOCLDWAIT for SIGCHLD, so ...", "another wait in this process reaped it
+ * first"; empty for NONE.
+ */
+[[nodiscard]] std::string describeStatusLoss(StatusLoss loss);
+
 /* ------------------------------ Bounded Probes ------------------------------ */
 
 /** @brief Outcome of one bounded probe. */
@@ -396,13 +426,25 @@ struct HelperStopPolicy {
   std::shared_ptr<const ReadinessContext> context; ///< Environment for `sudo -n kill`.
 };
 
+/**
+ * @brief The wait status a helper's result holds when none was read: the
+ * helper still runs, or it was reaped elsewhere (statusLoss says why). It is
+ * never zero, and no wait macro reads it as an exit or a signal, so it never
+ * passes for a clean exit.
+ */
+inline constexpr int HELPER_STATUS_UNAVAILABLE = -1;
+
 /** @brief How an owned helper's start went. */
 struct HelperStart {
   bool started = false;     ///< The program was executed.
   int spawnErrno = 0;       ///< errno of a failed fork or exec.
   bool exitedEarly = false; ///< It ended within the start grace.
-  int waitStatus = 0;       ///< Its wait status when it ended early.
-  std::string errorTail;    ///< The end of its stderr when it ended early.
+  /// Its wait status when it ended early and was reaped here; otherwise
+  /// HELPER_STATUS_UNAVAILABLE.
+  int waitStatus = HELPER_STATUS_UNAVAILABLE;
+  bool statusObtained = false;              ///< waitStatus was read here.
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why it ended early without its status.
+  std::string errorTail;                    ///< The end of its stderr when it ended early.
 
   /** @brief Started and still running after the grace. */
   [[nodiscard]] bool running() const noexcept { return started && !exitedEarly; }
@@ -421,10 +463,14 @@ struct StopDelivery {
 struct HelperStopResult {
   bool wasRunning = false; ///< The helper was alive when the stop began.
   std::vector<StopDelivery> deliveries;
-  bool reaped = false;     ///< The helper's process was reaped.
+  bool reaped = false;     ///< The helper's process was reaped, here or elsewhere.
   int stoppedBy = 0;       ///< The last delivered signal before it ended; 0 if none.
   bool stillAlive = false; ///< Every step was tried and it still runs.
-  int waitStatus = 0;      ///< Its wait status when reaped.
+  /// Its wait status when reaped here; HELPER_STATUS_UNAVAILABLE when it
+  /// still runs or was reaped elsewhere, which says nothing of how it ended.
+  int waitStatus = HELPER_STATUS_UNAVAILABLE;
+  bool statusObtained = false;              ///< waitStatus was read here.
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why it is gone without its status.
 
   /** @brief True when every delivery succeeded; false names a refused one. */
   [[nodiscard]] bool allDelivered() const noexcept;
@@ -465,7 +511,14 @@ public:
                     const std::string& stderrPath, int graceMs,
                     const ReadinessContext* probeEnv = nullptr);
 
-  /** @brief Stop through the policy's route; bounded. Safe to call more than once. */
+  /**
+   * @brief Stop through the policy's route; bounded. Safe to call more than
+   * once. A helper reaped elsewhere (this process ignores SIGCHLD, sets
+   * SA_NOCLDWAIT, or another wait took it) is gone: it is never signalled
+   * again, and the result says that its status was not read and why
+   * (statusObtained, statusLoss), never that it exited 0. start() reports a
+   * helper that ended within the grace the same way.
+   */
   HelperStopResult stop();
 
   /** @brief pid of the direct child, or -1. */
@@ -478,7 +531,8 @@ private:
   HelperStopPolicy policy_;
   pid_t child_ = -1;
   bool reaped_ = true;
-  int waitStatus_ = 0;
+  int waitStatus_ = HELPER_STATUS_UNAVAILABLE;
+  StatusLoss loss_ = StatusLoss::NONE;
 };
 
 /* ------------------------------ Memo ------------------------------ */

@@ -239,10 +239,11 @@ void OffCpuProfiler::stopBpftrace() {
   }
   // SIGINT makes bpftrace print its maps and exit with status 0. The stop
   // escalates through the plan's route and reports every delivery it could
-  // not make, and a tracer that ended otherwise, whose stacks are not claimed.
+  // not make, and a tracer not seen to end so, whose stacks are not claimed.
   const HelperStopResult STOPPED = helper_->stop();
   const bool COMPLETED =
-      !bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_).has_value();
+      !bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_)
+           .has_value();
   helper_.reset();
   if (COMPLETED) {
     std::fprintf(stderr, "[offcpu] stacks written to %s\n", outputPath_.c_str());

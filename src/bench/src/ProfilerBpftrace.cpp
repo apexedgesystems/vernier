@@ -175,6 +175,22 @@ bool waitForAttachLine(OwnedHelper& helper, const std::string& outPath,
 /** @brief True when @p waitStatus is an exit with status 0. */
 bool exitedCleanly(int waitStatus) { return WIFEXITED(waitStatus) && WEXITSTATUS(waitStatus) == 0; }
 
+/** @brief How this process can read its tracers' ends, for a hint. */
+const char* const READ_CHILD_STATUS =
+    "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for this program's "
+    "own children while the profiler runs, so the tracer's end can be read";
+
+/** @brief Why a helper's status was not read, as reports say it: never empty. */
+std::string lostStatus(StatusLoss loss) {
+  return loss == StatusLoss::NONE ? std::string{"its exit status was not read"}
+                                  : describeStatusLoss(loss);
+}
+
+/** @brief "; its error output says: <its failure line>", or nothing when @p text is empty. */
+std::string errorOutputSays(const std::string& text) {
+  return saysSomething(text) ? "; its error output says: " + failureLine(text) : std::string{};
+}
+
 /** @brief Milliseconds from @p from to @p to. */
 long long msBetween(std::chrono::steady_clock::time_point from,
                     std::chrono::steady_clock::time_point to) {
@@ -341,7 +357,20 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
     return readinessResult(ReadinessCause::UNUSABLE, what + ": " + START.errorTail,
                            "Check that " + argv.front() + " can be executed.");
   }
+  // A probe gone without its status shows nothing of how it ended, and a run
+  // here would not show its tracer's end either.
+  const auto UNOBSERVED = [&](StatusLoss loss, const std::string& errorText) {
+    return readinessResult(ReadinessCause::UNVERIFIED,
+                           what + ": the probe tracer's end could not be observed: " +
+                               lostStatus(loss) + errorOutputSays(errorText) +
+                               "; a run here cannot observe its tracer's end either, so its "
+                               "captures will not count as complete",
+                           std::string{READ_CHILD_STATUS} + ".");
+  };
   if (START.exitedEarly) {
+    if (!START.statusObtained) {
+      return UNOBSERVED(START.statusLoss, START.errorTail);
+    }
     if (exitedCleanly(START.waitStatus)) {
       return endedByItself(route, probe, msBetween(STARTED_AT, std::chrono::steady_clock::now()));
     }
@@ -400,6 +429,9 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
   // error after it, reads as one that ended at its start, so the result does
   // not depend on how long a busy machine kept it starting.
   const std::string ERR = fileText(ERR_PATH);
+  if (!STOP.statusObtained) {
+    return UNOBSERVED(STOP.statusLoss, ERR);
+  }
   const bool CLEAN = exitedCleanly(STOP.waitStatus);
   if (!STOP.wasRunning || STOP.stoppedBy == 0) {
     if (CLEAN) {
@@ -438,7 +470,8 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
 
 std::optional<ReadinessResult> reportStop(const char* tag, const std::string& what,
                                           const HelperStopResult& stop, const BpftraceRoute& route,
-                                          const std::string& errorPath) {
+                                          const std::string& errorPath,
+                                          const std::string& outputPath) {
   for (const StopDelivery& delivery : stop.deliveries) {
     if (!delivery.delivered) {
       std::fprintf(stderr, "[%s] %s: could not deliver %s to tracer %d: %s: %s\n", tag,
@@ -458,6 +491,20 @@ std::optional<ReadinessResult> reportStop(const char* tag, const std::string& wh
   } else if (stop.stoppedBy == SIGKILL) {
     detail = "the tracer ignored SIGINT and SIGTERM and was killed; its output is incomplete";
     remedy = "bpftrace prints its maps on SIGINT; check that this build handles it.";
+  } else if (!stop.statusObtained) {
+    // Gone without its status: nothing shows how it ended, so nothing shows
+    // that it printed its maps. No status is ever read as a clean exit.
+    const std::string ERR = errorPath.empty() ? std::string{} : fileText(errorPath);
+    detail = "the tracer's end could not be observed: " + lostStatus(stop.statusLoss) +
+             "; nothing shows that it printed its maps, so its output may be incomplete" +
+             errorOutputSays(ERR);
+    std::string kept = "its files are kept in its capture folder.";
+    if (!outputPath.empty() && !errorPath.empty()) {
+      kept = "its output and error output are kept in " + outputPath + " and " + errorPath + ".";
+    } else if (!errorPath.empty()) {
+      kept = "its error output is kept in " + errorPath + ".";
+    }
+    remedy = std::string{READ_CHILD_STATUS} + "; " + kept;
   } else if (!exitedCleanly(stop.waitStatus)) {
     // How the tracer ended decides, as for the readiness probe, not the
     // signal it ended after: bpftrace exits with status 0 once it has printed
@@ -970,12 +1017,13 @@ std::string runCopyPath(const std::string& outdir, const std::string& stem) {
  * @brief What a tracer's stop says about its capture: READY when the tracer
  * ended with status 0 at the stop, having printed its maps; else the Error
  * that leaves the capture incomplete, @p incomplete as reportStop() judged and
- * printed it. A tracer that ended with status 0 before the stop ran its own
- * exit() while the measured repeats went on; that case is printed here.
+ * printed it, an end whose status could not be read among them. A tracer
+ * seen to end with status 0 before the stop ran its own exit() while the
+ * measured repeats went on; that case is printed here.
  */
 ReadinessResult stopOutcome(const std::string& what, const HelperStopResult& stop,
                             const std::optional<ReadinessResult>& incomplete) {
-  if (!stop.stillAlive && !stop.wasRunning && WIFEXITED(stop.waitStatus) &&
+  if (!stop.stillAlive && !stop.wasRunning && stop.statusObtained && WIFEXITED(stop.waitStatus) &&
       WEXITSTATUS(stop.waitStatus) == 0) {
     const std::string DETAIL = what +
                                " ended by itself before the measured repeats finished; its output "
@@ -1195,8 +1243,8 @@ public:
     // The stop acknowledged, or the tracer ended before it: stop it, judge
     // how it ended, then the output it left.
     const HelperStopResult STOPPED = helper_->stop();
-    const std::optional<ReadinessResult> INCOMPLETE =
-        bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
+    const std::optional<ReadinessResult> INCOMPLETE = bpftrace_tool::reportStop(
+        "bpftrace", what_, STOPPED, plan_->route, stderrPath_, stdoutPath_);
     helper_.reset();
     phase_ = Phase::DONE;
     ReadinessResult result = stopOutcome(what_, STOPPED, INCOMPLETE);
@@ -1218,8 +1266,8 @@ private:
       return;
     }
     const HelperStopResult STOPPED = helper_->stop();
-    const std::optional<ReadinessResult> INCOMPLETE =
-        bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
+    const std::optional<ReadinessResult> INCOMPLETE = bpftrace_tool::reportStop(
+        "bpftrace", what_, STOPPED, plan_->route, stderrPath_, stdoutPath_);
     if (!outcome_) {
       outcome_ = stopOutcome(what_, STOPPED, INCOMPLETE);
     }
@@ -1237,7 +1285,8 @@ private:
     phase_ = Phase::FAILED;
     if (helper_) {
       const HelperStopResult STOPPED = helper_->stop();
-      (void)bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_);
+      (void)bpftrace_tool::reportStop("bpftrace", what_, STOPPED, plan_->route, stderrPath_,
+                                      stdoutPath_);
       helper_.reset();
     }
   }
@@ -1248,14 +1297,26 @@ private:
     helper_.reset();
     std::string errorText;
     (void)readScript(stderrPath_, errorText);
-    ReadinessResult why =
-        WIFEXITED(ENDED.waitStatus) && WEXITSTATUS(ENDED.waitStatus) == 0
-            ? readinessResult(ReadinessCause::UNUSABLE,
-                              what_ + " ended by itself before it acknowledged its arm probe",
-                              "End the script only on the traced process's exit "
-                              "(sched_process_exit filtered on tid == {{PID}}).")
-            : bpftrace_tool::classifyAttachFailure(plan_->route, what_, commandLine_, errorText,
-                                                   *plan_->context);
+    ReadinessResult why;
+    if (!ENDED.statusObtained && !bpftrace_tool::saysSomething(errorText)) {
+      // Gone without its status, and silent: how it ended is unknown.
+      why = readinessResult(ReadinessCause::UNUSABLE,
+                            what_ +
+                                " ended before it acknowledged its arm probe, and its end "
+                                "could not be observed: " +
+                                bpftrace_tool::lostStatus(ENDED.statusLoss),
+                            std::string{bpftrace_tool::READ_CHILD_STATUS} +
+                                "; its error output is kept in " + stderrPath_ + ".");
+    } else if (ENDED.statusObtained && WIFEXITED(ENDED.waitStatus) &&
+               WEXITSTATUS(ENDED.waitStatus) == 0) {
+      why = readinessResult(ReadinessCause::UNUSABLE,
+                            what_ + " ended by itself before it acknowledged its arm probe",
+                            "End the script only on the traced process's exit "
+                            "(sched_process_exit filtered on tid == {{PID}}).");
+    } else {
+      why = bpftrace_tool::classifyAttachFailure(plan_->route, what_, commandLine_, errorText,
+                                                 *plan_->context);
+    }
     std::fprintf(stderr, "[bpftrace] the tracer exited before it acknowledged its arm probe: %s\n",
                  why.report.message.c_str());
     if (!why.report.hint.empty()) {
