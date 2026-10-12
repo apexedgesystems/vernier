@@ -318,6 +318,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
+- **A profiler's wrap stays out of the run's `git describe`** -- the
+  `git describe` behind the CSV's `gitHash` column starts without a shell
+  and without `LD_PRELOAD`, `MALLOC_CONF` or the other variables that put a
+  profiler into a process, and is ended after 10 s (the hash is then
+  `unknown`), so a run under `bench run --profile jemalloc` leaves no heap
+  dump of git beside its own.
 - **bpftrace waits for its tracers to attach and traces threaded tests to their
   end** -- a run waits before its measured repeats, the doctor before it passes
   a script, and `wakeup_latency.bt` counts wakeups completed on another CPU.
