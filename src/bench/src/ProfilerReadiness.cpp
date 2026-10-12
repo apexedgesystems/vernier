@@ -125,17 +125,46 @@ void defaultStopSignals() {
 
 /**
  * @brief Where a forked keeper's last resort stops closing descriptors: the
- * soft limit on open descriptors, under which every descriptor opened since
- * it was set lies (at least 256, at most 1 << 20, the system's default
- * ceiling).
+ * hard limit on open descriptors (at least 256; 1 << 20, the system's default
+ * ceiling, where there is none), not the soft one, which may have been
+ * lowered after a descriptor above it was opened. A descriptor can lie above
+ * the hard limit too, when that was lowered after it was opened: only
+ * close_range and the /proc list reach those, which is why a probe is not
+ * started where neither works (keeperIsolation).
  */
 int descriptorBound() {
   constexpr rlim_t CEILING = rlim_t{1} << 20;
   struct rlimit limit{};
-  if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
-    return static_cast<int>(std::clamp<rlim_t>(limit.rlim_cur, 256, CEILING));
+  if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_max != RLIM_INFINITY) {
+    return static_cast<int>(std::clamp<rlim_t>(limit.rlim_max, 256, INT_MAX));
   }
   return static_cast<int>(CEILING);
+}
+
+/**
+ * @brief 0 when a keeper forked now can close every descriptor it inherits,
+ * whatever its number: close_range works here (asked over an empty range,
+ * which closes nothing), or /proc/self/fd can be opened to be listed.
+ * Otherwise the errno the probe's setup fails with: EMFILE or ENFILE when no
+ * descriptor was left to open the list with, ENOSYS when the system offers
+ * neither. Not called between fork and exec.
+ */
+int keeperIsolation() {
+#ifdef __linux__
+#ifdef SYS_close_range
+  if (::syscall(SYS_close_range, ~0U, ~0U, 0U) == 0) {
+    return 0;
+  }
+#endif
+  const int LIST = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (LIST >= 0) {
+    ::close(LIST);
+    return 0;
+  }
+  return errno == EMFILE || errno == ENFILE ? errno : ENOSYS;
+#else
+  return 0;
+#endif
 }
 
 #ifdef __linux__
@@ -796,6 +825,14 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       }
     }
   };
+
+  // A keeper that could not close what it inherits would hold this
+  // process's descriptors (a lock, a pipe's write end) while the probe runs:
+  // where neither close_range nor the /proc list works, nothing is started.
+  if (const int ISOLATION = keeperIsolation(); ISOLATION != 0) {
+    result.spawnErrno = ISOLATION;
+    return result;
+  }
 
   // The group's keeper, started first and ended last: the program runs in
   // the keeper's process group, and until the keeper is reaped, here, after

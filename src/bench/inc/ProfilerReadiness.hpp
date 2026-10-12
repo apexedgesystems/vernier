@@ -427,9 +427,12 @@ enum class ProbeStreams : std::uint8_t {
  * cannot belong to another process, so the group is ended also when the
  * system reaps the program as it exits (this process ignores SIGCHLD or
  * sets SA_NOCLDWAIT), and no id that may have passed to another process is
- * ever signalled. A call whose setup fails after the keeper started (a pipe
- * or the program's process cannot be made) ends and reaps the keeper before
- * it returns. Output still in the pipes is read for at most
+ * ever signalled. The keeper holds nothing of this process's: where it could
+ * not close every descriptor it inherits (no close_range, and /proc/self/fd
+ * cannot be listed), nothing is started and the call fails (ENOSYS). A call
+ * whose setup fails after the keeper started (a pipe or the program's
+ * process cannot be made) ends and reaps the keeper before it returns.
+ * Output still in the pipes is read for at most
  * PROBE_DRAIN_MS, and the call returns once the program is reaped and no
  * process of its group runs, or PROBE_REAP_MS later at the most. A process
  * that leaves the group, or that this user may not signal, is beyond its

@@ -26,6 +26,7 @@
 #ifdef __linux__
 #include <linux/filter.h>
 #include <linux/seccomp.h>
+#include <sys/file.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
 #endif
@@ -35,6 +36,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -915,18 +917,37 @@ namespace {
  * @brief In a process of its own (a death test's): from now on close_range(2)
  * fails with ENOSYS, as on a kernel before 5.9, for this process and every
  * process it starts; when @p unclosable is 0 or more, close(2) of that
- * descriptor fails too (EBADF), so that no process can close it. Seccomp, no
- * privilege needed; false when the filter cannot be installed.
+ * descriptor fails too (EBADF), so that no process can close it; with
+ * @p unlistable no directory can be opened (ENOENT), so /proc/self/fd cannot
+ * be listed. Seccomp, no privilege needed; false when the filter cannot be
+ * installed.
  */
-bool withoutCloseRange(int unclosable) {
+bool withoutCloseRange(int unclosable, bool unlistable = false) {
 #ifdef SYS_close_range
-  constexpr unsigned FIRST_ARGUMENT =
-      offsetof(seccomp_data, args) + (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U);
+  constexpr unsigned WORD = __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U;
+  constexpr unsigned FIRST_ARGUMENT = offsetof(seccomp_data, args) + WORD;
   std::vector<sock_filter> filter = {
       BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
       BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
       BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
   };
+  // An open of a directory, by openat(2) (its flags the third argument) or,
+  // where it exists, open(2) (the second), fails; anything else goes on to
+  // the checks below with the call's number loaded again.
+  const auto NO_DIRECTORY = [&filter](unsigned call, unsigned flagsArgument) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 4));
+    const auto FLAGS = static_cast<__u32>(offsetof(seccomp_data, args) + 8U * flagsArgument + WORD);
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FLAGS));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_DIRECTORY, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOENT));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
+  };
+  if (unlistable) {
+    NO_DIRECTORY(SYS_openat, 2);
+#ifdef SYS_open
+    NO_DIRECTORY(SYS_open, 1);
+#endif
+  }
   if (unclosable >= 0) {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
     filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FIRST_ARGUMENT));
@@ -939,6 +960,7 @@ bool withoutCloseRange(int unclosable) {
          ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
 #else
   (void)unclosable;
+  (void)unlistable;
   return false;
 #endif
 }
@@ -1067,6 +1089,117 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::_Exit(NOTHING_ELSE ? 0 : 1);
 }
 
+/** @brief What a forked keeper can use in the lock control, and the limits there. */
+enum class LockCase : std::uint8_t {
+  NATIVE,             ///< close_range.
+  LISTED,             ///< No close_range; /proc/self/fd can be listed.
+  UNLISTED,           ///< Neither: no close_range, and no directory can be opened.
+  LISTED_HARD_LOWERED ///< No close_range, the list, and the hard limit lowered too.
+};
+
+/**
+ * @brief The body of a death test: this process holds a lock (flock) through a
+ * close-on-exec descriptor at 65590, then lowers its soft limit on descriptors
+ * to 64 (and its hard limit, with LISTED_HARD_LOWERED); close_range is
+ * unavailable but in NATIVE. A probe's program waits until its keeper has
+ * dropped that descriptor (3 s at the most), says it is ready, and once another
+ * thread here has closed this process's descriptor, which releases the lock as
+ * far as this process goes, tries the lock. Prints how the call came out and
+ * exits 0 when the program got the lock, or, in UNLISTED, when the call refused
+ * the setup (ENOSYS) before anything started; in both cases with no child of
+ * this process left behind.
+ */
+[[noreturn]] void keeperReleasesTheCallersLock(LockCase which) {
+  constexpr int PLANTED = 65590;
+  const ReadinessContext CTX = ReadinessContext::capture();
+  char directory[] = "/tmp/keeper_lock_XXXXXX";
+  if (::mkdtemp(directory) == nullptr || !softDescriptorLimit(PLANTED + 10)) {
+    std::fprintf(stderr, "the control could not be set up\n");
+    std::_Exit(4);
+  }
+  const std::string FOLDER = directory;
+  const std::string LOCK = FOLDER + "/lock";
+  const std::string READY = FOLDER + "/ready";
+  const std::string RELEASED = FOLDER + "/released";
+  const int FD = ::open(LOCK.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  if (FD < 0 || ::flock(FD, LOCK_EX | LOCK_NB) != 0 || ::dup3(FD, PLANTED, O_CLOEXEC) != PLANTED) {
+    std::fprintf(stderr, "the lock could not be planted\n");
+    std::_Exit(4);
+  }
+  ::close(FD);
+  struct rlimit limit{};
+  (void)::getrlimit(RLIMIT_NOFILE, &limit);
+  limit.rlim_cur = 64;
+  if (which == LockCase::LISTED_HARD_LOWERED) {
+    limit.rlim_max = 64;
+  }
+  if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+    std::fprintf(stderr, "the limits could not be lowered\n");
+    std::_Exit(4);
+  }
+  if (which != LockCase::NATIVE && !withoutCloseRange(-1, which == LockCase::UNLISTED)) {
+    std::fprintf(stderr, "close_range could not be made unavailable\n");
+    std::_Exit(3);
+  }
+  const std::string HELD = "/proc/$k/fd/" + std::to_string(PLANTED);
+  const std::string SCRIPT = "PATH=/usr/bin:/bin; read -r s < /proc/$$/stat; set -- $s; k=$5\n"
+                             "i=0; while [ -e " +
+                             HELD +
+                             " ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
+                             ": > '" +
+                             READY +
+                             "'\n"
+                             "i=0; while [ ! -e '" +
+                             RELEASED +
+                             "' ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
+                             "flock -n '" +
+                             LOCK + "' true; e=$?; echo \"lock_acquire_status=$e\"; exit $e\n";
+  std::atomic<bool> returned{false};
+  std::thread release([&] {
+    const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (::access(READY.c_str(), F_OK) != 0 && !returned.load() &&
+           std::chrono::steady_clock::now() < UNTIL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ::close(PLANTED);
+    const int MARK = ::open(RELEASED.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (MARK >= 0) {
+      ::close(MARK);
+    }
+  });
+  const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", SCRIPT}, 10000, CTX);
+  returned = true;
+  release.join();
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  for (const pid_t PID : LEFT) {
+    (void)::kill(PID, SIGKILL);
+    int status = 0;
+    (void)::waitpid(PID, &status, 0);
+  }
+  for (const std::string& path : {LOCK, READY, RELEASED}) {
+    (void)::unlink(path.c_str());
+  }
+  (void)::rmdir(FOLDER.c_str());
+  std::fprintf(stderr, "started=%d errno=%d %s; output: %s; children left: %zu\n",
+               R.started ? 1 : 0, R.spawnErrno, R.describe().c_str(), R.output.c_str(),
+               LEFT.size());
+  const char* wrong = nullptr;
+  if (!LEFT.empty()) {
+    wrong = "a child of this process was left behind";
+  } else if (which == LockCase::UNLISTED) {
+    if (R.started) {
+      wrong = "the probe started where its keeper could not close what it inherits";
+    } else if (R.spawnErrno != ENOSYS) {
+      wrong = "the setup failed for another reason";
+    }
+  } else if (!R.succeeded() || R.output != "lock_acquire_status=0\n") {
+    wrong = "the program did not get the lock the caller released";
+  }
+  std::fprintf(stderr, "%s\n",
+               wrong == nullptr ? "the caller's lock was the caller's to release" : wrong);
+  std::_Exit(wrong == nullptr ? 0 : 1);
+}
+
 } // namespace
 
 /**
@@ -1101,6 +1234,40 @@ TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
   EXPECT_EXIT(setupFailureEndsTheKeeper(HIGH, true, true), ::testing::ExitedWithCode(0),
               "the keeper ended with the call")
       << "descriptors above 65535, no close_range, the anchor unclosable";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A lock this process releases is released for the probe too, whatever
+ * the keeper can use to close what it inherits: the lock's descriptor lies at
+ * 65590, opened before the soft limit was lowered to 64. With close_range, and
+ * without it but with /proc/self/fd to list (also with the hard limit lowered
+ * to 64, which only the list reaches past), the keeper drops it and the
+ * program gets the lock; with neither, the setup is refused (ENOSYS) before
+ * anything starts. Each case in a process of its own.
+ */
+TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  if (::access("/usr/bin/flock", X_OK) != 0) {
+    GTEST_SKIP() << "flock(1) is not installed";
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::NATIVE), ::testing::ExitedWithCode(0),
+              "the caller's lock was the caller's to release")
+      << "close_range";
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::LISTED), ::testing::ExitedWithCode(0),
+              "the caller's lock was the caller's to release")
+      << "no close_range, the list";
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::UNLISTED), ::testing::ExitedWithCode(0),
+              "the caller's lock was the caller's to release")
+      << "no close_range, no list";
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::LISTED_HARD_LOWERED),
+              ::testing::ExitedWithCode(0), "the caller's lock was the caller's to release")
+      << "no close_range, the list, the hard limit lowered";
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 
