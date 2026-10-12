@@ -27,17 +27,20 @@
 #include <csignal>
 #include <fstream>
 #include <future>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using vernier::bench::decidePrivilege;
 using vernier::bench::EnvBool;
 using vernier::bench::EnvReport;
+using vernier::bench::HELPER_STATUS_UNAVAILABLE;
 using vernier::bench::HelperStart;
 using vernier::bench::HelperStopPolicy;
 using vernier::bench::HelperStopResult;
@@ -63,6 +66,8 @@ using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
 using vernier::bench::resolveExecutable;
 using vernier::bench::runBoundedProbe;
+using vernier::bench::StatusLoss;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 
 namespace {
@@ -81,6 +86,47 @@ HelperStopPolicy quickPolicy(PrivilegeRoute route = PrivilegeRoute::CURRENT_USER
   policy.killWaitMs = 400;
   return policy;
 }
+
+/**
+ * @brief While it lives, this process ignores SIGINT and this thread blocks
+ * SIGTERM, as a benchmark started as a background job of a script, or by a
+ * caller that blocked the signal, inherits them; restored after.
+ */
+class StopSignalsInherited {
+public:
+  StopSignalsInherited() {
+    struct sigaction ignore{};
+    ignore.sa_handler = SIG_IGN;
+    sigemptyset(&ignore.sa_mask);
+    ::sigaction(SIGINT, &ignore, &savedInterrupt_);
+    sigset_t block;
+    sigemptyset(&block);
+    sigaddset(&block, SIGTERM);
+    ::pthread_sigmask(SIG_BLOCK, &block, &savedMask_);
+  }
+  ~StopSignalsInherited() {
+    ::sigaction(SIGINT, &savedInterrupt_, nullptr);
+    ::pthread_sigmask(SIG_SETMASK, &savedMask_, nullptr);
+  }
+  StopSignalsInherited(const StopSignalsInherited&) = delete;
+  StopSignalsInherited& operator=(const StopSignalsInherited&) = delete;
+
+private:
+  struct sigaction savedInterrupt_{};
+  sigset_t savedMask_{};
+};
+
+/**
+ * @brief The hexadecimal mask after @p key ("SigIgn:") in /proc/<pid>/status
+ *        text @p status; all bits set when the line is missing.
+ */
+unsigned long long statusMask(const std::string& status, const std::string& key) {
+  const std::size_t AT = status.find(key);
+  return AT == std::string::npos ? ~0ULL : std::stoull(status.substr(AT + key.size()), nullptr, 16);
+}
+
+/** @brief The bit for signal @p sig in a /proc status mask. */
+constexpr unsigned long long bitOf(int sig) { return 1ULL << (sig - 1); }
 
 /** @brief Kill and reap every pid the fake helper logged ("... pid=N"). */
 void killLoggedChildren(const FakeToolDir& dir) {
@@ -530,6 +576,25 @@ TEST(ReadinessProbes, ExitStatusAndOutput) {
   EXPECT_EQ(FAIL.describe(), "exit status 3");
 }
 
+/**
+ * @test A probe's program, a stop's `sudo -n kill` among them, takes SIGINT
+ * and SIGTERM at their default action whatever this process inherited.
+ */
+TEST(ReadinessProbes, StopSignalsAtTheirDefaultWhateverThisProcessInherited) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  ProbeResult masks;
+  {
+    const StopSignalsInherited INHERITED;
+    masks = runBoundedProbe({HELPER, "masks"}, 5000, CTX);
+  }
+  ASSERT_TRUE(masks.succeeded()) << masks.describe() << "\n" << masks.output;
+  EXPECT_EQ(statusMask(masks.output, "SigIgn:") & bitOf(SIGINT), 0ULL) << masks.output;
+  EXPECT_EQ(statusMask(masks.output, "SigBlk:") & bitOf(SIGTERM), 0ULL) << masks.output;
+}
+
 /** @test stderr is interleaved by default and kept apart on request. */
 TEST(ReadinessProbes, SeparateStreams) {
   FakeToolDir dir;
@@ -706,6 +771,109 @@ TEST(ReadinessOwnedHelper, StopsOnInterrupt) {
   EXPECT_EQ(STOP.deliveries[0].target, START.started ? helper.pid() : -1);
   EXPECT_TRUE(dir.logLines("sudo").empty()) << "the current-user route never calls sudo";
   EXPECT_TRUE(dir.logLines("kill").empty()) << dir.log();
+}
+
+/**
+ * @test A helper takes the stop signals at their default action whatever this
+ * process inherited: started while this process ignores SIGINT and blocks
+ * SIGTERM, it neither ignores nor blocks them, and it stops on SIGINT.
+ */
+TEST(ReadinessOwnedHelper, StopsOnInterruptThatThisProcessIgnores) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  OwnedHelper helper(quickPolicy());
+  HelperStart start;
+  {
+    const StopSignalsInherited INHERITED;
+    start = helper.start({HELPER, "run"}, "", dir.path() + "/err.txt", 200, &CTX);
+  }
+  ASSERT_TRUE(start.running()) << start.errorTail;
+  std::ifstream statusFile("/proc/" + std::to_string(helper.pid()) + "/status");
+  const std::string STATUS((std::istreambuf_iterator<char>(statusFile)),
+                           std::istreambuf_iterator<char>());
+  EXPECT_EQ(statusMask(STATUS, "SigIgn:") & bitOf(SIGINT), 0ULL) << STATUS;
+  EXPECT_EQ(statusMask(STATUS, "SigBlk:") & bitOf(SIGTERM), 0ULL) << STATUS;
+  const HelperStopResult STOP = helper.stop();
+  EXPECT_TRUE(STOP.reaped);
+  EXPECT_EQ(STOP.stoppedBy, SIGINT);
+  EXPECT_TRUE(WIFSIGNALED(STOP.waitStatus) && WTERMSIG(STOP.waitStatus) == SIGINT)
+      << "wait status " << STOP.waitStatus;
+}
+
+/**
+ * @test A helper reaped elsewhere, as an application that ignores SIGCHLD or
+ * sets SA_NOCLDWAIT reaps it, leaves no exit status to read: its stop, or its
+ * start when it ended within the grace (here with status 0), says the status
+ * was not read and why, holds HELPER_STATUS_UNAVAILABLE, does not pass for a
+ * clean exit, and once the helper is gone it is never signalled again. Reaped
+ * here, with SIGCHLD at its default action, its status is read.
+ */
+TEST(ReadinessOwnedHelper, StatusReapedElsewhereIsNotACleanExit) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string HELPER = dir.install("fake_helper.sh", "helper");
+  const ReadinessContext CTX = dir.context();
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::NO_CHILD_WAIT, Policy::DEFAULT}) {
+    const std::string NAME = POLICY == Policy::IGNORED         ? "SIGCHLD ignored"
+                             : POLICY == Policy::NO_CHILD_WAIT ? "SA_NOCLDWAIT"
+                                                               : "the default action";
+    const StatusLoss LOSS = POLICY == Policy::IGNORED         ? StatusLoss::SIGCHLD_IGNORED
+                            : POLICY == Policy::NO_CHILD_WAIT ? StatusLoss::NO_CHILD_WAIT
+                                                              : StatusLoss::NONE;
+    OwnedHelper helper(quickPolicy());
+    OwnedHelper early(quickPolicy());
+    HelperStart start;
+    HelperStopResult stop;
+    HelperStart ended;
+    HelperStopResult afterEnd;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      start = helper.start({HELPER, "run"}, "", dir.path() + "/err.txt", 200, &CTX);
+      ASSERT_TRUE(start.running()) << NAME << ": " << start.errorTail;
+      stop = helper.stop();
+      ended = early.start({HELPER, "exit", "0"}, "", dir.path() + "/early.txt", 2000, &CTX);
+      afterEnd = early.stop();
+    }
+    EXPECT_TRUE(stop.wasRunning) << NAME;
+    EXPECT_TRUE(stop.reaped) << NAME;
+    EXPECT_FALSE(stop.stillAlive) << NAME;
+    EXPECT_EQ(stop.stoppedBy, SIGINT) << NAME;
+    ASSERT_EQ(stop.deliveries.size(), 1U) << NAME << ": a helper gone is never signalled again";
+    ASSERT_TRUE(ended.exitedEarly) << NAME;
+    EXPECT_FALSE(afterEnd.wasRunning) << NAME;
+    EXPECT_TRUE(afterEnd.deliveries.empty()) << NAME << ": a helper gone is never signalled";
+    EXPECT_EQ(stop.statusLoss, LOSS) << NAME;
+    EXPECT_EQ(ended.statusLoss, LOSS) << NAME;
+    EXPECT_EQ(afterEnd.statusLoss, LOSS) << NAME;
+    if (POLICY == Policy::DEFAULT) {
+      // Reaped here: each status is read, the SIGINT that ended the one and
+      // the other's exit with status 0.
+      EXPECT_TRUE(stop.statusObtained) << NAME;
+      EXPECT_TRUE(WIFSIGNALED(stop.waitStatus) && WTERMSIG(stop.waitStatus) == SIGINT)
+          << NAME << ": wait status " << stop.waitStatus;
+      for (const auto& [OBTAINED, STATUS] :
+           {std::pair{ended.statusObtained, ended.waitStatus},
+            std::pair{afterEnd.statusObtained, afterEnd.waitStatus}}) {
+        EXPECT_TRUE(OBTAINED) << NAME;
+        EXPECT_TRUE(WIFEXITED(STATUS) && WEXITSTATUS(STATUS) == 0)
+            << NAME << ": wait status " << STATUS;
+      }
+      continue;
+    }
+    for (const auto& [OBTAINED, STATUS] :
+         {std::pair{stop.statusObtained, stop.waitStatus},
+          std::pair{ended.statusObtained, ended.waitStatus},
+          std::pair{afterEnd.statusObtained, afterEnd.waitStatus}}) {
+      EXPECT_FALSE(OBTAINED) << NAME;
+      EXPECT_EQ(STATUS, HELPER_STATUS_UNAVAILABLE) << NAME;
+      EXPECT_FALSE(WIFEXITED(STATUS) && WEXITSTATUS(STATUS) == 0)
+          << NAME << ": an exit status not read passes for a clean exit";
+    }
+  }
 }
 
 /** @test A helper that ends within the grace is reported with its stderr and never signalled. */

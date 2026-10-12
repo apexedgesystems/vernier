@@ -93,7 +93,7 @@ __global__ void saxpyKernel(float a, const float* x, float* y, std::size_t n) {
 
 The example also carries two ways of driving that kernel end to end, `G0`
 (allocate and copy on every call, one thread per block) and `G1` (buffers once,
-256 threads per block); its unit test, `TestDemoExamples`, holds both to the CPU
+256 threads per block); its unit test, `TestDemoSaxpy`, holds both to the CPU
 loop within one part in a million. This walkthrough does not time them: the
 demo gives the harness the bare launch and lets it time the copies.
 
@@ -306,7 +306,7 @@ stops beating the loop by 3x.
   C++ exception with description "no CUDA-capable device is detected" thrown in the test body.
   ```
 
-  `TestDemoExamples` instead runs its CPU-loop check and skips the GPU cases.
+  `TestDemoSaxpy` instead runs its CPU-loop check and skips the GPU cases.
 
 ## Check Against the Reference
 

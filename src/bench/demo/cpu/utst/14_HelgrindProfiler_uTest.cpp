@@ -22,6 +22,7 @@
 #include "src/bench/inc/HelgrindRequests.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
+#include <csignal>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -96,12 +97,15 @@ fs::path scratchDir() {
  *
  * Skipped in a build with the address or the thread sanitizer (which
  * valgrind cannot check), without valgrind, where valgrind gives up reading
- * the demo binary's debug information before the program runs, and where
- * valgrind cannot read the demo binary's symbols: valgrind says so for that
- * binary, and a frame of the report, in the binary, is unnamed. Each frame is
- * read on its own: only an unnamed frame goes unchecked, a readable wrong
- * frame or one elsewhere fails, and the skip comes last, once everything
- * else has passed. The last two skips quote valgrind's lines.
+ * the demo binary's debug information before the program runs, where an
+ * assertion in valgrind's ELF debug-information reader stops it before the
+ * program starts (valgrind 3.18.1 on a GCC 11.4 Debug build that mold
+ * linked), and where valgrind cannot read the demo binary's symbols: valgrind
+ * says so for that binary, and a frame of the report, in the binary, is
+ * unnamed. Each frame is read on its own: only an unnamed frame goes
+ * unchecked, a readable wrong frame or one elsewhere fails, and the skip comes
+ * last, once everything else has passed. The last three skips quote valgrind's
+ * lines.
  */
 TEST(Helgrind, FindsTheRace) {
   if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
@@ -123,12 +127,19 @@ TEST(Helgrind, FindsTheRace) {
       check::runUnderHelgrind(DEMO, RACY_CASE, {}, DIR, HELGRIND_ERROR_EXIT);
   if (!vg::testsStarted(RUN.output)) {
     const std::string GAVE_UP = vg::debugInfoGiveUp(RUN.log + RUN.output);
+    const std::string ASSERTED = vg::readerAssertionBeforeStart(RUN.end, RUN.output, RUN.log);
     std::error_code ec;
     fs::remove_all(DIR, ec);
     if (!GAVE_UP.empty()) {
       GTEST_SKIP() << "valgrind gave up reading the demo binary's debug information before the "
                       "program ran. It printed:\n"
                    << GAVE_UP;
+    }
+    if (!ASSERTED.empty()) {
+      GTEST_SKIP() << "valgrind stopped before the demo binary started: an assertion failed in "
+                      "its debug-information reader and valgrind "
+                   << vg::describe(RUN.end) << ", so helgrind checked nothing. It printed:\n"
+                   << ASSERTED;
     }
     FAIL() << "RacyTotal did not start under helgrind: valgrind " << vg::describe(RUN.end)
            << ". The run printed:\n"
@@ -197,8 +208,8 @@ TEST(Helgrind, FindsTheRace) {
  * four threads, two calls each, one repeat: it must run to its end, and
  * helgrind must count no error, contentionRun's start gate included; valgrind
  * must exit 0. Skipped where FindsTheRace skips before running anything, on
- * valgrind's give-up lines, and where libbench says it does not mark the gate
- * for helgrind.
+ * valgrind's give-up lines or its reader's assertion before the program
+ * started, and where libbench says it does not mark the gate for helgrind.
  */
 TEST(Helgrind, LockedTotalReportsNothing) {
   if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
@@ -224,12 +235,19 @@ TEST(Helgrind, LockedTotalReportsNothing) {
       HELGRIND_ERROR_EXIT);
   if (!vg::testsStarted(RUN.output)) {
     const std::string GAVE_UP = vg::debugInfoGiveUp(RUN.log + RUN.output);
+    const std::string ASSERTED = vg::readerAssertionBeforeStart(RUN.end, RUN.output, RUN.log);
     std::error_code ec;
     fs::remove_all(DIR, ec);
     if (!GAVE_UP.empty()) {
       GTEST_SKIP() << "valgrind gave up reading the demo binary's debug information before the "
                       "program ran. It printed:\n"
                    << GAVE_UP;
+    }
+    if (!ASSERTED.empty()) {
+      GTEST_SKIP() << "valgrind stopped before the demo binary started: an assertion failed in "
+                      "its debug-information reader and valgrind "
+                   << vg::describe(RUN.end) << ", so helgrind checked nothing. It printed:\n"
+                   << ASSERTED;
     }
     FAIL() << "LockedTotal did not start under helgrind: valgrind " << vg::describe(RUN.end)
            << ". The run printed:\n"
@@ -479,4 +497,74 @@ TEST(HelgrindReportTest, UnnamedEarlierAccessDoesNotExcuseTheRace) {
     EXPECT_EQ(FRAMES.race, check::FrameReading::WRONG) << "racing access: " << race;
     EXPECT_EQ(FRAMES.earlier, check::FrameReading::UNNAMED_IN_BINARY) << race;
   }
+}
+
+/* ----------------------------- Start-Up Log Tests ----------------------------- */
+
+// What decides the two checks' skip where valgrind stopped before the demo
+// binary started, on the logs valgrind 3.18.1 left for each check's run of a
+// GCC 11.4 Debug build linked by mold (the program wrote nothing, valgrind was
+// killed by SIGSEGV), with a short binary path and process id. The race
+// report before the line in the second half of each test is shaped as
+// helgrind prints one; no run printed it there.
+
+namespace {
+
+/// valgrind's log of a run of the demo binary with @p arguments that its
+/// reader's assertion stopped, with @p beforeTheLine between valgrind's
+/// opening lines and the assertion's line: nothing, as the log was left, or
+/// something of the run.
+std::string stoppedLogBefore(const std::string& arguments, const std::string& beforeTheLine) {
+  return "==7== Helgrind, a thread error detector\n"
+         "==7== Copyright (C) 2007-2017, and GNU GPL'd, by OpenWorks LLP et al.\n"
+         "==7== Using Valgrind-3.18.1 and LibVEX; rerun with -h for copyright info\n"
+         "==7== Command: /b/bin/ptests/BenchDemo_14_HelgrindProfiler " +
+         arguments +
+         "\n"
+         "==7== Parent PID: 6\n"
+         "==7== \n" +
+         beforeTheLine +
+         "\n"
+         "valgrind: m_debuginfo/readelf.c:2478 (vgModuleLocal_read_elf_debug_info): Assertion "
+         "'di->bss_svma + di->bss_size == svma' failed.\n";
+}
+
+/// The line itself, as the skip quotes it.
+constexpr const char* READER_ASSERTION =
+    "valgrind: m_debuginfo/readelf.c:2478 (vgModuleLocal_read_elf_debug_info): Assertion "
+    "'di->bss_svma + di->bss_size == svma' failed.";
+
+/// A race report's opening, as helgrind prints one once the program has run.
+constexpr const char* RACE_REPORTED =
+    "==7== Possible data race during read of size 8 at 0x1FFEFFEE08 by thread #3\n"
+    "==7== Locks held: none\n"
+    "==7== \n";
+
+/// How those runs ended: valgrind killed by SIGSEGV.
+constexpr vg::ChildExit KILLED_BY_SIGSEGV{vg::ChildExit::How::Signaled, SIGSEGV};
+
+} // namespace
+
+/** @test FindsTheRace's run, stopped by valgrind's reader before it started, is that skip */
+TEST(HelgrindLogTest, RacyRunStoppedBeforeItStarted) {
+  const std::string ARGUMENTS = "--gtest_filter=Helgrind.RacyTotal --gtest_print_time=0";
+
+  EXPECT_EQ(vg::readerAssertionBeforeStart(KILLED_BY_SIGSEGV, "", stoppedLogBefore(ARGUMENTS, "")),
+            READER_ASSERTION);
+  EXPECT_TRUE(vg::readerAssertionBeforeStart(KILLED_BY_SIGSEGV, "",
+                                             stoppedLogBefore(ARGUMENTS, RACE_REPORTED))
+                  .empty());
+}
+
+/** @test LockedTotalReportsNothing's run, stopped by valgrind's reader before it started, is that
+ * skip */
+TEST(HelgrindLogTest, LockedRunStoppedBeforeItStarted) {
+  const std::string ARGUMENTS = "--gtest_filter=Helgrind.LockedTotal --gtest_print_time=0 "
+                                "--threads 4 --cycles 2 --repeats 1";
+
+  EXPECT_EQ(vg::readerAssertionBeforeStart(KILLED_BY_SIGSEGV, "", stoppedLogBefore(ARGUMENTS, "")),
+            READER_ASSERTION);
+  EXPECT_TRUE(vg::readerAssertionBeforeStart(KILLED_BY_SIGSEGV, "",
+                                             stoppedLogBefore(ARGUMENTS, RACE_REPORTED))
+                  .empty());
 }

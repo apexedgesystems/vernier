@@ -1,0 +1,14 @@
+source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,Avg (MB),Count,Max (MB),Max (ns),Med (MB),Med (ns),Min (MB),Min (ns),Operation,StdDev (MB),StdDev (ns),Total (MB)
+nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,178481856,2925932.1,100.0,,,,3774688,,2890848.0,,2852032,,,149253.5,
+nsys,cuda_api_sum,cudaMemcpy,183,199253613,1088817.6,58.5,,,,3841722,,131481.0,,46630,,,1397635.5,
+nsys,cuda_api_sum,cudaMalloc,122,119530146,979755.3,35.1,,,,93628054,,173907.5,,96352,,,8458093.5,
+nsys,cuda_api_sum,cudaFree,122,20710938,169761.8,6.1,,,,450287,,137699.0,,66370,,,85941.1,
+nsys,cuda_api_sum,cudaLaunchKernel,61,1037676,17011.1,0.3,,,,90426,,12750.0,,8963,,,12614.7,
+nsys,cuda_api_sum,cuLibraryLoadData,1,48703,48703.0,0.0,,,,48703,,48703.0,,48703,,,0.0,
+nsys,cuda_api_sum,cuKernelGetName,61,42200,691.8,0.0,,,,1435,,453.0,,250,,,447.7,
+nsys,cuda_api_sum,cuModuleGetLoadingMode,1,1111,1111.0,0.0,,,,1111,,1111.0,,1111,,,0.0,
+nsys,cuda_api_sum,cuLibraryGetKernel,1,509,509.0,0.0,,,,509,,509.0,,509,,,0.0,
+nsys,cuda_gpu_mem_size_sum,,,,,,4.194,122,4.194,,4.194,,4.194,,[CUDA memcpy Host-to-Device],0.000,,511.705
+nsys,cuda_gpu_mem_size_sum,,,,,,4.194,61,4.194,,4.194,,4.194,,[CUDA memcpy Device-to-Host],0.000,,255.853
+nsys,cuda_gpu_mem_time_sum,,,2408928,19745.3,74.4,,122,,42528,,19168.0,,18496,[CUDA memcpy Host-to-Device],,3108.3,
+nsys,cuda_gpu_mem_time_sum,,,827168,13560.1,25.6,,61,,25024,,13856.0,,11840,[CUDA memcpy Device-to-Host],,1954.5,

@@ -1,178 +1,182 @@
 /**
  * @file 04_ComputeSanitizerProfiler_Demo.cu
- * @brief Demo 04: NVIDIA Compute Sanitizer for GPU memory + race checking.
+ * @brief Demo 04: Compute Sanitizer -- is the device code correct
  *
- * Compute Sanitizer is the GPU analog of valgrind memcheck. It catches
- * device-side bugs that often don't crash but silently corrupt results:
- *  - Out-of-bounds reads / writes (--tool=memcheck, default)
- *  - Shared-memory races (--tool=racecheck)
- *  - Missed __syncthreads (--tool=synccheck)
- *  - Reads from uninitialized device memory (--tool=initcheck)
+ * Measures the shared SAXPY kernel and carries a copy of it without its
+ * bounds guard for compute-sanitizer to find:
+ *  1. SaxpyKernel times the example's kernel on its own and checks its
+ *     answer, one CSV row
+ *  2. SaxpyUnguarded launches the unguarded copy once on a grid that rounds
+ *     up, so one thread runs past the end of both vectors; it runs only under
+ *     compute-sanitizer and skips itself anywhere else
  *
- * Compute Sanitizer wraps the binary externally, the same way valgrind
- * wraps a CPU binary for callgrind.
+ * Both cases use 1,048,575 elements, one less than 4,096 blocks of 256
+ * cover: the guard is the only difference between the two kernels.
  *
  * Usage:
  *   @code{.sh}
- *   # 1) Run unwrapped (printable hint shown by the backend):
- *   ./BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile compute-sanitizer
+ *   # Measure
+ *   ./BenchDemo_Gpu_04_ComputeSanitizerProfiler --repeats 10 --csv compute_sanitizer.csv
  *
- *   # 2) Wrap externally so the sanitizer actually runs:
- *   compute-sanitizer --tool=memcheck \
- *       --log-file=ComputeSanitizer.SafeKernel.compute-sanitizer/sanitizer.log \
- *       ./BenchDemo_Gpu_04_ComputeSanitizerProfiler \
- *       --profile compute-sanitizer --cycles 5 \
- *       --gtest_filter='ComputeSanitizer.SafeKernel'
+ *   # Find the bug: the tool's log lands in
+ *   # bench-out/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log
+ *   bench run ./BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile compute-sanitizer -- \
+ *     --gtest_filter=ComputeSanitizer.SaxpyUnguarded
  *
- *   # 3) Inspect the log -- on the safe kernel it should report
- *   #    "0 errors". Switch the filter to '*WithDeliberateOob' to see
- *   #    compute-sanitizer flag the OOB read.
- *   cat ComputeSanitizer.SafeKernel.compute-sanitizer/sanitizer.log | tail -20
+ *   # Read it
+ *   cat bench-out/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log
  *   @endcode
+ *
+ * What the tool reports for this binary is checked apart from it, by
+ * utst/04_ComputeSanitizerProfiler_uTest.cpp.
+ *
+ * @see docs/17_COMPUTE_SANITIZER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
+#include <cstdio>
 #include <vector>
 
+#include "src/bench/demo/examples/saxpy/inc/Saxpy.hpp"
+#include "src/bench/demo/gpu/04_ComputeSanitizerProfiler_Unguarded.hpp"
+#include "src/bench/demo/helpers/SkipUnlessUnderComputeSanitizer.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
 
 namespace ub = vernier::bench;
+namespace ubd = vernier::bench::demo;
+namespace wrong = vernier::bench::demo::sanitizer_demo;
 
 namespace {
 
-/* ----------------------------- Kernels ----------------------------- */
-
-/** @brief Bounds-checked element-wise scale -- nothing for the sanitizer to find. */
-__global__ void scaleKernel(const float* in, float* out, int n) {
-  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    out[idx] = in[idx] * 2.0f;
-  }
-}
-
-/**
- * @brief Deliberately reads ONE element past the end on the last thread of the
- *        grid. Demonstrates a class of off-by-one bug that often "works" on
- *        real hardware (the read is within the allocation's page) but compute-
- *        sanitizer flags as out-of-bounds.
- *
- * Do not copy this pattern; it is here so the sanitizer has something to find.
- */
-__global__ void scaleKernelWithOob(const float* in, float* out, int n) {
-  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    out[idx] = in[idx] * 2.0f;
-  }
-  // One OOB write per launch: thread 0 of the last block writes at out[n],
-  // one past the logical end of the buffer. cudaMalloc tracks logical size,
-  // so compute-sanitizer memcheck flags this even though the address may
-  // still fall inside the allocated page.
-  if (blockIdx.x == gridDim.x - 1 && threadIdx.x == 0) {
-    out[n] = 99.0f;
-  }
-}
-
 /* ----------------------------- Constants ----------------------------- */
 
-static constexpr int N = 1 << 20;
-static constexpr std::size_t SIZE = static_cast<std::size_t>(N) * sizeof(float);
-static constexpr int BLOCK_SIZE = 256;
+constexpr int BLOCK_SIZE = 256;                  ///< Threads per block
+constexpr std::size_t N = 4096 * BLOCK_SIZE - 1; ///< One less than the grid covers
+constexpr std::size_t BYTES = N * sizeof(float); ///< One vector, in bytes
+constexpr float A = 2.5F;                        ///< The scalar of a*x + y
+constexpr float X_VALUE = 1.5F;                  ///< Every element of x
+constexpr float Y_VALUE = 0.5F;                  ///< Every element of y at the start
 
-} // anonymous namespace
+/* ----------------------------- Helpers ----------------------------- */
+
+/** @brief The answer a*x + y after @p launches launches, for the constants above. */
+double expectedAfter(std::size_t launches) {
+  return static_cast<double>(Y_VALUE) + static_cast<double>(launches) * A * X_VALUE;
+}
+
+/** @brief Device buffers for one case, freed however the test leaves. */
+class DeviceVectors {
+public:
+  DeviceVectors() {
+    if (cudaMalloc(&dX_, BYTES) != cudaSuccess) {
+      dX_ = nullptr;
+    }
+    if (cudaMalloc(&dY_, BYTES) != cudaSuccess) {
+      dY_ = nullptr;
+    }
+  }
+
+  ~DeviceVectors() {
+    cudaFree(dY_);
+    cudaFree(dX_);
+  }
+
+  DeviceVectors(const DeviceVectors&) = delete;
+  DeviceVectors& operator=(const DeviceVectors&) = delete;
+
+  [[nodiscard]] bool ok() const { return dX_ != nullptr && dY_ != nullptr; }
+  [[nodiscard]] float* x() const { return dX_; }
+  [[nodiscard]] float* y() const { return dY_; }
+
+  /** @brief Fill x and y on the device from the constants above. */
+  [[nodiscard]] bool fill() const {
+    const std::vector<float> X(N, X_VALUE);
+    const std::vector<float> Y(N, Y_VALUE);
+    return cudaMemcpy(dX_, X.data(), BYTES, cudaMemcpyHostToDevice) == cudaSuccess &&
+           cudaMemcpy(dY_, Y.data(), BYTES, cudaMemcpyHostToDevice) == cudaSuccess;
+  }
+
+private:
+  float* dX_ = nullptr;
+  float* dY_ = nullptr;
+};
+
+} // namespace
 
 /* ----------------------------- Tests ----------------------------- */
 
-/** @test Safe kernel: clean run; sanitizer report shows 0 errors. */
-PERF_GPU_BANDWIDTH(ComputeSanitizer, SafeKernel) {
+/**
+ * @test The shared kernel on its own: what it costs, and that every launch
+ *       reaches both ends of the vectors, its guard included.
+ *
+ * No transfer is declared, so the wall time is the kernel time. After the
+ * measurement the first and the last element hold the scalar applied once
+ * per launch, so a kernel that missed either would not pass. A stray access
+ * past the end can leave both right: staying in bounds is memcheck's to check.
+ */
+PERF_GPU_TEST(ComputeSanitizer, SaxpyKernel) {
   UB_PERF_GPU_GUARD(perf);
 
-  float *d_in = nullptr, *d_out = nullptr;
-  cudaMalloc(&d_in, SIZE);
-  cudaMalloc(&d_out, SIZE);
+  DeviceVectors device;
+  ASSERT_TRUE(device.ok()) << "device allocation failed";
+  ASSERT_TRUE(device.fill()) << "copy to the device failed";
 
-  std::vector<float> h_in(N, 1.0f);
-  cudaMemcpy(d_in, h_in.data(), SIZE, cudaMemcpyHostToDevice);
+  const dim3 BLOCK(BLOCK_SIZE);
+  const dim3 GRID(static_cast<unsigned>((N + BLOCK_SIZE - 1) / BLOCK_SIZE));
+  std::size_t launches = 0;
+  const auto LAUNCH = [&](cudaStream_t s) {
+    ubd::launchSaxpy(A, device.x(), device.y(), N, BLOCK_SIZE, s);
+    ++launches;
+  };
+  perf.cudaWarmup(LAUNCH);
 
-  const dim3 block(BLOCK_SIZE);
-  const dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(LAUNCH, "saxpy_kernel").withLaunchConfig(GRID, BLOCK).measure();
 
-  perf.cudaWarmup([&](cudaStream_t s) { scaleKernel<<<grid, block, 0, s>>>(d_in, d_out, N); });
+  // Nothing was copied inside the measurement, so the wall time is the kernel's.
+  EXPECT_DOUBLE_EQ(RESULT.transferTimeUs, 0.0);
+  EXPECT_DOUBLE_EQ(RESULT.totalTimeUs, RESULT.kernelTimeUs);
 
-  auto result =
-      perf.cudaKernel([&](cudaStream_t s) { scaleKernel<<<grid, block, 0, s>>>(d_in, d_out, N); },
-                      "scale_safe")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  cudaFree(d_in);
-  cudaFree(d_out);
+  // The effect this case checks: every launch computed a*x + y at both ends,
+  // to the tolerance single precision leaves after that many adds.
+  std::vector<float> y(N, 0.0F);
+  ASSERT_EQ(cudaMemcpy(y.data(), device.y(), BYTES, cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_GT(launches, 0U);
+  EXPECT_NEAR(static_cast<double>(y[0]), expectedAfter(launches), 1e-3 * expectedAfter(launches));
+  EXPECT_NEAR(static_cast<double>(y[N - 1]), expectedAfter(launches),
+              1e-3 * expectedAfter(launches));
 }
 
 /**
- * @test Kernel with a deliberate one-element OOB write on the last thread.
+ * @test The unguarded copy, launched once past the end of its buffers.
+ *       Runs only under compute-sanitizer.
  *
- * Standalone behavior is driver- and architecture-dependent: many recent
- * CUDA runtimes detect the page-boundary overrun and surface it as "an
- * illegal memory access", which fails the gtest case; older runtimes
- * silently return a benign value (the next page) and the case passes.
- *
- * Either outcome leaves you with a buggy kernel. compute-sanitizer
- * --tool=memcheck is what actually pinpoints it: "Invalid __global__
- * write of size 4 bytes" with the exact source line, thread, and block.
+ * Measures nothing: what happens to the kernel is the tool's doing (memcheck
+ * stops it at its first invalid access and, by default, ends the CUDA
+ * context, so the sync and the frees that follow report a launch failure),
+ * and what the tool reports is read by the check beside this demo. The case
+ * asserts that the launch was accepted and prints what the device reported.
+ * Anywhere else it skips itself and says how to run it.
  */
-PERF_GPU_BANDWIDTH(ComputeSanitizer, WithDeliberateOob) {
-  UB_PERF_GPU_GUARD(perf);
+PERF_GPU_TEST(ComputeSanitizer, SaxpyUnguarded) {
+  DEMO_SKIP_UNLESS_UNDER_COMPUTE_SANITIZER();
 
-  float *d_in = nullptr, *d_out = nullptr;
-  cudaMalloc(&d_in, SIZE);
-  cudaMalloc(&d_out, SIZE);
+  DeviceVectors device;
+  ASSERT_TRUE(device.ok()) << "device allocation failed";
+  ASSERT_TRUE(device.fill()) << "copy to the device failed";
 
-  std::vector<float> h_in(N, 1.0f);
-  cudaMemcpy(d_in, h_in.data(), SIZE, cudaMemcpyHostToDevice);
-
-  const dim3 block(BLOCK_SIZE);
-  const dim3 grid((N + BLOCK_SIZE - 1) / BLOCK_SIZE);
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { scaleKernelWithOob<<<grid, block, 0, s>>>(d_in, d_out, N); });
-
-  auto result =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { scaleKernelWithOob<<<grid, block, 0, s>>>(d_in, d_out, N); },
-              "scale_with_oob")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-
-  cudaFree(d_in);
-  cudaFree(d_out);
+  wrong::launchSaxpyUnguarded(A, device.x(), device.y(), N, BLOCK_SIZE, nullptr);
+  ASSERT_EQ(cudaGetLastError(), cudaSuccess) << "the launch was refused";
+  const cudaError_t END = cudaDeviceSynchronize();
+  std::printf("[ComputeSanitizer.SaxpyUnguarded]  one launch over %zu elements, %u blocks of %d; "
+              "the device reported: %s\n",
+              N, static_cast<unsigned>((N + BLOCK_SIZE - 1) / BLOCK_SIZE), BLOCK_SIZE,
+              cudaGetErrorString(END));
 }
 
 /* ----------------------------- Main ----------------------------- */
 
-#include "src/bench/inc/PerfConfig.hpp"
-#include "src/bench/inc/PerfGpuConfig.hpp"
-#include "src/bench/inc/PerfRegistry.hpp"
-#include "src/bench/inc/PerfListener.hpp"
-#include "src/bench/inc/PerfTestMacros.hpp"
-#include "src/bench/inc/PerfGpuTestMacros.hpp"
-
-int main(int argc, char** argv) {
-  auto& cfg = vernier::bench::detail::perfConfigSingleton();
-  vernier::bench::parsePerfFlags(cfg, &argc, argv);
-
-  vernier::bench::PerfGpuConfig gpuCfg;
-  vernier::bench::parseGpuFlags(gpuCfg, &argc, argv);
-
-  vernier::bench::detail::setGlobalGpuConfig(gpuCfg);
-  vernier::bench::setGlobalPerfConfig(&cfg);
-  vernier::bench::installPerfEventListener(cfg);
-
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}
+PERF_GPU_MAIN()

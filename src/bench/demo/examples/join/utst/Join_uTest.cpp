@@ -7,7 +7,9 @@
  *    is what lets a walkthrough compare their timings.
  *  - How often each version allocates is what the heap-profiler walkthroughs
  *    read, so it is tested too: this binary replaces the global operator new
- *    to count the calls each version makes.
+ *    to count the calls each version makes. A thread-sanitizer build cannot
+ *    replace it (AllocationCounting.hpp), so there those tests skip and say
+ *    why.
  *  - The counts are those of a plain run. A tool preloaded into this binary
  *    that allocates through operator new on the test's thread adds its own
  *    calls: under heaptrack, a count taken through a call stack it has not
@@ -23,6 +25,7 @@
 
 #include "src/bench/demo/examples/join/inc/Join.hpp"
 
+#include "src/bench/demo/examples/join/utst/AllocationCounting.hpp"
 #include "src/bench/demo/examples/utst/HardwareCounter.hpp"
 
 #include <gtest/gtest.h>
@@ -39,6 +42,7 @@ using vernier::bench::demo::joinedSize;
 using vernier::bench::demo::joinV0;
 using vernier::bench::demo::joinV1;
 using vernier::bench::demo::makeParts;
+using vernier::bench::demo::test::ALLOCATIONS_NOT_COUNTED;
 using vernier::bench::demo::test::HardwareCounter;
 using vernier::bench::demo::test::HardwareEvent;
 using vernier::bench::demo::test::joinReasons;
@@ -46,6 +50,8 @@ using vernier::bench::demo::test::Reading;
 using vernier::bench::demo::test::scalingNote;
 
 /* ----------------------------- Allocation Counting ----------------------------- */
+
+#if VERNIER_DEMO_REPLACES_ALLOCATION
 
 namespace {
 
@@ -95,6 +101,8 @@ void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
 [[gnu::noinline]] void operator delete(void* p, const std::nothrow_t& /*tag*/) noexcept {
   std::free(p);
 }
+
+#endif // VERNIER_DEMO_REPLACES_ALLOCATION
 
 /* ----------------------------- API Tests ----------------------------- */
 
@@ -174,11 +182,13 @@ TEST(JoinedSizeTest, CountsEveryPartAndOneSeparatorEach) {
 /// Parts per join in the walkthroughs that read allocation counts.
 constexpr std::size_t PROFILED_PART_COUNT = 1000;
 
+#if VERNIER_DEMO_REPLACES_ALLOCATION
 /// At PROFILED_PART_COUNT parts, joinV0 must make at least this many
 /// allocations per call for each one joinV1 makes. joinV0 makes about two per
 /// part, four times this; joinV0 building like joinV1, or joinV1 losing its
 /// reserve, falls below it.
 constexpr std::size_t MIN_ALLOCATION_RATIO = 500;
+#endif
 
 class JoinAllocationSizesTest : public ::testing::TestWithParam<std::size_t> {
 protected:
@@ -189,11 +199,15 @@ protected:
 
 /** @test joinV1 allocates once per call, for the final size, at every size */
 TEST_P(JoinAllocationSizesTest, V1AllocatesOnce) {
+#if VERNIER_DEMO_REPLACES_ALLOCATION
   std::string joined;
   const std::size_t calls = countNewCalls([&] { joined = joinV1(parts_, ','); });
 
   EXPECT_EQ(calls, 1u) << "joinV1 of " << GetParam() << " parts";
   EXPECT_EQ(joined, joinV0(parts_, ','));
+#else
+  GTEST_SKIP() << ALLOCATIONS_NOT_COUNTED;
+#endif
 }
 
 // Sizes whose joined string is too long for the string's inline buffer, so
@@ -202,6 +216,7 @@ INSTANTIATE_TEST_SUITE_P(Counts, JoinAllocationSizesTest, ::testing::Values(10, 
 
 /** @test joinV0 allocates at least MIN_ALLOCATION_RATIO times as often as joinV1 */
 TEST(JoinAllocationTest, V0AllocatesFarMoreOftenThanV1) {
+#if VERNIER_DEMO_REPLACES_ALLOCATION
   const auto parts = makeParts(PROFILED_PART_COUNT, 42);
 
   std::string joined;
@@ -212,11 +227,15 @@ TEST(JoinAllocationTest, V0AllocatesFarMoreOftenThanV1) {
   EXPECT_GE(v0Calls, MIN_ALLOCATION_RATIO * v1Calls)
       << "joinV0 made " << v0Calls << " allocations for " << PROFILED_PART_COUNT
       << " parts, joinV1 " << v1Calls << ": the heap-profiler demos have stopped demonstrating";
+#else
+  GTEST_SKIP() << ALLOCATIONS_NOT_COUNTED;
+#endif
 }
 
 /** @test joinedSize allocates nothing: demo 15 checks each answer with it, and
  *  heaptrack's counts of that test divide by the calls to its version alone */
 TEST(JoinAllocationTest, JoinedSizeAllocatesNothing) {
+#if VERNIER_DEMO_REPLACES_ALLOCATION
   const auto parts = makeParts(PROFILED_PART_COUNT, 42);
 
   std::size_t size = 0;
@@ -224,6 +243,9 @@ TEST(JoinAllocationTest, JoinedSizeAllocatesNothing) {
 
   EXPECT_EQ(calls, 0u);
   EXPECT_EQ(size, joinV1(parts, ',').size());
+#else
+  GTEST_SKIP() << ALLOCATIONS_NOT_COUNTED;
+#endif
 }
 
 /* ----------------------------- Instruction Tests ----------------------------- */

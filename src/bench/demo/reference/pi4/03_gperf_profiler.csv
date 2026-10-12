@@ -1,3 +1,3 @@
 test,cycles,repeats,warmup,threads,msgBytes,console,nonBlocking,minLevel,wallMedian,wallP10,wallP90,wallP99,wallP999,wallMin,wallMax,wallMean,wallStddev,wallCV,callsPerSecond,stable,cvThreshold,timestamp,gitHash,hostname,platform
-GperfProfiler.JoinV0,47,10,1,1,64,0,0,INFO,937.245,936.802,937.606,937.693,937.701,936.745,937.702,937.162,0.316328,0.000337538,1066.96,1,0.1,2026-09-24T03:31:28Z,unknown,pi4,aarch64
-GperfProfiler.JoinV1,2446,10,1,1,64,0,0,INFO,21.0174,20.4816,21.0633,21.0759,21.0771,20.1836,21.0773,20.8846,0.280958,0.0134529,47579.7,1,0.1,2026-09-24T03:31:28Z,unknown,pi4,aarch64
+GperfProfiler.JoinV0,52,10,1,1,64,0,0,INFO,942.183,941.471,943.935,947.922,948.321,941.212,948.365,942.86,1.96192,0.00208082,1061.37,1,0.1,2026-09-29T02:08:24Z,unknown,pi4,aarch64
+GperfProfiler.JoinV1,2424,10,1,1,64,0,0,INFO,19.7756,19.7425,19.8879,19.8986,19.8996,19.7384,19.8998,19.8024,0.0609541,0.00307811,50567.4,1,0.1,2026-09-29T02:08:25Z,unknown,pi4,aarch64

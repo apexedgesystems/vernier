@@ -541,21 +541,20 @@ as ever. `G1` then reads about 0.9 ms a call instead of about 0.65 ms (see
 
 ## The Reports as CSV
 
-Vernier's `nsight-parse` turns these reports into one CSV. It exports an
+`bench nsight-parse` turns these reports into one CSV. It exports an
 Nsight Systems report once, to a private temporary file, and reads the four
 summaries from that export with `nsys stats --format csv`; it imports an
 Nsight Compute report with `ncu --import ... --csv --print-summary
-per-kernel`. It is one of Vernier's Python tools, which a build puts in
-`build/bin/tools/py` only when it finds Poetry and pip. This rig's build has no
-Poetry (see the [rig document](../../docs/rigs/RIG_THOR_AGX.md#2-one-time-setup)),
-so for this page the wheel built from the same tree was installed with
-`pip3 install --target` and put on `PATH`. The reports are from a second run of
-Steps 2 and 4 with the clocks as found, read where `bench run` left them, the
-SQLite export beside the Nsight Systems report included:
+per-kernel`. It is part of the `bench` CLI, so the rig's build has it, and it
+needs only `nsys` and `ncu`. Here it reads the reports of Steps 2 and 4, laid
+out as `bench run` leaves them: in its folders, with the summaries and the
+SQLite export it writes beside the Nsight Systems report. These commands ran on
+this rig on 2026-10-04 (UTC), with the CLI of a later development tree, which
+also reports `bench 1.0.3`:
 
 ```bash
-nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
-nsight-parse parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_metrics.csv
+bench nsight-parse bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/ --csv nsys_summaries.csv
+bench nsight-parse bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/ --csv ncu_metrics.csv
 ```
 
 ```
@@ -569,9 +568,9 @@ seven columns come the summaries' own:
 
 ```
 source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,Avg (MB),Count,Max (MB),Max (ns),Med (MB),Med (ns),Min (MB),Min (ns),Operation,StdDev (MB),StdDev (ns),Total (MB)
-nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,178481856,2925932.1,100.0,,,,3774688,,2890848.0,,2852032,,,149253.5,
-nsys,cuda_api_sum,cudaMemcpy,183,199253613,1088817.6,58.5,,,,3841722,,131481.0,,46630,,,1397635.5,
-nsys,cuda_api_sum,cudaMalloc,122,119530146,979755.3,35.1,,,,93628054,,173907.5,,96352,,,8458093.5,
+nsys,cuda_gpu_kern_sum,"vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",61,176606848,2895194.2,100.0,,,,3323488,,2888384.0,,2858464,,,57126.0,
+nsys,cuda_api_sum,cudaMemcpy,183,198379293,1084039.9,64.8,,,,3397166,,262788.0,,48556,,,1317480.8,
+nsys,cuda_api_sum,cudaMalloc,122,97942066,802803.8,32.0,,,,86843778,,86745.5,,61916,,,7854498.5,
 ...
 ```
 
@@ -581,20 +580,20 @@ the occupancy rows of the two shapes:
 ```
 source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,average,block_size,cc,device,grid_size,host_name,invocations,maximum,metric_name,metric_unit,minimum,process_id,process_name,section_name
 ...
-ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,100.00,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,100.00,Theoretical Occupancy,%,100.00,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
-ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,76.34,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,82.08,Achieved Occupancy,%,73.92,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,100.00,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,100.00,Theoretical Occupancy,%,100.00,18471,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,77.13,"(256, 1, 1)",11.0,0,"(4096, 1, 1)",127.0.0.1,14,79.52,Achieved Occupancy,%,75.07,18471,BenchDemo_Gpu_02_NsightProfiler,Occupancy
 ...
-ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,50.00,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,50.00,Theoretical Occupancy,%,50.00,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
-ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,28.88,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,30.09,Achieved Occupancy,%,25.95,93269,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,50.00,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,50.00,Theoretical Occupancy,%,50.00,18471,BenchDemo_Gpu_02_NsightProfiler,Occupancy
+ncu,per_kernel,"unnamed>::saxpyKernel(float, const float *, float *, unsigned long)",,,,,30.03,"(1, 1, 1)",11.0,0,"(1048576, 1, 1)",127.0.0.1,14,30.98,Achieved Occupancy,%,29.45,18471,BenchDemo_Gpu_02_NsightProfiler,Occupancy
 ...
 ```
 
-When a report cannot be read, `nsight-parse` names it on stderr, still writes
-the rows it did read, and exits 1 (see the
-[tools README](../../../../tools/README.md#3b-nsight-parse-python)). Its CSV is
-not a benchmark CSV: the benchmark tools need `test`, `wallMedian`, `wallCV`
-and `callsPerSecond` columns. `bench summary` and `bench compare` refuse it
-(`missing required column 'test'`), and `bench-plot` stops with
+When a report cannot be read, `bench nsight-parse` names it on stderr,
+still writes the rows it did read, and exits 1 (see the
+[tools README](../../../../tools/README.md#nsight-parse---nsight-reports-as-csv)).
+Its CSV is not a benchmark CSV: the benchmark tools need `test`, `wallMedian`,
+`wallCV` and `callsPerSecond` columns. `bench summary` and `bench compare`
+refuse it (`missing required column 'test'`), and `bench-plot` stops with
 `Missing required columns`.
 
 ## What Should Reproduce

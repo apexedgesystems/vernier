@@ -8,6 +8,7 @@
 
 #include <fstream>
 #include <optional>
+#include <ostream>
 #include <string>
 
 #include "src/bench/inc/PerfRegistry.hpp"
@@ -15,6 +16,36 @@
 
 namespace vernier {
 namespace bench {
+
+/* ------------------------------- CSV Cells ------------------------------- */
+
+namespace detail {
+
+/**
+ * @brief Write @p text as one CSV cell.
+ *
+ * Text holding a comma, a double quote, a carriage return or a line feed is
+ * written in double quotes with each inner quote doubled (RFC 4180), so a CSV
+ * reader takes it as one cell; any other text is written unchanged.
+ *
+ * @note NOT RT-safe (stream I/O).
+ */
+inline void writeCsvCell(std::ostream& csv, const std::string& text) {
+  if (text.find_first_of(",\"\r\n") == std::string::npos) {
+    csv << text;
+    return;
+  }
+  csv << '"';
+  for (const char C : text) {
+    if (C == '"') {
+      csv << '"';
+    }
+    csv << C;
+  }
+  csv << '"';
+}
+
+} // namespace detail
 
 /* --------------------------------- API --------------------------------- */
 
@@ -58,7 +89,9 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
  * Each enabled group is written whether or not the row has values for it
  * (missing values are empty cells), so every row of a file has the column
  * count of its header: a GPU row that carries no profile metadata, and a CPU
- * row inside a GPU binary's file, both stay under the header names.
+ * row inside a GPU binary's file, both stay under the header names. The test
+ * name is written with detail::writeCsvCell(), so a name holding a comma, a
+ * quote or a line break stays one cell.
  *
  * @param csv             Output stream (opened in text mode).
  * @param row             The result row.
@@ -69,13 +102,14 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
  */
 inline void writeCsvRow(std::ofstream& csv, const PerfRow& row, bool includeProfile,
                         bool includeMetadata, bool includeGpu) {
-  csv << row.testName << "," << row.cycles << "," << row.repeats << "," << row.warmup << ","
-      << row.threads << "," << row.msgBytes << "," << (row.console ? "1" : "0") << ","
-      << (row.nonBlocking ? "1" : "0") << "," << row.minLevel << "," << row.stats.median << ","
-      << row.stats.p10 << "," << row.stats.p90 << "," << row.stats.p99 << "," << row.stats.p999
-      << "," << row.stats.min << "," << row.stats.max << "," << row.stats.mean << ","
-      << row.stats.stddev << "," << row.stats.cv << "," << row.callsPerSecond << ","
-      << (row.stable ? "1" : "0") << "," << row.cvThreshold;
+  detail::writeCsvCell(csv, row.testName);
+  csv << "," << row.cycles << "," << row.repeats << "," << row.warmup << "," << row.threads << ","
+      << row.msgBytes << "," << (row.console ? "1" : "0") << "," << (row.nonBlocking ? "1" : "0")
+      << "," << row.minLevel << "," << row.stats.median << "," << row.stats.p10 << ","
+      << row.stats.p90 << "," << row.stats.p99 << "," << row.stats.p999 << "," << row.stats.min
+      << "," << row.stats.max << "," << row.stats.mean << "," << row.stats.stddev << ","
+      << row.stats.cv << "," << row.callsPerSecond << "," << (row.stable ? "1" : "0") << ","
+      << row.cvThreshold;
 
   // Profile columns
   if (includeProfile) {

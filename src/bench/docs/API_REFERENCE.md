@@ -788,7 +788,8 @@ time; no `--profile` flag required.
 | `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                   |
 | `--profile-frequency N`  | int    | 10000   | Rate asked of gperf, the only backend that reads it; set too late to take effect, see [ProfilerGperf](#profilergperf)                                                                                                                       |
 | `--profile-analyze`      | bool   | false   | Auto-run analysis after profiling                                                                                                                                                                                                           |
-| `--bpf LIST`             | string | -       | BPF script names or paths (comma-separated), resolved under `--bpf-scripts`: e.g. fsync_latency,write_latency                                                                                                                               |
+| `--bpf LIST`             | string | -       | Scripts to run, comma-separated: a name is `<name>.bt` in the `--bpf-scripts` directory, a name with a `/` a path from the working directory, `.bt` optional; e.g. `write_latency`, `./my_script.bt`                                        |
+| `--bpf-scripts DIR`      | string | -       | Directory `--bpf` looks script names up in: sets `PERF_BPF_SCRIPTS` in the process environment, over an inherited value. Default, or an empty value: `src/bench/bpf/` of the source tree the library was built from                         |
 
 ### GPU-Specific Flags
 

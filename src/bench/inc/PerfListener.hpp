@@ -10,11 +10,15 @@
 
 #include <gtest/gtest.h>
 #include <algorithm>
+#include <cerrno>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfCsv.hpp"
@@ -29,9 +33,12 @@ namespace bench {
 namespace detail {
 
 /**
- * @brief GoogleTest listener that appends one CSV row per finished test.
+ * @brief GoogleTest listener that appends one CSV row per completed
+ * measurement of each finished test.
  *
- * Takes the row the test left in PerfRegistry and writes it as recorded.
+ * Takes every row the test published in PerfRegistry, named by the registry
+ * (a case that measured more than once has a row per measurement, named
+ * `<case>/<label>`), and writes them as recorded, in completion order.
  * The config columns are the case's own (a --target-time case's calibrated
  * cycles, a per-case thread count), which can differ from the process-wide
  * config; the harness that built the row is the only authority on them.
@@ -42,9 +49,12 @@ class CsvListener : public ::testing::EmptyTestEventListener {
 public:
   explicit CsvListener(std::string path, bool includeProfile, bool includeGpu)
       : path_(std::move(path)), includeProfile_(includeProfile), includeGpu_(includeGpu) {
+    errno = 0;
     out_.open(path_, std::ios::out | std::ios::trunc);
     if (out_) {
       writeCsvHeader(out_, includeProfile_, /*includeMetadata=*/true, includeGpu_);
+    } else {
+      openError_ = errno;
     }
   }
   ~CsvListener() override {
@@ -55,28 +65,38 @@ public:
   }
 
   void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    // The test's rows leave the registry whether or not the file opened, so
+    // none of them waits into the next test.
+    std::vector<PerfRow> rows = PerfRegistry::instance().takeAll();
     if (!out_) {
       return;
     }
 
-    if (auto row = PerfRegistry::instance().take()) {
+    for (PerfRow& row : rows) {
       // Clear profile metadata if not including profile columns
       if (!includeProfile_) {
-        row->profileTool.reset();
-        row->profileDir.reset();
+        row.profileTool.reset();
+        row.profileDir.reset();
       }
 
       // The header's own flags, so the row has the header's column count
       // whatever this particular row carries.
-      writeCsvRow(out_, *row, includeProfile_, /*includeMetadata=*/true, includeGpu_);
+      writeCsvRow(out_, row, includeProfile_, /*includeMetadata=*/true, includeGpu_);
     }
   }
+
+  /** @return true when the file was opened for writing. */
+  [[nodiscard]] bool isOpen() const { return static_cast<bool>(out_); }
+
+  /** @return Why the file could not be opened: errno of the open, 0 if open or unknown. */
+  [[nodiscard]] int openError() const noexcept { return openError_; }
 
 private:
   std::string path_;
   std::ofstream out_{};
   bool includeProfile_{false};
   bool includeGpu_{false};
+  int openError_{0};
 };
 
 } // namespace detail
@@ -86,20 +106,30 @@ private:
 /**
  * @brief Print end-of-run summary table from accumulated results.
  *
- * Format:
+ * Format, when every test published one row:
  * @code
- * ================================ BENCHMARK SUMMARY ================================
- * Test                                       Median (us)   CV%     Calls/s   Status
- * -----------------------------------------------------------------------------------
- * CoreFeatures.BasicThroughput                    0.034    4.2%      29.4M   OK
- * CoreFeatures.WarmupStabilization                0.089   12.3%      11.2M   UNSTABLE
- * -----------------------------------------------------------------------------------
+ * ==================================================================================
+ * Test                               Median (us)     CV%     Calls/s  Status
+ * ----------------------------------------------------------------------------------
+ * CoreFeatures.BasicThroughput             0.034    4.2%       29.4M  OK
+ * CoreFeatures.WarmupStabilization         0.089   12.3%       11.2M  UNSTABLE
+ * ----------------------------------------------------------------------------------
  * 2 tests | 1 stable | 1 unstable
  * @endcode
  *
+ * When a test published more than one row the footer names both counts, and
+ * the stable and unstable counts are rows:
+ * @code
+ * 3 rows from 2 tests | 2 stable | 1 unstable
+ * @endcode
+ *
+ * @param entries One entry per published row.
+ * @param tests   Tests that published the entries. When it is at least 1 and
+ *                smaller than the number of entries the footer names both
+ *                counts; otherwise it counts one test per row.
  * @note NOT RT-safe (console I/O, heap allocation).
  */
-inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries) {
+inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries, std::size_t tests = 0) {
   if (entries.empty()) {
     return;
   }
@@ -165,28 +195,72 @@ inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries) {
   for (int i = 0; i < TOTAL_WIDTH; ++i) {
     std::fputc('-', stdout);
   }
-  std::fprintf(stdout, "\n%d tests | %d stable | %d unstable\n", static_cast<int>(entries.size()),
-               stableCount, unstableCount);
+  if (tests > 0 && tests < entries.size()) {
+    std::fprintf(stdout, "\n%d rows from %d test%s | %d stable | %d unstable\n",
+                 static_cast<int>(entries.size()), static_cast<int>(tests), (tests == 1) ? "" : "s",
+                 stableCount, unstableCount);
+  } else {
+    std::fprintf(stdout, "\n%d tests | %d stable | %d unstable\n", static_cast<int>(entries.size()),
+                 stableCount, unstableCount);
+  }
 }
+
+/* ----------------------------- SummaryListener ----------------------------- */
+
+namespace detail {
+
+/**
+ * @brief GoogleTest listener that prints the end-of-run summary table.
+ *
+ * It counts the tests that published rows, for the table's footer. When no CSV
+ * listener takes each test's rows (no --csv), this one takes them at the
+ * test's end instead, which gives the table's entries the rows' names and
+ * keeps no more than one test's rows waiting in the registry.
+ *
+ * @note NOT RT-safe (console I/O, heap allocation).
+ */
+class SummaryListener : public ::testing::EmptyTestEventListener {
+public:
+  explicit SummaryListener(bool takeRows) : takeRows_(takeRows) {}
+
+  void OnTestStart(const ::testing::TestInfo& /*info*/) override {
+    rowsAtTestStart_ = PerfRegistry::instance().summary().size();
+  }
+
+  void OnTestEnd(const ::testing::TestInfo& /*info*/) override {
+    // A test counts once in the footer however many rows it published.
+    if (PerfRegistry::instance().summary().size() > rowsAtTestStart_) {
+      ++testsWithRows_;
+    }
+    if (takeRows_) {
+      static_cast<void>(PerfRegistry::instance().takeAll());
+    }
+  }
+
+  void OnTestProgramEnd(const ::testing::UnitTest& /*ut*/) override {
+    const auto& ENTRIES = PerfRegistry::instance().summary();
+    if (ENTRIES.size() >= 2) {
+      printSummaryTable(ENTRIES, testsWithRows_);
+    }
+  }
+
+private:
+  bool takeRows_{false};
+  std::size_t rowsAtTestStart_{0};
+  std::size_t testsWithRows_{0};
+};
+
+} // namespace detail
 
 inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest* ut = nullptr) {
   if (!ut) {
     ut = ::testing::UnitTest::GetInstance();
   }
 
-  // Always install summary listener (prints end-of-run table)
-  class SummaryListener : public ::testing::EmptyTestEventListener {
-  public:
-    void OnTestProgramEnd(const ::testing::UnitTest& /*ut*/) override {
-      const auto& ENTRIES = PerfRegistry::instance().summary();
-      if (ENTRIES.size() >= 2) {
-        printSummaryTable(ENTRIES);
-      }
-    }
-  };
-
+  // Always install the summary listener (end-of-run table); it takes each
+  // test's rows itself only when no CSV listener will.
   auto& listeners = ut->listeners();
-  listeners.Append(new SummaryListener());
+  listeners.Append(new detail::SummaryListener(/*takeRows=*/!cfg.csv));
 
   // CSV listener (only if --csv provided)
   if (!cfg.csv) {
@@ -217,7 +291,16 @@ inline void installPerfEventListener(const PerfConfig& cfg, ::testing::UnitTest*
     }
   }
 
-  listeners.Append(new detail::CsvListener(*cfg.csv, INCLUDE_PROFILE, hasGpuTests));
+  // A file that cannot be written is a usage error, stated before any test
+  // runs: a run whose rows go nowhere would otherwise look like a success.
+  auto csv = std::make_unique<detail::CsvListener>(*cfg.csv, INCLUDE_PROFILE, hasGpuTests);
+  if (!csv->isOpen()) {
+    const int ERR = csv->openError();
+    std::fprintf(stderr, "[csv] cannot write --csv '%s': %s\n", cfg.csv->c_str(),
+                 (ERR != 0) ? std::strerror(ERR) : "the file could not be opened for writing");
+    std::exit(2);
+  }
+  listeners.Append(csv.release());
 }
 
 } // namespace bench

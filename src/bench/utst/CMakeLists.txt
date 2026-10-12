@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (15 files)
+# Sources (17 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -26,6 +26,8 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/BpfScripts_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ValgrindReaderAssertion_uTest.cpp"
 )
 
 # ------------------------------------------------------------------------------
@@ -46,15 +48,17 @@ vernier_add_gtest(
 )
 
 # ------------------------------------------------------------------------------
-# Host Test on a Stand-in CUPTI (1)
+# Host Tests of the CUPTI Collector (2)
 # ------------------------------------------------------------------------------
-# TestBenchCuptiDecision: the real CuptiCollector.cu, compiled into the test
-# against a counting stand-in for the CUPTI calls it makes (fake_cupti/), so
-# every configuration, CPU-only included, checks that the collector applies the
-# CUPTI decision before it registers: a setting that stands it down, or one that
-# is rejected, registers nothing. It links bench, which defines what the
-# decision is built from: the shared Boolean parser, the readiness context and
-# the report formatter.
+# The real CuptiCollector.cu, compiled into each test, so every configuration,
+# CPU-only included, checks it. TestBenchCuptiDecision builds it with CUPTI,
+# against a counting stand-in for the CUPTI calls it makes (fake_cupti/): the
+# collector applies the CUPTI decision before it registers, and a setting that
+# stands it down, or one that is rejected, registers nothing.
+# TestBenchCuptiAbsent builds it as a GPU build without CUPTI does
+# (COMPAT_CUPTI_AVAILABLE=0): it compiles, never collects and takes the same
+# decision. Both link bench, which defines what the decision is built from:
+# the shared Boolean parser, the readiness context and the report formatter.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -71,6 +75,61 @@ target_include_directories(
   TestBenchCuptiDecision BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_cupti"
                                         "${PROJECT_SOURCE_DIR}"
 )
+target_compile_definitions(TestBenchCuptiDecision PRIVATE COMPAT_CUPTI_AVAILABLE=1)
+
+vernier_add_gtest(
+  TARGET
+  TestBenchCuptiAbsent
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/CuptiCollectorAbsent_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(TestBenchCuptiAbsent BEFORE PRIVATE "${PROJECT_SOURCE_DIR}")
+target_compile_definitions(TestBenchCuptiAbsent PRIVATE COMPAT_CUPTI_AVAILABLE=0)
+
+# ------------------------------------------------------------------------------
+# Host Tests of the NVML Readings (2)
+# ------------------------------------------------------------------------------
+# The GPU harness's NVML readings (src/bench/src/NvmlTelemetry.hpp), compiled
+# into each test, so every configuration, CPU-only included, checks them.
+# TestBenchNvmlTelemetry builds them with NVML, against a scripted stand-in for
+# the NVML calls they make (fake_nvml/): a cell is filled only from readings
+# NVML reported, and the statement names the rest. TestBenchNvmlAbsent builds
+# them as a GPU build without NVML does (COMPAT_NVML_AVAILABLE=0): they compile
+# without any nvml.h and say the build has no NVML.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchNvmlTelemetry
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/NvmlTelemetry_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(
+  TestBenchNvmlTelemetry BEFORE PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/fake_nvml"
+                                        "${PROJECT_SOURCE_DIR}"
+)
+target_compile_definitions(TestBenchNvmlTelemetry PRIVATE COMPAT_NVML_AVAILABLE=1)
+
+vernier_add_gtest(
+  TARGET
+  TestBenchNvmlAbsent
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/NvmlTelemetryAbsent_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+target_include_directories(TestBenchNvmlAbsent BEFORE PRIVATE "${PROJECT_SOURCE_DIR}")
+target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
 # GPU Unit Tests (2 files)
@@ -111,6 +170,62 @@ if (TARGET bench_cuda)
 endif ()
 
 # ------------------------------------------------------------------------------
+# Compute Sanitizer Session Tests (1 file)
+# ------------------------------------------------------------------------------
+# The detection the compute-sanitizer backend and the demos decide with, on
+# snapshots and map texts: CPU-only, so every lane checks it. A target of its
+# own, apart from TestBench's source list.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestBenchSanitizerSession
+  SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerComputeSanitizerSession_uTest.cpp"
+  LINK
+  bench
+  LABELS
+  benchmarking
+)
+
+# ------------------------------------------------------------------------------
+# Nsight Range Test (1)
+# ------------------------------------------------------------------------------
+# TestBenchNsightRange: the Nsight backend's NVTX range opens and closes with
+# each measurement the guard makes, kernel, baseline, multi-GPU and CPU alike.
+# It records the ranges through NvtxRangeRecorder, a stand-in NVTX tool built as
+# a shared library of its own, which the test names in NVTX_INJECTION64_PATH
+# before anything calls NVTX, as Nsight Systems names its own. Built where
+# libbench_cuda and the toolkit's nvtx3 headers are: without the headers the
+# backend's push and pop compile to nothing, and there is no range to record.
+# Its GPU cases skip without a device.
+# ------------------------------------------------------------------------------
+
+if (TARGET bench_cuda AND TARGET CUDA::nvtx3)
+  add_library(NvtxRangeRecorder SHARED "${CMAKE_CURRENT_SOURCE_DIR}/NvtxRangeRecorder.cpp")
+  target_include_directories(NvtxRangeRecorder PRIVATE "${PROJECT_SOURCE_DIR}")
+  target_link_libraries(NvtxRangeRecorder PRIVATE CUDA::nvtx3)
+
+  vernier_add_gtest(
+    TARGET
+    TestBenchNsightRange
+    SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerNsightRange_uTest.cu"
+    LINK
+    bench
+    bench_cuda
+    NvtxRangeRecorder
+    LABELS
+    benchmarking
+    gpu
+    nsight
+  )
+  target_compile_definitions(
+    TestBenchNsightRange PRIVATE VERNIER_NVTX_RECORDER_PATH="$<TARGET_FILE:NvtxRangeRecorder>"
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
 # Consumer Warning Check
 # ------------------------------------------------------------------------------
 # Compiles a consumer-style benchmark file against the public headers with
@@ -135,10 +250,12 @@ target_compile_options(
 )
 
 # ------------------------------------------------------------------------------
-# Build Logic Tests (1)
+# Build Logic Tests (2)
 # ------------------------------------------------------------------------------
-# Script-mode tests of configure logic; they need no toolkit and no GPU, so the
-# CUDA architecture rules are checked on every lane, including CPU-only ones.
+# Script-mode tests of configure logic; they need no toolkit and no GPU, so they
+# run on every lane, including CPU-only ones: the CUDA architecture rules, and
+# what vernier_add_gtest's NO_REGISTER registers (a scratch project is
+# configured with this build's generator and compiler; nothing is built).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
@@ -147,6 +264,16 @@ add_test(NAME CudaArchitecturesResolveTest
 )
 set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")
 
+add_test(
+  NAME AddGtestNoRegisterTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/add_gtest_no_register
+    "-DGENERATOR=${CMAKE_GENERATOR}" -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -P
+    "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/AddGtestNoRegister_test.cmake"
+)
+set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake")
+
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
 # ------------------------------------------------------------------------------
@@ -154,13 +281,14 @@ set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarkin
 # profilers' own tools, so the readiness policy, its routing and its error
 # reports are tested without privileges or the real tools. The unit tests copy
 # them into a private directory and hand the checks a context whose PATH is it;
-# the command-line tests run a fixture benchmark with that PATH.
+# the command-line tests run a fixture benchmark with that PATH. The bpftrace
+# tests also read the bundled scripts, where the library looks them up.
 # ------------------------------------------------------------------------------
 
 if (TARGET TestBench)
   target_compile_definitions(
-    TestBench
-    PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+    TestBench PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+                      VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
   )
 endif ()
 
@@ -185,15 +313,45 @@ include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/InstallConsumers.cmake")
 
 # ------------------------------------------------------------------------------
+# Valgrind Reader Assertion Program (1)
+# ------------------------------------------------------------------------------
+# ValgrindReaderAssertion.hpp's reading as a program, for the callgrind window
+# tests' driver, which is written in CMake: valgrind's line when an assertion
+# in its debug-information reader stopped it before the program started, with
+# the evidence a C++ check asks of it. A test fixture, never installed.
+# ------------------------------------------------------------------------------
+
+vernier_add_test_program(
+  TARGET ValgrindReaderAssertionCli SOURCES
+  "${CMAKE_CURRENT_LIST_DIR}/ValgrindReaderAssertionCli.cpp"
+)
+
+# ------------------------------------------------------------------------------
+# Startup-Fault Fixture
+# ------------------------------------------------------------------------------
+# StartupFaultUnderValgrind.cpp aborts during static initialization when its
+# program runs under valgrind: the negative control of the callgrind checks,
+# linked by the window probe's copy below and by the join example's
+# instruction-count check. An object library, so each program that links it
+# carries the object and its initializer, which nothing references: an archive
+# would drop the object.
+# ------------------------------------------------------------------------------
+
+add_library(
+  StartupFaultUnderValgrind OBJECT "${CMAKE_CURRENT_LIST_DIR}/StartupFaultUnderValgrind.cpp"
+)
+target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_DIR}")
+
+# ------------------------------------------------------------------------------
 # Callgrind Window Probe (2 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
 # valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
 # prints must record the window and none of the work around it, the wrap
-# `bench run` uses the whole process. A test fixture, never installed; the
-# tests skip without valgrind, where valgrind cannot read the probe and says
-# so, and in a build with the address sanitizer, which the driver learns from
-# the build's SANITIZER setting.
+# `bench run` uses the whole process. A process fixture with its own PERF_MAIN,
+# run only by these tests; they skip without valgrind, where valgrind cannot
+# read the probe and says so, and in a build with the address sanitizer, which
+# the driver learns from the build's SANITIZER setting.
 # ------------------------------------------------------------------------------
 
 set(_probe_sanitizer "")
@@ -201,15 +359,14 @@ if (NOT CMAKE_CROSSCOMPILING)
   set(_probe_sanitizer "${SANITIZER}")
 endif ()
 
-vernier_add_app(
-  NAME
+vernier_add_gtest(
+  TARGET
   CallgrindWindowProbe
-  SRC
+  SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe.cpp"
   LINK
   bench
-  NO_INSTALL
-  NO_UPX
+  NO_REGISTER
 )
 
 if (TARGET CallgrindWindowProbe)
@@ -218,7 +375,8 @@ if (TARGET CallgrindWindowProbe)
     add_test(
       NAME CallgrindWindow${_case}Test
       COMMAND
-        "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe> -DCASE=${_mode}
+        "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe>
+        -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=${_mode}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_${_mode}
         -DPROBE_SANITIZER=${_probe_sanitizer} -P
         "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
@@ -250,9 +408,29 @@ add_test(
 set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;callgrind")
 
 # ------------------------------------------------------------------------------
+# Callgrind Window Probe, Reader Assertion (1 test)
+# ------------------------------------------------------------------------------
+# The window tests' driver against a stand-in valgrind that prints its reader's
+# assertion: where valgrind stopped before the probe started, the driver must
+# skip quoting the line; after a line of the probe's, or with an exit status
+# for a signal, it must fail. Needs neither valgrind nor the probe.
+# ------------------------------------------------------------------------------
+
+add_test(
+  NAME CallgrindWindowReaderAssertionTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DDRIVER=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake
+    -DFAKE=${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowReaderAssertion_fake_valgrind.sh
+    -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli>
+    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_reader_assertion -P
+    "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowReaderAssertion_test.cmake"
+)
+set_tests_properties(CallgrindWindowReaderAssertionTest PROPERTIES LABELS "benchmarking;callgrind")
+
+# ------------------------------------------------------------------------------
 # Callgrind Window Probe, Startup Fault (1 test)
 # ------------------------------------------------------------------------------
-# The probe with StartupFaultUnderValgrind.cpp linked in: it runs plainly, and
+# The probe with the startup-fault fixture linked in: it runs plainly, and
 # under valgrind it aborts before its tests start. The hint test's driver must
 # fail on it and say how the run ended. The test passes on that failure, over
 # a run that shows the fixture's abort, and skips only where valgrind is
@@ -261,23 +439,23 @@ set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;c
 # mean the driver hides a real startup fault as a valgrind limitation.
 # ------------------------------------------------------------------------------
 
-vernier_add_app(
-  NAME
+vernier_add_gtest(
+  TARGET
   CallgrindWindowProbeStartupFault
-  SRC
+  SOURCES
   "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe.cpp"
-  "${CMAKE_CURRENT_LIST_DIR}/StartupFaultUnderValgrind.cpp"
   LINK
   bench
-  NO_INSTALL
-  NO_UPX
+  NO_REGISTER
 )
 
 if (TARGET CallgrindWindowProbeStartupFault)
+  target_link_libraries(CallgrindWindowProbeStartupFault PRIVATE StartupFaultUnderValgrind)
   add_test(
     NAME CallgrindWindowStartupFaultTest
     COMMAND
-      "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbeStartupFault> -DCASE=hint
+      "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbeStartupFault>
+      -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=hint
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_startup_fault
       -DPROBE_SANITIZER=${_probe_sanitizer} -P
       "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
@@ -289,12 +467,14 @@ if (TARGET CallgrindWindowProbeStartupFault)
   # not pass it. It skips only on evidence that is not the driver's wording:
   # "valgrind is not installed", decided before anything runs; valgrind's own
   # words when it stops reading debug information, which the driver prints as
-  # valgrind wrote them; and, in a build with the address sanitizer only, the
-  # driver's skip for that build.
+  # valgrind wrote them, its reader's assertion only where the driver's skip
+  # quotes it ("It printed:"), which READER allows only with the evidence that
+  # valgrind stopped before the probe started; and, in a build with the
+  # address sanitizer only, the driver's skip for that build.
   set(_fault_skips
       "-- SKIPPED: valgrind is not installed"
       "Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-      "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
+      "It printed:\nvalgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
   )
   if (_probe_sanitizer STREQUAL "asan")
     list(APPEND _fault_skips
@@ -351,3 +531,9 @@ foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateR
                                    "\\[  SKIPPED \\] ${_start_gate_pattern}"
   )
 endforeach ()
+
+# ------------------------------------------------------------------------------
+# Subdirectories
+# ------------------------------------------------------------------------------
+
+add_subdirectory(measurement_rows)

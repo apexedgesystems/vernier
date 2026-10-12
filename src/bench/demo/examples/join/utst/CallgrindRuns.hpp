@@ -15,6 +15,8 @@
 #ifndef VERNIER_DEMO_JOIN_CALLGRIND_RUNS_HPP
 #define VERNIER_DEMO_JOIN_CALLGRIND_RUNS_HPP
 
+#include "src/bench/utst/ValgrindReaderAssertion.hpp"
+
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -170,10 +172,13 @@ inline bool oneTestPassed(const std::string& log) {
 /// recover.  Giving up.  Sorry.". Or an assertion fails inside that reader, as
 /// in valgrind 3.18.1 on programs that GCC 11.4 built for Debug and mold
 /// linked: "valgrind: m_debuginfo/readelf.c:2478
-/// (vgModuleLocal_read_elf_debug_info): Assertion '...' failed.". Empty for any
-/// other outcome. A skip quotes these lines, so what it rests on is valgrind's
-/// text, not the check's.
-inline std::string debugInfoGiveUp(const std::string& log) {
+/// (vgModuleLocal_read_elf_debug_info): Assertion '...' failed.", taken only
+/// with the evidence that it stopped valgrind before the program started, read
+/// by the shared test helper (ValgrindReaderAssertion.hpp) from @p log, where
+/// valgrind and the program share one stream, and from how valgrind ended
+/// (@p end). Empty for any other outcome. A skip quotes these lines, so what it
+/// rests on is valgrind's text, not the check's.
+inline std::string debugInfoGiveUp(const ChildExit& end, const std::string& log) {
   const std::size_t GAVE_UP = log.find("Valgrind: I can't recover.  Giving up.");
   if (GAVE_UP != std::string::npos) {
     // The line that gives up, and the reader's line just before it.
@@ -188,18 +193,8 @@ inline std::string debugInfoGiveUp(const std::string& log) {
       }
     }
   }
-  // valgrind's assertion line, which starts a line of its own.
-  const std::size_t ASSERTED = log.find("valgrind: m_debuginfo/");
-  if (ASSERTED != std::string::npos && (ASSERTED == 0 || log[ASSERTED - 1] == '\n')) {
-    const std::size_t TO = log.find('\n', ASSERTED);
-    const std::string LINE =
-        log.substr(ASSERTED, (TO == std::string::npos ? log.size() : TO) - ASSERTED);
-    if (LINE.find(": Assertion '") != std::string::npos &&
-        LINE.find("' failed.") != std::string::npos) {
-      return LINE;
-    }
-  }
-  return "";
+  return vernier::bench::test::readerAssertionBeforeStart(end.how == ChildExit::How::Signaled, "",
+                                                          log);
 }
 
 /// valgrind expands '%' in output file names; "%%" is a literal one.

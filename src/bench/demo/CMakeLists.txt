@@ -18,8 +18,10 @@ target_include_directories(demo_helpers INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
 # ------------------------------------------------------------------------------
 # Shared Examples
 # ------------------------------------------------------------------------------
-# The code the walkthroughs measure, with its unit tests. A demo links the
-# example it walks through instead of declaring its own workload.
+# The code the walkthroughs measure, with its tests. A demo links the example
+# it walks through instead of declaring its own workload. Each example builds
+# and registers its own tests, among them the guards of demos 07 and 11, which
+# count what those demos show instead of timing it (examples/join/utst).
 # ------------------------------------------------------------------------------
 
 add_subdirectory(examples)
@@ -36,7 +38,6 @@ set(CPU_DEMOS
     07_CallgrindProfiler
     08_RaplProfiler
     09_BpftraceProfiler
-    10_NvtxAnnotation
     11_MassifProfiler
     12_MemcheckProfiler
     13_OffCpuProfiler
@@ -86,7 +87,7 @@ set_source_files_properties(cpu/14_HelgrindProfiler_Racy.cpp PROPERTIES COMPILE_
 
 if (TARGET bench_cuda)
   set(GPU_DEMOS 01_GpuBasicWorkflow 02_NsightProfiler 03_SharedMemoryOpt
-                04_ComputeSanitizerProfiler
+                04_ComputeSanitizerProfiler 05_NvtxAnnotation
   )
 
   foreach (DEMO ${GPU_DEMOS})
@@ -101,10 +102,33 @@ if (TARGET bench_cuda)
       demo_helpers
     )
   endforeach ()
+
+  # Demo 03's kernels are a source of their own, so the tests beside the demo
+  # compile the kernels the demo launches (the sections at the end of this
+  # file).
+  target_sources(BenchDemo_Gpu_03_SharedMemoryOpt PRIVATE gpu/03_SharedMemoryOpt_Transpose.cu)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (12)
+# Demo 04's Private Sources
+# ------------------------------------------------------------------------------
+# The SAXPY kernel without its bounds guard, which compute-sanitizer finds, is
+# a source of its own, compiled with device line information whatever the
+# build type, so the tool's report names the line of the access. Nothing else
+# in the build changes.
+# ------------------------------------------------------------------------------
+
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  target_sources(
+    BenchDemo_Gpu_04_ComputeSanitizerProfiler PRIVATE gpu/04_ComputeSanitizerProfiler_Unguarded.cu
+  )
+  set_source_files_properties(
+    gpu/04_ComputeSanitizerProfiler_Unguarded.cu PROPERTIES COMPILE_OPTIONS "-lineinfo"
+  )
+endif ()
+
+# ------------------------------------------------------------------------------
+# Demos Built on a Shared Example (15)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -131,6 +155,10 @@ target_link_libraries(
   PRIVATE demo_example_join
 )
 target_link_libraries(
+  BenchDemo_09_BpftraceProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
   BenchDemo_11_MassifProfiler
   PRIVATE demo_example_join
 )
@@ -154,8 +182,12 @@ target_link_libraries(
 if (TARGET BenchDemo_Gpu_01_GpuBasicWorkflow)
   target_link_libraries(BenchDemo_Gpu_01_GpuBasicWorkflow PRIVATE demo_example_saxpy)
   target_link_libraries(BenchDemo_Gpu_02_NsightProfiler PRIVATE demo_example_saxpy)
+  target_link_libraries(BenchDemo_Gpu_05_NvtxAnnotation PRIVATE demo_example_saxpy)
   # Demo 02's guard timing, in a source of its own so the host test below builds it.
   target_sources(BenchDemo_Gpu_02_NsightProfiler PRIVATE gpu/02_NsightProfiler_Timing.cpp)
+endif ()
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  target_link_libraries(BenchDemo_Gpu_04_ComputeSanitizerProfiler PRIVATE demo_example_saxpy)
 endif ()
 
 # ------------------------------------------------------------------------------
@@ -182,84 +214,46 @@ target_include_directories(
 )
 
 # ------------------------------------------------------------------------------
-# Demo Effect Guards Run by CTest (3)
+# Walkthrough 19's Column Check (1)
 # ------------------------------------------------------------------------------
-# Demos are ptests: built, not registered with CTest. A guard that checks what
-# its demo demonstrates by counting bytes, not by timing, is registered on its
-# own, the way gtest_add_tests names and runs a test, under the demo label, so
-# ordinary test runs include it and never the demo's timing cases.
-#
-# Demo 07's guard counts instructions under callgrind, which load does not
-# change either. It is a program of the join example's tests,
-# JoinInstructionCounts (examples/CMakeLists.txt), so demo 07's source holds
-# only what it teaches. It also carries the callgrind label, and skips where
-# valgrind is missing or stops reading the program's debug information, and in
-# a build with a sanitizer (-DSANITIZER), whose instrumentation it would count.
-# The third test, labelled callgrind only, runs the same check in
-# JoinInstructionCountsStartupFault, whose counting worker aborts under
-# valgrind before its tests start
-# (src/bench/utst/StartupFaultUnderValgrind.cpp), and passes only when the
-# check fails on that abort rather than skipping.
+# TestDemoKernelColumns runs demo 02's two kernel cases with --csv and holds
+# each GPU column of their rows to its source: CUDA events, the harness's
+# occupancy estimate, CUPTI's records (BENCH_CUDA_HAS_CUPTI says whether the
+# build collects them) and NVML's readings, every cell the run cannot fill
+# empty and stated. It compiles the SAXPY example's kernel source into itself
+# to read the kernel's compiled resource use, so it links no example library.
+# Built where the GPU demos are, under the demo and gpu labels; it compares no
+# timing. The skip expression names the check, as the memcheck check's does.
 # ------------------------------------------------------------------------------
 
-add_test(NAME Massif.JoinPeakHeap COMMAND BenchDemo_11_MassifProfiler
-                                          --gtest_filter=Massif.JoinPeakHeap
-)
-set_tests_properties(
-  Massif.JoinPeakHeap PROPERTIES LABELS demo WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-)
-
-if (TARGET JoinInstructionCounts)
-  add_test(NAME CallgrindDemoInstructionCountsTest
-           COMMAND JoinInstructionCounts --gtest_filter=JoinInstructionCounts.UnderCallgrind
+if (TARGET BenchDemo_Gpu_02_NsightProfiler)
+  vernier_add_gtest(
+    TARGET
+    TestDemoKernelColumns
+    SOURCES
+    gpu/utst/02_NsightProfiler_KernelColumns_uTest.cpp
+    gpu/utst/02_NsightProfiler_KernelColumns_Kernel.cu
+    LINK
+    bench
+    bench_cuda
+    LABELS
+    demo
+    gpu
   )
-  # The skip expression names this test: its failure messages quote the
-  # counting runs' output, whose own GoogleTest lines must not turn a failure
-  # into a skip.
+  target_compile_definitions(
+    TestDemoKernelColumns
+    PRIVATE VERNIER_DEMO_02_BINARY="$<TARGET_FILE:BenchDemo_Gpu_02_NsightProfiler>"
+            VERNIER_DEMO_02_HAS_CUPTI=$<BOOL:${BENCH_CUDA_HAS_CUPTI}>
+  )
+  add_dependencies(TestDemoKernelColumns BenchDemo_Gpu_02_NsightProfiler)
   set_tests_properties(
-    CallgrindDemoInstructionCountsTest
-    PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
-               "\\[  SKIPPED \\] JoinInstructionCounts\\.UnderCallgrind"
-  )
-endif ()
-
-if (TARGET JoinInstructionCountsStartupFault)
-  add_test(NAME CallgrindDemoStartupFaultTest
-           COMMAND JoinInstructionCountsStartupFault
-                   --gtest_filter=JoinInstructionCounts.UnderCallgrind
-  )
-  # It passes only on the check's startup-failure message over a run that shows
-  # the fixture's own abort, followed by GoogleTest's FAILED line for the check:
-  # a run that valgrind or a sanitizer stopped first does not pass it. It skips
-  # only on evidence that is not the check's wording: "valgrind is not
-  # installed", decided before anything runs; valgrind's own words when it
-  # stops reading debug information, which the check's skip quotes as valgrind
-  # wrote them; and, in a build with a sanitizer only, the check's skip for that
-  # build, decided at compile time.
-  set(_fault_skips
-      "valgrind is not installed"
-      "Valgrind: debuginfo reader: [^\n]*\n[^\n]*Valgrind: I can't recover\\.  Giving up\\."
-      "valgrind: m_debuginfo/[^\n]*: Assertion '[^\n]*' failed\\."
-  )
-  if (SANITIZER MATCHES "^(asan|tsan|ubsan)$" AND NOT CMAKE_CROSSCOMPILING)
-    list(APPEND _fault_skips
-         "this program is built with the [a-z-]+ sanitizer \\(SANITIZER=${SANITIZER}\\)"
-    )
-  endif ()
-  set_tests_properties(
-    CallgrindDemoStartupFaultTest
-    PROPERTIES
-      LABELS
-      "callgrind"
-      PASS_REGULAR_EXPRESSION
-      "counting worker did not start under callgrind.*StartupFaultUnderValgrind: aborting before the tests start, as intended.*\\[  FAILED  \\] JoinInstructionCounts\\.UnderCallgrind"
-      SKIP_REGULAR_EXPRESSION
-      "${_fault_skips}"
+    KernelColumns.MatchTheirSources PROPERTIES SKIP_REGULAR_EXPRESSION
+                                               "\\[  SKIPPED \\] KernelColumns\\.MatchTheirSources"
   )
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (2)
+# Demo Effect Checks Run by CTest (7)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -267,7 +261,9 @@ endif ()
 # under the demo label and the tool's, so ordinary test runs include it and
 # never the demo's timing cases. The skip expression names the check: its
 # failure messages quote the child runs' output, whose own GoogleTest lines
-# must not turn a failure into a skip.
+# must not turn a failure into a skip. A GPU demo's check keeps its report
+# reading, which needs no CUDA, in a second program named after it with
+# Report, built in every configuration under the same labels.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -284,7 +280,10 @@ vernier_add_gtest(
   memcheck
 )
 target_compile_definitions(
-  TestDemoMemcheck PRIVATE VERNIER_DEMO_12_BINARY="$<TARGET_FILE:BenchDemo_12_MemcheckProfiler>"
+  TestDemoMemcheck
+  PRIVATE
+    VERNIER_DEMO_12_BINARY="$<TARGET_FILE:BenchDemo_12_MemcheckProfiler>"
+    VERNIER_DEMO_12_OFF_BY_ONE_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/cpu/12_MemcheckProfiler_OffByOne.cpp"
 )
 add_dependencies(TestDemoMemcheck BenchDemo_12_MemcheckProfiler)
 set_tests_properties(
@@ -316,6 +315,130 @@ foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothin
     ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
   )
 endforeach ()
+
+# Demo 09's check also counts the demo's writes and totals, with no tool, under
+# the demo label; only its traced test runs bpftrace, and carries that label
+# too. That test runs alone: its tracer compiles its program and traces every
+# write of the process, which timing tests running beside it would feel. Its
+# backend bounds each of its waits; the test's own bound is far above their sum.
+vernier_add_gtest(
+  TARGET
+  TestDemoBpftrace
+  SOURCES
+  cpu/utst/09_BpftraceProfiler_uTest.cpp
+  LINK
+  bench
+  demo_example_join
+  LABELS
+  demo
+)
+target_compile_definitions(
+  TestDemoBpftrace PRIVATE VERNIER_DEMO_09_BINARY="$<TARGET_FILE:BenchDemo_09_BpftraceProfiler>"
+)
+add_dependencies(TestDemoBpftrace BenchDemo_09_BpftraceProfiler)
+set_property(
+  TEST Bpftrace.CountsEveryWrite
+  APPEND
+  PROPERTY LABELS bpftrace
+)
+set_tests_properties(
+  Bpftrace.CountsEveryWrite PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 SKIP_REGULAR_EXPRESSION
+                                       "\\[  SKIPPED \\] Bpftrace\\.CountsEveryWrite"
+)
+
+# Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only
+# where the GPU demos are built. It links the CUDA runtime for one question
+# decided before anything runs: whether a device is there.
+if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  vernier_add_gtest(
+    TARGET
+    TestDemoComputeSanitizer
+    SOURCES
+    gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp
+    LINK
+    bench
+    demo_helpers
+    CUDA::cudart
+    LABELS
+    demo
+    compute-sanitizer
+  )
+  target_compile_definitions(
+    TestDemoComputeSanitizer
+    PRIVATE
+      VERNIER_DEMO_04_BINARY="$<TARGET_FILE:BenchDemo_Gpu_04_ComputeSanitizerProfiler>"
+      VERNIER_DEMO_04_UNGUARDED_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/gpu/04_ComputeSanitizerProfiler_Unguarded.cu"
+  )
+  add_dependencies(TestDemoComputeSanitizer BenchDemo_Gpu_04_ComputeSanitizerProfiler)
+  foreach (
+    _sanitizer_check
+    ComputeSanitizer.FindsTheUnguardedRead
+    ComputeSanitizer.KernelReportsNothing
+    ComputeSanitizer.PlainRunIsNotWrapped
+    ComputeSanitizer.PlainRunHintShape
+    ComputeSanitizer.HintRunsOnTheFirstRun
+    ComputeSanitizer.UnguardedSkipsOutsideTheTool
+    ComputeSanitizer.NamedToolHintRunsThatTool
+    ComputeSanitizer.HintRunsWithSpacesInItsPath
+    ComputeSanitizer.HintRunsWithAQuoteInItsPath
+  )
+    string(REPLACE "." "\\." _sanitizer_pattern "${_sanitizer_check}")
+    set_tests_properties(
+      ${_sanitizer_check} PROPERTIES SKIP_REGULAR_EXPRESSION
+                                     "\\[  SKIPPED \\] ${_sanitizer_pattern}"
+    )
+  endforeach ()
+endif ()
+
+vernier_add_gtest(
+  TARGET
+  TestDemoComputeSanitizerReport
+  SOURCES
+  gpu/utst/04_ComputeSanitizerProfiler_Report_uTest.cpp
+  LABELS
+  demo
+  compute-sanitizer
+)
+
+# Demo 05's check runs the GPU demo under Nsight Systems, so it exists only where
+# the GPU demos are built; its tool's label is nsight. It links the CUDA runtime
+# for one question decided before anything runs: whether a device is there.
+# What it reads and decides with needs neither, so the tests of that code are a
+# program of their own, built in every configuration.
+vernier_add_gtest(
+  TARGET
+  TestDemoNvtxRangesReport
+  SOURCES
+  gpu/utst/05_NvtxAnnotation_RangesReport_uTest.cpp
+  INC
+  "${PROJECT_SOURCE_DIR}"
+  LABELS
+  demo
+  nsight
+)
+if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
+  vernier_add_gtest(
+    TARGET
+    TestDemoNvtxRanges
+    SOURCES
+    gpu/utst/05_NvtxAnnotation_Ranges_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    nsight
+  )
+  target_compile_definitions(
+    TestDemoNvtxRanges
+    PRIVATE VERNIER_DEMO_GPU_05_BINARY="$<TARGET_FILE:BenchDemo_Gpu_05_NvtxAnnotation>"
+  )
+  add_dependencies(TestDemoNvtxRanges BenchDemo_Gpu_05_NvtxAnnotation)
+  set_tests_properties(
+    NvtxRanges.RecordedByNsightSystems
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] NvtxRanges\\.RecordedByNsightSystems"
+  )
+endif ()
 
 # ------------------------------------------------------------------------------
 # Demo 06's Totals Check Run by CTest
@@ -388,6 +511,7 @@ vernier_add_gtest(
   TestDemoHelpers
   SOURCES
   helpers/utst/SkipUnlessUnderValgrind_uTest.cpp
+  helpers/utst/SkipUnlessUnderComputeSanitizer_uTest.cpp
   LINK
   bench
   demo_helpers
@@ -399,3 +523,73 @@ set_tests_properties(
   PROPERTIES SKIP_REGULAR_EXPRESSION
              "\\[  SKIPPED \\] SkipUnlessUnderValgrindProbe\\.RunsOnlyUnderValgrind"
 )
+set_tests_properties(
+  SkipUnlessUnderComputeSanitizerProbe.RunsOnlyUnderTheTool
+  PROPERTIES SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerProbe\\.RunsOnlyUnderTheTool"
+)
+set_tests_properties(
+  SkipUnlessUnderComputeSanitizerTest.ToolRunRunsTheProbe
+  PROPERTIES SKIP_REGULAR_EXPRESSION
+             "\\[  SKIPPED \\] SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe"
+)
+
+# ------------------------------------------------------------------------------
+# GPU Demo Tests and Effect Checks Run by CTest (3)
+# ------------------------------------------------------------------------------
+# Demo 03's tests. TestDemoBankConflictsReport holds the bank-conflict check's
+# reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
+# GPU, so every configuration runs it, under the check's labels.
+# TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
+# check also ncu) and are built where the GPU demos are. The check's skip
+# expression names its own case, so the demo's GoogleTest lines in its failure
+# output cannot turn a failure into a skip.
+# ------------------------------------------------------------------------------
+
+vernier_add_gtest(
+  TARGET
+  TestDemoBankConflictsReport
+  SOURCES
+  gpu/utst/03_SharedMemoryOpt_BankConflictsReport_uTest.cpp
+  LABELS
+  demo
+  ncu
+)
+
+if (TARGET bench_cuda)
+  vernier_add_gtest(
+    TARGET
+    TestDemoTranspose
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_uTest.cu
+    gpu/03_SharedMemoryOpt_Transpose.cu
+    LINK
+    CUDA::cudart
+    LABELS
+    demo
+  )
+  target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
+
+  # The check behind walkthrough 12, beside the demo it runs.
+  vernier_add_gtest(
+    TARGET
+    TestDemoBankConflicts
+    SOURCES
+    gpu/utst/03_SharedMemoryOpt_BankConflicts_uTest.cpp
+    LINK
+    bench
+    CUDA::cudart
+    LABELS
+    demo
+    ncu
+  )
+  target_compile_definitions(
+    TestDemoBankConflicts
+    PRIVATE VERNIER_DEMO_GPU_03_BINARY="$<TARGET_FILE:BenchDemo_Gpu_03_SharedMemoryOpt>"
+  )
+  add_dependencies(TestDemoBankConflicts BenchDemo_Gpu_03_SharedMemoryOpt)
+  set_tests_properties(
+    BankConflicts.CountedByNsightCompute
+    PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] BankConflicts\\.CountedByNsightCompute"
+  )
+endif ()

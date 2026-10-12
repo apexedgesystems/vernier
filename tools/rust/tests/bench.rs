@@ -1328,3 +1328,138 @@ fn run_wrapped_exports_wrap_folder_to_child() {
     );
     assert!(dir.path().join(format!("bench-out/{stem}.massif")).is_dir());
 }
+
+/* ----------------------------- Measurement Rows ----------------------------- */
+
+/// Each test's last row in the measurement-rows fixture's CSV, and the name its
+/// case gave that row when a test published only its last measurement.
+const LAST_ROW_OF_EACH_TEST: [(&str, &str); 8] = [
+    ("Rows.SeparateCases/1024", "Rows.SeparateCases/1024"),
+    ("Rows.OneCaseThreeLabels/1024", "Rows.OneCaseThreeLabels"),
+    (
+        "Rows.SingleThenContention/contention",
+        "Rows.SingleThenContention",
+    ),
+    ("Rows.RepeatedLabel/x#2", "Rows.RepeatedLabel"),
+    ("Rows.EmptyLabels/#2", "Rows.EmptyLabels"),
+    ("Rows.LabelWithComma/c", "Rows.LabelWithComma"),
+    ("Rows.OneMeasurement", "Rows.OneMeasurement"),
+    (
+        "Rows.SecondMeasurementThrows",
+        "Rows.SecondMeasurementThrows",
+    ),
+];
+
+/// The JSON `bench <args>` printed and what it wrote to stderr, once it has
+/// exited with `code`.
+fn bench_json(args: &[&str], code: i32) -> (serde_json::Value, String) {
+    let (actual, out, err) = run(args);
+    assert_eq!(actual, code, "bench {args:?}: {err}");
+    let json = serde_json::from_str(&out).unwrap_or_else(|e| panic!("bench {args:?}: {e}"));
+    (json, err)
+}
+
+/// The strings of a JSON array, or the `member` of each of its objects, sorted.
+fn sorted_strings(array: &serde_json::Value, member: Option<&str>) -> Vec<String> {
+    let items = array
+        .as_array()
+        .unwrap_or_else(|| panic!("not an array: {array}"));
+    let mut strings: Vec<String> = items
+        .iter()
+        .map(|item| member.map_or(item, |name| &item[name]))
+        .map(|value| {
+            value
+                .as_str()
+                .unwrap_or_else(|| panic!("not a string: {value}"))
+        })
+        .map(str::to_string)
+        .collect();
+    strings.sort();
+    strings
+}
+
+/// @test bench summary and bench compare read every row the measurement-rows
+/// fixture writes under the name its CSV gives it, and a baseline written one
+/// row per test compares as a migration: the case names missing, the row names
+/// new.
+#[test]
+#[ignore = "runs the measurement-rows fixture, which CTest names in MEASUREMENT_ROWS_PROBE"]
+fn measurement_rows_cli_agreement() {
+    let probe = std::env::var("MEASUREMENT_ROWS_PROBE").expect("MEASUREMENT_ROWS_PROBE");
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = |name: &str| dir.path().join(name).to_string_lossy().into_owned();
+    let (rows, baseline) = (path("rows.csv"), path("one_row_per_test.csv"));
+    let fixture = Command::new(&probe)
+        .args("--threads 4 --cycles 50 --repeats 3 --csv".split(' '))
+        .arg(&rows)
+        .output()
+        .unwrap_or_else(|e| panic!("run {probe}: {e}"));
+    let stderr = String::from_utf8_lossy(&fixture.stderr);
+    assert!(fixture.status.success(), "{probe}: {stderr}");
+
+    // The rows as a CSV reader reads them: one for each measurement the
+    // fixture reports completing, each under a name of its own.
+    let mut reader = csv::Reader::from_path(&rows).expect("open the fixture's CSV");
+    let header = reader.headers().expect("its header").clone();
+    let records: Vec<csv::StringRecord> = reader.records().map(|r| r.expect("a row")).collect();
+    let completed = String::from_utf8_lossy(&fixture.stdout)
+        .matches("[rows-probe] ")
+        .count();
+    assert_eq!(
+        records.len(),
+        completed,
+        "rows against completed measurements"
+    );
+    let mut names: Vec<String> = records.iter().map(|row| row[0].to_string()).collect();
+    names.sort();
+    let mut distinct = names.clone();
+    distinct.dedup();
+    assert_eq!(distinct, names, "a name the CSV repeats");
+    let none: Vec<String> = Vec::new();
+
+    // bench summary reads every row under its name, and bench compare of the
+    // run against itself pairs every row.
+    let (summary, _) = bench_json(&["summary", "--json", &rows], 0);
+    assert_eq!(sorted_strings(&summary, Some("test")), names);
+    let (itself, _) = bench_json(&["compare", "--json", &rows, &rows], 0);
+    assert_eq!(sorted_strings(&itself["results"], Some("test")), names);
+    assert_eq!(sorted_strings(&itself["baseline_only"], None), none);
+    assert_eq!(sorted_strings(&itself["candidate_only"], None), none);
+
+    // A baseline in the one-row-per-test shape: each test's last row, under
+    // its case's name.
+    let mut writer = csv::Writer::from_path(&baseline).expect("create the baseline");
+    writer.write_record(&header).expect("write its header");
+    for (row, case) in LAST_ROW_OF_EACH_TEST {
+        let record = records.iter().find(|record| &record[0] == row);
+        let record = record.unwrap_or_else(|| panic!("no row {row} in the fixture's CSV"));
+        let mut renamed = csv::StringRecord::from(vec![case]);
+        renamed.extend(record.iter().skip(1));
+        writer.write_record(&renamed).expect("write a row");
+    }
+    writer.flush().expect("write the baseline");
+    let cases: Vec<&str> = LAST_ROW_OF_EACH_TEST
+        .iter()
+        .map(|(_, case)| *case)
+        .collect();
+    let mut missing: Vec<String> = cases.iter().map(|case| case.to_string()).collect();
+    missing.retain(|case| !names.contains(case));
+    missing.sort();
+    let mut new = names.clone();
+    new.retain(|name| !cases.contains(&name.as_str()));
+
+    let gate = [
+        "compare",
+        "--json",
+        "--fail-on-regression",
+        &baseline,
+        &rows,
+    ];
+    let (migration, err) = bench_json(&gate, 1);
+    assert!(
+        err.contains("baseline test(s) missing from the candidate"),
+        "{err}"
+    );
+    assert_eq!(sorted_strings(&migration["baseline_only"], None), missing);
+    assert_eq!(sorted_strings(&migration["candidate_only"], None), new);
+}

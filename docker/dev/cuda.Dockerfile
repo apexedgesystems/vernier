@@ -66,9 +66,11 @@ ENV OMP_NUM_THREADS=1 \
 ENV CCACHE_DIR=/ccache \
     CCACHE_MAXSIZE=5G \
     CCACHE_COMPRESS=1
-# Rust toolchain (installed to /opt/rust in base image)
+# Rust toolchain (installed to /opt/rust in base image), with Cargo's automatic
+# cache cleaning off as in vernier.base, which keeps the baked crates
 ENV RUSTUP_HOME=/opt/rust/rustup \
     CARGO_HOME=/opt/rust/cargo \
+    CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never \
     PATH="/opt/rust/cargo/bin:${PATH}"
 
 # ==============================================================================

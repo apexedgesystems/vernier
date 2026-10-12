@@ -153,11 +153,22 @@ std::string commandLine(const BpftraceRoute& route, long pid) {
 constexpr int PROBE_SELF_EXIT_S = 5;
 
 /**
- * @brief The readiness probe's script: the launch's, plus an interval probe
- * that ends it by itself. A tracer whose stop is refused so ends within the
- * bound whatever it traces; the check waits for that and reaps it.
+ * @brief The readiness probe's script: the launch's, plus the attach line
+ * the check waits for and an interval probe that ends it by itself. A tracer
+ * whose stop is refused so ends within the bound whatever it traces; the
+ * check waits for that and reaps it.
  */
 std::string probeScript() {
+  return std::string{OFFCPU_SCRIPT} + bpftrace_tool::attachLineProgram() +
+         "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
+}
+
+/**
+ * @brief The check's second copy: the launch's script and the probe's
+ * self-exit. Its own arm line, not an attach line, is what the check waits
+ * for.
+ */
+std::string witnessScript() {
   return std::string{OFFCPU_SCRIPT} + "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) +
          " { exit(); }\n";
 }
@@ -495,7 +506,7 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
                                           const std::string& runCommand, std::string& seen) {
   const long PID = static_cast<long>(ctx.self());
   std::vector<std::string> argv = route.command();
-  const std::vector<std::string> ARGS = {"-B", "none", "-e", probeScript(), std::to_string(PID)};
+  const std::vector<std::string> ARGS = {"-B", "none", "-e", witnessScript(), std::to_string(PID)};
   argv.insert(argv.end(), ARGS.begin(), ARGS.end());
   const std::string COMMAND = route.bpftrace + " -B none -e <the off-CPU script with a " +
                               std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " +
@@ -591,20 +602,23 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   if (auto failure = bpftrace_tool::probeExecutable(plan->route, ctx)) {
     return *failure;
   }
-  // The launch's script, with a self-exit added, through the route for the
-  // run's start grace, on this process; stopped with the run's first stop
-  // signal. The added interval makes it a command the run never runs, so a
-  // grant's refusal of it is unverified, and it bounds a tracer whose stop is
-  // refused: the check waits for that end and reaps it.
+  // The launch's script, with an attach line and a self-exit added, through
+  // the route until it has attached, the run's start grace at least, on this
+  // process; stopped with the run's first stop signal. -B none brings the
+  // attach line out as it is printed. The additions make it a command the run
+  // never runs, so a grant's refusal of it is unverified, and the self-exit
+  // bounds a tracer whose stop is refused: the check waits for that end and
+  // reaps it.
   const bool SUDO = plan->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const std::string SELF = std::to_string(static_cast<long>(ctx.self()));
   const std::string RUN_COMMAND =
       plan->route.bpftrace + " -B none -e <the off-CPU script> <benchmark pid>";
   const ProbeScratch SCRATCH(ctx);
   bpftrace_tool::AttachProbe probe;
-  probe.toolArgs = {"-e", probeScript(), SELF};
+  probe.toolArgs = {"-B", "none", "-e", probeScript(), SELF};
   probe.what = WHAT;
-  probe.commandLine = plan->route.bpftrace + " -e <the off-CPU script with a " +
+  probe.commandLine = plan->route.bpftrace +
+                      " -B none -e <the off-CPU script with an attach line and a " +
                       std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " + SELF;
   probe.runCommand = RUN_COMMAND;
   probe.graceMs = START_GRACE_MS;
@@ -615,8 +629,9 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
   }
   // The capture's own evidence that bpftrace sees this process's threads
   // under the ids the process knows: a copy of the script arms on a thread
-  // of this process. Not tried when the grant refused the probe, which it
-  // would refuse alike.
+  // of this process. Not tried after an unverified probe: the grant refused
+  // it and would refuse the copy alike, or only the run can show whether the
+  // tracer attaches here, or how it ends.
   std::string seen;
   if (!verdict || verdict->cause != ReadinessCause::UNVERIFIED) {
     auto witness = witnessArm(plan->route, ctx, SCRATCH.path(), RUN_COMMAND, seen);
@@ -811,7 +826,7 @@ void OffCpuProfiler::stopBpftrace() {
   // plan's route and reports every delivery it could not make.
   const HelperStopResult STOPPED = CAPTURE->tracer.stop();
   if (STOPPED.wasRunning) {
-    (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route);
+    (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_);
   }
   // At the stop bpftrace prints the lines it still had queued, then its
   // maps: a disarm line that did not arrive in time can arrive there.

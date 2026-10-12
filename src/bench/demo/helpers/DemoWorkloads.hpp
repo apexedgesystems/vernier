@@ -16,7 +16,6 @@
 #ifndef VERNIER_DEMO_WORKLOADS_HPP
 #define VERNIER_DEMO_WORKLOADS_HPP
 
-#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -42,23 +41,6 @@ inline std::vector<double> makeRandomDoubles(std::size_t count, std::uint32_t se
   return v;
 }
 
-/** @brief Generate deterministic random int32 in [-1000, 1000]. */
-inline std::vector<std::int32_t> makeRandomInts(std::size_t count, std::uint32_t seed = 42) {
-  std::vector<std::int32_t> v(count);
-  std::mt19937 rng(seed);
-  std::uniform_int_distribution<std::int32_t> dist(-1000, 1000);
-  for (auto& x : v) {
-    x = dist(rng);
-  }
-  return v;
-}
-
-/** @brief Generate a sorted copy of input data. */
-inline std::vector<double> makeSorted(std::vector<double> data) {
-  std::sort(data.begin(), data.end());
-  return data;
-}
-
 /* ----------------------------- Dot Product Workloads ----------------------------- */
 
 /** @brief Slow: Naive element-by-element dot product (not vectorizable by some compilers). */
@@ -78,20 +60,6 @@ inline double naiveDotProduct(const double* a, const double* b, std::size_t len)
 /** @brief Fast: std::inner_product (compiler can auto-vectorize). */
 inline double fastDotProduct(const double* a, const double* b, std::size_t len) {
   return std::inner_product(a, a + len, b, 0.0);
-}
-
-/* ----------------------------- I/O Workloads ----------------------------- */
-
-/** @brief Slow: Many small writes (one syscall per byte). */
-inline void manySmallWrites(int fd, const std::uint8_t* data, std::size_t len) {
-  for (std::size_t i = 0; i < len; ++i) {
-    [[maybe_unused]] auto r = ::write(fd, &data[i], 1);
-  }
-}
-
-/** @brief Fast: Single batched write. */
-inline void singleBatchedWrite(int fd, const std::uint8_t* data, std::size_t len) {
-  [[maybe_unused]] auto r = ::write(fd, data, len);
 }
 
 } // namespace demo

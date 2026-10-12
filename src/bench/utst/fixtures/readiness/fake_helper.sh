@@ -3,6 +3,7 @@
 # what it does:
 #   exit N       print its arguments, exit with status N
 #   env          print its environment
+#   masks        print its own ignored and blocked signal masks (SigIgn, SigBlk)
 #   flood        print more output than a probe keeps
 #   run          run until signalled (at most 30 s)
 #   ignore-int   like run, but ignore SIGINT
@@ -31,6 +32,11 @@ exit)
   ;;
 env)
   env
+  ;;
+masks)
+  # In its own process: a shell forks with every signal blocked for a
+  # moment, so its masks read from a child are not the ones it runs with.
+  exec grep -E '^Sig(Ign|Blk):' /proc/self/status
   ;;
 flood)
   yes "flood line ..................................................." | head -c 400000

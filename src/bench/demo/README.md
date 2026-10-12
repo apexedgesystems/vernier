@@ -38,14 +38,13 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench summary run1.csv
 ```
 
-Captured on the Raspberry Pi 4 rig, 2026-09-20, Release build. The three
+Captured on the Raspberry Pi 4 rig, 2026-09-28 (UTC), Release build. The two
 result lines, without GoogleTest's framing, the harness's calibration lines
 and the end-of-run table:
 
 ```
-[BasicWorkflow.JoinV0]  927.611 us/call  CV=0.1%  ~1.1K calls/s  (p10=927.056 p90=928.317 sd=0.544)
-[BasicWorkflow.JoinV1]  21.044 us/call  CV=0.7%  ~47.5K calls/s  (p10=20.752 p90=21.123 sd=0.149)
-[BasicWorkflow.JoinSpeedup]  V0 927.564 us/call  V1 20.511 us/call  45.2x
+[BasicWorkflow.JoinV0]  1000.531 us/call  CV=0.1%  ~999 calls/s  (p10=999.845 p90=1001.631 sd=0.879)
+[BasicWorkflow.JoinV1]  20.003 us/call  CV=0.1%  ~50.0K calls/s  (p10=19.975 p90=20.022 sd=0.023)
 ```
 
 Then the CSV, read back:
@@ -53,21 +52,20 @@ Then the CSV, read back:
 ```
 Test                   Median (us)       P10       P90        CV       Calls/sec  Stable
 --------------------  ------------  --------  --------  --------  --------------  ------
-BasicWorkflow.JoinV0     927.61100  927.05600  928.31700      0.1%            1078  yes
-BasicWorkflow.JoinV1      21.04410  20.75180  21.12340      0.7%           47519  yes
+BasicWorkflow.JoinV0    1000.53000  999.84500  1001.63000      0.1%             999  yes
+BasicWorkflow.JoinV1      20.00320  19.97520  20.02200      0.1%           49992  yes
 
   2 tests, sorted by name
 ```
 
-Reserving the result once instead of copying it per part is 44 times faster
-in this capture. The third test fails if the speedup falls to three times or
-less. The framework measured both versions, wrote the CSV, and `bench summary`
-read it back. Every demo follows the same pattern: measure something slow,
-measure something fast, compare.
+Reserving the result once instead of copying it per part is 50 times faster
+in this capture. The framework measured both versions, wrote the CSV, and
+`bench summary` read it back. Every demo follows the same pattern: measure
+something slow, measure something fast, compare.
 
 Open [docs/01_BASIC_WORKFLOW.md](docs/01_BASIC_WORKFLOW.md) for the full
-walkthrough: how to read those lines, what reproduces on another machine, and
-how to compare two runs.
+walkthrough: how to read those lines, what reproduces on another machine, how
+to compare two runs, and how to measure your own code the same way.
 
 ---
 
@@ -81,8 +79,7 @@ how to compare two runs.
 | 06  | Thread Scaling      | What a call costs while other threads make it  | join, one lock held for the whole call                      | join, a total per thread                     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
 | 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
 | 08  | RAPL Profiler       | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
-| 09  | bpftrace Profiler   | Syscall overhead tracing                       | One write() per byte                                        | Single batched write()                       | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
-| 10  | NVTX Annotation     | Timeline labeling for Nsight                   | Single opaque region                                        | Per-phase named ranges                       | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
+| 09  | bpftrace Profiler   | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
 | 13  | Off-CPU Profiler    | Where threads go to sleep, and for how long    | join, one lock held for the whole call                      | join, a total per thread                     | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
@@ -99,24 +96,25 @@ filenames carry their own sequential number across CPU + GPU.
 
 Requires NVIDIA GPU with CUDA support.
 
-| #   | Demo               | Concept                                       | Slow Path                                   | Fast Path                                   | Walkthrough                                               |
-| --- | ------------------ | --------------------------------------------- | ------------------------------------------- | ------------------------------------------- | --------------------------------------------------------- |
-| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                     | Same kernel, with and without its transfers | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
-| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block | SAXPY G1: buffers once, 256 threads/block   | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
-| 03  | Shared Memory Opt  | Bank conflicts and padding                    | Naive global transpose                      | Padded shared transpose                     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
-| 04  | Compute Sanitizer  | GPU memcheck for kernels                      | Deliberate OOB write                        | Bounds-checked scale                        | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| #   | Demo               | Concept                                       | Slow Path                                            | Fast Path                                           | Walkthrough                                               |
+| --- | ------------------ | --------------------------------------------- | ---------------------------------------------------- | --------------------------------------------------- | --------------------------------------------------------- |
+| 01  | GPU Basic Workflow | CPU vs GPU, and what transfers cost           | CPU loop over 1M floats                              | Same kernel, with and without its transfers         | [10_GPU_BASIC_WORKFLOW.md](docs/10_GPU_BASIC_WORKFLOW.md) |
+| 02  | Nsight Profiler    | Where GPU time goes, and what limits a kernel | SAXPY G0: allocate per call, 1 thread/block          | SAXPY G1: buffers once, 256 threads/block           | [11_NSIGHT_PROFILER.md](docs/11_NSIGHT_PROFILER.md)       |
+| 03  | Shared Memory Opt  | Bank conflicts, counted by Nsight Compute     | Transpose through a 32-wide shared tile              | The same tile with each row padded by one float     | [12_SHARED_MEMORY_OPT.md](docs/12_SHARED_MEMORY_OPT.md)   |
+| 04  | Compute Sanitizer  | A kernel past the end of its buffer           | SAXPY kernel without its guard (under the tool only) | The shared SAXPY kernel                             | [17_COMPUTE_SANITIZER.md](docs/17_COMPUTE_SANITIZER.md)   |
+| 05  | NVTX Annotation    | Named ranges on an Nsight Systems timeline    | SAXPY G1 as it is: the test's range only             | G1 in three named phases: copy_in, kernel, copy_out | [13_NVTX_ANNOTATION.md](docs/13_NVTX_ANNOTATION.md)       |
 
 Binary names: `BenchDemo_Gpu_NN_*`.
 
-Demos 01 and 02 measure the shared SAXPY example (see
-[Shared Examples](#shared-examples)); the other two carry their own kernels.
+Demos 01, 02, 04 and 05 measure the shared SAXPY example (see
+[Shared Examples](#shared-examples)); demo 03 carries its own kernels.
 
 Two GPU topics have a walkthrough but no dedicated demo binary:
 
-| Profiler        | Wraps                                   | When to use                                             | Walkthrough                                                   |
-| --------------- | --------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------- |
-| rocprof (AMD)   | AMD GPU + HIP kernels                   | Wraps an AMD GPU run; not validated on AMD hardware     | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
-| CUPTI (in-proc) | Tests timed with the GPU kernel builder | Per-kernel launch count, register and shared-memory use | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
+| Profiler                 | Wraps                      | When to use                                                       | Walkthrough                                                   |
+| ------------------------ | -------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------- |
+| rocprof (AMD)            | AMD GPU + HIP kernels      | Wraps an AMD GPU run; not validated on AMD hardware               | [18_ROCPROF_PROFILER.md](docs/18_ROCPROF_PROFILER.md)         |
+| CUPTI and NVML (in-proc) | Demo 02's two kernel tests | What each GPU column of a kernel test's row holds, and its source | [19_CUPTI_KERNEL_METRICS.md](docs/19_CUPTI_KERNEL_METRICS.md) |
 
 ---
 
@@ -175,7 +173,6 @@ slow/fast workload pairs used across demos:
 | Category    | Slow               | Fast               | Used In |
 | ----------- | ------------------ | ------------------ | ------- |
 | Dot product | Naive (dependency) | std::inner_product | Demo 08 |
-| I/O         | Per-byte write()   | Batched write()    | Demo 09 |
 
 All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
 and dependency chains), and designed to show measurable differences.
@@ -183,19 +180,22 @@ and dependency chains), and designed to show measurable differences.
 ### Shared Examples
 
 Code a walkthrough teaches from lives in its own directory beside these
-helpers, as `examples/<name>/{inc,src,utst}`: a small library the demo links,
-and unit tests that hold the example's versions to the same answers,
-registered under the `demo` label (`ctest --test-dir build -L demo`). The
-first is [examples/join](examples/join/inc/Join.hpp), and the table below names
-the demos that use each example.
+helpers, as `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its
+own: a small library the demo links, and unit tests that hold the example's
+versions to the same answers, registered under the `demo` label
+(`ctest --test-dir build -L demo`). An example's performance tests, run by
+hand on the rig and never registered, are in its `ptst` directory. The first
+is [examples/join](examples/join/inc/Join.hpp), and the table below names the
+demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                                  |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 12, 14, 16, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                  |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11                             |
+| Example                                  | Versions                                                                                                                                           | Used In                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 09, 12, 14, 16, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                      |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                     |
 
-The saxpy example and its tests are built only where the GPU demos are.
+The saxpy library and its device tests are built only where the GPU demos are;
+its host tests on a stand-in runtime are built everywhere.
 
 ---
 
@@ -229,17 +229,17 @@ Walkthroughs are numbered by their file name in `docs/`.
 
 **System and energy:**
 
-13. [09](docs/09_BPFTRACE_PROFILER.md) -- kernel tracing with bpftrace
+13. [09](docs/09_BPFTRACE_PROFILER.md) -- system calls and wakeups traced with bpftrace, then a script of your own
 14. [08](docs/08_RAPL_PROFILER.md) -- energy with Intel RAPL
 
 **GPU (requires an NVIDIA GPU):**
 
 15. [10](docs/10_GPU_BASIC_WORKFLOW.md) -- CPU vs GPU, kernel time vs transfers
 16. [11](docs/11_NSIGHT_PROFILER.md) -- Nsight Systems and Nsight Compute
-17. [13](docs/13_NVTX_ANNOTATION.md) -- NVTX ranges for Nsight timelines
-18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- per-kernel metrics from CUPTI
-19. [17](docs/17_COMPUTE_SANITIZER.md) -- kernel correctness with Compute Sanitizer
-20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared memory and bank conflicts (advanced)
+17. [13](docs/13_NVTX_ANNOTATION.md) -- named NVTX ranges: where a call's time goes on an Nsight Systems timeline
+18. [19](docs/19_CUPTI_KERNEL_METRICS.md) -- the GPU columns of a kernel test, and where each comes from
+19. [17](docs/17_COMPUTE_SANITIZER.md) -- a kernel past the end of its buffer, found by Compute Sanitizer
+20. [12](docs/12_SHARED_MEMORY_OPT.md) -- shared-memory bank conflicts, read from Nsight Compute's counter (advanced)
 
 ---
 

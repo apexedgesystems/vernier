@@ -200,7 +200,7 @@ TEST(JoinInstructionCounts, UnderCallgrind) {
     // or no output at all is a failure of the run, reported with what the run
     // printed (the log is short when the tests never started).
     if (!check::testsStarted(LOG_TEXT)) {
-      const std::string GAVE_UP = check::debugInfoGiveUp(LOG_TEXT);
+      const std::string GAVE_UP = check::debugInfoGiveUp(END, LOG_TEXT);
       std::error_code ec;
       fs::remove_all(DIR, ec);
       if (!GAVE_UP.empty()) {

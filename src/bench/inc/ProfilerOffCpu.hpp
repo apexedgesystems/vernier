@@ -40,19 +40,20 @@
  * <pid>`, its output unbuffered so that each acknowledgement arrives as it is
  * printed; with BENCH_SUDO it runs as `sudo -n -- <bpftrace> -B none -e ...`,
  * and `sudo -n -- <kill> -2|-15|-9 <tracer>` stops it. The readiness check
- * (checkOffCpuRequest) runs the launch's script with a 5 s self-exit added
- * through that route for the start grace and stops it with SIGINT; a probe
- * whose stop is refused ends by that self-exit, and the check waits for it
- * and reaps it. The added interval makes the probe a command the run never
- * runs, so a grant's refusal of it is unverified and the run's start decides.
- * The check then runs a second copy with unbuffered output while a thread of
- * this process named vernier-arm sleeps, and requires its arm
- * acknowledgement with this process's pid and that thread's id: without it
- * the request is refused, naming a PID namespace other than the initial one.
- * A grant's refusal of the second copy is unverified, as for the first, and
- * the second is not tried when the grant refused the first. The profiler
- * launches and stops with exactly the tools and route it verified
- * (OffCpuPlan).
+ * (checkOffCpuRequest) runs the launch's script, with an attach line and a
+ * 5 s self-exit added and its output unbuffered, through that route until it
+ * prints that line, the start grace at least, and stops it with SIGINT; a
+ * probe whose stop is refused ends by that self-exit, and the check waits for
+ * it and reaps it. The additions make the probe a command the run never runs,
+ * so a grant's refusal of it is unverified and the run's start decides. The
+ * check then runs a second copy, the launch's script with the self-exit,
+ * with unbuffered output while a thread of this process named vernier-arm
+ * sleeps, and requires its arm acknowledgement with this process's pid and
+ * that thread's id: without it the request is refused, naming a PID
+ * namespace other than the initial one. A grant's refusal of the second copy
+ * is unverified, as for the first, and the second is not tried after an
+ * unverified first. The profiler launches and stops with exactly the tools
+ * and route it verified (OffCpuPlan).
  *
  * Output: `<testName>.offcpu/offcpu.txt` (the tracer's acknowledgements and
  * its map dump) and `offcpu.err.txt` (bpftrace's messages). Each capture ends
