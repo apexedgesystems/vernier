@@ -159,6 +159,17 @@ bool ended(pid_t pid) {
          (text[COMM_END + 2] == 'Z' || text[COMM_END + 2] == 'X');
 }
 
+/** @brief The children of this process that have ended and wait to be reaped. */
+std::vector<pid_t> zombieChildren() {
+  std::vector<pid_t> zombies;
+  for (const pid_t CHILD : childProcesses(::getpid())) {
+    if (ended(CHILD)) {
+      zombies.push_back(CHILD);
+    }
+  }
+  return zombies;
+}
+
 /** @brief How a probe that leaves a child behind came out, observed as it returned. */
 struct OrphanOutcome {
   bool returned = false; ///< It returned within the watchdog.
@@ -848,6 +859,40 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
     EXPECT_LT(OUT.elapsed, std::chrono::milliseconds(row.timeoutMs + 3000));
     ASSERT_GT(OUT.child, 0) << dir.log();
     EXPECT_TRUE(OUT.childEnded) << "child " << OUT.child << " outlived the probe";
+  }
+}
+
+/**
+ * @test A child the program leaves in the probe's group ends with the probe
+ * whatever reaps the program. With SIGCHLD ignored, or with SA_NOCLDWAIT, the
+ * system reaps the program as it exits, so the program's pid cannot name the
+ * group any more; the group is still ended, and the call leaves no child of
+ * its own unreaped. Here the program starts a 30 s sleep and exits at once.
+ */
+TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::DEFAULT, Policy::IGNORED, Policy::NO_CHILD_WAIT}) {
+    const std::string NAME = POLICY == Policy::IGNORED         ? "SIGCHLD ignored"
+                             : POLICY == Policy::NO_CHILD_WAIT ? "SA_NOCLDWAIT"
+                                                               : "the default action";
+    SCOPED_TRACE(NAME);
+    FakeToolDir dir;
+    ASSERT_TRUE(dir.ok());
+    const std::string HELPER = dir.install("fake_helper.sh", "helper");
+    const std::size_t ZOMBIES_BEFORE = zombieChildren().size();
+    OrphanOutcome out;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      out = runOrphanProbe(dir, HELPER, "quiet", "0", 5000);
+    }
+    ASSERT_TRUE(out.returned) << "the probe did not return";
+    EXPECT_LT(out.elapsed, std::chrono::milliseconds(3000));
+    ASSERT_GT(out.child, 0) << dir.log();
+    EXPECT_TRUE(out.childEnded) << "child " << out.child << " outlived the probe";
+    EXPECT_EQ(out.result.endUnobserved(), POLICY != Policy::DEFAULT) << out.result.describe();
+    EXPECT_EQ(out.result.succeeded(), POLICY == Policy::DEFAULT) << out.result.describe();
+    EXPECT_LE(zombieChildren().size(), ZOMBIES_BEFORE) << "the probe left a child unreaped";
   }
 }
 

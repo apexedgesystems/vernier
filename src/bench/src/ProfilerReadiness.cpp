@@ -10,7 +10,9 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -118,6 +120,46 @@ void defaultStopSignals() {
     (void)::sigaddset(&stopSignals, SIGNAL);
   }
   (void)::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr);
+}
+
+/** @brief Where a forked keeper stops closing descriptors when it cannot close a range at once. */
+int descriptorBound() {
+  struct rlimit limit{};
+  if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
+    return static_cast<int>(std::clamp<rlim_t>(limit.rlim_cur, 256, 65536));
+  }
+  return 1024;
+}
+
+/**
+ * @brief A probe group's keeper, in the child of fork(): every signal it can
+ * block blocked, a process group of its own, stdin the read end of its
+ * anchor pipe, stdout and stderr /dev/null and every other inherited
+ * descriptor closed, so it holds nothing open of this process's; then it
+ * waits for the anchor's end-of-file and exits. Async-signal-safe.
+ */
+[[noreturn]] void runGroupKeeper(int anchor, int bound) {
+  sigset_t all;
+  (void)::sigfillset(&all);
+  (void)::sigprocmask(SIG_SETMASK, &all, nullptr);
+  (void)::setpgid(0, 0);
+  (void)::dup2(anchor, STDIN_FILENO);
+  const int NUL = ::open("/dev/null", O_WRONLY);
+  if (NUL >= 0) {
+    (void)::dup2(NUL, STDOUT_FILENO);
+    (void)::dup2(NUL, STDERR_FILENO);
+  }
+  bool closed = false;
+#if defined(__linux__) && defined(SYS_close_range)
+  closed = ::syscall(SYS_close_range, 3U, ~0U, 0U) == 0;
+#endif
+  for (int fd = 3; !closed && fd < bound; ++fd) {
+    (void)::close(fd);
+  }
+  char byte = 0;
+  while (::read(STDIN_FILENO, &byte, 1) < 0 && errno == EINTR) {
+  }
+  ::_exit(0);
 }
 
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
@@ -639,6 +681,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   // Everything the child needs is built before fork(): after it, in a
   // threaded process, the child may only make async-signal-safe calls.
   std::vector<std::string> argvStore = argvIn;
+  const int DESCRIPTOR_BOUND = descriptorBound();
   std::vector<std::string> envStore = ctx.probeEnvironment();
   const std::vector<char*> ARGV = cStrings(argvStore);
   const std::vector<char*> ENVP = cStrings(envStore);
@@ -657,9 +700,54 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       }
     }
   };
+
+  // The group's keeper, started first and ended last: the program runs in
+  // the keeper's process group, and until the keeper is reaped, here, after
+  // the group has ended, the group's id cannot belong to another process. So
+  // the group is signalled and waited for even when the program has been
+  // reaped elsewhere (this process ignores SIGCHLD or sets SA_NOCLDWAIT, and
+  // the system reaps the program as it exits), and never by an id that may
+  // have passed to another process. It is forked before the probe's pipes
+  // exist, so it holds none of them.
+  int anchor[2] = {-1, -1};
+  if (!makePipe(anchor)) {
+    result.spawnErrno = errno;
+    return result;
+  }
+  const pid_t KEEPER = ::fork();
+  if (KEEPER < 0) {
+    result.spawnErrno = errno;
+    ::close(anchor[0]);
+    ::close(anchor[1]);
+    return result;
+  }
+  if (KEEPER == 0) {
+    runGroupKeeper(anchor[0], DESCRIPTOR_BOUND);
+  }
+  (void)::setpgid(KEEPER, KEEPER); // both sides set it; whichever runs first wins the race
+  ::close(anchor[0]);
+  // Closes the anchor, so a keeper still running exits, and reaps the keeper
+  // within PROBE_REAP_MS (one reaped elsewhere is gone).
+  const auto END_KEEPER = [&] {
+    if (anchor[1] >= 0) {
+      ::close(anchor[1]);
+      anchor[1] = -1;
+    }
+    const auto UNTIL = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
+    int keeperStatus = 0;
+    while (true) {
+      const pid_t W = ::waitpid(KEEPER, &keeperStatus, WNOHANG);
+      if (W == KEEPER || (W < 0 && errno != EINTR) || Clock::now() >= UNTIL) {
+        return;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  };
+
   if (!makePipe(output) || (SEPARATE && !makePipe(errors)) || !makePipe(report)) {
     result.spawnErrno = errno;
     CLOSE_ALL();
+    END_KEEPER();
     return result;
   }
   const int DEV_NULL = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
@@ -671,10 +759,17 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     if (DEV_NULL >= 0) {
       ::close(DEV_NULL);
     }
+    END_KEEPER();
     return result;
   }
   if (CHILD == 0) {
-    (void)::setpgid(0, 0);
+    // Into the keeper's group, or not run at all: outside it, nothing the
+    // program starts could be ended with it.
+    if (::setpgid(0, KEEPER) != 0) {
+      const int FAILURE[2] = {2, errno};
+      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     defaultStopSignals();
     if (DEV_NULL >= 0) {
       (void)::dup2(DEV_NULL, STDIN_FILENO);
@@ -686,7 +781,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     writeAll(report[1], FAILURE, sizeof(FAILURE));
     ::_exit(127);
   }
-  (void)::setpgid(CHILD, CHILD); // both sides set it; whichever runs first wins the race
+  (void)::setpgid(CHILD, KEEPER); // both sides set it; whichever runs first wins the race
   ::close(output[1]);
   output[1] = -1;
   if (SEPARATE) {
@@ -706,6 +801,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     int status = 0;
     reapBlocking(CHILD, status);
     CLOSE_ALL();
+    END_KEEPER();
     result.spawnErrno = execErrno;
     return result;
   }
@@ -752,9 +848,8 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   };
 
   // Run until the program ends or the bound passes. The program is observed,
-  // not reaped: while it stays unreaped its pid, which is its group's id,
-  // cannot be reused, so the group signal below reaches only processes this
-  // probe started.
+  // not reaped, so that its pid stays its own while it is signalled below
+  // (unless the system reaped it already: then it is gone).
   const auto DEADLINE = Clock::now() + std::chrono::milliseconds(std::max(timeoutMs, 0));
   LeaderState leader = LeaderState::RUNNING;
   while (true) {
@@ -776,10 +871,15 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   }
 
   // Finish the group on every path: nothing the probe started may run on
-  // into the measurement it precedes.
+  // into the measurement it precedes. The unreaped keeper keeps the group's
+  // id this call's; a keeper reaped elsewhere (another wait, against the
+  // documented ownership of children) is gone, and nothing is signalled by
+  // its id.
+  if (leaderState(KEEPER) != LeaderState::GONE) {
+    (void)::kill(-KEEPER, SIGKILL);
+  }
   if (leader != LeaderState::GONE) {
-    (void)::kill(-CHILD, SIGKILL);
-    (void)::kill(CHILD, SIGKILL); // the program itself, had it left its group
+    (void)::kill(CHILD, SIGKILL); // the program itself, had it left the group
   }
 
   // What the pipes still hold. Processes the signal ended close them; one
@@ -794,9 +894,9 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     (void)PUMP(static_cast<int>(std::min<long long>(LEFT, 50)));
   }
 
-  // Reap the program, then wait for the rest of its group; both bounded. A
-  // program reaped elsewhere (ECHILD) is gone without a status: its end is
-  // unobserved, never read as an exit.
+  // Reap the program, wait for the rest of its group, then reap the keeper;
+  // each bounded. A program reaped elsewhere (ECHILD) is gone without a
+  // status: its end is unobserved, never read as an exit.
   int status = 0;
   bool reaped = leader == LeaderState::GONE;
   bool lost = reaped;
@@ -817,9 +917,8 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
-  if (reaped && leader != LeaderState::GONE) {
-    waitForGroup(CHILD, REAP_END);
-  }
+  waitForGroup(KEEPER, REAP_END);
+  END_KEEPER();
   CLOSE_ALL();
   result.statusObtained = reaped && !lost;
   if (lost) {

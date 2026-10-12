@@ -393,7 +393,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   status of each program a readiness check runs, and the check took it for an
   exit with status 0, however the program ended; such a check now fails,
   saying why, and a stop signal sent through `sudo -n kill` is recorded as not
-  known while the stop still waits for the tracer. **Action needed:** leave
+  known while the stop still waits for the tracer. A process such a program
+  leaves behind in its group still ends with the check. **Action needed:** leave
   SIGCHLD at its default action, without `SA_NOCLDWAIT`, and wait only for the
   benchmark's own children while it is profiled.
 - **An in-process profile of the first case leaves out the run's metadata**

@@ -417,17 +417,23 @@ enum class ProbeStreams : std::uint8_t {
  * @brief Run @p argv once, bounded, and collect its status and output.
  *
  * argv[0] is executed as given (a resolved absolute path; no PATH search),
- * with stdin from /dev/null, in its own process group, in the probe
+ * with stdin from /dev/null, in a process group of its own, in the probe
  * environment of @p ctx, with SIGINT and SIGTERM at their default action,
  * unblocked, as OwnedHelper starts its helpers. When the program ends,
  * whatever its status, or at @p timeoutMs, the whole group is killed, so
- * nothing the probe started runs on after it. The group is signalled before
- * the program is reaped: its pid, the group's id, cannot belong to another
- * process then. Output still in the pipes is read for at most PROBE_DRAIN_MS,
- * and the call returns once the program is reaped and no process of its group
- * runs, or PROBE_REAP_MS later at the most. A process that leaves the group,
- * or that this user may not signal, is beyond its reach. Needs no external
- * helper such as timeout(1).
+ * nothing the probe started runs on after it. The group is led by a keeper
+ * process the call forks first, which holds nothing open of this process's
+ * and is reaped last, after the group has ended: until then the group's id
+ * cannot belong to another process, so the group is ended also when the
+ * system reaps the program as it exits (this process ignores SIGCHLD or
+ * sets SA_NOCLDWAIT), and no id that may have passed to another process is
+ * ever signalled. Output still in the pipes is read for at most
+ * PROBE_DRAIN_MS, and the call returns once the program is reaped and no
+ * process of its group runs, or PROBE_REAP_MS later at the most. A process
+ * that leaves the group, or that this user may not signal, is beyond its
+ * reach, and so is the group when another wait in this process reaps the
+ * keeper, which the ownership of children CHILD_STATUS_REMEDY states rules
+ * out. Needs no external helper such as timeout(1).
  */
 [[nodiscard]] ProbeResult runBoundedProbe(const std::vector<std::string>& argv, int timeoutMs,
                                           const ReadinessContext& ctx,
