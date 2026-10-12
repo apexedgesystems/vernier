@@ -1827,6 +1827,94 @@ fn run_reports_the_benchmark_exit_status() {
     }
 }
 
+/// Start @p command with SIGCHLD ignored, as a process started with it
+/// ignored inherits it across exec.
+fn start_with_sigchld_ignored(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only sigaction, which is async-signal-safe; a zeroed sigaction is a
+    // valid value of the type, given the ignore handler.
+    unsafe {
+        command.pre_exec(|| {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_IGN;
+            if libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// @test bench run and bench doctor started with SIGCHLD ignored, under which
+/// the system would reap the benchmark as it exits and leave nothing to
+/// wait for: bench run still reports how the benchmark ended, as
+/// `run_reports_the_benchmark_exit_status` does with SIGCHLD at its default
+/// action, and starts the benchmark with SIGCHLD at its default action; bench
+/// doctor exits with its binary's status.
+#[test]
+#[cfg(target_os = "linux")]
+fn run_and_doctor_started_with_sigchld_ignored_read_the_status() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let started = |args: &[&str]| {
+        let mut command = Command::new(bin());
+        command.args(args).current_dir(dir.path());
+        start_with_sigchld_ignored(&mut command);
+        let out = output_of(&mut command);
+        (
+            out.status.code(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    for (i, (body, code, expected)) in [
+        ("exit 0", 0, ""),
+        ("exit 1", 1, "Error: the benchmark exited with status 1\n"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let fake = dir.path().join(format!("fake_bench_{i}"));
+        write_executable(
+            &fake,
+            &format!("#!/bin/sh\necho 'stand-in benchmark ran'\n{body}\n"),
+        );
+        let (status, stdout, stderr) = started(&["run", &fake.to_string_lossy()]);
+        assert_eq!(status, Some(code), "{body}: {stderr}");
+        assert!(
+            stdout.contains("stand-in benchmark ran"),
+            "{body}: {stdout}{stderr}"
+        );
+        assert!(stderr.ends_with(expected), "{body}: {stderr}");
+    }
+
+    // A benchmark that prints its own /proc status, signals ignored included
+    // (cat, which leaves them as it found them, unlike a shell).
+    let fake = dir.path().join("fake_bench_status");
+    write_executable(&fake, "#!/bin/cat /proc/self/status\n");
+    let (status, stdout, stderr) = started(&["run", &fake.to_string_lossy()]);
+    assert_eq!(status, Some(0), "{stderr}");
+    let ignored = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("SigIgn:"))
+        .and_then(|hex| u64::from_str_radix(hex.trim(), 16).ok())
+        .unwrap_or_else(|| panic!("no SigIgn line in {stdout}"));
+    assert_eq!(
+        ignored & (1 << (libc::SIGCHLD - 1)),
+        0,
+        "the benchmark started with SIGCHLD ignored"
+    );
+
+    let doctor = dir.path().join("doctor_bench");
+    write_executable(&doctor, "#!/bin/sh\necho 'text doctor'\nexit 3\n");
+    let (status, stdout, stderr) = started(&["doctor", &doctor.to_string_lossy()]);
+    assert_eq!(status, Some(3), "{stderr}");
+    assert!(stdout.contains("text doctor"), "{stdout}{stderr}");
+}
+
 /* ----------------------------- Run: Routes ----------------------------- */
 
 /// A private PATH holding recording stand-ins for wrapper programs, and a

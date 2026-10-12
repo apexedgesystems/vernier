@@ -380,6 +380,13 @@ enum GpuMonitorAction {
 fn main() -> ExitCode {
     let args = Args::parse();
 
+    // Before any command starts a child: each stays waitable until the
+    // command reaps it, whatever SIGCHLD action this process inherited.
+    if let Err(e) = bench::runner::keep_children_waitable() {
+        eprintln!("Error: SIGCHLD could not be given its default action: {e}");
+        return ExitCode::FAILURE;
+    }
+
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

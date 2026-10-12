@@ -1069,6 +1069,37 @@ fn run_owned(
     }
 }
 
+/// Give SIGCHLD its default action, without SA_NOCLDWAIT, for the rest of the
+/// process, so that every child a bench command starts stays waitable until
+/// the command reaps it: ignored (kept across exec) or with SA_NOCLDWAIT, it
+/// would have the system reap each child as it exits, and the command could
+/// not read how the child ended (its wait fails with ECHILD), nor keep the
+/// process id an owned run's group is signalled by. The children then start
+/// with the default action too. The bench binary sets it before any command
+/// runs; owned runs (`owned_run::spawn`) set it again before each start.
+#[cfg(unix)]
+pub fn keep_children_waitable() -> std::io::Result<()> {
+    // SAFETY: a zeroed sigaction is a valid value of the type; sigaction only
+    // reads `action`, owned here; the default action installs no handler.
+    let rc = unsafe {
+        let mut action: libc::sigaction = std::mem::zeroed();
+        action.sa_sigaction = libc::SIG_DFL;
+        libc::sigemptyset(&mut action.sa_mask);
+        libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut())
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// No SIGCHLD where there are no Unix signals: nothing to set.
+#[cfg(not(unix))]
+pub fn keep_children_waitable() -> std::io::Result<()> {
+    Ok(())
+}
+
 /// A helper program a bench command owns until it returns: bench run's
 /// annotator and `nsys stats` (`run_owned`), and bench validate's version
 /// probes (`validate::run_version`), each with its own caller policy. The
@@ -1128,7 +1159,8 @@ pub(crate) mod owned_run {
 
     /// Start @p command with stdin closed and both outputs piped, in a
     /// process group of its own, once this process keeps its children
-    /// waitable (`keep_children_waitable`); nothing starts where it cannot.
+    /// waitable (`super::keep_children_waitable`); nothing starts where it
+    /// cannot.
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
         command
             .stdin(Stdio::null())
@@ -1138,31 +1170,9 @@ pub(crate) mod owned_run {
         {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
-            keep_children_waitable()?;
         }
+        super::keep_children_waitable()?;
         command.spawn()
-    }
-
-    /// Give SIGCHLD its default action, without SA_NOCLDWAIT, for the rest of
-    /// the process: ignored (kept across exec) or with SA_NOCLDWAIT, it would
-    /// have the system reap the program as it exits and release the process
-    /// id the program's group is signalled by.
-    #[cfg(unix)]
-    fn keep_children_waitable() -> io::Result<()> {
-        // SAFETY: a zeroed sigaction is a valid value of the type; sigaction
-        // only reads `action`, owned here; the default action installs no
-        // handler.
-        let rc = unsafe {
-            let mut action: libc::sigaction = std::mem::zeroed();
-            action.sa_sigaction = libc::SIG_DFL;
-            libc::sigemptyset(&mut action.sa_mask);
-            libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut())
-        };
-        if rc == 0 {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
     }
 
     /// Wait for @p child (from `spawn`) until it exits, @p bound passes or
