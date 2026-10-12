@@ -134,10 +134,12 @@ const std::string& testName() const noexcept;
 - Framework calls `fn()` once (you do the loop inside)
 - Use for: Batch measurements, custom loop logic
 - Your lambda should perform exactly `cycles()` operations
-- If `fn()` throws, the abort hook runs in place of the after hook (a
-  profiler attached with `attachProfilerHooks()` stops what it started,
-  unanalyzed), nothing is published, and the exception reaches you
-  unchanged; the case can measure again
+- If `fn()` throws, the abort hook runs in place of the after hook, nothing
+  is published, and the exception reaches you unchanged; the case can measure
+  again. With `attachProfilerHooks()`, the abort hook calls the profiler's
+  `abortMeasure()`, which does nothing by default; the gperf profiler stops
+  its CPU and heap captures there at once, without analysis, so this case and
+  others can capture again
 
 **`contentionRun(worker, label)`**
 
@@ -538,7 +540,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw: stop, without analysis
+  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
