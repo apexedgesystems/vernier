@@ -664,14 +664,15 @@ matches the benchmark's headers. Exiting.` The ABI version and the size of
   benchmark is refused like a smaller one, because the libraries copy these
   objects into storage of their own size. Members are still only appended
   (`targetTimeUs` is the last member of `PerfConfig`, and every member 1.0.3
-  has sits at its 1.0.3 offset), and every layout change raises
-  `BENCH_ABI_VERSION`; a unit test pins the member count, order, types and
-  offsets of the current version. A member added into existing padding without
-  a version change is caught by that test, not at run time. `BENCH_ABI_VERSION`
-  and the SONAME number are separate: the SONAME decides which file the loader
-  picks and also has to move when an exported signature changes, while
-  `BENCH_ABI_VERSION` is compared inside the process and catches a layout change
-  that leaves both the struct sizes and the file name alone.
+  has sits at its 1.0.3 offset), and every layout change, a change to
+  `Profiler`'s virtual functions included, raises `BENCH_ABI_VERSION`; a unit
+  test pins the member count, order, types and offsets of the current version.
+  A member added into existing padding without a version change is caught by
+  that test, not at run time. `BENCH_ABI_VERSION` and the SONAME number are
+  separate: the SONAME decides which file the loader picks and also has to move
+  when an exported signature changes, while `BENCH_ABI_VERSION` is compared
+  inside the process and catches a layout change that leaves both the struct
+  sizes and the file name alone.
 - **`Perf.hpp` compiles without warnings for consumers** -- the profile
   watchdog's signal handler discarded the result of five `write(2)` calls, so an
   optimized consumer build with `-Wall` (where the C library marks `write`
@@ -910,7 +911,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 2).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 3).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable

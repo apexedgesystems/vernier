@@ -199,8 +199,11 @@ For a packager this means:
   incompatible layout. Rebuild it against the headers that ship with these
   libraries.
 - Raise the ABI number in `src/bench/CMakeLists.txt` (`BENCH_ABI_SOVERSION`) for
-  any change to those shared structs or to an exported signature. Both bench
-  libraries read that one number.
+  any change to those shared structs, to an exported signature or to
+  `Profiler`'s virtual functions (the libraries build the profilers that
+  benchmark code calls), even when no struct's size changes. Both bench
+  libraries read that one number; until a release ships it,
+  `BENCH_ABI_VERSION` in `src/bench/inc/PerfAbi.hpp` alone moves.
 
 ---
 

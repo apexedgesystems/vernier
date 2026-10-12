@@ -52,9 +52,12 @@ set(CUDA_SOURCES
 # with header code compiled into the benchmark, and bench_cuda embeds Stats in
 # the results it returns. The two therefore carry one object layout and one
 # SONAME number, stated here once so the GPU library cannot drift from the
-# core one. Raise it whenever that layout changes or an exported signature
-# does; the loader then refuses a benchmark built against the previous number
-# instead of binding it to incompatible code.
+# core one. Raise it whenever that layout changes, an exported signature does,
+# or Profiler's virtual functions do (the libraries build the profilers that
+# benchmark code calls through); the loader then refuses a benchmark built
+# against the previous number instead of binding it to incompatible code.
+# While no release has shipped this number, BENCH_ABI_VERSION alone moves
+# (PerfAbi.hpp): every library built under it runs that check.
 # ------------------------------------------------------------------------------
 
 set(BENCH_ABI_SOVERSION 2)

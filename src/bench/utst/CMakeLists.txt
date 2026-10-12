@@ -323,6 +323,15 @@ include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 
 # ------------------------------------------------------------------------------
+# Virtual Interface Check (2)
+# ------------------------------------------------------------------------------
+# A benchmark built from these headers against a library built before
+# Profiler's abortMeasure() slot, and against one built with it.
+# ------------------------------------------------------------------------------
+
+include("${CMAKE_CURRENT_LIST_DIR}/AbiProfilerInterface.cmake")
+
+# ------------------------------------------------------------------------------
 # Installed Package Consumers (1)
 # ------------------------------------------------------------------------------
 # An install of this tree used by a project outside it, through
