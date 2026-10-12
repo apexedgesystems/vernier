@@ -3,9 +3,10 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp), called from several threads at once (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-10-03 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; bpftrace 0.23.2
+**Captured:** 2026-10-03 (UTC); the denied, unsupported and PID-namespace
+lines under If It Does Not Match and the `ctest` counts 2026-10-12 (UTC);
+written for the Vernier 1.0.4 release; captured from the development tree at
+project version 1.0.3, whose CLI reported `bench 1.0.3`; bpftrace 0.23.2
 
 ## Overview
 
@@ -612,21 +613,21 @@ and another run of the same command can land outside them.
 
   ```
     [FAIL] offcpu     denied: the off-CPU script could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
-               Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, run with CAP_BPF and CAP_PERFMON, or run as root.
+               Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or run as root.
   ```
 
   and step 2's command prints
 
   ```
   [FAIL] Profiler 'offcpu': denied: the off-CPU script could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
-     Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, run with CAP_BPF and CAP_PERFMON, or run as root.
+     Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or run as root.
      Falling back to no-op (measurements will proceed without profiling).
   ```
 
   then measures as usual, writes no capture and exits 0. bpftrace 0.23.2
-  checks for the root user itself, so of the hint's three ways, the two that
-  work here are `BENCH_SUDO=1` with a grant, as in
-  [Needs](#what-is-off-cpu-profiling), and running as root.
+  checks for the root user itself, and both of the hint's ways work here:
+  `BENCH_SUDO=1` with a grant, as in [Needs](#what-is-off-cpu-profiling), and
+  running as root.
 
 - **In this project's dev container, the tracepoint is not found.** The dev
   container (`docker compose run dev`: Ubuntu 24.04, bpftrace 0.20.2) mounts
@@ -634,6 +635,7 @@ and another run of the same command can land outside them.
 
   ```
     [FAIL] offcpu     unsupported: the off-CPU script: stdin:1-2: ERROR: tracepoint not found: sched:sched_switch
+               The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not mounted: mount -t tracefs tracefs /sys/kernel/tracing.
   ```
 
   and step 2's command without `--taskset`, on the container's own build,
@@ -641,12 +643,11 @@ and another run of the same command can land outside them.
 
   ```
   [FAIL] Profiler 'offcpu': unsupported: the off-CPU script: stdin:1-2: ERROR: tracepoint not found: sched:sched_switch
-     The kernel lacks a probe the script uses, or tracefs is not mounted (mount -t tracefs tracefs /sys/kernel/tracing); select a script whose probes exist here.
+     The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not mounted: mount -t tracefs tracefs /sys/kernel/tracing.
      Falling back to no-op (measurements will proceed without profiling).
   ```
 
-  measures as usual and writes no capture folder. The hint's last clause is
-  the generic bpftrace backend's: offcpu has one script. The dev container is
+  measures as usual and writes no capture folder. The dev container is
   privileged, and `sudo mount -t tracefs tracefs /sys/kernel/tracing` inside
   it mounts tracefs; the doctor then names the next obstacle, the container's
   own PID namespace.
@@ -659,7 +660,8 @@ and another run of the same command can land outside them.
   `unshare --pid`, the doctor's row read
 
   ```
-    [FAIL] offcpu     unsupported: the off-CPU script ran through sudo -n (BENCH_SUDO=1) but did not acknowledge its arm probe within 4000 ms; this process runs in PID namespace pid:[4026532587], not in the initial one (pid:[4026531836]), and offcpu traces only from the host's PID view
+    [FAIL] offcpu     unsupported: the off-CPU script ran through sudo -n (BENCH_SUDO=1) but did not acknowledge its arm probe within 4000 ms; this process runs in PID namespace pid:[4026532586], not the host's, and offcpu traces only from the host's PID view
+               Run the benchmark on the host, or in a container started with --pid=host.
   ```
 
   and step 2's command printed the same reason as
@@ -784,16 +786,17 @@ Three things check what this page shows, and all fail loudly:
   under the `demo` label.
 
 The demo's check runs under the `demo` label, the traced check also under
-`bpftrace`, which runs it alone:
+`bpftrace`, which runs it and demo 09's traced check:
 
 ```bash
 ctest --test-dir build -L demo
 ctest --test-dir build -L bpftrace
 ```
 
-On this rig the first selected 50 tests and the second one, and every one
-passed but the memcheck walkthrough's valgrind probe, which `ctest` reports
-as skipped outside valgrind, as it should. The demo's two timing tests are
+On this rig the first selected 155 tests and the second two, and every one
+passed but three that `ctest` reports as skipped outside their tools, as it
+should: the memcheck walkthrough's valgrind probe and the two
+compute-sanitizer helper tests. The demo's two timing tests are
 not registered: what they measure belongs to the machine they run on. This
 repository has no continuous-integration lane on the reference board, so
 before a release the page's commands are run on the rig by hand, and the page

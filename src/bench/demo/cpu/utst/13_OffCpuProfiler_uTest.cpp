@@ -377,21 +377,20 @@ constexpr const char* RIG_NO_SHARING_DUMP =
 
 /// A run in a PID namespace of its own: the decision refused the request.
 constexpr const char* RIG_NAMESPACE_RUN =
-    "[ RUN      ] ReadinessFixture.First\n"
+    "[ RUN      ] OffCpu.CoarseLock\n"
     "\n"
-    "[FAIL] Profiler 'offcpu': unsupported: the off-CPU script ran through sudo -n "
-    "(BENCH_SUDO=1) but did not acknowledge its arm probe within 4000 ms; this process runs in "
-    "PID namespace pid:[4026532563], not in the initial one (pid:[4026531836]), and offcpu "
-    "traces only from the host's PID view\n"
+    "[FAIL] Profiler 'offcpu': unsupported: the off-CPU script ran through sudo -n (BENCH_SUDO=1) "
+    "but did not acknowledge its arm probe within 4000 ms; this process runs in PID namespace "
+    "pid:[4026532586], not the host's, and offcpu traces only from the host's PID view\n"
     "   Run the benchmark on the host, or in a container started with --pid=host.\n"
     "   Falling back to no-op (measurements will proceed without profiling).\n";
 
 /// A run without BENCH_SUDO: bpftrace's own refusal, quoted by the decision.
 constexpr const char* RIG_DENIED_RUN =
-    "[FAIL] Profiler 'offcpu': denied: the off-CPU script could not attach as the current "
-    "user: ERROR: bpftrace currently only supports running as the root user.\n"
-    "   Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, "
-    "run with CAP_BPF and CAP_PERFMON, or run as root.\n"
+    "[FAIL] Profiler 'offcpu': denied: the off-CPU script could not attach as the current user: "
+    "ERROR: bpftrace currently only supports running as the root user.\n"
+    "   Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or "
+    "run as root.\n"
     "   Falling back to no-op (measurements will proceed without profiling).\n";
 
 /// A capture whose tracer ended before the stop: a failure of the capture,
