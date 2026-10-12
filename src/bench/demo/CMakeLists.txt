@@ -9,7 +9,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Demo Helpers (shared workloads)
+# Demo Helpers
 # ------------------------------------------------------------------------------
 
 add_library(demo_helpers INTERFACE)
@@ -128,7 +128,7 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (14)
+# Demos Built on a Shared Example (15)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -152,6 +152,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_07_CallgrindProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_08_RaplProfiler
   PRIVATE demo_example_join
 )
 target_link_libraries(
@@ -249,7 +253,7 @@ if (TARGET BenchDemo_Gpu_02_NsightProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (7)
+# Demo Effect Checks Run by CTest (8)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -340,6 +344,18 @@ set_property(
 set_tests_properties(
   Bpftrace.CountsEveryWrite PROPERTIES RUN_SERIAL TRUE TIMEOUT 120 SKIP_REGULAR_EXPRESSION
                                        "\\[  SKIPPED \\] Bpftrace\\.CountsEveryWrite"
+)
+
+# Demo 08's check runs the demo with no tool, under the demo label: both join
+# versions run to their end and publish a row each.
+vernier_add_gtest(TARGET TestDemoRapl SOURCES cpu/utst/08_RaplProfiler_uTest.cpp LABELS demo)
+target_compile_definitions(
+  TestDemoRapl PRIVATE VERNIER_DEMO_08_BINARY="$<TARGET_FILE:BenchDemo_08_RaplProfiler>"
+)
+add_dependencies(TestDemoRapl BenchDemo_08_RaplProfiler)
+set_tests_properties(
+  RaplDemoTest.MeasuresBothVersions
+  PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] RaplDemoTest\\.MeasuresBothVersions"
 )
 
 # Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only

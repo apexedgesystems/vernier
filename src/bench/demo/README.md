@@ -78,7 +78,7 @@ to compare two runs, and how to measure your own code the same way.
 | 03  | gperftools Profiler | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
 | 06  | Thread Scaling      | What a call costs while other threads make it  | join, one lock held for the whole call                      | join, a total per thread                     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
 | 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
-| 08  | RAPL Profiler       | Energy/power measurement                       | Naive dot product                                           | Vectorized inner product                     | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
+| 08  | RAPL Profiler       | Energy/power measurement                       | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
 | 09  | bpftrace Profiler   | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
@@ -167,32 +167,22 @@ docker compose run --rm -T dev bash -c '
 
 ## 5. Shared Workloads
 
-[helpers/DemoWorkloads.hpp](helpers/DemoWorkloads.hpp) provides reusable
-slow/fast workload pairs used across demos:
-
-| Category    | Slow               | Fast               | Used In |
-| ----------- | ------------------ | ------------------ | ------- |
-| Dot product | Naive (dependency) | std::inner_product | Demo 08 |
-
-All workloads are deterministic (fixed seed), compiler-resistant (volatile sinks
-and dependency chains), and designed to show measurable differences.
-
 ### Shared Examples
 
-Code a walkthrough teaches from lives in its own directory beside these
-helpers, as `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its
-own: a small library the demo links, and unit tests that hold the example's
-versions to the same answers, registered under the `demo` label
+Code a walkthrough teaches from lives in its own directory, as
+`examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its own: a small
+library the demo links, and unit tests that hold the example's versions to
+the same answers, registered under the `demo` label
 (`ctest --test-dir build -L demo`). An example's performance tests, run by
 hand on the rig and never registered, are in its `ptst` directory. The first
 is [examples/join](examples/join/inc/Join.hpp), and the table below names the
 demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                                  |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 09, 12, 14, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                  |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                 |
+| Example                                  | Versions                                                                                                                                           | Used In                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 08, 09, 12, 14, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                      |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                     |
 
 The saxpy library and its device tests are built only where the GPU demos are;
 its host tests on a stand-in runtime are built everywhere.

@@ -9,6 +9,13 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 08 measures the shared join example** -- `BenchDemo_08_RaplProfiler`
+  measures `joinV0` and `joinV1`, one test each, instead of a naive and a
+  "vectorized" dot product that a Release build compiles to the same scalar
+  arithmetic. **Action needed:** its test names change (`NaiveDotProduct` and
+  `VectorizedDotProduct` become `JoinV0` and `JoinV1`), so demo 08 CSVs from
+  before this release do not join with newer ones, and
+  `helpers/DemoWorkloads.hpp`, whose last helpers were demo 08's, is removed.
 - **Demo 09 traces writes and lock hand-offs on the shared join example** --
   its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
   from a run on the documented Raspberry Pi 4 rig.
