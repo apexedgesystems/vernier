@@ -12,7 +12,9 @@
  * words. Otherwise it measures, then reads what the backend wrote for this
  * process into the case's capture folder:
  *  - perf: stat.txt, perf stat's report on this process, ended normally
- *  - gperf: cpu.prof, a gperftools CPU profile with its end written
+ *  - gperf: nothing, in-process. A cpu.prof an earlier run left in the folder
+ *    looks like this run's, so the profile is read after the run, from a
+ *    capture folder only that run wrote.
  *  - bpftrace: each selected script's report, whose capture window this
  *    process armed and disarmed
  *  - callgrind: nothing, in-process. valgrind writes the profile when the
@@ -53,16 +55,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <system_error>
-#include <vector>
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/ProfilerBpftrace.hpp"
@@ -127,42 +125,6 @@ bool reportsEvent(const std::string& report, std::string_view event) {
     }
   }
   return false;
-}
-
-/** @brief What GperfIntegration reads of a gperftools CPU profile. */
-struct CpuProfile {
-  bool header = false; ///< The header words 0, 3, 0, the period, 0.
-  bool end = false;    ///< The words 0, 1, 0 that end the samples.
-  std::uintptr_t periodUs = 0;
-  std::uintptr_t samples = 0;
-};
-
-/**
- * @brief Read @p bytes as gperftools' CPU profile: pointer-sized words, a
- * header, sample records (count, depth, that many addresses) and the record
- * that ends them, which ProfilerStop() writes before the process's mappings.
- */
-CpuProfile readCpuProfile(const std::string& bytes) {
-  CpuProfile profile;
-  std::vector<std::uintptr_t> words(bytes.size() / sizeof(std::uintptr_t));
-  if (words.size() < 5) {
-    return profile;
-  }
-  std::memcpy(words.data(), bytes.data(), words.size() * sizeof(std::uintptr_t));
-  if (words[0] != 0 || words[1] != 3 || words[2] != 0 || words[3] == 0 || words[4] != 0) {
-    return profile;
-  }
-  profile.header = true;
-  profile.periodUs = words[3];
-  for (std::size_t i = 5; i + 2 < words.size() && words[i + 1] <= words.size();
-       i += 2 + words[i + 1]) {
-    if (words[i] == 0 && words[i + 1] == 1 && words[i + 2] == 0) {
-      profile.end = true;
-      break;
-    }
-    profile.samples += words[i];
-  }
-  return profile;
 }
 
 } // anonymous namespace
@@ -281,17 +243,14 @@ PERF_TEST(Profilers, PerfIntegration) {
 }
 
 /**
- * @brief gperftools attached by the guard, checked by its CPU profile
+ * @brief gperftools attached by the guard to the measurement
  *
  * Runs under --profile gperf with CPU profiling (the default). The guard
  * attaches gperftools to the case: ProfilerStart() before the measured
- * repeats and ProfilerStop() after them write cpu.prof.
+ * repeats and ProfilerStop() after them write cpu.prof into the case's
+ * capture folder, which is read after the run.
  *
  * @test GperfIntegration
- *
- * Validates:
- *  - cpu.prof in the case's capture folder, written by this run (an earlier
- *    one is removed first), is a gperftools CPU profile with its end written
  *
  * Skips without --profile gperf, when --profile-args asks for the heap
  * profile alone, and, with the readiness decision's words, where gperftools
@@ -316,10 +275,6 @@ PERF_TEST(Profilers, GperfIntegration) {
     GTEST_SKIP() << "This case reads the CPU profile; --profile-args '" << config().profileArgs
                  << "' asks for the heap profile alone";
   }
-  // Only a profile this run writes can satisfy the check below.
-  const fs::path PROFILE = captureFolder(perf, "gperf") / "cpu.prof";
-  std::error_code removeError;
-  fs::remove(PROFILE, removeError);
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -332,15 +287,6 @@ PERF_TEST(Profilers, GperfIntegration) {
   volatile std::uint64_t sink = 0;
   auto result = perf.throughputLoop([&] { sink = sink + test::sumBytes(data.data(), data.size()); },
                                     "gperf_test");
-
-  // What gperftools wrote for this measurement. A short measurement may hold
-  // no sample, so the samples are reported, not required.
-  const CpuProfile CPU = readCpuProfile(readFile(PROFILE));
-  ASSERT_TRUE(CPU.header) << PROFILE << " is missing or is not a gperftools CPU profile";
-  EXPECT_TRUE(CPU.end) << "the samples in " << PROFILE << " have no end: ProfilerStop() did not "
-                       << "complete the profile";
-  std::printf("[gperf] %s: %ju samples, one every %ju us\n", PROFILE.c_str(),
-              static_cast<std::uintmax_t>(CPU.samples), static_cast<std::uintmax_t>(CPU.periodUs));
 
   EXPECT_GT(result.callsPerSecond, 100.0) << "Test should complete with gperf profiling";
 
