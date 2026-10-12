@@ -1085,6 +1085,12 @@ fn run_owned(
 ///   is unreaped: the group is signalled only before `Child::wait` reaps the
 ///   program, and the program's exit is seen with `WNOWAIT`, which does not
 ///   reap it.
+/// - Nothing else reaps the program: before it is spawned, SIGCHLD gets its
+///   default action without SA_NOCLDWAIT, for the rest of the process (as the
+///   Nsight executor's runs do), so an ignored SIGCHLD inherited across exec
+///   or SA_NOCLDWAIT cannot have the system reap it as it exits. A program
+///   whose end cannot be observed (another wait in this process took it) is
+///   not the run's any more: its group is not signalled.
 /// - The signal handler only stores the signal's number in an atomic.
 /// - Only the read ends of the program's own pipes are made non-blocking.
 pub(crate) mod owned_run {
@@ -1121,7 +1127,8 @@ pub(crate) mod owned_run {
     }
 
     /// Start @p command with stdin closed and both outputs piped, in a
-    /// process group of its own.
+    /// process group of its own, once this process keeps its children
+    /// waitable (`keep_children_waitable`); nothing starts where it cannot.
     pub(crate) fn spawn(command: &mut Command) -> io::Result<Child> {
         command
             .stdin(Stdio::null())
@@ -1131,13 +1138,37 @@ pub(crate) mod owned_run {
         {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
+            keep_children_waitable()?;
         }
         command.spawn()
     }
 
+    /// Give SIGCHLD its default action, without SA_NOCLDWAIT, for the rest of
+    /// the process: ignored (kept across exec) or with SA_NOCLDWAIT, it would
+    /// have the system reap the program as it exits and release the process
+    /// id the program's group is signalled by.
+    #[cfg(unix)]
+    fn keep_children_waitable() -> io::Result<()> {
+        // SAFETY: a zeroed sigaction is a valid value of the type; sigaction
+        // only reads `action`, owned here; the default action installs no
+        // handler.
+        let rc = unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut action.sa_mask);
+            libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut())
+        };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
     /// Wait for @p child (from `spawn`) until it exits, @p bound passes or
     /// @p interrupted holds a signal's number; then end its group, wait for
-    /// the group to be gone and collect the output.
+    /// the group to be gone and collect the output. A program whose end
+    /// cannot be observed is left with its group (`unowned`).
     pub(crate) fn finish(
         mut child: Child,
         bound: Duration,
@@ -1148,8 +1179,10 @@ pub(crate) mod owned_run {
         let stderr = read_to_end(child.stderr.take(), &stop);
         let started = Instant::now();
         let ending = loop {
-            if exited(&mut child) {
-                break None;
+            match look(&mut child) {
+                Seen::Running => {}
+                Seen::Exited => break None,
+                Seen::Lost(e) => return unowned(e, stdout, stderr, &stop, interrupted),
             }
             let signal = interrupted.load(Ordering::SeqCst);
             if signal != 0 {
@@ -1160,6 +1193,10 @@ pub(crate) mod owned_run {
             }
             std::thread::sleep(POLL);
         };
+        // Looked at again just before the group is signalled.
+        if let Seen::Lost(e) = look(&mut child) {
+            return unowned(e, stdout, stderr, &stop, interrupted);
+        }
         let group = child.id();
         let left_running = if ending.is_none() {
             running_in_group(group).len()
@@ -1189,6 +1226,38 @@ pub(crate) mod owned_run {
             stderr,
             left_running,
         })
+    }
+
+    /// The run of a program whose end this process could not observe (@p e):
+    /// another wait took it, so its process id, and the group's, may have
+    /// passed to another process, and nothing is signalled. The output read
+    /// so far is kept; a signal the command received still ends it; otherwise
+    /// the error says what happened.
+    fn unowned(
+        e: io::Error,
+        stdout: JoinHandle<String>,
+        stderr: JoinHandle<String>,
+        stop: &AtomicBool,
+        interrupted: &AtomicI32,
+    ) -> io::Result<Finished> {
+        stop.store(true, Ordering::SeqCst);
+        let stdout = stdout.join().unwrap_or_default();
+        let stderr = stderr.join().unwrap_or_default();
+        match interrupted.load(Ordering::SeqCst) {
+            0 => Err(io::Error::new(
+                e.kind(),
+                format!(
+                    "the program's end could not be observed ({e}): another wait in this \
+                     process took it, so its process group was left as it is"
+                ),
+            )),
+            signal => Ok(Finished {
+                ending: Ending::Interrupted(signal),
+                stdout,
+                stderr,
+                left_running: 0,
+            }),
+        }
     }
 
     /// Read @p pipe to its end on a thread of its own. Once @p stop is set,
@@ -1251,36 +1320,60 @@ pub(crate) mod owned_run {
         }
     }
 
-    /// Whether @p child has exited, without reaping it.
-    #[cfg(unix)]
-    fn exited(child: &mut Child) -> bool {
-        let pid: libc::id_t = child.id();
-        // SAFETY: a zeroed siginfo_t is a valid value of the type; waitid
-        // only writes into `info`, owned here, and with WNOWAIT leaves the
-        // child for `Child::wait` to reap.
-        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-        let rc = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pid,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if rc != 0 {
-            // EINTR: look again; anything else: let `Child::wait` report it.
-            return io::Error::last_os_error().kind() != io::ErrorKind::Interrupted;
-        }
-        // SAFETY: waitid filled `info`; with WNOHANG its process id stays 0
-        // while the child runs.
-        unsafe { info.si_pid() != 0 }
+    /// How the program stands.
+    enum Seen {
+        Running,
+        /// Exited, not yet reaped: its process id, the group's id, is still
+        /// its own.
+        Exited,
+        /// Its end could not be observed (another wait in this process took
+        /// it): the group's id may have passed on.
+        Lost(io::Error),
     }
 
-    /// Whether @p child has exited (reaped here; `Child::wait` returns the
-    /// status it kept).
+    /// How @p child stands, without reaping it.
+    #[cfg(unix)]
+    fn look(child: &mut Child) -> Seen {
+        let pid: libc::id_t = child.id();
+        loop {
+            // SAFETY: a zeroed siginfo_t is a valid value of the type; waitid
+            // only writes into `info`, owned here, and with WNOWAIT leaves the
+            // child for `Child::wait` to reap.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    pid,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc != 0 {
+                let e = io::Error::last_os_error();
+                if e.kind() == io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Seen::Lost(e);
+            }
+            // SAFETY: waitid filled `info`; with WNOHANG its process id stays
+            // 0 while the child runs.
+            return if unsafe { info.si_pid() } != 0 {
+                Seen::Exited
+            } else {
+                Seen::Running
+            };
+        }
+    }
+
+    /// How @p child stands (reaped here once it has exited; `Child::wait`
+    /// returns the status it kept).
     #[cfg(not(unix))]
-    fn exited(child: &mut Child) -> bool {
-        child.try_wait().map_or(true, |status| status.is_some())
+    fn look(child: &mut Child) -> Seen {
+        match child.try_wait() {
+            Ok(Some(_)) => Seen::Exited,
+            Ok(None) => Seen::Running,
+            Err(e) => Seen::Lost(e),
+        }
     }
 
     /// End every process of @p child's group, the child included if it
@@ -2476,5 +2569,236 @@ mod tests {
         assert_eq!(run.stdout.len(), 5000 * 41);
         assert_eq!(run.stderr.len(), 5000 * 2);
         assert_eq!(run.left_running, 0);
+    }
+
+    /// The SIGCHLD setting `owned_run_in_a_process_of_its_own` runs under,
+    /// and the file it writes what it saw to.
+    #[cfg(target_os = "linux")]
+    const POLICY_VARIABLE: &str = "VERNIER_OWNED_RUN_POLICY";
+    #[cfg(target_os = "linux")]
+    const REPORT_VARIABLE: &str = "VERNIER_OWNED_RUN_REPORT";
+
+    /// How SIGCHLD stands in this process: "default", "ignored" or
+    /// "handled", and "with SA_NOCLDWAIT" when that flag is set.
+    #[cfg(target_os = "linux")]
+    fn sigchld_setting() -> String {
+        // SAFETY: a zeroed sigaction is a valid value of the type; sigaction
+        // only writes the current action into `now`, owned here.
+        let now = unsafe {
+            let mut now: libc::sigaction = std::mem::zeroed();
+            libc::sigaction(libc::SIGCHLD, std::ptr::null(), &mut now);
+            now
+        };
+        let action = match now.sa_sigaction {
+            libc::SIG_DFL => "default",
+            libc::SIG_IGN => "ignored",
+            _ => "handled",
+        };
+        if now.sa_flags & libc::SA_NOCLDWAIT != 0 {
+            format!("{action} with SA_NOCLDWAIT")
+        } else {
+            action.to_string()
+        }
+    }
+
+    /// Not a test of its own: the body of
+    /// `owned_run_keeps_its_program_whatever_reaps_children`, which runs this
+    /// test binary for it in a process of its own; without that test's
+    /// variables it does nothing. "ignored" is inherited across exec;
+    /// "nocldwait" is set here, since the flag does not survive exec.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn owned_run_in_a_process_of_its_own() {
+        let Ok(policy) = std::env::var(POLICY_VARIABLE) else {
+            return;
+        };
+        let report = PathBuf::from(std::env::var(REPORT_VARIABLE).expect("the report's path"));
+        if policy == "nocldwait" {
+            // SAFETY: a zeroed sigaction is a valid value of the type;
+            // sigaction only reads `action`, owned here; the default action
+            // with SA_NOCLDWAIT installs no handler.
+            let rc = unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = libc::SIG_DFL;
+                action.sa_flags = libc::SA_NOCLDWAIT;
+                libc::sigemptyset(&mut action.sa_mask);
+                libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut())
+            };
+            assert_eq!(rc, 0, "set SA_NOCLDWAIT");
+        }
+        let before = sigchld_setting();
+        let dir = tempfile_dir(&format!("owned_run_policy_{policy}"));
+        let left = dir.join("left.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!(
+                "echo out; /bin/sleep 60 & echo $! > '{}'; exit 3",
+                left.display()
+            ),
+        ]);
+        let run = owned_run::spawn(&mut command).and_then(|child| {
+            owned_run::finish(
+                child,
+                std::time::Duration::from_secs(30),
+                &std::sync::atomic::AtomicI32::new(0),
+            )
+        });
+        let left = written_pid(&left);
+        let left_runs = still_runs(left);
+        if left_runs {
+            // This test started that process, through the script, and ends it.
+            let _ = Command::new("/bin/sh")
+                .args(["-c", &format!("kill -KILL {left}")])
+                .status();
+        }
+        let line = match run {
+            Ok(run) => {
+                let ending = match run.ending {
+                    owned_run::Ending::Exited(status) => format!("exited {:?}", status.code()),
+                    owned_run::Ending::TimedOut => "timed out".to_string(),
+                    owned_run::Ending::Interrupted(signal) => format!("interrupted by {signal}"),
+                };
+                format!(
+                    "before: {before}; {ending}; stdout {:?}; left running {}; the process left \
+                     still runs: {left_runs}; after: {}",
+                    run.stdout,
+                    run.left_running,
+                    sigchld_setting()
+                )
+            }
+            Err(e) => format!("before: {before}; the run failed: {e}"),
+        };
+        fs::write(&report, line).expect("write the report");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// @test An owned run keeps its program and its group its own whatever
+    /// this process inherited or set for SIGCHLD: at its default action,
+    /// ignored (inherited across exec, as by a process started with it
+    /// ignored) and with SA_NOCLDWAIT, under which the system would reap the
+    /// program as it exits. Each in a process of its own (this test binary,
+    /// running `owned_run_in_a_process_of_its_own`): the run reports the
+    /// program's own status and output, ends the process the program left in
+    /// its group, and leaves SIGCHLD at its default action.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn owned_run_keeps_its_program_whatever_reaps_children() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile_dir("owned_run_policies");
+        let name = format!(
+            "{}::owned_run_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let mut seen = Vec::new();
+        for (policy, before) in [
+            ("default", "default"),
+            ("ignored", "ignored"),
+            ("nocldwait", "default with SA_NOCLDWAIT"),
+        ] {
+            let report = dir.join(format!("{policy}.txt"));
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(POLICY_VARIABLE, policy)
+                .env(REPORT_VARIABLE, &report);
+            let handler = if policy == "ignored" {
+                libc::SIG_IGN
+            } else {
+                libc::SIG_DFL
+            };
+            // SAFETY: the closure runs in the child between fork and exec and
+            // calls only sigaction, which is async-signal-safe; a zeroed
+            // sigaction is a valid value of the type, given the default or the
+            // ignore handler.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    action.sa_sigaction = handler;
+                    if libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) == 0 {
+                        Ok(())
+                    } else {
+                        Err(std::io::Error::last_os_error())
+                    }
+                });
+            }
+            let out = command.output().expect("run this test binary");
+            let line = fs::read_to_string(&report).unwrap_or_default();
+            let expected = format!(
+                "before: {before}; exited Some(3); stdout \"out\\n\"; left running 1; the process \
+                 left still runs: false; after: default"
+            );
+            if !out.status.success() || line != expected {
+                seen.push(format!(
+                    "{policy}: {line}\n{}{}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(seen.is_empty(), "{}", seen.join("\n"));
+    }
+
+    /// @test A program another wait in this process reaped (against the
+    /// ownership of children the runner keeps) is not the run's any more: its
+    /// group's id may have passed on, so the run signals nothing and says that
+    /// it could not observe the end. Here the program leaves a process in its
+    /// group, which keeps the group's id from passing to another group: a
+    /// signal to the group would end that process, and it still runs after
+    /// the run (the test then ends it).
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn owned_run_does_not_signal_a_group_it_no_longer_owns() {
+        let dir = tempfile_dir("owned_run_reaped_elsewhere");
+        let left = dir.join("left.pid");
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            &format!(
+                "/bin/sleep 60 > /dev/null 2>&1 & echo $! > '{}'; exit 0",
+                left.display()
+            ),
+        ]);
+        let child = owned_run::spawn(&mut command).expect("start sh");
+        let pid = libc::pid_t::try_from(child.id()).expect("a process id");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !fs::read_to_string(format!("/proc/{pid}/stat"))
+            .ok()
+            .and_then(|stat| Some(stat.rsplit_once(')')?.1.trim_start().starts_with('Z')))
+            .unwrap_or(false)
+            && std::time::Instant::now() < until
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut status = 0;
+        // SAFETY: waitpid only writes the status into `status`, owned here;
+        // it reaps this test's own child, the run's program, which has exited.
+        let reaped = unsafe { libc::waitpid(pid, &mut status, 0) };
+        assert_eq!(reaped, pid, "reap the program here");
+        let run = owned_run::finish(
+            child,
+            std::time::Duration::from_secs(30),
+            &std::sync::atomic::AtomicI32::new(0),
+        );
+        let left = written_pid(&left);
+        let left_runs = still_runs(left);
+        // This test started that process, through the script, and ends it.
+        let _ = Command::new("/bin/sh")
+            .args(["-c", &format!("kill -KILL {left}")])
+            .status();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            left_runs,
+            "the run signalled the group of a program another wait had reaped"
+        );
+        let Err(error) = run else {
+            panic!("the run reported an end it could not observe");
+        };
+        assert!(
+            error.to_string().contains("could not be observed"),
+            "{error}"
+        );
     }
 }

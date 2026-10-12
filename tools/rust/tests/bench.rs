@@ -1094,6 +1094,73 @@ fn validate_version_probe_leaves_nothing_running() {
     assert!(detail.contains("(bpftrace 1.2.3)"), "{detail}");
 }
 
+/// @test bench validate started with SIGCHLD ignored, as a process started
+/// with it ignored inherits it across exec, under which the system would reap
+/// each tool as it exits: the version probe still reads the tool's version,
+/// the process the tool left is gone when validate returns, and validate does
+/// so at once. `validate_version_probe_leaves_nothing_running` is the same
+/// with SIGCHLD at its default action.
+#[test]
+#[cfg(target_os = "linux")]
+fn validate_started_with_sigchld_ignored_keeps_its_probes() {
+    use std::os::unix::process::CommandExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let pid_file = dir.path().join("child.pid");
+    write_executable(
+        &dir.path().join("bpftrace"),
+        &format!(
+            "#!/bin/sh\n/bin/sleep 60 &\nprintf '%s\\n' \"$!\" > '{}'\nprintf 'bpftrace 1.2.3\\n'\nexit 0\n",
+            pid_file.display()
+        ),
+    );
+    let mut command = Command::new(bin());
+    command
+        .arg("validate")
+        .arg("--json")
+        .env("PATH", dir.path());
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only sigaction, which is async-signal-safe; a zeroed sigaction is a
+    // valid value of the type, given the ignore handler.
+    unsafe {
+        command.pre_exec(|| {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = libc::SIG_IGN;
+            if libc::sigaction(libc::SIGCHLD, &action, std::ptr::null_mut()) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+    let started = std::time::Instant::now();
+    let out = output_of(&mut command);
+    let took = started.elapsed();
+    let child: u32 = std::fs::read_to_string(&pid_file)
+        .expect("the stand-in ran")
+        .trim()
+        .parse()
+        .expect("a process id");
+    let alive = still_running(child);
+    let (code, out, err) = (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !alive,
+        "the version probe's process {child} outlived bench validate"
+    );
+    assert!(took < std::time::Duration::from_secs(5), "{took:?}");
+    let rows: serde_json::Value = serde_json::from_str(&out).expect("one JSON array");
+    let detail = validate_row(&rows, "bpftrace")["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("(bpftrace 1.2.3)"), "{detail}");
+}
+
 /// @test Without a binary validate reports tool-presence facts: a found
 /// tool is OK with its path and the version its --version prints, a file
 /// without an execute bit and an absent tool are WARN, perf that does not
