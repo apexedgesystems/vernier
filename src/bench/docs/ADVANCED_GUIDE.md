@@ -797,6 +797,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
 --profile-analyze      # Auto-run analysis after profiling
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
+--bpf-scripts DIR      # Directory --bpf names are looked up in (sets PERF_BPF_SCRIPTS)
 ```
 
 **GPU flags:**
