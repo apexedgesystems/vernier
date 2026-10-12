@@ -16,23 +16,28 @@
  * includes the wait for a CPU after its wakeup. It exits by itself when this
  * process's main thread exits, not when one of its other threads does.
  *
- * Capture: beforeMeasure() starts the tracer and waits until it arms. The
- * script records nothing until it sees a thread of this process named
- * vernier-arm, which the backend starts, go to sleep, and it then prints
+ * Capture: through the shared capture window's helpers (bpftrace_tool in
+ * ProfilerBpftrace.hpp), with the window's arm and stop in the script's own
+ * program, which gates what it records. beforeMeasure() starts a thread of
+ * its own, named vernier-arm, then the tracer, whose script names that
+ * thread's id and the calling thread's; the script records nothing until it
+ * sees the arm thread go to sleep under its name, and it then prints
  * "offcpu armed <pid> <tid>"; the backend checks the ids against this
  * process and that thread. bpftrace (0.20.2 and 0.23.2) reads a probe's
  * output only once every probe of the script is attached, so the line's
- * arrival also shows the whole script attached. afterMeasure() names the
- * calling thread vernier-stop until the tracer disarms and prints
+ * arrival also shows the whole script attached. afterMeasure(), on the
+ * thread that called beforeMeasure(), reads what the tracer wrote during the
+ * measured repeats (a stop line there came too early), then names that
+ * thread vernier-stop until the tracer disarms and prints
  * "offcpu disarmed <pid> <tid> <n>", n the switch-outs it recorded, and
- * checks the ids against this process and the calling thread; then it stops
- * the tracer with SIGINT, on which bpftrace prints the lines it still had
- * queued, where a late disarm line counts too, and then its maps. Lines are
- * read in order from the start of the output, which each capture creates
- * afresh, so a disarm line counts only after the arm line. The backend's own
- * waits run under the name vernier-wait, which the script does not record.
- * The three names are reserved: a test's own thread given one of them
- * disturbs the capture.
+ * checks the ids against this process and that thread; then it stops the
+ * tracer with SIGINT, on which bpftrace prints the lines it still had
+ * queued, where a late disarm line counts too, and then its maps. Each
+ * capture creates its output afresh; a stop line before the arm line, or
+ * measured repeats that end on another thread, fail the capture. The
+ * backend's own waits run under the name vernier-wait. The script records no
+ * thread that carries one of the three names, which are reserved: a test's
+ * own thread given one of them disturbs the capture.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n` (PERF_BPF_SUDO does not apply to this backend); root never uses
@@ -50,7 +55,7 @@
  * with unbuffered output while a thread of this process named vernier-arm
  * sleeps, and requires its arm acknowledgement with this process's pid and
  * that thread's id: without it the request is refused, naming a PID
- * namespace other than the initial one. A grant's refusal of the second copy
+ * namespace other than the host's. A grant's refusal of the second copy
  * is unverified, as for the first, and the second is not tried after an
  * unverified first. The profiler launches and stops with exactly the tools
  * and route it verified (OffCpuPlan).
@@ -59,16 +64,21 @@
  * its map dump) and `offcpu.err.txt` (bpftrace's messages). Each capture ends
  * with one outcome, printed with an `[offcpu]` prefix and kept by
  * captureOutcome(): `stacks written to <path>` for a capture the tracer
- * acknowledged from its start to its stop, that ended cleanly on the stop and
- * whose dump is whole; a line of its own when the stop's count is 0 and the
- * dump, whole, holds no stack: no thread of this process slept in that
- * window; an error otherwise, the output kept: no arm acknowledgement, or one
- * for other ids; a tracer that ended before the stop, could not be stopped,
- * was killed or did not end cleanly; no stop acknowledgement, in time or at
- * the stop, or one for other ids ("capture validity could not be
- * established"); an output that cannot be read, or a dump missing or cut
- * short (no map dump after the acknowledgements, an entry cut, or no
- * @recorded line where the tracer recorded switch-outs).
+ * acknowledged from its start to its stop, that was seen to end with status
+ * 0 on the stop and whose dump is whole; a line of its own when the stop's
+ * count is 0 and the dump, whole, holds no stack: no thread of this process
+ * slept in that window; an error otherwise, the output kept: no arm
+ * acknowledgement, or one for other ids, or a stop line before it; a tracer
+ * that ended before the stop, could not be stopped, was killed or was not
+ * seen to end with status 0 (bpftrace_tool::reportStop() says how it ended,
+ * and an end this process could not observe, as when it ignores SIGCHLD or
+ * sets SA_NOCLDWAIT, never counts as status 0); measured repeats that ended
+ * on another thread; no stop acknowledgement, in time or at the stop, one
+ * for other ids, one before the stop was asked for, or one without its count
+ * ("capture validity could not be established"); an output that cannot be
+ * read, or a dump missing or cut short (no map dump after the
+ * acknowledgements, an entry cut, or no @recorded line where the tracer
+ * recorded switch-outs).
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the
@@ -106,16 +116,11 @@ namespace bench {
 struct OffCpuPlan final : ReadinessPlan {
   BpftraceRoute route;
   std::shared_ptr<const ReadinessContext> context;
-  int armWaitMs = 5000;    ///< How long a capture's start waits for the tracer to arm.
-  int disarmWaitMs = 3000; ///< How long its stop waits for the tracer to disarm.
+  /// How long a capture's start waits for the tracer to arm.
+  int armWaitMs = bpftrace_tool::ARM_WAIT_MS;
+  /// How long its stop waits for the tracer to disarm.
+  int disarmWaitMs = bpftrace_tool::DISARM_WAIT_MS;
 };
-
-/**
- * @brief The sentence a report adds when this process is not in the initial
- * PID namespace, from the text of the /proc/self/ns/pid link
- * ("pid:[4026531836]" for the initial one); "" in the initial namespace.
- */
-[[nodiscard]] std::string offCpuPidNamespaceNote(const std::string& namespaceLink);
 
 /**
  * @brief The offcpu backend's readiness decision for @p request in @p ctx.

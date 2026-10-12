@@ -9,21 +9,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#ifdef __linux__
-#include <sys/prctl.h>
-#include <sys/syscall.h>
-#endif
-
-#include <array>
-#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
-#include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -56,21 +45,24 @@ namespace {
 // the wait for a CPU after the wakeup.
 //
 // Nothing is recorded outside an armed window, which the capture opens and
-// closes through threads of its own, so that the tracer's acknowledgements
-// show it saw this process from the start of the measured region to its end:
-//  - a sleeping switch-out of a thread named vernier-arm that is not the main
-//    thread arms it and prints "offcpu armed <pid> <tid>"; the capture checks
-//    the ids against its own, and a tracer that numbers this process's
-//    threads differently, as bpftrace does inside a PID namespace of its own,
-//    never arms;
-//  - a sleeping switch-out of a thread named vernier-stop disarms it, forgets
-//    the start of every thread still asleep (counted once, with no time) and
-//    prints "offcpu disarmed <pid> <tid> <n>", n the switch-outs it recorded;
-//  - the capture's own waits run under the name vernier-wait, not recorded.
-// @recorded counts with ++ because printf takes no count() map; increments
-// racing on two CPUs can only make n smaller than the dump's counts. @armed
-// stays 2 after the disarm and is the first map printed, so an output
-// without "@armed: 2" holds no dump, whatever its acknowledgements say.
+// closes through threads of its own, bound by id and name as the shared
+// capture window binds them (bpftrace_tool::captureWindowProgram()), so that
+// the tracer's acknowledgements show it saw this process from the start of
+// the measured region to its end. offCpuScript() fills in the two thread ids
+// and the window's three reserved names:
+//  - a sleeping switch-out of the arm thread, the backend's own, while it
+//    carries the arm name, arms it and prints "offcpu armed <pid> <tid>";
+//  - one of the thread that runs the measured repeats, once they are over
+//    and it carries the stop name, disarms it, forgets the start of every
+//    thread still asleep (counted once, with no time) and prints
+//    "offcpu disarmed <pid> <tid> <n>", n the switch-outs it recorded;
+//  - no thread that carries one of the three names, the capture's own waits
+//    among them, is recorded.
+// Ids of 0 make a script that never arms (a readiness probe's). @recorded
+// counts with ++ because printf takes no count() map; increments racing on
+// two CPUs can only make n smaller than the dump's counts. @armed stays 2
+// after the disarm and is the first map printed, so an output without
+// "@armed: 2" holds no dump, whatever its acknowledgements say.
 //
 // No END block on purpose: bpftrace auto-prints every map at exit (SIGINT,
 // exit(), or target death via the self-exit probe), and distro builds are
@@ -87,18 +79,19 @@ tracepoint:sched:sched_switch {
     delete(@start[args->next_pid]);
   }
   if (pid == $1 && (args->prev_state == 1 || args->prev_state == 2)) {
-    if (comm == "vernier-arm") {
-      if (@armed == 0 && tid != $1) {
+    if (tid == {{ARM_TID}} && comm == "{{ARM_NAME}}") {
+      if (@armed == 0) {
         @armed = 1;
         printf("offcpu armed %d %d\n", pid, tid);
       }
-    } else if (comm == "vernier-stop") {
+    } else if (tid == {{STOP_TID}} && comm == "{{STOP_NAME}}") {
       if (@armed == 1) {
         @armed = 2;
         clear(@start);
         printf("offcpu disarmed %d %d %d\n", pid, tid, @recorded);
       }
-    } else if (@armed == 1 && comm != "vernier-wait") {
+    } else if (@armed == 1 && comm != "{{ARM_NAME}}" && comm != "{{WAIT_NAME}}" &&
+               comm != "{{STOP_NAME}}") {
       @start[args->prev_pid] = nsecs;
       @offcpu_blocks[ustack, comm] = count();
       @recorded++;
@@ -110,14 +103,8 @@ tracepoint:sched:sched_process_exit /tid == $1/ {
 }
 )BT";
 
-/// The names the capture gives its own threads; the script tests them.
-constexpr const char* ARM_THREAD_NAME = "vernier-arm";
-constexpr const char* WAIT_THREAD_NAME = "vernier-wait";
-constexpr const char* STOP_THREAD_NAME = "vernier-stop";
-
-/// The script's acknowledgements, up to their numbers.
-constexpr const char* ARMED_LINE = "offcpu armed ";
-constexpr const char* DISARMED_LINE = "offcpu disarmed ";
+/// The label of the script's acknowledgements: "offcpu armed <pid> <tid>".
+constexpr const char* LABEL = "offcpu";
 
 // How long the check's probe must stay running: older, stripped bpftrace
 // builds take on the order of a second to attach.
@@ -125,22 +112,43 @@ constexpr int START_GRACE_MS = 1500;
 constexpr int INTERRUPT_WAIT_MS = 4000;
 constexpr int TERMINATE_WAIT_MS = 2000;
 constexpr int KILL_WAIT_MS = 2000;
-/// How often a wait for an acknowledgement reads the tracer's output.
-constexpr int POLL_MS = 5;
 const char* const WHAT = "the off-CPU script";
 
 /// The stage of a failure found once the tracer armed: what the capture wrote.
 constexpr ReadinessStage CAPTURE_STAGE = ReadinessStage::COLLECTION;
 
-/// The PID namespace every process starts in, as /proc/self/ns/pid names it.
-constexpr const char* INITIAL_PID_NAMESPACE = "pid:[4026531836]";
-
 const char* const NAMESPACE_REMEDY =
     "Run the benchmark on the host, or in a container started with --pid=host.";
 
-/** @brief `-B none -e <script> <pid>`: the arguments every run passes; $1 binds the pid. */
-std::vector<std::string> launchArgs(long pid) {
-  return {"-B", "none", "-e", OFFCPU_SCRIPT, std::to_string(pid)};
+/** @brief @p text with every @p token replaced by @p value. */
+std::string filled(std::string text, const std::string& token, const std::string& value) {
+  for (std::size_t at = text.find(token); at != std::string::npos;
+       at = text.find(token, at + value.size())) {
+    text.replace(at, token.size(), value);
+  }
+  return text;
+}
+
+/**
+ * @brief The off-CPU script, armed by thread @p armTid and stopped by thread
+ * @p stopTid of the process $1 names, under the capture window's reserved
+ * thread names; ids of 0 make a script that never arms.
+ */
+std::string offCpuScript(long armTid, long stopTid) {
+  std::string script = OFFCPU_SCRIPT;
+  script = filled(std::move(script), "{{ARM_TID}}", std::to_string(armTid));
+  script = filled(std::move(script), "{{STOP_TID}}", std::to_string(stopTid));
+  script = filled(std::move(script), "{{ARM_NAME}}", bpftrace_tool::ARM_THREAD);
+  script = filled(std::move(script), "{{WAIT_NAME}}", bpftrace_tool::WAIT_THREAD);
+  return filled(std::move(script), "{{STOP_NAME}}", bpftrace_tool::STOP_THREAD);
+}
+
+/**
+ * @brief `-B none -e <script> <pid>`: the arguments every run passes, the
+ * script bound to @p armTid and @p stopTid; $1 binds the pid.
+ */
+std::vector<std::string> launchArgs(long pid, long armTid, long stopTid) {
+  return {"-B", "none", "-e", offCpuScript(armTid, stopTid), std::to_string(pid)};
 }
 
 /** @brief The run's command line as reports show it, the embedded script named. */
@@ -152,26 +160,27 @@ std::string commandLine(const BpftraceRoute& route, long pid) {
 /** @brief How many seconds a readiness probe runs before its script ends it. */
 constexpr int PROBE_SELF_EXIT_S = 5;
 
-/**
- * @brief The readiness probe's script: the launch's, plus the attach line
- * the check waits for and an interval probe that ends it by itself. A tracer
- * whose stop is refused so ends within the bound whatever it traces; the
- * check waits for that and reaps it.
- */
-std::string probeScript() {
-  return std::string{OFFCPU_SCRIPT} + bpftrace_tool::attachLineProgram() +
-         "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
+/** @brief The self-exit a check's tracer carries: an interval probe that ends it. */
+std::string selfExitProgram() {
+  return "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) + " { exit(); }\n";
 }
 
 /**
- * @brief The check's second copy: the launch's script and the probe's
- * self-exit. Its own arm line, not an attach line, is what the check waits
- * for.
+ * @brief The readiness probe's script: the launch's, bound to no thread,
+ * plus the attach line the check waits for and an interval probe that ends
+ * it by itself. A tracer whose stop is refused so ends within the bound
+ * whatever it traces; the check waits for that and reaps it.
  */
-std::string witnessScript() {
-  return std::string{OFFCPU_SCRIPT} + "interval:s:" + std::to_string(PROBE_SELF_EXIT_S) +
-         " { exit(); }\n";
+std::string probeScript() {
+  return offCpuScript(0, 0) + bpftrace_tool::attachLineProgram() + selfExitProgram();
 }
+
+/**
+ * @brief The check's second copy: the launch's script, armed by thread
+ * @p armTid and stopped by none, and the probe's self-exit. Its own arm
+ * line, not an attach line, is what the check waits for.
+ */
+std::string witnessScript(long armTid) { return offCpuScript(armTid, 0) + selfExitProgram(); }
 #endif
 
 std::shared_ptr<const OffCpuPlan> readyPlan(const ReadinessResult& result) {
@@ -188,7 +197,7 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
   return checkOffCpuRequest(request, CTX);
 }
 
-/** @brief How a process ended, as reports word it. */
+/** @brief How a process ended, as reports word it, from a status read here. */
 std::string statusText(int waitStatus) {
   if (WIFEXITED(waitStatus)) {
     return "exit status " + std::to_string(WEXITSTATUS(waitStatus));
@@ -197,6 +206,18 @@ std::string statusText(int waitStatus) {
     return "killed by signal " + std::to_string(WTERMSIG(waitStatus));
   }
   return "wait status " + std::to_string(waitStatus);
+}
+
+/**
+ * @brief What a tracer that ended with nothing on its stderr showed of its
+ * end: its status, or, when this process could not read it, why.
+ */
+std::string endedSilently(const HelperStopResult& end) {
+  if (!end.statusObtained) {
+    return "its end could not be observed (" + describeStatusLoss(end.statusLoss) +
+           "), and it printed nothing on stderr";
+  }
+  return "it ended with " + statusText(end.waitStatus) + " and printed nothing on stderr";
 }
 
 /** @brief A file's text, or why it could not be read. */
@@ -232,177 +253,41 @@ FileText readFile(const std::string& path) {
   return file;
 }
 
-/** @brief The calling thread's id. */
-long threadId() {
-#ifdef __linux__
-  return static_cast<long>(::syscall(SYS_gettid));
-#else
-  return 0;
-#endif
-}
-
-/** @brief Gives the calling thread a name for the tracer, and its own name back at the end. */
-class ThreadNameScope {
-public:
-  explicit ThreadNameScope(const char* name) {
-#ifdef __linux__
-    (void)::prctl(PR_GET_NAME, saved_.data(), 0UL, 0UL, 0UL);
-    (void)::prctl(PR_SET_NAME, name, 0UL, 0UL, 0UL);
-#else
-    (void)name;
-#endif
-  }
-  ~ThreadNameScope() {
-#ifdef __linux__
-    (void)::prctl(PR_SET_NAME, saved_.data(), 0UL, 0UL, 0UL);
-#endif
-  }
-  ThreadNameScope(const ThreadNameScope&) = delete;
-  ThreadNameScope& operator=(const ThreadNameScope&) = delete;
-
-private:
-  std::array<char, 17> saved_{}; ///< PR_GET_NAME writes at most 16 bytes.
-};
-
 /**
- * @brief A thread named for the tracer that sleeps in POLL_MS steps until it
- * is released: the tracer arms on its first sleep. Its id is stored before
- * it takes the name, and it keeps the name until it ends, so no sleep of its
- * own is recorded under another name.
+ * @brief Wait up to @p boundMs, under the name the capture window reserves
+ * for its waits, until @p watch holds the arm line, or a stop line before it
+ * when @p stopFirstEnds, or @p tracer has ended.
+ * @return Whether the tracer still ran at the last look. Whether it runs is
+ *         read before the output, so a line written just before it ended
+ *         still counts. A read that fails reads nothing: the bound decides.
  */
-class ArmThread {
-public:
-  ArmThread()
-      : thread_([this] {
-          id_ = threadId();
-#ifdef __linux__
-          (void)::prctl(PR_SET_NAME, ARM_THREAD_NAME, 0UL, 0UL, 0UL);
-#endif
-          while (!released_) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
-          }
-        }) {
-  }
-  ~ArmThread() {
-    released_ = true;
-    thread_.join();
-  }
-  ArmThread(const ArmThread&) = delete;
-  ArmThread& operator=(const ArmThread&) = delete;
-
-  /** @brief The thread's id, once it has started. */
-  [[nodiscard]] long id() const noexcept { return id_; }
-
-private:
-  std::atomic<bool> released_{false};
-  std::atomic<long> id_{0};
-  std::thread thread_; ///< Last: it starts once the flags exist.
-};
-
-/** @brief The lines a tracer appends to its output file, read as they arrive. */
-class OutputLines {
-public:
-  explicit OutputLines(std::string path) : path_(std::move(path)) {}
-
-  /** @brief The complete lines written since the last call. */
-  std::vector<std::string> next() {
-    std::vector<std::string> lines;
-    std::ifstream in(path_, std::ios::binary);
-    if (!in || !in.seekg(offset_)) {
-      return lines;
-    }
-    std::array<char, 4096> buffer{};
-    while (in.read(buffer.data(), buffer.size()) || in.gcount() > 0) {
-      pending_.append(buffer.data(), static_cast<std::size_t>(in.gcount()));
-      offset_ += in.gcount();
-    }
-    std::size_t start = 0;
-    for (std::size_t end = pending_.find('\n'); end != std::string::npos;
-         end = pending_.find('\n', start)) {
-      lines.push_back(pending_.substr(start, end - start));
-      start = end + 1;
-    }
-    pending_.erase(0, start);
-    return lines;
-  }
-
-private:
-  std::string path_;
-  std::streamoff offset_ = 0;
-  std::string pending_;
-};
-
-/** @brief One acknowledgement's numbers: pid, thread id and, for the stop, the count. */
-struct Ack {
-  long pid = 0;
-  long tid = 0;
-  long recorded = 0;
-};
-
-std::optional<Ack> parseAck(const std::string& line, const char* prefix, bool withCount) {
-  if (line.rfind(prefix, 0) != 0) {
-    return std::nullopt;
-  }
-  std::istringstream fields(line.substr(std::strlen(prefix)));
-  Ack ack;
-  if (!(fields >> ack.pid >> ack.tid) || (withCount && !(fields >> ack.recorded))) {
-    return std::nullopt;
-  }
-  std::string rest;
-  if (fields >> rest) {
-    return std::nullopt;
-  }
-  return ack;
-}
-
-enum class AckState : std::uint8_t { ACKNOWLEDGED, ENDED, TIMED_OUT };
-
-struct AckWait {
-  AckState state = AckState::TIMED_OUT;
-  Ack ack;
-};
-
-/**
- * @brief Wait up to @p boundMs for a line starting with @p prefix in the
- * tracer's output, reading it every POLL_MS while the tracer runs.
- */
-AckWait waitForAck(OutputLines& output, OwnedHelper& tracer, const char* prefix, bool withCount,
-                   int boundMs) {
-  const auto DEADLINE = std::chrono::steady_clock::now() + std::chrono::milliseconds(boundMs);
-  for (;;) {
-    // Whether it runs is read first: a line written just before it ended
-    // still counts.
-    const bool RUNNING = tracer.running();
-    for (const std::string& line : output.next()) {
-      if (const std::optional<Ack> ACK = parseAck(line, prefix, withCount)) {
-        return {AckState::ACKNOWLEDGED, *ACK};
-      }
-    }
-    if (!RUNNING) {
-      return {AckState::ENDED, {}};
-    }
-    if (std::chrono::steady_clock::now() >= DEADLINE) {
-      return {AckState::TIMED_OUT, {}};
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
-  }
-}
-
-/** @brief The target of this process's /proc/self/ns/pid link, "" if unreadable. */
-std::string ownPidNamespace() {
-  std::error_code ec;
-  const std::filesystem::path LINK = std::filesystem::read_symlink("/proc/self/ns/pid", ec);
-  return ec ? std::string{} : LINK.string();
+bool waitForTheArm(OwnedHelper& tracer, bpftrace_tool::WindowWatch& watch, int boundMs,
+                   bool stopFirstEnds) {
+  bool running = true;
+  const bpftrace_tool::ThreadNameScope WAITING(bpftrace_tool::WAIT_THREAD);
+  (void)bpftrace_tool::waitUntil(
+      [&] {
+        running = tracer.running();
+        (void)watch.poll();
+        return watch.armed().has_value() || (stopFirstEnds && watch.disarmedBeforeArmed()) ||
+               !running;
+      },
+      boundMs);
+  return running;
 }
 
 /**
  * @brief The outcome of a tracer that did not arm for this process: in a PID
- * namespace other than the initial one, that namespace is why.
+ * namespace other than the host's, that namespace is why.
  */
 ReadinessResult notSeen(const std::string& detail, const std::string& remedy) {
-  const std::string NOTE = offCpuPidNamespaceNote(ownPidNamespace());
-  if (!NOTE.empty()) {
-    return readinessResult(ReadinessCause::UNSUPPORTED, detail + "; " + NOTE, NAMESPACE_REMEDY);
+  const std::string NAMESPACE = bpftrace_tool::foreignPidNamespace();
+  if (!NAMESPACE.empty()) {
+    return readinessResult(ReadinessCause::UNSUPPORTED,
+                           detail + "; this process runs in PID namespace " + NAMESPACE +
+                               ", not the host's, and offcpu traces only from the host's PID "
+                               "view",
+                           NAMESPACE_REMEDY);
   }
   return readinessResult(ReadinessCause::UNUSABLE, detail, remedy);
 }
@@ -415,6 +300,33 @@ const StopDelivery* refusedDelivery(const HelperStopResult& stop) {
     }
   }
   return nullptr;
+}
+
+/**
+ * @brief The count the script's first stop line carries after its two ids
+ * ("offcpu disarmed <pid> <tid> <n>"); nullopt when @p text holds no stop
+ * line, or one without a count.
+ */
+std::optional<long> stopCount(const std::string& text) {
+  std::istringstream lines(text);
+  std::string line;
+  while (std::getline(lines, line)) {
+    const std::optional<bpftrace_tool::WindowAck> ACK = bpftrace_tool::parseDisarmAck(line, LABEL);
+    if (!ACK) {
+      continue;
+    }
+    const std::string IDS = std::string{LABEL} + " disarmed " + std::to_string(ACK->pid) + " " +
+                            std::to_string(ACK->tid) + " ";
+    const std::size_t AT = line.find(IDS);
+    const std::string COUNT =
+        AT == std::string::npos ? std::string{} : line.substr(AT + IDS.size());
+    if (COUNT.empty() || COUNT.size() > 18 ||
+        COUNT.find_first_not_of("0123456789") != std::string::npos) {
+      return std::nullopt;
+    }
+    return std::stol(COUNT);
+  }
+  return std::nullopt;
 }
 
 /** @brief What a map dump holds of the capture's own counts. */
@@ -473,18 +385,6 @@ DumpCounts countsIn(const std::string& dump) {
   return counts;
 }
 
-} // namespace
-
-std::string offCpuPidNamespaceNote(const std::string& namespaceLink) {
-  if (namespaceLink.empty() || namespaceLink == INITIAL_PID_NAMESPACE) {
-    return {};
-  }
-  return "this process runs in PID namespace " + namespaceLink + ", not in the initial one (" +
-         INITIAL_PID_NAMESPACE + "), and offcpu traces only from the host's PID view";
-}
-
-namespace {
-
 #ifdef __linux__
 /**
  * @brief How long the check waits for its copy of the script to arm: less
@@ -494,10 +394,10 @@ namespace {
 constexpr int CHECK_ARM_WAIT_MS = PROBE_SELF_EXIT_S * 1000 - 1000;
 
 /**
- * @brief The check's witness: a copy of the probe script with unbuffered
- * output, through @p route, while a thread of this process named for it
- * sleeps. The context is a snapshot of this process, so the thread belongs
- * to the script's target, the context's pid.
+ * @brief The check's witness: a copy of the launch's script with the
+ * probe's self-exit and unbuffered output, through @p route, armed by a
+ * thread of this process it starts first. The context is a snapshot of this
+ * process, so the thread belongs to the script's target, the context's pid.
  * @return The Error that stops the request, a Warning the check reports, or
  *         nullopt with @p seen saying what the tracer acknowledged.
  */
@@ -505,8 +405,19 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
                                           const std::string& scratchDir,
                                           const std::string& runCommand, std::string& seen) {
   const long PID = static_cast<long>(ctx.self());
+  std::optional<bpftrace_tool::ArmThread> arm;
+  try {
+    arm.emplace();
+  } catch (const std::system_error& error) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           std::string{WHAT} +
+                               ": the thread that arms the tracer could not start: " + error.what(),
+                           "");
+  }
+  const long ARM_TID = arm->tid();
   std::vector<std::string> argv = route.command();
-  const std::vector<std::string> ARGS = {"-B", "none", "-e", witnessScript(), std::to_string(PID)};
+  const std::vector<std::string> ARGS = {"-B", "none", "-e", witnessScript(ARM_TID),
+                                         std::to_string(PID)};
   argv.insert(argv.end(), ARGS.begin(), ARGS.end());
   const std::string COMMAND = route.bpftrace + " -B none -e <the off-CPU script with a " +
                               std::to_string(PROBE_SELF_EXIT_S) + " s self-exit> " +
@@ -521,20 +432,9 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
     return readinessResult(ReadinessCause::UNUSABLE, std::string{WHAT} + ": " + START.errorTail,
                            "Check that " + argv.front() + " can be executed.");
   }
-  OutputLines output(OUT);
-  AckWait armed;
-  long armTid = 0;
-  std::string threadError;
-  {
-    const ThreadNameScope WAITING(WAIT_THREAD_NAME);
-    try {
-      const ArmThread ARM;
-      armed = waitForAck(output, tracer, ARMED_LINE, false, CHECK_ARM_WAIT_MS);
-      armTid = ARM.id();
-    } catch (const std::system_error& error) {
-      threadError = error.what();
-    }
-  }
+  bpftrace_tool::WindowWatch watch(OUT, LABEL);
+  const bool RUNNING = waitForTheArm(tracer, watch, CHECK_ARM_WAIT_MS, false);
+  arm.reset();
   const HelperStopResult STOP = tracer.stop();
   if (STOP.stillAlive) {
     // The stop could not end it; its own self-exit will, as for the attach probe.
@@ -545,20 +445,15 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
   }
-  if (!threadError.empty()) {
-    return readinessResult(ReadinessCause::UNUSABLE,
-                           std::string{WHAT} +
-                               ": the thread that arms the tracer could not start: " + threadError,
-                           "");
-  }
-  if (armed.state == AckState::ENDED) {
+  const std::optional<bpftrace_tool::WindowAck>& ARMED = watch.armed();
+  if (!ARMED && !RUNNING) {
     std::string text = readFile(ERR).text;
     if (outputTail(text).empty()) {
-      text = "it ended with " + statusText(STOP.waitStatus) + " and printed nothing on stderr";
+      text = endedSilently(STOP);
     }
     return bpftrace_tool::classifyAttachFailure(route, WHAT, COMMAND, text, ctx, runCommand);
   }
-  if (armed.state == AckState::TIMED_OUT) {
+  if (!ARMED) {
     return notSeen(std::string{WHAT} + " ran " + route.describe() +
                        " but did not acknowledge its arm probe within " +
                        std::to_string(CHECK_ARM_WAIT_MS) + " ms",
@@ -566,11 +461,10 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
                    "off-CPU script by hand with " +
                        route.bpftrace + " to see why.");
   }
-  if (armed.ack.pid != PID || armed.ack.tid != armTid) {
-    return notSeen(std::string{WHAT} + " armed for pid " + std::to_string(armed.ack.pid) +
-                       " thread " + std::to_string(armed.ack.tid) +
-                       ", not for this process's arm thread (pid " + std::to_string(PID) +
-                       " thread " + std::to_string(armTid) + ")",
+  if (ARMED->pid != PID || ARMED->tid != ARM_TID) {
+    return notSeen(std::string{WHAT} + " armed for pid " + std::to_string(ARMED->pid) + " thread " +
+                       std::to_string(ARMED->tid) + ", not for this process's arm thread (pid " +
+                       std::to_string(PID) + " thread " + std::to_string(ARM_TID) + ")",
                    "bpftrace numbers this process's threads differently from the process "
                    "itself; offcpu traces only from the host's PID view.");
   }
@@ -582,7 +476,7 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
                            "Stop it by hand, then check the bpftrace build.");
   }
   seen = "a copy with unbuffered output armed on this process's arm thread (pid " +
-         std::to_string(PID) + ", thread " + std::to_string(armTid) + ")";
+         std::to_string(PID) + ", thread " + std::to_string(ARM_TID) + ")";
   return std::nullopt;
 }
 #endif
@@ -682,11 +576,12 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& /*request*/,
 /* ----------------------------- OffCpuProfiler ----------------------------- */
 
 struct OffCpuProfiler::Capture {
-  Capture(HelperStopPolicy policy, std::string outputPath)
-      : tracer(std::move(policy)), output(std::move(outputPath)) {}
+  Capture(HelperStopPolicy policy, const std::string& outputPath, long stopThread)
+      : tracer(std::move(policy)), watch(outputPath, LABEL), stopTid(stopThread) {}
 
   OwnedHelper tracer;
-  OutputLines output;
+  bpftrace_tool::WindowWatch watch;
+  long stopTid; ///< The thread that started the capture, which the script's stop names.
 };
 
 OffCpuProfiler::OffCpuProfiler(const PerfConfig& cfg, std::string testName)
@@ -732,14 +627,30 @@ void OffCpuProfiler::spawnBpftrace() {
   }
   outcome_.reset();
   const long PID = static_cast<long>(::getpid());
-  const std::vector<std::string> ARGS = launchArgs(PID);
+  // The script names the thread that arms it and the one that will stop it,
+  // the calling thread, which runs the measured repeats: the arm thread
+  // exists before the launch, and naps until the arm wait ends.
+  const long STOP_TID = bpftrace_tool::currentThreadId();
+  std::optional<bpftrace_tool::ArmThread> arm;
+  try {
+    arm.emplace();
+  } catch (const std::system_error& error) {
+    finish(readinessResult(ReadinessCause::UNUSABLE,
+                           std::string{"no capture: the thread that arms the tracer could not "
+                                       "start: "} +
+                               error.what(),
+                           ""));
+    return;
+  }
+  const long ARM_TID = arm->tid();
+  const std::vector<std::string> ARGS = launchArgs(PID, ARM_TID, STOP_TID);
   std::vector<std::string> argv = plan_->route.command();
   argv.insert(argv.end(), ARGS.begin(), ARGS.end());
   // The capture files are opened by the child as the invoking user, so they
   // stay the user's whatever the tracer runs as.
   auto capture = std::make_unique<Capture>(
       plan_->route.stopPolicy(INTERRUPT_WAIT_MS, TERMINATE_WAIT_MS, KILL_WAIT_MS, plan_->context),
-      outputPath_);
+      outputPath_, STOP_TID);
   const HelperStart STARTED = capture->tracer.start(argv, outputPath_, errorPath_, 0, nullptr);
   if (!STARTED.started) {
     finish(readinessResult(ReadinessCause::UNUSABLE,
@@ -747,58 +658,51 @@ void OffCpuProfiler::spawnBpftrace() {
                            "Check that " + argv.front() + " can be executed."));
     return;
   }
-  // The script arms when a thread of this process named for it goes to
-  // sleep; this thread waits for that under a name the script leaves out,
-  // and so does its wait for the arm thread to end.
-  AckWait armed;
-  long armTid = 0;
-  std::string threadError;
-  {
-    const ThreadNameScope WAITING(WAIT_THREAD_NAME);
-    try {
-      const ArmThread ARM;
-      armed = waitForAck(capture->output, capture->tracer, ARMED_LINE, false, plan_->armWaitMs);
-      armTid = ARM.id();
-    } catch (const std::system_error& error) {
-      threadError = error.what();
-    }
-  }
-  if (!threadError.empty()) {
-    (void)capture->tracer.stop();
-    finish(readinessResult(
-        ReadinessCause::UNUSABLE,
-        "no capture: the thread that arms the tracer could not start: " + threadError, ""));
-    return;
-  }
-  if (armed.state == AckState::ENDED) {
+  // The script arms when the arm thread goes to sleep; this thread waits for
+  // that under a name the script leaves out.
+  const bool RUNNING = waitForTheArm(capture->tracer, capture->watch, plan_->armWaitMs, true);
+  arm.reset();
+  const std::optional<bpftrace_tool::WindowAck>& ARMED = capture->watch.armed();
+  if (!capture->watch.disarmedBeforeArmed() && !ARMED && !RUNNING) {
     const HelperStopResult ENDED = capture->tracer.stop();
     std::string text = readFile(errorPath_).text;
     if (text.size() > 4096) {
       text.erase(0, text.size() - 4096);
     }
     if (outputTail(text).empty()) {
-      text = "it ended with " + statusText(ENDED.waitStatus) + " and printed nothing on stderr";
+      text = endedSilently(ENDED);
     }
     finish(bpftrace_tool::classifyAttachFailure(plan_->route, WHAT, commandLine(plan_->route, PID),
                                                 text, *plan_->context),
            "the tracer ended before it armed the capture: ");
     return;
   }
-  if (armed.state == AckState::TIMED_OUT || armed.ack.pid != PID || armed.ack.tid != armTid) {
+  if (capture->watch.disarmedBeforeArmed() || !ARMED || ARMED->pid != PID ||
+      ARMED->tid != ARM_TID) {
     const HelperStopResult STOPPED = capture->tracer.stop();
     if (STOPPED.wasRunning) {
-      (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route);
+      (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_,
+                                      outputPath_);
     }
-    if (armed.state == AckState::TIMED_OUT) {
+    if (capture->watch.disarmedBeforeArmed()) {
+      const bpftrace_tool::WindowAck EARLY = *capture->watch.disarmed();
+      finish(readinessResult(ReadinessCause::UNUSABLE,
+                             "no capture: the tracer acknowledged a stop before its arm, for pid " +
+                                 std::to_string(EARLY.pid) + " thread " +
+                                 std::to_string(EARLY.tid) + "; its output is in " + artifactDir_,
+                             "The script prints its stop line only once it has armed; see "
+                             "offcpu.err.txt there, and run the off-CPU script by hand with " +
+                                 plan_->route.bpftrace + "."));
+    } else if (!ARMED) {
       finish(notSeen("no capture: the tracer did not acknowledge its arm probe within " +
                          std::to_string(plan_->armWaitMs) + " ms; its output is in " + artifactDir_,
                      "bpftrace ran but did not see this process's arm thread go to sleep; see "
                      "offcpu.err.txt there, and run --profile-check --profile offcpu."));
     } else {
-      finish(notSeen("no capture: the tracer armed for pid " + std::to_string(armed.ack.pid) +
-                         " thread " + std::to_string(armed.ack.tid) +
+      finish(notSeen("no capture: the tracer armed for pid " + std::to_string(ARMED->pid) +
+                         " thread " + std::to_string(ARMED->tid) +
                          ", not for this process's arm thread (pid " + std::to_string(PID) +
-                         " thread " + std::to_string(armTid) + "); its output is in " +
+                         " thread " + std::to_string(ARM_TID) + "); its output is in " +
                          artifactDir_,
                      "bpftrace numbers this process's threads differently from the process "
                      "itself; offcpu traces only from the host's PID view."));
@@ -814,49 +718,70 @@ void OffCpuProfiler::stopBpftrace() {
   }
   const std::unique_ptr<Capture> CAPTURE = std::move(capture_);
   const long PID = static_cast<long>(::getpid());
-  AckWait disarmed;
-  long stopTid = 0;
-  {
-    const ThreadNameScope STOPPING(STOP_THREAD_NAME);
-    stopTid = threadId();
-    disarmed =
-        waitForAck(CAPTURE->output, CAPTURE->tracer, DISARMED_LINE, true, plan_->disarmWaitMs);
+  const long STOPPING = bpftrace_tool::currentThreadId();
+  const std::string VALIDITY = "capture validity could not be established: ";
+  // What the tracer wrote during the measured repeats: a stop line there came
+  // before the stop was asked for. The stop is bound to the thread that
+  // started the capture, and only that thread can take its name.
+  (void)CAPTURE->watch.poll();
+  std::optional<ReadinessResult> early;
+  if (const std::optional<bpftrace_tool::WindowAck>& EARLY = CAPTURE->watch.disarmed()) {
+    early = readinessResult(ReadinessCause::UNUSABLE,
+                            VALIDITY +
+                                "the tracer acknowledged a stop before the measured repeats "
+                                "finished, for pid " +
+                                std::to_string(EARLY->pid) + " thread " +
+                                std::to_string(EARLY->tid) + "; its output is in " + artifactDir_,
+                            std::string{"The thread that runs the measured repeats may carry the "
+                                        "name "} +
+                                bpftrace_tool::STOP_THREAD +
+                                ", which the capture reserves; give it another.",
+                            CAPTURE_STAGE);
+  } else if (STOPPING != CAPTURE->stopTid) {
+    early = readinessResult(ReadinessCause::UNUSABLE,
+                            VALIDITY + "the measured repeats ended on thread " +
+                                std::to_string(STOPPING) + ", not on thread " +
+                                std::to_string(CAPTURE->stopTid) +
+                                ", where they started and which the script's stop names; its "
+                                "output is in " +
+                                artifactDir_,
+                            "Call the profiler's beforeMeasure() and afterMeasure() from one "
+                            "thread, as the harness does.",
+                            CAPTURE_STAGE);
   }
-  // SIGINT makes bpftrace print its maps; the stop escalates through the
-  // plan's route and reports every delivery it could not make.
-  const HelperStopResult STOPPED = CAPTURE->tracer.stop();
-  if (STOPPED.wasRunning) {
+  if (early) {
+    finish(*early);
+    const HelperStopResult STOPPED = CAPTURE->tracer.stop();
     (void)bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_);
+    return;
   }
+  {
+    const bpftrace_tool::ThreadNameScope STOPPING_NAME(bpftrace_tool::STOP_THREAD);
+    (void)bpftrace_tool::waitUntil(
+        [&CAPTURE] {
+          const bool RUNNING = CAPTURE->tracer.running();
+          (void)CAPTURE->watch.poll();
+          return CAPTURE->watch.disarmed().has_value() || !RUNNING;
+        },
+        plan_->disarmWaitMs);
+  }
+  // SIGINT makes bpftrace print its maps and exit with status 0. The stop
+  // escalates through the plan's route and reports every delivery it could
+  // not make; reportStop() judges how the tracer ended, at the stop or before
+  // it, and prints every end but one seen to be status 0, whose stacks are
+  // not claimed. An end this process could not observe is never status 0.
+  const HelperStopResult STOPPED = CAPTURE->tracer.stop();
+  const std::optional<ReadinessResult> INCOMPLETE =
+      bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_);
   // At the stop bpftrace prints the lines it still had queued, then its
   // maps: a disarm line that did not arrive in time can arrive there.
-  if (disarmed.state == AckState::TIMED_OUT) {
-    for (const std::string& line : CAPTURE->output.next()) {
-      if (const std::optional<Ack> ACK = parseAck(line, DISARMED_LINE, true)) {
-        disarmed = {AckState::ACKNOWLEDGED, *ACK};
-        break;
-      }
-    }
+  if (!CAPTURE->watch.disarmed()) {
+    (void)CAPTURE->watch.poll();
   }
+  const std::optional<bpftrace_tool::WindowAck>& DISARMED = CAPTURE->watch.disarmed();
   const bool SUDO = plan_->route.privilege.route == PrivilegeRoute::SCOPED_SUDO;
   const StopDelivery* const REFUSED = refusedDelivery(STOPPED);
   const std::string KEPT = "; the capture in " + artifactDir_ + " is incomplete";
-  const bool CLEAN_END = WIFEXITED(STOPPED.waitStatus) && WEXITSTATUS(STOPPED.waitStatus) == 0;
-  if (disarmed.state == AckState::ENDED ||
-      (!STOPPED.wasRunning && !(disarmed.state == AckState::ACKNOWLEDGED && CLEAN_END))) {
-    std::string detail =
-        "the tracer ended by itself before the stop (" + statusText(STOPPED.waitStatus) + ")";
-    const std::string TAIL = outputTail(readFile(errorPath_).text);
-    if (!TAIL.empty()) {
-      detail += ": " + TAIL;
-    }
-    finish(readinessResult(ReadinessCause::UNUSABLE,
-                           detail + "; it misses the end of the measured region" + KEPT,
-                           "The script ends by itself when this process's main thread exits; "
-                           "anything else is bpftrace failing: see offcpu.err.txt there.",
-                           CAPTURE_STAGE));
-    return;
-  }
   if (STOPPED.stillAlive || STOPPED.stoppedBy == SIGKILL) {
     if (REFUSED != nullptr) {
       finish(readinessResult(ReadinessCause::DENIED,
@@ -881,17 +806,34 @@ void OffCpuProfiler::stopBpftrace() {
     }
     return;
   }
-  if (!CLEAN_END) {
+  if (INCOMPLETE) {
+    // Not seen to end with status 0: reportStop() printed how it ended, or
+    // why that could not be observed, naming the files kept; its verdict is
+    // the capture's.
+    ReadinessResult incomplete = *INCOMPLETE;
+    incomplete.stage = CAPTURE_STAGE;
+    if (!incomplete.report.hint.empty()) {
+      std::fprintf(stderr, "[offcpu] %s\n", incomplete.report.hint.c_str());
+    }
+    outcome_ = std::move(incomplete);
+    return;
+  }
+  // Seen to end with status 0: before the stop, its script ended itself.
+  if (!STOPPED.wasRunning && !DISARMED) {
+    std::string detail =
+        "the tracer ended by itself before the stop (" + statusText(STOPPED.waitStatus) + ")";
+    const std::string TAIL = outputTail(readFile(errorPath_).text);
+    if (!TAIL.empty()) {
+      detail += ": " + TAIL;
+    }
     finish(readinessResult(ReadinessCause::UNUSABLE,
-                           "the tracer did not end cleanly after the stop (" +
-                               statusText(STOPPED.waitStatus) + ")" + KEPT,
-                           "bpftrace exits 0 once it has printed its maps; see offcpu.err.txt "
-                           "there.",
+                           detail + "; it misses the end of the measured region" + KEPT,
+                           "The script ends by itself when this process's main thread exits; "
+                           "anything else is bpftrace failing: see offcpu.err.txt there.",
                            CAPTURE_STAGE));
     return;
   }
-  const std::string VALIDITY = "capture validity could not be established: ";
-  if (disarmed.state == AckState::TIMED_OUT) {
+  if (!DISARMED) {
     finish(readinessResult(
         ReadinessCause::UNUSABLE,
         VALIDITY + "the tracer did not acknowledge the stop within " +
@@ -902,13 +844,13 @@ void OffCpuProfiler::stopBpftrace() {
         CAPTURE_STAGE));
     return;
   }
-  if (disarmed.ack.pid != PID || disarmed.ack.tid != stopTid) {
+  if (DISARMED->pid != PID || DISARMED->tid != CAPTURE->stopTid) {
     finish(readinessResult(
         ReadinessCause::UNUSABLE,
-        VALIDITY + "the tracer acknowledged the stop for pid " + std::to_string(disarmed.ack.pid) +
-            " thread " + std::to_string(disarmed.ack.tid) +
+        VALIDITY + "the tracer acknowledged the stop for pid " + std::to_string(DISARMED->pid) +
+            " thread " + std::to_string(DISARMED->tid) +
             ", not for this process's stopping thread (pid " + std::to_string(PID) + " thread " +
-            std::to_string(stopTid) + "); its output is in " + artifactDir_,
+            std::to_string(CAPTURE->stopTid) + "); its output is in " + artifactDir_,
         "", CAPTURE_STAGE));
     return;
   }
@@ -920,8 +862,18 @@ void OffCpuProfiler::stopBpftrace() {
                         "", CAPTURE_STAGE));
     return;
   }
+  const std::optional<long> STOP_COUNT = stopCount(DUMP.text);
+  if (!STOP_COUNT) {
+    finish(readinessResult(ReadinessCause::UNUSABLE,
+                           VALIDITY +
+                               "the tracer's stop line carries no count of the switch-outs it "
+                               "recorded; its output is in " +
+                               artifactDir_,
+                           "", CAPTURE_STAGE));
+    return;
+  }
   const DumpCounts COUNTS = countsIn(DUMP.text);
-  const long N = disarmed.ack.recorded;
+  const long N = *STOP_COUNT;
   std::string cut;
   if (!COUNTS.wellFormed) {
     cut = "an @offcpu_blocks entry of its dump is cut short";

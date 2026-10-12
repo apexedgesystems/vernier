@@ -472,12 +472,6 @@ std::vector<std::string> tracedSize() {
   return {"--threads", "3", "--cycles", "200", "--repeats", "3"};
 }
 
-/// The target of this process's /proc/self/ns/pid link ("" if unreadable).
-std::string ownPidNamespaceLink() {
-  std::error_code ec;
-  return fs::read_symlink("/proc/self/ns/pid", ec).string();
-}
-
 /// The demo binary's path, or "" when it is missing.
 std::string demoPath() {
   std::error_code ec;
@@ -554,8 +548,8 @@ void expectAWholeCapture(const TracedCase& traced, const std::string& testName) 
  * waited, how often, and which workers slept at all are scheduling, described
  * on the page, and not checked.
  *
- * Skipped where this process runs in a PID namespace other than the initial
- * one (offcpu traces only from the host's view), without bpftrace, and without
+ * Skipped where this process runs in a PID namespace other than the host's
+ * (offcpu traces only from the host's view), without bpftrace, and without
  * root or sudo, each known before anything runs; where the run says offcpu
  * could not trace here, for want of a privilege, of a kernel probe or of the
  * host's PID view, quoting the run's line, which ends with sudo's or
@@ -565,9 +559,11 @@ void expectAWholeCapture(const TracedCase& traced, const std::string& testName) 
  * lock cannot be seen from there. The skip then quotes the stacks.
  */
 TEST(OffCpu, CapturesTheLockWait) {
-  const std::string NOTE = vernier::bench::offCpuPidNamespaceNote(ownPidNamespaceLink());
-  if (!NOTE.empty()) {
-    GTEST_SKIP() << NOTE << ": run it natively, or in a container started with --pid=host";
+  const std::string NESTED = vernier::bench::bpftrace_tool::foreignPidNamespace();
+  if (!NESTED.empty()) {
+    GTEST_SKIP() << "this process runs in a PID namespace other than the host's (" << NESTED
+                 << "), and offcpu traces only from the host's PID view: run it natively, or "
+                    "in a container started with --pid=host";
   }
   if (!vernier::bench::profiler_env::isOnPath("bpftrace")) {
     GTEST_SKIP() << "bpftrace is not installed; this test captures the demo's waits with it";
