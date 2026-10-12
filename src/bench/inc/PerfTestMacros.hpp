@@ -193,6 +193,9 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
  *   - Install CSV listener if --csv provided
  *   - Initialize GoogleTest
  *   - Run all tests
+ *   - Return ProfilerRegistry::finishRun(): the tests' status, or
+ *     BENCH_PROFILE_FAILED_EXIT_CODE (4) when they passed and the requested
+ *     profile failed, after a report of each failure
  */
 /// Inline filter-validation: a typo in --gtest_filter under --profile silently
 /// produces empty artifacts; emit a loud warning at end-of-main instead.
@@ -221,7 +224,8 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
     ::testing::InitGoogleTest(&argc, argv);                                                        \
     const int _vernier_rc = RUN_ALL_TESTS();                                                       \
     VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);                                               \
-    return _vernier_rc;                                                                            \
+    return vernier::bench::ProfilerRegistry::instance().finishRun(                                 \
+        cfg, _vernier_rc, ::testing::UnitTest::GetInstance()->test_to_run_count());                \
   }
 
 #endif // VERNIER_PERFTESTMACROS_HPP
