@@ -17,14 +17,26 @@
 
 #include <gtest/gtest.h>
 
+#include <fcntl.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+#ifdef __linux__
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#endif
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <future>
@@ -895,6 +907,225 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
     EXPECT_LE(zombieChildren().size(), ZOMBIES_BEFORE) << "the probe left a child unreaped";
   }
 }
+
+#ifdef __linux__
+namespace {
+
+/**
+ * @brief In a process of its own (a death test's): from now on close_range(2)
+ * fails with ENOSYS, as on a kernel before 5.9, for this process and every
+ * process it starts; when @p unclosable is 0 or more, close(2) of that
+ * descriptor fails too (EBADF), so that no process can close it. Seccomp, no
+ * privilege needed; false when the filter cannot be installed.
+ */
+bool withoutCloseRange(int unclosable) {
+#ifdef SYS_close_range
+  constexpr unsigned FIRST_ARGUMENT =
+      offsetof(seccomp_data, args) + (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U);
+  std::vector<sock_filter> filter = {
+      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
+      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
+      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+  };
+  if (unclosable >= 0) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FIRST_ARGUMENT));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(unclosable), 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EBADF));
+  }
+  filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+  const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
+  return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 &&
+         ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
+#else
+  (void)unclosable;
+  return false;
+#endif
+}
+
+/** @brief Why the keeper tests cannot run here, or empty when they can. */
+std::string keeperTestsUnavailable(rlim_t softLimit) {
+#ifndef SYS_close_range
+  return "this system's headers have no close_range(2)";
+#endif
+  struct rlimit limit{};
+  if (::getrlimit(RLIMIT_NOFILE, &limit) != 0 ||
+      (limit.rlim_max != RLIM_INFINITY && limit.rlim_max < softLimit)) {
+    return "the hard limit on open descriptors is below " + std::to_string(softLimit);
+  }
+  std::ifstream actions("/proc/sys/kernel/seccomp/actions_avail");
+  std::string text;
+  std::getline(actions, text);
+  if (text.find("errno") == std::string::npos) {
+    return "seccomp cannot make a call fail here";
+  }
+  return "";
+}
+
+/** @brief Raise or lower this process's soft limit on open descriptors to @p softLimit. */
+bool softDescriptorLimit(rlim_t softLimit) {
+  struct rlimit limit{};
+  if (::getrlimit(RLIMIT_NOFILE, &limit) != 0) {
+    return false;
+  }
+  limit.rlim_cur = softLimit;
+  return ::setrlimit(RLIMIT_NOFILE, &limit) == 0;
+}
+
+/**
+ * @brief The body of a death test: descriptors run out under a soft limit of
+ * @p softLimit but for the two highest, which a probe's anchor pipe then
+ * takes, so that the probe's next pipe cannot be made and its setup fails
+ * after its keeper started. With @p withoutRange close_range is unavailable
+ * (withoutCloseRange), and with @p unclosableAnchor the anchor's write end
+ * cannot be closed either, so the keeper never sees end-of-file. Prints what
+ * the call came to and exits 0 when it returned with that failure and left
+ * no child of this process behind, running or unreaped.
+ */
+[[noreturn]] void setupFailureEndsTheKeeper(rlim_t softLimit, bool withoutRange,
+                                            bool unclosableAnchor) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  if (!softDescriptorLimit(softLimit)) {
+    std::fprintf(stderr, "the soft limit could not be set\n");
+    std::_Exit(4);
+  }
+  std::vector<int> held;
+  held.reserve(static_cast<std::size_t>(softLimit));
+  for (int fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC); fd >= 0;
+       fd = ::open("/dev/null", O_RDONLY | O_CLOEXEC)) {
+    held.push_back(fd);
+  }
+  for (int i = 0; i < 2 && !held.empty(); ++i) {
+    ::close(held.back());
+    held.pop_back();
+  }
+  const int ANCHOR_WRITE = static_cast<int>(softLimit) - 1;
+  if (withoutRange && !withoutCloseRange(unclosableAnchor ? ANCHOR_WRITE : -1)) {
+    std::fprintf(stderr, "close_range could not be made unavailable\n");
+    std::_Exit(3);
+  }
+  const auto START = std::chrono::steady_clock::now();
+  const ProbeResult RESULT = runBoundedProbe({"/bin/true"}, 5000, CTX);
+  const auto ELAPSED = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - START);
+  for (const int FD : held) {
+    ::close(FD);
+  }
+  // Children of this process the call left: never reaped, so their pids are
+  // still theirs to be signalled by.
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  for (const pid_t PID : LEFT) {
+    (void)::kill(PID, SIGKILL);
+    int status = 0;
+    (void)::waitpid(PID, &status, 0);
+  }
+  std::fprintf(stderr, "started=%d errno=%d returned after %lld ms, children left: %zu\n",
+               RESULT.started ? 1 : 0, RESULT.spawnErrno, static_cast<long long>(ELAPSED.count()),
+               LEFT.size());
+  const bool ENDED = !RESULT.started && RESULT.spawnErrno == EMFILE && LEFT.empty();
+  std::fprintf(stderr, ENDED ? "the keeper ended with the call\n" : "the call left its keeper\n");
+  std::_Exit(ENDED ? 0 : 1);
+}
+
+/**
+ * @brief The body of a death test: this process holds a descriptor at
+ * @p planted, inherited by whatever it starts, and close_range is
+ * unavailable when @p withoutRange. A probe runs a program that lists, once
+ * their count settles, the descriptors its process group's leader (the
+ * probe's keeper) holds. Prints the list and exits 0 when it is the keeper's
+ * stdin, a pipe, and /dev/null on stdout and stderr, nothing else.
+ */
+[[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const int NUL = ::open("/dev/null", O_RDONLY);
+  if (!softDescriptorLimit(static_cast<rlim_t>(planted) + 10) || NUL < 0 ||
+      ::dup2(NUL, planted) != planted) {
+    std::fprintf(stderr, "the descriptor could not be planted\n");
+    std::_Exit(4);
+  }
+  ::close(NUL);
+  if (withoutRange && !withoutCloseRange(-1)) {
+    std::fprintf(stderr, "close_range could not be made unavailable\n");
+    std::_Exit(3);
+  }
+  const std::string LIST =
+      "PATH=/usr/bin:/bin; read -r s < /proc/$$/stat; set -- $s; k=$5; i=0\n"
+      "while :; do\n"
+      "  n=0; for f in /proc/$k/fd/*; do n=$((n + 1)); done\n"
+      "  [ \"$n\" -le 3 ] || [ \"$i\" -ge 100 ] && break\n"
+      "  i=$((i + 1)); sleep 0.02\n"
+      "done\n"
+      "for f in /proc/$k/fd/*; do printf '%s=%s ' \"${f##*/}\" \"$(readlink \"$f\")\"; done\n";
+  const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", LIST}, 10000, CTX);
+  std::fprintf(stderr, "the keeper's descriptors: %s\n", R.output.c_str());
+  const std::size_t PIPE_END = R.output.find("] ");
+  const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=pipe:[", 0) == 0 &&
+                            PIPE_END != std::string::npos &&
+                            R.output.substr(PIPE_END) == "] 1=/dev/null 2=/dev/null ";
+  std::fprintf(stderr, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
+                                    : "the keeper holds more than its own\n");
+  std::_Exit(NOTHING_ELSE ? 0 : 1);
+}
+
+} // namespace
+
+/**
+ * @test The keeper of a probe whose setup fails after the keeper started (its
+ * second pipe cannot be made: descriptors ran out) is ended and reaped before
+ * the call returns, wherever the descriptors lie and whether or not the system
+ * has close_range: with descriptors below 64 and above 65535, with close_range
+ * and without it, and with the anchor's write end that no process can close,
+ * so that the keeper never sees end-of-file. Each case in a process of its own.
+ */
+TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
+  constexpr rlim_t LOW = 64;
+  constexpr rlim_t HIGH = 65540;
+  const std::string UNAVAILABLE = keeperTestsUnavailable(HIGH);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(setupFailureEndsTheKeeper(LOW, false, false), ::testing::ExitedWithCode(0),
+              "the keeper ended with the call")
+      << "descriptors below 64, close_range";
+  EXPECT_EXIT(setupFailureEndsTheKeeper(LOW, true, false), ::testing::ExitedWithCode(0),
+              "the keeper ended with the call")
+      << "descriptors below 64, no close_range";
+  EXPECT_EXIT(setupFailureEndsTheKeeper(HIGH, false, false), ::testing::ExitedWithCode(0),
+              "the keeper ended with the call")
+      << "descriptors above 65535, close_range";
+  EXPECT_EXIT(setupFailureEndsTheKeeper(HIGH, true, false), ::testing::ExitedWithCode(0),
+              "the keeper ended with the call")
+      << "descriptors above 65535, no close_range";
+  EXPECT_EXIT(setupFailureEndsTheKeeper(HIGH, true, true), ::testing::ExitedWithCode(0),
+              "the keeper ended with the call")
+      << "descriptors above 65535, no close_range, the anchor unclosable";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test The keeper holds nothing of the benchmark's while the probe runs: a
+ * descriptor of this process's above 65535 is not among its descriptors,
+ * with close_range and without it. Each case in a process of its own.
+ */
+TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
+  constexpr int PLANTED = 65590;
+  const std::string UNAVAILABLE = keeperTestsUnavailable(PLANTED + 10);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false), ::testing::ExitedWithCode(0),
+              "the keeper holds nothing of this process")
+      << "close_range";
+  EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, true), ::testing::ExitedWithCode(0),
+              "the keeper holds nothing of this process")
+      << "no close_range";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+#endif
 
 /** @test A child that keeps writing does not hold the probe open, and ends with it. */
 TEST(ReadinessProbes, WritingChildEndsWithTheProbe) {

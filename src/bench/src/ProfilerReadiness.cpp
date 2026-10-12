@@ -21,6 +21,7 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <climits>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -122,39 +123,134 @@ void defaultStopSignals() {
   (void)::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr);
 }
 
-/** @brief Where a forked keeper stops closing descriptors when it cannot close a range at once. */
+/**
+ * @brief Where a forked keeper's last resort stops closing descriptors: the
+ * soft limit on open descriptors, under which every descriptor opened since
+ * it was set lies (at least 256, at most 1 << 20, the system's default
+ * ceiling).
+ */
 int descriptorBound() {
+  constexpr rlim_t CEILING = rlim_t{1} << 20;
   struct rlimit limit{};
   if (::getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur != RLIM_INFINITY) {
-    return static_cast<int>(std::clamp<rlim_t>(limit.rlim_cur, 256, 65536));
+    return static_cast<int>(std::clamp<rlim_t>(limit.rlim_cur, 256, CEILING));
   }
-  return 1024;
+  return static_cast<int>(CEILING);
+}
+
+#ifdef __linux__
+/**
+ * @brief Close every descriptor from @p lowest up that /proc/self/fd lists,
+ * whatever its number; false when the list cannot be read. The list is read
+ * with getdents64, which allocates nothing, and again from its start after
+ * a read that closed any. Async-signal-safe.
+ */
+bool closeListedDescriptors(int lowest) {
+  const int LIST = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+  if (LIST < 0) {
+    return false;
+  }
+  // A record: inode (8 bytes), offset (8), its length (2), type (1), name.
+  constexpr std::size_t LENGTH_AT = 16;
+  constexpr std::size_t NAME_AT = 19;
+  alignas(8) char records[4096];
+  bool listed = true;
+  while (true) {
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30))
+    const ssize_t N = ::getdents64(LIST, records, sizeof(records));
+#else
+    const ssize_t N = ::syscall(SYS_getdents64, LIST, records, sizeof(records));
+#endif
+    if (N < 0 && errno == EINTR) {
+      continue;
+    }
+    if (N <= 0) {
+      listed = N == 0;
+      break;
+    }
+    bool closedAny = false;
+    for (std::size_t at = 0; at + NAME_AT < static_cast<std::size_t>(N);) {
+      unsigned short length = 0;
+      std::memcpy(&length, records + at + LENGTH_AT, sizeof(length));
+      if (length == 0) {
+        break;
+      }
+      int fd = 0;
+      bool number = records[at + NAME_AT] != '\0';
+      for (const char* c = records + at + NAME_AT; number && *c != '\0'; ++c) {
+        number = *c >= '0' && *c <= '9' && fd <= (INT_MAX - 9) / 10;
+        if (number) {
+          fd = fd * 10 + (*c - '0');
+        }
+      }
+      if (number && fd >= lowest && fd != LIST) {
+        (void)::close(fd);
+        closedAny = true;
+      }
+      at += length;
+    }
+    if (closedAny && ::lseek(LIST, 0, SEEK_SET) != 0) {
+      listed = false;
+      break;
+    }
+  }
+  (void)::close(LIST);
+  return listed;
+}
+#endif
+
+/**
+ * @brief Close every descriptor from @p lowest up, whatever its number:
+ * close_range where the system has it, else each one /proc/self/fd lists,
+ * else each one below @p bound. Async-signal-safe.
+ */
+void closeDescriptorsFrom(int lowest, int bound) {
+#if defined(__linux__) && defined(SYS_close_range)
+  if (::syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) {
+    return;
+  }
+#endif
+#ifdef __linux__
+  if (closeListedDescriptors(lowest)) {
+    return;
+  }
+#endif
+  for (int fd = lowest; fd < bound; ++fd) {
+    (void)::close(fd);
+  }
 }
 
 /**
  * @brief A probe group's keeper, in the child of fork(): every signal it can
- * block blocked, a process group of its own, stdin the read end of its
- * anchor pipe, stdout and stderr /dev/null and every other inherited
- * descriptor closed, so it holds nothing open of this process's; then it
- * waits for the anchor's end-of-file and exits. Async-signal-safe.
+ * block blocked, a process group of its own, and nothing open of this
+ * process's: its copy of the anchor's write end closed first, by itself, so
+ * that it sees end-of-file once this process's copy closes, whatever the
+ * descriptors' numbers; stdin the anchor's read end; every other descriptor
+ * from 3 up closed (closeDescriptorsFrom); stdout and stderr /dev/null, or
+ * closed. Then it waits for the anchor's end-of-file and exits.
+ * Async-signal-safe.
  */
-[[noreturn]] void runGroupKeeper(int anchor, int bound) {
+[[noreturn]] void runGroupKeeper(int anchorRead, int anchorWrite, int bound) {
   sigset_t all;
   (void)::sigfillset(&all);
   (void)::sigprocmask(SIG_SETMASK, &all, nullptr);
   (void)::setpgid(0, 0);
-  (void)::dup2(anchor, STDIN_FILENO);
+  (void)::close(anchorWrite);
+  if (anchorRead != STDIN_FILENO) {
+    (void)::dup2(anchorRead, STDIN_FILENO);
+    (void)::close(anchorRead);
+  }
+  closeDescriptorsFrom(3, bound);
   const int NUL = ::open("/dev/null", O_WRONLY);
   if (NUL >= 0) {
     (void)::dup2(NUL, STDOUT_FILENO);
     (void)::dup2(NUL, STDERR_FILENO);
-  }
-  bool closed = false;
-#if defined(__linux__) && defined(SYS_close_range)
-  closed = ::syscall(SYS_close_range, 3U, ~0U, 0U) == 0;
-#endif
-  for (int fd = 3; !closed && fd < bound; ++fd) {
-    (void)::close(fd);
+    if (NUL > STDERR_FILENO) {
+      (void)::close(NUL);
+    }
+  } else {
+    (void)::close(STDOUT_FILENO);
+    (void)::close(STDERR_FILENO);
   }
   char byte = 0;
   while (::read(STDIN_FILENO, &byte, 1) < 0 && errno == EINTR) {
@@ -722,13 +818,22 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     return result;
   }
   if (KEEPER == 0) {
-    runGroupKeeper(anchor[0], DESCRIPTOR_BOUND);
+    runGroupKeeper(anchor[0], anchor[1], DESCRIPTOR_BOUND);
   }
   (void)::setpgid(KEEPER, KEEPER); // both sides set it; whichever runs first wins the race
   ::close(anchor[0]);
-  // Closes the anchor, so a keeper still running exits, and reaps the keeper
-  // within PROBE_REAP_MS (one reaped elsewhere is gone).
+  // Ends the keeper on every path, then reaps it within PROBE_REAP_MS. A
+  // keeper still running that the group's end has not signalled (a setup
+  // that failed before the program ran) is killed while this process still
+  // holds the anchor's write end: it cannot have ended by itself, so its pid
+  // is still its own. Then the anchor closes, and a keeper reaped elsewhere
+  // is gone.
+  bool keeperSignalled = false;
   const auto END_KEEPER = [&] {
+    if (!keeperSignalled && leaderState(KEEPER) == LeaderState::RUNNING) {
+      (void)::kill(KEEPER, SIGKILL);
+      keeperSignalled = true;
+    }
     if (anchor[1] >= 0) {
       ::close(anchor[1]);
       anchor[1] = -1;
@@ -877,6 +982,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   // its id.
   if (leaderState(KEEPER) != LeaderState::GONE) {
     (void)::kill(-KEEPER, SIGKILL);
+    keeperSignalled = true;
   }
   if (leader != LeaderState::GONE) {
     (void)::kill(CHILD, SIGKILL); // the program itself, had it left the group
