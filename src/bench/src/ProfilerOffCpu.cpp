@@ -256,13 +256,16 @@ FileText readFile(const std::string& path) {
 /**
  * @brief Wait up to @p boundMs, under the name the capture window reserves
  * for its waits, until @p watch holds the arm line, or a stop line before it
- * when @p stopFirstEnds, or @p tracer has ended.
+ * when @p stopFirstEnds, or @p tracer has ended; then end @p arm under the
+ * same name. Joining the arm thread waits out its last nap, a sleep of this
+ * thread once the script may have armed: under that name the script leaves
+ * it out, as it leaves out the wait.
  * @return Whether the tracer still ran at the last look. Whether it runs is
  *         read before the output, so a line written just before it ended
  *         still counts. A read that fails reads nothing: the bound decides.
  */
-bool waitForTheArm(OwnedHelper& tracer, bpftrace_tool::WindowWatch& watch, int boundMs,
-                   bool stopFirstEnds) {
+bool waitForTheArm(OwnedHelper& tracer, bpftrace_tool::WindowWatch& watch,
+                   std::optional<bpftrace_tool::ArmThread>& arm, int boundMs, bool stopFirstEnds) {
   bool running = true;
   const bpftrace_tool::ThreadNameScope WAITING(bpftrace_tool::WAIT_THREAD);
   (void)bpftrace_tool::waitUntil(
@@ -273,6 +276,7 @@ bool waitForTheArm(OwnedHelper& tracer, bpftrace_tool::WindowWatch& watch, int b
                !running;
       },
       boundMs);
+  arm.reset();
   return running;
 }
 
@@ -433,8 +437,7 @@ std::optional<ReadinessResult> witnessArm(const BpftraceRoute& route, const Read
                            "Check that " + argv.front() + " can be executed.");
   }
   bpftrace_tool::WindowWatch watch(OUT, LABEL);
-  const bool RUNNING = waitForTheArm(tracer, watch, CHECK_ARM_WAIT_MS, false);
-  arm.reset();
+  const bool RUNNING = waitForTheArm(tracer, watch, arm, CHECK_ARM_WAIT_MS, false);
   const HelperStopResult STOP = tracer.stop();
   if (STOP.stillAlive) {
     // The stop could not end it; its own self-exit will, as for the attach probe.
@@ -659,9 +662,8 @@ void OffCpuProfiler::spawnBpftrace() {
     return;
   }
   // The script arms when the arm thread goes to sleep; this thread waits for
-  // that under a name the script leaves out.
-  const bool RUNNING = waitForTheArm(capture->tracer, capture->watch, plan_->armWaitMs, true);
-  arm.reset();
+  // that, and ends the arm thread, under a name the script leaves out.
+  const bool RUNNING = waitForTheArm(capture->tracer, capture->watch, arm, plan_->armWaitMs, true);
   const std::optional<bpftrace_tool::WindowAck>& ARMED = capture->watch.armed();
   if (!capture->watch.disarmedBeforeArmed() && !ARMED && !RUNNING) {
     const HelperStopResult ENDED = capture->tracer.stop();

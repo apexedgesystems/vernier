@@ -536,6 +536,13 @@ void expectAWholeCapture(const TracedCase& traced, const std::string& testName) 
   EXPECT_EQ(DISARMED[2], traced.dump.recorded < 0 ? 0 : traced.dump.recorded)
       << "the stop's count and the dump's @recorded differ";
   EXPECT_LE(traced.dump.recorded, switchOuts(traced.dump));
+  // The backend's own waits, at the capture's start and its stop, run under
+  // names the script leaves out: no recorded stack passes through its code.
+  for (const char* own : {"vernier::bench::OffCpuProfiler::", "vernier::bench::bpftrace_tool::"}) {
+    EXPECT_EQ(switchOutsThrough(traced.dump, own), 0)
+        << "the capture recorded a sleep in the backend's own code (" << own << "):\n"
+        << stacksOf(traced.output);
+  }
 }
 
 } // namespace
@@ -543,10 +550,12 @@ void expectAWholeCapture(const TracedCase& traced, const std::string& testName) 
 /**
  * @test Demo 13 under the offcpu backend, as the walkthrough runs it: each
  * case's capture is verified from its arm to its stop, both lines naming the
- * demo, and whole; the coarse-lock case's threads wait in the lock under
- * addUnderCoarseLock, and the no-sharing case's do not. How long anything
- * waited, how often, and which workers slept at all are scheduling, described
- * on the page, and not checked.
+ * demo, and whole, with no sleep in the backend's own code, whose waits at
+ * the capture's start and stop run under the names the script leaves out;
+ * the coarse-lock case's threads wait in the lock under addUnderCoarseLock,
+ * and the no-sharing case's do not. How long anything waited, how often, and
+ * which workers slept at all are scheduling, described on the page, and not
+ * checked.
  *
  * Skipped where this process runs in a PID namespace other than the host's
  * (offcpu traces only from the host's view), without bpftrace, and without

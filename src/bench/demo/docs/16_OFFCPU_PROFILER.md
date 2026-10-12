@@ -757,8 +757,9 @@ Three things check what this page shows, and all fail loudly:
   nothing slept); unless the two acknowledgements name the demo's process,
   the arm a thread other than its first and the stop its first thread, the
   arm first; unless the dump holds `@armed: 2` and no `@start` line, with
-  `@recorded` equal to the stop's count and no more than the stacks' sum; and
-  unless the coarse lock's capture holds sleeps in the lock under
+  `@recorded` equal to the stop's count and no more than the stacks' sum, and
+  no stack in the backend's own code, whose waits run under the reserved
+  names; and unless the coarse lock's capture holds sleeps in the lock under
   `addUnderCoarseLock` and the no-sharing capture none. How long anything
   slept, how often and which workers slept are scheduling and are not
   checked. With `addUnderCoarseLock` left for the compiler to inline, it
