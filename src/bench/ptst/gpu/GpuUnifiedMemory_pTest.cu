@@ -532,5 +532,3 @@ PERF_GPU_TEST(GpuUnifiedMemory, AccessPatterns) {
 
   cudaFree(um_data);
 }
-
-// Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary
