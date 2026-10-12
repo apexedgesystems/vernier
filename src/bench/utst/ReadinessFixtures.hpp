@@ -11,7 +11,7 @@
  * set their own PATH for the utilities they use, and append each invocation
  * to the directory's log (FAKE_LOG), which the test reads back. ScopedEnv
  * (ScopedEnv.hpp), for what a test must set in the live environment, comes
- * with it.
+ * with it, and ChildReaping, for a test of how this process reaps children.
  */
 
 #include "src/bench/inc/ProfilerReadiness.hpp"
@@ -20,6 +20,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <csignal>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -136,6 +137,41 @@ public:
 private:
   std::string dir_;
   std::string log_;
+};
+
+/* ----------------------------- ChildReaping ----------------------------- */
+
+/**
+ * @brief While it lives, this process reaps its children as an application
+ * may: SIGCHLD at its default action, ignored, or with SA_NOCLDWAIT; with
+ * either of the last two the system discards each child's exit status. The
+ * previous action is restored on destruction.
+ */
+class ChildReaping {
+public:
+  enum class Policy { DEFAULT, IGNORED, NO_CHILD_WAIT };
+
+  explicit ChildReaping(Policy policy) {
+    struct sigaction action{};
+    action.sa_handler = policy == Policy::IGNORED ? SIG_IGN : SIG_DFL;
+    action.sa_flags = policy == Policy::NO_CHILD_WAIT ? SA_NOCLDWAIT : 0;
+    sigemptyset(&action.sa_mask);
+    ok_ = ::sigaction(SIGCHLD, &action, &saved_) == 0;
+  }
+  ~ChildReaping() {
+    if (ok_) {
+      ::sigaction(SIGCHLD, &saved_, nullptr);
+    }
+  }
+  ChildReaping(const ChildReaping&) = delete;
+  ChildReaping& operator=(const ChildReaping&) = delete;
+
+  /** @brief True when the policy is in force. */
+  [[nodiscard]] bool ok() const noexcept { return ok_; }
+
+private:
+  struct sigaction saved_{};
+  bool ok_ = false;
 };
 
 } // namespace test

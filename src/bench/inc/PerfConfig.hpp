@@ -38,7 +38,7 @@ struct PerfConfig {
   // ---- Profiling / artifact knobs (default off) ----
   std::string profileTool;             ///< "", "perf", "gperf", "bpftrace", "rapl", "callgrind"
   std::string profileArgs;             ///< Verbatim pass-through to the tool
-  std::vector<std::string> bpfScripts; ///< Curated script names: "offcpu", "syslat", "bio"
+  std::vector<std::string> bpfScripts; ///< bpftrace scripts (--bpf): names or paths
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
   int profileFrequency = 10000;        ///< Rate asked of gperf (Hz); set too late to take effect
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
@@ -135,12 +135,15 @@ inline bool isUnclaimedOption(std::string_view arg) {
  * An unrecognized `--option` is still forwarded, with one stderr line naming
  * it, so a mistyped flag or a binary older than the flag does not run on
  * defaults in silence. GoogleTest's and the GPU parser's options are exempt.
+ * `--bpf-scripts DIR` sets PERF_BPF_SCRIPTS in this process's environment,
+ * where the bpftrace check reads the scripts directory.
  *
  * Recognized flags:
  *   --cycles N         --repeats N        --warmup N (0 = auto-scale)
  *   --threads N        --msg-bytes N      --console
  *   --nonblocking      --min-level STR    --csv PATH
  *   --profile TOOL     --profile-args STR --bpf LIST(,...) --artifact-root PATH
+ *   --bpf-scripts DIR  (bpftrace scripts directory; sets PERF_BPF_SCRIPTS)
  *   --profile-frequency N  (rate asked of gperf, default 10000; set too late to take effect)
  *   --profile-analyze      (auto-run analysis after profiling)
  *   --quick            (applies lighter defaults for fast iteration)
@@ -261,6 +264,12 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
       ++i;
     } else if (a == "--bpf") {
       cfg.bpfScripts = PARSE_LIST(NEED_ARG("--bpf", i, *argc, argv));
+      ++i;
+    } else if (a == "--bpf-scripts") {
+      // The bpftrace check reads the scripts directory from PERF_BPF_SCRIPTS,
+      // so the flag sets that variable over any inherited value; an empty
+      // value selects the bundled scripts.
+      ::setenv("PERF_BPF_SCRIPTS", NEED_ARG("--bpf-scripts", i, *argc, argv), 1);
       ++i;
     } else if (a == "--artifact-root" || a == "--profile-output-dir") {
       // --profile-output-dir is the user-friendlier alias; both write the
