@@ -18,8 +18,10 @@
  *    and a perf the check found not answering, start after a fixed
  *    PERF_START_GRACE_MS instead.
  *  - perf runs as this process's own child (OwnedHelper): a perf that ends
- *    before or during the measured phase, needs SIGTERM or SIGKILL to stop, or
- *    leaves no counts (stat) or no data (record, mem, c2c) is reported through
+ *    before or during the measured phase, needs SIGTERM or SIGKILL to stop,
+ *    ends without a status this process could read (it ignores SIGCHLD or
+ *    sets SA_NOCLDWAIT: never taken for a clean end), or leaves no counts
+ *    (stat) or no data (record, mem, c2c) is reported through
  *    ProfilerRegistry::reportFailure(), which fails the run.
  *
  * Readiness (checkPerfRequest): perf is resolved on PATH, `perf --version`
@@ -116,8 +118,9 @@ public:
   static constexpr int PERF_START_GRACE_MS = 200;
 
 private:
-  /** @brief Record a failure of this test's capture at @p stage. */
-  void fail(ReadinessCause cause, const std::string& detail, ReadinessStage stage) const;
+  /** @brief Record a failure of this test's capture at @p stage, with @p remedy as its hint. */
+  void fail(ReadinessCause cause, const std::string& detail, ReadinessStage stage,
+            const std::string& remedy = {}) const;
 
   /** @brief Check the output perf left after a clean stop. */
   void checkOutput() const;

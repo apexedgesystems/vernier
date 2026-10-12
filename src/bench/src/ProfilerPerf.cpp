@@ -445,6 +445,25 @@ std::string waitStatusText(int status) {
   return "an unknown end";
 }
 
+/**
+ * @brief How perf ended, as a report says it: its wait status when this
+ * process read it; otherwise that its end could not be observed, and why. A
+ * status not read is never an exit.
+ */
+std::string endText(int status, bool statusObtained, StatusLoss loss) {
+  if (statusObtained) {
+    return waitStatusText(status);
+  }
+  return "an end this process could not observe: " +
+         (loss == StatusLoss::NONE ? std::string{"its exit status was not read"}
+                                   : describeStatusLoss(loss));
+}
+
+/** @brief The remedy for a report on perf's end: how to let it be read, when it was not. */
+std::string endRemedy(bool statusObtained) {
+  return statusObtained ? std::string{} : std::string{CHILD_STATUS_REMEDY};
+}
+
 /** @brief The whole text of @p path, or "" when it cannot be read. */
 std::string readText(const std::string& path) {
   std::ifstream in(path, std::ios::binary);
@@ -549,10 +568,10 @@ StatReport readStatReport(const std::string& text) {
 
 } // namespace
 
-void PerfStatProfiler::fail(ReadinessCause cause, const std::string& detail,
-                            ReadinessStage stage) const {
+void PerfStatProfiler::fail(ReadinessCause cause, const std::string& detail, ReadinessStage stage,
+                            const std::string& remedy) const {
   ProfilerRegistry::instance().reportFailure("perf", testName_,
-                                             readinessResult(cause, detail, "", stage));
+                                             readinessResult(cause, detail, remedy, stage));
 }
 
 void PerfStatProfiler::beforeMeasure() {
@@ -634,9 +653,9 @@ void PerfStatProfiler::beforeMeasure() {
   }
   if (START.exitedEarly) {
     fail(ReadinessCause::UNUSABLE,
-         "perf ended (" + waitStatusText(START.waitStatus) +
+         "perf ended (" + endText(START.waitStatus, START.statusObtained, START.statusLoss) +
              ") before the measured phase: " + perfSaid(errPath),
-         ReadinessStage::COLLECTION);
+         ReadinessStage::COLLECTION, endRemedy(START.statusObtained));
     return;
   }
   if (HANDSHAKE) {
@@ -645,9 +664,9 @@ void PerfStatProfiler::beforeMeasure() {
     if (WAIT == AckWait::ENDED) {
       const HelperStopResult GONE = helper_.stop();
       fail(ReadinessCause::UNUSABLE,
-           "perf ended (" + waitStatusText(GONE.waitStatus) +
+           "perf ended (" + endText(GONE.waitStatus, GONE.statusObtained, GONE.statusLoss) +
                ") before the measured phase: " + perfSaid(errPath),
-           ReadinessStage::COLLECTION);
+           ReadinessStage::COLLECTION, endRemedy(GONE.statusObtained));
       return;
     }
     if (WAIT == AckWait::TIMED_OUT) {
@@ -675,10 +694,10 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
   const HelperStopResult STOP = helper_.stop();
   if (!STOP.wasRunning) {
     fail(ReadinessCause::UNUSABLE,
-         "perf ended (" + waitStatusText(STOP.waitStatus) +
+         "perf ended (" + endText(STOP.waitStatus, STOP.statusObtained, STOP.statusLoss) +
              ") during the measured phase, so its output covers part of it at most: " +
              perfSaid(OUTPUT),
-         ReadinessStage::COMPLETION);
+         ReadinessStage::COMPLETION, endRemedy(STOP.statusObtained));
     return;
   }
   if (STOP.stillAlive) {
@@ -694,6 +713,17 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
              (STOP.stoppedBy == SIGTERM ? "SIGTERM" : "SIGKILL") +
              ", so its output may be incomplete",
          ReadinessStage::COMPLETION);
+    return;
+  }
+  if (!STOP.statusObtained) {
+    // Gone without a status this process could read: nothing shows that it
+    // ended as a perf that has written its report ends.
+    fail(ReadinessCause::UNUSABLE,
+         "perf ended (" + endText(STOP.waitStatus, false, STOP.statusLoss) +
+             ") after SIGINT, so nothing shows that it wrote its report, and its output does not "
+             "count: " +
+             perfSaid(OUTPUT),
+         ReadinessStage::COMPLETION, CHILD_STATUS_REMEDY);
     return;
   }
   if (!endedAsAfterSigint(STOP.waitStatus)) {

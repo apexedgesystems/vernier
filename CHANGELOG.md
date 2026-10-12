@@ -9,6 +9,12 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 09 traces writes and lock hand-offs on the shared join example** --
+  its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
+  from a run on the documented Raspberry Pi 4 rig.
+  **Action needed:** its test names change, so demo 09 CSVs from before this
+  release do not join with newer ones, and `manySmallWrites()` and
+  `singleBatchedWrite()` leave `helpers/DemoWorkloads.hpp`.
 - **Demo 04 measures the shared SAXPY kernel and carries a copy without its
   bounds guard for Compute Sanitizer to find** -- the copy runs only under
   the tool, and a check registered with `ctest` under the `compute-sanitizer`
@@ -246,10 +252,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   bare array of results. A gate that was passing because a p-value suppressed
   its labels will start failing on the changes it was always meant to catch.
 - **A profiler request that fails fails the run** -- an unknown profiler, a
-  request its tool cannot collect (which creates no folder) and a requested
-  analysis that fails (which keeps the capture) are reported, and the run
-  exits with status 4 if its tests passed, also for a profiler built by its
-  backend's own constructor or factory, bpftrace's and offcpu's aside
+  request its tool cannot collect (which creates no folder), a requested
+  analysis that fails (which keeps the capture) and a bpftrace or offcpu
+  capture that does not complete are reported, and the run exits with status
+  4 if its tests passed, also for a profiler built by its backend's own
+  constructor or factory, offcpu's aside
   ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
   **Action needed:** a CI job that passed without its requested profile now
   fails; a benchmark with its own `main()` returns
@@ -426,6 +433,36 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
+- **bpftrace waits for its tracers to attach and traces threaded tests to their
+  end** -- a run waits before its measured repeats, the doctor before it passes
+  a script, and `wakeup_latency.bt` counts wakeups completed on another CPU.
+  **Action needed:** a custom script that uses `@vernier_` maps or prints the
+  `bpftrace armed` and `bpftrace disarmed` lines each report holds is refused,
+  one with an `iter:` probe runs only by hand, and the thread that runs the
+  measured repeats must not be named `vernier-stop` (see
+  [the capture window](src/bench/docs/BPF_SCRIPTS.md#the-capture-window));
+  `wakeup_latency.bt` histograms do not compare with earlier ones, and copies of
+  the bundled scripts should filter `sched_process_exit` on `tid == {{PID}}`.
+- **bpftrace finds its scripts from any directory and reads `PERF_BPF` as a
+  boolean** -- `--bpf-scripts DIR` selects another directory, `--bpf` takes a
+  path with or without `.bt` (see
+  [selecting scripts](src/bench/docs/BPF_SCRIPTS.md#selecting-scripts)), a run's
+  files land in its capture folder, and `yes` and `on` turn `PERF_BPF` on.
+  **Action needed:** a `--bpf` name containing `/` is a path from the working
+  directory, an installed library whose source tree is gone needs
+  [`--bpf-scripts`](src/bench/docs/BPF_SCRIPTS.md#scripts), and an invalid
+  `PERF_BPF` value is a configuration error, not off.
+- **bpftrace and offcpu trust only a tracer seen to exit cleanly** -- a capture
+  is complete only when its tracer is seen to exit with status 0 after the stop;
+  otherwise the run says how the tracer ended or why that could not be observed,
+  quoting its error, a bpftrace capture fails with its files kept, and offcpu
+  does not claim its stacks. Their tracers and probes stop on SIGINT when the
+  benchmark runs in the background too, the doctor warns where exit statuses are
+  discarded, and their hints offer only what works: root for access, directly or
+  through `BENCH_SUDO=1` and a scoped sudoers grant (see
+  [requirements](src/bench/docs/BPF_SCRIPTS.md#requirements)).
+  **Action needed:** while either runs, leave SIGCHLD at its default action,
+  without `SA_NOCLDWAIT`, and wait only for the benchmark's own children.
 - **`--profile compute-sanitizer` tells the tool apart from the binary's
   name, and its printed wrap command keeps its log** -- the backend decides
   it is running under the tool from what the tool exports to the process and

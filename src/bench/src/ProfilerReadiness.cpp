@@ -101,6 +101,25 @@ std::vector<char*> cStrings(std::vector<std::string>& strings) {
   return out;
 }
 
+/**
+ * @brief Give the signals a helper is stopped with, SIGINT and SIGTERM, their
+ * default action, unblocked, whatever this process inherited: a benchmark
+ * started as a background job of a script ignores SIGINT, and a helper would
+ * keep the ignore across exec. Async-signal-safe (used between fork and exec).
+ */
+void defaultStopSignals() {
+  struct sigaction action{};
+  action.sa_handler = SIG_DFL;
+  (void)::sigemptyset(&action.sa_mask);
+  sigset_t stopSignals;
+  (void)::sigemptyset(&stopSignals);
+  for (const int SIGNAL : {SIGINT, SIGTERM}) {
+    (void)::sigaction(SIGNAL, &action, nullptr);
+    (void)::sigaddset(&stopSignals, SIGNAL);
+  }
+  (void)::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr);
+}
+
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);
@@ -656,6 +675,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   }
   if (CHILD == 0) {
     (void)::setpgid(0, 0);
+    defaultStopSignals();
     if (DEV_NULL >= 0) {
       (void)::dup2(DEV_NULL, STDIN_FILENO);
     }
@@ -929,7 +949,7 @@ OwnedHelper::~OwnedHelper() {
 
 OwnedHelper::OwnedHelper(OwnedHelper&& other) noexcept
     : policy_(std::move(other.policy_)), child_(other.child_), reaped_(other.reaped_),
-      waitStatus_(other.waitStatus_) {
+      waitStatus_(other.waitStatus_), loss_(other.loss_) {
   other.child_ = -1;
   other.reaped_ = true;
 }
@@ -943,6 +963,7 @@ OwnedHelper& OwnedHelper::operator=(OwnedHelper&& other) noexcept {
     child_ = other.child_;
     reaped_ = other.reaped_;
     waitStatus_ = other.waitStatus_;
+    loss_ = other.loss_;
     other.child_ = -1;
     other.reaped_ = true;
   }
@@ -951,8 +972,12 @@ OwnedHelper& OwnedHelper::operator=(OwnedHelper&& other) noexcept {
 
 namespace {
 
-/** @brief Reap @p child if it has ended; true once it is gone. */
-bool tryReap(pid_t child, bool& reaped, int& waitStatus) {
+/**
+ * @brief Reap @p child if it has ended; true once it is gone. A child reaped
+ * elsewhere (ECHILD) is gone too, without a status: @p waitStatus stays
+ * HELPER_STATUS_UNAVAILABLE, and @p loss says why.
+ */
+bool tryReap(pid_t child, bool& reaped, int& waitStatus, StatusLoss& loss) {
   if (child <= 0 || reaped) {
     return true;
   }
@@ -966,14 +991,16 @@ bool tryReap(pid_t child, bool& reaped, int& waitStatus) {
     waitStatus = status;
   } else if (w < 0) {
     reaped = true; // not our child any more (ECHILD): never signal it again
+    waitStatus = HELPER_STATUS_UNAVAILABLE;
+    loss = currentStatusLoss();
   }
   return reaped;
 }
 
 /** @brief Poll for the child's end for up to @p ms. */
-bool waitGone(pid_t child, bool& reaped, int& waitStatus, int ms) {
+bool waitGone(pid_t child, bool& reaped, int& waitStatus, StatusLoss& loss, int ms) {
   const auto DEADLINE = Clock::now() + std::chrono::milliseconds(std::max(ms, 0));
-  while (!tryReap(child, reaped, waitStatus)) {
+  while (!tryReap(child, reaped, waitStatus, loss)) {
     if (Clock::now() >= DEADLINE) {
       return false;
     }
@@ -1020,7 +1047,7 @@ pid_t toolUnderSudo(pid_t started, const std::string& sudoPath) {
 
 } // namespace
 
-bool OwnedHelper::running() { return child_ > 0 && !tryReap(child_, reaped_, waitStatus_); }
+bool OwnedHelper::running() { return child_ > 0 && !tryReap(child_, reaped_, waitStatus_, loss_); }
 
 HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
                                const std::string& stdoutPath, const std::string& stderrPath,
@@ -1031,7 +1058,8 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   }
   child_ = -1;
   reaped_ = true;
-  waitStatus_ = 0;
+  waitStatus_ = HELPER_STATUS_UNAVAILABLE;
+  loss_ = StatusLoss::NONE;
   if (argvIn.empty() || argvIn.front().empty()) {
     outcome.spawnErrno = EINVAL;
     return outcome;
@@ -1060,6 +1088,9 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     return outcome;
   }
   if (CHILD == 0) {
+    // stop() relies on SIGINT and SIGTERM: the helper takes them at their
+    // default action whatever this process inherited.
+    defaultStopSignals();
     // Capture files are opened here, by the invoking user, before any
     // elevation: they stay the user's whatever the helper runs as.
     const int IN = ::open("/dev/null", O_RDONLY);
@@ -1115,9 +1146,11 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   child_ = CHILD;
   reaped_ = false;
   outcome.started = true;
-  if (waitGone(child_, reaped_, waitStatus_, graceMs)) {
+  if (waitGone(child_, reaped_, waitStatus_, loss_, graceMs)) {
     outcome.exitedEarly = true;
     outcome.waitStatus = waitStatus_;
+    outcome.statusObtained = waitStatus_ != HELPER_STATUS_UNAVAILABLE;
+    outcome.statusLoss = loss_;
     if (!stderrPath.empty()) {
       outcome.errorTail = readFileTail(stderrPath, 4096);
     }
@@ -1177,9 +1210,11 @@ HelperStopResult OwnedHelper::stop() {
   if (child_ <= 0) {
     return result;
   }
-  if (tryReap(child_, reaped_, waitStatus_)) {
+  if (tryReap(child_, reaped_, waitStatus_, loss_)) {
     result.reaped = true;
     result.waitStatus = waitStatus_;
+    result.statusObtained = waitStatus_ != HELPER_STATUS_UNAVAILABLE;
+    result.statusLoss = loss_;
     return result;
   }
   result.wasRunning = true;
@@ -1193,7 +1228,7 @@ HelperStopResult OwnedHelper::stop() {
   for (const auto& step : STEPS) {
     // Re-derived before every signal: a reaped pid may already belong to
     // another process, so it is never signalled.
-    if (tryReap(child_, reaped_, waitStatus_)) {
+    if (tryReap(child_, reaped_, waitStatus_, loss_)) {
       break;
     }
     StopDelivery delivery;
@@ -1236,14 +1271,16 @@ HelperStopResult OwnedHelper::stop() {
     }
     result.deliveries.push_back(delivery);
     if ((delivery.delivered || !delivery.statusObtained) &&
-        waitGone(child_, reaped_, waitStatus_, step.waitMs)) {
+        waitGone(child_, reaped_, waitStatus_, loss_, step.waitMs)) {
       result.stoppedBy = step.sig;
       break;
     }
   }
-  (void)tryReap(child_, reaped_, waitStatus_);
+  (void)tryReap(child_, reaped_, waitStatus_, loss_);
   result.reaped = reaped_;
   result.waitStatus = waitStatus_;
+  result.statusObtained = waitStatus_ != HELPER_STATUS_UNAVAILABLE;
+  result.statusLoss = loss_;
   result.stillAlive = !reaped_;
   return result;
 }

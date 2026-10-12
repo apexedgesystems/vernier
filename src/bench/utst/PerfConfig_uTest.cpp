@@ -8,6 +8,7 @@
 #include "src/bench/inc/PerfConfig.hpp"
 
 #include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
@@ -22,6 +23,7 @@ using vernier::bench::parseGpuFlags;
 using vernier::bench::parsePerfFlags;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
+using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
 
 namespace {
@@ -247,6 +249,38 @@ TEST(PerfConfigTest, ParseBpfTrimsWhitespace) {
   EXPECT_EQ(cfg.bpfScripts[1], "syslat");
 }
 
+/** @test --bpf-scripts sets PERF_BPF_SCRIPTS over an inherited value, without a warning */
+TEST(PerfConfigTest, ParseBpfScriptsSetsTheVariable) {
+  const ScopedEnv inherited("PERF_BPF_SCRIPTS", "/inherited/scripts");
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--bpf-scripts", "/my/scripts", "--bpf", "write_latency"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+
+  EXPECT_EQ(capture.text(), "");
+  EXPECT_EQ(*args.argc(), 1);
+  const char* value = std::getenv("PERF_BPF_SCRIPTS");
+  ASSERT_NE(value, nullptr);
+  EXPECT_STREQ(value, "/my/scripts");
+  ASSERT_EQ(cfg.bpfScripts.size(), 1U);
+  EXPECT_EQ(cfg.bpfScripts[0], "write_latency");
+}
+
+/** @test An empty --bpf-scripts value sets the variable empty, which selects the bundled scripts */
+TEST(PerfConfigTest, ParseBpfScriptsEmptyValue) {
+  const ScopedEnv inherited("PERF_BPF_SCRIPTS", "/inherited/scripts");
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--bpf-scripts", ""};
+
+  parsePerfFlags(cfg, args.argc(), args.argv());
+
+  const char* value = std::getenv("PERF_BPF_SCRIPTS");
+  ASSERT_NE(value, nullptr);
+  EXPECT_STREQ(value, "");
+  EXPECT_EQ(*args.argc(), 1);
+}
+
 /* ----------------------------- Quick Mode Tests ----------------------------- */
 
 /** @test Quick mode applies lighter defaults. */
@@ -441,14 +475,14 @@ TEST(PerfConfigUnknownOptionTest, UnknownOptionWarnsOnceByName) {
 /** @test Warns once per unknown option, each line naming its own option */
 TEST(PerfConfigUnknownOptionTest, EachUnknownOptionGetsItsOwnLine) {
   PerfConfig cfg;
-  ArgvBuilder args{"prog", "--bpf-scripts", "offcpu", "--repeats", "4", "--no-such-thing"};
+  ArgvBuilder args{"prog", "--bpf-dir", "offcpu", "--repeats", "4", "--no-such-thing"};
 
   StderrCapture capture;
   parsePerfFlags(cfg, args.argc(), args.argv());
   const std::string err = capture.text();
 
   EXPECT_EQ(countLines(err), 2u) << err;
-  const std::size_t first = err.find("'--bpf-scripts'");
+  const std::size_t first = err.find("'--bpf-dir'");
   const std::size_t second = err.find("'--no-such-thing'");
   ASSERT_NE(first, std::string::npos) << err;
   ASSERT_NE(second, std::string::npos) << err;
@@ -478,6 +512,7 @@ TEST(PerfConfigUnknownOptionTest, GtestAndNonOptionArgsDoNotWarn) {
 
 /** @test Accepts every option the parser documents without a warning */
 TEST(PerfConfigUnknownOptionTest, KnownOptionsDoNotWarn) {
+  const ScopedEnv restoreScriptsDir("PERF_BPF_SCRIPTS", "");
   PerfConfig cfg;
   ArgvBuilder args{"prog",
                    "--cycles",
@@ -504,6 +539,8 @@ TEST(PerfConfigUnknownOptionTest, KnownOptionsDoNotWarn) {
                    "record",
                    "--bpf",
                    "offcpu,syslat",
+                   "--bpf-scripts",
+                   "/workspace/bpf",
                    "--artifact-root",
                    "/workspace/a",
                    "--profile-output-dir",

@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (20 files)
+# Sources (21 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -30,6 +30,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/BpfScripts_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ValgrindReaderAssertion_uTest.cpp"
 )
 
@@ -286,13 +287,14 @@ set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmak
 # profilers' own tools, so the readiness policy, its routing and its error
 # reports are tested without privileges or the real tools. The unit tests copy
 # them into a private directory and hand the checks a context whose PATH is it;
-# the command-line tests run a fixture benchmark with that PATH.
+# the command-line tests run a fixture benchmark with that PATH. The bpftrace
+# tests also read the bundled scripts, where the library looks them up.
 # ------------------------------------------------------------------------------
 
 if (TARGET TestBench)
   target_compile_definitions(
-    TestBench
-    PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+    TestBench PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+                      VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
   )
   # Tables both languages are tested against (the Rust tools read them in
   # place), e.g. the profile aliases and the profile-failed exit status.

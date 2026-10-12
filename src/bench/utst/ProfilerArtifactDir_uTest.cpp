@@ -356,16 +356,12 @@ template <typename T> DirectBackend constructed(const std::string& name) {
 /// Every backend whose direct construction decides its own request.
 std::vector<DirectBackend> directBackends() {
   using namespace vernier::bench;
-  return {{"callgrind", makeCallgrindProfiler},
-          {"massif", makeMassifProfiler},
-          {"memcheck", makeMemcheckProfiler},
-          {"helgrind", makeHelgrindProfiler},
-          {"heaptrack", makeHeaptrackProfiler},
-          {"rocprof", makeRocprofProfiler},
-          {"perf", makePerfProfiler},
-          {"gperf", makeGperfProfiler},
-          constructed<PerfStatProfiler>("perf"),
-          constructed<GperfProfiler>("gperf")};
+  return {{"callgrind", makeCallgrindProfiler}, {"massif", makeMassifProfiler},
+          {"memcheck", makeMemcheckProfiler},   {"helgrind", makeHelgrindProfiler},
+          {"heaptrack", makeHeaptrackProfiler}, {"rocprof", makeRocprofProfiler},
+          {"perf", makePerfProfiler},           {"gperf", makeGperfProfiler},
+          {"bpftrace", makeBpftraceProfiler},   constructed<PerfStatProfiler>("perf"),
+          constructed<GperfProfiler>("gperf"),  constructed<BpftraceProfiler>("bpftrace")};
 }
 
 /// What one way of building a profiler for a request led to.

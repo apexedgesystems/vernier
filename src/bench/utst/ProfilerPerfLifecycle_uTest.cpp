@@ -28,11 +28,13 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace {
 
 using vernier::bench::checkPerfRequest;
+using vernier::bench::CHILD_STATUS_REMEDY;
 using vernier::bench::parsePerfMode;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfPlan;
@@ -44,6 +46,7 @@ using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
+using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -239,6 +242,56 @@ TEST_F(PerfLifecycleTest, OtherEndAfterSigintFails) {
             "completion: unusable: perf ended (exit status 42) after SIGINT, not as a perf that "
             "has written its report ends (by SIGINT, or exit status 130 or 0), so its output does "
             "not count: perf: 0.101234567 seconds time elapsed | Error: final read failed");
+}
+
+/**
+ * @test A perf whose end this process could not observe is never taken for
+ * one that ended cleanly. With SIGCHLD ignored, or with SA_NOCLDWAIT, the
+ * system discards perf's status: a perf stopped by SIGINT fails its
+ * completion, and one that ends before the measured phase fails its
+ * collection, each saying that its end could not be observed and why, with
+ * how to let it be read. With SIGCHLD at its default action the same perfs
+ * keep their counts, and fail with their exit status (CleanStopKeepsCounts,
+ * EarlyExitFails).
+ */
+TEST_F(PerfLifecycleTest, EndNotObservedIsNoCleanEnd) {
+  using Policy = ChildReaping::Policy;
+  const std::vector<std::pair<Policy, std::string>> POLICIES{
+      {Policy::IGNORED,
+       "this process ignores SIGCHLD, so the system discards its children's exit statuses"},
+      {Policy::NO_CHILD_WAIT, "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
+                              "discards its children's exit statuses"}};
+  for (const auto& [POLICY, WHY] : POLICIES) {
+    Window stopped;
+    Window early;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      stopped = window("ok");
+      ProfilerRegistry::instance().resetFailures();
+      early = window("exit-early");
+    }
+    ASSERT_EQ(stopped.failures.size(), 1U) << WHY;
+    EXPECT_EQ(stopped.failures[0].result.stage, ReadinessStage::COMPLETION) << WHY;
+    const std::string STOPPED = stopped.failures[0].result.report.message;
+    EXPECT_EQ(STOPPED.rfind("completion: unusable: perf ended (an end this process could not "
+                            "observe: " +
+                                WHY +
+                                ") after SIGINT, so nothing shows that it wrote its report, and "
+                                "its output does not count: perf: ",
+                            0),
+              0U)
+        << STOPPED;
+    EXPECT_EQ(stopped.failures[0].result.report.hint, CHILD_STATUS_REMEDY) << WHY;
+    ASSERT_EQ(early.failures.size(), 1U) << WHY;
+    EXPECT_EQ(early.failures[0].result.stage, ReadinessStage::COLLECTION) << WHY;
+    EXPECT_EQ(early.failures[0].result.report.message,
+              "unusable: perf ended (an end this process could not observe: " + WHY +
+                  ") before the measured phase: perf: Error: failed to open counters: No such "
+                  "process");
+    EXPECT_EQ(early.failures[0].result.report.hint, CHILD_STATUS_REMEDY) << WHY;
+    ProfilerRegistry::instance().resetFailures();
+  }
 }
 
 /** @test The control: perf ending by SIGINT itself, as it does after its report, passes. */
