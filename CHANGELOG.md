@@ -319,6 +319,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **The RAPL performance sample runs with the RAPL profiler** --
+  `Profilers.RAPLIntegration` (`BenchmarkCPU_PTEST`) built its case without
+  the profiler guard, so `--profile rapl` never reached the RAPL backend and
+  the sample passed without measuring energy; it builds the case with
+  `UB_PERF_GUARD`.
 - **`contentionRun`'s start gate stays out of helgrind's reports** -- the
   gate that releases a contention test's threads together spins on two atomic
   flags, which helgrind reported as data races whenever it checked a contention
