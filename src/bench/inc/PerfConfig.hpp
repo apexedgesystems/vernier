@@ -112,8 +112,9 @@ inline constexpr const char* SAMPLING_RATE_VARIABLE = "CPUPROFILE_FREQUENCY";
  * GPERF_MAX_SAMPLING_HZ; leading zeros are digits.
  *
  * Anything else (a sign, a space, a unit, a fraction, 0, a larger number) is
- * std::nullopt. gperftools itself takes such text as its default rate or its
- * maximum without saying so, which is why it is refused rather than passed on.
+ * std::nullopt. gperftools itself reads such text its own way (as its default
+ * rate, as its maximum, or as the digits it finds) without saying which rate
+ * it took, which is why it is refused rather than passed on.
  */
 inline std::optional<int> parseProfileFrequency(std::string_view text) {
   if (text.empty()) {

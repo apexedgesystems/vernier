@@ -245,8 +245,9 @@ artifact subdirs.
 With `--profile gperf`, `--profile-frequency HZ` starts the binary with
 `CPUPROFILE_FREQUENCY=HZ`, the variable gperftools reads its sampling rate
 from only as the process starts, and passes the binary
-`--profile-frequency HZ`; the `Running:` line shows the variable. Nothing
-else is added: no wrap, no folder. The rate is refused before anything starts
+`--profile-frequency HZ`, which checks that each profile it writes records
+that rate's period; the `Running:` line shows the variable. Nothing else is
+added: no wrap, no folder. The rate is refused before anything starts
 when it is not a whole number from 1 to 4000, or when no profiler, or another
 one, is requested. Without the flag `bench run` sets nothing, and a
 `CPUPROFILE_FREQUENCY` it inherited reaches the binary as it is.

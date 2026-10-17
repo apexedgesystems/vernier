@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -74,17 +75,11 @@ constexpr const char* PERF_STAT =
 const std::vector<std::string> QUICK = {"--cycles", "50", "--repeats", "2", "--warmup", "0"};
 
 /// Settings removed from a run's environment, so the test alone decides.
-const std::vector<std::string> UNSET = {"BENCH_SUDO",
-                                        "PERF_BPF",
-                                        "PERF_BPF_SUDO",
-                                        "PERF_BPF_SCRIPTS",
-                                        "PERF_BPF_FMT",
-                                        "PERF_BPF_OUT",
-                                        "VERNIER_EXTERNAL_WRAP",
-                                        "VERNIER_EXTERNAL_WRAP_DIR",
-                                        "FAKE_SUDO_DENY",
-                                        "LD_PRELOAD",
-                                        "MALLOC_CONF"};
+const std::vector<std::string> UNSET = {
+    "BENCH_SUDO",     "PERF_BPF",     "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
+    "PERF_BPF_FMT",   "PERF_BPF_OUT", "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
+    "FAKE_SUDO_DENY", "LD_PRELOAD",   "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
+    "CPUPROFILE"};
 
 /// @p args followed by QUICK.
 std::vector<std::string> quick(std::vector<std::string> args) {
@@ -714,4 +709,256 @@ TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
                                  MESSAGE))
       << "run-end report";
   EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
+
+/* ------------------------------ gperf: Sampling Rate ------------------------------ */
+
+namespace {
+
+/// The cases of a fixture run that the profiler guard profiles.
+const std::vector<std::string> GUARDED = {"ReadinessFixture.First", "ReadinessFixture.Second"};
+
+/**
+ * @brief The sampling period the header of the CPU profile at @p path records,
+ * in microseconds (its fourth pointer-sized slot); -1 when it has no header.
+ * Read here, apart from the backend's own reader.
+ */
+long long recordedPeriodUs(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::uintptr_t slots[5] = {};
+  if (!in.read(reinterpret_cast<char*>(slots), sizeof slots) || slots[0] != 0 || slots[1] < 3 ||
+      slots[2] != 0) {
+    return -1;
+  }
+  return static_cast<long long>(slots[3]);
+}
+
+/// The doctor's message for a gperf CPU request with no analyzer on PATH, then @p clause.
+std::string gperfReady(const std::string& clause = "") {
+  return std::string{"gperftools profiles cpu (built: "} + (HEAP_BUILT ? "cpu, heap" : "cpu") +
+         "); no analyzer on PATH (only --profile-analyze needs one)" +
+         (clause.empty() ? "" : "; " + clause);
+}
+
+/// The remedy of a rate @p hz the fixture was not started with.
+std::string startRemedy(const std::string& hz) {
+  const std::string REQUEST = "--profile gperf --profile-frequency " + hz;
+  return "Run it through bench run " + shellQuote(FIXTURE) + " " + REQUEST +
+         ", which sets CPUPROFILE_FREQUENCY before the benchmark starts, or start it as "
+         "CPUPROFILE_FREQUENCY=" +
+         hz + " " + shellQuote(FIXTURE) + " " + REQUEST + ".";
+}
+
+} // namespace
+
+/**
+ * @test A rate asked for and carried by the environment the fixture starts
+ * with, at 250 and at 1000 Hz: the doctor says so, the run exits 0, each
+ * guarded case writes its own folder and profile, both record the rate's
+ * period, and each case prints its rate line.
+ */
+TEST_F(ReadinessFixtureRun, GperfRequestedRateIsEveryCasesPeriod) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  for (const auto& [HZ, PERIOD] : {std::pair<std::string, long long>{"250", 4000},
+                                   std::pair<std::string, long long>{"1000", 1000}}) {
+    env_ = {"CPUPROFILE_FREQUENCY=" + HZ};
+    const std::vector<std::string> REQUEST = {"--profile", "gperf", "--profile-frequency", HZ};
+    EXPECT_EQ(selectedField(doctorJson(REQUEST), "message"),
+              gperfReady(HZ +
+                         " Hz requested; the current environment matches the request "
+                         "(CPUPROFILE_FREQUENCY=" +
+                         HZ + "); expected period " + std::to_string(PERIOD) +
+                         " us, checked in each finished profile"))
+        << HZ << " Hz: doctor message";
+    const RunResult RUN = run(quick(REQUEST));
+    EXPECT_EQ(RUN.status, 0) << HZ << " Hz: run exit status";
+    std::vector<std::string> folders = namesEndingWith(work_, ".gperf");
+    std::sort(folders.begin(), folders.end());
+    EXPECT_EQ(folders, (std::vector<std::string>{"ReadinessFixture.First.gperf",
+                                                 "ReadinessFixture.Second.gperf"}))
+        << HZ << " Hz: one folder per case";
+    for (const std::string& TEST : GUARDED) {
+      EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), PERIOD)
+          << HZ << " Hz: " << TEST << "'s profile";
+      EXPECT_THAT(RUN.err, HasSubstr("[gperf] " + TEST + ": cpu.prof records a period of " +
+                                     std::to_string(PERIOD) + " us (" + HZ + " Hz requested), "))
+          << HZ << " Hz: " << TEST << "'s rate line";
+    }
+    EXPECT_EQ(countOf(RUN.err, ": cpu.prof records a period of "), 2U) << HZ << " Hz: rate lines";
+  }
+}
+
+/**
+ * @test A rate in the environment the fixture starts with, none asked for:
+ * the doctor and the run take it, and each case's profile records its period.
+ */
+TEST_F(ReadinessFixtureRun, GperfInheritedRateIsEveryCasesPeriod) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=250"};
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"),
+            gperfReady("sampling at CPUPROFILE_FREQUENCY=250 from the environment: expected "
+                       "period 4000 us, checked in each finished profile"))
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 4000) << TEST;
+    EXPECT_THAT(RUN.err, HasSubstr("[gperf] " + TEST +
+                                   ": cpu.prof records a period of 4000 us "
+                                   "(CPUPROFILE_FREQUENCY=250 from the "
+                                   "environment), "))
+        << TEST << "'s rate line";
+  }
+}
+
+/**
+ * @test A rate the fixture's environment does not carry, absent or another
+ * value: the doctor and the run refuse it with the command that starts the
+ * fixture with it, the run collects nothing, creates no folder and exits 4.
+ */
+TEST_F(ReadinessFixtureRun, GperfRateTheProcessDidNotStartWithFails) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const std::vector<std::string> REQUEST = {"--profile", "gperf", "--profile-frequency", "1000"};
+  for (const std::string& SETTING : {std::string{}, std::string{"CPUPROFILE_FREQUENCY=250"}}) {
+    env_.clear();
+    if (!SETTING.empty()) {
+      env_.push_back(SETTING);
+    }
+    const std::string MESSAGE =
+        "configuration: 1000 Hz requested, and this process's environment has " +
+        std::string{SETTING.empty() ? "no CPUPROFILE_FREQUENCY" : "CPUPROFILE_FREQUENCY='250'"} +
+        ": gperftools reads the rate only when the process starts";
+    const std::string DOCTOR = doctorJson(REQUEST);
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << SETTING << ": doctor status";
+    EXPECT_EQ(selectedField(DOCTOR, "message"), MESSAGE) << SETTING << ": doctor message";
+    EXPECT_EQ(selectedField(DOCTOR, "hint"), startRemedy("1000")) << SETTING << ": doctor hint";
+    const RunResult RUN = run(quick(REQUEST));
+    EXPECT_EQ(RUN.status, 4) << SETTING << ": run exit status";
+    EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE + "\n   " +
+                                   startRemedy("1000") + "\n   Nothing is collected"))
+        << SETTING << ": run notice";
+    EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty())
+        << SETTING << ": a folder for a refused rate";
+  }
+}
+
+/** @test The highest rate gperftools takes, carried by the environment: a period of 250 us. */
+TEST_F(ReadinessFixtureRun, GperfHighestRate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=4000"};
+  const RunResult RUN = run(quick({"--profile", "gperf", "--profile-frequency", "4000"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 250) << TEST;
+  }
+}
+
+/**
+ * @test A rate above the highest stops the benchmark as its command line is
+ * read, in every build: exit 2, nothing run or created.
+ */
+TEST_F(ReadinessFixtureRun, RateAboveTheHighestStopsTheRun) {
+  env_ = {"CPUPROFILE_FREQUENCY=4001"};
+  const RunResult RUN = run(quick({"--profile", "gperf", "--profile-frequency", "4001"}));
+  EXPECT_EQ(RUN.status, 2) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("--profile-frequency: '4001' is not a whole number of Hz from 1 "
+                                 "to 4000 (gperftools samples at most 4000 times a second)"))
+      << "refusal";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused rate";
+}
+
+/**
+ * @test A rate with heap profiling alone is refused by the doctor and the run
+ * (in a build without heap profiling, the heap request is refused for that
+ * first): exit 4, no folder.
+ */
+TEST_F(ReadinessFixtureRun, GperfHeapAloneRefusesARate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=1000"};
+  const std::vector<std::string> REQUEST = {
+      "--profile", "gperf", "--profile-args", "heap", "--profile-frequency", "1000"};
+  const std::string MESSAGE = selectedField(doctorJson(REQUEST), "message");
+  if (HEAP_BUILT) {
+    EXPECT_EQ(MESSAGE, "configuration: --profile-frequency 1000 sets the CPU sampling rate, and "
+                       "--profile-args heap profiles the heap only")
+        << "doctor message";
+  } else {
+    EXPECT_THAT(MESSAGE, HasSubstr("unsupported: heap profiling is not compiled in"))
+        << "doctor message";
+  }
+  const RunResult RUN = run(quick(REQUEST));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE)) << "run notice";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused rate";
+}
+
+/**
+ * @test A rate for perf, which takes none, in every build: the doctor's row
+ * and the run refuse it alike before perf's own check, and the run starts no
+ * perf and exits 4.
+ */
+TEST_F(ReadinessFixtureRun, RateForPerfIsRefusedBeforePerfRuns) {
+  dir_.install("fake_perf.sh", "perf");
+  env_ = {"CPUPROFILE_FREQUENCY=1000"};
+  const std::vector<std::string> REQUEST = {"--profile", "perf", "--profile-frequency", "1000"};
+  const std::string MESSAGE = "configuration: --profile-frequency 1000 sets gperftools' CPU "
+                              "sampling rate; 'perf' does not take it";
+  EXPECT_EQ(selectedField(doctorJson(REQUEST), "message"), MESSAGE) << "doctor message";
+  std::error_code ec;
+  std::filesystem::remove(dir_.logPath(), ec);
+  const RunResult RUN = run(quick(REQUEST));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'perf': " + MESSAGE)) << "run notice";
+  EXPECT_EQ(dir_.log(), "") << "perf was run for a refused rate";
+}
+
+/**
+ * @test Without a rate, asked for or in the environment, a gperf run prints
+ * what it printed before rates were checked: the doctor's message is
+ * unchanged, no rate line is printed, and both profiles record gperftools'
+ * default period, 10000 us.
+ */
+TEST_F(ReadinessFixtureRun, GperfDefaultRunPrintsNoRate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"), gperfReady())
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("cpu.prof records a period of"))) << "a rate line";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 10000) << TEST;
+  }
+}
+
+/**
+ * @test A value in the environment that is not a whole number from 1 to 4000,
+ * with no rate asked for: the doctor and the run refuse it, and the run exits
+ * 4 without a folder.
+ */
+TEST_F(ReadinessFixtureRun, GperfRefusedVariableFails) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=abc"};
+  const std::string MESSAGE =
+      "configuration: CPUPROFILE_FREQUENCY='abc' in the environment is not a whole number of Hz "
+      "from 1 to 4000: gperftools reads such a value without saying what rate it takes from it";
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"), MESSAGE)
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE)) << "run notice";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused value";
 }

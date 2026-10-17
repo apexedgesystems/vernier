@@ -13,10 +13,13 @@
 #include <array>
 #include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -89,6 +92,45 @@ std::string capturedModes(const GperfModes& modes) {
   return modes.cpu ? "cpu" : "heap";
 }
 
+/** @brief The rate gperftools samples at when CPUPROFILE_FREQUENCY is not set, in Hz. */
+constexpr int GPERF_DEFAULT_SAMPLING_HZ = 100;
+
+constexpr int MICROSECONDS_PER_SECOND = 1000000;
+
+/** @brief gperftools' sampling period for a rate, in microseconds, rounded down as it rounds. */
+constexpr int periodUsFor(int hz) { return MICROSECONDS_PER_SECOND / hz; }
+
+/// The sampling periods gperftools writes, those of its highest rate and of 1 Hz.
+constexpr long long SHORTEST_PERIOD_US = periodUsFor(GPERF_MAX_SAMPLING_HZ);
+constexpr long long LONGEST_PERIOD_US = periodUsFor(1);
+
+/** @brief This program as a command line names it: its argv[0] as one shell word. */
+std::string programWord() {
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+  if (program_invocation_name != nullptr && *program_invocation_name != '\0') {
+    return detail::shellQuote(program_invocation_name);
+  }
+#endif
+  return "<this-binary>";
+}
+
+// Used only by the check of a finished profile, which exists only where CPU
+// profiling does.
+#if UB_HAS_GPERF_CPU
+/** @brief Where a capture's rate came from, for messages: "1000 Hz requested". */
+std::string rateSourceText(GperfRateSource source, int hz) {
+  switch (source) {
+  case GperfRateSource::REQUESTED:
+    return std::to_string(hz) + " Hz requested";
+  case GperfRateSource::INHERITED:
+    return std::string{SAMPLING_RATE_VARIABLE} + "=" + std::to_string(hz) + " from the environment";
+  case GperfRateSource::DEFAULT:
+    break;
+  }
+  return "gperftools' default " + std::to_string(GPERF_DEFAULT_SAMPLING_HZ) + " Hz";
+}
+#endif
+
 } // namespace
 
 /* ----------------------------- Readiness ----------------------------- */
@@ -139,6 +181,15 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
                            "apt install libgperftools-dev (or equivalent), then rebuild.");
   }
 
+  // The rate the CPU capture samples at; a rate it cannot take collects nothing.
+  const GperfSampling SAMPLING = decideGperfSampling(plan->modes, request.profileFrequency, ctx);
+  if (SAMPLING.error) {
+    return *SAMPLING.error;
+  }
+  plan->expectedPeriodUs = SAMPLING.expectedPeriodUs;
+  plan->samplingHz = SAMPLING.hz;
+  plan->samplingSource = SAMPLING.source;
+
   const std::string MODES = capturedModes(plan->modes);
   const GperfAnalysis ANALYSIS = decideGperfAnalysis(plan->modes, plan->analyze, ctx);
   plan->analyzer = ANALYSIS.analyzer;
@@ -159,6 +210,9 @@ ReadinessResult checkGperfRequest(const ReadinessRequest& request, const Readine
       message += "; analyzer " + plan->analyzer;
     } else {
       message += "; no analyzer on PATH (only --profile-analyze needs one)";
+    }
+    if (!SAMPLING.clause.empty()) {
+      message += "; " + SAMPLING.clause;
     }
     result = readinessResult(ReadinessCause::READY, std::move(message), "");
   }
@@ -217,6 +271,167 @@ GperfAnalysis decideGperfAnalysis(const GperfModes& modes, bool analyze,
         ReadinessStage::ANALYSIS);
   }
   return analysis;
+}
+
+GperfSampling decideGperfSampling(const GperfModes& modes, int requestedHz,
+                                  const ReadinessContext& ctx) {
+  GperfSampling sampling;
+  const std::string HZ = std::to_string(requestedHz);
+  const std::string MAX = std::to_string(GPERF_MAX_SAMPLING_HZ);
+  // Only a source value can be out of range: the command line refuses one.
+  if (requestedHz != 0 && (requestedHz < 1 || requestedHz > GPERF_MAX_SAMPLING_HZ)) {
+    sampling.error = readinessResult(
+        ReadinessCause::CONFIGURATION,
+        "a sampling rate of " + HZ +
+            " Hz was asked for (--profile-frequency or PerfConfig::profileFrequency): "
+            "gperftools samples at 1 to " +
+            MAX + " Hz",
+        "Ask for a whole number from 1 to " + MAX +
+            ", or leave PerfConfig::profileFrequency at 0 for gperftools' default " +
+            std::to_string(GPERF_DEFAULT_SAMPLING_HZ) + " Hz.");
+    return sampling;
+  }
+  if (!modes.cpu) {
+    // Heap profiling alone samples nothing, so the variable is not read.
+    if (requestedHz != 0) {
+      sampling.error = readinessResult(
+          ReadinessCause::CONFIGURATION,
+          "--profile-frequency " + HZ +
+              " sets the CPU sampling rate, and --profile-args heap profiles the heap only",
+          "Profile the CPU too (--profile-args both), or drop --profile-frequency.");
+    }
+    return sampling;
+  }
+
+  // gperftools read the variable once, as this process started; the snapshot
+  // stands for that environment.
+  const std::string VARIABLE = SAMPLING_RATE_VARIABLE;
+  const std::optional<std::string> SET = ctx.get(VARIABLE);
+  const std::optional<int> SET_HZ = SET ? parseProfileFrequency(*SET) : std::nullopt;
+  if (requestedHz == 0) {
+    if (!SET) {
+      sampling.expectedPeriodUs = periodUsFor(GPERF_DEFAULT_SAMPLING_HZ);
+      return sampling;
+    }
+    if (!SET_HZ) {
+      sampling.error = readinessResult(
+          ReadinessCause::CONFIGURATION,
+          VARIABLE + "='" + *SET + "' in the environment is not a whole number of Hz from 1 to " +
+              MAX + ": gperftools reads such a value without saying what rate it takes from it",
+          "Unset it, or set it to a whole number from 1 to " + MAX +
+              " before the benchmark starts.");
+      return sampling;
+    }
+    sampling.hz = *SET_HZ;
+    sampling.source = GperfRateSource::INHERITED;
+    sampling.expectedPeriodUs = periodUsFor(*SET_HZ);
+    sampling.clause = "sampling at " + VARIABLE + "=" + std::to_string(*SET_HZ) +
+                      " from the environment: expected period " +
+                      std::to_string(*sampling.expectedPeriodUs) +
+                      " us, checked in each finished profile";
+    return sampling;
+  }
+  if (SET_HZ && *SET_HZ == requestedHz) {
+    sampling.hz = requestedHz;
+    sampling.source = GperfRateSource::REQUESTED;
+    sampling.expectedPeriodUs = periodUsFor(requestedHz);
+    sampling.clause = HZ + " Hz requested; the current environment matches the request (" +
+                      VARIABLE + "=" + HZ + "); expected period " +
+                      std::to_string(*sampling.expectedPeriodUs) +
+                      " us, checked in each finished profile";
+    return sampling;
+  }
+  const std::string REQUEST = std::string{"--profile gperf"} +
+                              (modes.heap ? " --profile-args both" : "") + " --profile-frequency " +
+                              HZ;
+  const std::string PROGRAM = programWord();
+  sampling.error =
+      readinessResult(ReadinessCause::CONFIGURATION,
+                      HZ + " Hz requested, and this process's environment has " +
+                          (SET ? VARIABLE + "='" + *SET + "'" : "no " + VARIABLE) +
+                          ": gperftools reads the rate only when the process starts",
+                      "Run it through bench run " + PROGRAM + " " + REQUEST + ", which sets " +
+                          VARIABLE + " before the benchmark starts, or start it as " + VARIABLE +
+                          "=" + HZ + " " + PROGRAM + " " + REQUEST + ".");
+  return sampling;
+}
+
+GperfProfileSummary readGperfProfile(const std::string& path) {
+  GperfProfileSummary summary;
+  std::ifstream in(path, std::ios::binary);
+  if (!in) {
+    summary.problem = "it cannot be opened";
+    return summary;
+  }
+  const std::string BYTES{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  constexpr std::size_t SLOT_BYTES = sizeof(std::uintptr_t);
+  const std::size_t SLOTS = BYTES.size() / SLOT_BYTES;
+  const auto SLOT = [&BYTES](std::size_t index) {
+    std::uintptr_t value = 0;
+    std::memcpy(&value, BYTES.data() + index * SLOT_BYTES, SLOT_BYTES);
+    return value;
+  };
+  const auto BYTE = [](std::size_t index) { return std::to_string(index * SLOT_BYTES); };
+
+  // The header: 0, n (at least 3), the version 0, the period, padding to n.
+  if (SLOTS < 5) {
+    summary.problem = "its " + std::to_string(BYTES.size()) + " bytes hold no header (5 slots of " +
+                      std::to_string(SLOT_BYTES) + " bytes)";
+    return summary;
+  }
+  const std::uintptr_t HEADER_SLOTS = SLOT(1);
+  if (SLOT(0) != 0 || HEADER_SLOTS < 3 || SLOT(2) != 0) {
+    summary.problem = "its header starts " + std::to_string(SLOT(0)) + "," +
+                      std::to_string(HEADER_SLOTS) + "," + std::to_string(SLOT(2)) +
+                      " where gperftools writes 0, then 3 or more, then 0";
+    return summary;
+  }
+  const std::uintptr_t PERIOD = SLOT(3);
+  if (PERIOD < static_cast<std::uintptr_t>(SHORTEST_PERIOD_US) ||
+      PERIOD > static_cast<std::uintptr_t>(LONGEST_PERIOD_US)) {
+    summary.problem = "its header records a sampling period of " + std::to_string(PERIOD) +
+                      " us, outside the " + std::to_string(SHORTEST_PERIOD_US) + " to " +
+                      std::to_string(LONGEST_PERIOD_US) + " us gperftools writes";
+    return summary;
+  }
+  summary.periodUs = static_cast<long long>(PERIOD);
+  if (HEADER_SLOTS > SLOTS - 2) {
+    summary.problem = "its header of " + std::to_string(HEADER_SLOTS + 2) +
+                      " slots runs past the end of the file";
+    return summary;
+  }
+
+  // The records, each a count, a depth and that many program counters, up to
+  // the trailer 0, 1, 0. Every step is bounded by the slots the file holds.
+  for (std::size_t at = 2 + HEADER_SLOTS;;) {
+    if (SLOTS - at < 2) {
+      summary.problem =
+          "it ends at byte " + std::to_string(BYTES.size()) + " with no trailer (0, 1, 0)";
+      return summary;
+    }
+    const std::uintptr_t COUNT = SLOT(at);
+    const std::uintptr_t DEPTH = SLOT(at + 1);
+    if (DEPTH > SLOTS - at - 2) {
+      summary.problem = "the record at byte " + BYTE(at) + " runs past the end of the file";
+      return summary;
+    }
+    if (COUNT == 0) {
+      if (DEPTH == 1 && SLOT(at + 2) == 0) {
+        summary.binaryBytes = static_cast<long long>((at + 3) * SLOT_BYTES);
+        summary.valid = true;
+        return summary;
+      }
+      summary.problem =
+          "the record at byte " + BYTE(at) + " counts no samples and is not the trailer (0, 1, 0)";
+      return summary;
+    }
+    if (DEPTH == 0) {
+      summary.problem = "the record at byte " + BYTE(at) + " holds no program counters";
+      return summary;
+    }
+    summary.samples += COUNT;
+    at += 2 + DEPTH;
+  }
 }
 
 /* ----------------------------- GperfProfiler Methods ----------------------------- */
@@ -329,14 +544,6 @@ GperfProfiler::~GperfProfiler() { stopCapture(); }
 
 void GperfProfiler::beforeMeasure() {
 #if UB_HAS_GPERF_CPU || UB_HAS_GPERF_HEAP
-  // Pass --profile-frequency to gperftools as CPUPROFILE_FREQUENCY. Measured with gperftools
-  // 2.15 and 2.16, this write is too late for the profiler's initialization and does not change
-  // the rate; the variable takes effect when set before the process starts (API_REFERENCE.md).
-  if (wantCpu_ && cfg_.profileFrequency > 0) {
-    std::string freq = std::to_string(cfg_.profileFrequency);
-    ::setenv("CPUPROFILE_FREQUENCY", freq.c_str(), /*overwrite=*/1);
-  }
-
   // gperftools runs one CPU profile and one heap profile per process. A
   // capture this profiler started for an earlier window is still on when
   // that window ended through neither afterMeasure() nor abortMeasure()
@@ -412,14 +619,14 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
     cpuActive_ = false;
 
     // The capture is this run's file, whether or not an analysis follows;
-    // only a file that holds one is analyzed.
+    // only a file that holds a complete profile is analyzed.
     const long long SIZE = fileSize(cpuPath_);
     if (SIZE <= 0) {
       fail(SIZE < 0 ? ReadinessCause::MISSING : ReadinessCause::UNUSABLE,
            cpuPath_ + (SIZE < 0 ? " was not written" : " is empty") +
                ": gperftools stopped the CPU profile and left no capture there",
            "", ReadinessStage::COMPLETION);
-    } else if (cfg_.profileAnalyze) {
+    } else if (checkCapture() && cfg_.profileAnalyze) {
       // Auto-analyze: run the analyzer the check found and print top functions
       runPprofAnalysis();
     }
@@ -447,6 +654,49 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
 }
 
 void GperfProfiler::abortMeasure() noexcept { stopCapture(); }
+
+bool GperfProfiler::checkCapture() const {
+// Only ever called from the UB_HAS_GPERF_CPU branch of afterMeasure().
+#if UB_HAS_GPERF_CPU
+  const GperfProfileSummary PROFILE = readGperfProfile(cpuPath_);
+  if (!PROFILE.valid) {
+    fail(ReadinessCause::UNUSABLE,
+         cpuPath_ + " is not a complete gperftools CPU profile: " + PROFILE.problem +
+             "; raw profile kept",
+         "", ReadinessStage::COMPLETION);
+    return false;
+  }
+  if (!plan_ || !plan_->expectedPeriodUs) {
+    return true; // a plan made by hand expects no period: the format alone is checked
+  }
+  // The period gperftools configured for this capture, as its finished file
+  // records it: the rate the process started with, not the rate taken, which
+  // the kernel's timer tick may hold lower. A request for exactly 100 Hz
+  // records the period of no request, 10000 us, so a request lost at that rate
+  // passes this comparison.
+  const std::string SOURCE = rateSourceText(plan_->samplingSource, plan_->samplingHz);
+  if (PROFILE.periodUs != *plan_->expectedPeriodUs) {
+    fail(ReadinessCause::UNUSABLE,
+         cpuPath_ + " records a period of " + std::to_string(PROFILE.periodUs) + " us (" +
+             std::to_string(MICROSECONDS_PER_SECOND / PROFILE.periodUs) + " Hz) where " +
+             std::to_string(*plan_->expectedPeriodUs) + " us was expected for " + SOURCE +
+             ": gperftools started with another rate; raw profile kept",
+         "Set " + std::string{SAMPLING_RATE_VARIABLE} +
+             " before the benchmark starts (bench run --profile-frequency does), not from inside "
+             "it.",
+         ReadinessStage::COMPLETION);
+    return true; // a complete profile, at another rate: still analyzed
+  }
+  if (plan_->samplingSource != GperfRateSource::DEFAULT) {
+    std::fprintf(stderr, "[gperf] %s: cpu.prof records a period of %lld us (%s), %llu sample%s\n",
+                 testName_.c_str(), PROFILE.periodUs, SOURCE.c_str(), PROFILE.samples,
+                 PROFILE.samples == 1 ? "" : "s");
+  }
+  return true;
+#else
+  return false;
+#endif
+}
 
 void GperfProfiler::fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
                          ReadinessStage stage) const {

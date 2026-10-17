@@ -29,11 +29,14 @@
 #endif
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <optional>
+#include <regex>
 #include <stdexcept>
 #include <string>
 #include <system_error>
@@ -610,4 +613,192 @@ TEST_F(GperfLifecycleTest, HeapCaptureIsTheCasesOwn) {
   EXPECT_EQ(FAILED[0], "Gperf.HeapSecond: unusable: a gperftools heap profile already "
                        "runs in this process, so this case's could not start; its heap is not "
                        "profiled");
+}
+
+/* ------------------------------ Sampling Rate ------------------------------ */
+
+namespace {
+
+using vernier::bench::GperfRateSource;
+
+/**
+ * @brief The sampling period the header of the CPU profile at @p path records,
+ * in microseconds (its fourth pointer-sized slot); -1 when it has no header.
+ * Read here, apart from the backend's own reader.
+ */
+long long recordedPeriodUs(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::uintptr_t slots[5] = {};
+  if (!in.read(reinterpret_cast<char*>(slots), sizeof slots) || slots[0] != 0 || slots[1] < 3 ||
+      slots[2] != 0) {
+    return -1;
+  }
+  return static_cast<long long>(slots[3]);
+}
+
+/**
+ * @brief The period gperftools samples this process with: 1000000 / its
+ * CPUPROFILE_FREQUENCY, rounded down, or 10000 without it; none when the
+ * value is one a gperf request refuses (the tests then skip).
+ */
+std::optional<int> thisProcessPeriodUs() {
+  const char* value = std::getenv(vernier::bench::SAMPLING_RATE_VARIABLE);
+  if (value == nullptr) {
+    return 10000;
+  }
+  const std::optional<int> HZ = vernier::bench::parseProfileFrequency(value);
+  return HZ ? std::optional<int>{1000000 / *HZ} : std::nullopt;
+}
+
+/** @brief @p plan, expecting @p periodUs from @p source at @p hz. */
+std::shared_ptr<const GperfPlan> expecting(const std::shared_ptr<const GperfPlan>& plan,
+                                           int periodUs, GperfRateSource source, int hz) {
+  auto out = std::make_shared<GperfPlan>(*plan);
+  out->expectedPeriodUs = periodUs;
+  out->samplingSource = source;
+  out->samplingHz = hz;
+  return out;
+}
+
+/** @brief Why this process cannot be profiled at the period it started with. */
+std::string refusedVariable() {
+  return std::string{"this process started with CPUPROFILE_FREQUENCY='"} +
+         std::getenv(vernier::bench::SAMPLING_RATE_VARIABLE) + "', which a gperf request refuses";
+}
+
+} // namespace
+
+/**
+ * @test A capture through the hooks a benchmark attaches records the period
+ * the decision expects, taken from this process's own environment, and
+ * nothing fails; the rate line is printed only for a rate from the
+ * environment, so at the default the run prints what it printed before.
+ */
+TEST_F(GperfLifecycleTest, CaptureRecordsTheDecisionsPeriod) {
+  const std::optional<int> PERIOD = thisProcessPeriodUs();
+  if (!PERIOD) {
+    GTEST_SKIP() << refusedVariable();
+  }
+  StderrCapture capture;
+  {
+    PerfCase pc{"Gperf.Decided", config(false)};
+    vernier::bench::attachProfilerHooks(pc, config(false));
+    pc.measured(work);
+  }
+  const std::string ERR = capture.text();
+  EXPECT_EQ(recordedPeriodUs(cpuProf("Gperf.Decided")), *PERIOD);
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+  const bool INHERITED = std::getenv(vernier::bench::SAMPLING_RATE_VARIABLE) != nullptr;
+  EXPECT_EQ(ERR.find("[gperf] Gperf.Decided: cpu.prof records a period of ") != std::string::npos,
+            INHERITED)
+      << ERR;
+}
+
+/**
+ * @test A profile whose period is not the one the plan expects fails its
+ * case at completion, naming both periods and where the expected one came
+ * from; the profile is kept as gperftools wrote it, and, being a complete
+ * profile, it is still analyzed.
+ */
+TEST_F(GperfLifecycleTest, CaptureAtAnotherPeriodFailsAndIsKept) {
+  const std::optional<int> PERIOD = thisProcessPeriodUs();
+  if (!PERIOD) {
+    GTEST_SKIP() << refusedVariable();
+  }
+  ScopedEnv log("FAKE_LOG", dir_.logPath());
+  StderrCapture quiet;
+  const int OTHER = *PERIOD == 1000 ? 4000 : 1000;
+  {
+    GperfProfiler profiler(
+        config(), "Gperf.OtherRate",
+        expecting(plan(true), OTHER, GperfRateSource::REQUESTED, 1000000 / OTHER));
+    profiler.beforeMeasure();
+    work();
+    profiler.afterMeasure(Stats{});
+  }
+  const std::string PROF = cpuProf("Gperf.OtherRate");
+  EXPECT_EQ(recordedPeriodUs(PROF), *PERIOD) << "the profile was not kept as written";
+  const std::vector<ProfileFailure> FAILED = ProfilerRegistry::instance().failures();
+  ASSERT_EQ(FAILED.size(), 1U);
+  EXPECT_EQ(FAILED[0].test, "Gperf.OtherRate");
+  EXPECT_EQ(FAILED[0].result.stage, vernier::bench::ReadinessStage::COMPLETION);
+  EXPECT_EQ(FAILED[0].result.report.message,
+            "completion: unusable: " + PROF + " records a period of " + std::to_string(*PERIOD) +
+                " us (" + std::to_string(1000000 / *PERIOD) + " Hz) where " +
+                std::to_string(OTHER) + " us was expected for " + std::to_string(1000000 / OTHER) +
+                " Hz requested: gperftools started with another rate; raw profile kept");
+  EXPECT_EQ(FAILED[0].result.report.hint,
+            "Set CPUPROFILE_FREQUENCY before the benchmark starts (bench run "
+            "--profile-frequency does), not from inside it.");
+  EXPECT_TRUE(analyzed("Gperf.OtherRate")) << "a complete profile was not analyzed\n" << dir_.log();
+}
+
+/**
+ * @test A profile at the period expected prints the rate line for a rate
+ * asked for or taken from the environment, with the samples it holds, and
+ * nothing at gperftools' default.
+ */
+TEST_F(GperfLifecycleTest, RateLineOnlyForARequestedOrInheritedRate) {
+  const std::optional<int> PERIOD = thisProcessPeriodUs();
+  if (!PERIOD) {
+    GTEST_SKIP() << refusedVariable();
+  }
+  const int HZ = 1000000 / *PERIOD;
+  const std::string AT =
+      "[gperf] Gperf.Line: cpu.prof records a period of " + std::to_string(*PERIOD) + " us (";
+  const std::vector<std::pair<GperfRateSource, std::string>> SOURCES = {
+      {GperfRateSource::REQUESTED, std::to_string(HZ) + " Hz requested"},
+      {GperfRateSource::INHERITED,
+       "CPUPROFILE_FREQUENCY=" + std::to_string(HZ) + " from the environment"},
+      {GperfRateSource::DEFAULT, ""}};
+  for (const auto& [SOURCE, TEXT] : SOURCES) {
+    StderrCapture capture;
+    {
+      GperfProfiler profiler(
+          config(false), "Gperf.Line",
+          expecting(plan(false), *PERIOD, SOURCE, SOURCE == GperfRateSource::DEFAULT ? 0 : HZ));
+      profiler.beforeMeasure();
+      work();
+      profiler.afterMeasure(Stats{});
+    }
+    const std::string ERR = capture.text();
+    if (TEXT.empty()) {
+      EXPECT_EQ(ERR.find("[gperf] Gperf.Line"), std::string::npos) << "a line at the default\n"
+                                                                   << ERR;
+    } else {
+      const std::regex LINE(
+          std::regex_replace(AT + TEXT + "), ", std::regex(R"([.^$|()\[\]{}*+?\\])"), R"(\$&)") +
+          "[0-9]+ samples?\n");
+      EXPECT_TRUE(std::regex_search(ERR, LINE)) << ERR;
+    }
+    const std::vector<std::string> FAILED = failures();
+    EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+  }
+}
+
+/**
+ * @test A file at the capture's path that is not a complete profile fails the
+ * case at completion, saying what is wrong with it, and is neither analyzed
+ * nor replaced.
+ */
+TEST_F(GperfLifecycleTest, CaptureThatIsNotAProfileFails) {
+  ScopedEnv log("FAKE_LOG", dir_.logPath());
+  StderrCapture quiet;
+  {
+    GperfProfiler profiler(config(), "Gperf.Foreign", plan(true));
+    profiler.beforeMeasure();
+    work();
+    // gperftools writes on into the file it opened; the name now holds another.
+    ASSERT_TRUE(std::filesystem::remove(cpuProf("Gperf.Foreign")));
+    std::ofstream(cpuProf("Gperf.Foreign")) << "not a profile\n";
+    profiler.afterMeasure(Stats{});
+  }
+  EXPECT_EQ(failures(), std::vector<std::string>{
+                            "Gperf.Foreign: completion: unusable: " + cpuProf("Gperf.Foreign") +
+                            " is not a complete gperftools CPU profile: its 14 bytes hold no "
+                            "header (5 slots of " +
+                            std::to_string(sizeof(std::uintptr_t)) + " bytes); raw profile kept"});
+  EXPECT_EQ(contents(cpuProf("Gperf.Foreign")), "not a profile\n");
+  EXPECT_FALSE(analyzed("Gperf.Foreign")) << dir_.log();
 }
