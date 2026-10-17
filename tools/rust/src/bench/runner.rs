@@ -2532,9 +2532,18 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// Shell that waits, 5 s at the most, until the process `$!` leads a
+    /// session of its own, as setsid makes it: only then has it left the
+    /// group the script runs in.
+    #[cfg(target_os = "linux")]
+    const UNTIL_ITS_OWN_SESSION: &str = "i=0; while read -r s < /proc/$!/stat && set -- $s && \
+        [ \"$6\" != \"$!\" ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;";
+
     /// @test A process that leaves the program's group (setsid) is not
     /// owned: the run neither ends it nor waits on the output it holds open,
-    /// and keeps what the program wrote.
+    /// and keeps what the program wrote. The program exits only once that
+    /// process has left its group, which a background start may take longer
+    /// to do than the run takes to see the program exit.
     #[test]
     #[cfg(target_os = "linux")]
     fn owned_run_does_not_wait_on_a_process_outside_its_group() {
@@ -2542,8 +2551,9 @@ mod tests {
         let outside = dir.join("outside.pid");
         let (run, took) = owned_sh(
             &format!(
-                "echo out; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; exit 0",
-                outside.display()
+                "echo out; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; {} exit 0",
+                outside.display(),
+                UNTIL_ITS_OWN_SESSION
             ),
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicI32::new(0),
