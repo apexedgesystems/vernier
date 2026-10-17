@@ -919,10 +919,11 @@ namespace {
  * process it starts; when @p unclosable is 0 or more, close(2) of that
  * descriptor fails too (EBADF), so that no process can close it; with
  * @p unlistable no directory can be opened (ENOENT), so /proc/self/fd cannot
- * be listed. Seccomp, no privilege needed; false when the filter cannot be
- * installed.
+ * be listed; with @p unreadable a directory opens but cannot be read
+ * (getdents64 fails with EPERM). Seccomp, no privilege needed; false when
+ * the filter cannot be installed.
  */
-bool withoutCloseRange(int unclosable, bool unlistable = false) {
+bool withoutCloseRange(int unclosable, bool unlistable = false, bool unreadable = false) {
 #ifdef SYS_close_range
   constexpr unsigned WORD = __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U;
   constexpr unsigned FIRST_ARGUMENT = offsetof(seccomp_data, args) + WORD;
@@ -948,6 +949,10 @@ bool withoutCloseRange(int unclosable, bool unlistable = false) {
     NO_DIRECTORY(SYS_open, 1);
 #endif
   }
+  if (unreadable) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getdents64, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM));
+  }
   if (unclosable >= 0) {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
     filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FIRST_ARGUMENT));
@@ -961,6 +966,7 @@ bool withoutCloseRange(int unclosable, bool unlistable = false) {
 #else
   (void)unclosable;
   (void)unlistable;
+  (void)unreadable;
   return false;
 #endif
 }
@@ -996,11 +1002,13 @@ bool softDescriptorLimit(rlim_t softLimit) {
 
 /**
  * @brief The body of a death test: descriptors run out under a soft limit of
- * @p softLimit but for the two highest, which a probe's anchor pipe then
- * takes, so that the probe's next pipe cannot be made and its setup fails
- * after its keeper started. With @p withoutRange close_range is unavailable
- * (withoutCloseRange), and with @p unclosableAnchor the anchor's write end
- * cannot be closed either, so the keeper never sees end-of-file. Prints what
+ * @p softLimit but for the two highest, which a probe's anchor then takes
+ * (this process's end the higher), so that the probe's next pipe cannot be
+ * made and its setup fails (EMFILE) after its keeper started. With
+ * @p withoutRange close_range is unavailable (withoutCloseRange), and with
+ * @p unclosableAnchor this process's end of the anchor cannot be closed
+ * either, so the keeper never sees end-of-file and cannot close everything
+ * it inherits: the setup fails with the keeper's report (EBADF). Prints what
  * the call came to and exits 0 when it returned with that failure and left
  * no child of this process behind, running or unreaped.
  */
@@ -1021,8 +1029,8 @@ bool softDescriptorLimit(rlim_t softLimit) {
     ::close(held.back());
     held.pop_back();
   }
-  const int ANCHOR_WRITE = static_cast<int>(softLimit) - 1;
-  if (withoutRange && !withoutCloseRange(unclosableAnchor ? ANCHOR_WRITE : -1)) {
+  const int ANCHOR_OWN_END = static_cast<int>(softLimit) - 1;
+  if (withoutRange && !withoutCloseRange(unclosableAnchor ? ANCHOR_OWN_END : -1)) {
     std::fprintf(stderr, "close_range could not be made unavailable\n");
     std::_Exit(3);
   }
@@ -1044,9 +1052,13 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::fprintf(stderr, "started=%d errno=%d returned after %lld ms, children left: %zu\n",
                RESULT.started ? 1 : 0, RESULT.spawnErrno, static_cast<long long>(ELAPSED.count()),
                LEFT.size());
-  const bool ENDED = !RESULT.started && RESULT.spawnErrno == EMFILE && LEFT.empty();
-  std::fprintf(stderr, ENDED ? "the keeper ended with the call\n" : "the call left its keeper\n");
-  std::_Exit(ENDED ? 0 : 1);
+  const bool FAILED_AS_EXPECTED =
+      !RESULT.started && RESULT.spawnErrno == (unclosableAnchor ? EBADF : EMFILE);
+  std::fprintf(stderr, "%s\n",
+               !LEFT.empty()         ? "the call left its keeper"
+               : !FAILED_AS_EXPECTED ? "the setup did not fail as expected"
+                                     : "the keeper ended with the call");
+  std::_Exit(LEFT.empty() && FAILED_AS_EXPECTED ? 0 : 1);
 }
 
 /**
@@ -1055,7 +1067,8 @@ bool softDescriptorLimit(rlim_t softLimit) {
  * unavailable when @p withoutRange. A probe runs a program that lists, once
  * their count settles, the descriptors its process group's leader (the
  * probe's keeper) holds. Prints the list and exits 0 when it is the keeper's
- * stdin, a pipe, and /dev/null on stdout and stderr, nothing else.
+ * stdin, its end of the anchor (a socket), and /dev/null on stdout and
+ * stderr, nothing else.
  */
 [[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange) {
   const ReadinessContext CTX = ReadinessContext::capture();
@@ -1080,10 +1093,10 @@ bool softDescriptorLimit(rlim_t softLimit) {
       "for f in /proc/$k/fd/*; do printf '%s=%s ' \"${f##*/}\" \"$(readlink \"$f\")\"; done\n";
   const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", LIST}, 10000, CTX);
   std::fprintf(stderr, "the keeper's descriptors: %s\n", R.output.c_str());
-  const std::size_t PIPE_END = R.output.find("] ");
-  const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=pipe:[", 0) == 0 &&
-                            PIPE_END != std::string::npos &&
-                            R.output.substr(PIPE_END) == "] 1=/dev/null 2=/dev/null ";
+  const std::size_t ANCHOR_END = R.output.find("] ");
+  const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=socket:[", 0) == 0 &&
+                            ANCHOR_END != std::string::npos &&
+                            R.output.substr(ANCHOR_END) == "] 1=/dev/null 2=/dev/null ";
   std::fprintf(stderr, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
                                     : "the keeper holds more than its own\n");
   std::_Exit(NOTHING_ELSE ? 0 : 1);
@@ -1091,23 +1104,26 @@ bool softDescriptorLimit(rlim_t softLimit) {
 
 /** @brief What a forked keeper can use in the lock control, and the limits there. */
 enum class LockCase : std::uint8_t {
-  NATIVE,             ///< close_range.
-  LISTED,             ///< No close_range; /proc/self/fd can be listed.
-  UNLISTED,           ///< Neither: no close_range, and no directory can be opened.
-  LISTED_HARD_LOWERED ///< No close_range, the list, and the hard limit lowered too.
+  NATIVE,              ///< close_range.
+  LISTED,              ///< No close_range; /proc/self/fd can be listed.
+  UNLISTED,            ///< Neither: no close_range, and no directory can be opened.
+  LISTED_HARD_LOWERED, ///< No close_range, the list, and the hard limit lowered too.
+  UNREADABLE           ///< No close_range, /proc/self/fd opens but cannot be read; the
+                       ///< hard limit lowered too.
 };
 
 /**
  * @brief The body of a death test: this process holds a lock (flock) through a
  * close-on-exec descriptor at 65590, then lowers its soft limit on descriptors
- * to 64 (and its hard limit, with LISTED_HARD_LOWERED); close_range is
- * unavailable but in NATIVE. A probe's program waits until its keeper has
- * dropped that descriptor (3 s at the most), says it is ready, and once another
- * thread here has closed this process's descriptor, which releases the lock as
- * far as this process goes, tries the lock. Prints how the call came out and
- * exits 0 when the program got the lock, or, in UNLISTED, when the call refused
- * the setup (ENOSYS) before anything started; in both cases with no child of
- * this process left behind.
+ * to 64 (and its hard limit, with LISTED_HARD_LOWERED and UNREADABLE);
+ * close_range is unavailable but in NATIVE. A probe's program waits until its
+ * keeper has dropped that descriptor (3 s at the most), says it is ready, and
+ * once another thread here has closed this process's descriptor, which
+ * releases the lock as far as this process goes, tries the lock. Prints how
+ * the call came out and exits 0 when the program got the lock, or, in
+ * UNLISTED, when the call refused the setup (ENOSYS) before anything started,
+ * or, in UNREADABLE, when the setup failed with the keeper's EPERM; in every
+ * case with no child of this process left behind.
  */
 [[noreturn]] void keeperReleasesTheCallersLock(LockCase which) {
   constexpr int PLANTED = 65590;
@@ -1130,14 +1146,15 @@ enum class LockCase : std::uint8_t {
   struct rlimit limit{};
   (void)::getrlimit(RLIMIT_NOFILE, &limit);
   limit.rlim_cur = 64;
-  if (which == LockCase::LISTED_HARD_LOWERED) {
+  if (which == LockCase::LISTED_HARD_LOWERED || which == LockCase::UNREADABLE) {
     limit.rlim_max = 64;
   }
   if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
     std::fprintf(stderr, "the limits could not be lowered\n");
     std::_Exit(4);
   }
-  if (which != LockCase::NATIVE && !withoutCloseRange(-1, which == LockCase::UNLISTED)) {
+  if (which != LockCase::NATIVE &&
+      !withoutCloseRange(-1, which == LockCase::UNLISTED, which == LockCase::UNREADABLE)) {
     std::fprintf(stderr, "close_range could not be made unavailable\n");
     std::_Exit(3);
   }
@@ -1186,10 +1203,10 @@ enum class LockCase : std::uint8_t {
   const char* wrong = nullptr;
   if (!LEFT.empty()) {
     wrong = "a child of this process was left behind";
-  } else if (which == LockCase::UNLISTED) {
+  } else if (which == LockCase::UNLISTED || which == LockCase::UNREADABLE) {
     if (R.started) {
       wrong = "the probe started where its keeper could not close what it inherits";
-    } else if (R.spawnErrno != ENOSYS) {
+    } else if (R.spawnErrno != (which == LockCase::UNLISTED ? ENOSYS : EPERM)) {
       wrong = "the setup failed for another reason";
     }
   } else if (!R.succeeded() || R.output != "lock_acquire_status=0\n") {
@@ -1204,11 +1221,12 @@ enum class LockCase : std::uint8_t {
 
 /**
  * @test The keeper of a probe whose setup fails after the keeper started (its
- * second pipe cannot be made: descriptors ran out) is ended and reaped before
+ * first pipe cannot be made: descriptors ran out) is ended and reaped before
  * the call returns, wherever the descriptors lie and whether or not the system
  * has close_range: with descriptors below 64 and above 65535, with close_range
- * and without it, and with the anchor's write end that no process can close,
- * so that the keeper never sees end-of-file. Each case in a process of its own.
+ * and without it, and with this process's end of the anchor that no process
+ * can close, so that the keeper never sees end-of-file (and reports that it
+ * could not close everything). Each case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
   constexpr rlim_t LOW = 64;
@@ -1244,7 +1262,9 @@ TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
  * without it but with /proc/self/fd to list (also with the hard limit lowered
  * to 64, which only the list reaches past), the keeper drops it and the
  * program gets the lock; with neither, the setup is refused (ENOSYS) before
- * anything starts. Each case in a process of its own.
+ * anything starts; with the list opening but not readable (and the hard limit
+ * lowered), the setup fails with the keeper's EPERM and no keeper is left.
+ * Each case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
@@ -1268,6 +1288,9 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
   EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::LISTED_HARD_LOWERED),
               ::testing::ExitedWithCode(0), "the caller's lock was the caller's to release")
       << "no close_range, the list, the hard limit lowered";
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::UNREADABLE), ::testing::ExitedWithCode(0),
+              "the caller's lock was the caller's to release")
+      << "no close_range, the list opens but cannot be read, the hard limit lowered";
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 

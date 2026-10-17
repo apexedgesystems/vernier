@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/resource.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -93,6 +94,20 @@ bool makePipe(int fds[2]) {
 #endif
 }
 
+/** @brief A connected pair of stream sockets whose ends close on exec. */
+bool makeSocketPair(int fds[2]) {
+#ifdef SOCK_CLOEXEC
+  return ::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, fds) == 0;
+#else
+  if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+    return false;
+  }
+  (void)::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+  (void)::fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+  return true;
+#endif
+}
+
 /** @brief Null-terminated pointer array over @p strings, which must outlive it. */
 std::vector<char*> cStrings(std::vector<std::string>& strings) {
   std::vector<char*> out;
@@ -124,13 +139,12 @@ void defaultStopSignals() {
 }
 
 /**
- * @brief Where a forked keeper's last resort stops closing descriptors: the
- * hard limit on open descriptors (at least 256; 1 << 20, the system's default
- * ceiling, where there is none), not the soft one, which may have been
- * lowered after a descriptor above it was opened. A descriptor can lie above
- * the hard limit too, when that was lowered after it was opened: only
- * close_range and the /proc list reach those, which is why a probe is not
- * started where neither works (keeperIsolation).
+ * @brief Where a forked keeper stops closing descriptors outside Linux, where
+ * it has no list of them: the hard limit on open descriptors (at least 256;
+ * 1 << 20, the system's default ceiling, where there is none), not the soft
+ * one, which may have been lowered after a descriptor above it was opened.
+ * On Linux the keeper closes a range or every listed descriptor, or reports
+ * that it could not.
  */
 int descriptorBound() {
   constexpr rlim_t CEILING = rlim_t{1} << 20;
@@ -142,12 +156,13 @@ int descriptorBound() {
 }
 
 /**
- * @brief 0 when a keeper forked now can close every descriptor it inherits,
- * whatever its number: close_range works here (asked over an empty range,
- * which closes nothing), or /proc/self/fd can be opened to be listed.
- * Otherwise the errno the probe's setup fails with: EMFILE or ENFILE when no
+ * @brief 0 when a keeper forked now may close every descriptor it inherits:
+ * close_range works here (asked over an empty range, which closes nothing),
+ * or /proc/self/fd can be opened to be listed. Otherwise the errno the
+ * probe's setup fails with before anything starts: EMFILE or ENFILE when no
  * descriptor was left to open the list with, ENOSYS when the system offers
- * neither. Not called between fork and exec.
+ * neither. Only an early refusal: the keeper's own report decides whether it
+ * did (readKeeperReport). Not called between fork and exec.
  */
 int keeperIsolation() {
 #ifdef __linux__
@@ -170,21 +185,23 @@ int keeperIsolation() {
 #ifdef __linux__
 /**
  * @brief Close every descriptor from @p lowest up that /proc/self/fd lists,
- * whatever its number; false when the list cannot be read. The list is read
- * with getdents64, which allocates nothing, and again from its start after
- * a read that closed any. Async-signal-safe.
+ * whatever its number. 0 once none is left; otherwise the errno of what
+ * failed: the list could not be opened or read, or a listed descriptor
+ * would not close. The list is read with getdents64, which allocates
+ * nothing, and again from its start after a read that closed any.
+ * Async-signal-safe.
  */
-bool closeListedDescriptors(int lowest) {
+int closeListedDescriptors(int lowest) {
   const int LIST = ::open("/proc/self/fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (LIST < 0) {
-    return false;
+    return errno;
   }
   // A record: inode (8 bytes), offset (8), its length (2), type (1), name.
   constexpr std::size_t LENGTH_AT = 16;
   constexpr std::size_t NAME_AT = 19;
   alignas(8) char records[4096];
-  bool listed = true;
-  while (true) {
+  int failure = 0;
+  while (failure == 0) {
 #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 30))
     const ssize_t N = ::getdents64(LIST, records, sizeof(records));
 #else
@@ -194,11 +211,11 @@ bool closeListedDescriptors(int lowest) {
       continue;
     }
     if (N <= 0) {
-      listed = N == 0;
+      failure = N == 0 ? 0 : errno;
       break;
     }
     bool closedAny = false;
-    for (std::size_t at = 0; at + NAME_AT < static_cast<std::size_t>(N);) {
+    for (std::size_t at = 0; failure == 0 && at + NAME_AT < static_cast<std::size_t>(N);) {
       unsigned short length = 0;
       std::memcpy(&length, records + at + LENGTH_AT, sizeof(length));
       if (length == 0) {
@@ -213,63 +230,78 @@ bool closeListedDescriptors(int lowest) {
         }
       }
       if (number && fd >= lowest && fd != LIST) {
-        (void)::close(fd);
-        closedAny = true;
+        // Linux releases the descriptor whatever close() returns, but for
+        // EBADF: a listed descriptor that is still there would not close.
+        if (::close(fd) == 0 || errno != EBADF) {
+          closedAny = true;
+        } else {
+          failure = EBADF;
+        }
       }
       at += length;
     }
-    if (closedAny && ::lseek(LIST, 0, SEEK_SET) != 0) {
-      listed = false;
-      break;
+    if (failure == 0 && closedAny && ::lseek(LIST, 0, SEEK_SET) != 0) {
+      failure = errno;
     }
   }
   (void)::close(LIST);
-  return listed;
+  return failure;
 }
 #endif
 
 /**
  * @brief Close every descriptor from @p lowest up, whatever its number:
- * close_range where the system has it, else each one /proc/self/fd lists,
- * else each one below @p bound. Async-signal-safe.
+ * close_range where the system has it, else each one /proc/self/fd lists
+ * (closeListedDescriptors). 0 when every one is closed; otherwise the errno
+ * of what failed, and some may be left open. Where there is no /proc,
+ * outside Linux, each one below @p bound. Async-signal-safe.
  */
-void closeDescriptorsFrom(int lowest, int bound) {
-#if defined(__linux__) && defined(SYS_close_range)
-  if (::syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) {
-    return;
-  }
-#endif
+int closeDescriptorsFrom(int lowest, int bound) {
 #ifdef __linux__
-  if (closeListedDescriptors(lowest)) {
-    return;
+  (void)bound;
+#ifdef SYS_close_range
+  if (::syscall(SYS_close_range, static_cast<unsigned>(lowest), ~0U, 0U) == 0) {
+    return 0;
   }
 #endif
+  return closeListedDescriptors(lowest);
+#else
   for (int fd = lowest; fd < bound; ++fd) {
     (void)::close(fd);
   }
+  return 0;
+#endif
 }
+
+/** @brief What a keeper reports first on its end of the anchor: isolated, or not, and why. */
+enum KeeperReport : int {
+  KEEPER_ISOLATED = 0,     ///< It holds nothing of this process's but the anchor.
+  KEEPER_NOT_ISOLATED = 1, ///< It could not close everything it inherits; errno follows.
+};
 
 /**
  * @brief A probe group's keeper, in the child of fork(): every signal it can
  * block blocked, a process group of its own, and nothing open of this
- * process's: its copy of the anchor's write end closed first, by itself, so
- * that it sees end-of-file once this process's copy closes, whatever the
- * descriptors' numbers; stdin the anchor's read end; every other descriptor
- * from 3 up closed (closeDescriptorsFrom); stdout and stderr /dev/null, or
- * closed. Then it waits for the anchor's end-of-file and exits.
- * Async-signal-safe.
+ * process's: its copy of this process's end of the anchor closed first, by
+ * itself, so that it sees end-of-file once this process's copy closes,
+ * whatever the descriptors' numbers; stdin its own end of the anchor; every
+ * other descriptor from 3 up closed (closeDescriptorsFrom); stdout and stderr
+ * /dev/null, or closed. Then it reports on the anchor, in the shape of a
+ * program's start report, whether it holds nothing else (KEEPER_ISOLATED) or
+ * could not close everything (KEEPER_NOT_ISOLATED and the errno), waits for
+ * the anchor's end-of-file and exits. Async-signal-safe.
  */
-[[noreturn]] void runGroupKeeper(int anchorRead, int anchorWrite, int bound) {
+[[noreturn]] void runGroupKeeper(int own, int peer, int bound) {
   sigset_t all;
   (void)::sigfillset(&all);
   (void)::sigprocmask(SIG_SETMASK, &all, nullptr);
   (void)::setpgid(0, 0);
-  (void)::close(anchorWrite);
-  if (anchorRead != STDIN_FILENO) {
-    (void)::dup2(anchorRead, STDIN_FILENO);
-    (void)::close(anchorRead);
+  (void)::close(peer);
+  if (own != STDIN_FILENO) {
+    (void)::dup2(own, STDIN_FILENO);
+    (void)::close(own);
   }
-  closeDescriptorsFrom(3, bound);
+  const int NOT_CLOSED = closeDescriptorsFrom(3, bound);
   const int NUL = ::open("/dev/null", O_WRONLY);
   if (NUL >= 0) {
     (void)::dup2(NUL, STDOUT_FILENO);
@@ -281,10 +313,73 @@ void closeDescriptorsFrom(int lowest, int bound) {
     (void)::close(STDOUT_FILENO);
     (void)::close(STDERR_FILENO);
   }
+  const int REPORT[2] = {NOT_CLOSED == 0 ? KEEPER_ISOLATED : KEEPER_NOT_ISOLATED, NOT_CLOSED};
+  const char* next = reinterpret_cast<const char*>(REPORT);
+  std::size_t left = sizeof(REPORT);
+  while (left > 0) {
+    const ssize_t N = ::send(STDIN_FILENO, next, left, MSG_NOSIGNAL);
+    if (N < 0 && errno == EINTR) {
+      continue;
+    }
+    if (N <= 0) {
+      break;
+    }
+    next += N;
+    left -= static_cast<std::size_t>(N);
+  }
   char byte = 0;
   while (::read(STDIN_FILENO, &byte, 1) < 0 && errno == EINTR) {
   }
   ::_exit(0);
+}
+
+/** @brief How long a probe waits for its keeper's report. */
+constexpr int KEEPER_REPORT_MS = 5000;
+
+/**
+ * @brief The keeper's report on @p fd, this process's end of the anchor: 0
+ * once the keeper holds nothing of this process's (KEEPER_ISOLATED);
+ * otherwise the errno the probe's setup fails with: the one the keeper
+ * reports (KEEPER_NOT_ISOLATED), ESRCH when it ended without a report,
+ * ETIMEDOUT when none came within KEEPER_REPORT_MS.
+ */
+int readKeeperReport(int fd) {
+  int report[2] = {KEEPER_NOT_ISOLATED, 0};
+  std::size_t got = 0;
+  const auto UNTIL = Clock::now() + std::chrono::milliseconds(KEEPER_REPORT_MS);
+  while (got < sizeof(report)) {
+    const auto LEFT =
+        std::chrono::duration_cast<std::chrono::milliseconds>(UNTIL - Clock::now()).count();
+    if (LEFT <= 0) {
+      return ETIMEDOUT;
+    }
+    pollfd ready{fd, POLLIN, 0};
+    const int READY = ::poll(&ready, 1, static_cast<int>(LEFT));
+    if (READY < 0 && errno == EINTR) {
+      continue;
+    }
+    if (READY < 0) {
+      return errno;
+    }
+    if (READY == 0) {
+      return ETIMEDOUT;
+    }
+    const ssize_t N = ::read(fd, reinterpret_cast<char*>(report) + got, sizeof(report) - got);
+    if (N < 0 && errno == EINTR) {
+      continue;
+    }
+    if (N < 0) {
+      return errno;
+    }
+    if (N == 0) {
+      return ESRCH;
+    }
+    got += static_cast<std::size_t>(N);
+  }
+  if (report[0] == KEEPER_ISOLATED) {
+    return 0;
+  }
+  return report[1] != 0 ? report[1] : EIO;
 }
 
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
@@ -828,7 +923,8 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
 
   // A keeper that could not close what it inherits would hold this
   // process's descriptors (a lock, a pipe's write end) while the probe runs:
-  // where neither close_range nor the /proc list works, nothing is started.
+  // where neither close_range nor the /proc list can work, nothing is
+  // started. Where they can, the keeper's report below decides.
   if (const int ISOLATION = keeperIsolation(); ISOLATION != 0) {
     result.spawnErrno = ISOLATION;
     return result;
@@ -841,28 +937,32 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   // reaped elsewhere (this process ignores SIGCHLD or sets SA_NOCLDWAIT, and
   // the system reaps the program as it exits), and never by an id that may
   // have passed to another process. It is forked before the probe's pipes
-  // exist, so it holds none of them.
+  // exist, so it holds none of them. The anchor is a pair of connected
+  // sockets: the keeper reports on its end whether it holds nothing of this
+  // process's, and sees end-of-file once this process closes its own.
+  constexpr int KEEPER_END = 0;
+  constexpr int OWN_END = 1;
   int anchor[2] = {-1, -1};
-  if (!makePipe(anchor)) {
+  if (!makeSocketPair(anchor)) {
     result.spawnErrno = errno;
     return result;
   }
   const pid_t KEEPER = ::fork();
   if (KEEPER < 0) {
     result.spawnErrno = errno;
-    ::close(anchor[0]);
-    ::close(anchor[1]);
+    ::close(anchor[KEEPER_END]);
+    ::close(anchor[OWN_END]);
     return result;
   }
   if (KEEPER == 0) {
-    runGroupKeeper(anchor[0], anchor[1], DESCRIPTOR_BOUND);
+    runGroupKeeper(anchor[KEEPER_END], anchor[OWN_END], DESCRIPTOR_BOUND);
   }
   (void)::setpgid(KEEPER, KEEPER); // both sides set it; whichever runs first wins the race
-  ::close(anchor[0]);
+  ::close(anchor[KEEPER_END]);
   // Ends the keeper on every path, then reaps it within PROBE_REAP_MS. A
   // keeper still running that the group's end has not signalled (a setup
   // that failed before the program ran) is killed while this process still
-  // holds the anchor's write end: it cannot have ended by itself, so its pid
+  // holds its end of the anchor: it cannot have ended by itself, so its pid
   // is still its own. Then the anchor closes, and a keeper reaped elsewhere
   // is gone.
   bool keeperSignalled = false;
@@ -871,9 +971,9 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       (void)::kill(KEEPER, SIGKILL);
       keeperSignalled = true;
     }
-    if (anchor[1] >= 0) {
-      ::close(anchor[1]);
-      anchor[1] = -1;
+    if (anchor[OWN_END] >= 0) {
+      ::close(anchor[OWN_END]);
+      anchor[OWN_END] = -1;
     }
     const auto UNTIL = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
     int keeperStatus = 0;
@@ -885,6 +985,15 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
   };
+
+  // The keeper's own report decides: a program starts only once the keeper
+  // holds nothing of this process's; one that could not close everything it
+  // inherits, or said nothing in time, fails the setup and is ended here.
+  if (const int NOT_ISOLATED = readKeeperReport(anchor[OWN_END]); NOT_ISOLATED != 0) {
+    result.spawnErrno = NOT_ISOLATED;
+    END_KEEPER();
+    return result;
+  }
 
   if (!makePipe(output) || (SEPARATE && !makePipe(errors)) || !makePipe(report)) {
     result.spawnErrno = errno;
