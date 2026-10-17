@@ -71,6 +71,7 @@
  *
  * Use this instead of PERF_MAIN() in GPU test binaries. Calls parseGpuFlags()
  * to enable --gpu-memory, --gpu-device, and other GPU-specific CLI options.
+ * Returns the run's status as PERF_MAIN() does (ProfilerRegistry::finishRun()).
  *
  * Usage in GPU test files:
  *   PERF_GPU_MAIN()  // Replaces entire main() function
@@ -88,7 +89,8 @@
     ::testing::InitGoogleTest(&argc, argv);                                                        \
     const int _vernier_rc = RUN_ALL_TESTS();                                                       \
     VERNIER_WARN_IF_NO_TESTS_RAN_UNDER_PROFILE(cfg);                                               \
-    return _vernier_rc;                                                                            \
+    return vernier::bench::ProfilerRegistry::instance().finishRun(                                 \
+        cfg, _vernier_rc, ::testing::UnitTest::GetInstance()->test_to_run_count());                \
   }
 
 /* -------------------------------- Detail -------------------------------- */

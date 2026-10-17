@@ -78,7 +78,9 @@
  * ("capture validity could not be established"); an output that cannot be
  * read, or a dump missing or cut short (no map dump after the
  * acknowledgements, an entry cut, or no @recorded line where the tracer
- * recorded switch-outs).
+ * recorded switch-outs). An error is also reported through
+ * ProfilerRegistry::reportFailure(), which fails the run with status 4 once
+ * the tests pass.
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the
@@ -166,6 +168,7 @@ private:
   void spawnBpftrace();
   void stopBpftrace();
   void finish(ReadinessResult outcome, const std::string& context = {});
+  void record(ReadinessResult outcome);
 
   PerfConfig cfg_;
   std::string testName_;

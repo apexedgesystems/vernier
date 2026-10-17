@@ -371,19 +371,19 @@ elseif (CASE STREQUAL "SelectedRowMatchesRun")
     selected
     hint
   )
-  expect_eq("${_message}" "valgrind binary not found on PATH" "selected message")
+  expect_eq("${_message}" "missing: valgrind not found on PATH" "selected message")
   run(text --profile massif --profile-check)
   expect_has(
     "${text_OUT}" "Selected request: --profile massif\n  [FAIL] massif     ${_message}"
     "text selected row"
   )
   run(run --profile massif ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
-  set(_notice "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Falling back to no-op")
+  expect_eq("${run_RC}" "4" "run exit status")
+  set(_notice "[FAIL] Profiler 'massif': ${_message}\n   ${_hint}\n   Nothing is collected")
   expect_has("${run_ERR}" "${_notice}" "run notice")
   count_of(_times "${run_ERR}" "${_notice}")
   expect_eq("${_times}" "1" "notices for two guarded cases")
-  expect_not("${run_ERR}" "requested but unavailable" "run notice")
+  expect_not("${run_ERR}" "unavailable on this platform" "run notice")
 
 elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
   # No opt-in: the attach runs as the current user, a denial says how to get
@@ -421,7 +421,7 @@ elseif (CASE STREQUAL "BpfNoOptInNeverCallsSudo")
     "selected hint"
   )
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}\n   ${_hint}" "run notice")
   read_log(_text)
   expect_not("${_text}" "sudo " "fake log")
@@ -475,7 +475,7 @@ elseif (CASE STREQUAL "BpfInvalidValueLaunchesNothing")
   )
   expect_eq("${_message}" "configuration: BENCH_SUDO='maybe' is not a boolean" "selected message")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'bpftrace': ${_message}" "run notice")
   read_log(_text)
   expect_eq("${_text}" "" "fake log (nothing may run)")
@@ -484,7 +484,8 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   # A grant that refuses every -q command. The check's probe copy is not the
   # run's command, so its refusal leaves the run unverified: the doctor warns
   # and names the command sudo refused, and each launch then reports the
-  # refusal of its own command; no tracer runs.
+  # refusal of its own command, which the run records as that case's failure
+  # and exits 4 for; no tracer runs.
   bpf_fakes()
   list(APPEND _env BENCH_SUDO=1 FAKE_SUDO_DENY=-q)
   selected_row(row --profile bpftrace --bpf probe_script)
@@ -501,18 +502,29 @@ elseif (CASE STREQUAL "BpfProbeRefusedRunDecides")
   expect_not("${row_MESSAGE}" "${WORK_DIR}/scripts/" "selected message (a command not attempted)")
   expect_has("${row_HINT}" "The grant must allow ${WORK_DIR}/bin/bpftrace" "selected hint")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   count_of(_notices "${run_ERR}"
            "[WARN] Profiler 'bpftrace': unverified: sudo -n refused the probe"
   )
   expect_eq("${_notices}" "1" "run notices")
   foreach (_case First Second)
+    set(_refused
+        "denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
+    )
     expect_has(
-      "${run_ERR}"
-      "[bpftrace] the tracer exited before it acknowledged its arm probe: denied: sudo -n refused ${WORK_DIR}/bin/bpftrace -q -B none ./ReadinessFixture.${_case}.bpf/probe_script.tmp.bt: sudo: a password is required"
+      "${run_ERR}" "[bpftrace] the tracer exited before it acknowledged its arm probe: ${_refused}"
       "run report (${_case})"
     )
+    expect_has(
+      "${run_ERR}" "[FAIL] Profiler 'bpftrace' (ReadinessFixture.${_case}): ${_refused}\n"
+      "recorded failure (${_case})"
+    )
   endforeach ()
+  expect_has(
+    "${run_ERR}"
+    "[profile] --profile bpftrace --bpf probe_script failed; the run exits with status 4:"
+    "run outcome"
+  )
   read_log(_text)
   expect_not("${_text}" "\nbpftrace -q " "fake log (no tracer ran)")
 
@@ -552,11 +564,12 @@ elseif (CASE STREQUAL "BpfRunStopsThroughRoute")
 
 elseif (CASE STREQUAL "BpfRunReportsRefusedStop")
   # The run's tracer ignores SIGINT and SIGTERM is refused: both are reported,
-  # SIGKILL ends it, and no tracer survives.
+  # SIGKILL ends it, its incomplete capture is the case's recorded failure and
+  # the run exits 4, and no tracer survives.
   bpf_fakes()
   list(APPEND _env BENCH_SUDO=1 FAKE_BPFTRACE_MODE=ignore-int-run "FAKE_SUDO_DENY=kill -15")
   run(run --profile bpftrace --bpf probe_script ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has(
     "${run_ERR}" "[bpftrace] script 'probe_script': could not deliver SIGTERM to tracer "
     "run report"
@@ -567,6 +580,11 @@ elseif (CASE STREQUAL "BpfRunReportsRefusedStop")
     "${run_ERR}"
     "[bpftrace] script 'probe_script': the tracer ignored SIGINT and SIGTERM and was killed"
     "run report"
+  )
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'bpftrace' (ReadinessFixture.First): unusable: script 'probe_script': the tracer ignored SIGINT and SIGTERM and was killed; its output is incomplete\n"
+    "recorded failure"
   )
   expect_owned_and_gone("run")
 
@@ -626,14 +644,23 @@ elseif (CASE STREQUAL "OffcpuRefusedStopLeavesNoTracer")
   expect_not("${row_MESSAGE}" "still runs" "selected message")
   expect_owned_and_gone("doctor")
   run(run --profile offcpu ${_quick})
-  expect_eq("${run_RC}" "0" "run exit status")
+  expect_eq("${run_RC}" "4" "run exit status")
   expect_has("${run_ERR}" "[FAIL] Profiler 'offcpu': denied: cleanup: " "run notice")
   expect_owned_and_gone("run")
 
 elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")
+  # A tracer killed at the stop claims no stacks: its incomplete capture is
+  # the case's recorded failure, and the run exits 4. The SIGTERM refused on
+  # the way is the failure's cause.
   bpf_fakes()
   list(APPEND _env BENCH_SUDO=1 FAKE_BPFTRACE_MODE=ignore-int-run "FAKE_SUDO_DENY=kill -15")
   run(run --profile offcpu ${_quick})
+  expect_eq("${run_RC}" "4" "run exit status")
+  expect_has(
+    "${run_ERR}"
+    "[FAIL] Profiler 'offcpu' (ReadinessFixture.First): denied: the tracer was killed before it printed its maps: "
+    "recorded failure"
+  )
   expect_has(
     "${run_ERR}"
     "[offcpu] the off-CPU script: the tracer ignored SIGINT and SIGTERM and was killed"
@@ -767,9 +794,9 @@ elseif (CASE MATCHES "^Gperf")
       "text selected row"
     )
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     set(_notice
-        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+        "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
     )
     expect_has("${run_ERR}" "${_notice}" "run notice")
     count_of(_times "${run_ERR}" "${_notice}")
@@ -800,10 +827,10 @@ elseif (CASE MATCHES "^Gperf")
     )
     expect_eq("${off_STATUS}" "ok" "selected status without --profile-analyze")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds; the analysis is skipped and the raw capture is kept."
+      "[FAIL] Profiler 'gperf': ${on_MESSAGE}\n   ${on_HINT}\n   Collection proceeds and keeps the raw capture; the analysis is skipped and the run will fail (exit status 4 if the tests pass)."
       "run notice"
     )
     expect_has(
@@ -825,10 +852,10 @@ elseif (CASE MATCHES "^Gperf")
     selected_row(on --profile gperf --profile-analyze)
     expect_eq("${on_STATUS}" "ok" "selected status (the analyzer answers --help)")
     run(run --profile gperf --profile-analyze ${_quick})
-    expect_eq("${run_RC}" "0" "run exit status")
+    expect_eq("${run_RC}" "4" "run exit status")
     expect_has(
       "${run_ERR}"
-      "[gperf] ${WORK_DIR}/bin/google-pprof failed: exit status 1: fake pprof: cannot read profile; raw profile kept at "
+      "[FAIL] Profiler 'gperf' (ReadinessFixture.First): analysis: unusable: ${WORK_DIR}/bin/google-pprof failed on the profile: exit status 1: fake pprof: cannot read profile; raw profile kept at "
       "analysis failure"
     )
     if (NOT EXISTS "${_prof}")

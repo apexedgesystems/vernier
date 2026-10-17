@@ -43,7 +43,9 @@
 
 using vernier::bench::BpftracePlan;
 using vernier::bench::BpftraceProfiler;
+using vernier::bench::CHILD_STATUS_REMEDY;
 using vernier::bench::decideGperfAnalysis;
+using vernier::bench::describeStatusLoss;
 using vernier::bench::EnvReport;
 using vernier::bench::GperfAnalysis;
 using vernier::bench::GperfModes;
@@ -55,12 +57,14 @@ using vernier::bench::parsePerfMode;
 using vernier::bench::PerfMode;
 using vernier::bench::PerfPlan;
 using vernier::bench::PrivilegeRoute;
+using vernier::bench::ProfileFailure;
 using vernier::bench::ProfilerRegistry;
 using vernier::bench::ReadinessCause;
 using vernier::bench::ReadinessContext;
 using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
+using vernier::bench::StatusLoss;
 using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
@@ -1470,6 +1474,85 @@ TEST_F(BpfCheckTest, BpftraceCaptureWithoutItsTracersStatusIsNotComplete) {
   }
 }
 
+/**
+ * @test A capture that is not complete fails the run with its cause: each of
+ * its failures is recorded once, for its case, with the capture's own message
+ * and remedy, and the run then ends with status 4 once its tests pass. Here a
+ * tracer whose end this process could not observe (SIGCHLD ignored, or
+ * SA_NOCLDWAIT), one that exits 42 with an error at the stop, and one that
+ * never acknowledges its arm. A complete capture, and one that is complete
+ * but printed no data of its own (a caveat), record nothing, and the run ends
+ * with status 0.
+ */
+TEST_F(BpfCheckTest, IncompleteCaptureFailsTheRun) {
+  using Policy = ChildReaping::Policy;
+  const ReadinessResult R = check("bpftrace", ctx());
+  ASSERT_TRUE(R.collectionReady()) << R.report.message;
+  struct Case {
+    std::string test;
+    Policy policy;
+    std::string window;
+    bool fails;
+  };
+  const std::vector<Case> CASES{
+      {"Bpf.Outcome.Complete", Policy::DEFAULT, "", false},
+      {"Bpf.Outcome.NoData", Policy::DEFAULT, "marker-only", false},
+      {"Bpf.Outcome.FlushError", Policy::DEFAULT, "flush-error", true},
+      {"Bpf.Outcome.NoArm", Policy::DEFAULT, "no-arm", true},
+      {"Bpf.Outcome.Ignored", Policy::IGNORED, "", true},
+      {"Bpf.Outcome.NoWait", Policy::NO_CHILD_WAIT, "", true},
+  };
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "bpftrace";
+  for (const Case& C : CASES) {
+    std::map<std::string, std::string> env;
+    if (!C.window.empty()) {
+      env["FAKE_WINDOW"] = C.window;
+    }
+    registry.resetFailures();
+    WindowRun run{};
+    {
+      const ChildReaping REAPING(C.policy);
+      ASSERT_TRUE(REAPING.ok());
+      run = runWindowed(R, C.test, env, C.window == "no-arm" ? 500 : 5000);
+    }
+    std::vector<ProfileFailure> failed;
+    int status = -1;
+    {
+      const StderrCapture QUIET;
+      failed = registry.failures();
+      status = registry.finishRun(cfg, 0, 1);
+    }
+    registry.resetFailures();
+    ASSERT_TRUE(run.outcome.has_value()) << C.test << ": " << run.err;
+    if (!C.fails) {
+      EXPECT_NE(run.outcome->report.status, EnvReport::Status::Error) << C.test;
+      EXPECT_TRUE(failed.empty()) << C.test << ": " << failed.front().result.report.message;
+      EXPECT_EQ(status, 0) << C.test;
+      EXPECT_EQ(run.err.find("[FAIL] Profiler 'bpftrace'"), std::string::npos) << C.test << ":\n"
+                                                                               << run.err;
+      continue;
+    }
+    EXPECT_EQ(run.outcome->report.status, EnvReport::Status::Error) << C.test;
+    ASSERT_EQ(failed.size(), 1U) << C.test << ":\n" << run.err;
+    EXPECT_EQ(failed[0].backend, "bpftrace") << C.test;
+    EXPECT_EQ(failed[0].test, C.test);
+    EXPECT_EQ(failed[0].result.report.message, run.outcome->report.message) << C.test;
+    EXPECT_EQ(failed[0].result.report.hint, run.outcome->report.hint) << C.test;
+    EXPECT_EQ(status, 4) << C.test;
+    EXPECT_NE(run.err.find("[FAIL] Profiler 'bpftrace' (" + C.test +
+                           "): " + run.outcome->report.message + "\n"),
+              std::string::npos)
+        << C.test << ":\n"
+        << run.err;
+  }
+  for (const pid_t TRACER : tracerPids(dir_)) {
+    EXPECT_TRUE(exited(TRACER)) << "tracer " << TRACER << " outlived the run";
+    endIfLeft(TRACER);
+  }
+}
+
 /* ----------------------------- bpftrace: the capture window ----------------------------- */
 
 /**
@@ -2823,6 +2906,89 @@ TEST_F(BpfCheckTest, OffCpuStacksClaimedOnlyOnAnObservedCleanExit) {
 }
 
 /**
+ * @test An off-CPU capture that claims no stacks fails the run with its cause:
+ * a tracer whose end this process could not observe (SIGCHLD ignored, or
+ * SA_NOCLDWAIT) and one that exits at its start are each recorded once, for
+ * their case, with what the backend printed, and the run then ends with
+ * status 4 once its tests pass. The control, a tracer seen to end its stop
+ * with status 0, writes its stacks, records nothing, and the run ends with
+ * status 0.
+ */
+TEST_F(BpfCheckTest, OffCpuCaptureWithoutStacksFailsTheRun) {
+  using Policy = ChildReaping::Policy;
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  const std::string IGNORED =
+      "this process ignores SIGCHLD, so the system discards its children's exit statuses";
+  const std::string NO_WAIT = "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
+                              "discards its children's exit statuses";
+  const auto UNOBSERVED = [](const std::string& why) {
+    return "unusable: the off-CPU script: the tracer's end could not be observed: " + why +
+           "; nothing shows that it printed its maps, so its output may be incomplete";
+  };
+  struct Case {
+    std::string test;
+    Policy policy;
+    std::string mode;
+    std::string message; ///< The recorded failure's message; empty for none.
+  };
+  const std::vector<Case> CASES{
+      {"OffCpu.Outcome.Clean", Policy::DEFAULT, "", ""},
+      {"OffCpu.Outcome.Ignored", Policy::IGNORED, "", UNOBSERVED(IGNORED)},
+      {"OffCpu.Outcome.NoWait", Policy::NO_CHILD_WAIT, "", UNOBSERVED(NO_WAIT)},
+      {"OffCpu.Outcome.Refused", Policy::DEFAULT, "eperm",
+       "denied: the off-CPU script could not attach as the current user: ERROR: bpftrace "
+       "currently only supports running as the root user."},
+  };
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "offcpu";
+  for (const Case& C : CASES) {
+    std::map<std::string, std::string> env{
+        {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}};
+    if (!C.mode.empty()) {
+      env["FAKE_BPFTRACE_MODE"] = C.mode;
+    }
+    registry.resetFailures();
+    std::string err;
+    {
+      const ChildReaping REAPING(C.policy);
+      ASSERT_TRUE(REAPING.ok());
+      err = runPlanned("offcpu", R, C.test, env);
+    }
+    std::vector<ProfileFailure> failed;
+    int status = -1;
+    {
+      const StderrCapture QUIET;
+      failed = registry.failures();
+      status = registry.finishRun(cfg, 0, 1);
+    }
+    registry.resetFailures();
+    if (C.message.empty()) {
+      EXPECT_TRUE(failed.empty()) << C.test << ": " << failed.front().result.report.message;
+      EXPECT_EQ(status, 0) << C.test;
+      EXPECT_NE(err.find("[offcpu] stacks written to "), std::string::npos) << C.test << ":\n"
+                                                                            << err;
+      continue;
+    }
+    ASSERT_EQ(failed.size(), 1U) << C.test << ":\n" << err;
+    EXPECT_EQ(failed[0].backend, "offcpu") << C.test;
+    EXPECT_EQ(failed[0].test, C.test);
+    EXPECT_EQ(failed[0].result.report.message, C.message) << C.test;
+    EXPECT_EQ(status, 4) << C.test;
+    EXPECT_EQ(err.find("stacks written"), std::string::npos) << C.test << ":\n" << err;
+    EXPECT_NE(err.find("[FAIL] Profiler 'offcpu' (" + C.test + "): " + C.message + "\n"),
+              std::string::npos)
+        << C.test << ":\n"
+        << err;
+  }
+  for (const InlineCall& CALL : inlineCalls(dir_, "bpftrace")) {
+    EXPECT_TRUE(exited(CALL.pid)) << "tracer " << CALL.pid << " outlived the run";
+    endIfLeft(CALL.pid);
+  }
+}
+
+/**
  * @test Every stop signal refused: denied (the run's stop would be refused
  * alike), and the self-exit ends the probe within its bound; the check
  * returns only after that, with no tracer alive.
@@ -4056,6 +4222,39 @@ TEST_F(PerfCheckTest, BrokenPerfIsNeverRun) {
   EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
 }
 
+/**
+ * @test A probe whose exit status this process could not read proves
+ * nothing: in a process that ignores SIGCHLD or sets SA_NOCLDWAIT, perf's
+ * --version shows neither a perf that runs nor one that fails, so the check
+ * is not ready, says why and how to let the status through, and never asks
+ * that perf to count, whatever its --version did.
+ */
+TEST_F(PerfCheckTest, ProbeWithoutItsStatusProvesNothing) {
+  using Policy = ChildReaping::Policy;
+  for (const Policy POLICY : {Policy::IGNORED, Policy::NO_CHILD_WAIT}) {
+    const StatusLoss LOSS =
+        POLICY == Policy::IGNORED ? StatusLoss::SIGCHLD_IGNORED : StatusLoss::NO_CHILD_WAIT;
+    for (const std::string MODE : {"ok", "broken"}) {
+      ReadinessResult r;
+      {
+        const ChildReaping REAPING(POLICY);
+        ASSERT_TRUE(REAPING.ok());
+        r = check({{"FAKE_PERF_MODE", MODE}});
+      }
+      EXPECT_EQ(r.cause, ReadinessCause::UNUSABLE) << MODE << ": " << r.report.message;
+      EXPECT_EQ(r.report.message.rfind("unusable: " + perf_ +
+                                           " --version: ended without an exit status this "
+                                           "process could read: " +
+                                           describeStatusLoss(LOSS),
+                                       0),
+                0U)
+          << r.report.message;
+      EXPECT_EQ(r.report.hint, CHILD_STATUS_REMEDY);
+      EXPECT_TRUE(dir_.logLines("perf " + perf_ + " stat").empty()) << dir_.log();
+    }
+  }
+}
+
 /** @test Refused counter access is denied, with the remedies and no elevation. */
 TEST_F(PerfCheckTest, DeniedAccessNamesTheRemedy) {
   const ReadinessResult R = check({{"FAKE_PERF_MODE", "denied"}}, "", 1000);
@@ -4164,15 +4363,16 @@ TEST_F(PerfCheckTest, LaunchKeepsPunctuationInPaths) {
     EXPECT_EQ(TEXT.find("Syntax error"), std::string::npos) << TEXT;
     EXPECT_EQ(TEXT.find("not found"), std::string::npos) << TEXT;
   }
+  // The checked perf answers on --control, so each launch ends with its fifos.
   EXPECT_EQ(dir_.logLines("perf " + PERF +
                           " stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses "
                           "-p " +
-                          PID + " pid=")
+                          PID + " --control fifo:")
                 .size(),
             1U)
       << dir_.log();
   EXPECT_EQ(dir_.logLines("perf " + PERF + " record -g -p " + PID + " -o " + ROOT +
-                          "/Perf.Record.perf/perf.data pid=")
+                          "/Perf.Record.perf/perf.data --control fifo:")
                 .size(),
             1U)
       << dir_.log();
@@ -4214,14 +4414,84 @@ protected:
 
 } // namespace
 
-/** @test One parser decides the modes for the check and the profiler. */
+namespace {
+
+/** @brief The modes @p args selects; fails the test when it is refused. */
+GperfModes gperfModes(const std::string& args) {
+  GperfModes modes;
+  const auto REFUSED = parseGperfModes(args, modes);
+  EXPECT_FALSE(REFUSED.has_value()) << "'" << args << "': " << REFUSED->report.message;
+  return modes;
+}
+
+} // namespace
+
+/** @test Each word, and each combination of them, selects its modes; none selects cpu. */
 TEST(GperfModeTest, ParsesTheSelectedModes) {
-  EXPECT_TRUE(parseGperfModes("").cpu);
-  EXPECT_FALSE(parseGperfModes("").heap);
-  EXPECT_FALSE(parseGperfModes("heap").cpu);
-  EXPECT_TRUE(parseGperfModes("heap").heap);
-  EXPECT_TRUE(parseGperfModes("both").cpu && parseGperfModes("both").heap);
-  EXPECT_TRUE(parseGperfModes("cpu,heap").cpu && parseGperfModes("cpu,heap").heap);
+  for (const auto& [ARGS, CPU, HEAP] : std::vector<std::tuple<std::string, bool, bool>>{
+           {"", true, false},
+           {"  ", true, false},
+           {"cpu", true, false},
+           {"heap", false, true},
+           {"both", true, true},
+           {"cpu,heap", true, true},
+           {"heap cpu", true, true},
+           {"heap,heap", false, true},
+           {"both, cpu", true, true},
+       }) {
+    const GperfModes MODES = gperfModes(ARGS);
+    EXPECT_EQ(MODES.cpu, CPU) << "'" << ARGS << "'";
+    EXPECT_EQ(MODES.heap, HEAP) << "'" << ARGS << "'";
+  }
+}
+
+/**
+ * @test A word that is not a mode is refused whole, with the configuration
+ * error every backend gives such a word, and selects nothing; a mode's name
+ * inside another word is not that mode.
+ */
+TEST(GperfModeTest, RefusesAWordThatIsNotAMode) {
+  for (const auto& [ARGS, WORD] : std::vector<std::pair<std::string, std::string>>{
+           {"nonsense", "nonsense"},
+           {"cpuheap", "cpuheap"},
+           {"xcpu", "xcpu"},
+           {"heap-ish", "heap-ish"},
+           {"CPU", "CPU"},
+           {"cpu,nonsense", "nonsense"},
+           {"both;", "both;"},
+       }) {
+    GperfModes modes;
+    modes.cpu = modes.heap = true;
+    const auto REFUSED = parseGperfModes(ARGS, modes);
+    ASSERT_TRUE(REFUSED.has_value()) << "'" << ARGS << "' was accepted";
+    EXPECT_EQ(REFUSED->report.status, EnvReport::Status::Error);
+    EXPECT_EQ(REFUSED->cause, ReadinessCause::CONFIGURATION);
+    EXPECT_FALSE(REFUSED->collectionReady());
+    EXPECT_EQ(REFUSED->report.message,
+              "configuration: '" + WORD +
+                  "' is not a mode of gperf; its modes are cpu, heap, both");
+    EXPECT_EQ(REFUSED->report.hint, "Use one of cpu, heap, both in --profile-args, or drop it.");
+    EXPECT_FALSE(modes.cpu || modes.heap) << "'" << ARGS << "' left a mode selected";
+  }
+}
+
+/**
+ * @test The check refuses such a word first, in every build (with gperftools
+ * or without), so a run creates nothing for it and fails, as the doctor says.
+ */
+TEST(GperfModeTest, CheckRefusesAWordBeforeAnythingElse) {
+  FakeToolDir dir;
+  ReadinessRequest request;
+  request.backend = "gperf";
+  request.profileArgs = "nonsense";
+  request.scope = ReadinessScope::RUNTIME;
+  const ReadinessResult R = ProfilerRegistry::instance().checkRequest(request, dir.context());
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(R.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_FALSE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "configuration: 'nonsense' is not a mode of gperf; its modes are cpu, heap, both");
+  EXPECT_EQ(R.plan, nullptr) << "a refused request carries no plan to build a profiler from";
 }
 
 /** @test Without --profile-analyze a missing analyzer is only information. */
@@ -4299,6 +4569,7 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
   cfg.profileAnalyze = true;
   cfg.artifactRoot = dir_.path();
   std::string err;
+  ProfilerRegistry::instance().resetFailures();
   {
     ScopedEnv mode("FAKE_PPROF_MODE", "fail-on-profile");
     ScopedEnv log("FAKE_LOG", dir_.logPath());
@@ -4313,12 +4584,20 @@ TEST_F(GperfCheckTest, FailingAnalyzerKeepsTheRawProfile) {
     err = capture.text();
   }
   const std::string CPU_PROF = dir_.path() + "/Gperf.Fails.gperf/cpu.prof";
-  EXPECT_NE(
-      err.find("[gperf] " + PPROF +
-               " failed: exit status 1: fake pprof: cannot read profile; raw profile kept at " +
-               CPU_PROF),
-      std::string::npos)
+  EXPECT_NE(err.find("[FAIL] Profiler 'gperf' (Gperf.Fails): analysis: unusable: " + PPROF +
+                     " failed on the profile: exit status 1: fake pprof: cannot read profile; "
+                     "raw profile kept at " +
+                     CPU_PROF + "\n   Run it by hand to see why: " + PPROF +
+                     " --text --cum --lines "),
+            std::string::npos)
       << err;
+  const std::vector<vernier::bench::ProfileFailure> FAILED =
+      ProfilerRegistry::instance().failures();
+  ProfilerRegistry::instance().resetFailures();
+  ASSERT_EQ(FAILED.size(), 1U) << "the failed analysis is the run's failure";
+  EXPECT_EQ(FAILED[0].backend, "gperf");
+  EXPECT_EQ(FAILED[0].test, "Gperf.Fails");
+  EXPECT_EQ(FAILED[0].result.stage, vernier::bench::ReadinessStage::ANALYSIS);
   std::error_code ec;
   EXPECT_TRUE(std::filesystem::exists(CPU_PROF, ec)) << "the raw capture is never removed";
   EXPECT_EQ(dir_.logLines("pprof " + PPROF + " --text --cum --lines ").size(), 1U) << dir_.log();
@@ -4433,6 +4712,33 @@ TEST(GperfAnalysisTest, BrokenAnalyzerIsAnalysisError) {
   EXPECT_FALSE(OFF.error.has_value());
   EXPECT_EQ(OFF.analyzer, PPROF) << "the analyzer is still named";
   EXPECT_EQ(dir.logLines("pprof ").size(), RUNS) << "without the promise it is not run";
+}
+
+/**
+ * @test An analyzer whose --help exit status this process could not read is
+ * not known to run: a promised analysis is an analysis-stage Error that says
+ * why, and the capture still runs.
+ */
+TEST(GperfAnalysisTest, AnalyzerWithoutItsStatusIsNotKnownToRun) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  const std::string PPROF = dir.install("fake_pprof.sh", "pprof");
+  GperfAnalysis on;
+  {
+    const ChildReaping REAPING(ChildReaping::Policy::IGNORED);
+    ASSERT_TRUE(REAPING.ok());
+    on = analysisIn(dir, true);
+  }
+  ASSERT_TRUE(on.error.has_value()) << "an analyzer not seen to run must not be ready";
+  EXPECT_EQ(on.error->stage, vernier::bench::ReadinessStage::ANALYSIS);
+  EXPECT_EQ(on.error->cause, ReadinessCause::UNUSABLE);
+  EXPECT_TRUE(on.error->collectionReady()) << "the capture still runs";
+  EXPECT_EQ(on.error->report.message,
+            "analysis: unusable: --profile-analyze would run " + PPROF +
+                ", whose --help ended without an exit status this process could read: " +
+                describeStatusLoss(StatusLoss::SIGCHLD_IGNORED) +
+                "; the cpu capture still runs and cpu.prof is kept");
+  EXPECT_EQ(on.error->report.hint, CHILD_STATUS_REMEDY);
 }
 
 /** @test Either spelling is found, google-pprof first, and only the selected one is probed. */

@@ -1,0 +1,104 @@
+# Profile routes: the names both languages agree on and what `bench run`
+# starts for each wrapped request. Read by the Rust tests (runner.rs) and the
+# C++ tests (ProfilerRegistry_uTest.cpp, through VERNIER_SHARED_FIXTURE_DIR).
+#
+# Tab-separated. '#' starts a comment line. A '-' field is empty. In a route,
+# <dir> is the folder the wrap writes into (<output-dir>/<binary>.<canonical
+# tool>), <cwd> the working directory and <whole-dir> the folder named whole,
+# <cwd>/<dir>, each with every '%' doubled, and <bin> the benchmark;
+# arguments are separated by single spaces. compute-sanitizer joins a
+# relative log name to its working directory before it reads '%' macros,
+# so its log is named whole.
+#
+# alias   <spelling>  <canonical backend>
+alias	nsys	nsight
+alias	nsight	nsight
+alias	ncu	ncu
+alias	callgrind	callgrind
+alias	massif	massif
+alias	memcheck	memcheck
+alias	helgrind	helgrind
+alias	heaptrack	heaptrack
+alias	compute-sanitizer	compute-sanitizer
+alias	perf	perf
+alias	gperf	gperf
+alias	bpftrace	bpftrace
+alias	offcpu	offcpu
+alias	rapl	rapl
+alias	jemalloc	jemalloc
+alias	rocprof	rocprof
+#
+# route   <--profile>  <--profile-args>  <program>  <arguments>
+route	callgrind	-	valgrind	--tool=callgrind --callgrind-out-file=<dir>/callgrind.out <bin>
+route	massif	-	valgrind	--tool=massif --massif-out-file=<dir>/massif.out <bin>
+route	massif	pages	valgrind	--tool=massif --pages-as-heap=yes --massif-out-file=<dir>/massif.out <bin>
+route	massif	stacks	valgrind	--tool=massif --stacks=yes --massif-out-file=<dir>/massif.out <bin>
+route	memcheck	-	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/memcheck.log <bin>
+route	memcheck	track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	memcheck	leak-full,track-origins	valgrind	--tool=memcheck --leak-check=full --error-exitcode=0 --track-origins=yes --log-file=<dir>/memcheck.log <bin>
+route	helgrind	-	valgrind	--tool=helgrind --log-file=<dir>/helgrind.log <bin>
+route	helgrind	drd	valgrind	--tool=drd --log-file=<dir>/helgrind.log <bin>
+route	heaptrack	-	heaptrack	-o <dir>/run <bin>
+route	compute-sanitizer	-	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	memcheck	compute-sanitizer	--tool=memcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	racecheck	compute-sanitizer	--tool=racecheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	synccheck	compute-sanitizer	--tool=synccheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	compute-sanitizer	initcheck	compute-sanitizer	--tool=initcheck --error-exitcode 5 --log-file <whole-dir>/sanitizer.log <bin>
+route	nsight	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
+route	nsys	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <bin>
+route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+route	nsight	ncu	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+#
+# escape   <--profile>  <--profile-args>  <--profile-output-dir>  <output option>  <its value in the route>
+# (valgrind's output options, compute-sanitizer's --log-file and the -o of
+# nsys and ncu read a '%' in the value as the start of a macro such as %p,
+# and %% as one '%': each '%' of the folder is doubled, and the output lands
+# in the folder as named. heaptrack's -o replaces %h and %p and has no
+# escape: any other '%' reaches it as it is, and a folder holding %h or %p is
+# refused, in the refuse-folder rows below)
+escape	compute-sanitizer	-	out%p	--log-file	<cwd>/out%%p/my_test.compute-sanitizer/sanitizer.log
+escape	compute-sanitizer	-	a%%b%x	--log-file	<cwd>/a%%%%b%%x/my_test.compute-sanitizer/sanitizer.log
+escape	callgrind	-	out%p	--callgrind-out-file	out%%p/my_test.callgrind/callgrind.out
+escape	massif	-	out%q{HOME}	--massif-out-file	out%%q{HOME}/my_test.massif/massif.out
+escape	memcheck	-	a%%b%x	--log-file	a%%%%b%%x/my_test.memcheck/memcheck.log
+escape	helgrind	-	out%p	--log-file	out%%p/my_test.helgrind/helgrind.log
+escape	nsight	-	out%p	-o	out%%p/my_test.nsight/profile
+escape	nsys	-	a%%b%x	-o	a%%%%b%%x/my_test.nsight/profile
+escape	nsight	compute	out%p	-o	out%%p/my_test.nsight/kernel_profile
+escape	ncu	-	a%%b%x	-o	a%%%%b%%x/my_test.ncu/kernel_profile
+escape	heaptrack	-	a%%b%x	-o	a%%b%x/my_test.heaptrack/run
+#
+# unwrapped   <--profile>  (the benchmark runs itself; --profile-args reach it untouched)
+unwrapped	perf
+unwrapped	gperf
+unwrapped	bpftrace
+unwrapped	offcpu
+unwrapped	rapl
+unwrapped	jemalloc
+unwrapped	rocprof
+#
+# refuse   <--profile>  <--profile-args>  <text the refusal contains>
+refuse	nsight	replay	does not wrap a kernel replay
+refuse	ncu	replay	does not wrap a kernel replay
+refuse	nsys	compute,replay	does not wrap a kernel replay
+refuse	massif	pages,stacks	cannot combine pages
+refuse	massif	heap	'heap' is not a mode of massif; its modes are pages, stacks
+refuse	memcheck	leak-summary	'leak-summary' is not a mode of memcheck
+refuse	helgrind	helgrind	'helgrind' is not a mode of helgrind; its modes are drd
+refuse	compute-sanitizer	memcheck,racecheck	runs one tool at a time
+refuse	callgrind	instr	'instr' is not a mode of callgrind, which takes none
+refuse	heaptrack	x	'x' is not a mode of heaptrack, which takes none
+refuse	ncu	compute	'compute' is not a mode of ncu, which takes none
+#
+# refuse-folder   <--profile>  <--profile-output-dir>  <text the refusal contains>
+# (refused before anything starts or is created; the refusal names the folder)
+refuse-folder	heaptrack	out%h	which holds %h;
+refuse-folder	heaptrack	out%p	which holds %p;
+#
+# exit   <meaning>  <status>
+# profile-failed: the tests passed and the requested profile failed (libbench)
+# tool-findings: compute-sanitizer reported errors (the route's --error-exitcode)
+exit	profile-failed	4
+exit	tool-findings	5

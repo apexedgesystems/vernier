@@ -33,6 +33,9 @@ int main(int argc, char** argv) {
   // Initialize GoogleTest with remaining args
   ::testing::InitGoogleTest(&argc, argv);
 
-  // Run all tests
-  return RUN_ALL_TESTS();
+  // Run all tests; a failed --profile request makes the run's status 4 when
+  // they pass, as PERF_GPU_MAIN() does.
+  const int RC = RUN_ALL_TESTS();
+  return vernier::bench::ProfilerRegistry::instance().finishRun(
+      cfg, RC, ::testing::UnitTest::GetInstance()->test_to_run_count());
 }

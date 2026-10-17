@@ -817,7 +817,7 @@ void OffCpuProfiler::stopBpftrace() {
     if (!incomplete.report.hint.empty()) {
       std::fprintf(stderr, "[offcpu] %s\n", incomplete.report.hint.c_str());
     }
-    outcome_ = std::move(incomplete);
+    record(std::move(incomplete));
     return;
   }
   // Seen to end with status 0: before the stop, its script ended itself.
@@ -913,6 +913,15 @@ void OffCpuProfiler::finish(ReadinessResult outcome, const std::string& context)
   std::fprintf(stderr, "[offcpu] %s%s\n", context.c_str(), outcome.report.message.c_str());
   if (outcome.report.status == EnvReport::Status::Error && !outcome.report.hint.empty()) {
     std::fprintf(stderr, "[offcpu] %s\n", outcome.report.hint.c_str());
+  }
+  record(std::move(outcome));
+}
+
+void OffCpuProfiler::record(ReadinessResult outcome) {
+  // A failure is also the run's: the registry records it for this case and
+  // fails the run with status 4 once the tests pass.
+  if (outcome.report.status == EnvReport::Status::Error) {
+    ProfilerRegistry::instance().reportFailure("offcpu", testName_, outcome);
   }
   outcome_ = std::move(outcome);
 }
