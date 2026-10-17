@@ -13,7 +13,9 @@
  *    aborts the program before its tests start once the tool's libraries are
  *    injected ("AddressSanitizer: alloc-dealloc-mismatch"), and where
  *    compute-sanitizer is not on PATH, both decided before anything runs;
- *    any other way of not reaching the probe fails.
+ *    and where the tool cannot start a program at all, as without a CUDA
+ *    driver, decided by running this binary's test listing under it before
+ *    the probe. Any other way of not reaching the probe fails.
  *  - Tests are platform-agnostic and independent of execution order.
  */
 
@@ -68,6 +70,30 @@ fs::path scratchDir() {
   return ::mkdtemp(dirTemplate.data()) != nullptr ? fs::path(dirTemplate) : fs::path();
 }
 
+/**
+ * @brief Why compute-sanitizer cannot start a program here, or "" when it
+ * can.
+ *
+ * Runs this binary's test listing (`--gtest_list_tests`, which runs no test)
+ * under the tool, the way the probe's run starts it, into @p dir: a tool that
+ * starts programs passes on the listing, which names the probe's suite. Where
+ * the tool starts nothing, as without a CUDA driver, the reason says so and
+ * quotes what the tool printed.
+ */
+std::string reasonTheToolStartsNoProgram(const fs::path& dir) {
+  const vg::ChildExit END = vg::runLogged(
+      {"compute-sanitizer", "--require-cuda-init", "no", selfPath(), "--gtest_list_tests"},
+      dir / "listing.txt");
+  const std::string OUTPUT = vg::readText(dir / "listing.txt");
+  if (OUTPUT.find("\nSkipUnlessUnderComputeSanitizerProbe.\n") != std::string::npos) {
+    return {};
+  }
+  return "compute-sanitizer cannot start a program here (no CUDA driver, or none it can "
+         "use): under it, this binary's --gtest_list_tests printed nothing of its own (" +
+         vg::describe(END) + "). The tool printed:\n" +
+         (OUTPUT.empty() ? std::string("(nothing)\n") : vg::lastLines(OUTPUT, 20));
+}
+
 } // namespace
 
 /* ----------------------------- Probe ----------------------------- */
@@ -120,6 +146,14 @@ TEST(SkipUnlessUnderComputeSanitizerTest, ToolRunRunsTheProbe) {
   }
   const fs::path DIR = scratchDir();
   ASSERT_FALSE(DIR.empty()) << "could not create a scratch directory";
+  // Decided before the probe runs: a tool that starts no program at all
+  // cannot reach it, which is this environment's, not the helper's.
+  const std::string CANNOT_START = reasonTheToolStartsNoProgram(DIR);
+  if (!CANNOT_START.empty()) {
+    std::error_code ec;
+    fs::remove_all(DIR, ec);
+    GTEST_SKIP() << CANNOT_START;
+  }
 
   const vg::ChildExit END =
       vg::runLogged({"compute-sanitizer", "--require-cuda-init", "no", selfPath(),
@@ -129,7 +163,8 @@ TEST(SkipUnlessUnderComputeSanitizerTest, ToolRunRunsTheProbe) {
   std::error_code ec;
   fs::remove_all(DIR, ec);
 
-  // Any way of not reaching the probe fails, with what the run printed.
+  // A tool that starts programs and does not reach the probe fails, with
+  // what the run printed.
   ASSERT_TRUE(vg::testsStarted(OUTPUT))
       << "the probe did not start under compute-sanitizer (" << vg::describe(END)
       << "). The run printed:\n"

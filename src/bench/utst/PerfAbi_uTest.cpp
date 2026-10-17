@@ -86,8 +86,10 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 
 } // namespace
 
-// The tables and bindings below describe this version and no other.
-static_assert(BENCH_ABI_VERSION == 2,
+// The tables and bindings below describe this version and no other. Version 3
+// changed Profiler's virtual functions and no member (AbiProfilerInterface.cmake
+// holds that change); the layout is version 2's.
+static_assert(BENCH_ABI_VERSION == 3,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 

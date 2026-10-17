@@ -5,7 +5,13 @@
 **Example:** `saxpy` (see [Shared Examples](../README.md#shared-examples)), plus a copy of its kernel without the bounds guard, private to the demo
 **Captured:** 2026-09-30 (UTC), written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`; compute-sanitizer 2025.3.1 (CUDA 13.0)
+reported `bench 1.0.3`; compute-sanitizer 2025.3.1 (CUDA 13.0). The doctor's
+row, the readiness report under the wrap, the output of the `bench run` steps
+(2 and 4) and the plain run with `--profile compute-sanitizer` in
+[If It Does Not Match](#if-it-does-not-match) are from a later session on
+2026-10-10 (UTC), from a later development tree at the same version with the
+same tool; the report in Step 3, the job commands and every other figure are
+from the first.
 
 ## Overview
 
@@ -35,7 +41,7 @@ them nothing to find, so this page runs memcheck only.
 - **Best for:** device code that reads or writes outside its buffers, a
   bug the hardware often lets through and a test of the result cannot see.
 - **Overhead:** large. On this rig the kernel that takes about 20 us alone
-  took 1139.2 us under memcheck, about 56 times as long
+  took 1149.5 us under memcheck, about 56 times as long
   (step 4). Run one case at a time under it, with few cycles, and never read
   its timings as measurements.
 - **Not for:** time (Nsight, [walkthrough 11](11_NSIGHT_PROFILER.md)), host
@@ -45,29 +51,28 @@ them nothing to find, so this page runs memcheck only.
 **In Vernier:** `--profile compute-sanitizer` selects the compute-sanitizer
 backend, which does not start the tool itself. `bench run <binary> --profile
 compute-sanitizer` builds the wrap and prints it on its first line:
-`compute-sanitizer --tool=memcheck --log-file <dir>/<binary>.compute-sanitizer/sanitizer.log <binary> --profile compute-sanitizer ...`,
-where `<dir>` is `--profile-output-dir` (`bench-out` when you give none).
-The tool writes one report for the whole process, so profile one case per
-run with `--gtest_filter`; no per-test folder is created. On this tree the
-wrap runs memcheck whatever `--profile-args` says; a tool asked for by name
-reaches the tool only in a wrap typed by hand. Under the wrap a case that
-measures prints, once per run, the readiness report of its profiler request:
+`compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file <working directory>/<dir>/<binary>.compute-sanitizer/sanitizer.log <binary> --profile compute-sanitizer ...`,
+where `<dir>` is `--profile-output-dir` (`bench-out` when you give none). The
+log is named whole because the tool joins a relative name to its working
+directory and reads a `%` there as a macro. The tool writes one report for
+the whole process, so profile one case per run with `--gtest_filter`; no
+per-test folder is created. The wrap runs the tool `--profile-args` names
+(`memcheck`, `racecheck`, `synccheck` or `initcheck`; memcheck by default),
+and when the report counts errors `bench run` fails the run, naming the
+report (step 2). Under the wrap a case that measures prints, once per run,
+the readiness report of its profiler request:
 
 ```
-[WARN] Profiler 'compute-sanitizer': unverified: collection is owned by the compute-sanitizer wrap; completion is checked at exit
+[WARN] Profiler 'compute-sanitizer': unverified: compute-sanitizer started this process and reports when it exits; which tool it runs, and what it finds, is not seen from inside the process
 ```
 
-which says that the capture belongs to the tool around the process, so the
-benchmark runs no check of its own and reports the request unverified; the
-backend then prints that the wrap was detected and where the report goes.
-Run by hand instead, with `--profile compute-sanitizer` on the binary's own
-command line and nothing around it, a test that measures creates the folder
-`ComputeSanitizer.SaxpyKernel.compute-sanitizer/` in the working directory
-and prints the two ways to check it (see
-[If It Does Not Match](#if-it-does-not-match)); the folder stays empty unless
-a `--log-file` points into it. The tool opens its log before the program
-starts and prints nothing anywhere when the log's folder is missing, so the
-printed by-hand command makes the folder first.
+which says that the tool started the process and that its report, not the
+benchmark, holds what it found; the backend then prints that the wrap was
+detected and where the report goes. Run by hand instead, with
+`--profile compute-sanitizer` on the binary's own command line and nothing
+around it, the request fails: the tests run, the run ends with status 4, and
+its report names the command that wraps the binary in the tool (see
+[If It Does Not Match](#if-it-does-not-match)). No folder is created for it.
 
 **Needs:** the CUDA toolkit on `PATH`, with `compute-sanitizer`, and a GPU
 build: see the rig's [setup](../../docs/rigs/RIG_THOR_AGX.md#2-one-time-setup)
@@ -77,8 +82,11 @@ counters are restricted to administrators (the rig document's note on
 Nsight Compute). `bench doctor` reports it as:
 
 ```
-  [OK]   compute-sanitizer compute-sanitizer available
+  [WARN] compute-sanitizer unverified: /usr/local/cuda/bin/compute-sanitizer runs here (Version 2025.3.1.0 (build 36400806) (public-release)); whether its memcheck checks the benchmark's kernels is not checked before the run
 ```
+
+A run is unverified for the same reason: whether the tool checked the
+kernels is in its report.
 
 ## The Example
 
@@ -201,32 +209,39 @@ bench run ./build/bin/ptests/BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile
   --profile-output-dir sanitizer-unguarded -- --gtest_filter=ComputeSanitizer.SaxpyUnguarded
 ```
 
-Captured output, with the binary's directory shortened to `...`:
+Captured output, with the working directory shortened to `...`:
 
 ```
-Running: compute-sanitizer --tool=memcheck --log-file sanitizer-unguarded/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log .../BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile compute-sanitizer --profile-output-dir sanitizer-unguarded --gtest_filter=ComputeSanitizer.SaxpyUnguarded
+Running: compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file .../sanitizer-unguarded/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log ./build/bin/ptests/BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile compute-sanitizer --profile-output-dir sanitizer-unguarded --gtest_filter=ComputeSanitizer.SaxpyUnguarded
 Note: Google Test filter = ComputeSanitizer.SaxpyUnguarded
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from ComputeSanitizer
 [ RUN      ] ComputeSanitizer.SaxpyUnguarded
 [ComputeSanitizer.SaxpyUnguarded]  one launch over 1048575 elements, 4096 blocks of 256; the device reported: unspecified launch failure
-[       OK ] ComputeSanitizer.SaxpyUnguarded (463 ms)
-[----------] 1 test from ComputeSanitizer (463 ms total)
+[       OK ] ComputeSanitizer.SaxpyUnguarded (428 ms)
+[----------] 1 test from ComputeSanitizer (428 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (463 ms total)
+[==========] 1 test from 1 test suite ran. (428 ms total)
 [  PASSED  ] 1 test.
+
+[profile] --profile compute-sanitizer: no case that ran was built with the profiler guard; the compute-sanitizer wrap still recorded the whole process.
+
+Error: compute-sanitizer reported 4 errors in the benchmark; the report is sanitizer-unguarded/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log (the tool exited with status 5)
 ```
 
-The `Running:` line is the wrap `bench run` built. No readiness report is
+The `Running:` line is the wrap `bench run` built: the tool asked for, an
+exit status for its findings, and the log named whole. No readiness report is
 printed here: the case builds no measurement, so no profiler is created for
-it, and the tool around the process captures it all the same. The case ran,
-because under the tool the helper lets it, and it passed: the launch was
-accepted, and what the device reported when the case waited for it is
-`unspecified launch failure`, which is the tool ending the context at the
-kernel's first invalid access. The one file the run wrote is the report, in a
-folder named for the binary and the tool:
+it, as the `[profile]` line says, and the tool around the process checks it
+all the same. The case ran, because under the tool the helper lets it, and it
+passed: the launch was accepted, and what the device reported when the case
+waited for it is `unspecified launch failure`, which is the tool ending the
+context at the kernel's first invalid access. The tool then ended with the
+status `bench run` gave it for findings, and `bench run` read the report's
+count and failed the run, naming the report: it exits 1. The one file the run
+wrote is the report, in a folder named for the binary and the tool:
 
 ```bash
 ls sanitizer-unguarded/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer
@@ -315,26 +330,29 @@ bench run ./build/bin/ptests/BenchDemo_Gpu_04_ComputeSanitizerProfiler --profile
 cat sanitizer-kernel/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log
 ```
 
-Captured output of the run, with the binary's directory shortened to `...`:
+Captured output of the run, with the working directory shortened to `...`:
 
 ```
-Running: compute-sanitizer --tool=memcheck --log-file sanitizer-kernel/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log .../BenchDemo_Gpu_04_ComputeSanitizerProfiler --cycles 1 --repeats 1 --profile compute-sanitizer --profile-output-dir sanitizer-kernel --gtest_filter=ComputeSanitizer.SaxpyKernel
+Running: compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file .../sanitizer-kernel/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log ./build/bin/ptests/BenchDemo_Gpu_04_ComputeSanitizerProfiler --cycles 1 --repeats 1 --profile compute-sanitizer --profile-output-dir sanitizer-kernel --gtest_filter=ComputeSanitizer.SaxpyKernel
 Note: Google Test filter = ComputeSanitizer.SaxpyKernel
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from ComputeSanitizer
 [ RUN      ] ComputeSanitizer.SaxpyKernel
 
-[WARN] Profiler 'compute-sanitizer': unverified: collection is owned by the compute-sanitizer wrap; completion is checked at exit
+[WARN] Profiler 'compute-sanitizer': unverified: compute-sanitizer started this process and reports when it exits; which tool it runs, and what it finds, is not seen from inside the process
 
 [compute-sanitizer] tool=memcheck -- wrapping detected; compute-sanitizer reports at process exit, in its --log-file or on its stdout. Artifact directory: sanitizer-kernel/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer
-[ComputeSanitizer.SaxpyKernel]  1139.168 us/call  CV=0.0%  ~878 calls/s  (p10=1139.168 p90=1139.168 sd=0.000)
-[       OK ] ComputeSanitizer.SaxpyKernel (263 ms)
-[----------] 1 test from ComputeSanitizer (263 ms total)
+[gpu] CUPTI refused the collector's activity callbacks (CUPTI_ERROR_MULTIPLE_SUBSCRIBERS_NOT_SUPPORTED): cuptiKernelLaunches, cuptiRegistersMedian, cuptiRegistersMax, cuptiStaticSmemBytes and cuptiDynamicSmemBytes stay empty.
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[ComputeSanitizer.SaxpyKernel]  1149.472 us/call  CV=0.0%  ~870 calls/s  (p10=1149.472 p90=1149.472 sd=0.000)
+[       OK ] ComputeSanitizer.SaxpyKernel (243 ms)
+[----------] 1 test from ComputeSanitizer (243 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (263 ms total)
+[==========] 1 test from 1 test suite ran. (243 ms total)
 [  PASSED  ] 1 test.
+[bench] compute-sanitizer wrote sanitizer-kernel/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log (62 bytes)
 ```
 
 and of the report:
@@ -346,9 +364,13 @@ and of the report:
 
 The `[WARN]` line is the readiness report explained above, printed because
 this case measures; the line after it is the backend's notice that the wrap
-was detected and where the report goes. `ERROR SUMMARY: 0 errors`: the tool
-watched every launch of the guarded kernel and found nothing to report. The
-result line is one launch under the tool, 1139.2 us against step 1's 20.473 us; it says what
+was detected and where the report goes. The two `[gpu]` lines name the GPU
+columns this run leaves empty: CUPTI takes one subscriber, and under the tool
+the harness's collector is refused; this rig's NVML reads no clocks or
+power. The last line is `bench run`'s check that the run left its report.
+`ERROR SUMMARY: 0 errors`: the tool watched every launch of the guarded
+kernel and found nothing to report, and the run exits 0. The result line is
+one launch under the tool, 1149.5 us against step 1's 20.473 us; it says what
 the tool costs, not how fast the kernel is. Measured with more launches
 (`--cycles 100 --repeats 3`, three runs each way), the kernel read
 20.10 to 20.93 us plainly and 1135.3 to 1136.4 us under
@@ -356,9 +378,10 @@ the tool: 54 to 57 times as long.
 
 ## Failing a Job on a Memory Error
 
-The wrap `bench run` builds gives the tool no exit code for errors, so a
-run with an invalid access still exits with the program's own status. A job
-that should stop on one runs the tool itself, with an exit code:
+The wrap `bench run` builds gives the tool an exit status for its findings
+and fails the run when the report counts errors, as step 2 shows, so a job
+that runs it stops on an invalid access. A job that runs the tool itself
+gives it an exit code of its own:
 
 ```bash
 compute-sanitizer --tool=memcheck --error-exitcode 1 --log-file unguarded.log \
@@ -430,8 +453,7 @@ carry elsewhere.
 ## If It Does Not Match
 
 - **`ComputeSanitizer.SaxpyUnguarded` reports `SKIPPED` in step 2.** The
-  run was not under the tool. The binary run on its own, with or without
-  `--profile compute-sanitizer`, prints:
+  run was not under the tool. The binary run on its own prints:
 
   ```
   Note: Google Test filter = ComputeSanitizer.SaxpyUnguarded
@@ -463,31 +485,35 @@ carry elsewhere.
 
   The toolkit's `bin` is not on `PATH`; the rig document's setup exports it.
 
-- **The binary run by hand with `--profile compute-sanitizer` prints a
-  command instead of a report.** Nothing wraps it, and the backend says so,
-  naming both ways to check the measurement:
+- **The binary run by hand with `--profile compute-sanitizer` fails with
+  status 4 and names the wrap.** Nothing started it under the tool, so the
+  request cannot check anything: the tests run and pass, and the report names
+  the command that wraps the binary in the tool, and `bench run`, which does.
+  The run as this page's later session printed it, with the working
+  directory shortened to `...`:
 
   ```
   [ RUN      ] ComputeSanitizer.SaxpyKernel
 
-  [compute-sanitizer] not running under compute-sanitizer: this measurement runs unchecked. To check it:
-  [compute-sanitizer]   bench run <this-binary> --profile compute-sanitizer -- [...]
-  [compute-sanitizer] or by hand, making the folder first (the tool opens its log before this program starts):
-  [compute-sanitizer]   mkdir -p ./ComputeSanitizer.SaxpyKernel.compute-sanitizer && compute-sanitizer --tool=memcheck --log-file=./ComputeSanitizer.SaxpyKernel.compute-sanitizer/sanitizer.log \
-  [compute-sanitizer]       <this-binary> --profile compute-sanitizer [...]
+  [FAIL] Profiler 'compute-sanitizer': missing: compute-sanitizer checks a process only when it starts it, and it did not start this one
+     Wrap it: compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file=.../sanitizer.log <this-binary> --profile compute-sanitizer [...]; or run it with bench run --profile compute-sanitizer, which wraps it and reads the report.
+     Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
 
-  [ComputeSanitizer.SaxpyKernel]  21.344 us/call  CV=0.0%  ~46.9K calls/s  (p10=21.344 p90=21.344 sd=0.000)
-  [       OK ] ComputeSanitizer.SaxpyKernel (175 ms)
+  [gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+  [ComputeSanitizer.SaxpyKernel]  21.856 us/call  CV=0.0%  ~45.8K calls/s  (p10=21.856 p90=21.856 sd=0.000)
+  [       OK ] ComputeSanitizer.SaxpyKernel (180 ms)
+  ...
+  [profile] --profile compute-sanitizer failed; the run exits with status 4:
+  [profile]   compute-sanitizer: missing: compute-sanitizer checks a process only when it starts it, and it did not start this one
   ```
 
-  The by-hand command makes the folder before the tool opens its log; run
-  as printed, it writes the log where it says. Its folder and its log are
-  quoted for the shell where they need it, so a name with a space or a
-  quote in it stays one argument. A `--log-file` pointed into a folder that
-  does not exist produces no report anywhere. With
-  `--profile-args racecheck`, `synccheck` or `initcheck`, the backend prints
-  the by-hand command alone, with that tool: the wrap `bench run` builds
-  runs memcheck.
+  The wrap names the log whole, in the directory the run started from, with
+  each `%` in it doubled for the tool and the name quoted for the shell where
+  it needs it: the tool joins a relative log name to its working directory
+  and reads a `%` there as a macro. Filled in with the binary and the run's
+  arguments, it checks the case and writes the log where it says. No folder
+  is created for the refused request. With `--profile-args racecheck`,
+  `synccheck` or `initcheck`, both commands carry that tool.
 
 - **The report names no line, only `saxpyUnguarded(...)+0x...`.** The
   build has no device line information for that source; this tree compiles
@@ -503,9 +529,11 @@ call`, exit 255.** The program the tool started never called CUDA: a
   100 (`--print-limit`); at 1,048,577 elements, 255 threads of a 4,097th
   block, this rig reported 259 errors.
 
-- **`[WARN] Profiler 'compute-sanitizer': unverified: compute-sanitizer
-checks its default mode only; '...' was not checked`.** `--profile-args`
-  named a tool; on this tree the request is not checked beyond memcheck.
+- **`--profile-args` is refused before anything runs.** A word that is not
+  one of the tool's four (`memcheck`, `racecheck`, `synccheck`,
+  `initcheck`), or two of them at once, is refused by `bench run`, naming
+  the four; the binary run by hand reads the same words and fails the
+  request the same way.
 
 ## Check Against the Reference
 
@@ -548,8 +576,8 @@ Three things check what this page shows, and all fail loudly:
 
 - `TestDemoComputeSanitizer`, a test program of its own beside the demo
   ([`04_ComputeSanitizerProfiler_uTest.cpp`](../gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp)),
-  runs the demo binary under compute-sanitizer as `bench run` wraps it, plus
-  an exit code for errors. `ComputeSanitizer.FindsTheUnguardedRead` fails
+  runs the demo binary under compute-sanitizer as `bench run` wraps it, with
+  its own exit code for errors. `ComputeSanitizer.FindsTheUnguardedRead` fails
   unless the unguarded case runs to its end, the report holds exactly one
   invalid access, a read of four bytes in `saxpyUnguarded` at the line of
   its statement (found in the source), by thread (255,0,0) in block
@@ -557,16 +585,21 @@ Three things check what this page shows, and all fail loudly:
   tool exits with the code it was given; a copy given its guard fails it.
   `ComputeSanitizer.KernelReportsNothing` fails on any access or error for
   the shared kernel. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
-  the plain run to its skip, `ComputeSanitizer.PlainRunIsNotWrapped` the
-  backend to reporting no wrap where there is none,
-  `ComputeSanitizer.PlainRunHintShape` and `ComputeSanitizer.HintRunsOnTheFirstRun`
-  the printed by-hand command to its shape and to writing its log where it
-  says, run as printed where its folder does not exist, also under folders
-  whose names hold spaces (`ComputeSanitizer.HintRunsWithSpacesInItsPath`)
-  or a quote (`ComputeSanitizer.HintRunsWithAQuoteInItsPath`), and
-  `ComputeSanitizer.NamedToolHintRunsThatTool` the hint for racecheck,
-  synccheck and initcheck to the by-hand command alone, which, run as
-  printed against a stand-in that records its arguments, starts
+  the plain run to its skip; `ComputeSanitizer.PlainRunIsNotWrapped` the
+  binary run by hand with `--profile compute-sanitizer` to its refusal
+  (status 4 after its test passed, no wrap reported where there is none, the
+  wrap named); `ComputeSanitizer.PlainRunHintShape` the wrap its report names
+  to its shape (the tool asked for, `--error-exitcode 5`, the log named whole
+  in the run's working directory, and `bench run` with the same request, for
+  memcheck and for racecheck); `ComputeSanitizer.HintRunsOnTheFirstRun` that
+  wrap, filled in and run as printed from another directory, to writing its
+  log where it says, under a directory whose name holds a `%`, also where the
+  run's own directory's name holds spaces
+  (`ComputeSanitizer.HintRunsWithSpacesInItsPath`) or a quote
+  (`ComputeSanitizer.HintRunsWithAQuoteInItsPath`); and
+  `ComputeSanitizer.NamedToolHintRunsThatTool` the report for racecheck,
+  synccheck and initcheck to offering `bench run` with that tool, and a wrap
+  which, run as printed against a stand-in that records its arguments, starts
   compute-sanitizer with the tool named. These are registered with `ctest`
   under the `demo` and `compute-sanitizer` labels wherever the GPU demos are
   built, and skip only where the tool is not on `PATH`, where the CUDA

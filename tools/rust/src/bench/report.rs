@@ -349,25 +349,47 @@ pub fn summary_to_json(rows: &[BenchRow]) -> String {
     serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
 }
 
-/// Format GPU environment results as a JSON array.
-pub fn gpu_env_to_json(checks: &[super::CheckResult]) -> String {
-    validate_to_json(checks)
+/// A check status as the JSON outputs spell it.
+fn status_word(status: super::CheckStatus) -> &'static str {
+    match status {
+        super::CheckStatus::Ok => "ok",
+        super::CheckStatus::Warn => "warn",
+        super::CheckStatus::Fail => "fail",
+    }
 }
 
-/// Format validation results as a JSON array.
-pub fn validate_to_json(checks: &[super::CheckResult]) -> String {
+/// Format GPU environment results as a JSON array.
+pub fn gpu_env_to_json(checks: &[super::CheckResult]) -> String {
     let entries: Vec<serde_json::Value> = checks
         .iter()
         .map(|c| {
             serde_json::json!({
                 "label": c.label,
-                "status": match c.status {
-                    super::CheckStatus::Ok => "ok",
-                    super::CheckStatus::Warn => "warn",
-                    super::CheckStatus::Fail => "fail",
-                },
+                "status": status_word(c.status),
                 "detail": c.detail,
             })
+        })
+        .collect();
+
+    serde_json::to_string_pretty(&entries).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Format `bench validate`'s rows as a JSON array: each row's `label`,
+/// `status` ("ok" or "warn"), `detail`, and `hint` on a binary's row that
+/// has one.
+pub fn validate_to_json(rows: &[super::validate::Row]) -> String {
+    let entries: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            let mut entry = serde_json::json!({
+                "label": r.label,
+                "status": status_word(r.status),
+                "detail": r.detail,
+            });
+            if !r.hint.is_empty() {
+                entry["hint"] = serde_json::Value::from(r.hint.as_str());
+            }
+            entry
         })
         .collect();
 
