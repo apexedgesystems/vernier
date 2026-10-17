@@ -31,8 +31,11 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerMassif.cpp"
     "${SRC_DIR}/ProfilerMemcheck.cpp"
     "${SRC_DIR}/ProfilerHelgrind.cpp"
+    "${SRC_DIR}/ValgrindTool.cpp"
     "${SRC_DIR}/ProfilerOffCpu.cpp"
     "${SRC_DIR}/ProfilerRocprof.cpp"
+    "${SRC_DIR}/ProfilerNsightChecks.cpp"
+    "${SRC_DIR}/ProfilerComputeSanitizerChecks.cpp"
     "${SRC_DIR}/ProfilerHeaptrack.cpp"
     "${SRC_DIR}/ProfilerJemalloc.cpp"
 )
@@ -49,9 +52,12 @@ set(CUDA_SOURCES
 # with header code compiled into the benchmark, and bench_cuda embeds Stats in
 # the results it returns. The two therefore carry one object layout and one
 # SONAME number, stated here once so the GPU library cannot drift from the
-# core one. Raise it whenever that layout changes or an exported signature
-# does; the loader then refuses a benchmark built against the previous number
-# instead of binding it to incompatible code.
+# core one. Raise it whenever that layout changes, an exported signature does,
+# or Profiler's virtual functions do (the libraries build the profilers that
+# benchmark code calls through); the loader then refuses a benchmark built
+# against the previous number instead of binding it to incompatible code.
+# While no release has shipped this number, BENCH_ABI_VERSION alone moves
+# (PerfAbi.hpp): every library built under it runs that check.
 # ------------------------------------------------------------------------------
 
 set(BENCH_ABI_SOVERSION 2)
@@ -111,6 +117,13 @@ endif ()
 # include directory; downstream consumers that only link bench should
 # still get real NVTX ranges when the CUDA toolkit is present.
 vernier_nvtx_enable(${LIB_NAME})
+
+# The bpftrace backend reads its bundled scripts from this source tree by
+# absolute path, so a run finds them whatever its working directory.
+set_source_files_properties(
+  "${SRC_DIR}/ProfilerBpftrace.cpp"
+  PROPERTIES COMPILE_DEFINITIONS "VERNIER_BPF_SCRIPTS_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/bpf\""
+)
 
 # ------------------------------------------------------------------------------
 # CUDA Library (requires CUDA toolkit)

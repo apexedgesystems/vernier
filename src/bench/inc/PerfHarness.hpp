@@ -447,6 +447,7 @@ public:
   using Fn = std::function<void()>;
   using BeforeHook = std::function<void(const PerfCase&)>;
   using AfterHook = std::function<void(const PerfCase&, const Stats&)>;
+  using AbortHook = std::function<void(const PerfCase&)>;
 
   PerfCase(std::string testName, PerfConfig cfg)
       : testName_(std::move(testName)), cfg_(std::move(cfg)) {}
@@ -498,6 +499,14 @@ public:
   void setAfterMeasureHook(AfterHook h) { afterHook_ = std::move(h); }
 
   /**
+   * @brief Install the hook measured() runs in place of the after hook when
+   * its callback throws (optional): it ends what the before hook started,
+   * with nothing summarized or published. An exception it throws is dropped,
+   * so the caller gets the callback's.
+   */
+  void setAbortMeasureHook(AbortHook h) { abortHook_ = std::move(h); }
+
+  /**
    * @brief Measure repeats. User-provided body should perform exactly `cycles()` ops.
    * Records wall us per call per repeat, then summarizes.
    *
@@ -510,6 +519,12 @@ public:
    * PerfRegistry); a body that throws publishes nothing.
    *
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
+   *
+   * An exception from @p fn ends the measurement: the watchdog is turned off,
+   * the abort hook runs (attachProfilerHooks(): the profiler ends what its
+   * before hook started, without analysis), nothing is summarized or
+   * published, the after hook does not run, and the exception reaches the
+   * caller unchanged. The case can then measure again.
    */
   PerfResult measured(Fn fn, std::string label = "measured") {
     if (beforeHook_) {
@@ -520,8 +535,8 @@ public:
     auto lastProgressTime = MEASURE_START;
     bool showedProgress = false;
 
-    // Arm the per-test watchdog only when profiling AND the user has a
-    // non-zero timeout. SIGALRM is the cleanest way to abort a hung fn():
+    // Arm the per-test watchdog only when profiling AND the timeout is above
+    // zero (0 turns it off). SIGALRM is the cleanest way to abort a hung fn():
     // drain-loop / blocking-recv tests cannot be interrupted from the
     // measured() thread itself because fn() holds the CPU.
     const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
@@ -531,22 +546,36 @@ public:
     }
 
     std::vector<double> perCall;
-    perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
-    for (int r = 0; r < cfg_.repeats; ++r) {
-      const double T0 = nowUs();
-      fn();
-      const double T1 = nowUs();
-      perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
+    try {
+      perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
+      for (int r = 0; r < cfg_.repeats; ++r) {
+        const double T0 = nowUs();
+        fn();
+        const double T1 = nowUs();
+        perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
 
-      // Progress reporting: print every ~2 seconds for long runs
-      auto now = std::chrono::steady_clock::now();
-      auto sinceLast =
-          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
-      if (sinceLast.count() >= 2000) {
-        printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
-        lastProgressTime = now;
-        showedProgress = true;
+        // Progress reporting: print every ~2 seconds for long runs
+        auto now = std::chrono::steady_clock::now();
+        auto sinceLast =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
+        if (sinceLast.count() >= 2000) {
+          printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
+          lastProgressTime = now;
+          showedProgress = true;
+        }
       }
+    } catch (...) {
+      // Left armed, the alarm would end a later case of this process.
+      if (showedProgress) {
+        clearProgress();
+      }
+      if (watchdogActive) {
+        perf_watchdog::disarm();
+      }
+      // What the before hook started ends now, not with the case: the caller
+      // may keep the case, measure it again or measure another.
+      runAbortHook();
+      throw;
     }
 
     if (showedProgress) {
@@ -763,6 +792,19 @@ public:
   [[nodiscard]] const std::string& testName() const noexcept { return testName_; }
 
 private:
+  /// Run the abort hook, if any. What it throws is dropped, so the exception
+  /// that ended the measurement is the one the caller gets.
+  void runAbortHook() noexcept {
+    if (!abortHook_) {
+      return;
+    }
+    try {
+      abortHook_(*this);
+    } catch (...) {
+      // Dropped: the measured callback's exception is the one rethrown.
+    }
+  }
+
   /**
    * @brief --target-time auto-sizing: estimate one call's cost, then set
    * this instance's cycle count so a repeat spans the requested wall time.
@@ -818,6 +860,7 @@ private:
   // Optional hooks (no-ops unless set)
   BeforeHook beforeHook_{};
   AfterHook afterHook_{};
+  AbortHook abortHook_{};
 };
 
 } // namespace bench

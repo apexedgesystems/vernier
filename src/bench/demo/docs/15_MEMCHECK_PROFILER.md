@@ -5,7 +5,9 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), plus a deliberately wrong join private to the demo
 **Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; valgrind 3.24.0
+`bench 1.0.3`; valgrind 3.24.0. The doctor's rows and the console output of
+steps 2 and 4 come from 2026-10-03 (UTC), a later tree at the same version;
+the reports of steps 3 and 4 are the first session's.
 
 ## Overview
 
@@ -54,9 +56,12 @@ with `--gtest_filter`; no per-test folder is created. Run by hand instead,
 with `--profile memcheck` on the binary's own command line, a test that
 measures (`Memcheck.JoinV1` here) creates the folder
 `Memcheck.JoinV1.memcheck/` in the working directory, which stays empty
-unless `--log-file` points into it; run without valgrind, the backend prints
-a command that does exactly that. `Memcheck.JoinOffByOne` measures nothing
-and creates no folder. Because the wrap passes `--error-exitcode=0`, a
+unless `--log-file` points into it. Run without valgrind, the request fails:
+the test measures, no folder is created, the run prints the command that
+starts it under memcheck
+(`valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=./memcheck.log <this-binary> --profile memcheck [...]`)
+and exits with status 4. `Memcheck.JoinOffByOne` measures nothing and
+creates no folder. Because the wrap passes `--error-exitcode=0`, a
 `bench run` with memory errors still exits 0: the log carries the finding.
 To fail a job on one, run valgrind yourself
 ([below](#failing-a-job-on-a-memory-error)).
@@ -66,7 +71,7 @@ To fail a job on one, run valgrind yourself
 [`bench doctor`](../../docs/rigs/RIG_PI4.md#6-verify-your-rig) reports it as:
 
 ```
-  [OK]   memcheck   valgrind available (memcheck is the default tool)
+  [OK]   memcheck   valgrind starts memcheck (probe: /usr/bin/valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=/dev/null /bin/true)
 ```
 
 ## The Example
@@ -238,12 +243,20 @@ Note: Google Test filter = Memcheck.JoinOffByOne
 [----------] Global test environment tear-down
 [==========] 1 test from 1 test suite ran. (141 ms total)
 [  PASSED  ] 1 test.
+
+[profile] --profile memcheck: no case that ran was built with the profiler guard; the memcheck wrap still recorded the whole process.
+
+[bench] memcheck wrote memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log (7530 bytes)
 ```
 
 The `Running:` line is the wrap `bench run` built. The case ran, because
 under valgrind the helper lets it, and it passed: memcheck reports and does
-not stop the program, and the answers were right. The one file the run
-wrote is the log, in a folder named for the binary and the tool:
+not stop the program, and the answers were right. The `[profile]` line says
+that no case built with the profiler guard ran, since this case measures
+nothing, and that the wrap still recorded the whole process; the last line is
+`bench run`'s, after valgrind exited: it checks that the log was written and
+names its size. The one file the run wrote is the log, in a folder named for
+the binary and the tool:
 
 ```bash
 ls memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck
@@ -363,13 +376,14 @@ Note: Google Test filter = Memcheck.JoinV1
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinV1
-[Memcheck.JoinV1]  2385.000 us/call  CV=0.0%  ~419 calls/s  (p10=2385.000 p90=2385.000 sd=0.000)
-[       OK ] Memcheck.JoinV1 (260 ms)
-[----------] 1 test from Memcheck (269 ms total)
+[Memcheck.JoinV1]  2466.000 us/call  CV=0.0%  ~406 calls/s  (p10=2466.000 p90=2466.000 sd=0.000)
+[       OK ] Memcheck.JoinV1 (448 ms)
+[----------] 1 test from Memcheck (457 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (345 ms total)
+[==========] 1 test from 1 test suite ran. (532 ms total)
 [  PASSED  ] 1 test.
+[bench] memcheck wrote memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log (1188 bytes)
 ```
 
 and of the log:
@@ -481,8 +495,7 @@ to carry elsewhere.
 ## If It Does Not Match
 
 - **`Memcheck.JoinOffByOne` reports `SKIPPED` in step 2.** The run was not
-  under valgrind. The binary run on its own, with or without
-  `--profile memcheck`, prints:
+  under valgrind. The binary run on its own prints:
 
   ```
   Note: Google Test filter = Memcheck.JoinOffByOne
@@ -503,6 +516,9 @@ to carry elsewhere.
   [  SKIPPED ] Memcheck.JoinOffByOne
   ```
 
+  With `--profile memcheck` it prints the same and then, since no case built
+  with the profiler guard ran,
+  `[profile] --profile memcheck: no case that ran was built with the profiler guard, so nothing was profiled.`
   Run it through `bench run --profile memcheck`, as step 2 does, or under
   `valgrind --tool=memcheck` yourself.
 
@@ -513,7 +529,7 @@ to carry elsewhere.
   ```
 
   valgrind is not installed, or not on `PATH`; the doctor reports
-  `[FAIL] memcheck   valgrind binary not found on PATH`. Install the package
+  `[FAIL] memcheck   missing: valgrind not found on PATH`. Install the package
   from the rig document's one-time setup.
 
 - **`Memcheck.FindsTheOffByOne` reports `SKIPPED`, quoting valgrind giving

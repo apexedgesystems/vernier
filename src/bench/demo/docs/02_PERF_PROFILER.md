@@ -5,7 +5,12 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) and [`filter`](../examples/filter/inc/Filter.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured from
 the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`;
-perf 6.18.39
+perf 6.18.39. Step 2's console output, the record step's check and the
+doctor's rows under If It Does Not Match come from this rig on 2026-10-03
+(UTC), a later tree at the same version; the reports of step 3 and of Record
+Mode are the first session's. The refused run quoted under If It Does Not Match comes from
+the project's development container on an x86-64 laptop whose kernel sets
+`perf_event_paranoid` to 4.
 
 ## Overview
 
@@ -50,9 +55,10 @@ on the same machine.
 cpu-cycles,instructions,branches,branch-misses,cache-misses -p <pid>` on the
 benchmark's own process just before a test's measured repeats and stops it
 after them, so warmup and the `--target-time` calibration are not counted. It
-waits 200 ms after starting perf, for perf to attach, and a second after
-signalling it to stop: the per-call timings cover the measured calls alone,
-and a profiled test takes that much longer than its calls. perf's report is
+starts the measured calls once perf answers that it is counting, and after
+them stops perf and waits until perf has written its report: the per-call
+timings cover the measured calls alone, and a profiled test takes perf's
+start and stop longer than its calls. perf's report is
 written to `<Suite.Case>.perf/stat.txt` under the working directory
 (`--profile-output-dir DIR` moves the root), and that is the only file stat
 mode writes. The totals are for the whole measured window, so a per-call
@@ -164,22 +170,30 @@ Note: Google Test filter = PerfProfiler.JoinV0
 [----------] Global test environment set-up.
 [----------] 1 test from PerfProfiler
 [ RUN      ] PerfProfiler.JoinV0
-[PerfProfiler.JoinV0]  945.195 us/call  CV=0.1%  ~1.1K calls/s  (p10=944.686 p90=945.777 sd=0.507)
-[       OK ] PerfProfiler.JoinV0 (2160 ms)
-[----------] 1 test from PerfProfiler (2160 ms total)
+
+[WARN] Profiler 'perf': perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events
+
+[PerfProfiler.JoinV0]  919.675 us/call  CV=0.1%  ~1.1K calls/s  (p10=919.083 p90=920.424 sd=1.169)
+[       OK ] PerfProfiler.JoinV0 (1161 ms)
+[----------] 1 test from PerfProfiler (1162 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (2160 ms total)
+[==========] 1 test from 1 test suite ran. (1162 ms total)
 [  PASSED  ] 1 test.
 ```
 
 `bench run` starts the binary pinned to core 3 with `--profile perf`, as its
 `Running:` line shows. Just before the measured repeats the backend starts
 `perf stat` on the benchmark's own process, and just after them it stops it.
-The timing covers the measured calls alone: 945.2 us per call, within the
-spread of step 1's runs. The test took 2,160 ms for about 945 ms of calls; the
-rest is the backend's 200 ms wait for perf to attach, its one-second wait for
-perf to stop, and the test's setup and warmup.
+The `[WARN]` line is the perf backend's readiness report, printed once per
+run: perf counts this process, but this processor has no `branches:u` event,
+and `perf_event_paranoid` 2 keeps the counting to user space, which is all
+this page needs. The timing covers the measured calls alone: 919.7 us per
+call, a little below the twelve runs of step 1 (926.9 to 1,002.6). The test
+took 1,161 ms for about 920 ms of calls; the rest is perf's start, on which
+the backend waits until perf answers that it is counting, perf's stop, on
+which it waits until perf has written its report, and the test's setup and
+warmup.
 `--cycles 100 --repeats 10` makes the measured window exactly 1,000 calls, the
 number every count in the next step is divided by. perf's report is
 `PerfProfiler.JoinV0.perf/stat.txt`, under the directory `bench run` ran from.
@@ -226,8 +240,10 @@ with `:u` for user space. Divided by the 1,000 calls:
   per part.
 
 The `time elapsed` line is perf's own clock, 1.09 s: the 1,000 calls of about
-0.95 ms, plus most of the 200 ms the backend gives perf to attach before the
-loop.
+0.95 ms, plus most of the 200 ms that the tree this report comes from waited
+for perf before the loop. The backend now starts the loop once perf answers
+that it is counting, so a current run's window holds little more than the
+calls.
 
 ## Step 4: Confirm the Fix
 
@@ -433,23 +449,19 @@ bench run ./build/bin/ptests/BenchDemo_02_PerfProfiler --taskset 3 --profile per
   --profile-args "record -g" --target-time 250ms -- --gtest_filter=PerfProfiler.JoinV0
 ```
 
-The benchmark does not wait for `perf record` to finish writing: it stops
-perf when the measured repeats end, prints its result and exits, and perf
-goes on writing `perf.data` for a moment. perf's last line in
-`record.err.txt` says when the file is complete, so check for it before
-reading the file:
+When the measured repeats end, the backend stops perf and waits, up to 5 s,
+until perf has written `perf.data` before it reports the test; a perf that
+has not finished by then fails the run. So the file is complete when
+`bench run` returns, and perf's last line in `record.err.txt` says so:
 
 ```bash
 grep "Captured and wrote" PerfProfiler.JoinV0.perf/record.err.txt
 ```
 
-While perf is still writing, the check prints nothing and exits with status
-1; run straight after `bench run` on this rig, it did. Run it again until it
-prints perf's closing line; repeated every tenth of a second here, it printed
-it 0.76 s after `bench run` returned:
+Run straight after `bench run` on this rig, it printed:
 
 ```
-[ perf record: Captured and wrote 1.914 MB ./PerfProfiler.JoinV0.perf/perf.data (10150 samples) ]
+[ perf record: Captured and wrote 1.857 MB ./PerfProfiler.JoinV0.perf/perf.data (9868 samples) ]
 ```
 
 Then read the report:
@@ -493,8 +505,8 @@ and exited with status 0, so its own status does not tell you either.
 
 In stat mode, `--profile-args` text that does not start with `record` is
 appended to the `perf stat` command, so `-e <event>` adds an event to the
-five. The value starts with a hyphen, which the `bench` CLI's parser takes
-for an option of its own unless the value is attached with `=`:
+five. `bench run` takes the value attached with `=`, as below, or after a
+space:
 
 ```bash
 bench run ./build/bin/ptests/BenchDemo_02_PerfProfiler --taskset 3 --profile perf \
@@ -553,18 +565,30 @@ rig's.
 
 ## If It Does Not Match
 
-- **`stat.txt` holds a refusal instead of counts.** With
-  `kernel.perf_event_paranoid` at 3 or above (some distributions default to
-  it, and a locked-down host can be at 4), perf prints
-  `Access to performance monitoring and observability operations is limited`
-  with the setting, and counts nothing.
-  `bench doctor ./build/bin/ptests/BenchDemo_02_PerfProfiler` reports
-  the perf backend's view; on this rig its row reads
-  `[WARN] perf       perf_event_paranoid=2 (kernel profiling blocked; userspace counters still work)`,
-  a warning because kernel-side events are off limits at 2, which this page
-  never needs. Lower the setting (`sudo sysctl -w kernel.perf_event_paranoid=2`),
-  grant `CAP_PERFMON` to the binary, or run as root. The examples' counting
-  tests skip with the same reason, and say so.
+- **The run fails with `denied: perf stat cannot open the counters as this
+user`.** With `kernel.perf_event_paranoid` at 3 or above (some
+  distributions default to it, and a locked-down host can be at 4), perf
+  refuses to count for a user that is not root. The perf backend checks
+  before the measured phase, so the test runs without perf, no `stat.txt` is
+  written, and the run exits with status 4 after a report of the request:
+
+  ```
+  [FAIL] Profiler 'perf': denied: perf stat cannot open the counters as this user: Access to performance monitoring and observability operations is limited.
+  ...
+  [profile] --profile perf failed; the run exits with status 4:
+  ```
+
+  `bench doctor ./build/bin/ptests/BenchDemo_02_PerfProfiler` reports the
+  perf backend's view, and with `--profile perf` added it reports the request
+  this page runs on a `Selected request` row as well. On this rig both rows
+  read
+  `[WARN] perf       perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events`,
+  a warning because this core has no `branches:u` event and because
+  kernel-side events are off limits at 2, which this page never needs. Lower
+  the setting (`sudo sysctl -w kernel.perf_event_paranoid=2`), grant
+  `CAP_PERFMON` to the binary, or run as root. The examples' counting tests
+  skip with the same reason, and say so.
+
 - **`<not supported>` on other lines.** A processor without the event, or a
   virtual machine without a performance monitoring unit. The count stays
   empty and the run is otherwise unaffected; `perf list` says which events
@@ -573,10 +597,10 @@ rig's.
   x86 processor with two kinds of core: perf opens each event on both, and a
   test pinned to a performance core counts on `cpu_core` only. Read the
   `cpu_core` rows.
-- **`perf report` says the data size field is 0.** perf record was still
-  writing: see [Record Mode](#record-mode).
-- **`bench run` rejects `--profile-args "-e ..."`.** Attach the value with
-  `=`: see [Adding an Event](#adding-an-event).
+- **`perf report` says the data size field is 0.** perf record had not
+  finished writing: the file was read during the run, or it came from a
+  build of Vernier older than this page, which did not wait for perf to
+  finish (see [Record Mode](#record-mode)).
 - **Different per-call figures.** Check the call count: the totals cover
   `--cycles` times `--repeats` calls, and with `--target-time` the calibrated
   cycle count is the one the `[target-time]` line prints.

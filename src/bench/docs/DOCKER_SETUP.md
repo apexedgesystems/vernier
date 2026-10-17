@@ -214,89 +214,92 @@ docker run --rm --gpus all mybench-gpu:latest nvidia-smi
 
 ### Built-in Environment Checks
 
-`bench validate` reports the profiling tools and settings the container has.
+Two commands check a container, at two strengths:
+
+- `bench validate` is an advisory inventory. It lists the profiling tools
+  the image has, each with its path and version, and the settings that limit
+  them (`kernel.perf_event_paranoid`, ASLR), and it exits 0 whatever it finds.
+  Given a benchmark binary, it shows that binary's row for each profiler's
+  default mode instead: a profiler the binary cannot use here is
+  `[WARN] ... not usable here:`, with the remedy on the line after it.
+- `bench doctor <binary> --require <backends>` is the gate. It exits 1 unless
+  every named profiler can run here, with one `[require]` line for each.
+
 In the project's dev containers, `bench` comes from the build's `.env`; in the
 profiling image built below it is on `PATH` already:
-
-**Running validation:**
 
 ```bash
 # In a project dev container, after make release
 source build/native-linux-release/.env
 bench validate
+bench validate build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST
+bench doctor build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --require perf,massif
 
 # From the host, in the profiling image (see Complete Profiling Example)
-docker run --rm --privileged mybench-prof:latest bench validate
+docker run --rm --privileged mybench-prof:latest \
+  bench doctor ./build/MyComponent_PTEST --require perf
 ```
 
 For GPU containers, add `bench gpu-env` to check GPU environment readiness
-(CUDA, Nsight Systems, Nsight Compute). For a deeper per-backend check tied
-to a specific binary, run `bench doctor <ptest-binary>`.
+(CUDA, Nsight Systems, Nsight Compute).
 
-**What it checks:**
-
-1. **Python Dependencies** - pandas, matplotlib, seaborn, scipy, plotly
-2. **FlameGraph Tools** - PATH, $FLAMEGRAPH_DIR, scripts available
-3. **Perf Profiling** - whether `perf` runs (on Ubuntu it needs the build for
-   the running kernel) and the `perf_event_paranoid` level, as separate checks;
-   see [Perf Profiling](#perf-profiling)
-4. **GPU Tools** (optional) - CUDA, Nsight Systems, Nsight Compute
-5. **Framework Smoke Test** - Actual benchmark execution
-
-**Example output:**
+**Example output** of the gate in the `dev` service as its non-root user
+(uid 1001), on a host at `kernel.perf_event_paranoid=4` (exit status 1; the
+remedy line under the perf line is cut):
 
 ```
-Container Integrity Validation
-==================================
-1. Python Dependencies
-[OK] All required Python packages available
-pandas: 2.1.1, scipy: 1.15.3, plotly: 5.18.0
-
-2. FlameGraph Tools
-[OK] FLAMEGRAPH_DIR set: /opt/FlameGraph
-[OK] flamegraph.pl found in PATH
-[OK] stackcollapse-perf.pl available
-
-3. Perf Profiling Tools
-[OK] perf available: perf version 6.8.12
-[OK] Kernel-specific perf tools available
-[OK] perf has sufficient permissions
-
-4. GPU Tools (Optional)
-[OK] CUDA available: 12.0
-[OK] Nsight Systems: 2025.5.1
-[OK] Nsight Compute available
-
-5. Framework Smoke Test
-[OK] Test binary exists
-[OK] Benchmark execution successful
-[OK] CSV output valid
-[OK] Python analysis tools working
-
-==================================
-Validation Summary
-All checks passed!
-Container is ready for benchmarking.
+[require] perf: NOT READY (denied: perf stat cannot open the counters as this user: Access to performance monitoring and observability operations is limited.)
+          ...
+[require] massif: OK
+[require] 1 requirement(s) unmet
 ```
+
+The same command as root in that container prints `[require] perf: OK` and
+`[require] massif: OK` and exits 0. A requirement names the profile a lane
+runs, mode included, when the request is given to the doctor as `bench run`
+would pass it:
+
+```bash
+bench doctor build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+  --profile massif --profile-args pages --require massif
+# [require] massif (--profile massif --profile-args 'pages'): OK
+```
+
+**Smoke test.** A short run with `--csv`, read back by `bench summary`, shows
+that the harness measures and writes a CSV the tools can read:
+
+```bash
+./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST --quick \
+  --gtest_filter='CoreFeatures.BasicThroughput' --csv /tmp/smoke.csv
+bench summary /tmp/smoke.csv
+```
+
+`bench summary` prints one row for the test and exits 0; a CSV it cannot read
+ends with `Error: parse error: ...` and exit status 1.
 
 ### Adding Validation to Dockerfile
 
+Record what the image has when it is built. `bench validate` never fails the
+build: whether a profiler can run depends on the host and on the container's
+privileges, which a build step does not have, so the gate runs where the
+profile runs:
+
 ```dockerfile
-# Add validation as health check
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 # ... install dependencies, copy source ...
 
 # Build the tools and source the build .env so bench is on PATH
 RUN make tools-rust
 
-# Run validation during build (fails build if issues)
-RUN . build/native-linux-debug/.env && bench validate || \
-(echo "ERROR: Container validation failed" && exit 1)
+# Record the image's profiling tools in the build log (advisory)
+RUN . build/native-linux-debug/.env && bench validate
+```
 
-# Also use as runtime health check
-HEALTHCHECK --interval=60s --timeout=10s \
-CMD . build/native-linux-debug/.env && bench validate || exit 1
+```bash
+# The profile lane's gate, in the container that profiles
+docker run --rm --privileged mybench:latest bash -c \
+  '. build/native-linux-debug/.env && bench doctor build/native-linux-debug/bin/ptests/MyComponent_PTEST --require perf'
 ```
 
 ---
@@ -540,14 +543,15 @@ COPY . .
 RUN cmake --build build
 ```
 
-### 3. Validate on Build
+### 3. Check the Image Where It Profiles
 
-Fail fast if container is broken:
+Record the image's tools when it is built, and gate a profile lane on the
+profilers it needs where it runs (see
+[Adding Validation to Dockerfile](#adding-validation-to-dockerfile)):
 
 ```dockerfile
-# Run validation during build
 RUN make tools-rust
-RUN . build/native-linux-debug/.env && bench validate || exit 1
+RUN . build/native-linux-debug/.env && bench validate
 ```
 
 ### 4. Use Specific Base Images
@@ -601,29 +605,27 @@ yourself.
 
 ## Troubleshooting
 
-### Container Validation Fails
+### A Profiler the Lane Needs Is Not Ready
 
-**Problem:** `bench validate` reports errors.
+**Problem:** `bench doctor <binary> --require <backends>` exits 1 with a
+`[require] <backend>: NOT READY (...)` line.
 
 **Solutions:**
 
 ```bash
-# Check which checks failed
+# Every profiler's row for this binary, with its remedy (advisory, exits 0)
 docker run --rm mybench:latest \
-bash -c "source build/native-linux-debug/.env && bench validate"
+bash -c "source build/native-linux-debug/.env && bench validate build/native-linux-debug/bin/ptests/MyComponent_PTEST"
 
-# Common issues:
+# Common causes:
 
-# 1. Python packages missing
-RUN pip3 install pandas matplotlib seaborn scipy
+# 1. The tool is not in the image: "missing: ... not found on PATH".
+#    Install it (valgrind, heaptrack; perf for the host's kernel, see Perf Profiling)
 
-# 2. FlameGraph tools not found
-RUN git clone https://github.com/brendangregg/FlameGraph.git /opt/FlameGraph
-ENV PATH="/opt/FlameGraph:${PATH}"
+# 2. perf is refused: "denied: perf stat cannot open the counters as this user".
+#    Lower kernel.perf_event_paranoid on the host, or run the benchmark as root
 
-# 3. Perf not available
-# Install linux-tools for the host's kernel when the image is built
-# (see Perf Profiling)
+# 3. bpftrace or offcpu is refused: bpftrace runs only as root
 ```
 
 ### Perf Doesn't Work in Container

@@ -6,7 +6,10 @@
 **Captured:** 2026-10-03 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`. The run in Check Against the Reference was made later
-the same day, by this page's commands as written.
+the same day, by this page's commands as written. Step 4's console output and
+kernel summaries come from a session of 2026-10-10 (UTC) on a later
+development tree at the same version, with Step 1's command run just before
+them and the clocks locked the same way.
 
 ## Overview
 
@@ -260,13 +263,20 @@ Resource usage:
 ```
 
 The compiler gave the kernel 10 registers per thread and no shared memory
-(`REG:10`, `SHARED:0`); the CSV says 16. `cuptiRegistersMedian` is what each
-thread was allocated at launch, and a launch is given registers in larger
-units than one: on this GPU and on the RTX 5000 Ada, the 10 compiled registers
-were allocated as 16, the count rounded up to a multiple of 8. Nsight Compute,
-in walkthrough 11's capture on this rig, reports `Registers Per Thread` 16.00
-for both shapes. Read the column as the kernel's footprint on the register
-file, and the compiler's report for the count the code needs.
+(`REG:10`, `SHARED:0`); the CSV says 16. The two counts come from different
+places, and neither API says how one follows from the other. CUDA documents
+the compiled count, which a program reads as `cudaFuncAttributes::numRegs`, as
+the registers each thread of the function uses; CUPTI documents its record's
+`registersPerThread`, whose median and maximum over the measured launches are
+`cuptiRegistersMedian` and `cuptiRegistersMax`, as the registers each thread
+executing the kernel requires. What runs have shown: in Release builds, on
+this GPU and on the RTX 5000 Ada, the 10 compiled registers read 16, the count
+rounded up to a multiple of 8, and Nsight Compute, in walkthrough 11's capture
+on this rig, reports `Registers Per Thread` 16.00 for both shapes; in a Debug
+build on the RTX 5000 Ada (CUDA 13.1, driver 580.178.04, in the project's CUDA
+development container) the kernel compiled to 20 and read 20, the compiled
+count itself. Read the column as CUPTI's count for the launch, and the
+compiler's report for the count the code needs.
 
 ## Step 4: Against Nsight Systems' Kernel Durations
 
@@ -284,15 +294,16 @@ Running: nsys profile -o bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profil
 ...
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
 
-[WARN] Profiler 'nsight': unverified: collection is owned by the nsight wrap; completion is checked at exit
+[WARN] Profiler 'nsight': unverified: nsys started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
 [nsight] this process runs under nsys, which writes the report when the process exits.
 [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
 [gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
-[NsightProfiler.KernelOneThreadPerBlock]  2884.168 us/call  CV=0.1%  ~347 calls/s  (p10=2880.018 p90=2884.713 sd=2.621)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (369 ms)
+[NsightProfiler.KernelOneThreadPerBlock]  2888.810 us/call  CV=0.0%  ~346 calls/s  (p10=2888.418 p90=2890.900 sd=1.362)
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (370 ms)
 ...
-[nsight] auto-extracted nsys stats reports into bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight
+[bench] nsight wrote bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight/profile.nsys-rep (138941 bytes)
+[nsight] wrote the nsys stats summaries into bench-out/BenchDemo_Gpu_02_NsightProfiler.nsight
 ```
 
 Under `nsys` the in-process CUPTI collector stands down, and says so:
@@ -303,20 +314,20 @@ kernels as the GPU ran them,
 ```
  Time (%)  Total Time (ns)  Instances   Avg (ns)     Med (ns)    Min (ns)   Max (ns)   StdDev (ns)                                             Name
  --------  ---------------  ---------  -----------  -----------  ---------  ---------  -----------  ------------------------------------------------------------------------------------------
-    100.0      204,954,848         71  2,886,688.0  2,881,120.0  2,851,264  3,358,144     57,826.5  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
+    100.0      205,428,256         71  2,893,355.7  2,888,320.0  2,851,552  3,271,008     46,870.7  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
 ```
 
 The same command with `--gtest_filter=NsightProfiler.Kernel256ThreadsPerBlock`
 overwrites the report and its summaries with the other shape's:
 
 ```
-[NsightProfiler.Kernel256ThreadsPerBlock]  25.090 us/call  CV=3.1%  ~39.9K calls/s  (p10=24.987 p90=26.386 sd=0.796)
+[NsightProfiler.Kernel256ThreadsPerBlock]  24.944 us/call  CV=0.3%  ~40.1K calls/s  (p10=24.847 p90=24.998 sd=0.078)
 ```
 
 ```
  Time (%)  Total Time (ns)  Instances  Avg (ns)  Med (ns)  Min (ns)  Max (ns)  StdDev (ns)                                             Name
  --------  ---------------  ---------  --------  --------  --------  --------  -----------  ------------------------------------------------------------------------------------------
-    100.0        1,666,816         71  23,476.3  22,496.0    22,400    40,544      3,053.2  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
+    100.0        1,619,328         71  22,807.4  22,400.0    22,336    40,256      2,291.7  vernier::bench::demo::<unnamed>::saxpyKernel(float, const float *, float *, unsigned long)
 ```
 
 Each test ran 71 kernels: 11 warmup launches and the 60 measured (20 cycles
@@ -324,17 +335,17 @@ times 3 repeats). Within each run:
 
 | Shape                 | events, per launch | Nsight Systems, median kernel | difference |
 | --------------------- | ------------------ | ----------------------------- | ---------- |
-| one thread per block  | 2,884.2 us         | 2,881.1 us                    | 0.1%       |
-| 256 threads per block | 25.09 us           | 22.50 us                      | 2.6 us     |
+| one thread per block  | 2,888.8 us         | 2,888.3 us                    | 0.02%      |
+| 256 threads per block | 24.94 us           | 22.40 us                      | 2.5 us     |
 
 For the 3 ms kernel the two agree. For the 22 us kernel the events also hold
 the time on the stream between one kernel and the next, which a kernel's own
-duration leaves out: 2.6 us a launch here.
+duration leaves out: 2.5 us a launch here.
 
-Both runs also differ from Step 1, which ran without a profiler: 25.09 against
-20.11 us at 256 threads, 2,884 against 2,999 us at one. A run under a profiler
-is a run of its own, so set `kernelTimeUs` against the kernel durations of the
-same run.
+Both runs also differ from Step 1's command, run just before them in the same
+session without a profiler: 24.94 against 20.18 us at 256 threads, 2,889
+against 2,993 us at one. A run under a profiler is a run of its own, so set
+`kernelTimeUs` against the kernel durations of the same run.
 
 ## What Should Reproduce
 
@@ -345,7 +356,7 @@ same run.
 | `cuptiRegistersMedian` / compiled          | 16 / 10                                                                                      | the compiled count depends on the compiler and architecture; 16 / 10 on the RTX 5000 Ada too |
 | `occupancy`                                | 0.5 and 1.0                                                                                  | depends on the SM's limits; 0.5 and 1.0 on the RTX 5000 Ada too                              |
 | NVML cells                                 | all six empty, `Not Supported`                                                               | filled where NVML answers; all but `powerLimitW` on the RTX 5000 Ada                         |
-| `kernelTimeUs` vs Nsight Systems, same run | 0.1% apart at one thread per block; 2.5 to 2.6 us a launch apart at 256 (two runs)           | close for long kernels; the gap between launches shows on short ones                         |
+| `kernelTimeUs` vs Nsight Systems, same run | 0.02 to 0.1% apart at one thread per block; 2.5 to 2.6 us a launch apart at 256 (three runs) | close for long kernels; the gap between launches shows on short ones                         |
 | absolute times                             | 2,998.6 / 20.11 us                                                                           | will differ                                                                                  |
 
 The non-timing cells were the same in all eight runs. The ranges describe
@@ -424,16 +435,20 @@ reported, `kalex`.
   built as `TestDemoKernelColumns`), runs demo 02's two kernel tests with
   `--csv` and holds each row to this page: `kernelTimeUs` equal to
   `wallMedian`; the copy columns 0; `occupancy` equal to the harness's estimate
-  for the row's block; one CUPTI record per measured launch, registers equal to
-  the compiled count rounded up to a multiple of 8, the kernel's static shared
+  for the row's block; one CUPTI record per measured launch, a median and a
+  maximum register count equal to each other and to one of the two forms Step 3
+  records, the compiled count or that count rounded up to a multiple of 8 (any
+  other value fails, one between the two included), the kernel's static shared
   memory and no dynamic, or, in a build without CUPTI, the five cells stated
   empty; every cell the run states empty empty, every NVML cell it does not
   state a reading, and `speedupVsCpu`, `memBandwidthGBs` and the multi-GPU and
   unified-memory cells empty. It compares no timing. It skips only without a
   CUDA device or inside an Nsight session, saying which, and a failing run
-  keeps its files and names the folder.
+  keeps its files and names the folder. The two register forms are what runs
+  have shown, not what CUDA or CUPTI promise: a build that reads another form
+  fails the check until a run of it qualifies that form.
 - Demo 02's two kernel tests fail if the occupancy estimate stops matching
-  their shapes, and the SAXPY example's unit tests, in `TestDemoExamples`,
+  their shapes, and the SAXPY example's unit tests, in `TestDemoSaxpy`,
   hold its versions to the same answers.
 
 An ordinary test run includes the check, and every test it runs should pass:

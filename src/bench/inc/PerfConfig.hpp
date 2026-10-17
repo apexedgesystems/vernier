@@ -6,11 +6,14 @@
  */
 
 #include <algorithm> // std::max
+#include <charconv>  // std::from_chars
 #include <cstdio>    // std::fprintf
 #include <cstdlib>   // std::atoi, std::exit
 #include <cstring>   // std::strstr
 #include <fstream>   // profile-check file reads
+#include <limits>    // std::numeric_limits
 #include <optional>
+#include <system_error> // std::errc
 #include <string>
 #include <string_view>
 #include <vector>
@@ -38,17 +41,18 @@ struct PerfConfig {
   // ---- Profiling / artifact knobs (default off) ----
   std::string profileTool;             ///< "", "perf", "gperf", "bpftrace", "rapl", "callgrind"
   std::string profileArgs;             ///< Verbatim pass-through to the tool
-  std::vector<std::string> bpfScripts; ///< Curated script names: "offcpu", "syslat", "bio"
+  std::vector<std::string> bpfScripts; ///< bpftrace scripts (--bpf): names or paths
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
   int profileFrequency = 10000;        ///< Rate asked of gperf (Hz); set too late to take effect
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
 
-  // Per-test watchdog: aborts a measured() loop when total wall time exceeds
-  // the threshold. 0 disables; auto-set to 300 seconds when profileTool is
-  // non-empty so a drain-loop / blocking-recv test under profiler overhead
-  // fails loudly instead of hanging CI indefinitely. Override with
-  // --profile-test-timeout N (seconds).
-  int profileTestTimeoutSecs = 0;
+  // Per-test watchdog under --profile: aborts a measured loop whose wall time
+  // exceeds this many seconds, so a drain-loop or blocking-recv test under
+  // profiler overhead fails loudly instead of hanging CI. -1 (any negative
+  // value) is "not given": parsing sets 300 when profileTool is non-empty.
+  // 0 turns the watchdog off; N > 0 is N seconds. Set with
+  // --profile-test-timeout N; never armed without --profile.
+  int profileTestTimeoutSecs = -1;
 
   // ---- Quick mode (lighter defaults for fast iteration) ----
   bool quickMode = false; ///< Apply reduced cycles/repeats for development iteration
@@ -135,14 +139,19 @@ inline bool isUnclaimedOption(std::string_view arg) {
  * An unrecognized `--option` is still forwarded, with one stderr line naming
  * it, so a mistyped flag or a binary older than the flag does not run on
  * defaults in silence. GoogleTest's and the GPU parser's options are exempt.
+ * `--bpf-scripts DIR` sets PERF_BPF_SCRIPTS in this process's environment,
+ * where the bpftrace check reads the scripts directory.
  *
  * Recognized flags:
  *   --cycles N         --repeats N        --warmup N (0 = auto-scale)
  *   --threads N        --msg-bytes N      --console
  *   --nonblocking      --min-level STR    --csv PATH
  *   --profile TOOL     --profile-args STR --bpf LIST(,...) --artifact-root PATH
+ *   --bpf-scripts DIR  (bpftrace scripts directory; sets PERF_BPF_SCRIPTS)
  *   --profile-frequency N  (rate asked of gperf, default 10000; set too late to take effect)
  *   --profile-analyze      (auto-run analysis after profiling)
+ *   --profile-test-timeout N  (watchdog seconds per measured loop under --profile;
+ *                       300 when omitted, 0 off; N must be a whole number from 0)
  *   --quick            (applies lighter defaults for fast iteration)
  *   --profile-check / --profile-check-json
  *                      (print the doctor, with a row for the --profile request
@@ -262,6 +271,12 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--bpf") {
       cfg.bpfScripts = PARSE_LIST(NEED_ARG("--bpf", i, *argc, argv));
       ++i;
+    } else if (a == "--bpf-scripts") {
+      // The bpftrace check reads the scripts directory from PERF_BPF_SCRIPTS,
+      // so the flag sets that variable over any inherited value; an empty
+      // value selects the bundled scripts.
+      ::setenv("PERF_BPF_SCRIPTS", NEED_ARG("--bpf-scripts", i, *argc, argv), 1);
+      ++i;
     } else if (a == "--artifact-root" || a == "--profile-output-dir") {
       // --profile-output-dir is the user-friendlier alias; both write the
       // same field. All registered profiler backends consult artifactRoot
@@ -275,8 +290,19 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     } else if (a == "--profile-analyze") {
       cfg.profileAnalyze = true;
     } else if (a == "--profile-test-timeout") {
-      cfg.profileTestTimeoutSecs =
-          std::max(0, std::atoi(NEED_ARG("--profile-test-timeout", i, *argc, argv)));
+      // A whole number of seconds from 0; anything else is refused, so a typo
+      // cannot turn the watchdog off or shorten it unnoticed.
+      const std::string_view RAW = NEED_ARG("--profile-test-timeout", i, *argc, argv);
+      int secs = -1;
+      const auto [END, EC] = std::from_chars(RAW.data(), RAW.data() + RAW.size(), secs);
+      if (RAW.empty() || EC != std::errc{} || END != RAW.data() + RAW.size() || secs < 0) {
+        std::fprintf(stderr,
+                     "--profile-test-timeout: '%.*s' is not a whole number of seconds from 0 to "
+                     "%d (0 turns the watchdog off; without the flag, --profile sets 300)\n",
+                     static_cast<int>(RAW.size()), RAW.data(), std::numeric_limits<int>::max());
+        std::exit(2);
+      }
+      cfg.profileTestTimeoutSecs = secs;
       ++i;
     }
 
@@ -321,10 +347,11 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     std::exit(0);
   }
 
-  // Auto-set a generous watchdog when profiling and the user hasn't overridden.
-  // 300 s = 5 min is comfortable headroom for callgrind's 20x overhead while
-  // still being short enough to abort genuinely hung tests during a CI run.
-  if (!cfg.profileTool.empty() && cfg.profileTestTimeoutSecs == 0) {
+  // Auto-set a generous watchdog when profiling and no timeout was given (an
+  // explicit 0 keeps it off). 300 s = 5 min is comfortable headroom for
+  // callgrind's 20x overhead while still being short enough to abort
+  // genuinely hung tests during a CI run.
+  if (!cfg.profileTool.empty() && cfg.profileTestTimeoutSecs < 0) {
     cfg.profileTestTimeoutSecs = 300;
   }
 

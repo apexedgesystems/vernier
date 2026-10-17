@@ -2,76 +2,98 @@
  * @file ProfilerHelgrind.cpp
  * @brief Valgrind Helgrind / DRD thread-error detector implementation.
  *
- * Same wrap-externally pattern as memcheck / massif. Valgrind presence is
- * detected by scanning /proc/self/maps for the vgpreload library, which is
- * mapped whenever the process actually runs under valgrind (an env-var check
- * is unreliable -- valgrind exposes RUNNING_ON_VALGRIND as a client request,
- * not an environment variable).
+ * The selected tool checks the whole process when valgrind runs it; the
+ * backend only reports where the artifacts belong. Whether that tool runs
+ * the process is the readiness check's decision.
  */
 
 #include "src/bench/inc/ProfilerHelgrind.hpp"
 
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace vernier {
 namespace bench {
 
-namespace {
+/* ----------------------------- Mode and Check ----------------------------- */
 
-bool isValgrindAvailable() { return std::system("command -v valgrind >/dev/null 2>&1") == 0; }
-
-// Detect a live valgrind instrumentation by its preload library in the process
-// memory map -- present only when the binary actually runs under valgrind.
-bool detectUnderValgrind() {
-  const char* preload = std::getenv("LD_PRELOAD");
-  if (preload && std::strstr(preload, "vgpreload"))
-    return true;
-  std::FILE* fp = std::fopen("/proc/self/maps", "r");
-  if (!fp)
-    return false;
-  char line[512];
-  bool found = false;
-  while (std::fgets(line, sizeof(line), fp)) {
-    if (std::strstr(line, "vgpreload") || std::strstr(line, "/valgrind/")) {
-      found = true;
-      break;
+std::optional<ReadinessResult> parseHelgrindMode(const std::string& profileArgs,
+                                                 valgrind_tool::ValgrindMode& mode) {
+  mode = valgrind_tool::ValgrindMode{};
+  mode.tool = "helgrind";
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    if (WORD != "drd") {
+      return valgrind_tool::refusedWord("helgrind", WORD, {"drd"});
     }
+    mode.tool = "drd";
   }
-  std::fclose(fp);
-  return found;
+  return std::nullopt;
 }
 
-// Helgrind by default; DRD when the user passes --profile-args drd.
-const char* selectTool(const PerfConfig& cfg) {
-  return cfg.profileArgs.find("drd") != std::string::npos ? "drd" : "helgrind";
+ReadinessResult checkHelgrindRequest(const ReadinessRequest& request, const ReadinessContext& ctx) {
+  valgrind_tool::ValgrindMode mode;
+  if (auto refused = parseHelgrindMode(request.profileArgs, mode)) {
+    return *refused;
+  }
+  ReadinessResult result = valgrind_tool::decideCollection(
+      "helgrind", mode, request, ctx,
+      valgrind_tool::wrapRemedy("helgrind", mode, request.profileArgs));
+  if (!request.analyze) {
+    return result;
+  }
+  return valgrind_tool::withAnalysis(
+      std::move(result),
+      readinessResult(ReadinessCause::UNSUPPORTED,
+                      "--profile-analyze: " + mode.tool +
+                          " has no automatic analysis; its log is the report, and the check "
+                          "still runs",
+                      "Read " + mode.tool +
+                          "'s log after the process exits, and drop "
+                          "--profile-analyze.",
+                      ReadinessStage::ANALYSIS));
+}
+
+/* ----------------------------- HelgrindProfiler ----------------------------- */
+
+namespace {
+
+std::shared_ptr<const valgrind_tool::ValgrindPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const valgrind_tool::ValgrindPlan>(result.plan);
+}
+
+ReadinessResult decideNow(const PerfConfig& cfg) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
+  request.backend = "helgrind";
+  return checkHelgrindRequest(request, CTX);
 }
 
 } // namespace
 
-/* ----------------------------- HelgrindProfiler ----------------------------- */
-
 HelgrindProfiler::HelgrindProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
+  // Decided first and reported as the registry reports its own decisions; a
+  // request that cannot collect creates nothing.
+  const ReadinessResult DECISION = decideNow(cfg_);
+  if (ProfilerRegistry::instance().reportDecision("helgrind", DECISION)) {
+    plan_ = readyPlan(DECISION);
+    artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
+                                                    "helgrind");
+  }
+}
+
+HelgrindProfiler::HelgrindProfiler(const PerfConfig& cfg, std::string testName,
+                                   std::shared_ptr<const valgrind_tool::ValgrindPlan> plan)
+    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
   artifactDir_ =
       profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "helgrind");
-
-  runningUnderValgrind_ = detectUnderValgrind();
-  if (!runningUnderValgrind_) {
-    const char* tool = selectTool(cfg_);
-    std::fprintf(stderr,
-                 "\n[helgrind] NOT running under valgrind; measurement will execute normally but\n"
-                 "[helgrind] no thread-error checking happens. To check:\n"
-                 "[helgrind]   valgrind --tool=%s \\\n"
-                 "[helgrind]       --log-file=%s/helgrind.log \\\n"
-                 "[helgrind]       <this-binary> --profile helgrind --cycles 5 [...]\n\n",
-                 tool, artifactDir_.c_str());
-  }
 }
 
 void HelgrindProfiler::beforeMeasure() {
@@ -82,28 +104,29 @@ void HelgrindProfiler::afterMeasure(const Stats& /*s*/) {
   // Valgrind writes its log at process exit when running under the tool.
 }
 
-/* ----------------------------- Env check ----------------------------- */
-
-EnvReport checkHelgrindEnvironment() {
-  if (!isValgrindAvailable()) {
-    return EnvReport{EnvReport::Status::Error, "valgrind binary not found on PATH",
-                     "apt install valgrind."};
-  }
-  return EnvReport{EnvReport::Status::Ok,
-                   "valgrind available (helgrind + drd thread-error detectors ship with it)", ""};
-}
-
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeHelgrindProfiler(const PerfConfig& cfg, const std::string& testName) {
-  if (!isValgrindAvailable())
-    return nullptr;
   return std::make_unique<HelgrindProfiler>(cfg, testName);
 }
+
+namespace {
+
+std::unique_ptr<Profiler> makePlannedHelgrindProfiler(const PerfConfig& cfg,
+                                                      const std::string& testName,
+                                                      const ReadinessResult& result) {
+  auto plan = readyPlan(result);
+  if (!plan) {
+    return nullptr;
+  }
+  return std::make_unique<HelgrindProfiler>(cfg, testName, std::move(plan));
+}
+
+} // namespace
 
 } // namespace bench
 } // namespace vernier
 
-VERNIER_REGISTER_PROFILER_BACKEND("helgrind", ::vernier::bench::makeHelgrindProfiler,
-                                  ::vernier::bench::checkHelgrindEnvironment,
-                                  "apt install valgrind (helgrind + drd ship with it).")
+VERNIER_REGISTER_READINESS_BACKEND("helgrind", ::vernier::bench::checkHelgrindRequest,
+                                   ::vernier::bench::makePlannedHelgrindProfiler,
+                                   "apt install valgrind (helgrind + drd ship with it).")

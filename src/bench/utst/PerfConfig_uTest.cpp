@@ -8,11 +8,13 @@
 #include "src/bench/inc/PerfConfig.hpp"
 
 #include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -21,6 +23,7 @@ using vernier::bench::parseGpuFlags;
 using vernier::bench::parsePerfFlags;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
+using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
 
 namespace {
@@ -51,6 +54,14 @@ std::size_t countLines(const std::string& text) {
   return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
 }
 
+/** @brief Parse `--profile perf --profile-test-timeout <value>`, then exit 0 (for death tests). */
+[[noreturn]] void parseTimeoutThenExit(const char* value) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--profile", "perf", "--profile-test-timeout", value};
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  std::exit(0);
+}
+
 } // namespace
 
 /* ----------------------------- Default Values Tests ----------------------------- */
@@ -72,6 +83,8 @@ TEST(PerfConfigTest, DefaultValues) {
   EXPECT_TRUE(CFG.profileArgs.empty());
   EXPECT_TRUE(CFG.bpfScripts.empty());
   EXPECT_TRUE(CFG.artifactRoot.empty());
+  EXPECT_EQ(CFG.profileTestTimeoutSecs, -1)
+      << "the timeout is 'not given' until a flag or --profile sets it";
   EXPECT_FALSE(CFG.quickMode);
 }
 
@@ -236,6 +249,38 @@ TEST(PerfConfigTest, ParseBpfTrimsWhitespace) {
   EXPECT_EQ(cfg.bpfScripts[1], "syslat");
 }
 
+/** @test --bpf-scripts sets PERF_BPF_SCRIPTS over an inherited value, without a warning */
+TEST(PerfConfigTest, ParseBpfScriptsSetsTheVariable) {
+  const ScopedEnv inherited("PERF_BPF_SCRIPTS", "/inherited/scripts");
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--bpf-scripts", "/my/scripts", "--bpf", "write_latency"};
+
+  StderrCapture capture;
+  parsePerfFlags(cfg, args.argc(), args.argv());
+
+  EXPECT_EQ(capture.text(), "");
+  EXPECT_EQ(*args.argc(), 1);
+  const char* value = std::getenv("PERF_BPF_SCRIPTS");
+  ASSERT_NE(value, nullptr);
+  EXPECT_STREQ(value, "/my/scripts");
+  ASSERT_EQ(cfg.bpfScripts.size(), 1U);
+  EXPECT_EQ(cfg.bpfScripts[0], "write_latency");
+}
+
+/** @test An empty --bpf-scripts value sets the variable empty, which selects the bundled scripts */
+TEST(PerfConfigTest, ParseBpfScriptsEmptyValue) {
+  const ScopedEnv inherited("PERF_BPF_SCRIPTS", "/inherited/scripts");
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--bpf-scripts", ""};
+
+  parsePerfFlags(cfg, args.argc(), args.argv());
+
+  const char* value = std::getenv("PERF_BPF_SCRIPTS");
+  ASSERT_NE(value, nullptr);
+  EXPECT_STREQ(value, "");
+  EXPECT_EQ(*args.argc(), 1);
+}
+
 /* ----------------------------- Quick Mode Tests ----------------------------- */
 
 /** @test Quick mode applies lighter defaults. */
@@ -330,6 +375,64 @@ TEST(PerfConfigTest, MsgBytesMinimumIsOne) {
   EXPECT_EQ(cfg.msgBytes, 1);
 }
 
+/* ----------------------------- Profile Test Timeout ----------------------------- */
+
+/** @test An explicit --profile-test-timeout 0 under --profile stays 0: the watchdog is off. */
+TEST(PerfConfigTest, ExplicitZeroTurnsTheWatchdogOff) {
+  for (const auto& order :
+       {std::vector<const char*>{"--profile", "perf", "--profile-test-timeout", "0"},
+        std::vector<const char*>{"--profile-test-timeout", "0", "--profile", "perf"}}) {
+    PerfConfig cfg;
+    ArgvBuilder args{"prog", order[0], order[1], order[2], order[3]};
+    parsePerfFlags(cfg, args.argc(), args.argv());
+    EXPECT_EQ(cfg.profileTestTimeoutSecs, 0) << order[0];
+  }
+}
+
+/** @test Without the flag, --profile sets 300 s; a value given keeps its seconds. */
+TEST(PerfConfigTest, OmittedTimeoutIs300UnderProfile) {
+  PerfConfig omitted;
+  ArgvBuilder plain{"prog", "--profile", "callgrind"};
+  parsePerfFlags(omitted, plain.argc(), plain.argv());
+  EXPECT_EQ(omitted.profileTestTimeoutSecs, 300);
+
+  PerfConfig given;
+  ArgvBuilder thirty{"prog", "--profile-test-timeout", "30", "--profile", "callgrind"};
+  parsePerfFlags(given, thirty.argc(), thirty.argv());
+  EXPECT_EQ(given.profileTestTimeoutSecs, 30);
+}
+
+/** @test Without --profile the timeout stays as given, or "not given" (-1). */
+TEST(PerfConfigTest, NoProfileLeavesItUnset) {
+  PerfConfig none;
+  ArgvBuilder plain{"prog", "--cycles", "10"};
+  parsePerfFlags(none, plain.argc(), plain.argv());
+  EXPECT_EQ(none.profileTestTimeoutSecs, -1);
+
+  PerfConfig given;
+  ArgvBuilder thirty{"prog", "--profile-test-timeout", "30"};
+  parsePerfFlags(given, thirty.argc(), thirty.argv());
+  EXPECT_EQ(given.profileTestTimeoutSecs, 30);
+}
+
+/**
+ * @test A negative value, a non-number, a number with a unit or trailing text,
+ * and one beyond an int's range exit 2 naming the flag, the value and the
+ * accepted range.
+ */
+TEST(PerfConfigTest, InvalidTimeoutExits) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  for (const char* VALUE : {"-5", "abc", "30s", "", "+30", "99999999999"}) {
+    EXPECT_EXIT(
+        parseTimeoutThenExit(VALUE), ::testing::ExitedWithCode(2),
+        "--profile-test-timeout: '.*' is not a whole number of seconds from 0 to 2147483647 \\(0 "
+        "turns the watchdog off; without the flag, --profile sets 300\\)")
+        << "'" << VALUE << "'";
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
 /* ----------------------------- Multiple Flags Tests ----------------------------- */
 
 /** @test Multiple flags parsed together. */
@@ -372,14 +475,14 @@ TEST(PerfConfigUnknownOptionTest, UnknownOptionWarnsOnceByName) {
 /** @test Warns once per unknown option, each line naming its own option */
 TEST(PerfConfigUnknownOptionTest, EachUnknownOptionGetsItsOwnLine) {
   PerfConfig cfg;
-  ArgvBuilder args{"prog", "--bpf-scripts", "offcpu", "--repeats", "4", "--no-such-thing"};
+  ArgvBuilder args{"prog", "--bpf-dir", "offcpu", "--repeats", "4", "--no-such-thing"};
 
   StderrCapture capture;
   parsePerfFlags(cfg, args.argc(), args.argv());
   const std::string err = capture.text();
 
   EXPECT_EQ(countLines(err), 2u) << err;
-  const std::size_t first = err.find("'--bpf-scripts'");
+  const std::size_t first = err.find("'--bpf-dir'");
   const std::size_t second = err.find("'--no-such-thing'");
   ASSERT_NE(first, std::string::npos) << err;
   ASSERT_NE(second, std::string::npos) << err;
@@ -409,6 +512,7 @@ TEST(PerfConfigUnknownOptionTest, GtestAndNonOptionArgsDoNotWarn) {
 
 /** @test Accepts every option the parser documents without a warning */
 TEST(PerfConfigUnknownOptionTest, KnownOptionsDoNotWarn) {
+  const ScopedEnv restoreScriptsDir("PERF_BPF_SCRIPTS", "");
   PerfConfig cfg;
   ArgvBuilder args{"prog",
                    "--cycles",
@@ -435,6 +539,8 @@ TEST(PerfConfigUnknownOptionTest, KnownOptionsDoNotWarn) {
                    "record",
                    "--bpf",
                    "offcpu,syslat",
+                   "--bpf-scripts",
+                   "/workspace/bpf",
                    "--artifact-root",
                    "/workspace/a",
                    "--profile-output-dir",
