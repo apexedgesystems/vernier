@@ -22,6 +22,14 @@
  * and offsets that belong to the current version, so a layout change without a
  * version change fails there.
  *
+ * An interface change counts as a layout change. libbench builds the
+ * profilers that header code compiled into the benchmark calls through, so a
+ * virtual function of Profiler added, removed or reordered changes what the
+ * two binaries share while every compared size stays the same: it raises
+ * BENCH_ABI_VERSION too. AbiProfilerInterface.cmake builds a benchmark from
+ * these headers against a library from before Profiler's last added slot and
+ * requires the check to stop it.
+ *
  * Not covered: a benchmark built from headers older than this check never
  * calls it, and one that constructs a PerfGpuCase without PERF_GPU_MAIN or the
  * GPU guard reaches libbench_cuda unchecked. The SONAME of libbench and
@@ -33,10 +41,11 @@
  * The SONAME is set in src/bench/CMakeLists.txt, names the file the loader
  * picks, and also has to move when an exported signature changes, which this
  * check cannot see. BENCH_ABI_VERSION is compared inside the process and is
- * what catches a layout change that leaves both the size and the file name
- * alone. Raise both for a layout change, except while no release has shipped
- * the current SONAME: every library built under it runs this check, so the
- * version alone stops a mismatched pair. The numbers do not have to agree.
+ * what catches a layout or interface change that leaves both the sizes and
+ * the file name alone. Raise both for such a change, except while no release
+ * has shipped the current SONAME: every library built under it runs this
+ * check, so the version alone stops a mismatched pair. The numbers do not
+ * have to agree.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -57,8 +66,9 @@ namespace bench {
 /// change to the members of PerfConfig, Stats, PerfGpuConfig, of a struct the
 /// libraries hand back (GpuStats, PerfGpuResult, MultiGpuResult, PerfRow) or of
 /// the PerfRegistry both sides publish rows through: added (also at the end),
-/// removed, reordered or retyped.
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 2;
+/// removed, reordered or retyped; and for every change to Profiler's virtual
+/// functions, which no compared size shows. 3: Profiler::abortMeasure().
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 3;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;

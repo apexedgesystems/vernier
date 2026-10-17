@@ -131,6 +131,9 @@ fails too, its files kept, and the `[bpftrace]` line says that the tracer's end
 could not be observed and why. A report that holds nothing but the two lines is
 a complete capture whose script printed no data of its own: the run says so
 with a `[bpftrace]` line, and the capture counts as a caveat, not as a zero.
+A failed capture fails the run too: it is reported once more as the case's
+failure, and the run exits with status 4 once its tests pass; a caveat does
+not fail it.
 
 What a script must leave alone: maps whose names start with `@vernier_`, and
 the lines `bpftrace armed` and `bpftrace disarmed`, which it must not print;

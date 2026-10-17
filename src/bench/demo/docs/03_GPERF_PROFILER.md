@@ -5,7 +5,10 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-29 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`
+`bench 1.0.3`. The doctor's `gperf` row in Needs comes from this rig on
+2026-10-03 (UTC), a later tree at the same version; the skip and the row
+quoted under If It Does Not Match, from a Debug build of that tree without
+gperftools on an x86-64 laptop.
 
 ## Overview
 
@@ -49,7 +52,8 @@ library (`libc6-dbg` on Debian), which give the library's internal functions
 the names this page shows. The rig's
 [one-time setup](../../docs/rigs/RIG_PI4.md#2-one-time-setup) installs all
 three, and `bench doctor` lists the `gperf` backend as
-`gperftools linked: cpu` when it is compiled in. Without the debug symbols, a
+`[OK]   gperf      gperftools profiles cpu (built: cpu); analyzer /usr/bin/google-pprof`
+when it is compiled in and the reader is installed. Without the debug symbols, a
 report names each of the library's internal functions after the nearest name
 the library exports; [If It Does Not Match](#if-it-does-not-match) shows what
 that looks like.
@@ -426,13 +430,17 @@ runs of the check on each kind of core.
   folds the inlined code into its caller's row. On x86, a build of the example
   without `-g` put 74.7% to 79.4% of V1's samples in `joinV1`'s row, with no
   `(inline)` rows.
-- **`GperfProfiler.ProfileAttribution` is skipped.** "gperf backend
-  unavailable: gperftools headers not present at build time" means Vernier was
-  built without gperftools: install its development package, reconfigure and
-  rebuild, and `bench doctor build/bin/ptests/BenchDemo_03_GperfProfiler`
-  should list `gperf` as `gperftools linked: cpu`. "google-pprof is not on
-  PATH" means the reader is missing (`google-perftools` on Debian). The test
-  also skips under `--profile`, because it takes profiles of its own.
+- **`GperfProfiler.ProfileAttribution` is skipped.**
+  `gperf backend unavailable: missing: gperftools headers were not present when libbench was built`,
+  as a build without gperftools printed it on an x86-64 laptop, means Vernier
+  was built without gperftools; that build's doctor row reads
+  `[FAIL] gperf      missing: gperftools headers were not present when libbench was built`.
+  Install its development package, reconfigure and rebuild, and
+  `bench doctor build/bin/ptests/BenchDemo_03_GperfProfiler` should list the
+  row quoted in Needs. `google-pprof is not on PATH; it reads the profiles`
+  means the reader is missing (`google-perftools` on Debian). The test also
+  skips under `--profile` (`runs its own profiles; run it without --profile`),
+  because it takes profiles of its own.
 - **Too few samples.** The profiler's default is 100 samples per second of CPU
   time, and `--profile-frequency` does not change it as Vernier applies it: the
   gperf backend sets `CPUPROFILE_FREQUENCY` from the flag just before it starts
