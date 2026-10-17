@@ -325,6 +325,16 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **`--profile rapl` reads the energy registers before it says yes, and says
+  why when it cannot** -- the doctor and the run read the power-unit and
+  package-energy registers through `/dev/cpu/0/msr` and name the cause of a
+  refusal: `denied` (it needs root, or CAP_SYS_RAWIO and read access to the
+  device), `missing` (no msr driver or device), `unsupported` (not an Intel
+  CPU, or a register the CPU lacks) or `unusable`. A refused request fails
+  the run with status 4 and creates no folder, through the registry, the
+  `RAPLProfiler` constructor or `makeRAPLProfiler()`. **Action needed:** drop
+  `--profile-args` from a rapl request, which takes no mode word, and
+  `--profile-analyze`, with which the capture runs and the run then fails.
 - **The RAPL performance sample runs with the RAPL profiler** --
   `Profilers.RAPLIntegration` (`BenchmarkCPU_PTEST`) built its case without
   the profiler guard, so `--profile rapl` never reached the RAPL backend and

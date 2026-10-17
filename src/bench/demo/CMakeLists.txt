@@ -347,16 +347,36 @@ set_tests_properties(
 )
 
 # Demo 08's check runs the demo with no tool, under the demo label: both join
-# versions run to their end and publish a row each.
-vernier_add_gtest(TARGET TestDemoRapl SOURCES cpu/utst/08_RaplProfiler_uTest.cpp LABELS demo)
+# versions run to their end and publish a row each. Its RAPL test runs the
+# demo under --profile rapl, under the rapl label too, and alone, so other
+# tests stay out of its energy windows; where RAPL cannot measure here it
+# checks the refusal and skips.
+vernier_add_gtest(
+  TARGET
+  TestDemoRapl
+  SOURCES
+  cpu/utst/08_RaplProfiler_uTest.cpp
+  LINK
+  bench
+  LABELS
+  demo
+)
 target_compile_definitions(
   TestDemoRapl PRIVATE VERNIER_DEMO_08_BINARY="$<TARGET_FILE:BenchDemo_08_RaplProfiler>"
 )
 add_dependencies(TestDemoRapl BenchDemo_08_RaplProfiler)
-set_tests_properties(
-  RaplDemoTest.MeasuresBothVersions
-  PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] RaplDemoTest\\.MeasuresBothVersions"
+set_property(
+  TEST Rapl.EnergyPerCall
+  APPEND
+  PROPERTY LABELS rapl
 )
+foreach (_rapl_check RaplDemoTest.MeasuresBothVersions Rapl.EnergyPerCall)
+  string(REPLACE "." "\\." _rapl_pattern "${_rapl_check}")
+  set_tests_properties(
+    ${_rapl_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_rapl_pattern}"
+  )
+endforeach ()
+set_tests_properties(Rapl.EnergyPerCall PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 
 # Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only
 # where the GPU demos are built. It links the CUDA runtime for one question
