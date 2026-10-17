@@ -192,8 +192,8 @@ TEST(ArtifactDirNameTest, OrdinaryNamesUnchangedAndSlashesEncoded) {
  * @test Encoding a GoogleTest name adds no character that a consumer of the path interprets
  *
  * The folder is passed, unquoted, in output-path options to valgrind and nsys
- * ('%' starts a substitution), inside jemalloc's MALLOC_CONF (',' and ':'
- * separate), to heaptrack -o and perf -o, and in shell command lines.
+ * ('%' starts a substitution), inside jemalloc's MALLOC_CONF (',' ends an
+ * option), to heaptrack -o and perf -o, and in shell command lines.
  */
 TEST(ArtifactDirNameTest, EncodingAddsNoCharacterItsConsumersInterpret) {
   const std::string INTERPRETED = "/%,: \t\n\"'$`\\*?[];&|<>()#!=@{}^";

@@ -83,7 +83,6 @@ unwrapped	gperf
 unwrapped	bpftrace
 unwrapped	offcpu
 unwrapped	rapl
-unwrapped	jemalloc
 unwrapped	rocprof
 #
 # refuse   <--profile>  <--profile-args>  <text the refusal contains>
@@ -97,12 +96,16 @@ refuse	helgrind	helgrind	'helgrind' is not a mode of helgrind; its modes are drd
 refuse	compute-sanitizer	memcheck,racecheck	runs one tool at a time
 refuse	callgrind	instr	'instr' is not a mode of callgrind, which takes none
 refuse	heaptrack	x	'x' is not a mode of heaptrack, which takes none
+refuse	jemalloc	x	'x' is not a mode of jemalloc, which takes none
 refuse	ncu	compute	'compute' is not a mode of ncu, which takes none
 #
 # refuse-folder   <--profile>  <--profile-output-dir>  <text the refusal contains>
-# (refused before anything starts or is created; the refusal names the folder)
+# (refused before anything starts or is created; the refusal names the folder.
+# jemalloc reads its folder inside MALLOC_CONF, which ends an option at ','
+# and has no escape)
 refuse-folder	heaptrack	out%h	which holds %h;
 refuse-folder	heaptrack	out%p	which holds %p;
+refuse-folder	jemalloc	out,x	which holds ',';
 #
 # exit   <meaning>  <status>
 # profile-failed: the tests passed and the requested profile failed (libbench)

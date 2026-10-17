@@ -65,10 +65,13 @@ pub fn run_checks() -> Vec<Row> {
             "heaptrack",
             "install heaptrack for low-overhead heap profiling",
         ),
+        // jeprof reads jemalloc's dumps and decides nothing about collecting
+        // them: whether this machine's jemalloc profiles is the doctor's row.
         tool_row(
-            "jemalloc",
+            "jeprof (reads jemalloc's dumps)",
             "jeprof",
-            "install jemalloc (built with prof) for allocation sampling",
+            "install it (Debian and Ubuntu: libjemalloc-dev) to read jemalloc's heap dumps; \
+             whether jemalloc profiles here: bench doctor <binary> --profile jemalloc",
         ),
         check_rapl(),
         check_aslr(),

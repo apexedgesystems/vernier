@@ -557,6 +557,23 @@ TEST(JemallocRequest, ModeWordsAreRefused) {
   }
 }
 
+/** @test The refusal of a word the shared table records for jemalloc is the backend's too. */
+TEST(JemallocRequest, RefusalMatchesTheSharedTable) {
+  int refusals = 0;
+  for (const auto& ROW : sharedTableRows("refuse")) {
+    ASSERT_EQ(ROW.size(), 4U);
+    if (ROW[1] != "jemalloc") {
+      continue;
+    }
+    const ReadinessResult RESULT = checkJemallocRequestWithFacts(
+        requestFor(ReadinessScope::PREFLIGHT, ROW[2]), contextWith(), JemallocFacts{});
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CONFIGURATION) << ROW[2];
+    EXPECT_NE(RESULT.report.message.find(ROW[3]), std::string::npos) << RESULT.report.message;
+    ++refusals;
+  }
+  EXPECT_EQ(refusals, 1) << "the table lost jemalloc's refusal";
+}
+
 /**
  * @test --profile-analyze is an analysis-stage error that keeps the capture
  * and its plan; a request that cannot collect stays a collection error.

@@ -1234,6 +1234,15 @@ fn validate_without_binary_reports_facts() {
             .starts_with(&format!("{t}/heaptrack is not an executable file")),
         "{heaptrack}"
     );
+    // The analyzer's row: what jeprof is for, never that it gives profiling.
+    let jeprof = validate_row(&rows, "jeprof (reads jemalloc's dumps)");
+    assert_eq!(jeprof["status"], "warn");
+    assert_eq!(
+        jeprof["detail"],
+        "jeprof not found on PATH; install it (Debian and Ubuntu: libjemalloc-dev) to read \
+         jemalloc's heap dumps; whether jemalloc profiles here: bench doctor <binary> \
+         --profile jemalloc"
+    );
     let perf = validate_row(&rows, "perf");
     assert_eq!(perf["status"], "warn");
     assert!(
@@ -4342,4 +4351,315 @@ fn measurement_rows_cli_agreement() {
     );
     assert_eq!(sorted_strings(&migration["baseline_only"], None), missing);
     assert_eq!(sorted_strings(&migration["candidate_only"], None), new);
+}
+
+/* ----------------------------- Run: jemalloc ----------------------------- */
+
+/// A jemalloc rig: a stand-in benchmark that writes the dumps a test names
+/// (`FAKE_DUMPS`) under the prefix MALLOC_CONF gives it and logs what it was
+/// given, a PATH folder of stand-ins, and a library folder for
+/// LD_LIBRARY_PATH.
+struct JemallocRig {
+    dir: tempfile::TempDir,
+    tools: PathBuf,
+    lib: PathBuf,
+    log: PathBuf,
+    bench: PathBuf,
+}
+
+/// The stand-in benchmark: `own` writes a heap profile of itself named after
+/// its own process id, `zero` the same with nothing sampled, `empty` an empty
+/// one, `other` a profile of another process (git's, as a child would leave),
+/// `foreign` a profile under its own id that maps another program.
+const JEMALLOC_STAND_IN: &str = r#"#!/bin/sh
+echo "bench pid=$$ LD_PRELOAD=$LD_PRELOAD MALLOC_CONF=$MALLOC_CONF wrap=$VERNIER_EXTERNAL_WRAP dir=$VERNIER_EXTERNAL_WRAP_DIR $*" >> '{log}'
+prefix=${MALLOC_CONF##*prof_prefix:}
+self=$(/bin/readlink -f "$0")
+profile() {
+  printf 'heap_v2/524288\n  t*: 1: 82338 [%s: %s]\n\nMAPPED_LIBRARIES:\n55d0c1a00000-55d0c1a2f000 r-xp 00000000 fd:01 1048601 %s\n' "$3" "$(($3 * 6000))" "$2" > "$1"
+}
+for kind in $FAKE_DUMPS; do
+  case "$kind" in
+    own) profile "$prefix.$$.0.f.heap" "$self" 2287 ;;
+    zero) profile "$prefix.$$.0.f.heap" "$self" 0 ;;
+    empty) : > "$prefix.$$.0.f.heap" ;;
+    other) profile "$prefix.$(($$ + 2)).0.f.heap" /usr/bin/git 3 ;;
+    foreign) profile "$prefix.$$.0.f.heap" /usr/bin/git 3 ;;
+  esac
+done
+exit 0
+"#;
+
+/// The C library this test program runs on, as its memory map names it.
+fn c_library() -> PathBuf {
+    let maps = std::fs::read_to_string("/proc/self/maps").expect("this process's map");
+    maps.lines()
+        .filter_map(|l| l.find('/').map(|at| PathBuf::from(&l[at..])))
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("libc.so"))
+        })
+        .expect("the C library is mapped")
+}
+
+/// A rig whose `libjemalloc.so.2` the loader preloads (@p loadable: the C
+/// library under that name, loaded already, so the preload changes nothing)
+/// or refuses (a file that is not a library).
+fn jemalloc_rig(loadable: bool) -> JemallocRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    std::fs::create_dir_all(&lib).expect("create lib dir");
+    if loadable {
+        std::os::unix::fs::symlink(c_library(), lib.join("libjemalloc.so.2")).expect("symlink");
+    } else {
+        std::fs::write(lib.join("libjemalloc.so.2"), "not a library\n").expect("write");
+    }
+    let log = dir.path().join("bench.log");
+    let bench = dir.path().join("fake_bench");
+    write_executable(
+        &bench,
+        &JEMALLOC_STAND_IN.replace("{log}", &log.display().to_string()),
+    );
+    JemallocRig {
+        dir,
+        tools,
+        lib,
+        log,
+        bench,
+    }
+}
+
+/// `bench run <rig's benchmark> --profile jemalloc <args>` with the rig's PATH
+/// and LD_LIBRARY_PATH and @p dumps for the stand-in: the exit status,
+/// stdout, stderr and the stand-in's log.
+fn run_jemalloc_rig(
+    rig: &JemallocRig,
+    args: &[&str],
+    dumps: &str,
+) -> (i32, String, String, String) {
+    let out = output_of(
+        Command::new(bin())
+            .arg("run")
+            .arg(&rig.bench)
+            .args(["--profile", "jemalloc"])
+            .args(args)
+            .env("PATH", &rig.tools)
+            .env("LD_LIBRARY_PATH", &rig.lib)
+            .env("FAKE_DUMPS", dumps)
+            .env_remove("MALLOC_CONF")
+            .env_remove("LD_PRELOAD")
+            .current_dir(rig.dir.path()),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test A library the loader cannot preload, a mode word and a folder
+/// holding ',' are refused before anything is created or started: the
+/// benchmark never runs and no folder appears.
+#[test]
+fn run_jemalloc_refusals_start_nothing() {
+    let rig = jemalloc_rig(false);
+    let (code, _, err, log) = run_jemalloc_rig(&rig, &[], "own");
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains(
+            "Error: tool not found: the loader cannot preload libjemalloc.so.2 (\"ERROR: ld.so: \
+             object 'libjemalloc.so.2' from LD_PRELOAD cannot be preloaded ("
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("Use a jemalloc built with profiling (configure --enable-prof;"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("jeprof"),
+        "the analyzer offered for collection: {err}"
+    );
+    assert_eq!(log, "", "the benchmark ran");
+    assert!(
+        !rig.dir.path().join("bench-out").exists(),
+        "a folder was created"
+    );
+
+    let rig = jemalloc_rig(true);
+    for (args, words) in [
+        (
+            vec!["--profile-args", "x"],
+            "--profile jemalloc --profile-args 'x': 'x' is not a mode of jemalloc, which takes \
+             none",
+        ),
+        (
+            vec!["--profile-output-dir", "out,x"],
+            "it cannot write into out,x/fake_bench.jemalloc, which holds ','",
+        ),
+    ] {
+        let (code, _, err, log) = run_jemalloc_rig(&rig, &args, "own");
+        assert_eq!(code, 1, "{words}: {err}");
+        assert!(err.contains(words), "{words}: {err}");
+        assert_eq!(log, "", "{words}: the benchmark ran");
+        assert!(!rig.dir.path().join("bench-out").exists(), "{words}");
+        assert!(!rig.dir.path().join("out,x").exists(), "{words}");
+    }
+}
+
+/// @test bench run preloads jemalloc with its profiling options into the wrap
+/// folder, takes the benchmark's own exit dump and names any other process's,
+/// prints what was sampled and the jeprof command, and says jeprof is missing
+/// only when it is.
+#[test]
+fn run_jemalloc_takes_the_benchmarks_own_dump() {
+    let rig = jemalloc_rig(true);
+    let (code, stdout, err, log) = run_jemalloc_rig(&rig, &[], "own other");
+    assert_eq!(code, 0, "{err}");
+    let pid = log
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("pid="))
+        .expect("the stand-in logged its process id")
+        .to_string();
+    assert!(
+        log.starts_with(&format!(
+            "bench pid={pid} LD_PRELOAD=libjemalloc.so.2 MALLOC_CONF=prof:true,prof_final:true,\
+             prof_accum:true,prof_prefix:bench-out/fake_bench.jemalloc/jeprof wrap=jemalloc \
+             dir=bench-out/fake_bench.jemalloc --profile jemalloc"
+        )),
+        "{log}"
+    );
+    let dump = format!("bench-out/fake_bench.jemalloc/jeprof.{pid}.0.f.heap");
+    assert!(
+        stdout.contains(&format!("[bench] jemalloc wrote {dump} (",))
+            && stdout.contains(
+                " bytes) when the benchmark exited: 2287 allocations sampled over the run, 1 of \
+             them in use at exit"
+            ),
+        "{stdout}"
+    );
+    let other: u32 = pid.parse::<u32>().expect("a process id") + 2;
+    assert!(
+        stdout.contains(&format!(
+            "[bench] jemalloc: bench-out/fake_bench.jemalloc/jeprof.{other}.0.f.heap is not the \
+             benchmark's exit dump (the benchmark is process {pid}); it is not this run's profile"
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "[bench] Read it: jeprof --text --alloc_space {} {dump}",
+            rig.bench.display()
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("[bench] jeprof is not on PATH: reading the dump needs it"),
+        "{stdout}"
+    );
+
+    write_executable(&rig.tools.join("jeprof"), "#!/bin/sh\nexit 0\n");
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "own");
+    assert_eq!(code, 0, "{err}");
+    assert!(stdout.contains("[bench] Read it: jeprof"), "{stdout}");
+    assert!(!stdout.contains("jeprof is not on PATH"), "{stdout}");
+}
+
+/// @test The completion check fails, after the benchmark exited 0, for no
+/// dump of the benchmark (also when the folder holds a previous run's dump,
+/// removed before the run, or another process's), an empty one and one of
+/// another program; a run that sampled nothing passes.
+#[test]
+fn run_jemalloc_completion_failures() {
+    let rig = jemalloc_rig(true);
+    let folder = rig.dir.path().join("bench-out/fake_bench.jemalloc");
+    std::fs::create_dir_all(&folder).expect("create the folder");
+    std::fs::write(folder.join("jeprof.1.0.f.heap"), "a previous run's dump\n").expect("write");
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "");
+    assert_eq!(code, 1, "{stdout}{err}");
+    assert!(
+        stdout.contains(
+            "[bench] removed bench-out/fake_bench.jemalloc/jeprof.1.0.f.heap from a \
+                         previous run"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        err.contains(
+            "Error: --profile jemalloc failed: completion: jemalloc wrote no exit dump \
+                      of the benchmark (process "
+        ),
+        "{err}"
+    );
+    for (dumps, words) in [
+        (
+            "other",
+            "; the folder holds only other dumps: bench-out/fake_bench.jemalloc/jeprof.",
+        ),
+        ("empty", ".0.f.heap is empty"),
+        ("foreign", ".0.f.heap does not map the benchmark, "),
+    ] {
+        let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], dumps);
+        assert_eq!(code, 1, "{dumps}: {stdout}{err}");
+        assert!(
+            err.contains("Error: --profile jemalloc failed: completion: ") && err.contains(words),
+            "{dumps}: {err}"
+        );
+    }
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "zero");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        stdout.contains("when the benchmark exited: no allocation was sampled over the run"),
+        "{stdout}"
+    );
+}
+
+/// @test Where a jemalloc that profiles can be preloaded (the test checks so
+/// itself), a real program run by bench run leaves its own exit dump, which
+/// bench run takes: /bin/true stands for the benchmark.
+#[test]
+fn run_jemalloc_real_library_profiles_a_real_program() {
+    let check = tempfile::tempdir().expect("tempdir");
+    let probe = output_of(
+        Command::new("/bin/true")
+            .env("LD_PRELOAD", "libjemalloc.so.2")
+            .env(
+                "MALLOC_CONF",
+                format!(
+                    "prof:true,prof_final:true,prof_prefix:{}/check",
+                    check.path().display()
+                ),
+            ),
+    );
+    let wrote = std::fs::read_dir(check.path())
+        .map(|entries| entries.count() > 0)
+        .unwrap_or(false);
+    if !wrote {
+        eprintln!(
+            "skipped: no jemalloc that profiles can be preloaded here: {}",
+            String::from_utf8_lossy(&probe.stderr).trim()
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = output_of(
+        Command::new(bin())
+            .args(["run", "/bin/true", "--profile", "jemalloc"])
+            .env_remove("MALLOC_CONF")
+            .env_remove("LD_PRELOAD")
+            .current_dir(dir.path()),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
+    assert!(
+        stdout.contains("[bench] jemalloc wrote bench-out/true.jemalloc/jeprof.")
+            && stdout.contains(".0.f.heap (")
+            && stdout.contains("when the benchmark exited: "),
+        "{stdout}"
+    );
 }

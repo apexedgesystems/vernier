@@ -209,7 +209,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
     `A/B_C.Run/0`) keep separate folders. Names without `/` or `+` are
     unchanged. `+` was chosen because the folder is passed on to tools that
     give other characters a meaning of their own in output paths (valgrind
-    and nsys expand `%`, jemalloc's `MALLOC_CONF` splits on `,` and `:`), and
+    and nsys expand `%`, jemalloc's `MALLOC_CONF` ends an option at `,`), and
     it needs no quoting in a shell. Scripts that read the nested path need the
     flat one.
   - `--profile ncu` names its per-test folder `<Suite.Case>.ncu/` (it was
@@ -310,6 +310,19 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   with the address or thread sanitizer is refused.
   **Action needed:** a profile job whose jemalloc cannot profile now fails;
   put a jemalloc built with profiling first on `LD_LIBRARY_PATH`.
+- **`bench run --profile jemalloc` checks the benchmark's own exit dump** --
+  it preloads jemalloc with `prof:true,prof_final:true,prof_accum:true`, so
+  the dump holds the bytes allocated over the whole run, which
+  `jeprof --text --alloc_space` reads. A library the loader cannot preload,
+  any `--profile-args` word and an output folder holding `,` (which
+  `MALLOC_CONF` cannot carry) are refused before anything starts; nothing
+  runs unprofiled in their place. After the exit only the dump named after
+  the benchmark's process, `jeprof.<pid>.<n>.f.heap`, counts: it must hold a
+  heap profile of the benchmark, and a dump of any other process in the
+  folder is named and never taken for it. The run prints how many
+  allocations were sampled and the `jeprof` command, saying when `jeprof` is
+  missing that only reading the dump needs it. `bench validate` names its
+  row `jeprof (reads jemalloc's dumps)`.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
   cells only from readings NVML reported, `occupancy` (an estimate from the
