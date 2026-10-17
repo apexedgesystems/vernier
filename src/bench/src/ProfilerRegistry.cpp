@@ -372,9 +372,17 @@ int ProfilerRegistry::finishRun(const PerfConfig& cfg, int testStatus, int tests
   }
 
   const std::vector<ProfileFailure> FAILED = failures();
+  // The report names the --profile request only when every failure is the
+  // request's own: anything else's (a profiler the benchmark built itself, the
+  // GPU harness's answer to --capture-um) would read as the request's.
+  bool othersFailed = false;
+  for (const ProfileFailure& failure : FAILED) {
+    othersFailed = othersFailed || failure.backend != NAME;
+  }
   const std::string REQUEST =
-      NAME.empty() ? std::string{"a profile"}
-                   : describeRequest(requestFor(NAME, cfg, ReadinessScope::RUNTIME, CTX));
+      NAME.empty() || othersFailed
+          ? std::string{"a profile"}
+          : describeRequest(requestFor(NAME, cfg, ReadinessScope::RUNTIME, CTX));
   int status = testStatus;
   if (!FAILED.empty()) {
     if (status == 0) {

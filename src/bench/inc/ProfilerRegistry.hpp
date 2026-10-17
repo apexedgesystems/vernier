@@ -229,8 +229,10 @@ public:
    *         BENCH_PROFILE_FAILED_EXIT_CODE when a failure was recorded;
    *         otherwise 0.
    *
-   * Prints, to stderr, every recorded failure under one header. An unknown
-   * `--profile` name fails here even when no case asked for a profiler.
+   * Prints, to stderr, every recorded failure under one header, which names
+   * the `--profile` request when every failure is the request's own and
+   * reads "a profile" otherwise. An unknown `--profile` name fails here even
+   * when no case asked for a profiler.
    * When `--profile` was given, tests ran, nothing failed and no case created
    * a profiler (only cases built with the profiler guard create one), it says
    * that nothing was profiled, or, under `bench run`'s wrap of that tool, that
