@@ -43,7 +43,7 @@ struct PerfConfig {
   std::string profileArgs;             ///< Verbatim pass-through to the tool
   std::vector<std::string> bpfScripts; ///< bpftrace scripts (--bpf): names or paths
   std::string artifactRoot;            ///< Optional root for artifacts (default chosen by runner)
-  int profileFrequency = 10000;        ///< Rate asked of gperf (Hz); set too late to take effect
+  int profileFrequency = 0;            ///< gperf CPU sampling rate asked for, Hz; 0: none asked
   bool profileAnalyze = false;         ///< Auto-run analysis after profiling (e.g., pprof top-10)
 
   // Per-test watchdog under --profile: aborts a measured loop whose wall time
@@ -99,6 +99,40 @@ inline long long parseDurationUs(const std::string& text) {
   return static_cast<long long>(VALUE * static_cast<double>(scale));
 }
 
+/// The most samples a second gperftools takes; it clamps a higher rate to this.
+inline constexpr int GPERF_MAX_SAMPLING_HZ = 4000;
+
+/// The environment variable gperftools reads its CPU sampling rate from, once,
+/// as the process starts: what a --profile-frequency request is applied through.
+inline constexpr const char* SAMPLING_RATE_VARIABLE = "CPUPROFILE_FREQUENCY";
+
+/**
+ * @brief A sampling rate as --profile-frequency and CPUPROFILE_FREQUENCY are
+ * read: ASCII digits only, a whole number of Hz from 1 to
+ * GPERF_MAX_SAMPLING_HZ; leading zeros are digits.
+ *
+ * Anything else (a sign, a space, a unit, a fraction, 0, a larger number) is
+ * std::nullopt. gperftools itself takes such text as its default rate or its
+ * maximum without saying so, which is why it is refused rather than passed on.
+ */
+inline std::optional<int> parseProfileFrequency(std::string_view text) {
+  if (text.empty()) {
+    return std::nullopt;
+  }
+  for (const char CH : text) {
+    if (CH < '0' || CH > '9') {
+      return std::nullopt;
+    }
+  }
+  int hz = 0;
+  const auto [END, EC] = std::from_chars(text.data(), text.data() + text.size(), hz);
+  if (EC != std::errc{} || END != text.data() + text.size() || hz < 1 ||
+      hz > GPERF_MAX_SAMPLING_HZ) {
+    return std::nullopt;
+  }
+  return hz;
+}
+
 inline void runProfileCheck();
 inline void runProfileCheckJson();
 inline void runProfileCheck(const PerfConfig& cfg);
@@ -148,7 +182,9 @@ inline bool isUnclaimedOption(std::string_view arg) {
  *   --nonblocking      --min-level STR    --csv PATH
  *   --profile TOOL     --profile-args STR --bpf LIST(,...) --artifact-root PATH
  *   --bpf-scripts DIR  (bpftrace scripts directory; sets PERF_BPF_SCRIPTS)
- *   --profile-frequency N  (rate asked of gperf, default 10000; set too late to take effect)
+ *   --profile-frequency N  (gperf CPU sampling rate, a whole number of Hz from 1 to
+ *                       4000; bench run sets it before the process starts; run
+ *                       directly, start the process with CPUPROFILE_FREQUENCY=N)
  *   --profile-analyze      (auto-run analysis after profiling)
  *   --profile-test-timeout N  (watchdog seconds per measured loop under --profile;
  *                       300 when omitted, 0 off; N must be a whole number from 0)
@@ -284,8 +320,19 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
       cfg.artifactRoot = NEED_ARG("--profile-output-dir", i, *argc, argv);
       ++i;
     } else if (a == "--profile-frequency") {
-      cfg.profileFrequency =
-          std::max(1, std::atoi(NEED_ARG("--profile-frequency", i, *argc, argv)));
+      // Refused, not passed on: gperftools would take any other text as its
+      // default rate or its maximum, unnoticed.
+      const std::string_view RAW = NEED_ARG("--profile-frequency", i, *argc, argv);
+      const std::optional<int> HZ = parseProfileFrequency(RAW);
+      if (!HZ) {
+        std::fprintf(stderr,
+                     "--profile-frequency: '%.*s' is not a whole number of Hz from 1 to %d "
+                     "(gperftools samples at most %d times a second)\n",
+                     static_cast<int>(RAW.size()), RAW.data(), GPERF_MAX_SAMPLING_HZ,
+                     GPERF_MAX_SAMPLING_HZ);
+        std::exit(2);
+      }
+      cfg.profileFrequency = *HZ;
       ++i;
     } else if (a == "--profile-analyze") {
       cfg.profileAnalyze = true;
@@ -337,6 +384,18 @@ inline void parsePerfFlags(PerfConfig& cfg, int* argc, char** argv) {
     }
   }
   *argc = w;
+
+  // A rate needs a profiler to take it, or it is dropped unnoticed; cupti
+  // selects none (ProfilerRegistry::make() proceeds unprofiled). Before the
+  // doctor, which would otherwise answer without it.
+  if (cfg.profileFrequency != 0 &&
+      (cfg.profileTool.empty() || ProfilerRegistry::canonicalName(cfg.profileTool) == "cupti")) {
+    std::fprintf(stderr,
+                 "--profile-frequency %d cannot apply: no profiler is selected; add --profile "
+                 "gperf, or drop --profile-frequency\n",
+                 cfg.profileFrequency);
+    std::exit(2);
+  }
 
   if (profileCheck == ProfileCheck::TEXT) {
     runProfileCheck(cfg);

@@ -1,0 +1,34 @@
+# The sampling-rate request: the rates both languages accept and refuse.
+# Read by the Rust tests (runner.rs) and the C++ tests (PerfConfig_uTest.cpp
+# and the gperf sampling tests, through VERNIER_SHARED_FIXTURE_DIR).
+#
+# Tab-separated; only a tab separates fields, so a field may hold a space.
+# '#' starts a comment line. A '-' field is empty.
+#
+# rate        <input> <ok|refused> <value in Hz> <period in microseconds>
+# variable    <the environment variable gperftools reads the rate from>
+# maximum     <the highest rate, in Hz>
+# noprofiler  <a --profile name that selects no profiler>
+rate	250	ok	250	4000
+rate	1000	ok	1000	1000
+rate	4000	ok	4000	250
+rate	1	ok	1	1000000
+rate	100	ok	100	10000
+rate	3000	ok	3000	333
+rate	0250	ok	250	4000
+rate	4001	refused	-	-
+rate	10000	refused	-	-
+rate	99999999999	refused	-	-
+rate	0	refused	-	-
+rate	-5	refused	-	-
+rate	+250	refused	-	-
+rate	 250	refused	-	-
+rate	250 	refused	-	-
+rate	1000x	refused	-	-
+rate	1e3	refused	-	-
+rate	2.5	refused	-	-
+rate	abc	refused	-	-
+rate	-	refused	-	-
+variable	CPUPROFILE_FREQUENCY
+maximum	4000
+noprofiler	cupti
