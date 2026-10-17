@@ -101,6 +101,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 16 (jemalloc) measures the shared `join` example** --
+  `BenchDemo_16_JemallocProfiler` measured strings grown by appending against
+  a reused buffer, about 7% apart, and its only check was that it ran. It
+  measures `joinV0` and `joinV1`, one version per test (`Jemalloc.JoinV0`,
+  `Jemalloc.JoinV1`), and `TestDemoJemalloc`, registered with `ctest` under
+  the `demo` and `jemalloc` labels, runs each as
+  `bench run --profile jemalloc` wraps it: the run must leave one exit dump,
+  the demo's, and `jeprof --alloc_space` must put at least 90% of JoinV0's
+  sampled bytes, and at least 400 MB for its 102 calls, under `joinV0`,
+  while JoinV1's run puts under `joinV1` less than 2% of that. It skips,
+  saying why, in a sanitizer build and where no jemalloc that profiles,
+  `jeprof` or binutils is found.
+  The demo's test names change, so CSVs captured from it before this release
+  do not join with newer ones.
 - **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
   `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
   `filter` example, with a Raspberry Pi walkthrough
