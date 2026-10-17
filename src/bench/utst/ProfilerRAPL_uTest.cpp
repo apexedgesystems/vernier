@@ -9,10 +9,13 @@
  * so raplAccessRefusal(), which gives each errno its cause, is tested over its
  * table on its own. The tests of the run, the direct constructor and the
  * factory decide on this machine's real files and expect a refusal: they skip
- * where this process can read the energy counter.
+ * where this process can read the energy counter. The capture's tests give a
+ * profiler a plan naming such a file, and rewrite the counter in it between
+ * the hooks.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
+#include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerRAPL.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
@@ -27,9 +30,11 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <string>
@@ -53,6 +58,7 @@ using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
+using vernier::bench::Stats;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::StderrCapture;
 
@@ -489,4 +495,327 @@ TEST_F(RaplRunTest, FactoryRecordsTheRefusal) {
   EXPECT_EQ(PROFILER, nullptr);
   EXPECT_EQ(failures(), std::vector<std::string>{"rapl||" + here_.report.message});
   EXPECT_EQ(outputRoot(), std::vector<std::string>{});
+}
+
+/* ----------------------------- The Capture ----------------------------- */
+
+namespace {
+
+/**
+ * @brief A profiler built from a plan that names this test's device file,
+ * whose counter a test sets before each hook; its report goes under this
+ * test's directory.
+ */
+class RaplCaptureTest : public ::testing::Test {
+protected:
+  void SetUp() override {
+    ASSERT_TRUE(dir_.ok());
+    ProfilerRegistry::instance().resetFailures();
+  }
+
+  void TearDown() override { ProfilerRegistry::instance().resetFailures(); }
+
+  /** @brief The plan the check would give for this test's device: one count is 2^-14 J. */
+  std::shared_ptr<const RaplPlan> plan() const {
+    auto out = std::make_shared<RaplPlan>();
+    out->device = device();
+    out->energyUnitJoules = 1.0 / 16384.0;
+    out->cpuModel = "Intel(R) Core(TM) Ultra 7 165H";
+    out->cpuFamily = 6;
+    out->cpuModelNumber = 170;
+    return out;
+  }
+
+  /** @brief A rapl request writing under @p root (this test's out/ by default). */
+  PerfConfig config(const std::string& root = "") const {
+    PerfConfig cfg;
+    cfg.profileTool = "rapl";
+    cfg.artifactRoot = root.empty() ? dir_.path() + "/out" : root;
+    return cfg;
+  }
+
+  std::string device() const { return dir_.path() + "/msr"; }
+
+  /** @brief The device file, its package counter holding @p counter. */
+  void setCounter(std::uint64_t counter) const {
+    ASSERT_TRUE(writeDevice(device(), {{MSR_POWER_UNIT, POWER_UNIT}, {MSR_PKG_ENERGY, counter}},
+                            DEVICE_SIZE));
+  }
+
+  /** @brief The case's report; "" when there is none. */
+  std::string report() const {
+    std::ifstream in(dir_.path() + "/out/RaplCaptureTest.Case.rapl/energy.txt");
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+  }
+
+  /** @brief A window's statistics with @p medianUs as its median call time. */
+  static Stats window(double medianUs) {
+    Stats stats;
+    stats.median = medianUs;
+    return stats;
+  }
+
+  /** @brief The failures the run recorded, as "<test>|<stage>|<message>". */
+  static std::vector<std::string> failures() {
+    std::vector<std::string> out;
+    for (const ProfileFailure& F : ProfilerRegistry::instance().failures()) {
+      out.push_back(F.test + "|" + std::to_string(static_cast<int>(F.result.stage)) + "|" +
+                    F.result.report.message);
+    }
+    return out;
+  }
+
+  FakeToolDir dir_;
+};
+
+/** @brief How many times @p text holds @p part. */
+int count(const std::string& text, const std::string& part) {
+  int n = 0;
+  for (std::size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + 1)) {
+    ++n;
+  }
+  return n;
+}
+
+/** @brief The number after "<field>: " in @p text's first line holding it; -1 when none. */
+double field(const std::string& text, const std::string& name) {
+  const std::size_t AT = text.find("\n" + name + ": ");
+  return AT == std::string::npos ? -1.0 : std::strtod(text.c_str() + AT + name.size() + 3, nullptr);
+}
+
+const std::string COLLECTION = std::to_string(static_cast<int>(ReadinessStage::COLLECTION));
+const std::string COMPLETION = std::to_string(static_cast<int>(ReadinessStage::COMPLETION));
+
+} // namespace
+
+/** @test A start reading of zero is a reading: the window is measured from it. */
+TEST_F(RaplCaptureTest, ZeroStartIsMeasured) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(0);
+  profiler.beforeMeasure();
+  setCounter(16384);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  (void)testing::internal::GetCapturedStdout();
+
+  const std::string REPORT = report();
+  EXPECT_NE(REPORT.find("\nStart counter: 0\n"), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nDelta counter: 16384\n"), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nEnergy consumed: 1.000000 J\n"), std::string::npos) << REPORT;
+  EXPECT_EQ(failures(), std::vector<std::string>{});
+}
+
+/** @test The 32-bit counter wrapping once in the window gives the right delta. */
+TEST_F(RaplCaptureTest, OneWrapIsTheDelta) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(0xABCD0000FFFFFF00ULL); // reserved upper bits set: not the counter's
+  profiler.beforeMeasure();
+  setCounter(0x0000000000000100ULL);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  (void)testing::internal::GetCapturedStdout();
+
+  const std::string REPORT = report();
+  EXPECT_NE(REPORT.find("\nStart counter: 4294967040\n"), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nEnd counter: 256\n"), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nDelta counter: 512\n"), std::string::npos) << REPORT;
+}
+
+/** @test A failed start reading fails the run with its cause, and the window has no report. */
+TEST_F(RaplCaptureTest, StartReadFailureFailsTheRun) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  ASSERT_TRUE(writeDevice(device(), {{MSR_POWER_UNIT, POWER_UNIT}}, MSR_POWER_UNIT + 8));
+  StderrCapture capture;
+  profiler.beforeMeasure();
+  setCounter(16384);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  const std::string PRINTED = testing::internal::GetCapturedStdout();
+  (void)capture.text();
+
+  EXPECT_EQ(failures(), std::vector<std::string>{"RaplCaptureTest.Case|" + COLLECTION +
+                                                 "|unusable: window 1's start: read MSR 0x611 "
+                                                 "from " +
+                                                 device() + " returned 0 of 8 bytes"});
+  EXPECT_EQ(report(), "") << "a window without a start has no section";
+  EXPECT_EQ(PRINTED.find("=== Energy"), std::string::npos) << PRINTED;
+}
+
+/** @test A failed end reading fails the run with its cause, and the window has no report. */
+TEST_F(RaplCaptureTest, EndReadFailureFailsTheRun) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(100);
+  profiler.beforeMeasure();
+  ASSERT_TRUE(std::filesystem::remove(device()));
+  StderrCapture capture;
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  const std::string PRINTED = testing::internal::GetCapturedStdout();
+  (void)capture.text();
+
+  EXPECT_EQ(failures(),
+            std::vector<std::string>{"RaplCaptureTest.Case|" + COLLECTION +
+                                     "|missing: window 1's end: cannot open " + device() +
+                                     ": No such file or directory; the msr driver "
+                                     "provides it"});
+  EXPECT_EQ(report(), "");
+  EXPECT_EQ(PRINTED.find("=== Energy"), std::string::npos) << PRINTED;
+}
+
+/**
+ * @test A report that cannot be written (the output root is a regular file)
+ * fails the run at the completion stage, naming the file; no summary is
+ * printed for it.
+ */
+TEST_F(RaplCaptureTest, UnwritableReportFailsTheRun) {
+  const std::string ROOT = dir_.writeFile("not-a-folder", "a regular file\n");
+  RAPLProfiler profiler(config(ROOT), "RaplCaptureTest.Case", plan());
+  setCounter(100);
+  profiler.beforeMeasure();
+  setCounter(200);
+  StderrCapture capture;
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  const std::string PRINTED = testing::internal::GetCapturedStdout();
+  (void)capture.text();
+
+  EXPECT_EQ(failures(),
+            std::vector<std::string>{"RaplCaptureTest.Case|" + COMPLETION +
+                                     "|completion: unusable: window 1's energy report: cannot "
+                                     "open " +
+                                     ROOT +
+                                     "/RaplCaptureTest.Case.rapl/energy.txt for writing: Not a "
+                                     "directory"});
+  EXPECT_EQ(PRINTED.find("=== Energy"), std::string::npos)
+      << "a summary announced a report that was not written:\n"
+      << PRINTED;
+}
+
+/** @test The summary comes after the report is written, names it, and gives no hints. */
+TEST_F(RaplCaptureTest, SummaryNamesTheWrittenReport) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(100);
+  profiler.beforeMeasure();
+  setCounter(16484);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  const std::string PRINTED = testing::internal::GetCapturedStdout();
+
+  EXPECT_NE(PRINTED.find("Report:              " + dir_.path() +
+                         "/out/RaplCaptureTest.Case.rapl/energy.txt\n"),
+            std::string::npos)
+      << PRINTED;
+  EXPECT_NE(report(), "");
+  EXPECT_EQ(PRINTED.find("Hint"), std::string::npos) << PRINTED;
+  EXPECT_EQ(PRINTED.find("DRAM"), std::string::npos) << PRINTED;
+  EXPECT_EQ(failures(), std::vector<std::string>{});
+}
+
+/** @test A window over which the counter did not advance is reported as such, not as a failure. */
+TEST_F(RaplCaptureTest, ZeroDeltaIsStated) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(777);
+  profiler.beforeMeasure();
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  const std::string PRINTED = testing::internal::GetCapturedStdout();
+
+  const std::string REPORT = report();
+  EXPECT_NE(REPORT.find("\nDelta counter: 0\n"), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nNote: the counter did not advance during this "), std::string::npos)
+      << REPORT;
+  EXPECT_NE(PRINTED.find("did not advance"), std::string::npos) << PRINTED;
+  EXPECT_EQ(failures(), std::vector<std::string>{});
+}
+
+/** @test Each measured window is a numbered section of one report, in order. */
+TEST_F(RaplCaptureTest, EachWindowHasItsSection) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  testing::internal::CaptureStdout();
+  setCounter(1000);
+  profiler.beforeMeasure();
+  setCounter(2000);
+  profiler.afterMeasure(window(10.0));
+  setCounter(5000);
+  profiler.beforeMeasure();
+  setCounter(9000);
+  profiler.afterMeasure(window(20.0));
+  (void)testing::internal::GetCapturedStdout();
+
+  const std::string REPORT = report();
+  EXPECT_EQ(count(REPORT, "=== RAPL Energy Measurement ==="), 1) << REPORT;
+  const std::size_t FIRST = REPORT.find("\n--- Window 1 ---\n");
+  const std::size_t SECOND = REPORT.find("\n--- Window 2 ---\n");
+  ASSERT_NE(FIRST, std::string::npos) << REPORT;
+  ASSERT_NE(SECOND, std::string::npos) << REPORT;
+  EXPECT_LT(FIRST, SECOND);
+  EXPECT_NE(REPORT.find("\nDelta counter: 1000\n", FIRST), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nStart counter: 5000\n", SECOND), std::string::npos) << REPORT;
+  EXPECT_NE(REPORT.find("\nDelta counter: 4000\n", SECOND), std::string::npos) << REPORT;
+}
+
+/**
+ * @test Each window starts from its own reading: after a window ended by an
+ * exception (no after hook), a start that cannot be read does not fall back
+ * on the aborted window's.
+ */
+TEST_F(RaplCaptureTest, StartIsTheWindowsOwn) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(100);
+  profiler.beforeMeasure();
+  profiler.abortMeasure();
+  ASSERT_TRUE(writeDevice(device(), {{MSR_POWER_UNIT, POWER_UNIT}}, MSR_POWER_UNIT + 8));
+  StderrCapture capture;
+  profiler.beforeMeasure();
+  setCounter(300);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(10.0));
+  (void)testing::internal::GetCapturedStdout();
+  (void)capture.text();
+
+  EXPECT_EQ(report(), "") << "the window was measured from the aborted window's start";
+  EXPECT_EQ(failures().size(), 1U);
+}
+
+/**
+ * @test The report states its scope, the counter's wrap and the per-call
+ * definition, and its numbers follow them: energy is the delta in units,
+ * power the energy over the duration, energy per call the power times the
+ * median call time.
+ */
+TEST_F(RaplCaptureTest, ReportFollowsItsDefinitions) {
+  RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+  setCounter(1000);
+  profiler.beforeMeasure();
+  setCounter(1000 + 3 * 16384);
+  testing::internal::CaptureStdout();
+  profiler.afterMeasure(window(250.0));
+  (void)testing::internal::GetCapturedStdout();
+
+  const std::string REPORT = report();
+  EXPECT_NE(REPORT.find("\nScope: package 0, read through " + device() + " (MSR 0x611): "),
+            std::string::npos)
+      << REPORT;
+  EXPECT_NE(REPORT.find("\nCounter: 32 bits, wrapping after 262144.000 J at this unit; "),
+            std::string::npos)
+      << REPORT;
+  EXPECT_NE(REPORT.find("\nEnergy per operation: the window's average package power x its "
+                        "median time per call\n"),
+            std::string::npos)
+      << REPORT;
+  EXPECT_EQ(REPORT.find("DRAM"), std::string::npos) << REPORT;
+
+  const std::size_t WINDOW = REPORT.find("\n--- Window 1 ---\n");
+  ASSERT_NE(WINDOW, std::string::npos) << REPORT;
+  const std::string SECTION = REPORT.substr(WINDOW);
+  const double ENERGY = field(SECTION, "Energy consumed");
+  const double DURATION = field(SECTION, "Duration");
+  const double POWER = field(SECTION, "Average power");
+  const double PER_CALL = field(SECTION, "Energy per operation");
+  EXPECT_EQ(ENERGY, 3.0);
+  EXPECT_EQ(field(SECTION, "Median time per call"), 250.0);
+  EXPECT_EQ(field(SECTION, "Energy unit"), 61.0352);
+  ASSERT_GT(DURATION, 0.0) << REPORT;
+  EXPECT_NEAR(POWER, ENERGY / DURATION, 1e-6 + POWER * 1e-6) << REPORT;
+  EXPECT_NEAR(PER_CALL, POWER * 250.0 * 1e-3, 1e-6 + PER_CALL * 1e-5) << REPORT;
 }

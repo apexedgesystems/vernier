@@ -18,6 +18,7 @@
  *  - captureFolder(): where a test's files are
  *  - refusalNotice(): the run's notice when RAPL cannot measure here
  *  - linesStarting(): how many lines of a run's output start with a text
+ *  - energyWindows(): the numbered windows of an energy report, read back
  *
  * Test support for 08_RaplProfiler_uTest.cpp; not part of the demo.
  */
@@ -26,6 +27,7 @@
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <cstddef>
+#include <cstdlib>
 
 #include <filesystem>
 #include <sstream>
@@ -132,6 +134,68 @@ inline int linesStarting(const std::string& output, const std::string& prefix) {
     count += startsWith(line, prefix) ? 1 : 0;
   }
   return count;
+}
+
+/* ----------------------------- Reading a Report ----------------------------- */
+
+/// One window's section of an energy report (energy.txt), as written; -1
+/// where the section has no such field.
+struct EnergyWindow {
+  int number = -1;                ///< "--- Window N ---"
+  double energyJoules = -1.0;     ///< Energy consumed (J)
+  double durationSeconds = -1.0;  ///< Duration (s)
+  double powerWatts = -1.0;       ///< Average power (W)
+  double perCallMillijoules = -1; ///< Energy per operation (mJ/call)
+  double medianUs = -1.0;         ///< Median time per call (us)
+  double unitMicrojoules = -1.0;  ///< Energy unit (uJ)
+  long long startCounter = -1;    ///< Start counter
+  long long endCounter = -1;      ///< End counter
+  long long deltaCounter = -1;    ///< Delta counter
+};
+
+/**
+ * @brief The windows of energy report @p report, in the order written: each
+ *        "--- Window N ---" line opens one, and its "<Field>: <number>" lines
+ *        fill it. Empty when the report holds no window.
+ */
+inline std::vector<EnergyWindow> energyWindows(const std::string& report) {
+  std::vector<EnergyWindow> windows;
+  std::istringstream in(report);
+  for (std::string line; std::getline(in, line);) {
+    if (startsWith(line, "--- Window ")) {
+      EnergyWindow window;
+      window.number = std::atoi(line.c_str() + std::string("--- Window ").size());
+      windows.push_back(window);
+      continue;
+    }
+    const std::size_t COLON = line.find(": ");
+    if (windows.empty() || COLON == std::string::npos) {
+      continue;
+    }
+    const std::string NAME = line.substr(0, COLON);
+    const char* VALUE = line.c_str() + COLON + 2;
+    EnergyWindow& window = windows.back();
+    if (NAME == "Energy consumed") {
+      window.energyJoules = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Duration") {
+      window.durationSeconds = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Average power") {
+      window.powerWatts = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Energy per operation") {
+      window.perCallMillijoules = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Median time per call") {
+      window.medianUs = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Energy unit") {
+      window.unitMicrojoules = std::strtod(VALUE, nullptr);
+    } else if (NAME == "Start counter") {
+      window.startCounter = std::strtoll(VALUE, nullptr, 10);
+    } else if (NAME == "End counter") {
+      window.endCounter = std::strtoll(VALUE, nullptr, 10);
+    } else if (NAME == "Delta counter") {
+      window.deltaCounter = std::strtoll(VALUE, nullptr, 10);
+    }
+  }
+  return windows;
 }
 
 } // namespace rapl_check

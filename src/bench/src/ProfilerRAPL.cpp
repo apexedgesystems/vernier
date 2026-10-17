@@ -32,9 +32,6 @@ namespace {
 
 constexpr uint32_t MSR_RAPL_POWER_UNIT = 0x606;
 constexpr uint32_t MSR_PKG_ENERGY_STATUS = 0x611;
-constexpr uint32_t MSR_PP0_ENERGY_STATUS = 0x639;
-constexpr uint32_t MSR_DRAM_ENERGY_STATUS = 0x619;
-constexpr uint32_t MSR_PP1_ENERGY_STATUS = 0x641;
 
 /// What a refusal for want of access tells the user to set up.
 constexpr const char* ACCESS_REMEDY =
@@ -97,13 +94,46 @@ MsrRead readMsr(const std::string& device, uint32_t msr) {
   return out;
 }
 
-/** @brief The refusal of a failed read: raplAccessRefusal(), or unusable for a short read. */
-ReadinessResult refusalOf(const MsrRead& read) {
-  if (read.error != 0) {
-    return raplAccessRefusal(read.step, read.error);
+/// A refusal's parts, before a stage and its cause word make it a result.
+struct Refusal {
+  ReadinessCause cause = ReadinessCause::UNUSABLE;
+  std::string detail;
+  std::string remedy;
+};
+
+/** @brief The cause of errno @p err from @p step, an open of the device or a read of it. */
+Refusal refusalFor(const std::string& step, int err) {
+  const std::string DETAIL = "cannot " + step + ": " + std::strerror(err);
+  switch (err) {
+  case EACCES:
+  case EPERM:
+    return {ReadinessCause::DENIED, DETAIL, ACCESS_REMEDY};
+  case ENOENT:
+  case ENODEV:
+    return {ReadinessCause::MISSING, DETAIL + "; the msr driver provides it", DEVICE_REMEDY};
+  case EIO:
+    return {ReadinessCause::UNSUPPORTED,
+            DETAIL + (step.rfind("open ", 0) == 0 ? "; this CPU has no model-specific registers"
+                                                  : "; this CPU does not implement that register"),
+            ""};
+  default:
+    return {ReadinessCause::UNUSABLE, DETAIL, ""};
   }
-  return readinessResult(ReadinessCause::UNUSABLE,
-                         read.step + " returned " + std::to_string(read.bytes) + " of 8 bytes", "");
+}
+
+/** @brief The cause of a failed read: refusalFor() its errno, or unusable for a short read. */
+Refusal refusalFor(const MsrRead& read) {
+  if (read.error != 0) {
+    return refusalFor(read.step, read.error);
+  }
+  return {ReadinessCause::UNUSABLE,
+          read.step + " returned " + std::to_string(read.bytes) + " of 8 bytes", ""};
+}
+
+/** @brief A failed read as the decision refuses it. */
+ReadinessResult refusalOf(const MsrRead& read) {
+  const Refusal REFUSAL = refusalFor(read);
+  return readinessResult(REFUSAL.cause, REFUSAL.detail, REFUSAL.remedy);
 }
 
 /** @brief What /proc/cpuinfo says of the first CPU it lists. */
@@ -238,24 +268,8 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 /* ----------------------------- Decision ----------------------------- */
 
 ReadinessResult raplAccessRefusal(const std::string& step, int err) {
-  const std::string DETAIL = "cannot " + step + ": " + std::strerror(err);
-  switch (err) {
-  case EACCES:
-  case EPERM:
-    return readinessResult(ReadinessCause::DENIED, DETAIL, ACCESS_REMEDY);
-  case ENOENT:
-  case ENODEV:
-    return readinessResult(ReadinessCause::MISSING, DETAIL + "; the msr driver provides it",
-                           DEVICE_REMEDY);
-  case EIO:
-    return readinessResult(ReadinessCause::UNSUPPORTED,
-                           DETAIL + (step.rfind("open ", 0) == 0
-                                         ? "; this CPU has no model-specific registers"
-                                         : "; this CPU does not implement that register"),
-                           "");
-  default:
-    return readinessResult(ReadinessCause::UNUSABLE, DETAIL, "");
-  }
+  const Refusal REFUSAL = refusalFor(step, err);
+  return readinessResult(REFUSAL.cause, REFUSAL.detail, REFUSAL.remedy);
 }
 
 ReadinessResult checkRaplRequestFrom(const ReadinessRequest& request, const RaplSources& sources) {
@@ -319,123 +333,166 @@ bool RAPLProfiler::isAvailable() noexcept {
   }
 }
 
-std::optional<uint64_t> RAPLProfiler::readEnergyCounter(RAPLDomain domain) const {
-  uint32_t msr = 0;
-
-  switch (domain) {
-  case RAPLDomain::Package:
-    msr = MSR_PKG_ENERGY_STATUS;
-    break;
-  case RAPLDomain::Core:
-    msr = MSR_PP0_ENERGY_STATUS;
-    break;
-  case RAPLDomain::DRAM:
-    msr = MSR_DRAM_ENERGY_STATUS;
-    break;
-  case RAPLDomain::GPU:
-    msr = MSR_PP1_ENERGY_STATUS;
-    break;
-  default:
-    return std::nullopt;
-  }
-
-  return readMsr(plan_->device, msr).value;
-}
-
 void RAPLProfiler::beforeMeasure() {
+  // Each window's start is its own: a window ended by an exception gets no
+  // after hook, and its reading goes here. Nothing else outlives a window:
+  // the device is opened for each read.
+  start_.reset();
   if (!plan_) {
     return;
   }
-
-  startTimeUs_ = nowUs();
-
-  auto counter = readEnergyCounter(domain_);
-  if (counter) {
-    energyStart_ = *counter;
-  } else {
-    energyStart_ = 0;
+  const double TIME_US = nowUs();
+  const MsrRead READ = readMsr(plan_->device, MSR_PKG_ENERGY_STATUS);
+  if (!READ.value) {
+    const Refusal REFUSAL = refusalFor(READ);
+    fail(REFUSAL.cause, "window " + std::to_string(windows_ + 1) + "'s start: " + REFUSAL.detail,
+         REFUSAL.remedy, ReadinessStage::COLLECTION);
+    return;
   }
+  // The energy-status counter is bits 31:0; bits 63:32 are reserved.
+  start_ = Reading{static_cast<uint32_t>(*READ.value & 0xFFFFFFFFULL), TIME_US};
 }
 
 void RAPLProfiler::afterMeasure(const Stats& s) {
-  if (!plan_ || energyStart_ == 0) {
+  if (!plan_) {
     return;
   }
+  // The end reading comes first: nothing else is counted in the window.
+  const MsrRead READ = readMsr(plan_->device, MSR_PKG_ENERGY_STATUS);
+  const double END_US = nowUs();
 
-  endTimeUs_ = nowUs();
-
-  auto counter = readEnergyCounter(domain_);
-  if (!counter) {
+  // Every window that ends published a row: the sections follow the rows.
+  const int WINDOW = ++windows_;
+  if (!start_) {
+    return; // The start's failure was reported when it happened.
+  }
+  const Reading START = *start_;
+  start_.reset();
+  if (!READ.value) {
+    const Refusal REFUSAL = refusalFor(READ);
+    fail(REFUSAL.cause, "window " + std::to_string(WINDOW) + "'s end: " + REFUSAL.detail,
+         REFUSAL.remedy, ReadinessStage::COLLECTION);
     return;
   }
-  energyEnd_ = *counter;
+  const Reading END{static_cast<uint32_t>(*READ.value & 0xFFFFFFFFULL), END_US};
 
-  uint32_t start32 = static_cast<uint32_t>(energyStart_ & 0xFFFFFFFF);
-  uint32_t end32 = static_cast<uint32_t>(energyEnd_ & 0xFFFFFFFF);
+  // Unsigned 32-bit subtraction is right across one wrap of the counter;
+  // two wraps in one window cannot be told from none.
+  const uint32_t DELTA = END.counter - START.counter;
+  RAPLMeasurement measurement;
+  measurement.energyJoules = static_cast<double>(DELTA) * plan_->energyUnitJoules;
+  measurement.durationSeconds = (END.timeUs - START.timeUs) / 1e6;
+  measurement.avgPowerWatts = measurement.durationSeconds > 0.0
+                                  ? measurement.energyJoules / measurement.durationSeconds
+                                  : 0.0;
+  // Energy per call: the window's average package power times the median
+  // call time (W x us = uJ, so 1e-3 for mJ). The hook is given the window's
+  // statistics, not its count of calls.
+  measurement.energyPerOpMillijoules = measurement.avgPowerWatts * s.median * 1e-3;
 
-  double deltaCounter = 0.0;
-  if (end32 >= start32) {
-    deltaCounter = static_cast<double>(end32 - start32);
-  } else {
-    deltaCounter = static_cast<double>(0xFFFFFFFFUL - start32 + end32 + 1);
+  if (!writeWindow(WINDOW, START, END, DELTA, measurement, s.median)) {
+    return;
   }
-
-  const double ENERGY_UNIT = plan_->energyUnitJoules;
-  double energyJoules = deltaCounter * ENERGY_UNIT;
-  double durationSeconds = (endTimeUs_ - startTimeUs_) / 1e6;
-  double avgPowerWatts = energyJoules / durationSeconds;
-
-  double totalOperations = (durationSeconds * 1e6) / s.median;
-  double energyPerOpMillijoules = (energyJoules * 1000.0) / totalOperations;
-
-  RAPLMeasurement measurement{.energyJoules = energyJoules,
-                              .durationSeconds = durationSeconds,
-                              .avgPowerWatts = avgPowerWatts,
-                              .energyPerOpMillijoules = energyPerOpMillijoules};
-
-  printSummary(measurement);
-
-  std::string resultPath = artifactDir_ + "/energy.txt";
-  std::ofstream out(resultPath);
-  if (out) {
-    out << "=== RAPL Energy Measurement ===\n";
-    out << "Test: " << testName_ << "\n";
-    out << "CPU: " << plan_->cpuModel << "\n";
-    out << "Family: " << plan_->cpuFamily << ", Model: " << plan_->cpuModelNumber << "\n";
-    out << "\n";
-    out << "Energy consumed: " << energyJoules << " J\n";
-    out << "Duration: " << durationSeconds << " s\n";
-    out << "Average power: " << avgPowerWatts << " W\n";
-    out << "Energy per operation: " << energyPerOpMillijoules << " mJ/call\n";
-    out << "\n";
-    out << "Energy unit: " << (ENERGY_UNIT * 1e6) << " uJ\n";
-    out << "Start counter: " << energyStart_ << "\n";
-    out << "End counter: " << energyEnd_ << "\n";
-    out << "Delta counter: " << deltaCounter << "\n";
-  }
+  printSummary(WINDOW, measurement, DELTA);
 }
 
-void RAPLProfiler::printSummary(const RAPLMeasurement& measurement) const {
-  std::printf("\n=== Energy Measurement (RAPL) ===\n");
+void RAPLProfiler::fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
+                        ReadinessStage stage) const {
+  ProfilerRegistry::instance().reportFailure("rapl", testName_,
+                                             readinessResult(cause, detail, remedy, stage));
+}
+
+bool RAPLProfiler::writeWindow(int window, const Reading& start, const Reading& end, uint32_t delta,
+                               const RAPLMeasurement& measurement, double medianUs) {
+  char line[256];
+  std::string text;
+  if (!reportStarted_) {
+    text += "=== RAPL Energy Measurement ===\n";
+    text += "Test: " + testName_ + "\n";
+    text += "CPU: " + plan_->cpuModel + "\n";
+    text += "Family: " + std::to_string(plan_->cpuFamily) +
+            ", Model: " + std::to_string(plan_->cpuModelNumber) + "\n";
+    text += "Scope: package 0, read through " + plan_->device +
+            " (MSR 0x611): every core, cache and the integrated graphics of the package, "
+            "whatever runs on them; nothing outside the package\n";
+    std::snprintf(line, sizeof(line),
+                  "Counter: 32 bits, wrapping after %.3f J at this unit; a window is taken to "
+                  "wrap it at most once\n",
+                  4294967296.0 * plan_->energyUnitJoules);
+    text += line;
+    text += "Energy per operation: the window's average package power x its median time per "
+            "call\n";
+  }
+  text += "\n--- Window " + std::to_string(window) + " ---\n";
+  std::snprintf(line, sizeof(line), "Energy consumed: %.6f J\n", measurement.energyJoules);
+  text += line;
+  std::snprintf(line, sizeof(line), "Duration: %.6f s\n", measurement.durationSeconds);
+  text += line;
+  std::snprintf(line, sizeof(line), "Average power: %.6f W\n", measurement.avgPowerWatts);
+  text += line;
+  std::snprintf(line, sizeof(line), "Energy per operation: %.6f mJ/call\n",
+                measurement.energyPerOpMillijoules);
+  text += line;
+  std::snprintf(line, sizeof(line), "Median time per call: %.3f us\n", medianUs);
+  text += line;
+  std::snprintf(line, sizeof(line), "Energy unit: %.4f uJ\n", plan_->energyUnitJoules * 1e6);
+  text += line;
+  text += "Start counter: " + std::to_string(start.counter) + "\n";
+  text += "End counter: " + std::to_string(end.counter) + "\n";
+  text += "Delta counter: " + std::to_string(delta) + "\n";
+  if (delta == 0) {
+    std::snprintf(line, sizeof(line),
+                  "Note: the counter did not advance during this %.3f s window\n",
+                  measurement.durationSeconds);
+    text += line;
+  }
+
+  // Each step checked: a report that is not on disk must not be announced.
+  const std::string PATH = artifactDir_ + "/energy.txt";
+  const std::string WHERE = "window " + std::to_string(window) + "'s energy report: ";
+  const std::string REMEDY =
+      "Make sure the output folder, which --profile-output-dir sets, can be created and written.";
+  errno = 0;
+  std::FILE* file = std::fopen(PATH.c_str(), reportStarted_ ? "a" : "w");
+  if (file == nullptr) {
+    fail(ReadinessCause::UNUSABLE,
+         WHERE + "cannot open " + PATH + " for writing: " + std::strerror(errno), REMEDY,
+         ReadinessStage::COMPLETION);
+    return false;
+  }
+  errno = 0;
+  const bool WRITTEN = std::fputs(text.c_str(), file) >= 0;
+  const int WRITE_ERROR = errno;
+  errno = 0;
+  const bool CLOSED = std::fclose(file) == 0;
+  const int CLOSE_ERROR = errno;
+  if (!WRITTEN || !CLOSED) {
+    const int ERR = !WRITTEN ? WRITE_ERROR : CLOSE_ERROR;
+    fail(ReadinessCause::UNUSABLE,
+         WHERE + "cannot write " + PATH + ": " +
+             (ERR != 0 ? std::strerror(ERR) : "the write did not complete"),
+         REMEDY, ReadinessStage::COMPLETION);
+    return false;
+  }
+  reportStarted_ = true;
+  return true;
+}
+
+void RAPLProfiler::printSummary(int window, const RAPLMeasurement& measurement,
+                                uint32_t delta) const {
+  std::printf("\n=== Energy Measurement (RAPL, package 0) ===\n");
+  std::printf("Window:              %d\n", window);
   std::printf("Energy consumed:     %.3f Joules\n", measurement.energyJoules);
   std::printf("Average power:       %.2f Watts\n", measurement.avgPowerWatts);
-  std::printf("Energy per op:       %.3f mJ/call\n", measurement.energyPerOpMillijoules);
+  std::printf("Energy per op:       %.3f mJ/call (average power x median call time)\n",
+              measurement.energyPerOpMillijoules);
   std::printf("Duration:            %.3f seconds\n", measurement.durationSeconds);
-  std::printf("\n");
-
-  if (measurement.avgPowerWatts > 50.0) {
-    std::printf("Hint: High power draw (>50W) - CPU-intensive workload\n");
-  } else if (measurement.avgPowerWatts < 10.0) {
-    std::printf("Hint: Low power draw (<10W) - Idle or I/O-bound workload\n");
+  if (delta == 0) {
+    std::printf("Counter:             did not advance during the window\n");
   }
-
-  if (measurement.energyPerOpMillijoules > 1.0) {
-    std::printf("Hint: High energy per operation (>1mJ) - Consider optimization\n");
-  }
-
-  std::printf("\n");
-  std::printf("Note: RAPL measures package energy (CPU + iGPU + DRAM on some models)\n");
-  std::printf("      Does not include PCIe devices, fans, or other system components\n");
+  std::printf("Scope:               package 0, every core included; nothing outside it\n");
+  std::printf("Report:              %s/energy.txt\n\n", artifactDir_.c_str());
+  std::fflush(stdout);
 }
 
 /* --------------------------------- API --------------------------------- */

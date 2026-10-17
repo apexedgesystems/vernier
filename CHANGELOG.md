@@ -325,6 +325,15 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **RAPL's energy report is the run's evidence, kept and checked** -- a start
+  reading of zero is measured, and a counter that cannot be read at either
+  end of a window, or an `energy.txt` that cannot be written, fails the run
+  with status 4, naming the cause or the file. The summary follows the
+  written report and names it, without the power and per-call hints. The
+  report holds one numbered section per measured window, in the order of the
+  case's rows, and states its scope (package 0, nothing off it), the
+  counter's 32-bit wrap and that energy per call is the window's average
+  package power times its median call time.
 - **`--profile rapl` reads the energy registers before it says yes, and says
   why when it cannot** -- the doctor and the run read the power-unit and
   package-energy registers through `/dev/cpu/0/msr` and name the cause of a

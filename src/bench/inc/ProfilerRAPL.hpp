@@ -6,10 +6,18 @@
  *
  * Reads package 0's energy-status counter (MSR 0x611) through the msr
  * driver's /dev/cpu/0/msr before and after each measured window, and writes
- * the window's energy, average package power and energy per call to
- * <Test>.rapl/energy.txt. The counter covers the whole package (its cores,
+ * the window's energy, average package power and energy per call (the
+ * average power times the median call time) to <Test>.rapl/energy.txt, one
+ * numbered section per window in the order of the case's rows; a summary
+ * naming the file follows. The counter covers the whole package (its cores,
  * caches, integrated graphics and the rest of it), not the case's thread
- * alone, and nothing off the package: no DRAM counter is read.
+ * alone, and nothing off the package: no DRAM counter is read. It is 32 bits
+ * wide and is taken to wrap at most once in a window.
+ *
+ * A failed read at either end of a window fails the run with the read's
+ * cause, and a report that cannot be written fails it at the completion
+ * stage, naming the file; a start reading of zero is a reading, and a
+ * window over which the counter did not advance is reported as such.
  *
  * One decision for the doctor rows and the run: rapl takes no mode words and
  * has no analysis; the CPU must be Intel's (vendor_id in /proc/cpuinfo); and
@@ -106,19 +114,28 @@ public:
   [[nodiscard]] static bool isAvailable() noexcept;
 
 private:
-  [[nodiscard]] std::optional<uint64_t> readEnergyCounter(RAPLDomain domain) const;
-  void printSummary(const RAPLMeasurement& measurement) const;
+  /// The package counter's low 32 bits, and when they were read.
+  struct Reading {
+    uint32_t counter = 0;
+    double timeUs = 0.0;
+  };
+
+  /** @brief Record a failure of this case's capture with the registry. */
+  void fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
+            ReadinessStage stage) const;
+  [[nodiscard]] bool writeWindow(int window, const Reading& start, const Reading& end,
+                                 uint32_t delta, const RAPLMeasurement& measurement,
+                                 double medianUs);
+  void printSummary(int window, const RAPLMeasurement& measurement, uint32_t delta) const;
 
   PerfConfig cfg_{};
   std::string testName_;
   std::string artifactDir_;
   std::shared_ptr<const RaplPlan> plan_;
 
-  RAPLDomain domain_ = RAPLDomain::Package;
-  uint64_t energyStart_ = 0;
-  uint64_t energyEnd_ = 0;
-  double startTimeUs_ = 0.0;
-  double endTimeUs_ = 0.0;
+  std::optional<Reading> start_; ///< The open window's start; empty outside one.
+  int windows_ = 0;              ///< Windows ended so far: the next section's number - 1.
+  bool reportStarted_ = false;   ///< This profiler created the case's energy.txt.
 };
 
 /* --------------------------------- API --------------------------------- */

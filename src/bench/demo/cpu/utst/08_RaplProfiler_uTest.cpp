@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -151,7 +152,13 @@ TEST(RaplDemoTest, MeasuresBothVersions) {
  * naming the cause (denied, missing or unsupported) is printed once and
  * again in the run's closing report, and there is no capture folder and no
  * energy summary; then the check skips, quoting the notice. Where RAPL can,
- * the run must exit 0 with each case's energy report in its folder. Any other
+ * the run must exit 0, and each case's energy report must hold one window
+ * over which the counter advanced, with its energy the counter's delta in
+ * units, its power the energy over the window's duration and its energy per
+ * call that power times the median call time; and JoinV1's energy per call
+ * must be at most a third of JoinV0's. On the x86 laptop the walkthrough is
+ * captured on, JoinV0 takes about 30 times JoinV1's time per call, so a third
+ * leaves JoinV1 room to draw several times JoinV0's package power. Any other
  * outcome fails: a refusal with another cause, an exit 0 without reports, a
  * report beside a refusal.
  */
@@ -195,9 +202,48 @@ TEST(Rapl, EnergyPerCall) {
          "unsupported): the demo "
       << vg::describe(RUN.end) << " (its files are in " << DIR << "). It printed:\n"
       << vg::lastLines(RUN.output, 40);
+
+  // Each case measured once: one window in its report, the counter advanced
+  // over it, and the report's numbers agree with one another to the digits
+  // it prints.
+  std::map<std::string, double> perCall;
   for (const std::string& name : DEMO_TESTS) {
-    EXPECT_TRUE(fs::is_regular_file(check::captureFolder(RUN, name) / "energy.txt"))
-        << name << " has no energy report in " << check::captureFolder(RUN, name);
+    const std::string TEXT = vg::readText(check::captureFolder(RUN, name) / "energy.txt");
+    const std::vector<check::EnergyWindow> WINDOWS = check::energyWindows(TEXT);
+    if (WINDOWS.size() != 1U) {
+      ADD_FAILURE() << name << "'s energy report does not hold one window:\n" << TEXT;
+      continue;
+    }
+    const check::EnergyWindow& WINDOW = WINDOWS.front();
+    EXPECT_EQ(WINDOW.number, 1) << TEXT;
+    EXPECT_GT(WINDOW.deltaCounter, 0) << name << ": the energy counter did not advance over its "
+                                      << WINDOW.durationSeconds << " s window:\n"
+                                      << TEXT;
+    EXPECT_NEAR(WINDOW.energyJoules, WINDOW.deltaCounter * WINDOW.unitMicrojoules * 1e-6,
+                1e-6 + WINDOW.energyJoules * 1e-5)
+        << "energy is not the delta in units:\n"
+        << TEXT;
+    EXPECT_NEAR(WINDOW.powerWatts, WINDOW.energyJoules / WINDOW.durationSeconds,
+                1e-6 + WINDOW.powerWatts * 1e-5)
+        << "power is not the energy over the duration:\n"
+        << TEXT;
+    EXPECT_NEAR(WINDOW.perCallMillijoules, WINDOW.powerWatts * WINDOW.medianUs * 1e-3,
+                1e-6 + WINDOW.powerWatts * 5e-7 + WINDOW.perCallMillijoules * 1e-5)
+        << "energy per call is not the power times the median call time:\n"
+        << TEXT;
+    perCall[name] = WINDOW.perCallMillijoules;
+  }
+  EXPECT_EQ(check::linesStarting(RUN.output, "=== Energy Measurement (RAPL, package 0) ==="), 2)
+      << "a summary for each case's window";
+
+  // The effect: the reserving version costs a fraction of the copying one's
+  // energy per call.
+  if (perCall.size() == DEMO_TESTS.size()) {
+    const double V0 = perCall["RaplProfiler.JoinV0"];
+    const double V1 = perCall["RaplProfiler.JoinV1"];
+    std::printf("[Rapl.EnergyPerCall]  JoinV0 %.6f mJ/call, JoinV1 %.6f mJ/call (%.1fx)\n", V0, V1,
+                V1 > 0.0 ? V0 / V1 : 0.0);
+    EXPECT_LE(3.0 * V1, V0) << "JoinV1's energy per call is not at most a third of JoinV0's";
   }
 
   if (HasFailure()) {
@@ -252,6 +298,43 @@ constexpr const char* DENIED_RUN =
     "[profile] --profile rapl failed; the run exits with status 4:\n"
     "[profile]   rapl: denied: cannot open /dev/cpu/0/msr: Permission denied\n";
 
+/// The report the backend writes for two windows, read from a regular file
+/// standing in for the msr device; over the second the counter did not advance.
+constexpr const char* TWO_WINDOW_REPORT =
+    "=== RAPL Energy Measurement ===\n"
+    "Test: RaplProfiler.JoinV0\n"
+    "CPU: Intel(R) Core(TM) Ultra 7 165H\n"
+    "Family: 6, Model: 170\n"
+    "Scope: package 0, read through /tmp/rapl-report-NZpLq3/msr (MSR 0x611): every core, "
+    "cache and the integrated graphics of the package, whatever runs on them; nothing "
+    "outside the package\n"
+    "Counter: 32 bits, wrapping after 262144.000 J at this unit; a window is taken to wrap "
+    "it at most once\n"
+    "Energy per operation: the window's average package power x its median time per call\n"
+    "\n"
+    "--- Window 1 ---\n"
+    "Energy consumed: 5.000000 J\n"
+    "Duration: 0.330223 s\n"
+    "Average power: 15.141283 W\n"
+    "Energy per operation: 2.047859 mJ/call\n"
+    "Median time per call: 135.250 us\n"
+    "Energy unit: 61.0352 uJ\n"
+    "Start counter: 123456789\n"
+    "End counter: 123538709\n"
+    "Delta counter: 81920\n"
+    "\n"
+    "--- Window 2 ---\n"
+    "Energy consumed: 0.000000 J\n"
+    "Duration: 0.330263 s\n"
+    "Average power: 0.000000 W\n"
+    "Energy per operation: 0.000000 mJ/call\n"
+    "Median time per call: 140.500 us\n"
+    "Energy unit: 61.0352 uJ\n"
+    "Start counter: 4294960000\n"
+    "End counter: 4294960000\n"
+    "Delta counter: 0\n"
+    "Note: the counter did not advance during this 0.330 s window\n";
+
 } // namespace
 
 /** @test The refusal for a missing device is read with its remedy lines, and only those. */
@@ -304,4 +387,33 @@ TEST(RaplReportTest, RefusalNoticeOnlyForThisMachinesCauses) {
             "");
   EXPECT_EQ(check::refusalNotice("[FAIL] Profiler 'perf': denied: perf_event_paranoid=4\n"), "");
   EXPECT_EQ(check::refusalNotice("[RaplProfiler.JoinV0]  4.226 us/call\n"), "");
+}
+
+/** @test An energy report's windows are read in order, each field from its own section. */
+TEST(RaplReportTest, EnergyWindowsReadsEachSection) {
+  const std::vector<check::EnergyWindow> WINDOWS = check::energyWindows(TWO_WINDOW_REPORT);
+
+  ASSERT_EQ(WINDOWS.size(), 2U);
+  const check::EnergyWindow& FIRST = WINDOWS[0];
+  EXPECT_EQ(FIRST.number, 1);
+  EXPECT_EQ(FIRST.energyJoules, 5.0);
+  EXPECT_EQ(FIRST.durationSeconds, 0.330223);
+  EXPECT_EQ(FIRST.powerWatts, 15.141283);
+  EXPECT_EQ(FIRST.perCallMillijoules, 2.047859);
+  EXPECT_EQ(FIRST.medianUs, 135.25);
+  EXPECT_EQ(FIRST.unitMicrojoules, 61.0352);
+  EXPECT_EQ(FIRST.startCounter, 123456789);
+  EXPECT_EQ(FIRST.endCounter, 123538709);
+  EXPECT_EQ(FIRST.deltaCounter, 81920);
+  EXPECT_EQ(WINDOWS[1].number, 2);
+  EXPECT_EQ(WINDOWS[1].deltaCounter, 0);
+  EXPECT_EQ(WINDOWS[1].startCounter, 4294960000LL);
+}
+
+/** @test The header's own fields, the definition of energy per call among them, are no window. */
+TEST(RaplReportTest, EnergyWindowsOfAReportWithoutWindows) {
+  const std::string REPORT = TWO_WINDOW_REPORT;
+
+  EXPECT_TRUE(check::energyWindows(REPORT.substr(0, REPORT.find("\n--- Window 1"))).empty());
+  EXPECT_TRUE(check::energyWindows("").empty());
 }
