@@ -293,6 +293,23 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `--profile-analyze` runs the first of `google-pprof` and `pprof` on `PATH`,
   whose absence or failure fails the run and keeps the capture.
   **Action needed:** give gperf's `--profile-args` its modes alone.
+- **jemalloc's doctor row and run ask jemalloc itself** -- the doctor
+  preloads the library the loader resolves into one program with the options
+  `bench run` sets, and is OK only when jemalloc writes its heap dump at that
+  program's exit. A jemalloc built without profiling (Debian's and Ubuntu's
+  arm64 `libjemalloc2`, which reject `prof:true`) and one the loader cannot
+  preload are failures naming the library, not warnings, and `jeprof`
+  is named beside an OK row without deciding it. A run asks its own
+  allocator through `mallctl` and starts no process: not jemalloc, built
+  without profiling, profiling off, or no dump configured fails the run with
+  exit status 4 and creates no folder; sampling off at start, no dump at
+  exit, or bytes not accumulated (`prof_accum`) is a warning. Its message
+  says where jemalloc will write the dump when the process exits, never that
+  one was written. jemalloc takes no `--profile-args` word,
+  `--profile-analyze` fails the run and keeps the capture, and a program built
+  with the address or thread sanitizer is refused.
+  **Action needed:** a profile job whose jemalloc cannot profile now fails;
+  put a jemalloc built with profiling first on `LD_LIBRARY_PATH`.
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
   cells only from readings NVML reported, `occupancy` (an estimate from the

@@ -70,6 +70,13 @@ escape	nsight	compute	out%p	-o	out%%p/my_test.nsight/kernel_profile
 escape	ncu	-	a%%b%x	-o	a%%%%b%%x/my_test.ncu/kernel_profile
 escape	heaptrack	-	a%%b%x	-o	a%%b%x/my_test.heaptrack/run
 #
+# env   <--profile>  <variable>  <value>
+# (an environment wrap: bench run starts the benchmark itself with these set,
+# in this order; <dir> as in a route. The C++ tests read them too:
+# ProfilerJemalloc_uTest.cpp)
+env	jemalloc	LD_PRELOAD	libjemalloc.so.2
+env	jemalloc	MALLOC_CONF	prof:true,prof_final:true,prof_accum:true,prof_prefix:<dir>/jeprof
+#
 # unwrapped   <--profile>  (the benchmark runs itself; --profile-args reach it untouched)
 unwrapped	perf
 unwrapped	gperf

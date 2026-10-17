@@ -123,7 +123,7 @@ protected:
 };
 
 /// Backends `bench run` wraps, with the suffix of their per-test folder,
-/// each built from a decision that lets it run (jemalloc decides nothing).
+/// each built from a decision that lets it run.
 /// The GPU ones live in libbench_cuda and are covered by the same shared
 /// function.
 struct WrappedBackend {
@@ -146,9 +146,8 @@ static std::vector<WrappedBackend> wrappedBackends() {
           wrapped<vernier::bench::HelgrindProfiler, ValgrindPlan>("helgrind", "helgrind"),
           wrapped<vernier::bench::HeaptrackProfiler, vernier::bench::HeaptrackPlan>("heaptrack",
                                                                                     "heaptrack"),
-          {"jemalloc", "jemalloc", [](const PerfConfig& cfg, const std::string& name) {
-             return std::unique_ptr<Profiler>(new vernier::bench::JemallocProfiler(cfg, name));
-           }}};
+          wrapped<vernier::bench::JemallocProfiler, vernier::bench::JemallocPlan>("jemalloc",
+                                                                                  "jemalloc")};
 }
 
 /// A perf decision that lets the profiler run; its tool is never launched here.
@@ -277,28 +276,6 @@ TEST_F(ProfilerArtifactDirTest, WrappedBackendCreatesNoFolderAndReportsWrapFolde
   }
 }
 
-/** @test The CSV row's profileDir carries the wrap folder for a wrapped run */
-TEST_F(ProfilerArtifactDirTest, CsvProfileDirPointsAtWrapFolder) {
-  const vernier::bench::test::StderrCapture QUIET;
-  const std::string WRAP_DIR = "bench-out/Binary_PTEST.jemalloc";
-  setWrap("jemalloc", WRAP_DIR);
-
-  // jemalloc is the one wrapped backend whose factory needs no installed tool.
-  PerfConfig cfg = configFor("jemalloc");
-  cfg.cycles = 1;
-  cfg.repeats = 2;
-  cfg.warmup = 0;
-  auto perf = vernier::bench::makePerfCaseWithProfiler("Suite.Case", cfg);
-  static_cast<void>(PerfRegistry::instance().take());
-  perf.throughputLoop([] {});
-
-  const std::optional<PerfRow> ROW = PerfRegistry::instance().take();
-  ASSERT_TRUE(ROW.has_value());
-  ASSERT_TRUE(ROW->profileDir.has_value());
-  EXPECT_EQ(*ROW->profileDir, WRAP_DIR);
-  EXPECT_TRUE(entries().empty());
-}
-
 /** @test A wrap by another tool does not redirect this backend */
 TEST_F(ProfilerArtifactDirTest, WrapByAnotherToolIsIgnored) {
   const vernier::bench::test::StderrCapture QUIET;
@@ -356,12 +333,20 @@ template <typename T> DirectBackend constructed(const std::string& name) {
 /// Every backend whose direct construction decides its own request.
 std::vector<DirectBackend> directBackends() {
   using namespace vernier::bench;
-  return {{"callgrind", makeCallgrindProfiler}, {"massif", makeMassifProfiler},
-          {"memcheck", makeMemcheckProfiler},   {"helgrind", makeHelgrindProfiler},
-          {"heaptrack", makeHeaptrackProfiler}, {"rocprof", makeRocprofProfiler},
-          {"perf", makePerfProfiler},           {"gperf", makeGperfProfiler},
-          {"bpftrace", makeBpftraceProfiler},   constructed<PerfStatProfiler>("perf"),
-          constructed<GperfProfiler>("gperf"),  constructed<BpftraceProfiler>("bpftrace")};
+  return {{"callgrind", makeCallgrindProfiler},
+          {"massif", makeMassifProfiler},
+          {"memcheck", makeMemcheckProfiler},
+          {"helgrind", makeHelgrindProfiler},
+          {"heaptrack", makeHeaptrackProfiler},
+          {"rocprof", makeRocprofProfiler},
+          {"perf", makePerfProfiler},
+          {"gperf", makeGperfProfiler},
+          {"bpftrace", makeBpftraceProfiler},
+          {"jemalloc", makeJemallocProfiler},
+          constructed<PerfStatProfiler>("perf"),
+          constructed<GperfProfiler>("gperf"),
+          constructed<BpftraceProfiler>("bpftrace"),
+          constructed<JemallocProfiler>("jemalloc")};
 }
 
 /// What one way of building a profiler for a request led to.
@@ -524,6 +509,30 @@ public:
   FolderFixtureBackend(const FolderFixtureBackend&) = delete;
   FolderFixtureBackend& operator=(const FolderFixtureBackend&) = delete;
 };
+
+/** @test The CSV row's profileDir carries the wrap folder for a wrapped run */
+TEST_F(ProfilerArtifactDirTest, CsvProfileDirPointsAtWrapFolder) {
+  const vernier::bench::test::StderrCapture QUIET;
+  // A registered backend whose request always runs, wrapped by name: the
+  // folder rule is the one every backend shares.
+  const FolderFixtureBackend BACKEND;
+  const std::string WRAP_DIR = std::string{"bench-out/Binary_PTEST."} + FolderFixtureBackend::NAME;
+  setWrap(FolderFixtureBackend::NAME, WRAP_DIR);
+
+  PerfConfig cfg = configFor(FolderFixtureBackend::NAME);
+  cfg.cycles = 1;
+  cfg.repeats = 2;
+  cfg.warmup = 0;
+  auto perf = vernier::bench::makePerfCaseWithProfiler("Suite.Case", cfg);
+  static_cast<void>(PerfRegistry::instance().take());
+  perf.throughputLoop([] {});
+
+  const std::optional<PerfRow> ROW = PerfRegistry::instance().take();
+  ASSERT_TRUE(ROW.has_value());
+  ASSERT_TRUE(ROW->profileDir.has_value());
+  EXPECT_EQ(*ROW->profileDir, WRAP_DIR);
+  EXPECT_TRUE(entries().empty());
+}
 
 static std::string readFile(const fs::path& path) {
   std::ifstream in(path);

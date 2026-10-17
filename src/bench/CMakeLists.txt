@@ -95,6 +95,13 @@ target_link_libraries(
             $<INSTALL_INTERFACE:$<TARGET_NAME_IF_EXISTS:GTest::gtest>>
 )
 
+# The jemalloc backend looks jemalloc's mallctl up at run time (dlsym), which
+# C libraries before glibc 2.34 keep in libdl.
+target_link_libraries(
+  ${LIB_NAME}
+  PRIVATE ${CMAKE_DL_LIBS}
+)
+
 # gperftools (optional): the CPU profiler links whenever it is installed.
 find_library(GPERF_PROFILER_LIB NAMES profiler)
 if (GPERF_PROFILER_LIB)
