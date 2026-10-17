@@ -763,16 +763,28 @@ migration record. `GpuStats::unifiedMemory` stays empty, and the CSV keeps the
 columns `umPageFaults`, `umH2DMigrations`, `umD2HMigrations`,
 `umMigrationTimeUs` and `umThrashing` empty in every row. `--capture-um` asks
 for those counters, as does a test that sets
-`PerfGpuConfig::captureUnifiedMemory`; it changes nothing that is measured, and
-the run says so once:
+`PerfGpuConfig::captureUnifiedMemory`, and the request fails as a `--profile`
+request that cannot collect does: the tests still run, timed as without it,
+and their rows are written, but the first measurement reports the request,
+and a run whose tests pass exits with status 4
+([troubleshooting](TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)):
 
 ```text
-[gpu] --capture-um asks for unified-memory counters, which the GPU harness does not collect: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty.
+[FAIL] Profiler 'capture-um': unsupported: the GPU harness collects no unified-memory counters: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty
+   Run without --capture-um (or leave PerfGpuConfig::captureUnifiedMemory false); the timing and the CSV do not change.
+   The run will fail (exit status 4 if the tests pass).
 ```
 
-`--gpu-memory unified` only records the memory strategy in the GPU
-configuration: it asks for no counters, and the harness does not change how a
-test allocates its memory.
+and, at the end of the run:
+
+```text
+[profile] a profile failed; the run exits with status 4:
+[profile]   capture-um: unsupported: the GPU harness collects no unified-memory counters: umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty
+```
+
+A failed test keeps its own status. `--gpu-memory unified` only records the
+memory strategy in the GPU configuration: it asks for no counters, and the
+harness does not change how a test allocates its memory.
 
 **When Unified Memory is good:**
 

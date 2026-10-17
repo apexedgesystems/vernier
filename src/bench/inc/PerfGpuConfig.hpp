@@ -37,8 +37,9 @@ struct PerfGpuConfig {
   /// An explicit request for unified-memory counters: --capture-um sets it,
   /// and a caller that sets it makes the same request. Choosing a memory
   /// strategy (memStrategy, --gpu-memory) does not set it. The harness
-  /// collects no such counters: a measurement made with this set says so once
-  /// per process, and the um* CSV cells stay empty.
+  /// collects no such counters: a measurement made with this set reports the
+  /// request as unsupported, the um* CSV cells stay empty, and a run whose
+  /// tests pass exits with status 4 (ProfilerRegistry::finishRun()).
   bool captureUnifiedMemory = false;
 
   // ---- Device selection ----

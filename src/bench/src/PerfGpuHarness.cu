@@ -9,6 +9,8 @@
 #include "src/bench/inc/PerfGpuTestMacros.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
 
 #include <cuda_runtime.h>
@@ -182,9 +184,10 @@ double sharedSuiteBaselineUs(const std::string& testName) {
 // ============================================================================
 // A GPU cell a run cannot measure is left empty, and the run says why. What
 // holds for the whole run (this build has no CUPTI, a provider refused, the
-// run asked for unified-memory counters the harness does not collect) is
-// said once per process, at the first measurement it empties cells of; what
-// went wrong in one measured window is said for that window, naming the test.
+// run asked for unified-memory counters the harness does not collect, which
+// also fails the run) is said once per process, at the first measurement it
+// empties cells of; what went wrong in one measured window is said for that
+// window, naming the test.
 // ============================================================================
 
 namespace {
@@ -204,25 +207,33 @@ void stateOnce(const std::string& line) {
   }
 }
 
-/// What a run that asks for unified-memory counters is told, once.
+/// Why a request for unified-memory counters cannot be met.
 constexpr const char* UM_NOT_COLLECTED =
-    "[gpu] --capture-um asks for unified-memory counters, which the GPU harness does not collect: "
-    "umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay "
-    "empty.";
+    "the GPU harness collects no unified-memory counters: umPageFaults, umH2DMigrations, "
+    "umD2HMigrations, umMigrationTimeUs and umThrashing stay empty";
+
+/// How a run with that request can pass.
+constexpr const char* UM_REMEDY = "Run without --capture-um (or leave "
+                                  "PerfGpuConfig::captureUnifiedMemory false); the timing and "
+                                  "the CSV do not change.";
 
 /**
  * @brief Answers a request for unified-memory counters
- *        (PerfGpuConfig::captureUnifiedMemory) at a measurement, once per
- *        process.
+ *        (PerfGpuConfig::captureUnifiedMemory) at a measurement: the request
+ *        fails, as a profile that cannot collect does.
  *
  * The harness reads no page-fault or migration record, so
  * GpuStats::unifiedMemory and a row's um* cells stay empty whether or not the
- * counters were asked for. This statement is the request's whole answer; the
- * run's status is left as it is.
+ * counters were asked for. The profiler registry records the failure and
+ * reports it the first time (ProfilerRegistry::reportFailure()); the
+ * measurement goes on, and ProfilerRegistry::finishRun() gives a run whose
+ * tests pass exit status 4.
  */
 void stateUnifiedMemoryRequest(const PerfGpuConfig& cfg) {
   if (cfg.captureUnifiedMemory) {
-    stateOnce(UM_NOT_COLLECTED);
+    ProfilerRegistry::instance().reportFailure(
+        "capture-um", "",
+        readinessResult(ReadinessCause::UNSUPPORTED, UM_NOT_COLLECTED, UM_REMEDY));
   }
 }
 
@@ -346,7 +357,7 @@ public:
                            "CUPTI CSV columns will be empty.\n");
     }
 
-    // No unified-memory counters are collected; a request for them is stated.
+    // No unified-memory counters are collected; a request for them fails.
     stateUnifiedMemoryRequest(gpuCfg_);
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {

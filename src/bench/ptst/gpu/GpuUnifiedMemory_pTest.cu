@@ -15,7 +15,8 @@
  *    neither isolates it nor guarantees that it is left out.
  *  - No unified-memory counters. The harness reads no page-fault or migration
  *    record: GpuStats::unifiedMemory stays empty and the CSV's um* cells with
- *    it, with or without --capture-um, which only adds a line saying so.
+ *    it. Given --capture-um, the tests still run and their rows are written,
+ *    but the run reports the request as unsupported and exits with status 4.
  *
  * Usage:
  *   @code{.sh}

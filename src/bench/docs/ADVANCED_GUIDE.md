@@ -1077,8 +1077,9 @@ linked at build time; no `--profile` flag required. See
 | `umThrashing`       | bool   | Back-and-forth migration reported | Never        |
 
 The GPU harness collects no unified-memory counters: these cells are empty in
-every row it writes, with or without `--capture-um`, which only makes the run
-say so. See [GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
+every row it writes, with or without `--capture-um`, which fails a run whose
+tests pass with status 4. See
+[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration
 

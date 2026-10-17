@@ -27,6 +27,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -34,6 +35,8 @@
 #include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
@@ -103,7 +106,10 @@ private:
 
 /* ----------------------------- Fixture ----------------------------- */
 
-/** @brief Skips when no CUDA device is present; keeps the registry slot clean. */
+/**
+ * @brief Skips when no CUDA device is present; keeps the registry slot clean,
+ *        and clears the profile failures a test records (ProfilerRegistry).
+ */
 class PerfGpuHarnessTest : public ::testing::Test {
 protected:
   ub::PerfConfig cfg_{};
@@ -120,9 +126,13 @@ protected:
     cfg_.warmup = 1;
     cfg_.msgBytes = 64; // recommendedCVThreshold(cfg) is 0.10 here, not the 0.05 default
     (void)ub::PerfRegistry::instance().take();
+    ub::ProfilerRegistry::instance().resetFailures();
   }
 
-  void TearDown() override { (void)ub::PerfRegistry::instance().take(); }
+  void TearDown() override {
+    (void)ub::PerfRegistry::instance().take();
+    ub::ProfilerRegistry::instance().resetFailures();
+  }
 
   /** @brief The row the harness published for the measurement just taken. */
   static ub::PerfRow lastRow() {
@@ -1175,22 +1185,80 @@ bool hasUnifiedMemoryField(const ub::PerfRow& row) {
          row.umThrashing.has_value();
 }
 
+/** @brief The recorded failures of the unified-memory request: unsupported, for the whole run. */
+std::size_t unifiedMemoryFailures() {
+  std::size_t count = 0;
+  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
+    count += failure.backend == "capture-um" && failure.test.empty() &&
+                     failure.result.cause == ub::ReadinessCause::UNSUPPORTED
+                 ? 1
+                 : 0;
+  }
+  return count;
+}
+
 /**
- * @brief Under GPU config @p gpu, measures the kernel in a case of this
- *        process, through the multi-GPU path on one device or as two kernel
- *        measurements (one with declared copies), then writes to stderr how
- *        many lines stated all five um* cells empty and how many rows carried
- *        a unified-memory field, and exits 0.
+ * @brief The lines of @p text that name all five um* columns, and of those,
+ *        the ones that start with @p prefix.
  */
-[[noreturn]] void reportUnifiedMemoryStatements(const ub::PerfConfig& cfg,
-                                                const ub::PerfGpuConfig& gpu, bool multiGpu) {
+std::pair<std::size_t, std::size_t> linesNamingTheCells(const std::string& text,
+                                                        const std::string& prefix) {
+  std::size_t naming = 0;
+  std::size_t prefixed = 0;
+  std::size_t from = 0;
+  while (from < text.size()) {
+    std::size_t end = text.find('\n', from);
+    if (end == std::string::npos) {
+      end = text.size();
+    }
+    const std::string LINE = text.substr(from, end - from);
+    bool namesEveryCell = true;
+    for (const std::string& column : UM_COLUMNS) {
+      namesEveryCell = namesEveryCell && namesColumn(LINE, column);
+    }
+    if (namesEveryCell) {
+      ++naming;
+      prefixed += LINE.rfind(prefix, 0) == 0 ? 1 : 0;
+    }
+    from = end + 1;
+  }
+  return {naming, prefixed};
+}
+
+/** @brief The first line of @p text that starts with @p prefix, or "none". */
+std::string firstLineStarting(const std::string& text, const std::string& prefix) {
+  for (std::size_t at = text.find(prefix); at != std::string::npos;
+       at = text.find(prefix, at + 1)) {
+    if (at == 0 || text[at - 1] == '\n') {
+      return text.substr(at, text.find('\n', at) - at);
+    }
+  }
+  return "none";
+}
+
+/**
+ * @brief Runs a GPU benchmark's measurements and end in this process, under
+ *        GPU config @p gpu, then exits with the run's status.
+ *
+ * Measures the kernel through the multi-GPU path on one device, or as two
+ * kernel measurements (one with declared copies), and ends the run as a GPU
+ * benchmark's main() does, with ProfilerRegistry::finishRun() after tests of
+ * status @p testStatus. Writes to stderr how many lines named all five um*
+ * cells while measuring and how many of those were the registry's report of
+ * the request, how many rows carried a unified-memory field, how many failures
+ * the request recorded, how many lines of the run's end named the request, and
+ * the run's end's first line.
+ */
+[[noreturn]] void endUnifiedMemoryRun(const ub::PerfConfig& cfg, const ub::PerfGpuConfig& gpu,
+                                      bool multiGpu, int testStatus) {
+  ub::ProfilerRegistry::instance().resetFailures();
   const ScopedGpuConfig GPU(gpu);
   std::size_t umRows = 0;
-  std::string captured;
+  std::string measured;
   {
     SaxpyFixtureData data;
     vernier::bench::test::StderrCapture capture;
-    ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryStatement") + ".Kernel", cfg};
+    ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryOutcome") + ".Kernel", cfg};
     perf.cudaWarmup(data.launch());
     if (multiGpu) {
       const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
@@ -1208,25 +1276,25 @@ bool hasUnifiedMemoryField(const ub::PerfRow& row) {
     for (const ub::PerfRow& row : ub::PerfRegistry::instance().takeAll()) {
       umRows += hasUnifiedMemoryField(row) ? 1 : 0;
     }
-    captured = capture.text();
+    measured = capture.text();
   }
-  std::size_t statements = 0;
-  std::size_t from = 0;
-  while (from < captured.size()) {
-    std::size_t end = captured.find('\n', from);
-    if (end == std::string::npos) {
-      end = captured.size();
-    }
-    const std::string LINE = captured.substr(from, end - from);
-    bool namesEveryCell = true;
-    for (const std::string& column : UM_COLUMNS) {
-      namesEveryCell = namesEveryCell && statedEmpty(LINE, column);
-    }
-    statements += namesEveryCell ? 1 : 0;
-    from = end + 1;
+  const std::size_t FAILURES = unifiedMemoryFailures();
+  int status = 0;
+  std::string ended;
+  {
+    vernier::bench::test::StderrCapture capture;
+    status = ub::ProfilerRegistry::instance().finishRun(cfg, testStatus, 1);
+    ended = capture.text();
   }
-  std::fprintf(stderr, "umStatements=%zu umRows=%zu\n", statements, umRows);
-  std::exit(0);
+  const auto [umLines, umReports] =
+      linesNamingTheCells(measured, "[FAIL] Profiler 'capture-um': unsupported: ");
+  std::fprintf(stderr,
+               "umLines=%zu umReports=%zu umRows=%zu umFailures=%zu umRunEndLines=%zu "
+               "runEnd=%s\n",
+               umLines, umReports, umRows, FAILURES,
+               linesNamingTheCells(ended, "[profile]   capture-um: unsupported: ").second,
+               firstLineStarting(ended, "[profile] ").c_str());
+  std::exit(status);
 }
 
 } // namespace
@@ -1235,22 +1303,28 @@ bool hasUnifiedMemoryField(const ub::PerfRow& row) {
  * @test A --capture-um measurement with declared copies publishes no
  *       unified-memory counters: the result has none, and its CSV row keeps
  *       the header's columns, with the five um* cells empty and the timing and
- *       byte cells of the measurement
+ *       byte cells of the measurement. Parsing the flag records nothing; the
+ *       measurement records the request's failure
  */
 TEST_F(PerfGpuHarnessTest, CaptureUmLeavesTheUnifiedMemoryCellsEmpty) {
   const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  EXPECT_EQ(unifiedMemoryFailures(), 0U) << "parsing --capture-um recorded a failure";
   SaxpyFixtureData data;
   ub::PerfGpuCase perf{uniqueSuite("GpuCaptureUm") + ".Transfers", cfg_};
   ASSERT_TRUE(perf.gpuConfig().captureUnifiedMemory) << "--capture-um did not reach the case";
   perf.cudaWarmup(data.launch());
 
-  const ub::PerfGpuResult RESULT =
-      perf.cudaKernel(data.launch(), "saxpy")
-          .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
-          .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
-          .measure();
+  ub::PerfGpuResult result;
+  {
+    vernier::bench::test::StderrCapture capture; // the registry's report, checked elsewhere
+    result = perf.cudaKernel(data.launch(), "saxpy")
+                 .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+                 .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+                 .measure();
+  }
 
-  EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
+  EXPECT_EQ(unifiedMemoryFailures(), 1U) << "the measurement did not record the request";
+  EXPECT_FALSE(result.stats.unifiedMemory.has_value())
       << "the result carries unified-memory counters nothing measured";
   const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
   ASSERT_EQ(ROWS.size(), 1U);
@@ -1259,46 +1333,68 @@ TEST_F(PerfGpuHarnessTest, CaptureUmLeavesTheUnifiedMemoryCellsEmpty) {
   }
   EXPECT_EQ(ROWS[0].at("h2dBytes"), std::to_string(SaxpyFixtureData::bytes()));
   EXPECT_EQ(ROWS[0].at("d2hBytes"), std::to_string(SaxpyFixtureData::bytes()));
-  EXPECT_EQ(ROWS[0].at("kernelTimeUs"), std::to_string(RESULT.kernelTimeUs));
-  EXPECT_EQ(ROWS[0].at("transferTimeUs"), std::to_string(RESULT.transferTimeUs));
+  EXPECT_EQ(ROWS[0].at("kernelTimeUs"), std::to_string(result.kernelTimeUs));
+  EXPECT_EQ(ROWS[0].at("transferTimeUs"), std::to_string(result.transferTimeUs));
 }
 
 /**
  * @test An explicit request for unified-memory counters, by --capture-um or by
- *       a caller setting PerfGpuConfig::captureUnifiedMemory, is stated once
- *       per process, naming the five cells it leaves empty, for kernel and
- *       multi-GPU measurements alike, and no row carries a unified-memory field
+ *       a caller setting PerfGpuConfig::captureUnifiedMemory, fails the run:
+ *       the registry reports it once per process, for kernel and multi-GPU
+ *       measurements alike, with no other line naming the five cells; no row
+ *       carries a unified-memory field; and the run's end names the request
+ *       and gives a run whose tests passed status 4
  */
-TEST_F(PerfGpuHarnessDeathTest, AnExplicitUnifiedMemoryRequestIsStatedOnce) {
+TEST_F(PerfGpuHarnessDeathTest, AnExplicitUnifiedMemoryRequestFailsTheRun) {
   ASSERT_TRUE(parsedGpuFlags({"--capture-um"}).captureUnifiedMemory) << "--capture-um not read";
+  const std::string FAILED = "umLines=1 umReports=1 umRows=0 umFailures=1 umRunEndLines=1 "
+                             "runEnd=\\[profile\\] a profile failed; the run exits with status 4:";
   // A fresh process for each run, so each run's once-per-process state is its own.
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--capture-um"}), false),
-              ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, programmaticCapture(), false),
-              ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--capture-um"}), true),
-              ::testing::ExitedWithCode(0), "umStatements=1 umRows=0");
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 0),
+              ::testing::ExitedWithCode(4), FAILED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, programmaticCapture(), false, 0),
+              ::testing::ExitedWithCode(4), FAILED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), true, 0),
+              ::testing::ExitedWithCode(4), FAILED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test A run whose tests failed keeps their status when it also asked for
+ *       unified-memory counters; its end still reports the request
+ */
+TEST_F(PerfGpuHarnessDeathTest, AFailedTestKeepsItsStatusOverTheRequest) {
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 1),
+              ::testing::ExitedWithCode(1),
+              "umLines=1 umReports=1 umRows=0 umFailures=1 umRunEndLines=1 "
+              "runEnd=\\[profile\\] a profile failed; the run exits with the tests' status 1:");
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 
 /**
  * @test Choosing the managed-memory strategy (--gpu-memory unified) asks for
- *       no unified-memory counters: like a run without GPU flags, it states
- *       nothing and no row carries a unified-memory field
+ *       no unified-memory counters: like a run without GPU flags, it reports
+ *       nothing, records nothing, no row carries a unified-memory field, and
+ *       the run passes
  */
-TEST_F(PerfGpuHarnessDeathTest, ChoosingManagedMemoryAloneStatesNothing) {
+TEST_F(PerfGpuHarnessDeathTest, ChoosingManagedMemoryAloneFailsNothing) {
   ASSERT_EQ(parsedGpuFlags({"--gpu-memory", "unified"}).memStrategy,
             ub::PerfGpuConfig::MemoryStrategy::Unified)
       << "--gpu-memory unified not read";
+  const std::string PASSED =
+      "umLines=0 umReports=0 umRows=0 umFailures=0 umRunEndLines=0 runEnd=none";
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
-  EXPECT_EXIT(
-      reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), false),
-      ::testing::ExitedWithCode(0), "umStatements=0 umRows=0");
-  EXPECT_EXIT(reportUnifiedMemoryStatements(cfg_, parsedGpuFlags({}), false),
-              ::testing::ExitedWithCode(0), "umStatements=0 umRows=0");
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), false, 0),
+              ::testing::ExitedWithCode(0), PASSED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), true, 0),
+              ::testing::ExitedWithCode(0), PASSED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({}), false, 0), ::testing::ExitedWithCode(0),
+              PASSED);
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 

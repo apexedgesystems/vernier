@@ -76,7 +76,9 @@ PERF_MAIN()                              // Main function with CSV export
 
 `PERF_MAIN()` and `PERF_GPU_MAIN()` return the tests' status, or 4
 (`BENCH_PROFILE_FAILED_EXIT_CODE`) when the tests passed and the requested
-`--profile` failed, after a report of each failure. A benchmark with its own
+`--profile` failed (or, in a GPU benchmark, `--capture-um` asked for the
+unified-memory counters the harness does not collect), after a report of each
+failure. A benchmark with its own
 `main()` gets the same status from `ProfilerRegistry::finishRun()`; the
 [advanced guide](ADVANCED_GUIDE.md#perf_main-macro) shows the call.
 
@@ -789,7 +791,8 @@ time; no `--profile` flag required.
 
 The GPU harness collects no unified-memory counters, so these cells are empty in
 every row it writes, with or without `--capture-um`; a run given `--capture-um`
-says so once. See the GPU guide's
+reports the request as unsupported and exits with status 4 when its tests pass.
+See the GPU guide's
 [Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters).
 
 ---
