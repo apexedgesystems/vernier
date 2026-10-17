@@ -261,7 +261,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   analysis that fails (which keeps the capture) and a bpftrace or offcpu
   capture that does not complete are reported, and the run exits with status
   4 if its tests passed, also for a profiler built by its backend's own
-  constructor or factory, offcpu's aside
+  constructor or factory
   ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
   **Action needed:** a CI job that passed without its requested profile now
   fails; a benchmark with its own `main()` returns

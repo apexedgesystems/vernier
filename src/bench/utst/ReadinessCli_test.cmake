@@ -658,7 +658,7 @@ elseif (CASE STREQUAL "OffcpuNoStacksClaimWhenKilled")
   expect_eq("${run_RC}" "4" "run exit status")
   expect_has(
     "${run_ERR}"
-    "[FAIL] Profiler 'offcpu' (ReadinessFixture.First): denied: the tracer was killed before it printed its maps: "
+    "[FAIL] Profiler 'offcpu' (ReadinessFixture.First): completion: denied: the tracer was killed before it printed its maps: "
     "recorded failure"
   )
   expect_has(

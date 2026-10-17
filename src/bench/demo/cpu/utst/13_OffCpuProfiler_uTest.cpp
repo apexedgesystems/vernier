@@ -510,7 +510,9 @@ TracedCase traceCase(const std::string& demoBinary, const std::string& testName,
 void expectAWholeCapture(const TracedCase& traced, const std::string& testName) {
   SCOPED_TRACE(testName);
   const fs::path OUTPUT = check::captureFolder(traced.run, testName, "offcpu") / "offcpu.txt";
-  EXPECT_TRUE(vg::exitedWith(traced.run.end, 0)) << "the demo " << vg::describe(traced.run.end);
+  EXPECT_TRUE(vg::exitedWith(traced.run.end, 0))
+      << "the demo " << vg::describe(traced.run.end)
+      << "; a run whose capture fails exits with status 4 once its tests pass";
   EXPECT_EQ(check::linesWith(traced.outcome, "[offcpu] "), 1) << "one outcome line per capture:\n"
                                                               << traced.outcome;
   const bool WRITTEN =
@@ -561,7 +563,8 @@ void expectAWholeCapture(const TracedCase& traced, const std::string& testName) 
  * root or sudo, each known before anything runs; where the run says offcpu
  * could not trace here, for want of a privilege, of a kernel probe or of the
  * host's PID view, quoting the run's line, which ends with sudo's or
- * bpftrace's own words; and, after the captures are checked, where their
+ * bpftrace's own words, once the run has failed with status 4 as a request
+ * that cannot collect does; and, after the captures are checked, where their
  * stacks do not reach the demo's test body, as on a build whose C library
  * keeps no frame pointers: bpftrace unwinds user stacks through them, so the
  * lock cannot be seen from there. The skip then quotes the stacks.
@@ -588,6 +591,11 @@ TEST(OffCpu, CapturesTheLockWait) {
   const TracedCase COARSE = traceCase(DEMO, "OffCpu.CoarseLock", DIR / "CoarseLock");
   const std::string CANNOT = check::cannotTraceHere(COARSE.run.output, "offcpu");
   if (!CANNOT.empty()) {
+    // A request that cannot collect fails the run once its tests pass.
+    EXPECT_TRUE(vg::exitedWith(COARSE.run.end, 4))
+        << "offcpu could not trace here, and the demo " << vg::describe(COARSE.run.end)
+        << " instead of failing the run with status 4. It printed:\n"
+        << CANNOT;
     std::error_code ec;
     fs::remove_all(DIR, ec);
     GTEST_SKIP() << "offcpu could not trace here. The run printed:\n" << CANNOT;

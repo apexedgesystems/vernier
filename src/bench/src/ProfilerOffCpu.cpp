@@ -114,8 +114,9 @@ constexpr int TERMINATE_WAIT_MS = 2000;
 constexpr int KILL_WAIT_MS = 2000;
 const char* const WHAT = "the off-CPU script";
 
-/// The stage of a failure found once the tracer armed: what the capture wrote.
-constexpr ReadinessStage CAPTURE_STAGE = ReadinessStage::COLLECTION;
+/// The stage of a failure found once the tracer armed: the capture ran, and
+/// what it wrote is missing, cut short or not shown to be this run's whole.
+constexpr ReadinessStage CAPTURE_STAGE = ReadinessStage::COMPLETION;
 
 const char* const NAMESPACE_REMEDY =
     "Run the benchmark on the host, or in a container started with --pid=host.";
@@ -590,12 +591,11 @@ struct OffCpuProfiler::Capture {
 OffCpuProfiler::OffCpuProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
   const ReadinessResult DECISION = decideNow(cfg_);
-  plan_ = readyPlan(DECISION);
+  // Reported as the registry reports its own decisions: a refused request
+  // fails the run, with the same words, and leaves no folder behind.
+  plan_ = ProfilerRegistry::instance().reportDecision("offcpu", DECISION) ? readyPlan(DECISION)
+                                                                          : nullptr;
   if (!plan_) {
-    std::fprintf(stderr, "[offcpu] not started: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[offcpu] %s\n", DECISION.report.hint.c_str());
-    }
     outcome_ = DECISION;
     return;
   }
@@ -813,7 +813,9 @@ void OffCpuProfiler::stopBpftrace() {
     // why that could not be observed, naming the files kept; its verdict is
     // the capture's.
     ReadinessResult incomplete = *INCOMPLETE;
+    // At the capture's stage, worded as readinessResult() words that stage.
     incomplete.stage = CAPTURE_STAGE;
+    incomplete.report.message = "completion: " + incomplete.report.message;
     if (!incomplete.report.hint.empty()) {
       std::fprintf(stderr, "[offcpu] %s\n", incomplete.report.hint.c_str());
     }
@@ -918,8 +920,10 @@ void OffCpuProfiler::finish(ReadinessResult outcome, const std::string& context)
 }
 
 void OffCpuProfiler::record(ReadinessResult outcome) {
-  // A failure is also the run's: the registry records it for this case and
-  // fails the run with status 4 once the tests pass.
+  // A failure is also the run's: the registry records it for this case, at
+  // the collection stage while nothing was captured and at the completion
+  // stage once the tracer armed, and fails the run with status 4 once the
+  // tests pass.
   if (outcome.report.status == EnvReport::Status::Error) {
     ProfilerRegistry::instance().reportFailure("offcpu", testName_, outcome);
   }
@@ -929,7 +933,9 @@ void OffCpuProfiler::record(ReadinessResult outcome) {
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeOffCpuProfiler(const PerfConfig& cfg, const std::string& testName) {
-  auto plan = readyPlan(decideNow(cfg));
+  const ReadinessResult DECISION = decideNow(cfg);
+  auto plan = ProfilerRegistry::instance().reportDecision("offcpu", DECISION) ? readyPlan(DECISION)
+                                                                              : nullptr;
   if (!plan) {
     return nullptr;
   }

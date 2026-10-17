@@ -80,7 +80,13 @@
  * acknowledgements, an entry cut, or no @recorded line where the tracer
  * recorded switch-outs). An error is also reported through
  * ProfilerRegistry::reportFailure(), which fails the run with status 4 once
- * the tests pass.
+ * the tests pass: at the collection stage when nothing was captured (the
+ * tracer could not start, ended or acknowledged a stop before its arm, never
+ * armed, or armed for other ids), at the completion stage, its message then
+ * starting "completion: ", once it armed. A request refused when the
+ * profiler is built directly (the constructor without a plan, or
+ * makeOffCpuProfiler()) is reported as the registry reports its own
+ * decisions (ProfilerRegistry::reportDecision()), and fails the run alike.
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the
@@ -136,8 +142,9 @@ ReadinessResult checkOffCpuRequest(const ReadinessRequest& request, const Readin
 class OffCpuProfiler final : public Profiler {
 public:
   /**
-   * @brief Construct, deciding the request itself; when it cannot run, prints
-   * why and does nothing in the hooks.
+   * @brief Construct, deciding the request itself and reporting the decision
+   * as the registry does; when it cannot run, the run fails, no folder is
+   * created and the hooks do nothing.
    */
   OffCpuProfiler(const PerfConfig& cfg, std::string testName);
 
@@ -183,8 +190,10 @@ private:
 /* --------------------------------- API --------------------------------- */
 
 /**
- * @brief Factory: decides the request in a snapshot of this process first.
- * @return Profiler instance, or nullptr if the request cannot run here.
+ * @brief Factory: decides the request in a snapshot of this process first,
+ * and reports the decision as the registry does.
+ * @return Profiler instance, or nullptr if the request cannot run here (the
+ *         run then fails).
  */
 std::unique_ptr<Profiler> makeOffCpuProfiler(const PerfConfig& cfg, const std::string& testName);
 

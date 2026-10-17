@@ -769,7 +769,8 @@ Three things check what this page shows, and all fail loudly:
   runs in a PID namespace other than the host's (this project's container
   has one), where bpftrace is not installed, and without root or sudo; where
   the run says offcpu could not trace, quoting the run's line, which ends
-  with sudo's or bpftrace's own words; and, once both captures have passed
+  with sudo's or bpftrace's own words, once the run has failed with status 4,
+  as a request that cannot collect does; and, once both captures have passed
   their checks, where no stack reaches the demo's test body, quoting the
   stacks, as on the x86-64 laptop above. Beside it,
   `OffCpuCaptureReadingTest` holds that reading to two captures and three
