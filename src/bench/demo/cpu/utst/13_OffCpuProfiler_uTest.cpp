@@ -246,56 +246,18 @@ std::string stacksOf(const std::string& text) {
 /// Demo 13's CoarseLock capture: 3 threads x 1,000 calls x 5 repeats.
 constexpr const char* RIG_COARSE_LOCK_DUMP =
     "Attaching 2 probes...\n"
-    "offcpu armed 85324 85344\n"
-    "offcpu disarmed 85324 85324 10111\n"
+    "offcpu armed 26929 26953\n"
+    "offcpu disarmed 26929 26929 10934\n"
     "\n"
     "\n"
     "@armed: 2\n"
     "@offcpu_blocks[\n"
-    "        0x7fb34cef6c\n"
-    "        __syscall_cancel+16\n"
-    "        _IO_new_file_underflow+320\n"
-    "        __GI__IO_default_uflow+56\n"
-    "        _IO_getline_info+212\n"
-    "        _IO_fgets+168\n"
-    "        vernier::bench::captureGitHash[abi:cxx11]()+88\n"
-    "        vernier::bench::PerfCase::contentionRun(...)+6656\n"
-    "        OffCpu_CoarseLock_Test::TestBody()+1576\n"
-    "        void testing::internal::HandleExceptionsInMethodIfSupported<...>(...)+72\n"
-    "        testing::Test::Run()+236\n"
-    "        testing::TestInfo::Run()+376\n"
-    "        testing::TestSuite::Run()+700\n"
-    "        testing::internal::UnitTestImpl::RunAllTests()+912\n"
-    "        testing::UnitTest::Run()+104\n"
-    "        main+128\n"
-    "        __libc_start_call_main+124\n"
-    "        __libc_start_main@GLIBC_2.17+156\n"
-    "        _start+48\n"
-    ", BenchDemo_13_Of]: 1\n"
-    "@offcpu_blocks[\n"
-    "        __clone3+52\n"
-    "        popen+100\n"
-    "        vernier::bench::captureGitHash[abi:cxx11]()+64\n"
-    "        vernier::bench::PerfCase::contentionRun(...)+6656\n"
-    "        OffCpu_CoarseLock_Test::TestBody()+1576\n"
-    "        void testing::internal::HandleExceptionsInMethodIfSupported<...>(...)+72\n"
-    "        testing::Test::Run()+236\n"
-    "        testing::TestInfo::Run()+376\n"
-    "        testing::TestSuite::Run()+700\n"
-    "        testing::internal::UnitTestImpl::RunAllTests()+912\n"
-    "        testing::UnitTest::Run()+104\n"
-    "        main+128\n"
-    "        __libc_start_call_main+124\n"
-    "        __libc_start_main@GLIBC_2.17+156\n"
-    "        _start+48\n"
-    ", BenchDemo_13_Of]: 1\n"
-    "@offcpu_blocks[\n"
-    "        0x7fb34cef6c\n"
+    "        0x7f9108ef6c\n"
     "        __GI___futex_abstimed_wait_cancelable64+72\n"
     "        __pthread_clockjoin_ex+420\n"
     "        std::thread::join()+36\n"
-    "        vernier::bench::PerfCase::contentionRun(...)+840\n"
-    "        OffCpu_CoarseLock_Test::TestBody()+1576\n"
+    "        vernier::bench::PerfCase::contentionRun(...)+1104\n"
+    "        OffCpu_CoarseLock_Test::TestBody()+1236\n"
     "        void testing::internal::HandleExceptionsInMethodIfSupported<...>(...)+72\n"
     "        testing::Test::Run()+236\n"
     "        testing::TestInfo::Run()+376\n"
@@ -306,29 +268,29 @@ constexpr const char* RIG_COARSE_LOCK_DUMP =
     "        __libc_start_call_main+124\n"
     "        __libc_start_main@GLIBC_2.17+156\n"
     "        _start+48\n"
-    ", BenchDemo_13_Of]: 9\n"
+    ", BenchDemo_13_Of]: 10\n"
     "@offcpu_blocks[\n"
     "        __lll_lock_wait+80\n"
     "        __pthread_mutex_lock+264\n"
     "        vernier::bench::demo::offcpu_demo::addUnderCoarseLock(...)+24\n"
-    "        std::thread::_State_impl<...>::_M_run(...)+104\n"
-    "        0x7fb37cb4e0\n"
+    "        std::thread::_State_impl<...>::_M_run()+104\n"
+    "        0x7f9138b4e0\n"
     "        start_thread+920\n"
     "        thread_start+12\n"
-    ", BenchDemo_13_Of]: 10103\n"
-    "@offcpu_ns[85349]: 2858726\n"
-    "@offcpu_ns[85358]: 17952228\n"
-    "@offcpu_ns[85356]: 18246216\n"
-    "@offcpu_ns[85362]: 18282181\n"
-    "@offcpu_ns[85353]: 18916858\n"
-    "@offcpu_ns[85351]: 24590128\n"
-    "@offcpu_ns[85361]: 33765527\n"
-    "@offcpu_ns[85359]: 34797809\n"
-    "@offcpu_ns[85355]: 34936154\n"
-    "@offcpu_ns[85354]: 35045335\n"
-    "@offcpu_ns[85350]: 36788698\n"
-    "@offcpu_ns[85324]: 322742249\n"
-    "@recorded: 10111\n"
+    ", BenchDemo_13_Of]: 10928\n"
+    "@offcpu_ns[26960]: 16705368\n"
+    "@offcpu_ns[26966]: 17802938\n"
+    "@offcpu_ns[26972]: 17856925\n"
+    "@offcpu_ns[26962]: 17888102\n"
+    "@offcpu_ns[26968]: 18151967\n"
+    "@offcpu_ns[26965]: 33547052\n"
+    "@offcpu_ns[26970]: 33673882\n"
+    "@offcpu_ns[26963]: 33702970\n"
+    "@offcpu_ns[26973]: 33811793\n"
+    "@offcpu_ns[26961]: 34315276\n"
+    "@offcpu_ns[26959]: 35621602\n"
+    "@offcpu_ns[26929]: 303837259\n"
+    "@recorded: 10934\n"
     "\n";
 
 /// Demo 13's NoSharing capture, the same run: one worker's wait is in the C
@@ -336,8 +298,8 @@ constexpr const char* RIG_COARSE_LOCK_DUMP =
 /// destructor, not in the demo's.
 constexpr const char* RIG_NO_SHARING_DUMP =
     "Attaching 2 probes...\n"
-    "offcpu armed 85324 85381\n"
-    "offcpu disarmed 85324 85324 10\n"
+    "offcpu armed 26929 26978\n"
+    "offcpu disarmed 26929 26929 9\n"
     "\n"
     "\n"
     "@armed: 2\n"
@@ -347,18 +309,18 @@ constexpr const char* RIG_NO_SHARING_DUMP =
     "        __cxa_thread_atexit_impl+124\n"
     "        __cxa_thread_atexit+16\n"
     "        std::_Function_handler<...>::_M_invoke(...)+40\n"
-    "        std::thread::_State_impl<...>::_M_run(...)+104\n"
-    "        0x7fb37cb4e0\n"
+    "        std::thread::_State_impl<...>::_M_run()+104\n"
+    "        0x7f9138b4e0\n"
     "        start_thread+920\n"
     "        thread_start+12\n"
     ", BenchDemo_13_Of]: 1\n"
     "@offcpu_blocks[\n"
-    "        0x7fb34cef6c\n"
+    "        0x7f9108ef6c\n"
     "        __GI___futex_abstimed_wait_cancelable64+72\n"
     "        __pthread_clockjoin_ex+420\n"
     "        std::thread::join()+36\n"
-    "        vernier::bench::PerfCase::contentionRun(...)+840\n"
-    "        OffCpu_NoSharing_Test::TestBody()+1580\n"
+    "        vernier::bench::PerfCase::contentionRun(...)+1104\n"
+    "        OffCpu_NoSharing_Test::TestBody()+1228\n"
     "        void testing::internal::HandleExceptionsInMethodIfSupported<...>(...)+72\n"
     "        testing::Test::Run()+236\n"
     "        testing::TestInfo::Run()+376\n"
@@ -369,10 +331,10 @@ constexpr const char* RIG_NO_SHARING_DUMP =
     "        __libc_start_call_main+124\n"
     "        __libc_start_main@GLIBC_2.17+156\n"
     "        _start+48\n"
-    ", BenchDemo_13_Of]: 9\n"
-    "@offcpu_ns[85386]: 31259\n"
-    "@offcpu_ns[85324]: 102879711\n"
-    "@recorded: 10\n"
+    ", BenchDemo_13_Of]: 8\n"
+    "@offcpu_ns[26986]: 26889\n"
+    "@offcpu_ns[26929]: 106244934\n"
+    "@recorded: 9\n"
     "\n";
 
 /// A run in a PID namespace of its own: the decision refused the request.
@@ -424,18 +386,18 @@ TEST(OffCpuCaptureReadingTest, FindsTheLockWaitInTheRigsCoarseLockCapture) {
   EXPECT_TRUE(DUMP.armedBeforeDisarmed);
   EXPECT_TRUE(DUMP.disarmedState);
   EXPECT_EQ(DUMP.startLines, 0);
-  EXPECT_EQ(DUMP.recorded, 10111);
-  ASSERT_EQ(DUMP.stacks.size(), 4U);
-  EXPECT_EQ(switchOuts(DUMP), 10114);
-  EXPECT_EQ(lockWaitsUnderTheCoarseLock(DUMP), 10103);
-  EXPECT_EQ(switchOutsThrough(DUMP, "OffCpu_CoarseLock_Test::TestBody"), 11)
-      << "the main thread's own waits, git describe's and join's";
+  EXPECT_EQ(DUMP.recorded, 10934);
+  ASSERT_EQ(DUMP.stacks.size(), 2U);
+  EXPECT_EQ(switchOuts(DUMP), 10938);
+  EXPECT_EQ(lockWaitsUnderTheCoarseLock(DUMP), 10928);
+  EXPECT_EQ(switchOutsThrough(DUMP, "OffCpu_CoarseLock_Test::TestBody"), 10)
+      << "the main thread's own waits, in join";
   EXPECT_EQ(DUMP.threads.size(), 12U);
   const std::vector<long> ARMED = check::acknowledgement(RIG_COARSE_LOCK_DUMP, "offcpu", "armed");
   const std::vector<long> DISARMED =
       check::acknowledgement(RIG_COARSE_LOCK_DUMP, "offcpu", "disarmed");
-  EXPECT_EQ(ARMED, (std::vector<long>{85324, 85344}));
-  EXPECT_EQ(DISARMED, (std::vector<long>{85324, 85324, 10111}));
+  EXPECT_EQ(ARMED, (std::vector<long>{26929, 26953}));
+  EXPECT_EQ(DISARMED, (std::vector<long>{26929, 26929, 10934}));
 }
 
 /**
@@ -447,10 +409,10 @@ TEST(OffCpuCaptureReadingTest, FindsNoCoarseLockWaitInTheRigsNoSharingCapture) {
   const OffCpuDump DUMP = readDump(RIG_NO_SHARING_DUMP);
   EXPECT_TRUE(DUMP.disarmedState);
   EXPECT_EQ(DUMP.startLines, 0);
-  EXPECT_EQ(switchOuts(DUMP), 10);
+  EXPECT_EQ(switchOuts(DUMP), 9);
   EXPECT_EQ(switchOutsThrough(DUMP, "pthread_mutex_lock"), 1);
   EXPECT_EQ(lockWaitsUnderTheCoarseLock(DUMP), 0);
-  EXPECT_EQ(switchOutsThrough(DUMP, "OffCpu_NoSharing_Test::TestBody"), 9);
+  EXPECT_EQ(switchOutsThrough(DUMP, "OffCpu_NoSharing_Test::TestBody"), 8);
 }
 
 /**

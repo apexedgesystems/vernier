@@ -3,10 +3,11 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp), called from several threads at once (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-10-03 (UTC); the doctor's rows under If It Does Not Match
-2026-10-12 (UTC), and the runs refused there 2026-10-17 (UTC); written for the
-Vernier 1.0.4 release; captured from the development tree at project version
-1.0.3, whose CLI reported `bench 1.0.3`; bpftrace 0.23.2
+**Captured:** 2026-10-03 (UTC); steps 2 to 4 and the doctor's row under Needs
+2026-10-17 (UTC); under If It Does Not Match, the doctor's rows 2026-10-12
+(UTC), and the refused runs and demo 01's case 2026-10-17 (UTC); written for
+the Vernier 1.0.4 release; captured from the development tree at project
+version 1.0.3, whose CLI reported `bench 1.0.3`; bpftrace 0.23.2
 
 ## Overview
 
@@ -16,11 +17,11 @@ which finds a thread only while it runs. This walkthrough starts three threads
 that each join the `join` example's 1,000 words and add the length to one
 total, first under one lock held for the whole call, then with nothing shared
 while they run, and captures where the threads went to sleep and how long
-each stayed off the CPU. With the lock, the capture holds 20,016 sleeps,
-19,997 of them in the lock, under `addUnderCoarseLock`, and the workers that
-slept were off the CPU for about 18 or about 34 ms each; with nothing shared,
-no worker slept. A CPU sampler's profile of the locked version shows the
-join's work and nothing of the waiting.
+each stayed off the CPU. With the lock, the capture holds 20,004 sleeps, 19,988
+of them in the lock, under `addUnderCoarseLock`, and the workers that slept
+were off the CPU for about 18 or about 33 ms each; with nothing shared, no
+worker slept. A CPU sampler's profile of the locked version shows the join's
+work and nothing of the waiting.
 
 ## What is off-CPU profiling?
 
@@ -42,15 +43,15 @@ stops is counted, with no time.
 - **Best for:** threads that wait: on a lock, on each other, on I/O, on a
   timer.
 - **Overhead:** the script runs on every context switch of the machine and
-  records a stack only for the benchmark's own sleeps. In this session the
-  timed medians under the capture overlapped those without it: 20.2 to
-  20.7 us per call with the lock over eleven captures, against 20.2 to
-  20.8 us over twelve runs without, and 6.6 to 7.4 us against 6.9 to 7.3 us
-  with nothing shared. Its cost is at the start and the stop, outside the
-  timed repeats: before its first capture a run checks the request, as the
-  doctor does (below), and each capture waits for bpftrace to start and arm,
-  then to disarm and stop. Step 2's test took 4.2 s, against 0.6 s for the
-  same test in step 1.
+  records a stack only for the benchmark's own sleeps. In the session of steps
+  2 to 4, the timed medians under the capture overlapped those without it: 19.9
+  to 21.0 us per call with the lock over eleven captures, against 20.1 to 21.2
+  us over eleven runs without, and 6.5 to 7.2 us against 6.7 to 7.1 us with
+  nothing shared. Its cost is at the start and the stop, outside the timed
+  repeats: before its first capture a run checks the request, as the doctor
+  does (below), and each capture waits for bpftrace to start and arm, then to
+  disarm and stop. Step 2's test took 4.3 s, against 0.6 s for the same test in
+  step 1.
 - **Not for:** where CPU time goes (gperftools, perf and callgrind,
   walkthroughs [03](03_GPERF_PROFILER.md), [02](02_PERF_PROFILER.md) and
   [07](07_CALLGRIND_PROFILER.md)), or data races (helgrind,
@@ -98,21 +99,21 @@ BENCH_SUDO=1 bench doctor ./build/bin/ptests/BenchDemo_13_OffCpuProfiler
 ```
 
 ```
-  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace), and a copy with unbuffered output armed on this process's arm thread (pid 25522, thread 25594); not checked: the grant for the run's own command (/usr/bin/bpftrace -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace), and a copy with unbuffered output armed on this process's arm thread (pid 25830, thread 25902); not checked: the grant for the run's own command (/usr/bin/bpftrace -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
 ```
 
 The row says what the check did. It ran the off-CPU script twice through
 `sudo -n`: once for its 1.5 s start grace, with a 5 s self-exit added, and
 stopped it with SIGINT; then as a copy that must report a sleep of a thread
 the check starts, under that thread's id and the benchmark's process id
-(thread 25594 of process 25522 here): the check that a capture can see the
+(thread 25902 of process 25830 here): the check that a capture can see the
 benchmark's threads. That second run has a cost. On this rig the doctor took
-5.9 to 6.0 s over five runs, 2.7 to 2.8 s of it in the offcpu row, of which
-the copy accounts for about 0.8 s; the two runs taken before the governor was
-pinned took 6.1 s. Adding `--profile offcpu` to the benchmark's own
+9.6 s in each of five runs, 2.8 s of it in the offcpu row, of which the copy
+accounts for about 0.9 s; the two runs taken before the governor was pinned
+took 9.7 and 9.8 s. Adding `--profile offcpu` to the benchmark's own
 `--profile-check` checks offcpu once more, for the selected request, so the
-script runs four times and the doctor took 8.6 s. A run checks once, before
-its first capture.
+script runs four times and the doctor took 12.3 and 12.4 s in two runs. A run
+checks once, before its first capture.
 
 ## The Example
 
@@ -258,13 +259,13 @@ Note: Google Test filter = OffCpu.CoarseLock
 [----------] Global test environment set-up.
 [----------] 1 test from OffCpu
 [ RUN      ] OffCpu.CoarseLock
-[offcpu] stacks written to ./OffCpu.CoarseLock.offcpu/offcpu.txt (20016 sleeping switch-outs)
-[OffCpu.CoarseLock]  20.217 us/call  CV=1.2%  ~49.5K calls/s  (p10=20.173 p90=20.595 sd=0.242)
-[       OK ] OffCpu.CoarseLock (4191 ms)
-[----------] 1 test from OffCpu (4191 ms total)
+[offcpu] stacks written to ./OffCpu.CoarseLock.offcpu/offcpu.txt (20004 sleeping switch-outs)
+[OffCpu.CoarseLock]  19.943 us/call  CV=2.1%  ~50.1K calls/s  (p10=19.860 p90=20.770 sd=0.417)
+[       OK ] OffCpu.CoarseLock (4282 ms)
+[----------] 1 test from OffCpu (4282 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (4191 ms total)
+[==========] 1 test from 1 test suite ran. (4282 ms total)
 [  PASSED  ] 1 test.
 ```
 
@@ -272,10 +273,10 @@ Note: Google Test filter = OffCpu.CoarseLock
 as its `Running:` line shows; the backend runs inside the benchmark and
 starts bpftrace through `sudo -n`, which `BENCH_SUDO=1` asks for. The
 `[offcpu]` line is the capture's outcome: checked from its arm to its stop,
-its dump whole, 20,016 sleeping switch-outs, written to
+its dump whole, 20,004 sleeping switch-outs, written to
 `./OffCpu.CoarseLock.offcpu/offcpu.txt` under the directory `bench run` ran
 from. The result line is step 1's measurement taken again under the capture:
-20.2 us per call, against 20.5 us there. The test took 4.2 s against step 1's
+19.9 us per call, against 20.5 us there. The test took 4.3 s against step 1's
 0.6 s, for the check and the capture's start and stop
 ([What is off-CPU profiling?](#what-is-off-cpu-profiling)).
 
@@ -295,129 +296,97 @@ cat OffCpu.CoarseLock.offcpu/offcpu.txt
 ```
 
 Captured output, with three long C++ names shortened to `(...)` and `<...>`,
-and the eight GoogleTest frames between each test body and `main` cut and
+and the six GoogleTest frames between the test body and `main` cut and
 marked `...`:
 
 ```
 Attaching 2 probes...
-offcpu armed 25675 25695
-offcpu disarmed 25675 25675 20011
+offcpu armed 25986 26010
+offcpu disarmed 25986 25986 19993
 
 
 @armed: 2
 @offcpu_blocks[
-        __clone3+52
-        popen+100
-        vernier::bench::captureGitHash[abi:cxx11]()+64
-        vernier::bench::PerfCase::contentionRun(...)+6656
-        OffCpu_CoarseLock_Test::TestBody()+1576
-        ...
-        main+128
-        __libc_start_call_main+124
-        __libc_start_main@GLIBC_2.17+156
-        _start+48
-, BenchDemo_13_Of]: 1
-@offcpu_blocks[
-        0x7fa283ef6c
-        __syscall_cancel+16
-        _IO_new_file_underflow+320
-        __GI__IO_default_uflow+56
-        _IO_getline_info+212
-        _IO_fgets+168
-        vernier::bench::captureGitHash[abi:cxx11]()+88
-        vernier::bench::PerfCase::contentionRun(...)+6656
-        OffCpu_CoarseLock_Test::TestBody()+1576
-        ...
-        main+128
-        __libc_start_call_main+124
-        __libc_start_main@GLIBC_2.17+156
-        _start+48
-, BenchDemo_13_Of]: 1
-@offcpu_blocks[
-        0x7fa283ef6c
+        0x7fa628ef6c
         __GI___futex_abstimed_wait_cancelable64+72
         __pthread_clockjoin_ex+420
         std::thread::join()+36
-        vernier::bench::PerfCase::contentionRun(...)+840
-        OffCpu_CoarseLock_Test::TestBody()+1576
+        vernier::bench::PerfCase::contentionRun(...)+1104
+        OffCpu_CoarseLock_Test::TestBody()+1236
         ...
         main+128
         __libc_start_call_main+124
         __libc_start_main@GLIBC_2.17+156
         _start+48
-, BenchDemo_13_Of]: 17
+, BenchDemo_13_Of]: 16
 @offcpu_blocks[
         __lll_lock_wait+80
         __pthread_mutex_lock+264
         vernier::bench::demo::offcpu_demo::addUnderCoarseLock(...)+24
         std::thread::_State_impl<...>::_M_run()+104
-        0x7fa2b3b4e0
+        0x7fa658b4e0
         start_thread+920
         thread_start+12
-, BenchDemo_13_Of]: 19997
-@offcpu_ns[25727]: 17823445
-@offcpu_ns[25725]: 17975066
-@offcpu_ns[25713]: 18066470
-@offcpu_ns[25709]: 18066544
-@offcpu_ns[25706]: 18148437
-@offcpu_ns[25722]: 18161341
-@offcpu_ns[25716]: 18193060
-@offcpu_ns[25718]: 18265737
-@offcpu_ns[25703]: 18303977
-@offcpu_ns[25702]: 18489862
-@offcpu_ns[25719]: 33614405
-@offcpu_ns[25726]: 33658123
-@offcpu_ns[25707]: 33664119
-@offcpu_ns[25712]: 33677764
-@offcpu_ns[25710]: 33719011
-@offcpu_ns[25721]: 33756208
-@offcpu_ns[25728]: 33936044
-@offcpu_ns[25704]: 33956002
-@offcpu_ns[25700]: 34516236
-@offcpu_ns[25715]: 34558051
-@offcpu_ns[25675]: 611641580
-@recorded: 20011
+, BenchDemo_13_Of]: 19988
+@offcpu_ns[26023]: 17500004
+@offcpu_ns[26028]: 17632631
+@offcpu_ns[26035]: 17672550
+@offcpu_ns[26032]: 17770004
+@offcpu_ns[26044]: 17774020
+@offcpu_ns[26025]: 17837519
+@offcpu_ns[26041]: 17846210
+@offcpu_ns[26038]: 17865849
+@offcpu_ns[26016]: 18234586
+@offcpu_ns[26019]: 19087467
+@offcpu_ns[26031]: 32385147
+@offcpu_ns[26029]: 32922719
+@offcpu_ns[26022]: 33156235
+@offcpu_ns[26042]: 33180459
+@offcpu_ns[26027]: 33204317
+@offcpu_ns[26034]: 33217038
+@offcpu_ns[26037]: 33245012
+@offcpu_ns[26043]: 33415993
+@offcpu_ns[26018]: 35581963
+@offcpu_ns[26021]: 37075927
+@offcpu_ns[25986]: 602340166
+@recorded: 19993
 ```
 
 | Line                                            | What it says                                                                                                                                                                                     |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `Attaching 2 probes...`                         | bpftrace attaching the script's two probes: the one on the switch, and one that ends the script if the benchmark exits first                                                                     |
-| `offcpu armed 25675 25695`                      | the script saw thread 25695 of process 25675, the thread Vernier started to arm it, go to sleep, and records from here                                                                           |
-| `offcpu disarmed 25675 25675 20011`             | after the last repeat, thread 25675, the test's own (a process's first thread has the process's id), went to sleep as `vernier-stop`; the script had recorded 20,011 sleeps, and records no more |
+| `offcpu armed 25986 26010`                      | the script saw thread 26010 of process 25986, the thread Vernier started to arm it, go to sleep, and records from here                                                                           |
+| `offcpu disarmed 25986 25986 19993`             | after the last repeat, thread 25986, the test's own (a process's first thread has the process's id), went to sleep as `vernier-stop`; the script had recorded 19,993 sleeps, and records no more |
 | `@armed: 2`                                     | the window is closed; bpftrace printed its maps when Vernier stopped it, in the order of their names                                                                                             |
 | `@offcpu_blocks[<stack>, BenchDemo_13_Of]: <n>` | how many sleeps were taken at that stack, innermost frame first, by threads named `BenchDemo_13_Of`, the program's name cut to 15 characters, which its threads inherit                          |
 | `@offcpu_ns[<thread>]: <nanoseconds>`           | per thread, the time off the CPU after its counted sleeps                                                                                                                                        |
-| `@recorded: 20011`                              | the script's own count of the sleeps, the number in the `disarmed` line                                                                                                                          |
+| `@recorded: 19993`                              | the script's own count of the sleeps, the number in the `disarmed` line                                                                                                                          |
 
-The four stacks hold every sleep. Read them from the bottom of the dump up:
+The two stacks hold every sleep. Read them from the bottom of the dump up:
 
-- **19,997 sleeps in the lock.** `__lll_lock_wait` in `__pthread_mutex_lock`,
+- **19,988 sleeps in the lock.** `__lll_lock_wait` in `__pthread_mutex_lock`,
   called from `addUnderCoarseLock`, called from the thread function
   `contentionRun()` gives each worker: the workers, asleep in the mutex the
   coarse lock takes. This stack is the finding: it names the function that
   takes the lock, and the count says how often a worker found it taken.
-- **17 sleeps in `std::thread::join`**, under `contentionRun()` and the
+- **16 sleeps in `std::thread::join`**, under `contentionRun()` and the
   test's body: the test's own thread, waiting for each repeat's workers to
   end.
-- **One sleep each under `captureGitHash`**, in `popen`, starting
-  `git describe`, and in `fgets`, reading its answer: the harness records the
-  tree's version for the CSV, once per process, after the last repeat and
-  before the stop.
 
-The last two are the harness's and the test's own, not the code under test:
-the waits in `join` come from `contentionRun()` itself, which waits for its
-workers, and the `git describe` pair from the first capture of a process. Two
-frames are addresses: bpftrace found no name for them.
+The second is the test's own, not the code under test: the waits in `join` come
+from `contentionRun()` itself, which waits for its workers. The run's metadata,
+the tree's `git describe` among it, is taken before the first profiler starts,
+so the dump holds only the sleeps of the measured repeats. Two frames are
+addresses: bpftrace found no name for them.
 
-Twenty-one threads have a time in `@offcpu_ns`. Thread 25675, the test's
-own, was off the CPU for 611.6 ms, about the whole measured time (ten repeats
-of 3,000 calls at the median 20.217 us is 606.5 ms): it waited in `join`
-while the workers ran, and for `git describe`. Twenty of the thirty workers
-have a row: ten with 17.8 to 18.5 ms and ten with 33.6 to 34.6 ms. The other
-ten have no row: they took no sleeping switch-out while the capture was
-armed.
+Twenty-one threads have a time in `@offcpu_ns`. Thread 25986, the test's own,
+was off the CPU for 602.3 ms, about the whole measured time (ten repeats of
+3,000 calls at the median 19.943 us is 598.3 ms): it waited in `join` while the
+workers ran. Twenty of the thirty workers have a row: ten with 17.5 to 19.1 ms
+and ten with 32.4 to 37.1 ms. The other ten have no row: they took no sleeping
+switch-out while the capture was armed.
 
-`@recorded` is 20,011, five below the stacks' sum of 20,016: the script
+`@recorded` is 19,993, eleven below the stacks' sum of 20,004: the script
 counts with an increment that two CPUs can make at the same moment, which
 can only make the count come out lower. The `[offcpu]` line reports the
 stacks' sum.
@@ -439,13 +408,13 @@ Note: Google Test filter = OffCpu.NoSharing
 [----------] Global test environment set-up.
 [----------] 1 test from OffCpu
 [ RUN      ] OffCpu.NoSharing
-[offcpu] stacks written to ./OffCpu.NoSharing.offcpu/offcpu.txt (23 sleeping switch-outs)
-[OffCpu.NoSharing]  6.646 us/call  CV=0.7%  ~150.5K calls/s  (p10=6.631 p90=6.749 sd=0.048)
-[       OK ] OffCpu.NoSharing (3752 ms)
-[----------] 1 test from OffCpu (3752 ms total)
+[offcpu] stacks written to ./OffCpu.NoSharing.offcpu/offcpu.txt (18 sleeping switch-outs)
+[OffCpu.NoSharing]  7.135 us/call  CV=1.3%  ~140.2K calls/s  (p10=7.058 p90=7.264 sd=0.093)
+[       OK ] OffCpu.NoSharing (3856 ms)
+[----------] 1 test from OffCpu (3856 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (3752 ms total)
+[==========] 1 test from 1 test suite ran. (3856 ms total)
 [  PASSED  ] 1 test.
 ```
 
@@ -453,65 +422,35 @@ and of the capture, cut as in step 3:
 
 ```
 Attaching 2 probes...
-offcpu armed 25747 25767
-offcpu disarmed 25747 25747 23
+offcpu armed 26062 26086
+offcpu disarmed 26062 26062 18
 
 
 @armed: 2
 @offcpu_blocks[
-        __clone3+52
-        popen+100
-        vernier::bench::captureGitHash[abi:cxx11]()+64
-        vernier::bench::PerfCase::contentionRun(...)+6656
-        OffCpu_NoSharing_Test::TestBody()+1580
-        ...
-        main+128
-        __libc_start_call_main+124
-        __libc_start_main@GLIBC_2.17+156
-        _start+48
-, BenchDemo_13_Of]: 1
-@offcpu_blocks[
-        0x7f92adef6c
-        __syscall_cancel+16
-        _IO_new_file_underflow+320
-        __GI__IO_default_uflow+56
-        _IO_getline_info+212
-        _IO_fgets+168
-        vernier::bench::captureGitHash[abi:cxx11]()+88
-        vernier::bench::PerfCase::contentionRun(...)+6656
-        OffCpu_NoSharing_Test::TestBody()+1580
-        ...
-        main+128
-        __libc_start_call_main+124
-        __libc_start_main@GLIBC_2.17+156
-        _start+48
-, BenchDemo_13_Of]: 1
-@offcpu_blocks[
-        0x7f92adef6c
+        0x7f95ccef6c
         __GI___futex_abstimed_wait_cancelable64+72
         __pthread_clockjoin_ex+420
         std::thread::join()+36
-        vernier::bench::PerfCase::contentionRun(...)+840
-        OffCpu_NoSharing_Test::TestBody()+1580
+        vernier::bench::PerfCase::contentionRun(...)+1104
+        OffCpu_NoSharing_Test::TestBody()+1228
         ...
         main+128
         __libc_start_call_main+124
         __libc_start_main@GLIBC_2.17+156
         _start+48
-, BenchDemo_13_Of]: 21
-@offcpu_ns[25747]: 201669430
-@recorded: 23
+, BenchDemo_13_Of]: 18
+@offcpu_ns[26062]: 213359353
+@recorded: 18
 ```
 
-Twenty-three sleeps, and none of them a worker's: the test's own thread, 21
-times in `join` and twice for `git describe`, the harness's rows of step 3.
-Only the test's thread has a time, 201.7 ms, again about the whole measured
-time (ten repeats of 3,000 calls at the median 6.646 us is 199.4 ms). The
-lock's 19,997 sleeps went with the lock, and with them two thirds of the
-time.
+Eighteen sleeps, and none of them a worker's: the test's own thread, in `join`.
+Only the test's thread has a time, 213.4 ms, again about the whole measured
+time (ten repeats of 3,000 calls at the median 7.135 us is 214.1 ms). The
+lock's 19,988 sleeps went with the lock, and with them two thirds of the time.
 
 Over the eleven captures of this command in the session, this one among
-them, up to two workers had a row: one sleep each, of 0.024 to 0.030 ms, in
+them, up to three workers had a row: one sleep each, of 0.014 to 0.030 ms, in
 the C library, when a thread first registered the destructor of its
 `thread_local` total, under a lock of the library's
 (`__cxa_thread_atexit_impl`, in 7 of the 11 captures), or set up its memory
@@ -574,9 +513,9 @@ The profile is the join's: `joinV1` is on the stack of 63 samples, 88.7%,
 copying (`__memcpy_generic`) and appending, and below the cut
 `addUnderCoarseLock` is on the stack of 65. The lock's own code took a few,
 waking a waiting thread (`__GI___lll_lock_wake`, 3) and in `futex_wait`
-(1). Nothing in the profile shows the workers' sleeps in the lock: 19,997 in
-step 3's capture, up to 34.6 ms per worker. A sleeping thread is not on a
-CPU, and a CPU sampler takes no sample of it.
+(1). Nothing in the profile shows the workers' sleeps in the lock: 19,988 in
+step 3's capture, up to 37.1 ms per worker. A sleeping thread is not on a CPU,
+and a CPU sampler takes no sample of it.
 
 The same command with `--gtest_filter='OffCpu.NoSharing'`, run twice in the
 session, took 58 and 59 samples, 0.58 and 0.59 s of CPU time against the
@@ -589,22 +528,25 @@ CPU, which only the off-CPU capture shows.
 
 | Reading                                            | On this rig                                                                                                                | Elsewhere                                                                                                                                   |
 | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| the lock's sleeps                                  | `__lll_lock_wait` in `__pthread_mutex_lock` under `addUnderCoarseLock`: 19,991 to 21,376 sleeps in each of eleven captures | should match wherever bpftrace's stacks reach the program; on an x86-64 laptop they did not ([If It Does Not Match](#if-it-does-not-match)) |
-| the coarse lock's other sleeps                     | 13 to 20: the test's own thread in `join`, and the `git describe` pair                                                     | the same rows; how many `join` sleeps varies                                                                                                |
-| no sharing                                         | 18 to 23 sleeps, none under `addUnderCoarseLock`; 0 to 2 of them a worker's, in the C library                              | none under `addUnderCoarseLock` should match; the C library's own waits depend on the library                                               |
-| which workers sleep, and for how long              | with the lock, 20 to 23 of the 30 workers had a row, the others none; a worker that slept, 3.9 to 37.4 ms                  | varies with scheduling                                                                                                                      |
-| the test's own thread                              | 610.4 to 628.0 ms with the lock, 199.4 to 223.6 ms with nothing shared: about the measured time                            | follows the measured time                                                                                                                   |
+| the lock's sleeps                                  | `__lll_lock_wait` in `__pthread_mutex_lock` under `addUnderCoarseLock`: 19,988 to 20,624 sleeps in each of eleven captures | should match wherever bpftrace's stacks reach the program; on an x86-64 laptop they did not ([If It Does Not Match](#if-it-does-not-match)) |
+| the coarse lock's other sleeps                     | 15 to 21: the test's own thread in `join`                                                                                  | the same row; how many `join` sleeps varies                                                                                                 |
+| no sharing                                         | 16 to 24 sleeps, none under `addUnderCoarseLock`; 0 to 3 of them a worker's, in the C library                              | none under `addUnderCoarseLock` should match; the C library's own waits depend on the library                                               |
+| which workers sleep, and for how long              | with the lock, 20 to 22 of the 30 workers had a row, the others none; a worker that slept, 0.04 to 38.3 ms                 | varies with scheduling                                                                                                                      |
+| the test's own thread                              | 602.3 to 634.4 ms with the lock, 198.4 to 214.7 ms with nothing shared: about the measured time                            | follows the measured time                                                                                                                   |
 | the sampler                                        | 68 to 71 samples on the coarse lock over six runs, 58 and 59 with nothing shared; the join's functions on top              | the same shape where gperftools samples every thread; the counts depend on the machine                                                      |
 | step 1: the lock's time per call over no sharing's | 2.8x here; 2.82x to 3.01x over twelve runs                                                                                 | the same direction wherever each thread has a core; how far depends on the machine                                                          |
-| the doctor                                         | 5.9 to 6.0 s, its offcpu row 2.7 to 2.8 s                                                                                  | depends on how quickly bpftrace starts                                                                                                      |
+| the doctor                                         | 9.6 s, its offcpu row 2.8 s                                                                                                | depends on how quickly bpftrace starts                                                                                                      |
 | absolute times                                     | 20.5 and 7.3 us per call in step 1; 20.2 to 20.8 and 6.9 to 7.3 us over twelve runs                                        | will differ                                                                                                                                 |
 
-The ranges come from one session on this rig: step 1's command and the two
-capture commands ten times each, alternating, then step 1's once more for the
-reference, then this page's commands, so twelve runs of step 1's command and
-eleven of each capture, six runs of step 5's sampler command and five of the
-doctor. They describe those runs; they are not a bound a run has to meet,
-and another run of the same command can land outside them.
+The ranges come from two sessions on this rig. The rows on step 1, the sampler
+and the absolute times come from the session of steps 1 and 5: step 1's command
+and the two capture commands ten times each, alternating, then step 1's once
+more for the reference, then this page's commands, so twelve runs of step 1's
+command, and six runs of step 5's sampler command. The rows on the captures and
+the doctor come from the session of steps 2 to 4: the same ten rounds, then
+this page's commands, so eleven runs of each capture, and five of the doctor.
+They describe those runs; they are not a bound a run has to meet, and another
+run of the same command can land outside them.
 
 ## If It Does Not Match
 
@@ -693,8 +635,8 @@ and another run of the same command can land outside them.
   ```
 
   and its `offcpu.txt` held the two lines and `@armed: 2`, no stack: the
-  join never sleeps. `JoinV0`, the first case of that run, recorded the
-  harness's `git describe` (3 sleeps).
+  join never sleeps. `JoinV0`, the first case of that run, printed the same
+  line.
 
 - **The stacks stop after a frame or two and name nothing of the demo.**
   bpftrace's user stacks follow frame pointers, and a function built without
