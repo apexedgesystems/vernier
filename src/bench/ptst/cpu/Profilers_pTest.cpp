@@ -7,11 +7,14 @@
  * BpftraceIntegration and CallgrindIntegration run only under their own
  * --profile and build their case with the same guard, which attaches that
  * backend to the measurement. When the backend's readiness check refuses the
- * request, the guard attaches a no-op instead and the run prints why; the
- * guard decides once per run.
+ * request, the guard attaches a no-op instead: the registry decides once per
+ * run, prints why and records it (ProfilerRegistry::failures()), these four
+ * cases skip with that reason, and the run exits with status 4 when its tests
+ * pass.
  *
  * The CSV row of a profiled case names the backend and its capture folder
- * (profileTool, profileDir); a refused request names no folder. There perf
+ * (profileTool, profileDir); a case measured under a refused request's no-op
+ * names neither. There perf
  * writes stat.txt, gperftools cpu.prof and bpftrace a report per script, and
  * valgrind writes callgrind's profile when the process exits. What a backend
  * wrote is read after the run, from that folder. RAPLIntegration builds a
@@ -45,8 +48,10 @@
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "helpers/TestHelpers.hpp"
 
 namespace ub = vernier::bench;
@@ -57,6 +62,22 @@ namespace {
 
 /** @brief Get current configuration */
 inline const ub::PerfConfig& config() { return ub::detail::getPerfConfig(); }
+
+/**
+ * @brief Why the run's request for @p tool cannot collect, or "" when it can.
+ *
+ * The guard's profiler comes from the registry's one decision for the request;
+ * a refusal is recorded for the whole request (no case named) and the guard
+ * attaches a no-op. Reading the record asks nothing again.
+ */
+std::string refusal(const std::string& tool) {
+  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
+    if (failure.backend == tool && failure.test.empty() && !failure.result.collectionReady()) {
+      return failure.result.report.message;
+    }
+  }
+  return "";
+}
 
 } // anonymous namespace
 
@@ -112,6 +133,9 @@ PERF_TEST(Profilers, PerfIntegration) {
   }
 
   UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("perf"); !WHY.empty()) {
+    GTEST_SKIP() << "perf cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -147,6 +171,9 @@ PERF_TEST(Profilers, GperfIntegration) {
   }
 
   UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("gperf"); !WHY.empty()) {
+    GTEST_SKIP() << "gperf cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -183,6 +210,9 @@ PERF_TEST(Profilers, BpftraceIntegration) {
   }
 
   UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("bpftrace"); !WHY.empty()) {
+    GTEST_SKIP() << "bpftrace cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -264,6 +294,9 @@ PERF_TEST(Profilers, CallgrindIntegration) {
   }
 
   UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("callgrind"); !WHY.empty()) {
+    GTEST_SKIP() << "callgrind cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
