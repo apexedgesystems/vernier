@@ -9,7 +9,13 @@ reported `bench 1.0.3`, with Nsight Systems 2025.3.2. Steps 1 to 4 come from
 one session. A second session the same day, from the same tree with this page
 and its reference CSV added, ran every command on this page again; the
 `bench compare` output is from it, and the ranges this page states include
-its runs.
+its runs. A third session, on 2026-10-10 (UTC), from a later development tree
+at the same version with the same Nsight Systems, ran Steps 2 and 3 again:
+Step 2's `bench run` output and range summary, the figures Step 2 reads from
+that run's summaries and GPU trace, its range's length and margins, and the
+`[bench] removed` lines that open Step 3's output are from it. The rest of
+Steps 1 to 4, Step 2's CUDA-trace and CPU-sample figures among it, is from
+the first session.
 
 ## Overview
 
@@ -180,15 +186,16 @@ Running: nsys profile -o bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profil
 ...
 [ RUN      ] NvtxAnnotation.G1
 
-[WARN] Profiler 'nsight': unverified: collection is owned by the nsight wrap; completion is checked at exit
+[WARN] Profiler 'nsight': unverified: nsys started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
 [nsight] this process runs under nsys, which writes the report when the process exits.
-[NvtxAnnotation.G1]  882.550 us/call  CV=0.6%  ~1.1K calls/s  (p10=881.590 p90=891.750 sd=5.725)
-[       OK ] NvtxAnnotation.G1 (209 ms)
+[NvtxAnnotation.G1]  893.850 us/call  CV=0.7%  ~1.1K calls/s  (p10=885.970 p90=898.210 sd=6.332)
+[       OK ] NvtxAnnotation.G1 (210 ms)
 ...
 Generated:
     .../bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile.nsys-rep
-[nsight] auto-extracted nsys stats reports into bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight
+[bench] nsight wrote bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile.nsys-rep (138584 bytes)
+[nsight] wrote the nsys stats summaries into bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight
 ```
 
 The `[WARN]` line is the harness's readiness report for the profiler request,
@@ -206,10 +213,10 @@ nsys stats --force-export=true --report nvtx_pushpop_sum bench-out/BenchDemo_Gpu
 
  Time (%)  Total Time (ns)  Instances    Avg (ns)      Med (ns)     Min (ns)    Max (ns)   StdDev (ns)        Range
  --------  ---------------  ---------  ------------  ------------  ----------  ----------  -----------  ------------------
-    100.0       61,369,464          1  61,369,464.0  61,369,464.0  61,369,464  61,369,464          0.0  :NvtxAnnotation.G1
+    100.0       53,592,761          1  53,592,761.0  53,592,761.0  53,592,761  53,592,761          0.0  :NvtxAnnotation.G1
 ```
 
-One range, the test's, 61.37 ms long (`nsys` writes each name as
+One range, the test's, 53.59 ms long (`nsys` writes each name as
 `domain:name`, and the demo's ranges are in the default domain, which has no
 name). It holds the 60 measured calls. The summaries `bench run` wrote beside
 the report cover the whole process instead: all 61 calls, the warmup's
@@ -217,33 +224,37 @@ included, and the setup and teardown around them, such as the `cudaMalloc`
 and `cudaFree` calls. By them a call makes three `cudaMemcpyAsync`, one launch
 and one `cudaStreamSynchronize` (183, 61 and 61 in `cuda_api_sum.txt`), and
 over the 61 calls the kernel took 22.5 us on the GPU by its median
-(`cuda_gpu_kern_sum.txt`) and each 4.19 MB copy about 15.5 us
+(`cuda_gpu_kern_sum.txt`) and each 4.19 MB copy 15.3 to 15.4 us
 (`cuda_gpu_mem_time_sum.txt`). What happened inside the range comes from the
 report's traces: matched call by call, as in Step 4, the GPU's four operations
-add up to about 70 us of each 882 us call. Each call's wait,
-`cudaStreamSynchronize`, lasts 281 us by its median; after it returns, about
-572 us pass, with no CUDA call and nothing on the GPU, before the next call
-queues its first copy, and the GPU starts that copy about 216 us after it was
-queued.
+add up to about 70 us of each 894 us call. In the first session's capture of
+this step (882.6 us a call), the CUDA trace showed where the rest goes: each
+call's wait, `cudaStreamSynchronize`, lasted 281 us by its median; after it
+returned, about 572 us passed, with no CUDA call and nothing on the GPU,
+before the next call queued its first copy, and the GPU started that copy
+about 216 us after it was queued.
 
 The CUDA trace does not say what the host does in those 572 us. Nsight Systems
 also samples the CPU by default on this rig, and all 36 samples it took of the
-test's thread inside the range landed in `__memcpy_sve`, the C library's copy
-(33 of 37 and 35 of 37 in two more captures): the thread is copying, but a
-sample does not say which copy, in which call, or for how long. A range does.
+test's thread inside that capture's range landed in `__memcpy_sve`, the C
+library's copy (33 of 37 and 35 of 37 in two more captures): the thread is
+copying, but a sample does not say which copy, in which call, or for how
+long. A range does.
 
-The range itself holds more than its calls: 60 calls of about 882 us take
-53 ms, and the range lasts 61.37 ms. It opens 0.68 ms before the first copy
+The range holds its calls and little more: 60 calls of about 894 us take
+53.6 ms, and the range lasts 53.59 ms. It opens 0.67 ms before the first copy
 runs on the GPU (the first call's host work, then the wait for the GPU to
-start the copy), and it closes 8.4 ms after the last copy back. That tail
-belongs to the first measured test of a process, not to `G1`: before the
-harness closes the range, it builds the test's CSV row, and the first row a
-process builds runs `git describe` once, as a subprocess, for the `gitHash`
-column. In a capture of both tests in one process, the first test's range
-ended 8.1 ms after its last copy back and the second's 0.24 ms after. In a
-capture of an earlier session that also traced the OS runtime, the range's
-thread called `popen` within a millisecond of the last copy back, and after it
-the trace shows nothing on that thread until the range closed.
+start the copy), and it closes 0.26 ms after the last copy back (the last
+call's wait returning and its copy of y out). With `--profile`, the harness
+takes the run's metadata for the CSV, whose `gitHash` column comes from
+`git describe` run as a subprocess, when the test's guard creates the
+profiler, before the warmup, so none of it lands in the range. The first
+session's tree took it while building the first test's CSV row, before
+closing that test's range: in its capture of this step the range ran on
+8.4 ms after the last copy back, and in an earlier session a capture that also
+traced the OS runtime showed the range's thread calling `popen` within a
+millisecond of the last copy back and nothing more on that thread until the
+range closed. Step 3's capture is from that tree.
 
 ## Step 3: The Same Call in Three Ranges
 
@@ -253,12 +264,21 @@ bench run ./build/bin/ptests/BenchDemo_Gpu_05_NvtxAnnotation --profile nsight --
 ```
 
 ```
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile.nsys-rep from a previous run
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile.sqlite from a previous run
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/cuda_gpu_kern_sum.txt from a previous run
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/cuda_api_sum.txt from a previous run
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/cuda_gpu_mem_size_sum.txt from a previous run
+[bench] removed bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/cuda_gpu_mem_time_sum.txt from a previous run
 Running: nsys profile -o bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile -t cuda,nvtx --force-overwrite true ./build/bin/ptests/BenchDemo_Gpu_05_NvtxAnnotation --profile nsight --gtest_filter=NvtxAnnotation.G1Phases --cycles 20 --repeats 3
 ...
 [NvtxAnnotation.G1Phases]  953.700 us/call  CV=0.4%  ~1.0K calls/s  (p10=949.820 p90=957.460 sd=3.899)
 [       OK ] NvtxAnnotation.G1Phases (212 ms)
 ...
 ```
+
+`bench run` first removes what Step 2's run left in the folder: its report,
+the SQLite export and the four summaries.
 
 ```bash
 nsys stats --force-export=true --report nvtx_pushpop_sum bench-out/BenchDemo_Gpu_05_NvtxAnnotation.nsight/profile.nsys-rep
@@ -302,7 +322,8 @@ nsys stats --force-export=true --report nvtx_pushpop_trace bench-out/BenchDemo_G
   and the kernel's first run (40.2 us).
 - **The test's range** (`RangeId` 4) has 180 children, three for each of the 60
   measured calls. They take 57.09 ms of it (`DurChild`); the other 7.84 ms
-  (`DurNonChild`) are almost all after the last call: Step 2's tail.
+  (`DurNonChild`) are almost all after the last call: the `git describe`
+  this capture's tree ran inside the first test's range (Step 2).
 - **Level 1, inside it:** each measured call's `copy_in`, `kernel` and
   `copy_out`, in that order, each closed before the next opens, with `ParentId`
   4 and a `--:` in `NameTree` for their depth.
@@ -373,19 +394,22 @@ calls; what the waits change is when each piece starts.
 | CUDA calls a call                          | `G1`: three copies, one launch, one wait; `G1Phases`: the same with three waits                                          | the same                                                                                                                  |
 | phase medians (`nvtx_pushpop_sum`)         | `copy_in` 655.6 to 676.4 us, `kernel` 46.6 to 47.7 us, `copy_out` 227.4 to 250.0 us, over five captures in two sessions  | the order and what each holds should match; their lengths depend on the host's copies, the GPU and how they are connected |
 | the GPU's operations in a `G1` call        | 69.6 to 70.9 us, over five captures                                                                                      | depends on the GPU; on a discrete GPU the copies cross PCIe and take longer ([walkthrough 10](10_GPU_BASIC_WORKFLOW.md))  |
-| the first test's range after its last call | 7.9 to 8.5 ms over nine captures; the second test's 0.24 ms (below)                                                      | the first test of a process carries it; its size depends on how long starting a process takes                             |
+| the first test's range after its last call | 0.26 ms (Step 2); a second test's 0.23 to 0.36 ms in nine captures from earlier trees (below)                            | the last call's wait returning and its copy of y; their length depends on the host                                        |
 | `G1Phases` minus `G1` (Step 1)             | 26.6 to 42.6 us in eleven of fifteen runs (below)                                                                        | what a wait costs depends on the GPU and its driver                                                                       |
 | absolute times                             | 874.8 / 908.9 us (the reference run)                                                                                     | will differ                                                                                                               |
 
 The demo's two tests fail if their answer is wrong; the ranges are held by the
 check described in [What Keeps This Page True](#what-keeps-this-page-true).
 
-**The first test's range runs on after its last call.** With the clocks locked
-it ended 7.9 to 8.5 ms after the last copy back for the first test of each of
-nine captures in two sessions, and 0.24 ms after it for the second test of the
-capture of both. In an earlier session, with the clocks as found, five captures
-traced as here read 12.4 to 13.9 ms for the first test, three beside a parallel
-build 15.2 to 35.1 ms, and the second test 0.23 to 0.36 ms in eight.
+**The first test's range closes with its last call.** In Step 2's capture it
+ended 0.26 ms after the last copy back. Earlier trees ran `git describe`
+inside the first test's range of a process (Step 2): with the clocks locked,
+in the first two sessions, that range ended 7.9 to 8.5 ms after the last copy
+back in each of nine captures, and in an earlier session, with the clocks as
+found, 12.4 to 13.9 ms after it in five captures and 15.2 to 35.1 ms in three
+beside a parallel build. A second test's range, which held no subprocess,
+ended 0.24 ms after its last copy back with the clocks locked, and 0.23 to
+0.36 ms after it in eight captures with them as found.
 
 **Both tests move between two bands on this rig.** Over fifteen runs of Step
 1's command in two sessions, with the clocks locked, `G1` read 629.5 to
@@ -421,9 +445,10 @@ Another run of unchanged code can land outside every range on this page.
   call 0, range kernel holds 0 kernel(s), 0 copy(ies) to the device, 0 copy(ies) back, 0 other
   ```
 
-- **The run was not captured.** `--profile nsight` without `nsys` around the
-  process captures nothing and prints the command that would; see
-  [walkthrough 11](11_NSIGHT_PROFILER.md#if-it-does-not-match).
+- **The run was not captured, and it failed.** `--profile nsight` without
+  `nsys` around the process captures nothing: the test runs and passes, and
+  the run exits with status 4, after its report names the command that would
+  capture it; see [walkthrough 11](11_NSIGHT_PROFILER.md#if-it-does-not-match).
 - **`nsys stats` refuses the report.** After `bench run` has summarized a
   report, `nsys stats` without `--force-export=true` can stop at the SQLite
   export left beside it; every read on this page passes the flag (walkthrough

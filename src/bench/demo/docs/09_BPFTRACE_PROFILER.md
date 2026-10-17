@@ -5,7 +5,10 @@
 **Example:** the [`join`](../examples/join/inc/Join.hpp) example's words (see [Shared Workloads](../README.md#5-shared-workloads)), written out as lines and joined by threads, in a workload private to the demo
 **Captured:** 2026-10-03 (UTC); the doctor's rows for a probe the kernel lacks
 and for a script that ends itself, and step 6's script with its opening
-comment as it now reads, 2026-10-04 (UTC); written for the Vernier 1.0.4
+comment as it now reads, 2026-10-04 (UTC); the three runs in
+[If It Does Not Match](#if-it-does-not-match) without the opt-in, with a script
+that ends itself and in a PID namespace of its own, 2026-10-12 (UTC), from a
+later development tree at the same version; written for the Vernier 1.0.4
 release; captured from the development tree at project version 1.0.3, whose
 CLI reported `bench 1.0.3`; bpftrace 0.23.2 on Linux 6.18
 
@@ -753,13 +756,34 @@ decision the run makes before its first test, and runs no test.
   ...
   ```
 
-  A run without the opt-in prints the same reason once, when its first test
-  asks for the profiler, then measures untraced and writes no capture folder:
+  A run without the opt-in, here step 2's `bench run` into `bpf-no-opt-in`,
+  prints the same reason once, when its first test asks for the profiler, then
+  measures untraced, writes no capture folder and fails:
 
   ```
+  Running: taskset -c 3 ./build/bin/ptests/BenchDemo_09_BpftraceProfiler --cycles 20 --repeats 2 --profile bpftrace --profile-output-dir bpf-no-opt-in --bpf write_latency --gtest_filter=BpftraceProfiler.WritePerLine
+  Note: Google Test filter = BpftraceProfiler.WritePerLine
+  [==========] Running 1 test from 1 test suite.
+  [----------] Global test environment set-up.
+  [----------] 1 test from BpftraceProfiler
+  [ RUN      ] BpftraceProfiler.WritePerLine
+
   [FAIL] Profiler 'bpftrace': denied: script 'write_latency' could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
      Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or run as root.
-     Falling back to no-op (measurements will proceed without profiling).
+     Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
+
+  [BpftraceProfiler.WritePerLine]  532.525 us/call  CV=0.3%  ~1.9K calls/s  (p10=531.105 p90=533.945 sd=1.775)
+  [       OK ] BpftraceProfiler.WritePerLine (180 ms)
+  [----------] 1 test from BpftraceProfiler (180 ms total)
+
+  [----------] Global test environment tear-down
+  [==========] 1 test from 1 test suite ran. (180 ms total)
+  [  PASSED  ] 1 test.
+
+  [profile] --profile bpftrace --bpf write_latency failed; the run exits with status 4:
+  [profile]   bpftrace: denied: script 'write_latency' could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
+
+  Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
   ```
 
   bpftrace runs only as root, whatever the user's capabilities: set
@@ -800,7 +824,30 @@ decision the run makes before its first test, and runs no test.
   long enough to outlast it (`--cycles 3000 --repeats 2`):
 
   ```
+  Running: taskset -c 3 ./build/bin/ptests/BenchDemo_09_BpftraceProfiler --cycles 3000 --repeats 2 --profile bpftrace --profile-output-dir bpf-ends --bpf ./ends_itself.bt --gtest_filter=BpftraceProfiler.WritePerLine
+  Note: Google Test filter = BpftraceProfiler.WritePerLine
+  [==========] Running 1 test from 1 test suite.
+  [----------] Global test environment set-up.
+  [----------] 1 test from BpftraceProfiler
+  [ RUN      ] BpftraceProfiler.WritePerLine
   [bpftrace] script './ends_itself.bt' ended by itself before the measured repeats finished; its output covers only the part before it ended
+
+  [FAIL] Profiler 'bpftrace' (BpftraceProfiler.WritePerLine): unusable: script './ends_itself.bt' ended by itself before the measured repeats finished; its output covers only the part before it ended
+     End the script only on the traced process's exit (sched_process_exit filtered on tid == {{PID}}); the backend stops it when the measured repeats finish.
+     The run will fail (exit status 4 if the tests pass).
+
+  [BpftraceProfiler.WritePerLine]  614.431 us/call  CV=12.5%  ~1.6K calls/s  (p10=552.780 p90=676.082 sd=77.063) [UNSTABLE]
+  [       OK ] BpftraceProfiler.WritePerLine (5394 ms)
+  [----------] 1 test from BpftraceProfiler (5394 ms total)
+
+  [----------] Global test environment tear-down
+  [==========] 1 test from 1 test suite ran. (5394 ms total)
+  [  PASSED  ] 1 test.
+
+  [profile] --profile bpftrace --bpf ./ends_itself.bt failed; the run exits with status 4:
+  [profile]   bpftrace (BpftraceProfiler.WritePerLine): unusable: script './ends_itself.bt' ended by itself before the measured repeats finished; its output covers only the part before it ended
+
+  Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
   ```
 
   Its report holds the arm line and no stop line. End a script only on the
@@ -839,8 +886,28 @@ decision the run makes before its first test, and runs no test.
   (`sudo unshare --pid --fork --mount-proc`), prints:
 
   ```
-  [bpftrace] unsupported: script 'write_latency' did not acknowledge its arm probe within 5000 ms: this process runs in PID namespace pid:[4026532587], not the host's, where bpftrace does not see its threads under the ids it knows
+  Note: Google Test filter = BpftraceProfiler.WritePerLine
+  [==========] Running 1 test from 1 test suite.
+  [----------] Global test environment set-up.
+  [----------] 1 test from BpftraceProfiler
+  [ RUN      ] BpftraceProfiler.WritePerLine
+  [bpftrace] unsupported: script 'write_latency' did not acknowledge its arm probe within 5000 ms: this process runs in PID namespace pid:[4026532586], not the host's, where bpftrace does not see its threads under the ids it knows
   [bpftrace] Run the benchmark on the host, or in a container started with --pid=host.
+
+  [FAIL] Profiler 'bpftrace' (BpftraceProfiler.WritePerLine): unsupported: script 'write_latency' did not acknowledge its arm probe within 5000 ms: this process runs in PID namespace pid:[4026532586], not the host's, where bpftrace does not see its threads under the ids it knows
+     Run the benchmark on the host, or in a container started with --pid=host.
+     The run will fail (exit status 4 if the tests pass).
+
+  [BpftraceProfiler.WritePerLine]  539.925 us/call  CV=0.0%  ~1.9K calls/s  (p10=539.865 p90=539.985 sd=0.075)
+  [       OK ] BpftraceProfiler.WritePerLine (7126 ms)
+  [----------] 1 test from BpftraceProfiler (7126 ms total)
+
+  [----------] Global test environment tear-down
+  [==========] 1 test from 1 test suite ran. (7126 ms total)
+  [  PASSED  ] 1 test.
+
+  [profile] --profile bpftrace --bpf write_latency failed; the run exits with status 4:
+  [profile]   bpftrace (BpftraceProfiler.WritePerLine): unsupported: script 'write_latency' did not acknowledge its arm probe within 5000 ms: this process runs in PID namespace pid:[4026532586], not the host's, where bpftrace does not see its threads under the ids it knows
   ```
 
   Run the benchmark on the host, or in a container started with
