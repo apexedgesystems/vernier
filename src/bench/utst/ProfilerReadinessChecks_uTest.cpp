@@ -1979,8 +1979,14 @@ TEST_F(BpfCheckTest, BpftraceEachScriptNeedsItsOwnAcknowledgement) {
     EXPECT_NE(REPORT.find("bpftrace disarmed "), std::string::npos) << STEM << ":\n" << REPORT;
   }
 
+  // The first script's tracer must arm within this window and the second's
+  // never does, so the window lasts its whole bound: it ends only once every
+  // tracer has armed, failed or ended. It takes the bound of this file's other
+  // windows in which a tracer arms (ARM_WAIT_MS), not the 300 ms of those in
+  // which none does, where the bound only sets how soon that is reported: a
+  // tracer starting on a busy host can take longer than 300 ms to arm.
   const WindowRun ONE = runWindowed(
-      R, "Bpf.OneArms", {{"FAKE_WINDOW", "no-arm"}, {"FAKE_WINDOW_FOR", "second.tmp.bt"}}, 300);
+      R, "Bpf.OneArms", {{"FAKE_WINDOW", "no-arm"}, {"FAKE_WINDOW_FOR", "second.tmp.bt"}});
   ASSERT_TRUE(ONE.outcome.has_value()) << ONE.err;
   EXPECT_EQ(ONE.outcome->report.status, EnvReport::Status::Error) << ONE.outcome->report.message;
   EXPECT_NE(
