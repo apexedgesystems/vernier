@@ -78,7 +78,7 @@ to compare two runs, and how to measure your own code the same way.
 | 03  | gperftools Profiler | Which function has the time                    | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [03_GPERF_PROFILER.md](docs/03_GPERF_PROFILER.md)         |
 | 06  | Thread Scaling      | What a call costs while other threads make it  | join, one lock held for the whole call                      | join, a total per thread                     | [06_THREAD_SCALING.md](docs/06_THREAD_SCALING.md)         |
 | 07  | Callgrind Profiler  | Exact instruction counts, per line             | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [07_CALLGRIND_PROFILER.md](docs/07_CALLGRIND_PROFILER.md) |
-| 08  | RAPL Profiler       | Energy/power measurement                       | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
+| 08  | RAPL Profiler       | The energy a call costs, for the package       | join V0 (copy per part)                                     | join V1 (reserve, append)                    | [08_RAPL_PROFILER.md](docs/08_RAPL_PROFILER.md)           |
 | 09  | bpftrace Profiler   | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
@@ -220,7 +220,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 **System and energy:**
 
 13. [09](docs/09_BPFTRACE_PROFILER.md) -- system calls and wakeups traced with bpftrace, then a script of your own
-14. [08](docs/08_RAPL_PROFILER.md) -- energy with Intel RAPL
+14. [08](docs/08_RAPL_PROFILER.md) -- the energy a call costs, with Intel RAPL (an Intel laptop, outside the reference rigs)
 
 **GPU (requires an NVIDIA GPU):**
 

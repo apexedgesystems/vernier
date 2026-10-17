@@ -994,38 +994,49 @@ required; for occupancy / warp stalls / cache / roofline, use `ncu` (see
 
 ### RAPL Energy Measurement Fails
 
-**Symptoms:**
+**Symptoms:** a run with `--profile rapl` exits with status 4 once its tests
+pass, prints one of these notices, and writes no `<Test>.rapl/` folder;
+`bench doctor <binary> --profile rapl` shows the same row:
 
 ```
-RAPL: Could not read MSR
+[FAIL] Profiler 'rapl': denied: cannot open /dev/cpu/0/msr: Permission denied
+[FAIL] Profiler 'rapl': missing: cannot open /dev/cpu/0/msr: No such file or directory; the msr driver provides it
+[FAIL] Profiler 'rapl': unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
 ```
 
-**Solutions:**
+**`denied`: the process may not read the device.** Run as root, or give the
+process both CAP_SYS_RAWIO, which the msr driver checks, and read permission
+on `/dev/cpu/0/msr`, which the capability does not grant (the device is
+`crw------- root root` by default). Vernier does not raise its privileges for
+RAPL.
 
-**1. Load MSR module**:
+```bash
+sudo ./MyComponent_PTEST --profile rapl
+```
+
+A file capability on the benchmark (`setcap cap_sys_rawio=ep`) is not
+enough alone: the device's mode still refuses an ordinary user. Whether a
+build-tree benchmark given that capability still loads its libraries has not
+been checked for this release.
+
+**`missing`: no device.** The msr driver is not loaded, or a container was
+started without the device:
 
 ```bash
 sudo modprobe msr
-lsmod | grep msr
+ls -l /dev/cpu/0/msr
 ```
 
-**2. Run as root or with capability**:
+In a container, pass the device in (`--device /dev/cpu/0/msr`); the process
+inside still needs the access above
+([Docker setup](DOCKER_SETUP.md#rapl-energy-profiling)).
 
-```bash
-# Option 1: Root
-sudo ./MyComponent_PTEST --profile rapl
+**`unsupported`: no RAPL here.** The CPU is not Intel's (an ARM board, an AMD
+CPU), or it does not implement the register read (the notice says which).
+RAPL cannot measure on such a machine.
 
-# Option 2: Capability
-sudo setcap cap_sys_rawio=ep ./MyComponent_PTEST
-./MyComponent_PTEST --profile rapl
-```
-
-**3. Check CPU support**:
-
-```bash
-# RAPL requires Intel Haswell+ (~2013+)
-lscpu | grep "Model name"
-```
+**A counter that did not advance** over a window is not a failure: its
+section of `energy.txt` says so, and that window's energy is zero.
 
 ---
 

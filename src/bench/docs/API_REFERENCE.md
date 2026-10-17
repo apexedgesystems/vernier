@@ -335,8 +335,8 @@ PERF_TEST(MyComponent, Throughput) {
 # Heap profiling with gperftools
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
-# Energy measurement with RAPL
-./MyComponent_PTEST --profile rapl --csv results.csv
+# Energy measurement with RAPL (read access to /dev/cpu/0/msr needed)
+./MyComponent_PTEST --profile rapl
 ```
 
 ### Validation Macros
@@ -654,19 +654,29 @@ BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace --bpf fsync_latency
 
 ### ProfilerRAPL
 
-Intel RAPL energy measurement.
+Intel RAPL energy measurement: package 0's energy-status counter (MSR 0x611),
+read through `/dev/cpu/0/msr` before and after each measured window. No DRAM
+counter is read; the package counter covers every core, cache and the
+integrated graphics, whatever runs on them.
 
-**Features:**
+**Writes:** `<Test>.rapl/energy.txt`, one numbered section per measured window
+(in the order of the case's CSV rows): the window's energy, duration, average
+power and energy per operation (average power x median time per call), with
+the counters. A summary naming the file follows each window.
 
-- Package energy consumption
-- DRAM energy consumption
-- Power efficiency analysis
+**Decides** from an actual read of MSR 0x606 and MSR 0x611, for the doctor and
+the run alike; a refusal names its cause (`denied`, `missing`, `unsupported`,
+`unusable`) and fails the run with exit status 4. It takes no mode words, and
+`--profile-analyze` fails the run after the capture (there is no analysis).
+`RAPLProfiler(cfg, test)` and `makeRAPLProfiler()` decide the same way, and
+`checkRaplRequest()` is the decision itself.
 
 **Usage:**
 
 ```bash
-# Requires root for /dev/cpu/*/msr access
-sudo ./MyComponent_PTEST --profile rapl --csv results.csv
+# Needs read access to /dev/cpu/0/msr: root, or CAP_SYS_RAWIO together with
+# read permission on the device
+sudo ./MyComponent_PTEST --profile rapl
 ```
 
 ### ProfilerNsight (GPU)

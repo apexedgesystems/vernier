@@ -545,7 +545,7 @@ without it fails with the command that would start it.
 | `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                                                          | ~10%     |
 | `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind, under the tool                                               | ~20-50x  |
 | `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                 | <1%      |
-| `rapl`               | CPU   | Package energy consumption                       | Intel CPU + MSR access                                                 | <1%      |
+| `rapl`               | CPU   | Package energy per call                          | Intel CPU, msr driver, read access to `/dev/cpu/0/msr` (see below)     | <1%      |
 | `massif`             | CPU   | Heap usage timeline                              | valgrind, under the tool                                               | ~20x     |
 | `memcheck`           | CPU   | Memory errors and leaks                          | valgrind, under the tool                                               | ~20x     |
 | `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
@@ -620,19 +620,34 @@ Counter detail lives in those files, not in extra CSV columns.
 ### Using RAPL
 
 ```bash
-# Run test with RAPL (requires root)
-sudo ./MyComponent_PTEST --profile rapl --csv results.csv
+# Needs read access to /dev/cpu/0/msr: root, or CAP_SYS_RAWIO together with
+# read permission on the device
+sudo ./MyComponent_PTEST --profile rapl
 
-# Energy summary is written to <Test>.rapl/energy.txt
+# Each case's report
 cat MyComponent.Throughput.rapl/energy.txt
 ```
 
-**Energy report fields (in `<Test>.rapl/energy.txt`):**
+**Access:** the msr driver checks CAP_SYS_RAWIO, and the device's file mode
+(`0600 root` by default) is a separate requirement that the capability does
+not lift. Vernier does not raise its privileges for RAPL; a run without
+access fails with exit status 4, naming the cause (`denied`, `missing`,
+`unsupported`), and creates no folder.
 
-- `Energy consumed` - Total energy consumed (J)
-- `Average power` - Average power (W)
-- `Energy per operation` - Energy per operation (mJ/call)
-- `Duration` - Measured wall-clock duration (s)
+**Energy report (`<Test>.rapl/energy.txt`):** a header (the CPU, the scope:
+package 0 and nothing off it, the counter's 32-bit wrap, the per-call
+definition), then one numbered section per measured window, in the order of
+the case's CSV rows:
+
+- `Energy consumed` - energy over the window (J): the counter's delta in units
+- `Duration` - the window's wall-clock duration (s)
+- `Average power` - energy over duration (W)
+- `Energy per operation` - average power x median time per call (mJ/call)
+- `Median time per call`, `Energy unit`, `Start counter`, `End counter`,
+  `Delta counter`
+
+The counter is the whole package's, whatever runs on it. Energy stays in this
+file, not in CSV columns: the row's `profileDir` names the folder.
 
 ### Custom Profilers
 
