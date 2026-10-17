@@ -46,6 +46,9 @@ pub struct RunConfig {
     pub repeats: Option<u32>,
     pub profile: Option<String>,
     pub profile_args: Option<String>,
+    /// `--profile-frequency`: gperf's CPU sampling rate as given, checked by
+    /// `startup_env` against the one grammar both languages share.
+    pub profile_frequency: Option<String>,
     pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
     /// `--profile-analyze`: the requested profile's analysis (forwarded to
@@ -70,6 +73,9 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     // One request decides the wrap, the benchmark's arguments and the folder.
     let cfg = &effective_request(cfg, "bench run")?;
+    // What the benchmark reads only as it starts (gperf's sampling rate):
+    // decided before anything is created or started, never a wrap.
+    let startup = startup_env(cfg)?;
 
     let mut args: Vec<String> = Vec::new();
 
@@ -184,16 +190,16 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
             }
         }
     }
+    for (k, v) in &startup {
+        cmd.env(k, v);
+    }
 
     let env_prefix = env_wrap
-        .as_ref()
-        .map(|pairs| {
-            pairs
-                .iter()
-                .map(|(k, v)| format!("{k}={v} "))
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+        .iter()
+        .flatten()
+        .chain(startup.iter())
+        .map(|(k, v)| format!("{k}={v} "))
+        .collect::<String>();
     println!(
         "Running: {}{}",
         env_prefix,
@@ -246,29 +252,38 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 /// The fields of a profile request that `bench run` routes on, as the
 /// benchmark spells them after `--`: each takes the word after it, and
 /// `--artifact-root` is the benchmark's other name for the output folder.
-const ROUTED_FIELDS: [&str; 4] = [
+const ROUTED_FIELDS: [&str; 5] = [
     "--profile",
     "--profile-args",
+    "--profile-frequency",
     "--profile-output-dir",
     "--artifact-root",
 ];
 
 /// The one profile request @p cfg makes, for `bench run` and `bench doctor`
-/// (@p command, for messages) alike: its `--profile`, `--profile-args` and
-/// `--profile-output-dir`, each also taken from the arguments after `--`,
-/// where the benchmark would read it, and those arguments without them. The
-/// wrap, the folder, the benchmark's arguments and the doctor's row all come
-/// from this request, and the benchmark receives each field once. A field
-/// given twice with different values (to the command and after `--`, or
-/// twice after `--`) is refused, as is one after `--` without its value,
+/// (@p command, for messages) alike: its `--profile`, `--profile-args`,
+/// `--profile-frequency` and `--profile-output-dir`, each also taken from
+/// the arguments after `--`, where the benchmark would read it, and those
+/// arguments without them. The wrap, the folder, the start-up setting, the
+/// benchmark's arguments and the doctor's row all come from this request,
+/// and the benchmark receives each field once. A field given twice with
+/// different values (to the command and after `--`, or twice after `--`) is
+/// refused, as is one after `--` without its value, and a rate written
+/// `--profile-frequency=N` after `--`, which the benchmark does not read,
 /// before anything is created or started; the same value twice is one
-/// request (`nsys` is `nsight`). Every other argument after `--`,
-/// `--profile-analyze` among them, stays as it is, in its place.
+/// request (`nsys` is `nsight`, `0250` is 250). Every other argument after
+/// `--`, `--profile-analyze` among them, stays as it is, in its place.
 pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Error> {
     let mut forwarded: Vec<(&str, &str)> = Vec::new();
     let mut rest = Vec::with_capacity(cfg.extra_args.len());
     let mut args = cfg.extra_args.iter();
     while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--profile-frequency=") {
+            return Err(Error::InvalidArgs(format!(
+                "{arg} after --: give it as --profile-frequency {value}, which the benchmark \
+                 reads"
+            )));
+        }
         let Some(field) = ROUTED_FIELDS.iter().find(|f| **f == arg) else {
             rest.push(arg.clone());
             continue;
@@ -320,6 +335,17 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
         canonical_backend(a) == canonical_backend(b)
     })?;
     out.profile_args = one("--profile-args", cfg.profile_args.clone(), &exact)?;
+    // Two spellings of one rate are one request; text that is no rate is
+    // compared as written and refused by startup_env.
+    out.profile_frequency = one(
+        "--profile-frequency",
+        cfg.profile_frequency.clone(),
+        &|a, b| {
+            a == b
+                || parse_profile_frequency(a)
+                    .is_some_and(|hz| Some(hz) == parse_profile_frequency(b))
+        },
+    )?;
     out.profile_output_dir = one(
         "--profile-output-dir",
         cfg.profile_output_dir
@@ -333,11 +359,12 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
 }
 
 /// The profile request as the benchmark reads it: `--profile` by its
-/// canonical name, `--profile-args`, `--profile-test-timeout`,
-/// `--profile-output-dir`, and `--profile-analyze` unless it is among the
-/// arguments forwarded after `--` (which the caller appends after these).
-/// `bench run` and `bench doctor` spell a request with this one function,
-/// for the request `effective_request` made.
+/// canonical name, `--profile-args`, `--profile-frequency` by its canonical
+/// value, `--profile-test-timeout`, `--profile-output-dir`, and
+/// `--profile-analyze` unless it is among the arguments forwarded after `--`
+/// (which the caller appends after these). `bench run` and `bench doctor`
+/// spell a request with this one function, for the request
+/// `effective_request` made.
 pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(tool) = cfg.profile.as_deref().map(canonical_backend) {
@@ -347,6 +374,10 @@ pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
     if let Some(ref pa) = cfg.profile_args {
         args.push("--profile-args".to_string());
         args.push(pa.clone());
+    }
+    if let Some(ref hz) = cfg.profile_frequency {
+        args.push("--profile-frequency".to_string());
+        args.push(parse_profile_frequency(hz).map_or_else(|| hz.clone(), |v| v.to_string()));
     }
     if let Some(t) = cfg.profile_test_timeout {
         args.push("--profile-test-timeout".to_string());
@@ -527,6 +558,71 @@ fn benchmark_exit(status: ExitStatus) -> Option<BenchmarkExit> {
         }
     }
     Some(BenchmarkExit::Status(-1))
+}
+
+/* ----------------------------- Start-up settings ----------------------------- */
+
+/// The environment variable gperftools reads its CPU sampling rate from,
+/// once, as the process starts (the benchmark's `SAMPLING_RATE_VARIABLE`).
+const SAMPLING_RATE_VARIABLE: &str = "CPUPROFILE_FREQUENCY";
+
+/// The most samples a second gperftools takes; it clamps a higher rate.
+const MAX_SAMPLING_HZ: u32 = 4000;
+
+/// The one profile that takes a sampling rate.
+const SAMPLING_RATE_PROFILE: &str = "gperf";
+
+/// `--profile` names that select no profiler: the benchmark runs unprofiled.
+const NO_PROFILER: [&str; 1] = ["cupti"];
+
+/// A sampling rate as the benchmark reads `--profile-frequency` and
+/// CPUPROFILE_FREQUENCY: ASCII digits only, a whole number of Hz from 1 to
+/// MAX_SAMPLING_HZ, leading zeros allowed; `None` for anything else, which
+/// gperftools would read as its default rate or its maximum. The shared
+/// table `tests/fixtures/profile_frequency.tsv` holds the cases both
+/// languages are tested against.
+pub(crate) fn parse_profile_frequency(text: &str) -> Option<u32> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // Digits only: the one way left to fail is a number too large.
+    let hz: u64 = text.parse().ok()?;
+    (1..=u64::from(MAX_SAMPLING_HZ))
+        .contains(&hz)
+        .then_some(hz as u32)
+}
+
+/// What the benchmark of request @p cfg must find in its environment as it
+/// starts, because it is read only then: for a sampling rate with `--profile
+/// gperf`, CPUPROFILE_FREQUENCY set to the rate's canonical value; nothing
+/// when no rate is asked for, so an inherited value reaches the benchmark
+/// untouched. Never a wrap: no wrap variables, no folder, no CPUPROFILE. A
+/// rate that is not a whole number from 1 to 4000, one with no profiler to
+/// take it and one for a profile that takes none are refused, before
+/// anything is created or started.
+pub fn startup_env(cfg: &RunConfig) -> Result<Vec<(String, String)>, Error> {
+    let Some(ref text) = cfg.profile_frequency else {
+        return Ok(Vec::new());
+    };
+    let Some(hz) = parse_profile_frequency(text) else {
+        return Err(Error::InvalidArgs(format!(
+            "--profile-frequency: '{text}' is not a whole number of Hz from 1 to \
+             {MAX_SAMPLING_HZ} (gperftools samples at most {MAX_SAMPLING_HZ} times a second)"
+        )));
+    };
+    match cfg.profile.as_deref().map(canonical_backend) {
+        Some(tool) if tool == SAMPLING_RATE_PROFILE => {
+            Ok(vec![(SAMPLING_RATE_VARIABLE.to_string(), hz.to_string())])
+        }
+        Some(tool) if !NO_PROFILER.contains(&tool) => Err(Error::InvalidArgs(format!(
+            "--profile-frequency {hz} sets gperftools' CPU sampling rate; --profile {tool} \
+             does not take it; drop --profile-frequency, or profile with --profile gperf"
+        ))),
+        _ => Err(Error::InvalidArgs(format!(
+            "--profile-frequency {hz} cannot apply: no profiler is selected; add --profile \
+             gperf, or drop --profile-frequency"
+        ))),
+    }
 }
 
 /* ----------------------------- Wrap-externally backends ----------------------------- */
@@ -2102,6 +2198,234 @@ mod tests {
         assert!(r.extra_args.is_empty());
     }
 
+    /// A request for @p profile with the rate @p hz given to the command.
+    fn rate_request(profile: Option<&str>, hz: &str) -> RunConfig {
+        RunConfig {
+            profile_frequency: Some(hz.to_string()),
+            ..request(profile, None, &[])
+        }
+    }
+
+    /// @test The rates the shared table accepts parse to its values, and
+    /// every other input, which gperftools would read as another rate, is
+    /// none; the variable and the maximum are the table's.
+    #[test]
+    fn parse_profile_frequency_follows_the_shared_table() {
+        let rows = fixture_rows("profile_frequency.tsv", "rate");
+        assert!(rows.len() >= 20, "the shared table was not read");
+        for row in rows {
+            let parsed = parse_profile_frequency(&row[1]);
+            if row[2] == "ok" {
+                assert_eq!(
+                    parsed,
+                    Some(row[3].parse().expect("a value")),
+                    "'{}'",
+                    row[1]
+                );
+            } else {
+                assert_eq!(parsed, None, "'{}' is accepted", row[1]);
+            }
+        }
+        let variable = fixture_rows("profile_frequency.tsv", "variable");
+        assert_eq!(variable.len(), 1);
+        assert_eq!(SAMPLING_RATE_VARIABLE, variable[0][1]);
+        let maximum = fixture_rows("profile_frequency.tsv", "maximum");
+        assert_eq!(maximum.len(), 1);
+        assert_eq!(MAX_SAMPLING_HZ.to_string(), maximum[0][1]);
+    }
+
+    /// @test A rate for gperf is one start-up setting, the variable with the
+    /// rate's canonical value, and nothing else: no wrap metadata, no
+    /// folder, no CPUPROFILE. Without a rate there is none, whatever the
+    /// profile.
+    #[test]
+    fn startup_env_sets_only_the_sampling_rate() {
+        for (hz, canonical) in [
+            ("250", "250"),
+            ("0250", "250"),
+            ("4000", "4000"),
+            ("1", "1"),
+        ] {
+            let env = startup_env(&rate_request(Some("gperf"), hz)).expect("a rate for gperf");
+            assert_eq!(
+                env,
+                [(SAMPLING_RATE_VARIABLE.to_string(), canonical.to_string())],
+                "'{hz}'"
+            );
+        }
+        for profile in [
+            None,
+            Some("gperf"),
+            Some("perf"),
+            Some("massif"),
+            Some("cupti"),
+        ] {
+            assert!(
+                startup_env(&request(profile, None, &[]))
+                    .expect("no rate")
+                    .is_empty(),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// @test A rate is refused before anything starts when the shared table
+    /// refuses it, when no profiler takes it (no --profile, or a name that
+    /// selects none) and for every profile the table says does not take it;
+    /// it is accepted for the one that does.
+    #[test]
+    fn startup_env_refuses_a_rate_that_cannot_apply() {
+        for row in fixture_rows("profile_frequency.tsv", "rate") {
+            if row[2] == "refused" {
+                let err = startup_env(&rate_request(Some("gperf"), &row[1]))
+                    .expect_err("an invalid rate");
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "invalid arguments: --profile-frequency: '{}' is not a whole number of \
+                         Hz from 1 to 4000 (gperftools samples at most 4000 times a second)",
+                        row[1]
+                    )
+                );
+            }
+        }
+        let none = "invalid arguments: --profile-frequency 250 cannot apply: no profiler is \
+                    selected; add --profile gperf, or drop --profile-frequency";
+        let err = startup_env(&rate_request(None, "250")).expect_err("no profiler");
+        assert_eq!(err.to_string(), none);
+        let names = fixture_rows("profile_frequency.tsv", "noprofiler");
+        assert_eq!(names.len(), 1, "the shared table was not read");
+        for row in names {
+            let err = startup_env(&rate_request(Some(&row[1]), "250")).expect_err("none");
+            assert_eq!(err.to_string(), none, "{}", row[1]);
+        }
+        let backends = fixture_rows("profile_frequency.tsv", "backend");
+        assert!(backends.len() >= 16, "the shared table lost its backends");
+        for row in backends {
+            let result = startup_env(&rate_request(Some(&row[1]), "250"));
+            if row[2] == "take" {
+                assert!(result.is_ok(), "{}: {result:?}", row[1]);
+            } else {
+                let err = result.expect_err("a profile that takes no rate");
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "invalid arguments: --profile-frequency 250 sets gperftools' CPU \
+                         sampling rate; --profile {} does not take it; drop \
+                         --profile-frequency, or profile with --profile gperf",
+                        canonical_backend(&row[1])
+                    ),
+                    "{}",
+                    row[1]
+                );
+            }
+        }
+    }
+
+    /// @test Each precedence row's request, as bench run prepares it: the
+    /// child gets the request's canonical rate, and without a request bench
+    /// run adds nothing, so the inherited value (or its absence) reaches the
+    /// child untouched.
+    #[test]
+    fn startup_env_follows_the_precedence_rows() {
+        let rows = fixture_rows("profile_frequency.tsv", "precedence");
+        assert!(rows.len() >= 8, "the shared table was not read");
+        for row in rows {
+            let (requested, inherited, child) = (&row[1], &row[2], &row[3]);
+            let cfg = if requested.is_empty() {
+                request(Some("gperf"), None, &[])
+            } else {
+                rate_request(Some("gperf"), requested)
+            };
+            let env = startup_env(&cfg).expect("a request the table expects to start");
+            let prepared = env
+                .iter()
+                .find(|(k, _)| k == SAMPLING_RATE_VARIABLE)
+                .map(|(_, v)| v.as_str());
+            // What the child sees: the runner's value over the inherited one.
+            let seen = prepared.or((!inherited.is_empty()).then_some(inherited.as_str()));
+            assert_eq!(
+                seen.unwrap_or(""),
+                child.as_str(),
+                "request '{requested}', inherited '{inherited}'"
+            );
+        }
+    }
+
+    /// @test A rate after `--` is the request's: taken in and removed from
+    /// the arguments after `--`; the same rate given to the command and after
+    /// `--` is one request, by value ("0250" is 250), different rates are
+    /// refused, and so is the "--profile-frequency=N" spelling, which the
+    /// benchmark does not read.
+    #[test]
+    fn effective_request_takes_in_a_forwarded_rate() {
+        let r = effective_request(
+            &request(
+                Some("gperf"),
+                None,
+                &[
+                    "--gtest_filter=A.*",
+                    "--profile-frequency",
+                    "1000",
+                    "--cycles",
+                    "5",
+                ],
+            ),
+            "bench run",
+        )
+        .expect("one request");
+        assert_eq!(r.profile_frequency.as_deref(), Some("1000"));
+        assert_eq!(r.extra_args, ["--gtest_filter=A.*", "--cycles", "5"]);
+        let same = RunConfig {
+            extra_args: vec!["--profile-frequency".into(), "0250".into()],
+            ..rate_request(Some("gperf"), "250")
+        };
+        let r = effective_request(&same, "bench run").expect("the same rate twice");
+        assert_eq!(r.profile_frequency.as_deref(), Some("250"));
+        assert!(r.extra_args.is_empty());
+        let differ = RunConfig {
+            extra_args: vec!["--profile-frequency".into(), "1000".into()],
+            ..rate_request(Some("gperf"), "250")
+        };
+        let err = effective_request(&differ, "bench run").expect_err("two rates");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-frequency is given more than once with different \
+             values ('250' to bench run, '1000' after --); give it once"
+        );
+        let err = effective_request(
+            &request(Some("gperf"), None, &["--profile-frequency=1000"]),
+            "bench run",
+        )
+        .expect_err("the = spelling");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-frequency=1000 after --: give it as \
+             --profile-frequency 1000, which the benchmark reads"
+        );
+    }
+
+    /// @test The benchmark is given the rate once, by its canonical value,
+    /// after the profile's mode.
+    #[test]
+    fn profile_request_args_names_the_rate_once() {
+        let cfg = RunConfig {
+            profile_args: Some("cpu".into()),
+            ..rate_request(Some("gperf"), "0250")
+        };
+        assert_eq!(
+            profile_request_args(&cfg),
+            [
+                "--profile",
+                "gperf",
+                "--profile-args",
+                "cpu",
+                "--profile-frequency",
+                "250"
+            ]
+        );
+    }
+
     /// @test A route decides without creating its folder.
     #[test]
     fn route_for_creates_nothing() {
@@ -2114,10 +2438,18 @@ mod tests {
         assert!(!root.exists());
     }
 
-    /// One row of the shared table, split on tabs, with `-` read as empty.
+    /// One row of the shared route table, split on tabs, with `-` read as empty.
     fn table_rows(kind: &str) -> Vec<Vec<String>> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile_routes.tsv");
-        let text = fs::read_to_string(&path).expect("the shared route table");
+        fixture_rows("profile_routes.tsv", kind)
+    }
+
+    /// The rows of @p kind in the shared table @p file, split on tabs, with
+    /// `-` read as empty.
+    fn fixture_rows(file: &str, kind: &str) -> Vec<Vec<String>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(file);
+        let text = fs::read_to_string(&path).expect("the shared table");
         text.lines()
             .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
             .map(|l| {

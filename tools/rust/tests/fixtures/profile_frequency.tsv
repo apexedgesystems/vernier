@@ -9,6 +9,17 @@
 # variable    <the environment variable gperftools reads the rate from>
 # maximum     <the highest rate, in Hz>
 # noprofiler  <a --profile name that selects no profiler>
+# backend     <--profile name> <take|refuse>: whether a rate applies to it
+# precedence  <request> <inherited> <child> <decision> <period>: bench run
+#             given <request> (or none) and started from an environment
+#             whose CPUPROFILE_FREQUENCY is <inherited> (or unset) starts the
+#             benchmark with <child>; the benchmark, given <request>, decides
+#             <decision> (ready or configuration) with that <period> expected
+# direct      <request> <variable> <decision> <period>: a benchmark started
+#             directly with that request and that CPUPROFILE_FREQUENCY
+#
+# In precedence and direct rows a '-' request is none and a '-' variable is
+# unset.
 rate	250	ok	250	4000
 rate	1000	ok	1000	1000
 rate	4000	ok	4000	250
@@ -32,3 +43,35 @@ rate	-	refused	-	-
 variable	CPUPROFILE_FREQUENCY
 maximum	4000
 noprofiler	cupti
+backend	gperf	take
+backend	perf	refuse
+backend	bpftrace	refuse
+backend	offcpu	refuse
+backend	rapl	refuse
+backend	callgrind	refuse
+backend	massif	refuse
+backend	memcheck	refuse
+backend	helgrind	refuse
+backend	heaptrack	refuse
+backend	jemalloc	refuse
+backend	compute-sanitizer	refuse
+backend	nsight	refuse
+backend	nsys	refuse
+backend	ncu	refuse
+backend	rocprof	refuse
+precedence	-	-	-	ready	10000
+precedence	-	250	250	ready	4000
+precedence	-	abc	abc	configuration	-
+precedence	250	-	250	ready	4000
+precedence	1000	250	1000	ready	1000
+precedence	1000	abc	1000	ready	1000
+precedence	0250	-	250	ready	4000
+precedence	4000	-	4000	ready	250
+direct	1000	-	configuration	-
+direct	1000	250	configuration	-
+direct	1000	1000	ready	1000
+direct	250	0250	ready	4000
+direct	-	-	ready	10000
+direct	-	4001	configuration	-
+direct	-	 250	configuration	-
+direct	-	+250	configuration	-

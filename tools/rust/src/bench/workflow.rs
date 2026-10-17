@@ -136,7 +136,8 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 /// with @p request's profile flags spelled as `bench run` passes them
 /// (`runner::effective_request`, `runner::profile_request_args`, then its
 /// other arguments after `--`), and
-/// @p env added to the binary's environment. Text mode streams the human
+/// @p env, then the start-up setting `bench run` would give the request
+/// (`runner::startup_env`), added to the binary's environment. Text mode streams the human
 /// report. `json` prints the binary's JSON document, once it parses, and
 /// nothing else on stdout (fleet capability records). `require` reads that
 /// document and exits 1 unless every named backend reports OK -- warn is not
@@ -155,6 +156,11 @@ pub fn doctor(
     // The request bench run would make of the same arguments: its fields
     // given after -- are taken in, and a conflict between them is refused.
     let request = &super::runner::effective_request(request, "bench doctor")?;
+    // And the start bench run would give it (gperf's sampling rate), so the
+    // row answers for that start.
+    let mut env = env.to_vec();
+    env.extend(super::runner::startup_env(request)?);
+    let env = env.as_slice();
     let mut request_args = super::runner::profile_request_args(request);
     request_args.extend(request.extra_args.iter().cloned());
     let selected = request.profile.as_deref().map(|profile| SelectedRequest {
@@ -614,6 +620,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             repeats: cfg.repeats,
             profile: Some(tool.to_string()),
             profile_args: None,
+            profile_frequency: None,
             profile_test_timeout: None,
             profile_output_dir: Some(out_dir.clone()),
             profile_analyze: false,
