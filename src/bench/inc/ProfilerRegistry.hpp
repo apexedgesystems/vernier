@@ -96,7 +96,10 @@ public:
    * @param unavailableHint Printed when the factory still returns nullptr.
    * @param contextKeys     Environment variables the check reads beyond PATH,
    *                        BENCH_SUDO and the runner's wrap variables; a change
-   *                        to any of them is a new decision.
+   *                        to any of them is a new decision. A backend that
+   *                        lists SAMPLING_RATE_VARIABLE takes a sampling rate
+   *                        (--profile-frequency); every other backend's
+   *                        decision refuses one as a configuration error.
    *
    * Re-registering a name replaces the prior entry. Startup-only, like registerBackend().
    */

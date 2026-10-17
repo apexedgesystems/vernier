@@ -583,6 +583,9 @@ std::unique_ptr<Profiler> makePlannedGperfProfiler(const PerfConfig& cfg,
 } // namespace bench
 } // namespace vernier
 
+// gperf takes a sampling rate: its check reads the variable gperftools takes
+// the rate from at start, so a change to it is a new decision.
 VERNIER_REGISTER_READINESS_BACKEND("gperf", ::vernier::bench::checkGperfRequest,
                                    ::vernier::bench::makePlannedGperfProfiler,
-                                   "Install libgperftools-dev and rebuild.")
+                                   "Install libgperftools-dev and rebuild.",
+                                   ::vernier::bench::SAMPLING_RATE_VARIABLE)
