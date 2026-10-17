@@ -427,6 +427,28 @@ void becomeStream(int fd, int stream) {
   }
 }
 
+/**
+ * @brief In a child between fork and exec, before it sets any of the
+ * program's standard streams: @p fd, which the child still needs once a
+ * stream is set (the start report's end; a stream's source), moved above
+ * the streams when its number is one of theirs that @p becomes (a mask,
+ * bit n for stream n) does not name: duplicated from 3 up, close-on-exec,
+ * the old number closed. So no stream set before it can overwrite it,
+ * whatever order the descriptors were made in; one that already is a stream
+ * it becomes stays (becomeStream()). Returns the descriptor to use, or -1
+ * and errno when none from 3 up is free. Async-signal-safe.
+ */
+int clearOfStreams(int fd, unsigned becomes) {
+  if (fd < 0 || fd > STDERR_FILENO || (becomes & (1U << fd)) != 0) {
+    return fd;
+  }
+  const int MOVED = ::fcntl(fd, F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+  if (MOVED >= 0) {
+    (void)::close(fd);
+  }
+  return MOVED;
+}
+
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);
@@ -1068,14 +1090,31 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       ::_exit(127);
     }
     defaultStopSignals();
-    if (DEV_NULL >= 0) {
-      becomeStream(DEV_NULL, STDIN_FILENO);
+    // What the child needs once a stream is set goes above the streams
+    // first, but where it already is a stream it becomes.
+    const int REPORT = clearOfStreams(report[1], 0U);
+    if (REPORT < 0) {
+      const int FAILURE[2] = {3, errno};
+      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      ::_exit(127);
     }
-    becomeStream(output[1], STDOUT_FILENO);
-    becomeStream(SEPARATE ? errors[1] : output[1], STDERR_FILENO);
+    const int IN = clearOfStreams(DEV_NULL, 1U << STDIN_FILENO);
+    const int OUT =
+        clearOfStreams(output[1], (1U << STDOUT_FILENO) | (SEPARATE ? 0U : 1U << STDERR_FILENO));
+    const int ERR = SEPARATE ? clearOfStreams(errors[1], 1U << STDERR_FILENO) : OUT;
+    if (OUT < 0 || ERR < 0 || (DEV_NULL >= 0 && IN < 0)) {
+      const int FAILURE[2] = {3, errno};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
+    if (IN >= 0) {
+      becomeStream(IN, STDIN_FILENO);
+    }
+    becomeStream(OUT, STDOUT_FILENO);
+    becomeStream(ERR, STDERR_FILENO);
     ::execve(ARGV[0], ARGV.data(), ENVP.data());
     const int FAILURE[2] = {3, errno};
-    writeAll(report[1], FAILURE, sizeof(FAILURE));
+    writeAll(REPORT, FAILURE, sizeof(FAILURE));
     ::_exit(127);
   }
   (void)::setpgid(CHILD, KEEPER); // both sides set it; whichever runs first wins the race
@@ -1488,6 +1527,13 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     // stop() relies on SIGINT and SIGTERM: the helper takes them at their
     // default action whatever this process inherited.
     defaultStopSignals();
+    // The start report's end goes above the streams before any is set.
+    const int REPORT = clearOfStreams(report[1], 0U);
+    if (REPORT < 0) {
+      const int FAILURE[2] = {3, errno};
+      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     // Capture files are opened here, by the invoking user, before any
     // elevation: they stay the user's whatever the helper runs as.
     const int IN = ::open("/dev/null", O_RDONLY);
@@ -1500,7 +1546,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     const int OUT = ::open(OUT_PATH.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (OUT < 0) {
       const int FAILURE[2] = {1, errno};
-      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
     becomeStream(OUT, STDOUT_FILENO);
@@ -1510,7 +1556,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     const int ERR = ::open(ERR_PATH.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (ERR < 0) {
       const int FAILURE[2] = {2, errno};
-      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
     becomeStream(ERR, STDERR_FILENO);
@@ -1523,7 +1569,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       ::execv(ARGV[0], ARGV.data());
     }
     const int FAILURE[2] = {3, errno};
-    writeAll(report[1], FAILURE, sizeof(FAILURE));
+    writeAll(REPORT, FAILURE, sizeof(FAILURE));
     ::_exit(127);
   }
   ::close(report[1]);

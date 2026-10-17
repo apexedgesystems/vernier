@@ -1183,6 +1183,58 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::_Exit(every ? 0 : 1);
 }
 
+/**
+ * @brief The body of a death test: with each combination of this process's
+ * standard streams closed (none, each, and all three; restored after each),
+ * an owned helper and a probe, its output merged and separate, are started
+ * on a program that does not exist. Prints how each start came out and
+ * exits 0 when none started and every one failed with ENOENT, the exec's
+ * own errno: where the streams are closed, the descriptor a start reports
+ * on may have taken a stream's number.
+ */
+[[noreturn]] void programThatCannotRunIsReported() {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's standard streams, kept above them to restore them and to print with.
+  int saved[3] = {-1, -1, -1};
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    saved[stream] = ::fcntl(stream, F_DUPFD_CLOEXEC, 100);
+  }
+  const int OUT = saved[STDERR_FILENO];
+  if (saved[STDIN_FILENO] < 0 || saved[STDOUT_FILENO] < 0 || OUT < 0) {
+    std::fprintf(stderr, "the standard streams could not be kept\n");
+    std::_Exit(4);
+  }
+  const std::string ABSENT = "/nonexistent/vernier-program";
+  bool every = true;
+  for (int closed = 0; closed < 8; ++closed) {
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      if ((closed & (1 << stream)) != 0) {
+        ::close(stream);
+      }
+    }
+    OwnedHelper helper(quickPolicy());
+    const HelperStart HELPER = helper.start({ABSENT}, "", "", 200, nullptr);
+    (void)helper.stop();
+    const ProbeResult MERGED = runBoundedProbe({ABSENT}, 2000, CTX);
+    const ProbeResult SEPARATE = runBoundedProbe({ABSENT}, 2000, CTX, ProbeStreams::SEPARATE);
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      (void)::dup2(saved[stream], stream);
+    }
+    const bool REPORTED = !HELPER.started && HELPER.spawnErrno == ENOENT && !MERGED.started &&
+                          MERGED.spawnErrno == ENOENT && !SEPARATE.started &&
+                          SEPARATE.spawnErrno == ENOENT;
+    ::dprintf(OUT,
+              "closed %d (bit 0 stdin, 1 stdout, 2 stderr): the helper started=%d errno=%d; the "
+              "probe started=%d errno=%d, separate started=%d errno=%d\n",
+              closed, HELPER.started ? 1 : 0, HELPER.spawnErrno, MERGED.started ? 1 : 0,
+              MERGED.spawnErrno, SEPARATE.started ? 1 : 0, SEPARATE.spawnErrno);
+    every = every && REPORTED;
+  }
+  ::dprintf(OUT, every ? "every start reported the program that cannot run\n"
+                       : "a start took a program that cannot run for one that ran\n");
+  std::_Exit(every ? 0 : 1);
+}
+
 /** @brief Where the lock control holds its lock, what fails there, and the limits. */
 enum class LockCase : std::uint8_t {
   NATIVE,               ///< At 65590; close_range.
@@ -1568,6 +1620,23 @@ TEST(ReadinessProbes, ProgramHasItsStreamsWhateverThisProcessClosed) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(programHasItsStreams(), ::testing::ExitedWithCode(0),
               "the program had both its streams every time");
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start reports a program that cannot run whatever of this
+ * process's standard streams are closed: with none, each and all three
+ * closed, an owned helper and a probe (merged and separate) started on a
+ * program that does not exist report it unstarted, with ENOENT. Where this
+ * process's streams are closed, the descriptor a start reports on may have
+ * taken a stream's number; the child moves it above them before it sets
+ * any. In a process of its own.
+ */
+TEST(ReadinessProbes, ProgramThatCannotRunIsReportedWhateverThisProcessClosed) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(programThatCannotRunIsReported(), ::testing::ExitedWithCode(0),
+              "every start reported the program that cannot run");
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif
