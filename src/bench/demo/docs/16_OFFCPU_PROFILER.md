@@ -3,10 +3,10 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp), called from several threads at once (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-10-03 (UTC); the denied, unsupported and PID-namespace
-lines under If It Does Not Match and the `ctest` counts 2026-10-12 (UTC);
-written for the Vernier 1.0.4 release; captured from the development tree at
-project version 1.0.3, whose CLI reported `bench 1.0.3`; bpftrace 0.23.2
+**Captured:** 2026-10-03 (UTC); the doctor's rows under If It Does Not Match
+2026-10-12 (UTC), and the runs refused there 2026-10-17 (UTC); written for the
+Vernier 1.0.4 release; captured from the development tree at project version
+1.0.3, whose CLI reported `bench 1.0.3`; bpftrace 0.23.2
 
 ## Overview
 
@@ -74,10 +74,10 @@ capture ends with one line from the backend:
 `[offcpu] stacks written to <path> (<n> sleeping switch-outs)`; or
 `[offcpu] no thread of this process went to sleep while the capture was armed; ...`
 for a capture checked from start to stop in which nothing slept; or a line
-saying what failed, with the files kept. The thread names `vernier-arm`,
-`vernier-wait` (the capture's own waits, which are not recorded) and
-`vernier-stop` are reserved: a test's own thread given one of them disturbs
-the capture.
+saying what failed, with the files kept, and the run then fails with status 4
+once its tests pass. The thread names `vernier-arm`, `vernier-wait` (the
+capture's own waits, which are not recorded) and `vernier-stop` are reserved: a
+test's own thread given one of them disturbs the capture.
 
 **Needs:** bpftrace, from the rig document's
 [package list](../../docs/rigs/RIG_PI4.md#2-one-time-setup), and tracefs,
@@ -621,13 +621,23 @@ and another run of the same command can land outside them.
   ```
   [FAIL] Profiler 'offcpu': denied: the off-CPU script could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
      Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or run as root.
-     Falling back to no-op (measurements will proceed without profiling).
+     Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
   ```
 
-  then measures as usual, writes no capture and exits 0. bpftrace 0.23.2
-  checks for the root user itself, and both of the hint's ways work here:
-  `BENCH_SUDO=1` with a grant, as in [Needs](#what-is-off-cpu-profiling), and
-  running as root.
+  then measures as usual, writes no capture and ends with the request's
+  failure:
+
+  ```
+  [profile] --profile offcpu failed; the run exits with status 4:
+  [profile]   offcpu: denied: the off-CPU script could not attach as the current user: ERROR: bpftrace currently only supports running as the root user.
+
+  Error: the requested profile failed (the benchmark's report above says why); the benchmark exited with status 4
+  ```
+
+  The benchmark exits with status 4, and `bench run` with status 1. bpftrace
+  0.23.2 checks for the root user itself, and both of the hint's ways work
+  here: `BENCH_SUDO=1` with a grant, as in [Needs](#what-is-off-cpu-profiling),
+  and running as root.
 
 - **In this project's dev container, the tracepoint is not found.** The dev
   container (`docker compose run dev`: Ubuntu 24.04, bpftrace 0.20.2) mounts
@@ -644,13 +654,13 @@ and another run of the same command can land outside them.
   ```
   [FAIL] Profiler 'offcpu': unsupported: the off-CPU script: stdin:1-2: ERROR: tracepoint not found: sched:sched_switch
      The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not mounted: mount -t tracefs tracefs /sys/kernel/tracing.
-     Falling back to no-op (measurements will proceed without profiling).
+     Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
   ```
 
-  measures as usual and writes no capture folder. The dev container is
-  privileged, and `sudo mount -t tracefs tracefs /sys/kernel/tracing` inside
-  it mounts tracefs; the doctor then names the next obstacle, the container's
-  own PID namespace.
+  measures as usual, writes no capture folder and fails the same way, with
+  status 4. The dev container is privileged, and
+  `sudo mount -t tracefs tracefs /sys/kernel/tracing` inside it mounts tracefs;
+  the doctor then names the next obstacle, the container's own PID namespace.
 
 - **The script never acknowledges its arm probe, and the line names a PID
   namespace.** In a PID namespace of its own, as in a container started
@@ -667,9 +677,10 @@ and another run of the same command can land outside them.
   and step 2's command printed the same reason as
   `[FAIL] Profiler 'offcpu': unsupported: ...`, followed by
   `Run the benchmark on the host, or in a container started with --pid=host.`
-  and the fallback line, and wrote no capture; the dev container with tracefs
-  mounted gives the same lines with its own namespace. Run the benchmark on
-  the host, or start the container with `--pid=host`.
+  and the line that the run will fail, wrote no capture and failed with status
+  4; the dev container with tracefs mounted gives the same lines with its own
+  namespace. Run the benchmark on the host, or start the container with
+  `--pid=host`.
 
 - **`no thread of this process went to sleep while the capture was armed`
   instead of `stacks written`.** That is a capture checked from its arm to
@@ -794,14 +805,14 @@ ctest --test-dir build -L demo
 ctest --test-dir build -L bpftrace
 ```
 
-On this rig the first selected 155 tests and the second two, and every one
-passed but three that `ctest` reports as skipped outside their tools, as it
-should: the memcheck walkthrough's valgrind probe and the two
-compute-sanitizer helper tests. The demo's two timing tests are
-not registered: what they measure belongs to the machine they run on. This
-repository has no continuous-integration lane on the reference board, so
-before a release the page's commands are run on the rig by hand, and the page
-and its reference CSV are re-captured when what they show changes.
+On this rig every test the two commands select passes, but for the probes that
+`ctest` reports as skipped outside their tools, as it should: the memcheck
+walkthrough's valgrind probe and the compute-sanitizer helper's tests. The
+demo's two timing tests are not registered: what they measure belongs to the
+machine they run on. This repository has no continuous-integration lane on the
+reference board, so before a release the page's commands are run on the rig by
+hand, and the page and its reference CSV are re-captured when what they show
+changes.
 
 ## See Also
 

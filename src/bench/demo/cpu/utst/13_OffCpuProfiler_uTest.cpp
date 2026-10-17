@@ -383,7 +383,8 @@ constexpr const char* RIG_NAMESPACE_RUN =
     "but did not acknowledge its arm probe within 4000 ms; this process runs in PID namespace "
     "pid:[4026532586], not the host's, and offcpu traces only from the host's PID view\n"
     "   Run the benchmark on the host, or in a container started with --pid=host.\n"
-    "   Falling back to no-op (measurements will proceed without profiling).\n";
+    "   Nothing is collected for this request; the run will fail (exit status 4 if the tests "
+    "pass).\n";
 
 /// A run without BENCH_SUDO: bpftrace's own refusal, quoted by the decision.
 constexpr const char* RIG_DENIED_RUN =
@@ -391,16 +392,24 @@ constexpr const char* RIG_DENIED_RUN =
     "ERROR: bpftrace currently only supports running as the root user.\n"
     "   Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, or "
     "run as root.\n"
-    "   Falling back to no-op (measurements will proceed without profiling).\n";
+    "   Nothing is collected for this request; the run will fail (exit status 4 if the tests "
+    "pass).\n";
 
 /// A capture whose tracer ended before the stop: a failure of the capture,
 /// not a machine that cannot trace.
 constexpr const char* RIG_EARLY_END_RUN =
-    "[offcpu] unusable: the tracer ended by itself before the stop (exit status 0); it misses "
-    "the end of the measured region; the capture in "
-    "/tmp/captures/ThreadScaling.MutexContention.offcpu is incomplete\n"
-    "[offcpu] The script ends by itself when this process's main thread exits; anything else "
-    "is bpftrace failing: see offcpu.err.txt there.\n";
+    "[offcpu] completion: unusable: the tracer ended by itself before the stop (exit status 0); it "
+    "misses the end of the measured region; the capture in ./OffCpu.CoarseLock.offcpu is "
+    "incomplete\n"
+    "[offcpu] The script ends by itself when this process's main thread exits; anything else is "
+    "bpftrace failing: see offcpu.err.txt there.\n"
+    "\n"
+    "[FAIL] Profiler 'offcpu' (OffCpu.CoarseLock): completion: unusable: the tracer ended by "
+    "itself before the stop (exit status 0); it misses the end of the measured region; the capture "
+    "in ./OffCpu.CoarseLock.offcpu is incomplete\n"
+    "   The script ends by itself when this process's main thread exits; anything else is bpftrace "
+    "failing: see offcpu.err.txt there.\n"
+    "   The run will fail (exit status 4 if the tests pass).\n";
 
 } // namespace
 
