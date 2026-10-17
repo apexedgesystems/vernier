@@ -933,6 +933,22 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   in-process CUPTI collector kept recording, and the case's next measurement
   counted the failed window's kernel launches in its CUPTI cells. The window
   closes when the measurement throws, so the next one counts only its own.
+- **The contention and scaling samples no longer race, and the GPU speedup
+  sample no longer requires a 2x speedup** -- in `BenchmarkCPU_PTEST`,
+  `Contention.MutexContention` and `ThreadScaling.EfficiencyValidation`
+  wrote a variable every worker shared without synchronization, and the
+  scaling sample divided its speedup by two whatever `--threads` said; they
+  now share nothing unsynchronized, check exact results and divide by the
+  workers started. In `BenchmarkGPU_PTEST` the speedup sample failed unless
+  the round trip, transfers included, ran twice as fast as the CPU loop; it
+  now reports the ratio it measures. The CPU profiler samples for perf,
+  gperf, bpftrace and callgrind measured without the profiler they name;
+  they now attach it, or skip with the reason the run reports, and the GPU
+  profiler samples no longer print capture claims. **Migration:**
+  `GpuBasics.SpeedupCalculation` is now `GpuSpeedup.SpeedupCalculation`, and
+  `GpuMultiDevice.ScalingEfficiency`, `GpuProfilers.ArtifactGeneration`,
+  `GpuSharedMemory.BankConflicts` and `GpuSharedMemory.ConflictFree` are
+  removed; re-record a baseline that has them.
 
 ## v1.0.3 - 2026-06-28
 
