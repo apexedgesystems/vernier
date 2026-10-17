@@ -85,7 +85,7 @@ to compare two runs, and how to measure your own code the same way.
 | 13  | Off-CPU Profiler    | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
 | 14  | Helgrind Profiler   | Data races, and the lock that fixes one        | join length added to one total, no lock (a race)            | the same under a mutex (correct, serialized) | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
 | 15  | Heaptrack Profiler  | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
-| 16  | jemalloc Profiler   | Sampled allocation hotspots                    | Per-iter string churn                                       | Reserved + reused string                     | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
+| 16  | jemalloc Profiler   | Which function the allocated bytes come from   | join V0 (copy per part)                                     | join V1 (one allocation per call)            | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
 
 The `#` column matches the binary suffix (`BenchDemo_NN_*`); walkthrough
 filenames carry their own sequential number across CPU + GPU.
@@ -225,7 +225,7 @@ Walkthroughs are numbered by their file name in `docs/`.
 9. [21](docs/21_HEAPTRACK_PROFILER.md) -- ranked allocation sites with heaptrack
 10. [14](docs/14_MASSIF_PROFILER.md) -- heap size over time with Massif
 11. [15](docs/15_MEMCHECK_PROFILER.md) -- leaks and invalid access with Memcheck
-12. [22](docs/22_JEMALLOC_PROFILER.md) -- sampled allocation profiling with jemalloc
+12. [22](docs/22_JEMALLOC_PROFILER.md) -- the bytes allocated, by function, sampled by jemalloc
 
 **System and energy:**
 

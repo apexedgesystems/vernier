@@ -163,8 +163,11 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
   procedure locks changed between the bands. Walkthroughs report every run and
   keep their reference selection rule; they do not retry a run until it is
   fast, and do not warm the GPU up to hide the slow band.
-- **jemalloc.** The distribution's jemalloc is built without profiling;
-  the doctor reports it, and the jemalloc walkthrough does not use this rig.
+- **jemalloc.** The distribution's jemalloc (Ubuntu's `libjemalloc2`
+  5.3.0 for arm64) is built without profiling: it rejects `prof:true`, and
+  the doctor fails `jemalloc`, naming the library. The jemalloc walkthrough
+  runs on the [Raspberry Pi 4](RIG_PI4.md) with a jemalloc built with
+  profiling.
 - **Energy.** RAPL is Intel-only and is not available here.
 
 ## 6. Verify Your Rig

@@ -1236,9 +1236,9 @@ parameterized test's name is written `+2F` and a `+` as `+2B`, so
 `Parts/Join.V0/n1000` gets
 `Parts+2FJoin.V0+2Fn1000.gperf/`. Under `bench run`, a profiler that
 `bench run` wraps around the whole process (the valgrind tools, heaptrack,
-compute-sanitizer, nsight, ncu, and jemalloc when its library can be
-preloaded) writes one `<binary>.<tool>/` folder for the run instead, and no
-per-test folders; its root is `--profile-output-dir`, else `bench-out/`. For
+compute-sanitizer, nsight, ncu, and jemalloc) writes one `<binary>.<tool>/`
+folder for the run instead, and no per-test folders; its root is
+`--profile-output-dir`, else `bench-out/`. For
 multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the same
 root: the tool is part of every folder name, so their artifacts stay apart.
 

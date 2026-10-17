@@ -112,7 +112,20 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   sampled bytes, and at least 400 MB for its 102 calls, under `joinV0`,
   while JoinV1's run puts under `joinV1` less than 2% of that. It skips,
   saying why, in a sanitizer build and where no jemalloc that profiles,
-  `jeprof` or binutils is found.
+  `jeprof` or binutils is found. Its walkthrough,
+  `src/bench/demo/docs/22_JEMALLOC_PROFILER.md`, is rewritten from a Release
+  run on the documented Raspberry Pi 4 rig with a jemalloc 5.3.0 built with
+  profiling, which a new step of the rig document's one-time setup builds
+  from the release archive, checked against Debian's checksum, into a folder
+  of the user's own (the rig's `libjemalloc2` rejects `prof:true`): it
+  profiles each version through `bench run --profile jemalloc`, reads the
+  dumps with `jeprof --alloc_space` (all of JoinV0's 1,203.5 sampled MB but
+  one start-up sample under `joinV0`, nothing under `joinV1`), and times one
+  jemalloc build with profiling off and on (1.73 times as long for `joinV0`,
+  1.01 for `joinV1`). That run's CSV is committed at
+  `src/bench/demo/reference/pi4/22_jemalloc_profiler.csv`. The unmeasured
+  "~5-10%" overhead the profiler tables gave jemalloc is removed; the
+  advanced guide's table gives the measured range and how it was taken.
   The demo's test names change, so CSVs captured from it before this release
   do not join with newer ones.
 - **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --

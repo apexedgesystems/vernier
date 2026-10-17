@@ -55,6 +55,37 @@ library exports: the gperftools walkthrough's report then shows its top row,
 **perf.** With `kernel.perf_event_paranoid=2`, the default, the user-space
 counters Vernier collects work without any sysctl change.
 
+**jemalloc with profiling** (the
+[jemalloc walkthrough](../../demo/docs/22_JEMALLOC_PROFILER.md) only).
+Debian's packaging enables jemalloc's heap profiling on amd64 and i386 only;
+this rig's `libjemalloc2`, for arm64, rejects `prof:true`. The walkthrough
+uses jemalloc 5.3.0, the version Debian packages, built from the project's
+release with profiling, into a folder of your own; nothing is installed
+system-wide, and the system's package stays as it is:
+
+```bash
+export JEMALLOC_PROF=<a folder of yours>/jemalloc-5.3.0-prof
+curl -LO https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2
+echo "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa  jemalloc-5.3.0.tar.bz2" |
+  sha256sum -c
+tar -xjf jemalloc-5.3.0.tar.bz2
+cd jemalloc-5.3.0
+./configure --prefix="$JEMALLOC_PROF" --enable-prof
+make -j4
+make install_bin install_include install_lib
+```
+
+The checksum is the one Debian's source package (`jemalloc_5.3.0-3.dsc`)
+records for that release archive. `--enable-prof` is upstream's switch for
+heap profiling: jemalloc 5.3.0's `INSTALL.md` says it will "Enable heap
+profiling and leak detection functionality", backtracing with the first
+approach that works on the machine; here configure chose libgcc's unwinder.
+On this rig the build takes about three minutes. Select it by putting
+its library folder first on `LD_LIBRARY_PATH`: the loader then resolves
+`libjemalloc.so.2` there, for the doctor's probe and for `bench run` alike.
+Reading the dumps needs `jeprof`, from Debian's `libjemalloc-dev`
+(`sudo apt install libjemalloc-dev`).
+
 **Kernel-probe backends** (`offcpu`, `bpftrace`). These attach scheduler
 tracepoints and need root. Either run as root, or grant your user
 passwordless sudo for `bpftrace` and `kill` and set `BENCH_SUDO=1`; only
@@ -115,9 +146,12 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
 
 - **Small caches.** 1 MiB of shared L2 and no L3: cache effects appear at
   much smaller working sets than on a desktop CPU.
-- **jemalloc.** The distribution's jemalloc is built without profiling
-  (`prof:true` is rejected); the doctor reports it, and the jemalloc
-  walkthrough does not use this rig.
+- **jemalloc.** Debian's `libjemalloc2` (5.3.0 for arm64) is built without
+  profiling: it rejects `prof:true`, and the doctor fails `jemalloc`, naming
+  the library. The
+  [jemalloc walkthrough](../../demo/docs/22_JEMALLOC_PROFILER.md) runs with
+  the build from the [one-time setup](#2-one-time-setup), selected with
+  `LD_LIBRARY_PATH`.
 - **Energy.** RAPL is Intel-only and is not available here.
 
 ## 6. Verify Your Rig
@@ -126,22 +160,22 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
 BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkCPU_PTEST
 ```
 
-Expected on this rig, captured 2026-10-03 (UTC) from the development tree at
+Expected on this rig, captured 2026-10-17 (UTC) from the development tree at
 project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
 it left out:
 
 ```
 === Profiler Backend Doctor (default mode of each backend) ===
 
-  [OK]   bpftrace   write_latency, fsync_latency: a probe copy of each with a 5 s self-exit stayed running for the 1000 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -q <capture folder>/write_latency.tmp.bt, /usr/bin/bpftrace -q <capture folder>/fsync_latency.tmp.bt), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   bpftrace   write_latency, fsync_latency: a probe copy of each with a 5 s self-exit stayed running for 1000 ms through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -q -B none <capture folder>/write_latency.tmp.bt, /usr/bin/bpftrace -q -B none <capture folder>/fsync_latency.tmp.bt), SIGTERM and SIGKILL through sudo, and the run's capture
   [OK]   callgrind  valgrind starts callgrind (probe: /usr/bin/valgrind --tool=callgrind --callgrind-out-file=/dev/null /bin/true)
   [FAIL] compute-sanitizer missing: compute-sanitizer not found on PATH
              Install the CUDA toolkit, which ships compute-sanitizer, or add its bin folder (for example /usr/local/cuda/bin) to PATH.
   [OK]   gperf      gperftools profiles cpu (built: cpu); analyzer /usr/bin/google-pprof
   [OK]   heaptrack  heaptrack records /bin/true (probe: /usr/bin/heaptrack -o <private directory>/probe /bin/true, which wrote probe.zst)
   [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
-  [WARN] jemalloc   libjemalloc present but built without profiling (prof:true rejected)
-             Debian/Ubuntu ship jemalloc without --enable-prof, so no heap profile can be written. Build jemalloc from source with --enable-prof, or use the heaptrack backend.
+  [FAIL] jemalloc   missing: /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 is built without profiling: preloaded with bench run's options, it rejects them ("<jemalloc>: Invalid conf pair: prof:true")
+             Use a jemalloc built with profiling (configure --enable-prof; Debian's and Ubuntu's libjemalloc2 have it on amd64 and i386, not on arm64), with its library folder first on LD_LIBRARY_PATH when it is not the system's; or profile the heap with --profile heaptrack.
   [OK]   massif     valgrind starts massif (probe: /usr/bin/valgrind --tool=massif --massif-out-file=/dev/null /bin/true)
   [OK]   memcheck   valgrind starts memcheck (probe: /usr/bin/valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=/dev/null /bin/true)
   [FAIL] ncu        missing: ncu not found on PATH
@@ -155,7 +189,7 @@ it left out:
   [FAIL] rocprof    missing: rocprof not found on PATH
              Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
 
-  15 backend(s), 5 fail.
+  15 backend(s), 6 fail.
 
   Each row checks one backend's default mode for this user and environment.
   A run checks its own --profile request when its profiler is created, and
@@ -164,10 +198,12 @@ it left out:
   --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
 
-Five backends fail here: the three NVIDIA tools, which this rig does not
-have, `rapl`, which is Intel-only, and `rocprof`, which is AMD's. `perf`
-warns because this core has no `branches:u` event, so the branch columns
-stay empty, and `jemalloc` because the distribution's jemalloc is built
-without profiling. Without `BENCH_SUDO=1`, `bpftrace` and `offcpu` fail as
-`denied:`, quoting bpftrace: `ERROR: bpftrace currently only supports running
-as the root user.`
+Six backends fail here: the three NVIDIA tools, which this rig does not
+have, `rapl`, which is Intel-only, `rocprof`, which is AMD's, and `jemalloc`,
+because the distribution's jemalloc is built without profiling. With the
+profiling build from the [one-time setup](#2-one-time-setup) first on
+`LD_LIBRARY_PATH`, as the jemalloc walkthrough selects it, the `jemalloc` row
+is `[OK]`, naming that library. `perf` warns because this core has no
+`branches:u` event, so the branch columns stay empty. Without `BENCH_SUDO=1`,
+`bpftrace` and `offcpu` fail as `denied:`, quoting bpftrace: `ERROR: bpftrace
+currently only supports running as the root user.`

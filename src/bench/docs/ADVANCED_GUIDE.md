@@ -551,10 +551,18 @@ without it fails with the command that would start it.
 | `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
 | `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
 | `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)                                       | ~5-10%   |
+| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                | jemalloc built with `--enable-prof`, preloaded                         | 1.0-1.7x |
 | `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
 | `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
 | `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
+
+jemalloc's overhead is measured in the
+[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs):
+on the Raspberry Pi 4 rig, a Release build of the `join` example timed under
+one jemalloc build with profiling off and with `bench run`'s options on,
+1.01x for `joinV1`, which allocates 7.5 KB per call, and 1.73x for `joinV0`,
+which allocates 11.8 MB per call. It grows with the bytes allocated per
+second.
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
