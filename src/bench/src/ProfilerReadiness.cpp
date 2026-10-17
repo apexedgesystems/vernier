@@ -408,6 +408,25 @@ int readKeeperReport(int fd) {
   return report[1] != 0 ? report[1] : EIO;
 }
 
+/**
+ * @brief In a child between fork and exec: make @p fd its standard stream
+ * @p stream for the program it runs. A descriptor whose number already is
+ * that stream's (where this process had the stream closed) keeps it, its
+ * close-on-exec cleared: dup2() onto itself leaves the flag, and the exec
+ * would close the stream. Any other is duplicated onto it.
+ * Async-signal-safe.
+ */
+void becomeStream(int fd, int stream) {
+  if (fd != stream) {
+    (void)::dup2(fd, stream);
+    return;
+  }
+  const int FLAGS = ::fcntl(fd, F_GETFD);
+  if (FLAGS != -1) {
+    (void)::fcntl(fd, F_SETFD, FLAGS & ~FD_CLOEXEC);
+  }
+}
+
 /** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);
@@ -1050,10 +1069,10 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     }
     defaultStopSignals();
     if (DEV_NULL >= 0) {
-      (void)::dup2(DEV_NULL, STDIN_FILENO);
+      becomeStream(DEV_NULL, STDIN_FILENO);
     }
-    (void)::dup2(output[1], STDOUT_FILENO);
-    (void)::dup2(SEPARATE ? errors[1] : output[1], STDERR_FILENO);
+    becomeStream(output[1], STDOUT_FILENO);
+    becomeStream(SEPARATE ? errors[1] : output[1], STDERR_FILENO);
     ::execve(ARGV[0], ARGV.data(), ENVP.data());
     const int FAILURE[2] = {3, errno};
     writeAll(report[1], FAILURE, sizeof(FAILURE));
@@ -1473,7 +1492,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     // elevation: they stay the user's whatever the helper runs as.
     const int IN = ::open("/dev/null", O_RDONLY);
     if (IN >= 0) {
-      (void)::dup2(IN, STDIN_FILENO);
+      becomeStream(IN, STDIN_FILENO);
       if (IN != STDIN_FILENO) {
         ::close(IN);
       }
@@ -1484,7 +1503,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       writeAll(report[1], FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
-    (void)::dup2(OUT, STDOUT_FILENO);
+    becomeStream(OUT, STDOUT_FILENO);
     if (OUT != STDOUT_FILENO) {
       ::close(OUT);
     }
@@ -1494,7 +1513,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       writeAll(report[1], FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
-    (void)::dup2(ERR, STDERR_FILENO);
+    becomeStream(ERR, STDERR_FILENO);
     if (ERR != STDERR_FILENO) {
       ::close(ERR);
     }

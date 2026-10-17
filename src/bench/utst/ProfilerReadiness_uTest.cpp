@@ -1134,6 +1134,55 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::_Exit(NOTHING_ELSE ? 0 : 1);
 }
 
+/**
+ * @brief The body of a death test: with each combination of this process's
+ * standard streams closed (none, each, and all three; restored after each),
+ * a probe runs a program that writes "out" to its stdout, "err" to its
+ * stderr, and exits 7 once both writes succeeded, its output merged and
+ * separate. Prints what each run read and exits 0 when every run read both
+ * lines and the program's status, 7.
+ */
+[[noreturn]] void programHasItsStreams() {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's standard streams, kept above them to restore them and to print with.
+  int saved[3] = {-1, -1, -1};
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    saved[stream] = ::fcntl(stream, F_DUPFD_CLOEXEC, 100);
+  }
+  const int OUT = saved[STDERR_FILENO];
+  if (saved[STDIN_FILENO] < 0 || saved[STDOUT_FILENO] < 0 || OUT < 0) {
+    std::fprintf(stderr, "the standard streams could not be kept\n");
+    std::_Exit(4);
+  }
+  bool every = true;
+  for (int closed = 0; closed < 8; ++closed) {
+    for (const ProbeStreams STREAMS : {ProbeStreams::MERGED, ProbeStreams::SEPARATE}) {
+      for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+        if ((closed & (1 << stream)) != 0) {
+          ::close(stream);
+        }
+      }
+      const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"},
+                                            5000, CTX, STREAMS);
+      for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+        (void)::dup2(saved[stream], stream);
+      }
+      const bool SEPARATE = STREAMS == ProbeStreams::SEPARATE;
+      const bool BOTH =
+          SEPARATE ? R.output == "out\n" && R.errorOutput == "err\n" : R.output == "out\nerr\n";
+      const bool AS_IT_SAID = R.started && R.exited && R.exitCode == 7 && BOTH;
+      ::dprintf(OUT,
+                "closed %d (bit 0 stdin, 1 stdout, 2 stderr), %s: %s; output [%s], errors [%s]\n",
+                closed, SEPARATE ? "separate" : "merged", R.describe().c_str(), R.output.c_str(),
+                R.errorOutput.c_str());
+      every = every && AS_IT_SAID;
+    }
+  }
+  ::dprintf(OUT, every ? "the program had both its streams every time\n"
+                       : "the program lost a stream\n");
+  std::_Exit(every ? 0 : 1);
+}
+
 /** @brief Where the lock control holds its lock, what fails there, and the limits. */
 enum class LockCase : std::uint8_t {
   NATIVE,               ///< At 65590; close_range.
@@ -1505,6 +1554,20 @@ TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false, 0, true),
               ::testing::ExitedWithCode(0), "the keeper holds nothing of this process")
       << "/dev/null not opened";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+/**
+ * @test The program has its stdout and its stderr whatever of this process's
+ * standard streams are closed: with none, each and all three closed, merged
+ * and separate, both lines it writes are read and its status is its own.
+ * Where this process's streams are closed, a pipe the probe makes may take
+ * the number of the stream it becomes. In a process of its own.
+ */
+TEST(ReadinessProbes, ProgramHasItsStreamsWhateverThisProcessClosed) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(programHasItsStreams(), ::testing::ExitedWithCode(0),
+              "the program had both its streams every time");
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif
