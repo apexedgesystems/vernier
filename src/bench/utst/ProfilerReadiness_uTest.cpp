@@ -913,60 +913,80 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
 #ifdef __linux__
 namespace {
 
+/** @brief The calls deny() makes fail, and how. */
+struct Denied {
+  bool closeRange = true;      ///< close_range(2): ENOSYS, as on a kernel before 5.9.
+  int close = -1;              ///< close(2) of this descriptor: EBADF, so no process can close it.
+  bool directories = false;    ///< Opening a directory: ENOENT, so /proc/self/fd cannot be listed.
+  bool directoryReads = false; ///< Reading a directory (getdents64): EPERM; it still opens.
+  int replace = -1;            ///< dup2(2) and dup3(2) onto this descriptor: EPERM.
+  bool nullOpen = false;       ///< An open for writing and nothing else, as the keeper opens
+                               ///< /dev/null: EACCES.
+};
+
 /**
- * @brief In a process of its own (a death test's): from now on close_range(2)
- * fails with ENOSYS, as on a kernel before 5.9, for this process and every
- * process it starts; when @p unclosable is 0 or more, close(2) of that
- * descriptor fails too (EBADF), so that no process can close it; with
- * @p unlistable no directory can be opened (ENOENT), so /proc/self/fd cannot
- * be listed; with @p unreadable a directory opens but cannot be read
- * (getdents64 fails with EPERM). Seccomp, no privilege needed; false when
- * the filter cannot be installed.
+ * @brief In a process of its own (a death test's): from now on the calls
+ * @p denied names fail, for this process and every process it starts.
+ * Seccomp, no privilege needed; false when the filter cannot be installed.
  */
-bool withoutCloseRange(int unclosable, bool unlistable = false, bool unreadable = false) {
+bool deny(const Denied& denied) {
 #ifdef SYS_close_range
   constexpr unsigned WORD = __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U;
-  constexpr unsigned FIRST_ARGUMENT = offsetof(seccomp_data, args) + WORD;
-  std::vector<sock_filter> filter = {
-      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
-      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
-      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+  constexpr unsigned NUMBER = offsetof(seccomp_data, nr);
+  std::vector<sock_filter> filter = {BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER)};
+  // The call fails with @p error.
+  const auto DENY_CALL = [&filter](unsigned call, int error) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
   };
-  // An open of a directory, by openat(2) (its flags the third argument) or,
-  // where it exists, open(2) (the second), fails; anything else goes on to
-  // the checks below with the call's number loaded again.
-  const auto NO_DIRECTORY = [&filter](unsigned call, unsigned flagsArgument) {
+  // The call fails with @p error when the low word of its argument @p n
+  // equals @p value (@p test BPF_JEQ) or has a bit of it set (BPF_JSET);
+  // anything else goes on to the checks below with the call's number loaded
+  // again.
+  const auto DENY_WHEN = [&filter](unsigned call, unsigned n, unsigned test, unsigned value,
+                                   int error) {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 4));
-    const auto FLAGS = static_cast<__u32>(offsetof(seccomp_data, args) + 8U * flagsArgument + WORD);
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FLAGS));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_DIRECTORY, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOENT));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + 8U * n + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | test | BPF_K, value, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
   };
-  if (unlistable) {
-    NO_DIRECTORY(SYS_openat, 2);
+  if (denied.closeRange) {
+    DENY_CALL(SYS_close_range, ENOSYS);
+  }
+  // An open's flags: openat(2)'s third argument, open(2)'s, where it exists, second.
+  if (denied.directories) {
+    DENY_WHEN(SYS_openat, 2, BPF_JSET, static_cast<unsigned>(O_DIRECTORY), ENOENT);
 #ifdef SYS_open
-    NO_DIRECTORY(SYS_open, 1);
+    DENY_WHEN(SYS_open, 1, BPF_JSET, static_cast<unsigned>(O_DIRECTORY), ENOENT);
 #endif
   }
-  if (unreadable) {
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_getdents64, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM));
+  if (denied.directoryReads) {
+    DENY_CALL(SYS_getdents64, EPERM);
   }
-  if (unclosable >= 0) {
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FIRST_ARGUMENT));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(unclosable), 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EBADF));
+  if (denied.close >= 0) {
+    DENY_WHEN(SYS_close, 0, BPF_JEQ, static_cast<unsigned>(denied.close), EBADF);
+  }
+  // The new descriptor: dup2(2)'s second argument, and dup3(2)'s.
+  if (denied.replace >= 0) {
+#ifdef SYS_dup2
+    DENY_WHEN(SYS_dup2, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), EPERM);
+#endif
+    DENY_WHEN(SYS_dup3, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), EPERM);
+  }
+  if (denied.nullOpen) {
+    DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
+#ifdef SYS_open
+    DENY_WHEN(SYS_open, 1, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
+#endif
   }
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
   const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
   return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 &&
          ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
 #else
-  (void)unclosable;
-  (void)unlistable;
-  (void)unreadable;
+  (void)denied;
   return false;
 #endif
 }
@@ -1005,7 +1025,7 @@ bool softDescriptorLimit(rlim_t softLimit) {
  * @p softLimit but for the two highest, which a probe's anchor then takes
  * (this process's end the higher), so that the probe's next pipe cannot be
  * made and its setup fails (EMFILE) after its keeper started. With
- * @p withoutRange close_range is unavailable (withoutCloseRange), and with
+ * @p withoutRange close_range is unavailable (deny()), and with
  * @p unclosableAnchor this process's end of the anchor cannot be closed
  * either, so the keeper never sees end-of-file and cannot close everything
  * it inherits: the setup fails with the keeper's report (EBADF). Prints what
@@ -1030,7 +1050,7 @@ bool softDescriptorLimit(rlim_t softLimit) {
     held.pop_back();
   }
   const int ANCHOR_OWN_END = static_cast<int>(softLimit) - 1;
-  if (withoutRange && !withoutCloseRange(unclosableAnchor ? ANCHOR_OWN_END : -1)) {
+  if (withoutRange && !deny({.close = unclosableAnchor ? ANCHOR_OWN_END : -1})) {
     std::fprintf(stderr, "close_range could not be made unavailable\n");
     std::_Exit(3);
   }
@@ -1064,23 +1084,34 @@ bool softDescriptorLimit(rlim_t softLimit) {
 /**
  * @brief The body of a death test: this process holds a descriptor at
  * @p planted, inherited by whatever it starts, and close_range is
- * unavailable when @p withoutRange. A probe runs a program that lists, once
- * their count settles, the descriptors its process group's leader (the
- * probe's keeper) holds. Prints the list and exits 0 when it is the keeper's
- * stdin, its end of the anchor (a socket), and /dev/null on stdout and
- * stderr, nothing else.
+ * unavailable when @p withoutRange. With @p closedStreams (bit 0 stdin, 1
+ * stdout, 2 stderr) this process has those standard streams closed, so that
+ * the probe's anchor and the keeper's /dev/null may take their numbers; with
+ * @p noNull the keeper cannot open /dev/null (deny()). A probe runs a program
+ * that lists, once their count settles, the descriptors its process group's
+ * leader (the probe's keeper) holds. Prints the list and exits 0 when it is
+ * the keeper's stdin, its end of the anchor (a socket), and /dev/null on
+ * stdout and stderr (nothing there with @p noNull), nothing else.
  */
-[[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange) {
+[[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange,
+                                                  int closedStreams = 0, bool noNull = false) {
   const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr where closing the standard streams leaves it, for what it prints.
+  const int OUT = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100);
   const int NUL = ::open("/dev/null", O_RDONLY);
-  if (!softDescriptorLimit(static_cast<rlim_t>(planted) + 10) || NUL < 0 ||
+  if (OUT < 0 || !softDescriptorLimit(static_cast<rlim_t>(planted) + 10) || NUL < 0 ||
       ::dup2(NUL, planted) != planted) {
     std::fprintf(stderr, "the descriptor could not be planted\n");
     std::_Exit(4);
   }
   ::close(NUL);
-  if (withoutRange && !withoutCloseRange(-1)) {
-    std::fprintf(stderr, "close_range could not be made unavailable\n");
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    if ((closedStreams & (1 << stream)) != 0) {
+      ::close(stream);
+    }
+  }
+  if ((withoutRange || noNull) && !deny({.closeRange = withoutRange, .nullOpen = noNull})) {
+    ::dprintf(OUT, "the calls could not be denied\n");
     std::_Exit(3);
   }
   const std::string LIST =
@@ -1092,44 +1123,118 @@ bool softDescriptorLimit(rlim_t softLimit) {
       "done\n"
       "for f in /proc/$k/fd/*; do printf '%s=%s ' \"${f##*/}\" \"$(readlink \"$f\")\"; done\n";
   const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", LIST}, 10000, CTX);
-  std::fprintf(stderr, "the keeper's descriptors: %s\n", R.output.c_str());
+  ::dprintf(OUT, "the keeper's descriptors: %s\n", R.output.c_str());
   const std::size_t ANCHOR_END = R.output.find("] ");
+  const std::string STREAMS = noNull ? "" : "1=/dev/null 2=/dev/null ";
   const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=socket:[", 0) == 0 &&
                             ANCHOR_END != std::string::npos &&
-                            R.output.substr(ANCHOR_END) == "] 1=/dev/null 2=/dev/null ";
-  std::fprintf(stderr, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
-                                    : "the keeper holds more than its own\n");
+                            R.output.substr(ANCHOR_END) == "] " + STREAMS;
+  ::dprintf(OUT, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
+                              : "the keeper holds more than its own\n");
   std::_Exit(NOTHING_ELSE ? 0 : 1);
 }
 
-/** @brief What a forked keeper can use in the lock control, and the limits there. */
+/** @brief Where the lock control holds its lock, what fails there, and the limits. */
 enum class LockCase : std::uint8_t {
-  NATIVE,              ///< close_range.
-  LISTED,              ///< No close_range; /proc/self/fd can be listed.
-  UNLISTED,            ///< Neither: no close_range, and no directory can be opened.
-  LISTED_HARD_LOWERED, ///< No close_range, the list, and the hard limit lowered too.
-  UNREADABLE           ///< No close_range, /proc/self/fd opens but cannot be read; the
-                       ///< hard limit lowered too.
+  NATIVE,               ///< At 65590; close_range.
+  LISTED,               ///< At 65590; no close_range; /proc/self/fd can be listed.
+  UNLISTED,             ///< At 65590; neither: no close_range, and no directory can be opened.
+  LISTED_HARD_LOWERED,  ///< At 65590; no close_range, the list, and the hard limit lowered too.
+  UNREADABLE,           ///< At 65590; no close_range, /proc/self/fd opens but cannot be read;
+                        ///< the hard limit lowered too.
+  STDIN,                ///< On stdin.
+  STDIN_UNREPLACEABLE,  ///< On stdin, onto which nothing can be duplicated (dup2, dup3).
+  STDOUT,               ///< On stdout.
+  STDOUT_UNREPLACEABLE, ///< On stdout, onto which nothing can be duplicated.
+  STDOUT_UNRELEASABLE,  ///< On stdout, onto which nothing can be duplicated and which cannot
+                        ///< be closed.
+  STDERR,               ///< On stderr.
+  STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated.
+  STDERR_UNRELEASABLE,  ///< On stderr, onto which nothing can be duplicated and which cannot
+                        ///< be closed.
+  NO_NULL,              ///< On stdout; /dev/null cannot be opened for writing.
+  NO_NULL_UNCLOSABLE    ///< On stdout; /dev/null cannot be opened for writing, nor stdout closed.
 };
 
 /**
  * @brief The body of a death test: this process holds a lock (flock) through a
- * close-on-exec descriptor at 65590, then lowers its soft limit on descriptors
- * to 64 (and its hard limit, with LISTED_HARD_LOWERED and UNREADABLE);
- * close_range is unavailable but in NATIVE. A probe's program waits until its
- * keeper has dropped that descriptor (3 s at the most), says it is ready, and
- * once another thread here has closed this process's descriptor, which
+ * close-on-exec descriptor: at 65590, under a soft limit on descriptors then
+ * lowered to 64 (and the hard limit too, with LISTED_HARD_LOWERED and
+ * UNREADABLE), close_range unavailable but in NATIVE; or on one of its
+ * standard streams, with close_range, and dup2 and dup3 onto it, close of it
+ * or the keeper's open of /dev/null failing as @p which says (deny()). A
+ * probe's program waits until its keeper's descriptor of that number is no
+ * longer the lock (3 s at the most), says it is ready, and once another
+ * thread here has released this process's descriptor (closed it), which
  * releases the lock as far as this process goes, tries the lock. Prints how
- * the call came out and exits 0 when the program got the lock, or, in
- * UNLISTED, when the call refused the setup (ENOSYS) before anything started,
- * or, in UNREADABLE, when the setup failed with the keeper's EPERM; in every
- * case with no child of this process left behind.
+ * the call came out and exits 0 when the program got the lock, or, where
+ * the keeper cannot let go of the lock, when the call refused the setup with
+ * the errno the case expects (ENOSYS, EPERM, EACCES) and the lock was free
+ * once this process released it; in every case with no child of this
+ * process left behind.
  */
 [[noreturn]] void keeperReleasesTheCallersLock(LockCase which) {
   constexpr int PLANTED = 65590;
+  int slot = PLANTED;
+  Denied denied;
+  int refusal = 0;
+  switch (which) {
+  case LockCase::NATIVE:
+    denied.closeRange = false;
+    break;
+  case LockCase::LISTED:
+  case LockCase::LISTED_HARD_LOWERED:
+    break;
+  case LockCase::UNLISTED:
+    denied.directories = true;
+    refusal = ENOSYS;
+    break;
+  case LockCase::UNREADABLE:
+    denied.directoryReads = true;
+    refusal = EPERM;
+    break;
+  case LockCase::STDIN:
+  case LockCase::STDOUT:
+  case LockCase::STDERR:
+    slot = which == LockCase::STDIN    ? STDIN_FILENO
+           : which == LockCase::STDOUT ? STDOUT_FILENO
+                                       : STDERR_FILENO;
+    denied.closeRange = false;
+    break;
+  case LockCase::STDIN_UNREPLACEABLE:
+    slot = STDIN_FILENO;
+    denied = {.closeRange = false, .replace = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::STDOUT_UNREPLACEABLE:
+  case LockCase::STDERR_UNREPLACEABLE:
+    slot = which == LockCase::STDOUT_UNREPLACEABLE ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .replace = slot};
+    break;
+  case LockCase::STDOUT_UNRELEASABLE:
+  case LockCase::STDERR_UNRELEASABLE:
+    slot = which == LockCase::STDOUT_UNRELEASABLE ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .close = slot, .replace = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::NO_NULL:
+    slot = STDOUT_FILENO;
+    denied = {.closeRange = false, .nullOpen = true};
+    break;
+  case LockCase::NO_NULL_UNCLOSABLE:
+    slot = STDOUT_FILENO;
+    denied = {.closeRange = false, .close = slot, .nullOpen = true};
+    refusal = EACCES;
+    break;
+  }
+  const bool DENIES = denied.closeRange || denied.close >= 0 || denied.directories ||
+                      denied.directoryReads || denied.replace >= 0 || denied.nullOpen;
   const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr, where the lock on stderr leaves it, for what it prints.
+  const int OUT =
+      slot == STDERR_FILENO ? ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100) : STDERR_FILENO;
   char directory[] = "/tmp/keeper_lock_XXXXXX";
-  if (::mkdtemp(directory) == nullptr || !softDescriptorLimit(PLANTED + 10)) {
+  if (OUT < 0 || ::mkdtemp(directory) == nullptr || !softDescriptorLimit(PLANTED + 10)) {
     std::fprintf(stderr, "the control could not be set up\n");
     std::_Exit(4);
   }
@@ -1137,32 +1242,34 @@ enum class LockCase : std::uint8_t {
   const std::string LOCK = FOLDER + "/lock";
   const std::string READY = FOLDER + "/ready";
   const std::string RELEASED = FOLDER + "/released";
+  const std::string RESULT = FOLDER + "/result";
   const int FD = ::open(LOCK.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-  if (FD < 0 || ::flock(FD, LOCK_EX | LOCK_NB) != 0 || ::dup3(FD, PLANTED, O_CLOEXEC) != PLANTED) {
-    std::fprintf(stderr, "the lock could not be planted\n");
+  if (FD < 0 || ::flock(FD, LOCK_EX | LOCK_NB) != 0 || ::dup3(FD, slot, O_CLOEXEC) != slot) {
+    ::dprintf(OUT, "the lock could not be planted\n");
     std::_Exit(4);
   }
   ::close(FD);
-  struct rlimit limit{};
-  (void)::getrlimit(RLIMIT_NOFILE, &limit);
-  limit.rlim_cur = 64;
-  if (which == LockCase::LISTED_HARD_LOWERED || which == LockCase::UNREADABLE) {
-    limit.rlim_max = 64;
+  if (slot == PLANTED) {
+    struct rlimit limit{};
+    (void)::getrlimit(RLIMIT_NOFILE, &limit);
+    limit.rlim_cur = 64;
+    if (which == LockCase::LISTED_HARD_LOWERED || which == LockCase::UNREADABLE) {
+      limit.rlim_max = 64;
+    }
+    if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+      ::dprintf(OUT, "the limits could not be lowered\n");
+      std::_Exit(4);
+    }
   }
-  if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
-    std::fprintf(stderr, "the limits could not be lowered\n");
-    std::_Exit(4);
-  }
-  if (which != LockCase::NATIVE &&
-      !withoutCloseRange(-1, which == LockCase::UNLISTED, which == LockCase::UNREADABLE)) {
-    std::fprintf(stderr, "close_range could not be made unavailable\n");
+  if (DENIES && !deny(denied)) {
+    ::dprintf(OUT, "the calls could not be denied\n");
     std::_Exit(3);
   }
-  const std::string HELD = "/proc/$k/fd/" + std::to_string(PLANTED);
+  const std::string HELD = "/proc/$k/fd/" + std::to_string(slot);
   const std::string SCRIPT = "PATH=/usr/bin:/bin; read -r s < /proc/$$/stat; set -- $s; k=$5\n"
-                             "i=0; while [ -e " +
-                             HELD +
-                             " ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
+                             "i=0; while [ \"$(readlink " +
+                             HELD + ")\" = '" + LOCK +
+                             "' ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
                              ": > '" +
                              READY +
                              "'\n"
@@ -1170,7 +1277,8 @@ enum class LockCase : std::uint8_t {
                              RELEASED +
                              "' ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
                              "flock -n '" +
-                             LOCK + "' true; e=$?; echo \"lock_acquire_status=$e\"; exit $e\n";
+                             LOCK + "' true; e=$?; echo \"lock_acquire_status=$e\" > '" + RESULT +
+                             "'; exit $e\n";
   std::atomic<bool> returned{false};
   std::thread release([&] {
     const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1178,7 +1286,11 @@ enum class LockCase : std::uint8_t {
            std::chrono::steady_clock::now() < UNTIL) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ::close(PLANTED);
+    // Where close(2) of it fails, as for the keeper, close_range(2) releases it.
+    if (::close(slot) != 0 && errno == EBADF) {
+      (void)::syscall(SYS_close_range, static_cast<unsigned>(slot), static_cast<unsigned>(slot),
+                      0U);
+    }
     const int MARK = ::open(RELEASED.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
     if (MARK >= 0) {
       ::close(MARK);
@@ -1193,27 +1305,38 @@ enum class LockCase : std::uint8_t {
     int status = 0;
     (void)::waitpid(PID, &status, 0);
   }
-  for (const std::string& path : {LOCK, READY, RELEASED}) {
+  // Once this process released its descriptor, nothing else holds the lock.
+  const int AGAIN = ::open(LOCK.c_str(), O_RDWR | O_CLOEXEC);
+  const bool FREE = AGAIN >= 0 && ::flock(AGAIN, LOCK_EX | LOCK_NB) == 0;
+  if (AGAIN >= 0) {
+    ::close(AGAIN);
+  }
+  std::string result;
+  std::getline(std::ifstream(RESULT), result);
+  for (const std::string& path : {LOCK, READY, RELEASED, RESULT}) {
     (void)::unlink(path.c_str());
   }
   (void)::rmdir(FOLDER.c_str());
-  std::fprintf(stderr, "started=%d errno=%d %s; output: %s; children left: %zu\n",
-               R.started ? 1 : 0, R.spawnErrno, R.describe().c_str(), R.output.c_str(),
-               LEFT.size());
+  ::dprintf(
+      OUT, "started=%d errno=%d %s; the program: %s; children left: %zu; the lock free after: %d\n",
+      R.started ? 1 : 0, R.spawnErrno, R.describe().c_str(), result.c_str(), LEFT.size(),
+      FREE ? 1 : 0);
   const char* wrong = nullptr;
   if (!LEFT.empty()) {
     wrong = "a child of this process was left behind";
-  } else if (which == LockCase::UNLISTED || which == LockCase::UNREADABLE) {
+  } else if (refusal != 0) {
     if (R.started) {
-      wrong = "the probe started where its keeper could not close what it inherits";
-    } else if (R.spawnErrno != (which == LockCase::UNLISTED ? ENOSYS : EPERM)) {
+      wrong = "the probe started where its keeper could not let go of what it inherits";
+    } else if (R.spawnErrno != refusal) {
       wrong = "the setup failed for another reason";
+    } else if (!FREE) {
+      wrong = "the lock was held once this process released it";
     }
-  } else if (!R.succeeded() || R.output != "lock_acquire_status=0\n") {
+  } else if (!R.succeeded() || result != "lock_acquire_status=0") {
     wrong = "the program did not get the lock the caller released";
   }
-  std::fprintf(stderr, "%s\n",
-               wrong == nullptr ? "the caller's lock was the caller's to release" : wrong);
+  ::dprintf(OUT, "%s\n",
+            wrong == nullptr ? "the caller's lock was the caller's to release" : wrong);
   std::_Exit(wrong == nullptr ? 0 : 1);
 }
 
@@ -1263,8 +1386,9 @@ TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
  * to 64, which only the list reaches past), the keeper drops it and the
  * program gets the lock; with neither, the setup is refused (ENOSYS) before
  * anything starts; with the list opening but not readable (and the hard limit
- * lowered), the setup fails with the keeper's EPERM and no keeper is left.
- * Each case in a process of its own.
+ * lowered), the setup fails with the keeper's EPERM and no keeper is left;
+ * refused, the lock is free once this process releases it. Each case in a
+ * process of its own.
  */
 TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
@@ -1295,9 +1419,59 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
 }
 
 /**
+ * @test The keeper lets go of this process's standard streams, or the setup
+ * fails before the program starts: a lock this process holds through its
+ * stdin, stdout or stderr (close-on-exec) is released for the probe once
+ * this process releases its copy. Natively the keeper puts its end of the
+ * anchor on stdin and /dev/null on stdout and stderr; where /dev/null cannot
+ * be put on stdout or stderr (dup2 and dup3 onto it fail) or cannot be
+ * opened, the keeper closes them. Where its end of the anchor cannot be put
+ * on stdin, or a stream can be neither replaced nor closed, the setup fails
+ * with the errno of the step that failed (EPERM, EACCES), no child is left,
+ * and the lock is free once this process releases its copy. Each case in a
+ * process of its own.
+ */
+TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  if (::access("/usr/bin/flock", X_OK) != 0) {
+    GTEST_SKIP() << "flock(1) is not installed";
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    LockCase which;
+    const char* name;
+  } CASES[] = {
+      {LockCase::STDIN, "stdin"},
+      {LockCase::STDIN_UNREPLACEABLE, "stdin, the anchor not put there: refused (EPERM)"},
+      {LockCase::STDOUT, "stdout"},
+      {LockCase::STDOUT_UNREPLACEABLE, "stdout, /dev/null not put there: closed"},
+      {LockCase::STDOUT_UNRELEASABLE, "stdout, neither replaced nor closed: refused (EPERM)"},
+      {LockCase::STDERR, "stderr"},
+      {LockCase::STDERR_UNREPLACEABLE, "stderr, /dev/null not put there: closed"},
+      {LockCase::STDERR_UNRELEASABLE, "stderr, neither replaced nor closed: refused (EPERM)"},
+      {LockCase::NO_NULL, "stdout, /dev/null not opened: closed"},
+      {LockCase::NO_NULL_UNCLOSABLE, "stdout, /dev/null not opened, not closed: refused (EACCES)"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(keeperReleasesTheCallersLock(c.which), ::testing::ExitedWithCode(0),
+                "the caller's lock was the caller's to release")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
  * @test The keeper holds nothing of the benchmark's while the probe runs: a
  * descriptor of this process's above 65535 is not among its descriptors,
- * with close_range and without it. Each case in a process of its own.
+ * with close_range and without it; where this process has standard streams
+ * closed, so that the anchor and /dev/null may take their numbers, the
+ * keeper still has its end of the anchor on stdin and /dev/null on stdout
+ * and stderr; where /dev/null cannot be opened, it holds its end of the
+ * anchor alone. Each case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   constexpr int PLANTED = 65590;
@@ -1305,6 +1479,9 @@ TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   if (!UNAVAILABLE.empty()) {
     GTEST_SKIP() << UNAVAILABLE;
   }
+  constexpr int STDIN = 1 << STDIN_FILENO;
+  constexpr int STDOUT = 1 << STDOUT_FILENO;
+  constexpr int STDERR = 1 << STDERR_FILENO;
   const std::string SAVED = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false), ::testing::ExitedWithCode(0),
@@ -1313,6 +1490,21 @@ TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, true), ::testing::ExitedWithCode(0),
               "the keeper holds nothing of this process")
       << "no close_range";
+  const struct {
+    int closed;
+    const char* name;
+  } CLOSED[] = {{STDIN, "stdin closed"},
+                {STDOUT, "stdout closed"},
+                {STDERR, "stderr closed"},
+                {STDIN | STDOUT | STDERR, "the three closed"}};
+  for (const auto& c : CLOSED) {
+    EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false, c.closed),
+                ::testing::ExitedWithCode(0), "the keeper holds nothing of this process")
+        << c.name;
+  }
+  EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false, 0, true),
+              ::testing::ExitedWithCode(0), "the keeper holds nothing of this process")
+      << "/dev/null not opened";
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif

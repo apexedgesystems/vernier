@@ -430,9 +430,11 @@ enum class ProbeStreams : std::uint8_t {
  * ever signalled. The program starts only once the keeper reports that it
  * holds nothing of this process's: where no keeper could (no close_range, and
  * /proc/self/fd cannot be opened) nothing is started and the call fails
- * (ENOSYS); a keeper that could not close everything it inherits (the list
- * could not be read, a descriptor would not close) fails the call with the
- * errno it reports, and one that says nothing within 5 s with ETIMEDOUT. A
+ * (ENOSYS); a keeper that could not let go of everything it inherits (its
+ * end of the anchor not put on its stdin, its stdout or stderr neither
+ * replaced by /dev/null nor closed, the list unreadable, a descriptor that
+ * would not close) fails the call with the errno it reports, and one that
+ * says nothing within 5 s with ETIMEDOUT. A
  * call whose setup fails after the keeper started ends and reaps the keeper
  * before it returns.
  * Output still in the pipes is read for at most

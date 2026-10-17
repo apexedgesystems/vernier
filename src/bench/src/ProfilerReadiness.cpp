@@ -276,7 +276,7 @@ int closeDescriptorsFrom(int lowest, int bound) {
 /** @brief What a keeper reports first on its end of the anchor: isolated, or not, and why. */
 enum KeeperReport : int {
   KEEPER_ISOLATED = 0,     ///< It holds nothing of this process's but the anchor.
-  KEEPER_NOT_ISOLATED = 1, ///< It could not close everything it inherits; errno follows.
+  KEEPER_NOT_ISOLATED = 1, ///< It could not let go of everything it inherits; errno follows.
 };
 
 /**
@@ -284,40 +284,66 @@ enum KeeperReport : int {
  * block blocked, a process group of its own, and nothing open of this
  * process's: its copy of this process's end of the anchor closed first, by
  * itself, so that it sees end-of-file once this process's copy closes,
- * whatever the descriptors' numbers; stdin its own end of the anchor; every
- * other descriptor from 3 up closed (closeDescriptorsFrom); stdout and stderr
- * /dev/null, or closed. Then it reports on the anchor, in the shape of a
- * program's start report, whether it holds nothing else (KEEPER_ISOLATED) or
- * could not close everything (KEEPER_NOT_ISOLATED and the errno), waits for
- * the anchor's end-of-file and exits. Async-signal-safe.
+ * whatever the descriptors' numbers; stdin its own end of the anchor; stdout
+ * and stderr /dev/null, or closed where /dev/null cannot be opened or put
+ * there; every other descriptor from 3 up closed (closeDescriptorsFrom), the
+ * /dev/null it opened too. Then it reports on the anchor, in the
+ * shape of a program's start report, whether it holds nothing else
+ * (KEEPER_ISOLATED) or could not let go of everything (KEEPER_NOT_ISOLATED
+ * and the errno of the first step that failed: its end of the anchor not
+ * put on stdin, reported from where that end is; stdout or stderr neither
+ * replaced nor closed; a descriptor from 3 up not closed), waits for the
+ * anchor's end-of-file and exits. A standard stream this process had closed
+ * counts as closed, and one whose number the anchor's end or /dev/null took
+ * as replaced. Async-signal-safe.
  */
 [[noreturn]] void runGroupKeeper(int own, int peer, int bound) {
   sigset_t all;
   (void)::sigfillset(&all);
   (void)::sigprocmask(SIG_SETMASK, &all, nullptr);
   (void)::setpgid(0, 0);
+  // What of it stays open is closed below, with stdout and stderr or from 3 up.
   (void)::close(peer);
+  int anchor = STDIN_FILENO;
+  int failure = 0;
   if (own != STDIN_FILENO) {
-    (void)::dup2(own, STDIN_FILENO);
-    (void)::close(own);
+    if (::dup2(own, STDIN_FILENO) == STDIN_FILENO) {
+      (void)::close(own);
+    } else {
+      // stdin is still this process's: the report goes out where the anchor is.
+      failure = errno;
+      anchor = own;
+    }
   }
-  const int NOT_CLOSED = closeDescriptorsFrom(3, bound);
-  const int NUL = ::open("/dev/null", O_WRONLY);
-  if (NUL >= 0) {
-    (void)::dup2(NUL, STDOUT_FILENO);
-    (void)::dup2(NUL, STDERR_FILENO);
+  if (failure == 0) {
+    // A stream that cannot be given /dev/null is closed; one still open
+    // after that is this process's, and the failure is the replacement's.
+    const int NUL = ::open("/dev/null", O_WRONLY);
+    const int NO_NUL = errno;
+    for (const int STREAM : {STDOUT_FILENO, STDERR_FILENO}) {
+      if (NUL >= 0 && ::dup2(NUL, STREAM) == STREAM) {
+        continue;
+      }
+      const int WHY = NUL >= 0 ? errno : NO_NUL;
+      (void)::close(STREAM);
+      if (failure == 0 && ::fcntl(STREAM, F_GETFD) != -1) {
+        failure = WHY;
+      }
+    }
+    // Its number free again for the list below; left open, it is closed there.
     if (NUL > STDERR_FILENO) {
       (void)::close(NUL);
     }
-  } else {
-    (void)::close(STDOUT_FILENO);
-    (void)::close(STDERR_FILENO);
+    const int NOT_CLOSED = closeDescriptorsFrom(3, bound);
+    if (failure == 0) {
+      failure = NOT_CLOSED;
+    }
   }
-  const int REPORT[2] = {NOT_CLOSED == 0 ? KEEPER_ISOLATED : KEEPER_NOT_ISOLATED, NOT_CLOSED};
+  const int REPORT[2] = {failure == 0 ? KEEPER_ISOLATED : KEEPER_NOT_ISOLATED, failure};
   const char* next = reinterpret_cast<const char*>(REPORT);
   std::size_t left = sizeof(REPORT);
   while (left > 0) {
-    const ssize_t N = ::send(STDIN_FILENO, next, left, MSG_NOSIGNAL);
+    const ssize_t N = ::send(anchor, next, left, MSG_NOSIGNAL);
     if (N < 0 && errno == EINTR) {
       continue;
     }
@@ -328,7 +354,7 @@ enum KeeperReport : int {
     left -= static_cast<std::size_t>(N);
   }
   char byte = 0;
-  while (::read(STDIN_FILENO, &byte, 1) < 0 && errno == EINTR) {
+  while (::read(anchor, &byte, 1) < 0 && errno == EINTR) {
   }
   ::_exit(0);
 }
@@ -987,8 +1013,9 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   };
 
   // The keeper's own report decides: a program starts only once the keeper
-  // holds nothing of this process's; one that could not close everything it
-  // inherits, or said nothing in time, fails the setup and is ended here.
+  // holds nothing of this process's; one that could not let go of everything
+  // it inherits, its standard streams among them, or said nothing in time,
+  // fails the setup and is ended here.
   if (const int NOT_ISOLATED = readKeeperReport(anchor[OWN_END]); NOT_ISOLATED != 0) {
     result.spawnErrno = NOT_ISOLATED;
     END_KEEPER();
