@@ -450,8 +450,8 @@ fn check_rapl() -> Row {
         Row::fact(
             "rapl",
             CheckStatus::Ok,
-            "/dev/cpu/0/msr present; energy access (an Intel CPU, root or CAP_SYS_RAWIO): \
-             bench doctor <binary>",
+            "/dev/cpu/0/msr present; energy access (an Intel CPU, root, or CAP_SYS_RAWIO with read \
+             access to the device): bench doctor <binary>",
         )
     } else {
         Row::fact(
