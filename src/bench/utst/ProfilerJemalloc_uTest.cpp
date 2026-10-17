@@ -289,7 +289,25 @@ TEST(JemallocRun, BuiltWithoutProfilingIsMissing) {
                         "this program"));
 }
 
-/** @test Profiling built in but not turned on, or turned on with no dump, is a configuration error.
+/**
+ * @test Profiling off although MALLOC_CONF asks for it is UNUSABLE: jemalloc
+ * did not take MALLOC_CONF, which the message says instead of blaming it.
+ */
+TEST(JemallocRun, ProfilingNotTakenIsUnusable) {
+  JemallocRuntimeFacts facts = profiling();
+  facts.optProf = false;
+  const ReadinessResult RESULT = runtimeDecision(
+      facts, contextWith({{"MALLOC_CONF", std::string{RUN_OPTIONS} + ",prof_prefix:./jeprof"}}));
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE);
+  EXPECT_THAT(RESULT.report.message,
+              HasSubstr("), but it did not take MALLOC_CONF: MALLOC_CONF holds prof:true, and "
+                        "jemalloc's profiling is off"));
+  EXPECT_THAT(RESULT.report.hint, HasSubstr("profile a build without -fsanitize"));
+}
+
+/**
+ * @test Profiling built in but not turned on, or turned on with no dump, is a
+ * configuration error.
  */
 TEST(JemallocRun, OptionsThatWriteNothingAreConfigurationErrors) {
   JemallocRuntimeFacts off = profiling();
@@ -398,7 +416,8 @@ TEST(JemallocRun, DecidesWithoutStartingAProcess) {
       vernier::bench::checkJemallocRequest(requestFor(ReadinessScope::RUNTIME), NOWHERE);
   const JemallocRuntimeFacts LIVE = vernier::bench::jemallocRuntimeFacts();
   ASSERT_FALSE(LIVE.jemalloc) << "this test program runs on jemalloc";
-  EXPECT_EQ(RESULT.cause, LIVE.sanitizer ? ReadinessCause::UNSUPPORTED : ReadinessCause::MISSING)
+  EXPECT_EQ(RESULT.cause, LIVE.sanitizer || LIVE.ubsanLinkedIn ? ReadinessCause::UNSUPPORTED
+                                                               : ReadinessCause::MISSING)
       << RESULT.report.message;
   EXPECT_THAT(RESULT.report.message, Not(HasSubstr("probe")));
 }
@@ -596,24 +615,35 @@ TEST(JemallocRequest, AnalyzeKeepsTheCapture) {
   EXPECT_EQ(MISSING.cause, ReadinessCause::MISSING);
 }
 
-/** @test A program built with the address or thread sanitizer is unsupported, doctor and run alike.
+/**
+ * @test A program built with the address or thread sanitizer, or with clang's
+ * undefined-behaviour sanitizer linked in, is unsupported, doctor and run
+ * alike.
  */
 TEST(JemallocRequest, SanitizerIsUnsupported) {
-  JemallocRuntimeFacts facts = profiling();
-  facts.sanitizer = true;
   const JemallocProbeFacts PROBE =
       probeOf(BUILD_MAPS, "", {{"jeprof.79492.0.f.heap", HEAP_HEADER}});
-  JemallocFacts given;
-  given.runtime = &facts;
-  given.probe = &PROBE;
-  for (const ReadinessScope SCOPE :
-       {ReadinessScope::DEFAULT_INVENTORY, ReadinessScope::PREFLIGHT, ReadinessScope::RUNTIME}) {
-    const ReadinessResult RESULT =
-        checkJemallocRequestWithFacts(requestFor(SCOPE), contextWith(), given);
-    EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED);
-    EXPECT_EQ(RESULT.report.message,
-              "unsupported: jemalloc does not profile a program built with the address or thread "
-              "sanitizer: the sanitizer's allocator serves its allocations");
+  for (const bool UBSAN : {false, true}) {
+    JemallocRuntimeFacts facts = profiling();
+    facts.sanitizer = !UBSAN;
+    facts.ubsanLinkedIn = UBSAN;
+    JemallocFacts given;
+    given.runtime = &facts;
+    given.probe = &PROBE;
+    for (const ReadinessScope SCOPE :
+         {ReadinessScope::DEFAULT_INVENTORY, ReadinessScope::PREFLIGHT, ReadinessScope::RUNTIME}) {
+      const ReadinessResult RESULT =
+          checkJemallocRequestWithFacts(requestFor(SCOPE), contextWith(), given);
+      EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED) << UBSAN;
+      EXPECT_EQ(RESULT.report.message,
+                UBSAN ? "unsupported: jemalloc does not profile a program built with clang's "
+                        "undefined-behaviour sanitizer: with its runtime linked into the "
+                        "program, a preloaded jemalloc does not take MALLOC_CONF, so its "
+                        "profiling stays off"
+                      : "unsupported: jemalloc does not profile a program built with the "
+                        "address or thread sanitizer: the sanitizer's allocator serves its "
+                        "allocations");
+    }
   }
 }
 
@@ -625,6 +655,9 @@ TEST(JemallocRequest, SanitizerIsUnsupported) {
  * the run's status 4.
  */
 TEST(JemallocProfilerTest, DirectConstructionHereRefusesAndCreatesNothing) {
+  if (vernier::bench::jemallocRuntimeFacts().jemalloc) {
+    GTEST_SKIP() << "this test program runs on jemalloc, so a request here may run";
+  }
   const FakeToolDir ROOT;
   ASSERT_TRUE(ROOT.ok());
   PerfConfig cfg;

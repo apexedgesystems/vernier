@@ -321,7 +321,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   says where jemalloc will write the dump when the process exits, never that
   one was written. jemalloc takes no `--profile-args` word,
   `--profile-analyze` fails the run and keeps the capture, and a program built
-  with the address or thread sanitizer is refused.
+  with the address or thread sanitizer, or with clang's undefined-behaviour
+  sanitizer (whose runtime keeps a preloaded jemalloc from taking
+  `MALLOC_CONF`), is refused.
   **Action needed:** a profile job whose jemalloc cannot profile now fails;
   put a jemalloc built with profiling first on `LD_LIBRARY_PATH`.
 - **`bench run --profile jemalloc` checks the benchmark's own exit dump** --

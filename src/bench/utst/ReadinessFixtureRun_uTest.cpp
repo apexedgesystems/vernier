@@ -66,12 +66,16 @@ constexpr const char* CUSTOM_MAIN = VERNIER_READINESS_CUSTOM_MAIN_TARGET;
 /// Heap profiling is compiled into libbench (VERNIER_LINK_TCMALLOC=ON).
 constexpr bool HEAP_BUILT = VERNIER_READINESS_HEAP_BUILT != 0;
 
-/// The fixtures are built with the address or thread sanitizer, as this test
-/// is: their allocator serves the program, so jemalloc profiles nothing.
+/// The fixtures are built with a sanitizer jemalloc does not profile under,
+/// as this test is: the address or thread sanitizer, whose allocator serves
+/// the program, or clang's undefined-behaviour sanitizer, whose runtime,
+/// linked into the program, keeps a preloaded jemalloc from taking
+/// MALLOC_CONF.
 #if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
 constexpr bool SANITIZED = true;
 #elif defined(__has_feature)
-#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(undefined_behavior_sanitizer)
 constexpr bool SANITIZED = true;
 #else
 constexpr bool SANITIZED = false;
@@ -774,7 +778,6 @@ TEST_F(ReadinessFixtureRun, JemallocUnloadableDoctorAndRunAgree) {
   EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << "doctor status";
   EXPECT_THAT(selectedField(DOCTOR, "message"),
               HasSubstr(SANITIZED ? "unsupported: jemalloc does not profile a program built with "
-                                    "the address or thread sanitizer"
                                   : "missing: the loader cannot preload libjemalloc.so.2 ("))
       << "doctor message";
 
@@ -822,8 +825,9 @@ TEST_F(ReadinessFixtureRun, JemallocUnloadableDoctorAndRunAgree) {
  */
 TEST_F(ReadinessFixtureRun, JemallocProfilingRunLeavesItsOwnDump) {
   if (SANITIZED) {
-    GTEST_SKIP() << "the fixture is built with the address or thread sanitizer, whose allocator "
-                    "jemalloc does not replace";
+    GTEST_SKIP() << "the fixture is built with a sanitizer jemalloc does not profile under (the "
+                    "address or thread sanitizer's allocator, or clang's undefined-behaviour "
+                    "sanitizer linked in)";
   }
   if (const std::string WHY = noProfilingJemalloc(dir_.makeDirectory("check")); !WHY.empty()) {
     GTEST_SKIP() << WHY;

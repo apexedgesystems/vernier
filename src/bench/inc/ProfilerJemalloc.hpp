@@ -67,12 +67,16 @@ inline constexpr int JEMALLOC_PROBE_TIMEOUT_MS = 30000;
  * @brief What a process's allocator says of itself, through jemalloc's
  * mallctl, and where its library is mapped.
  *
- * Every field but @ref jemalloc, @ref sanitizer and @ref library is read only
- * when jemalloc is the allocator, and the profiling ones only when it is
- * built with profiling.
+ * Every field but @ref jemalloc, @ref sanitizer, @ref ubsanLinkedIn and
+ * @ref library is read only when jemalloc is the allocator, and the profiling
+ * ones only when it is built with profiling.
  */
 struct JemallocRuntimeFacts {
-  bool sanitizer = false;    ///< The address or thread sanitizer's runtime is in the process.
+  bool sanitizer = false; ///< The address or thread sanitizer's runtime is in the process.
+  /// The undefined-behaviour sanitizer's runtime is linked into the program
+  /// itself, as clang links it: a preloaded jemalloc does not take
+  /// MALLOC_CONF there (GCC's runtime, a shared library, leaves it alone).
+  bool ubsanLinkedIn = false;
   bool jemalloc = false;     ///< mallctl resolves in the process: jemalloc is its allocator.
   std::string library;       ///< The mapped libjemalloc's path; "" when none is mapped.
   std::string version;       ///< jemalloc's "version".
@@ -165,16 +169,20 @@ jemallocWrapEnvironment(const std::string& dir);
  * @brief The jemalloc backend's readiness decision for @p request in @p ctx.
  *
  * Any --profile-args word is a configuration error (jemalloc takes no mode),
- * and a program built with the address or thread sanitizer is unsupported
- * (the sanitizer's allocator serves it). The doctor's scopes run one bounded
+ * and a program built with the address or thread sanitizer (whose allocator
+ * serves it), or with clang's undefined-behaviour sanitizer linked in (a
+ * preloaded jemalloc does not take MALLOC_CONF there), is unsupported. The
+ * doctor's scopes run one bounded
  * probe: `/usr/bin/env LD_PRELOAD=libjemalloc.so.2 MALLOC_CONF=<bench run's
  * options, the prefix in a private directory> /bin/cat /proc/self/maps`. The
  * loader's refusal, and a jemalloc that rejects prof:true (built without
  * profiling), are MISSING; a final dump in the private directory is READY,
  * naming the library the loader resolved. A run asks its own allocator
  * through mallctl, starting no process: not jemalloc, or jemalloc built
- * without profiling, is MISSING; profiling off, or no dump configured, is a
- * configuration error; sampling off at start, no dump at exit beside interval
+ * without profiling, is MISSING; profiling off although MALLOC_CONF asks for
+ * it is UNUSABLE (jemalloc did not take MALLOC_CONF); profiling off, or no
+ * dump configured, is a configuration error; sampling off at start, no dump
+ * at exit beside interval
  * or growth dumps, or bytes allocated not accumulated, is a caveat. jeprof is
  * named beside a READY verdict and never changes one. --profile-analyze is an
  * analysis-stage error: jemalloc has no automatic analysis. On success the

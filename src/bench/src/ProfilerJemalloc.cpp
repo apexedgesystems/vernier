@@ -13,6 +13,9 @@
 #include "src/bench/inc/ProfilerJemalloc.hpp"
 
 #include <dlfcn.h>
+#if defined(__GLIBC__)
+#include <link.h> // link_map, for dladdr1
+#endif
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -307,6 +310,28 @@ JemallocProbeFacts runProbe(const ReadinessContext& ctx, std::optional<Readiness
 
 /* ----------------------------- Runtime ----------------------------- */
 
+/**
+ * @brief True when the undefined-behaviour sanitizer's runtime is part of the
+ * program itself (clang links it so), not a shared library (GCC's libubsan):
+ * its handler resolves into the main program's link map, whose name is empty.
+ * Measured with clang 21: there a preloaded jemalloc 5.3.0 does not take
+ * MALLOC_CONF, where GCC 13's shared runtime leaves it alone.
+ */
+bool ubsanInTheProgram() {
+#if defined(__GLIBC__)
+  void* const HANDLER = ::dlsym(RTLD_DEFAULT, "__ubsan_handle_add_overflow");
+  if (HANDLER == nullptr) {
+    return false;
+  }
+  Dl_info info{};
+  link_map* map = nullptr;
+  return ::dladdr1(HANDLER, &info, reinterpret_cast<void**>(&map), RTLD_DL_LINKMAP) != 0 &&
+         map != nullptr && map->l_name != nullptr && map->l_name[0] == '\0';
+#else
+  return false;
+#endif
+}
+
 /// jemalloc's mallctl, as its header declares it.
 using Mallctl = int (*)(const char*, void*, std::size_t*, void*, std::size_t);
 
@@ -366,6 +391,18 @@ ReadinessResult runtimeVerdict(const ReadinessRequest& request, const ReadinessC
                            PROFILING_REMEDY);
   }
   if (!facts.optProf) {
+    const auto CONF = ctx.get("MALLOC_CONF");
+    if (CONF && CONF->find("prof:true") != std::string::npos) {
+      // Asked for, and off: jemalloc read its options without MALLOC_CONF.
+      return readinessResult(ReadinessCause::UNUSABLE,
+                             "jemalloc is this process's allocator (" + WHICH +
+                                 "), but it did not take MALLOC_CONF: MALLOC_CONF holds prof:true, "
+                                 "and jemalloc's profiling is off",
+                             "jemalloc reads MALLOC_CONF once, when it starts: set it before the "
+                             "program starts, as bench run --profile jemalloc does, and profile a "
+                             "build without -fsanitize, whose runtime can keep jemalloc from "
+                             "reading it.");
+    }
     return readinessResult(ReadinessCause::CONFIGURATION,
                            "jemalloc is this process's allocator (" + WHICH +
                                "), but its profiling is off: MALLOC_CONF has no prof:true",
@@ -438,6 +475,13 @@ ReadinessResult decideJemalloc(const ReadinessRequest& request, const ReadinessC
                              "jemalloc does not profile a program built with the address or "
                              "thread sanitizer: the sanitizer's allocator serves its allocations",
                              "Profile a build without -fsanitize=address or -fsanitize=thread.");
+  } else if (RUNTIME.ubsanLinkedIn) {
+    result = readinessResult(ReadinessCause::UNSUPPORTED,
+                             "jemalloc does not profile a program built with clang's "
+                             "undefined-behaviour sanitizer: with its runtime linked into the "
+                             "program, a preloaded jemalloc does not take MALLOC_CONF, so its "
+                             "profiling stays off",
+                             "Profile a build without -fsanitize=undefined.");
   } else if (request.scope == ReadinessScope::RUNTIME) {
     result = runtimeVerdict(request, ctx, RUNTIME, *plan);
   } else if (facts.probe != nullptr) {
@@ -485,6 +529,7 @@ JemallocRuntimeFacts jemallocRuntimeFacts() {
   // in the program itself, ahead of any preload.
   facts.sanitizer = ::dlsym(RTLD_DEFAULT, "__asan_init") != nullptr ||
                     ::dlsym(RTLD_DEFAULT, "__tsan_init") != nullptr;
+  facts.ubsanLinkedIn = ubsanInTheProgram();
   facts.library = mappedJemalloc(mapsOf(::getpid()));
   void* const SYMBOL = ::dlsym(RTLD_DEFAULT, "mallctl");
   if (SYMBOL == nullptr) {
@@ -611,4 +656,4 @@ VERNIER_REGISTER_READINESS_BACKEND(
     ::vernier::bench::makePlannedJemallocProfiler,
     "Use a jemalloc built with profiling (configure --enable-prof), preloaded: bench run "
     "--profile jemalloc wraps the benchmark.",
-    "LD_LIBRARY_PATH", "LD_PRELOAD")
+    "LD_LIBRARY_PATH", "LD_PRELOAD", "MALLOC_CONF")

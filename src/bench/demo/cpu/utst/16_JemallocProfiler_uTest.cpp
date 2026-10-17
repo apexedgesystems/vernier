@@ -52,6 +52,18 @@ namespace {
 /// The demo binary the checks run; the build passes its path.
 constexpr const char* DEMO_BINARY = VERNIER_DEMO_16_BINARY;
 
+/// The demo is built with clang's undefined-behaviour sanitizer, as this
+/// check is (GCC's runtime, a shared library, leaves jemalloc alone).
+#if defined(__has_feature)
+#if __has_feature(undefined_behavior_sanitizer)
+constexpr bool BUILT_WITH_CLANG_UBSAN = true;
+#else
+constexpr bool BUILT_WITH_CLANG_UBSAN = false;
+#endif
+#else
+constexpr bool BUILT_WITH_CLANG_UBSAN = false;
+#endif
+
 /// The demo's cases, and the functions jeprof names for their bytes.
 constexpr const char* V0_CASE = "Jemalloc.JoinV0";
 constexpr const char* V1_CASE = "Jemalloc.JoinV1";
@@ -216,6 +228,11 @@ std::string cannotRun(const fs::path& dir) {
   if constexpr (demo::BUILT_WITH_ASAN_OR_TSAN) {
     return "the demo is built with the address or the thread sanitizer, whose allocator a "
            "preloaded jemalloc does not replace; run this test in a build without either";
+  }
+  if constexpr (BUILT_WITH_CLANG_UBSAN) {
+    return "the demo is built with clang's undefined-behaviour sanitizer, whose runtime, linked "
+           "into the program, keeps a preloaded jemalloc from taking MALLOC_CONF; run this test "
+           "in a build without it";
   }
   const fs::path PROBE = dir / "probe";
   std::error_code ec;
