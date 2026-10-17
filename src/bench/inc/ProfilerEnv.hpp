@@ -235,15 +235,16 @@ inline std::string externalWrapTool() {
  *
  * Neither nsys nor ncu can attach to a process that is already running, so a
  * session exists only when the tool started this process. `bench run --profile
- * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP. A wrap typed by hand is
- * recognised from the variables each tool exports to the process it starts:
+ * nsight|ncu` says so through VERNIER_EXTERNAL_WRAP; its nsight wrap is nsys,
+ * or ncu for nsight's compute mode. A wrap typed by hand is recognised from
+ * the variables each tool exports to the process it starts:
  * NSYS_PROFILING_SESSION_ID (nsys) and NV_NSIGHT_INJECTION_PORT_BASE (ncu),
  * as exported by nsys 2025.3 and ncu 2025.3. Reads only the snapshot.
  */
 inline std::string nsightSessionTool(const ReadinessContext& ctx) {
   const std::string WRAP = ctx.get("VERNIER_EXTERNAL_WRAP").value_or("");
   if (WRAP == "nsight" || WRAP == "nsys") {
-    return "nsys";
+    return ctx.get("NV_NSIGHT_INJECTION_PORT_BASE") ? "ncu" : "nsys";
   }
   if (WRAP == "ncu") {
     return "ncu";
@@ -426,7 +427,9 @@ inline bool benchSudoActive() {
 /* ----------------------------- sudoBpftraceUsable ----------------------------- */
 
 /**
- * @brief True when `sudo -n <bpftrace> --version` works for this user.
+ * @brief True when `sudo -n <bpftrace> --version` works for this user: a
+ * proven success, which a probe whose exit status this process could not
+ * read is not.
  *
  * Proves that one invocation only: a grant restricted to other arguments can
  * refuse an attach this allows. The bpftrace and offcpu backends decide with
@@ -447,7 +450,9 @@ inline bool sudoBpftraceUsable() {
 /**
  * @brief Live viability probe: can bpftrace actually attach here?
  *
- * Presence on PATH is not health -- stripped builds break BEGIN/END,
+ * True only for a proven success: a probe whose exit status this process
+ * could not read is none. Presence on PATH is not health -- stripped builds
+ * break BEGIN/END,
  * missing tracefs breaks attachment, and both fail this real probe in
  * well under its 3s bound where a lookup-based check reports a false OK.
  * The bound is runBoundedProbe()'s own; no timeout(1) is needed.
@@ -504,16 +509,8 @@ inline bool processAlive(pid_t pid) {
  * own, that grandchild is the tracer.
  */
 inline pid_t tracerPid(pid_t child) {
-  char path[96];
-  std::snprintf(path, sizeof(path), "/proc/%d/task/%d/children", static_cast<int>(child),
-                static_cast<int>(child));
-  std::FILE* f = std::fopen(path, "r");
-  if (f == nullptr)
-    return child;
-  long grandchild = 0;
-  const int GOT = std::fscanf(f, "%ld", &grandchild);
-  std::fclose(f);
-  return (GOT == 1 && grandchild > 0) ? static_cast<pid_t>(grandchild) : child;
+  const std::vector<pid_t> CHILDREN = childProcesses(child);
+  return CHILDREN.size() == 1 ? CHILDREN.front() : child;
 }
 
 /* ----------------------------- sudoKill ----------------------------- */
@@ -524,7 +521,9 @@ inline pid_t tracerPid(pid_t child) {
  *
  * A child spawned through sudo runs as root, and a plain ::kill from its
  * unprivileged parent fails with EPERM -- silently losing e.g. bpftrace's
- * SIGINT-triggered END-block flush. @return true when delivery succeeded.
+ * SIGINT-triggered END-block flush. @return true when delivery is proven:
+ * false when it was refused, and when the sudo kill's exit status could not
+ * be read, which proves neither (OwnedHelper::stop() tells the two apart).
  */
 inline bool sudoKill(pid_t pid, int sig) {
   if (::geteuid() == 0)

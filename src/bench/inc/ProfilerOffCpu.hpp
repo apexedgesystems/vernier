@@ -25,7 +25,13 @@
  * with exactly the tools and route it verified (OffCpuPlan).
  *
  * Output: `<testName>.offcpu/offcpu.txt` (the bpftrace map dump) and
- * `offcpu.err.txt` (bpftrace's messages).
+ * `offcpu.err.txt` (bpftrace's messages). The stacks are claimed only when
+ * the tracer was seen to end its stop with status 0. A tracer that could not
+ * start, ended during its start grace, or was not seen to end so (an end
+ * this process could not observe, as when it ignores SIGCHLD or sets
+ * SA_NOCLDWAIT, among them) is printed and reported through
+ * ProfilerRegistry::reportFailure(), which fails the run with status 4 once
+ * the tests pass.
  *
  * Limitations:
  *  - The PID filter keeps this process; its threads are joined through the
