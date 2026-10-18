@@ -437,7 +437,8 @@ enum class ProbeStreams : std::uint8_t {
  * says nothing within 5 s with ETIMEDOUT. The program's own start (its
  * group joined, its streams set, its exec) fails the call with the errno of
  * the step that failed, or with ETIMEDOUT when neither its exec nor a
- * failure is reported within 5 s; that program is then ended with its group.
+ * failure is reported within 5 s; that program is then ended, itself while it
+ * runs, whether or not it has joined the group yet, and with its group.
  * A call whose setup fails after the keeper started ends and reaps the
  * keeper before it returns.
  * Output still in the pipes is read for at most

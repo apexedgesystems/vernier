@@ -1226,9 +1226,14 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   int execErrno = 0;
   const bool SPAWN_FAILED = readSpawnFailure(report[0], step, execErrno);
   if (SPAWN_FAILED) {
-    // A child that reported exits by itself; one whose report did not come
-    // may still run, and is ended with its group, the keeper's, whose id the
-    // unreaped keeper still holds.
+    // A child that reported exits by itself. One whose report did not come
+    // may still run, and may not have joined the keeper's group yet: it is
+    // this call's child, so it is killed itself while a look shows it running
+    // (not reaped, its pid is still its own), and then with its group, the
+    // keeper's, whose id the unreaped keeper still holds.
+    if (step == 0 && leaderState(CHILD) == LeaderState::RUNNING) {
+      (void)::kill(CHILD, SIGKILL);
+    }
     (void)::killpg(KEEPER, SIGKILL);
     keeperSignalled = true;
     int status = 0;

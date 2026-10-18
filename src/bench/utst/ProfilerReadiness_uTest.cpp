@@ -968,6 +968,10 @@ struct Denied {
   bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
   bool stateLook = false;      ///< Every waitid(2): EINTR.
   bool execHeld = false;       ///< Every execve(2) held, for a listener that never answers.
+  bool joinHeld = false;       ///< A process's join of another's group (setpgid(0, g), g not
+                               ///< 0) held, for a listener that never answers; a process's
+                               ///< join of another to a group not that one's own (setpgid(p,
+                               ///< g), p not 0, g not p): EPERM.
   bool stopAction = false;     ///< sigaction(2) of SIGINT: EPERM.
   bool stopUnblock = false;    ///< sigprocmask(2) SIG_UNBLOCK: EPERM.
   int readOpen = -1;           ///< An open with exactly these flags: EACCES.
@@ -1076,6 +1080,24 @@ bool deny(const Denied& denied) {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 0, 1));
     filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
   }
+  // setpgid(2)'s pid and group are its first and second arguments.
+  if (denied.joinHeld) {
+    constexpr auto PID_ARG = static_cast<__u32>(offsetof(seccomp_data, args) + WORD);
+    constexpr auto GROUP_ARG = static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD);
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_setpgid, 0, 9));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, PID_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 3));
+    // Its own join: of a group of its own (0) allowed, of another's held.
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, GROUP_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 5, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+    // Another's join: to that one's own group (pid and group alike) allowed.
+    filter.push_back(BPF_STMT(BPF_MISC | BPF_TAX, 0));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, GROUP_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_X, 0, 1, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(EPERM)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+  }
   // dup3(2) and, where it exists, dup2(2) onto `interruptOnce` wait for the
   // listener's answer.
   if (denied.interruptOnce >= 0) {
@@ -1099,13 +1121,14 @@ bool deny(const Denied& denied) {
   if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
     return false;
   }
-  if (!denied.execHeld && denied.interruptOnce < 0) {
+  if (!denied.execHeld && !denied.joinHeld && denied.interruptOnce < 0) {
     return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
   }
 #ifdef SECCOMP_RET_USER_NOTIF
-  // The listener stays open until this process exits: a held exec waits for
-  // an answer that never comes, until then or until it is killed; a held
-  // duplicate is answered by answerDuplicates(), on a thread of this process.
+  // The listener stays open until this process exits: a held exec or join
+  // waits for an answer that never comes, until then or until it is killed; a
+  // held duplicate is answered by answerDuplicates(), on a thread of this
+  // process.
   const long LISTENER =
       ::syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &PROGRAM);
   if (LISTENER < 0) {
@@ -1453,6 +1476,8 @@ enum class StartHazard : std::uint8_t {
   DUPLICATE_INTERRUPTED,      ///< Every duplicate onto stdout interrupted (EINTR).
   REPORT_WRITE_INTERRUPTED,   ///< Every write of a start report interrupted; no program to run.
   EXEC_HELD,                  ///< Every exec held, never answered.
+  JOIN_HELD,                  ///< The program's join of the keeper's group held, never answered,
+                              ///< and the parent's join of it refused: the probe alone.
   REAP_INTERRUPTED,           ///< Every blocking wait interrupted; no program to run.
   LOOK_INTERRUPTED,           ///< Every waitid interrupted; the keeper refuses (stdout kept).
   DUPLICATE_INTERRUPTED_ONCE, ///< A program's first duplicate onto stdout interrupted.
@@ -1467,13 +1492,16 @@ enum class StartHazard : std::uint8_t {
  * every start report's write is interrupted and the program cannot run, the
  * report is lost and both end at once as a program that exited with 127;
  * where every exec is held, both fail with ETIMEDOUT after the start
- * report's bound, 5 s; where every blocking wait is interrupted and the
- * program cannot run, both fail with ENOENT at once; where every waitid is
- * interrupted, a probe whose keeper refuses (EACCES) ends at once. Where a
- * program's first duplicate onto stdout is interrupted, once in each start,
- * the duplicate is tried again and both complete as they do with nothing
- * denied: the program exits 7, its output and errors captured apart. Prints
- * how each ended and exits 0 when every one did so.
+ * report's bound, 5 s; where the program's join of the keeper's group is held
+ * and the parent's join of it refused, the probe alone runs, fails with
+ * ETIMEDOUT, and its program, outside the group, is killed itself; where
+ * every blocking wait is interrupted and the program cannot run, both fail
+ * with ENOENT at once; where every waitid is interrupted, a probe whose
+ * keeper refuses (EACCES) ends at once. Where a program's first duplicate
+ * onto stdout is interrupted, once in each start, the duplicate is tried
+ * again and both complete as they do with nothing denied: the program exits
+ * 7, its output and errors captured apart. Prints how each ended and exits 0
+ * when every one did so.
  */
 [[noreturn]] void startsUnderInterruptions(StartHazard which) {
   const ReadinessContext CTX = ReadinessContext::capture();
@@ -1491,6 +1519,9 @@ enum class StartHazard : std::uint8_t {
     break;
   case StartHazard::EXEC_HELD:
     denied.execHeld = true;
+    break;
+  case StartHazard::JOIN_HELD:
+    denied.joinHeld = true;
     break;
   case StartHazard::REAP_INTERRUPTED:
     denied.blockingWait = true;
@@ -1518,7 +1549,7 @@ enum class StartHazard : std::uint8_t {
   HelperStart helper{};
   long long helperMs = 0;
   int helperInterrupted = 0;
-  if (which != StartHazard::LOOK_INTERRUPTED) {
+  if (which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD) {
     OwnedHelper owned(quickPolicy());
     helper = owned.start(program, "", "", 200, nullptr);
     helperInterrupted = duplicatesInterrupted.load();
@@ -1552,6 +1583,10 @@ enum class StartHazard : std::uint8_t {
     asDue = asDue && !helper.started && helper.spawnErrno == ETIMEDOUT && helperMs >= 4500 &&
             helperMs < 9000 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
             PROBE_MS >= 4500 && PROBE_MS < 9000;
+    break;
+  case StartHazard::JOIN_HELD:
+    asDue = asDue && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT && PROBE_MS >= 4500 &&
+            PROBE_MS < 9000;
     break;
   case StartHazard::REAP_INTERRUPTED:
     asDue = asDue && !helper.started && helper.spawnErrno == ENOENT && helperMs < 2000 &&
@@ -2206,13 +2241,15 @@ TEST(ReadinessProbes, StreamThatCannotBeSetFailsTheStart) {
  * and a program that cannot run, the report is lost and both end at once as
  * a program that exited with 127; with every exec held, both fail with
  * ETIMEDOUT after the start report's bound (5 s), the held child ended; with
- * every blocking wait interrupted and a program that cannot run, both fail
- * with ENOENT at once, the child reaped without blocking; with every waitid
- * interrupted, a probe whose keeper refuses ends at once. With a program's
- * first duplicate onto stdout interrupted, once in each start, both
- * complete as they do with nothing denied: exit 7, the program's output and
- * errors captured apart. Each case in a process of its own, which its
- * parent ends after 30 s with whatever it left.
+ * the program's join of the keeper's group held and the parent's join of it
+ * refused, the probe fails with ETIMEDOUT and its program, never in the
+ * group, is ended itself; with every blocking wait interrupted and a program
+ * that cannot run, both fail with ENOENT at once, the child reaped without
+ * blocking; with every waitid interrupted, a probe whose keeper refuses ends
+ * at once. With a program's first duplicate onto stdout interrupted, once in
+ * each start, both complete as they do with nothing denied: exit 7, the
+ * program's output and errors captured apart. Each case in a process of its
+ * own, which its parent ends after 30 s with whatever it left.
  */
 TEST(ReadinessProbes, StartEndsWithinItsBound) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(64);
@@ -2228,6 +2265,7 @@ TEST(ReadinessProbes, StartEndsWithinItsBound) {
       {StartHazard::DUPLICATE_INTERRUPTED, "every duplicate onto stdout interrupted"},
       {StartHazard::REPORT_WRITE_INTERRUPTED, "every start report's write interrupted"},
       {StartHazard::EXEC_HELD, "every exec held"},
+      {StartHazard::JOIN_HELD, "the program's join held, the parent's refused"},
       {StartHazard::REAP_INTERRUPTED, "every blocking wait interrupted"},
       {StartHazard::LOOK_INTERRUPTED, "every waitid interrupted"},
       {StartHazard::DUPLICATE_INTERRUPTED_ONCE,
@@ -2235,7 +2273,8 @@ TEST(ReadinessProbes, StartEndsWithinItsBound) {
       {StartHazard::NOTHING_DENIED, "nothing denied"},
   };
   for (const auto& c : CASES) {
-    if (c.which == StartHazard::EXEC_HELD && !callsCanBeHeld()) {
+    if ((c.which == StartHazard::EXEC_HELD || c.which == StartHazard::JOIN_HELD) &&
+        !callsCanBeHeld()) {
       std::fprintf(stderr, "this kernel cannot hold a call for a listener: %s not run\n", c.name);
       continue;
     }
