@@ -922,6 +922,7 @@ struct Denied {
   int replace = -1;            ///< dup2(2) and dup3(2) onto this descriptor: EPERM.
   bool nullOpen = false;       ///< An open for writing and nothing else, as the keeper opens
                                ///< /dev/null: EACCES.
+  int query = -1;              ///< fcntl(2) F_GETFD of this descriptor: EPERM.
 };
 
 /**
@@ -980,6 +981,21 @@ bool deny(const Denied& denied) {
 #ifdef SYS_open
     DENY_WHEN(SYS_open, 1, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
 #endif
+  }
+  // fcntl(2) of one descriptor (its first argument) with one command (its second).
+  const auto DENY_FCNTL = [&filter](int fd, unsigned command, int error) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fcntl, 0, 6));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(fd), 0, 3));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, command, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+  };
+  if (denied.query >= 0) {
+    DENY_FCNTL(denied.query, static_cast<unsigned>(F_GETFD), EPERM);
   }
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
   const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
@@ -1253,6 +1269,8 @@ enum class LockCase : std::uint8_t {
   STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated.
   STDERR_UNRELEASABLE,  ///< On stderr, onto which nothing can be duplicated and which cannot
                         ///< be closed.
+  STDOUT_UNKNOWN,       ///< On stdout, as STDOUT_UNRELEASABLE, and whose flags cannot be read.
+  STDERR_UNKNOWN,       ///< On stderr, as STDERR_UNRELEASABLE, and whose flags cannot be read.
   NO_NULL,              ///< On stdout; /dev/null cannot be opened for writing.
   NO_NULL_UNCLOSABLE    ///< On stdout; /dev/null cannot be opened for writing, nor stdout closed.
 };
@@ -1318,6 +1336,12 @@ enum class LockCase : std::uint8_t {
     denied = {.closeRange = false, .close = slot, .replace = slot};
     refusal = EPERM;
     break;
+  case LockCase::STDOUT_UNKNOWN:
+  case LockCase::STDERR_UNKNOWN:
+    slot = which == LockCase::STDOUT_UNKNOWN ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .close = slot, .replace = slot, .query = slot};
+    refusal = EPERM;
+    break;
   case LockCase::NO_NULL:
     slot = STDOUT_FILENO;
     denied = {.closeRange = false, .nullOpen = true};
@@ -1329,7 +1353,8 @@ enum class LockCase : std::uint8_t {
     break;
   }
   const bool DENIES = denied.closeRange || denied.close >= 0 || denied.directories ||
-                      denied.directoryReads || denied.replace >= 0 || denied.nullOpen;
+                      denied.directoryReads || denied.replace >= 0 || denied.nullOpen ||
+                      denied.query >= 0;
   const ReadinessContext CTX = ReadinessContext::capture();
   // This process's stderr, where the lock on stderr leaves it, for what it prints.
   const int OUT =
@@ -1527,10 +1552,11 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
  * anchor on stdin and /dev/null on stdout and stderr; where /dev/null cannot
  * be put on stdout or stderr (dup2 and dup3 onto it fail) or cannot be
  * opened, the keeper closes them. Where its end of the anchor cannot be put
- * on stdin, or a stream can be neither replaced nor closed, the setup fails
- * with the errno of the step that failed (EPERM, EACCES), no child is left,
- * and the lock is free once this process releases its copy. Each case in a
- * process of its own.
+ * on stdin, or a stream can be neither replaced nor closed, or whether it is
+ * closed cannot be read (its F_GETFD refused), the setup fails with the
+ * errno of the step that failed (EPERM, EACCES), no child is left, and the
+ * lock is free once this process releases its copy. Each case in a process
+ * of its own.
  */
 TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
@@ -1554,6 +1580,10 @@ TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
       {LockCase::STDERR, "stderr"},
       {LockCase::STDERR_UNREPLACEABLE, "stderr, /dev/null not put there: closed"},
       {LockCase::STDERR_UNRELEASABLE, "stderr, neither replaced nor closed: refused (EPERM)"},
+      {LockCase::STDOUT_UNKNOWN,
+       "stdout, neither replaced nor closed, unreadable: refused (EPERM)"},
+      {LockCase::STDERR_UNKNOWN,
+       "stderr, neither replaced nor closed, unreadable: refused (EPERM)"},
       {LockCase::NO_NULL, "stdout, /dev/null not opened: closed"},
       {LockCase::NO_NULL_UNCLOSABLE, "stdout, /dev/null not opened, not closed: refused (EACCES)"},
   };

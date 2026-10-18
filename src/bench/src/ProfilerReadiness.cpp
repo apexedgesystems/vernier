@@ -292,10 +292,12 @@ enum KeeperReport : int {
  * (KEEPER_ISOLATED) or could not let go of everything (KEEPER_NOT_ISOLATED
  * and the errno of the first step that failed: its end of the anchor not
  * put on stdin, reported from where that end is; stdout or stderr neither
- * replaced nor closed; a descriptor from 3 up not closed), waits for the
- * anchor's end-of-file and exits. A standard stream this process had closed
- * counts as closed, and one whose number the anchor's end or /dev/null took
- * as replaced. Async-signal-safe.
+ * replaced nor shown closed; a descriptor from 3 up not closed), waits for
+ * the anchor's end-of-file and exits. A stream is shown closed when its
+ * close succeeds or a query of it then fails with EBADF, so a standard
+ * stream this process had closed counts as closed; one whose state the
+ * query cannot read does not. One whose number the anchor's end or
+ * /dev/null took counts as replaced. Async-signal-safe.
  */
 [[noreturn]] void runGroupKeeper(int own, int peer, int bound) {
   sigset_t all;
@@ -316,8 +318,11 @@ enum KeeperReport : int {
     }
   }
   if (failure == 0) {
-    // A stream that cannot be given /dev/null is closed; one still open
-    // after that is this process's, and the failure is the replacement's.
+    // A stream that cannot be given /dev/null is closed. It is let go once
+    // the close succeeds or a query of it fails with EBADF; still open, it
+    // is this process's and the failure is the replacement's; where the
+    // query fails otherwise, whether it is open is unknown and the failure
+    // is the query's.
     const int NUL = ::open("/dev/null", O_WRONLY);
     const int NO_NUL = errno;
     for (const int STREAM : {STDOUT_FILENO, STDERR_FILENO}) {
@@ -325,9 +330,15 @@ enum KeeperReport : int {
         continue;
       }
       const int WHY = NUL >= 0 ? errno : NO_NUL;
-      (void)::close(STREAM);
-      if (failure == 0 && ::fcntl(STREAM, F_GETFD) != -1) {
-        failure = WHY;
+      if (::close(STREAM) == 0) {
+        continue;
+      }
+      const int FLAGS = ::fcntl(STREAM, F_GETFD);
+      if (FLAGS == -1 && errno == EBADF) {
+        continue;
+      }
+      if (failure == 0) {
+        failure = FLAGS == -1 ? errno : WHY;
       }
     }
     // Its number free again for the list below; left open, it is closed there.
