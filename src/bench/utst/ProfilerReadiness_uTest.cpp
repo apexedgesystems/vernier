@@ -927,6 +927,15 @@ std::atomic<int> killsOnLost{0};
 /** @brief The keeper answerHeldCalls() ended (Denied::keeperLoss), once it is gone; or 0. */
 std::atomic<pid_t> keeperEnded{0};
 
+/**
+ * @brief The counted kills by what they were aimed at: a group (a negative
+ * target), a group's leader (a probe's keeper), or any other process (the
+ * probe's program, the helper's child).
+ */
+std::atomic<int> killsAtGroup{0};
+std::atomic<int> killsAtLeader{0};
+std::atomic<int> killsAtChild{0};
+
 /** @brief What deny()'s listener does with each kill(2) it holds (Denied::kills). */
 enum class KillWatch : std::uint8_t {
   NONE,        ///< kill(2) is not held.
@@ -975,6 +984,8 @@ struct Denied {
   KeeperLoss keeperLoss = KeeperLoss::NONE;
   /// Every poll(2) and ppoll(2) held until this process has no child left, 3 s at most.
   bool reportHeld = false;
+  /// Every execve(2): ENOENT, so that a start's child reports its exec failing.
+  bool execRefused = false;
 };
 
 #if defined(SECCOMP_RET_USER_NOTIF) && defined(SECCOMP_USER_NOTIF_FLAG_CONTINUE)
@@ -1021,6 +1032,13 @@ void answerHeldCalls(int listener, Denied denied) {
       const bool AT_LOST = LOST > 0 && (TARGET == LOST || TARGET == -LOST);
       if (request.data.args[1] != 0) {
         killsSeen.fetch_add(1);
+        if (TARGET < 0) {
+          killsAtGroup.fetch_add(1);
+        } else if (::getpgid(TARGET) == TARGET) {
+          killsAtLeader.fetch_add(1);
+        } else {
+          killsAtChild.fetch_add(1);
+        }
         if (AT_LOST) {
           killsOnLost.fetch_add(1);
         }
@@ -1129,6 +1147,9 @@ bool deny(const Denied& denied) {
   }
   if (denied.stateLook) {
     DENY_CALL(SYS_waitid, EINTR);
+  }
+  if (denied.execRefused) {
+    DENY_CALL(SYS_execve, ENOENT);
   }
   // rt_sigaction(2)'s signal and rt_sigprocmask(2)'s how are their first argument.
   if (denied.stopAction) {
@@ -1599,7 +1620,10 @@ enum class StartHazard : std::uint8_t {
                               ///< helper alone.
   KEEPER_LOST_REPORTED,       ///< SIGCHLD ignored; the keeper ended at the program's exec, then
                               ///< the exec refused; a kill at it refused: the probe alone.
-  KEEPER_LOST_UNREPORTED      ///< As KEEPER_LOST_REPORTED, the exec left held: the probe alone.
+  KEEPER_LOST_UNREPORTED,     ///< As KEEPER_LOST_REPORTED, the exec left held: the probe alone.
+  UNREAD_EXEC_HELD,           ///< Every waitid and every wait that does not block interrupted;
+                              ///< every exec held; every kill counted.
+  UNREAD_EXEC_REFUSED         ///< The same, every exec refused (ENOENT).
 };
 
 /**
@@ -1633,8 +1657,13 @@ enum class StartHazard : std::uint8_t {
  * and reaped by the system, at its program's exec fails with ENOENT when
  * that exec is then refused, sending no signal, or with ETIMEDOUT after the
  * start report's bound when it is left held, killing its program, still its
- * own, once and nothing by the keeper's pid or group. Prints how each ended
- * and exits 0 when every one did so.
+ * own, once and nothing by the keeper's pid or group. With every look and
+ * every wait that does not block interrupted and every kill counted by what
+ * it is aimed at, no child is signalled, its state unread: the exec held,
+ * both fail with ETIMEDOUT, the probe's group (the keeper shown running by
+ * their link) killed once and the helper's held child left running; the
+ * exec refused, both fail with ENOENT and only the probe's keeper is killed,
+ * at its end. Prints how each ended and exits 0 when every one did so.
  */
 [[noreturn]] void startsUnderInterruptions(StartHazard which) {
   const bool LOST = which == StartHazard::HELPER_LOST_FIRST ||
@@ -1716,6 +1745,14 @@ enum class StartHazard : std::uint8_t {
   case StartHazard::KEEPER_LOST_UNREPORTED:
     denied.kills = KillWatch::LOST_REFUSED;
     denied.keeperLoss = KeeperLoss::THEN_HELD;
+    break;
+  case StartHazard::UNREAD_EXEC_HELD:
+  case StartHazard::UNREAD_EXEC_REFUSED:
+    denied.stateLook = true;
+    denied.noHangWait = true;
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.execHeld = which == StartHazard::UNREAD_EXEC_HELD;
+    denied.execRefused = which == StartHazard::UNREAD_EXEC_REFUSED;
     break;
   }
   if (!deny(denied)) {
@@ -1823,17 +1860,41 @@ enum class StartHazard : std::uint8_t {
     asDue = asDue && keeperEnded.load() > 0 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
             PROBE_MS >= 4500 && PROBE_MS < 9000 && killsOnLost.load() == 0 && killsSeen.load() == 1;
     break;
+  case StartHazard::UNREAD_EXEC_HELD:
+    // No child's state can be read: none is signalled. The probe's group,
+    // its id the call's while the keeper's end of their link shows it
+    // running, is killed once, the probe's program in it; the helper's held
+    // child, in no group of the call's, is left running to this fixture's
+    // parent. What was killed stays unreaped (no wait can be read).
+    asDue = !helper.started && helper.spawnErrno == ETIMEDOUT &&
+            helper.statusLoss == StatusLoss::NONE && helperMs >= 4500 && helperMs < 9000 &&
+            !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE.statusLoss == StatusLoss::NONE && PROBE_MS >= 4500 && PROBE_MS < 9500 &&
+            killsAtChild.load() == 0 && killsAtGroup.load() == 1 && killsAtLeader.load() == 0 &&
+            RUNNING_LEFT == 1;
+    break;
+  case StartHazard::UNREAD_EXEC_REFUSED:
+    // The children reported their exec failing and ended by themselves:
+    // none is signalled; no group is, the program never having run; the
+    // keeper, running, is killed at its end. Nothing is left running.
+    asDue = !helper.started && helper.spawnErrno == ENOENT &&
+            helper.statusLoss == StatusLoss::NONE && helperMs < 3000 && !PROBE.started &&
+            PROBE.spawnErrno == ENOENT && PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 &&
+            killsAtChild.load() == 0 && killsAtGroup.load() == 0 && killsAtLeader.load() == 1 &&
+            RUNNING_LEFT == 0;
+    break;
   }
   std::fprintf(stderr,
                "the helper started=%d errno=%d early=%d %s after %lld ms, %d interrupted; the "
                "probe %s, output [%s] errors [%s] after %lld ms, %d interrupted; children left: "
                "%zu, %zu running; the program's child %d ended=%d; kills %d, at the lost keeper "
-               "%d (%d)\n",
+               "%d (%d), at a group %d, at a leader %d, at a child %d\n",
                helper.started ? 1 : 0, helper.spawnErrno, helper.exitedEarly ? 1 : 0,
                helper.errorTail.c_str(), helperMs, helperInterrupted, PROBE.describe().c_str(),
                PROBE.output.c_str(), PROBE.errorOutput.c_str(), PROBE_MS, PROBE_INTERRUPTED,
                LEFT.size(), RUNNING_LEFT, static_cast<int>(left), LEFT_ENDED ? 1 : 0,
-               killsSeen.load(), killsOnLost.load(), static_cast<int>(keeperEnded.load()));
+               killsSeen.load(), killsOnLost.load(), static_cast<int>(keeperEnded.load()),
+               killsAtGroup.load(), killsAtLeader.load(), killsAtChild.load());
   dir.reset();
   std::_Exit(asDue ? 0 : 1);
 }
@@ -2561,9 +2622,15 @@ TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
  * signal; the probe's keeper, ended and reaped at the program's exec, leaves
  * a start that fails with ENOENT (the exec then refused) and sends no signal,
  * or with ETIMEDOUT after 5 s (the exec left held), its program, still its
- * own, killed once and nothing sent to the keeper's pid or group. Each case
- * in a process of its own, which its parent ends after 30 s with whatever it
- * left.
+ * own, killed once and nothing sent to the keeper's pid or group. With
+ * SIGCHLD at its default action and every look and every wait that does not
+ * block interrupted, no child's state can be read and no child is signalled:
+ * the exec held, both starts fail with ETIMEDOUT, the probe's group, its id
+ * the call's while the keeper is shown running, killed once with the
+ * program in it, the helper's held child left running; the exec refused,
+ * both fail with ENOENT, the children ending by themselves, the keeper
+ * killed at its end. Neither result names a loss. Each case in a process of
+ * its own, which its parent ends after 30 s with whatever it left.
  */
 TEST(ReadinessProbes, FailedStartSignalsOnlyWhatItOwns) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(64);
@@ -2582,6 +2649,8 @@ TEST(ReadinessProbes, FailedStartSignalsOnlyWhatItOwns) {
       {StartHazard::HELPER_LOST_FIRST, "the helper's child reaped before its report is read"},
       {StartHazard::KEEPER_LOST_REPORTED, "the keeper reaped, then the exec refused"},
       {StartHazard::KEEPER_LOST_UNREPORTED, "the keeper reaped, the exec left held"},
+      {StartHazard::UNREAD_EXEC_HELD, "no state readable, the exec held"},
+      {StartHazard::UNREAD_EXEC_REFUSED, "no state readable, the exec refused"},
   };
   for (const auto& c : CASES) {
     EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
