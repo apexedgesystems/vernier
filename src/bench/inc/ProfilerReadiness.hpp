@@ -351,7 +351,7 @@ enum class StatusLoss : std::uint8_t {
  */
 struct ProbeResult {
   bool started = false;                     ///< The program was executed.
-  int spawnErrno = 0;                       ///< errno of a failed fork or exec.
+  int spawnErrno = 0;                       ///< errno of a failed setup, fork or exec.
   bool exited = false;                      ///< Ended normally; exitCode is valid.
   int exitCode = -1;                        ///< Exit status when exited.
   int termSignal = 0;                       ///< Signal that ended it, 0 if it exited.
@@ -525,7 +525,7 @@ inline constexpr int HELPER_STATUS_UNAVAILABLE = -1;
 /** @brief How an owned helper's start went. */
 struct HelperStart {
   bool started = false;     ///< The program was executed.
-  int spawnErrno = 0;       ///< errno of a failed fork or exec.
+  int spawnErrno = 0;       ///< errno of a failed fork, stream setup or exec.
   bool exitedEarly = false; ///< It ended within the start grace.
   /// Its wait status when it ended early and was reaped here; otherwise
   /// HELPER_STATUS_UNAVAILABLE.

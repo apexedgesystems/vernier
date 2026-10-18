@@ -424,18 +424,25 @@ int readKeeperReport(int fd) {
  * @p stream for the program it runs. A descriptor whose number already is
  * that stream's (where this process had the stream closed) keeps it, its
  * close-on-exec cleared: dup2() onto itself leaves the flag, and the exec
- * would close the stream. Any other is duplicated onto it.
- * Async-signal-safe.
+ * would close the stream. Any other is duplicated onto it. Returns 0 once
+ * @p fd is the stream, open across the exec, or the errno of the step that
+ * failed (the duplicate, or reading or clearing the flag): the start then
+ * fails with it, before the exec. Async-signal-safe.
  */
-void becomeStream(int fd, int stream) {
+int becomeStream(int fd, int stream) {
   if (fd != stream) {
-    (void)::dup2(fd, stream);
-    return;
+    while (::dup2(fd, stream) != stream) {
+      if (errno != EINTR) {
+        return errno;
+      }
+    }
+    return 0;
   }
   const int FLAGS = ::fcntl(fd, F_GETFD);
-  if (FLAGS != -1) {
-    (void)::fcntl(fd, F_SETFD, FLAGS & ~FD_CLOEXEC);
+  if (FLAGS == -1 || ::fcntl(fd, F_SETFD, FLAGS & ~FD_CLOEXEC) == -1) {
+    return errno;
   }
+  return 0;
 }
 
 /**
@@ -1118,11 +1125,19 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
-    if (IN >= 0) {
-      becomeStream(IN, STDIN_FILENO);
+    // A stream that cannot be set fails the start, as a failed exec does.
+    int unset = IN >= 0 ? becomeStream(IN, STDIN_FILENO) : 0;
+    if (unset == 0) {
+      unset = becomeStream(OUT, STDOUT_FILENO);
     }
-    becomeStream(OUT, STDOUT_FILENO);
-    becomeStream(ERR, STDERR_FILENO);
+    if (unset == 0) {
+      unset = becomeStream(ERR, STDERR_FILENO);
+    }
+    if (unset != 0) {
+      const int FAILURE[2] = {3, unset};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     ::execve(ARGV[0], ARGV.data(), ENVP.data());
     const int FAILURE[2] = {3, errno};
     writeAll(REPORT, FAILURE, sizeof(FAILURE));
@@ -1547,9 +1562,14 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     }
     // Capture files are opened here, by the invoking user, before any
     // elevation: they stay the user's whatever the helper runs as.
+    // A stream that cannot be set fails the start, as a failed exec does.
     const int IN = ::open("/dev/null", O_RDONLY);
     if (IN >= 0) {
-      becomeStream(IN, STDIN_FILENO);
+      if (const int UNSET = becomeStream(IN, STDIN_FILENO); UNSET != 0) {
+        const int FAILURE[2] = {3, UNSET};
+        writeAll(REPORT, FAILURE, sizeof(FAILURE));
+        ::_exit(127);
+      }
       if (IN != STDIN_FILENO) {
         ::close(IN);
       }
@@ -1560,7 +1580,11 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
-    becomeStream(OUT, STDOUT_FILENO);
+    if (const int UNSET = becomeStream(OUT, STDOUT_FILENO); UNSET != 0) {
+      const int FAILURE[2] = {3, UNSET};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     if (OUT != STDOUT_FILENO) {
       ::close(OUT);
     }
@@ -1570,7 +1594,11 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(126);
     }
-    becomeStream(ERR, STDERR_FILENO);
+    if (const int UNSET = becomeStream(ERR, STDERR_FILENO); UNSET != 0) {
+      const int FAILURE[2] = {3, UNSET};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     if (ERR != STDERR_FILENO) {
       ::close(ERR);
     }

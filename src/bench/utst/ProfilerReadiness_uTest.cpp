@@ -923,6 +923,7 @@ struct Denied {
   bool nullOpen = false;       ///< An open for writing and nothing else, as the keeper opens
                                ///< /dev/null: EACCES.
   int query = -1;              ///< fcntl(2) F_GETFD of this descriptor: EPERM.
+  int flagSet = -1;            ///< fcntl(2) F_SETFD of this descriptor: EPERM.
 };
 
 /**
@@ -996,6 +997,9 @@ bool deny(const Denied& denied) {
   };
   if (denied.query >= 0) {
     DENY_FCNTL(denied.query, static_cast<unsigned>(F_GETFD), EPERM);
+  }
+  if (denied.flagSet >= 0) {
+    DENY_FCNTL(denied.flagSet, static_cast<unsigned>(F_SETFD), EPERM);
   }
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
   const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
@@ -1251,6 +1255,82 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::_Exit(every ? 0 : 1);
 }
 
+/** @brief How the stream control keeps a program's stream from being set. */
+enum class StreamDenial : std::uint8_t {
+  FLAGS_UNREADABLE, ///< This process's streams closed; F_GETFD of descriptor 2 refused.
+  FLAGS_UNSETTABLE, ///< This process's streams closed; F_SETFD of descriptor 2 refused.
+  UNDUPLICABLE      ///< Nothing duplicated onto stdout (dup2, dup3).
+};
+
+/**
+ * @brief The body of a death test: with @p which denied, an owned helper and
+ * a probe, its output merged and separate, start a program that writes
+ * "out" to its stdout and "err" to its stderr and exits 7 once both writes
+ * succeeded. Where a start cannot set a stream (with this process's streams
+ * closed, the merged output's pipe and the helper's error file take
+ * descriptor 2, whose close-on-exec cannot then be read or cleared; or
+ * nothing can be put on stdout), it must fail with EPERM; where it starts,
+ * both lines must be read and the status be 7. Prints how each start came
+ * out and exits 0 when every one did so, with no child of this process left.
+ */
+[[noreturn]] void streamThatCannotBeSetFailsTheStart(StreamDenial which) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr, kept where closing the standard streams leaves it, for what it prints.
+  const int OUT = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100);
+  if (OUT < 0) {
+    std::fprintf(stderr, "stderr could not be kept\n");
+    std::_Exit(4);
+  }
+  Denied denied{.closeRange = false};
+  if (which == StreamDenial::UNDUPLICABLE) {
+    denied.replace = STDOUT_FILENO;
+  } else {
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      ::close(stream);
+    }
+    (which == StreamDenial::FLAGS_UNREADABLE ? denied.query : denied.flagSet) = STDERR_FILENO;
+  }
+  if (!deny(denied)) {
+    ::dprintf(OUT, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  const std::vector<std::string> PROGRAM = {"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"};
+  OwnedHelper helper(quickPolicy());
+  const HelperStart HELPER = helper.start(PROGRAM, "", "", 200, nullptr);
+  (void)helper.stop();
+  const ProbeResult MERGED = runBoundedProbe(PROGRAM, 5000, CTX);
+  const ProbeResult SEPARATE = runBoundedProbe(PROGRAM, 5000, CTX, ProbeStreams::SEPARATE);
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  for (const pid_t PID : LEFT) {
+    (void)::kill(PID, SIGKILL);
+    int status = 0;
+    (void)::waitpid(PID, &status, 0);
+  }
+  // A start that sets every stream runs the program whole; one that cannot fails with EPERM.
+  const auto PROBE_AS_DUE = [](const ProbeResult& r, bool refused, bool separate) {
+    if (refused) {
+      return !r.started && r.spawnErrno == EPERM;
+    }
+    const bool BOTH =
+        separate ? r.output == "out\n" && r.errorOutput == "err\n" : r.output == "out\nerr\n";
+    return r.started && r.exited && r.exitCode == 7 && BOTH;
+  };
+  // The separate output's pipe is moved above the streams, so no stream's flag is read there.
+  const bool SEPARATE_REFUSED = which == StreamDenial::UNDUPLICABLE;
+  const bool AS_DUE = LEFT.empty() && !HELPER.started && HELPER.spawnErrno == EPERM &&
+                      PROBE_AS_DUE(MERGED, true, false) &&
+                      PROBE_AS_DUE(SEPARATE, SEPARATE_REFUSED, true);
+  ::dprintf(OUT,
+            "the helper started=%d errno=%d %s; merged: %s, output [%s]; separate: %s, output "
+            "[%s], errors [%s]; children left: %zu\n",
+            HELPER.started ? 1 : 0, HELPER.spawnErrno, HELPER.errorTail.c_str(),
+            MERGED.describe().c_str(), MERGED.output.c_str(), SEPARATE.describe().c_str(),
+            SEPARATE.output.c_str(), SEPARATE.errorOutput.c_str(), LEFT.size());
+  ::dprintf(OUT, AS_DUE ? "a stream that could not be set failed the start\n"
+                        : "a start went on without a stream it could not set\n");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
 /** @brief Where the lock control holds its lock, what fails there, and the limits. */
 enum class LockCase : std::uint8_t {
   NATIVE,               ///< At 65590; close_range.
@@ -1262,11 +1342,12 @@ enum class LockCase : std::uint8_t {
   STDIN,                ///< On stdin.
   STDIN_UNREPLACEABLE,  ///< On stdin, onto which nothing can be duplicated (dup2, dup3).
   STDOUT,               ///< On stdout.
-  STDOUT_UNREPLACEABLE, ///< On stdout, onto which nothing can be duplicated.
+  STDOUT_UNREPLACEABLE, ///< On stdout, onto which nothing can be duplicated (by the keeper, or
+                        ///< by the program's start).
   STDOUT_UNRELEASABLE,  ///< On stdout, onto which nothing can be duplicated and which cannot
                         ///< be closed.
   STDERR,               ///< On stderr.
-  STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated.
+  STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated (likewise).
   STDERR_UNRELEASABLE,  ///< On stderr, onto which nothing can be duplicated and which cannot
                         ///< be closed.
   STDOUT_UNKNOWN,       ///< On stdout, as STDOUT_UNRELEASABLE, and whose flags cannot be read.
@@ -1327,8 +1408,11 @@ enum class LockCase : std::uint8_t {
     break;
   case LockCase::STDOUT_UNREPLACEABLE:
   case LockCase::STDERR_UNREPLACEABLE:
+    // The keeper closes the stream it cannot replace; then the program's
+    // start cannot set the same stream either, and fails with that errno.
     slot = which == LockCase::STDOUT_UNREPLACEABLE ? STDOUT_FILENO : STDERR_FILENO;
     denied = {.closeRange = false, .replace = slot};
+    refusal = EPERM;
     break;
   case LockCase::STDOUT_UNRELEASABLE:
   case LockCase::STDERR_UNRELEASABLE:
@@ -1550,10 +1634,13 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
  * stdin, stdout or stderr (close-on-exec) is released for the probe once
  * this process releases its copy. Natively the keeper puts its end of the
  * anchor on stdin and /dev/null on stdout and stderr; where /dev/null cannot
- * be put on stdout or stderr (dup2 and dup3 onto it fail) or cannot be
- * opened, the keeper closes them. Where its end of the anchor cannot be put
- * on stdin, or a stream can be neither replaced nor closed, or whether it is
- * closed cannot be read (its F_GETFD refused), the setup fails with the
+ * be opened, the keeper closes them and the program gets the lock. Where
+ * nothing can be put on stdout or stderr (dup2 and dup3 onto it fail, for
+ * every process), the keeper closes it, and the program's start, which
+ * cannot set that stream either, fails. Where its end of the anchor cannot
+ * be put on stdin, or a stream can be neither replaced nor closed, or
+ * whether it is closed cannot be read (its F_GETFD refused), the setup fails
+ * before the program starts. A setup or start that fails does so with the
  * errno of the step that failed (EPERM, EACCES), no child is left, and the
  * lock is free once this process releases its copy. Each case in a process
  * of its own.
@@ -1575,10 +1662,12 @@ TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
       {LockCase::STDIN, "stdin"},
       {LockCase::STDIN_UNREPLACEABLE, "stdin, the anchor not put there: refused (EPERM)"},
       {LockCase::STDOUT, "stdout"},
-      {LockCase::STDOUT_UNREPLACEABLE, "stdout, /dev/null not put there: closed"},
+      {LockCase::STDOUT_UNREPLACEABLE,
+       "stdout, nothing put there: closed, then the start refused (EPERM)"},
       {LockCase::STDOUT_UNRELEASABLE, "stdout, neither replaced nor closed: refused (EPERM)"},
       {LockCase::STDERR, "stderr"},
-      {LockCase::STDERR_UNREPLACEABLE, "stderr, /dev/null not put there: closed"},
+      {LockCase::STDERR_UNREPLACEABLE,
+       "stderr, nothing put there: closed, then the start refused (EPERM)"},
       {LockCase::STDERR_UNRELEASABLE, "stderr, neither replaced nor closed: refused (EPERM)"},
       {LockCase::STDOUT_UNKNOWN,
        "stdout, neither replaced nor closed, unreadable: refused (EPERM)"},
@@ -1667,6 +1756,36 @@ TEST(ReadinessProbes, ProgramThatCannotRunIsReportedWhateverThisProcessClosed) {
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(programThatCannotRunIsReported(), ::testing::ExitedWithCode(0),
               "every start reported the program that cannot run");
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A stream a start cannot set fails the start, with the errno of the
+ * step that failed, before the program runs: with this process's streams
+ * closed and descriptor 2's F_GETFD or F_SETFD refused, the owned helper's
+ * error file and the merged probe output's pipe, which already are
+ * descriptor 2, cannot be kept open across the exec; with nothing
+ * duplicated onto stdout, no start can set it. The helper and the probe
+ * fail with EPERM there and leave no child; the separate probe, whose
+ * pipe is moved above the streams, runs whole where its streams can be
+ * set. Each case in a process of its own.
+ */
+TEST(ReadinessProbes, StreamThatCannotBeSetFailsTheStart) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::FLAGS_UNREADABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "descriptor 2's F_GETFD refused";
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::FLAGS_UNSETTABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "descriptor 2's F_SETFD refused";
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::UNDUPLICABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "nothing duplicated onto stdout";
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif
