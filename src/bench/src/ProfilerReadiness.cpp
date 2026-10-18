@@ -373,6 +373,18 @@ enum KeeperReport : int {
 /** @brief How long a probe waits for its keeper's report. */
 constexpr int KEEPER_REPORT_MS = 5000;
 
+/** @brief How long a parent waits for its child's start report: the exec, or what failed. */
+constexpr int START_REPORT_MS = 5000;
+
+/**
+ * @brief How many times a call that an interruption ended (EINTR) is tried
+ * where nothing else bounds it (a child before its exec, which takes no
+ * signals but those sent to it; a call that does not block): a few, so that
+ * a call interrupted every time cannot hold the start; it then fails with
+ * EINTR.
+ */
+constexpr int INTERRUPTED_TRIES = 4;
+
 /**
  * @brief The keeper's report on @p fd, this process's end of the anchor: 0
  * once the keeper holds nothing of this process's (KEEPER_ISOLATED);
@@ -424,15 +436,16 @@ int readKeeperReport(int fd) {
  * @p stream for the program it runs. A descriptor whose number already is
  * that stream's (where this process had the stream closed) keeps it, its
  * close-on-exec cleared: dup2() onto itself leaves the flag, and the exec
- * would close the stream. Any other is duplicated onto it. Returns 0 once
- * @p fd is the stream, open across the exec, or the errno of the step that
- * failed (the duplicate, or reading or clearing the flag): the start then
- * fails with it, before the exec. Async-signal-safe.
+ * would close the stream. Any other is duplicated onto it, an interrupted
+ * duplicate tried INTERRUPTED_TRIES times at the most. Returns 0 once @p fd
+ * is the stream, open across the exec, or the errno of the step that failed
+ * (the duplicate, or reading or clearing the flag): the start then fails
+ * with it, before the exec. Async-signal-safe.
  */
 int becomeStream(int fd, int stream) {
   if (fd != stream) {
-    while (::dup2(fd, stream) != stream) {
-      if (errno != EINTR) {
+    for (int tries = INTERRUPTED_TRIES; ::dup2(fd, stream) != stream;) {
+      if (errno != EINTR || --tries == 0) {
         return errno;
       }
     }
@@ -467,13 +480,19 @@ int clearOfStreams(int fd, unsigned becomes) {
   return MOVED;
 }
 
-/** @brief write() all of @p len bytes; async-signal-safe (used between fork and exec). */
+/**
+ * @brief write() all of @p len bytes, interrupted writes tried
+ * INTERRUPTED_TRIES times at the most; async-signal-safe (used between fork
+ * and exec). A report it cannot write is lost: the parent reads end-of-file,
+ * and the child's exit, status 127, is what it sees of the start.
+ */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);
+  int tries = INTERRUPTED_TRIES;
   while (len > 0) {
     const ssize_t N = ::write(fd, p, len);
     if (N < 0) {
-      if (errno == EINTR) {
+      if (errno == EINTR && --tries > 0) {
         continue;
       }
       return;
@@ -484,19 +503,40 @@ void writeAll(int fd, const void* data, std::size_t len) {
 }
 
 /**
- * @brief Read the child's start report from @p fd: EOF means the exec
- * succeeded (the close-on-exec end went away); two ints mean the step that
- * failed and its errno.
+ * @brief Read the child's start report from @p fd, START_REPORT_MS at the
+ * most: EOF means the exec succeeded (the close-on-exec end went away); two
+ * ints mean the step that failed and its errno. Returns true with them, or
+ * with step 0 and ETIMEDOUT when nothing came in time, or the errno of a
+ * poll or read that failed: then whether the child started is unknown, and
+ * the caller ends it.
  */
 bool readSpawnFailure(int fd, int& step, int& err) {
   int report[2] = {0, 0};
   std::size_t got = 0;
+  const auto UNTIL = Clock::now() + std::chrono::milliseconds(START_REPORT_MS);
   while (got < sizeof(report)) {
+    const auto LEFT =
+        std::chrono::duration_cast<std::chrono::milliseconds>(UNTIL - Clock::now()).count();
+    pollfd ready{fd, POLLIN, 0};
+    const int READY = LEFT > 0 ? ::poll(&ready, 1, static_cast<int>(LEFT)) : 0;
+    if (READY < 0 && errno == EINTR) {
+      continue;
+    }
+    if (READY <= 0) {
+      step = 0;
+      err = READY == 0 ? ETIMEDOUT : errno;
+      return true;
+    }
     const ssize_t N = ::read(fd, reinterpret_cast<char*>(report) + got, sizeof(report) - got);
     if (N < 0 && errno == EINTR) {
       continue;
     }
-    if (N <= 0) {
+    if (N < 0) {
+      step = 0;
+      err = errno;
+      return true;
+    }
+    if (N == 0) {
       break;
     }
     got += static_cast<std::size_t>(N);
@@ -509,9 +549,18 @@ bool readSpawnFailure(int fd, int& step, int& err) {
   return true;
 }
 
-/** @brief Blocking reap of @p pid, retrying on EINTR. */
-void reapBlocking(pid_t pid, int& status) {
-  while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+/**
+ * @brief Reap @p pid, a child that has been ended or is ending, PROBE_REAP_MS
+ * at the most (an interrupted wait tried again until then).
+ */
+void reapWithin(pid_t pid, int& status) {
+  const auto UNTIL = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
+  while (true) {
+    const pid_t W = ::waitpid(pid, &status, WNOHANG);
+    if (W == pid || (W < 0 && errno != EINTR) || Clock::now() >= UNTIL) {
+      return;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 }
 
@@ -519,17 +568,23 @@ void reapBlocking(pid_t pid, int& status) {
 enum class LeaderState : std::uint8_t {
   RUNNING, ///< Still running.
   ENDED,   ///< Ended, not yet reaped: its pid, which is its group's id, cannot be reused.
-  GONE     ///< Reaped elsewhere (ECHILD): nothing of it may be signalled.
+  GONE     ///< Reaped elsewhere (ECHILD), or unreadable: nothing of it may be signalled.
 };
 
-/** @brief The state of @p child, observed without reaping it. */
+/**
+ * @brief The state of @p child, observed without reaping it; GONE also when
+ * an interrupted look (EINTR, which a look that does not block is not given
+ * but by a policy) failed INTERRUPTED_TRIES times: then nothing of it is
+ * signalled.
+ */
 LeaderState leaderState(pid_t child) {
   siginfo_t info{};
   int rc = 0;
+  int tries = INTERRUPTED_TRIES;
   do {
     info.si_pid = 0;
     rc = ::waitid(P_PID, static_cast<id_t>(child), &info, WEXITED | WNOHANG | WNOWAIT);
-  } while (rc < 0 && errno == EINTR);
+  } while (rc < 0 && errno == EINTR && --tries > 0);
   if (rc < 0) {
     return LeaderState::GONE;
   }
@@ -1160,8 +1215,13 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   int execErrno = 0;
   const bool SPAWN_FAILED = readSpawnFailure(report[0], step, execErrno);
   if (SPAWN_FAILED) {
+    // A child that reported exits by itself; one whose report did not come
+    // may still run, and is ended with its group, the keeper's, whose id the
+    // unreaped keeper still holds.
+    (void)::killpg(KEEPER, SIGKILL);
+    keeperSignalled = true;
     int status = 0;
-    reapBlocking(CHILD, status);
+    reapWithin(CHILD, status);
     CLOSE_ALL();
     END_KEEPER();
     result.spawnErrno = execErrno;
@@ -1617,12 +1677,16 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   const bool FAILED = readSpawnFailure(report[0], step, err);
   ::close(report[0]);
   if (FAILED) {
+    // A child whose report did not come may still run: it is ended first.
+    (void)::kill(CHILD, SIGKILL);
     int status = 0;
-    reapBlocking(CHILD, status);
+    reapWithin(CHILD, status);
     outcome.spawnErrno = err;
     const std::string& WHAT = step == 1 ? OUT_PATH : (step == 2 ? ERR_PATH : argvIn.front());
-    outcome.errorTail =
-        (step == 3 ? "could not execute " : "could not open ") + WHAT + ": " + errnoText(err);
+    const char* const DOING = step == 0   ? "could not start "
+                              : step == 3 ? "could not execute "
+                                          : "could not open ";
+    outcome.errorTail = DOING + WHAT + ": " + errnoText(err);
     return outcome;
   }
   child_ = CHILD;

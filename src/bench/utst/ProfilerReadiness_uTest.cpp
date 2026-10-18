@@ -27,8 +27,10 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #endif
 
 #include <algorithm>
@@ -913,6 +915,41 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
 #ifdef __linux__
 namespace {
 
+/** @brief The duplicates answerDuplicates() has failed with EINTR in this process. */
+std::atomic<int> duplicatesInterrupted{0};
+
+#if defined(SECCOMP_RET_USER_NOTIF) && defined(SECCOMP_USER_NOTIF_FLAG_CONTINUE)
+/**
+ * @brief Answers the duplicates deny() holds on @p listener, for as long as
+ * this process lives: a process's first fails with EINTR and its later ones
+ * are carried out; a group's leader (the probe's keeper) goes on at once.
+ */
+void answerDuplicates(int listener) {
+  std::vector<std::uint32_t> interrupted;
+  for (;;) {
+    seccomp_notif request{};
+    if (::ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) != 0) {
+      if (errno == EINTR || errno == ENOENT) {
+        continue;
+      }
+      return;
+    }
+    seccomp_notif_resp response{};
+    response.id = request.id;
+    const auto PID = static_cast<pid_t>(request.pid);
+    if (::getpgid(PID) != PID &&
+        std::find(interrupted.begin(), interrupted.end(), request.pid) == interrupted.end()) {
+      interrupted.push_back(request.pid);
+      duplicatesInterrupted.fetch_add(1);
+      response.error = -EINTR;
+    } else {
+      response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+    }
+    (void)::ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response);
+  }
+}
+#endif
+
 /** @brief The calls deny() makes fail, and how. */
 struct Denied {
   bool closeRange = true;      ///< close_range(2): ENOSYS, as on a kernel before 5.9.
@@ -924,6 +961,13 @@ struct Denied {
                                ///< /dev/null: EACCES.
   int query = -1;              ///< fcntl(2) F_GETFD of this descriptor: EPERM.
   int flagSet = -1;            ///< fcntl(2) F_SETFD of this descriptor: EPERM.
+  int replaceErrno = EPERM;    ///< What the duplicates onto `replace` fail with.
+  int interruptOnce = -1;      ///< dup2(2) and dup3(2) onto this descriptor held for
+                               ///< answerDuplicates(): a process's first fails with EINTR.
+  bool reportWrite = false;    ///< Every write(2) of 8 bytes, a start report's: EINTR.
+  bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
+  bool stateLook = false;      ///< Every waitid(2): EINTR.
+  bool execHeld = false;       ///< Every execve(2) held, for a listener that never answers.
 };
 
 /**
@@ -973,9 +1017,19 @@ bool deny(const Denied& denied) {
   // The new descriptor: dup2(2)'s second argument, and dup3(2)'s.
   if (denied.replace >= 0) {
 #ifdef SYS_dup2
-    DENY_WHEN(SYS_dup2, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), EPERM);
+    DENY_WHEN(SYS_dup2, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), denied.replaceErrno);
 #endif
-    DENY_WHEN(SYS_dup3, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), EPERM);
+    DENY_WHEN(SYS_dup3, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), denied.replaceErrno);
+  }
+  // write(2)'s count is its third argument; wait4(2)'s options its third.
+  if (denied.reportWrite) {
+    DENY_WHEN(SYS_write, 2, BPF_JEQ, 8U, EINTR);
+  }
+  if (denied.blockingWait) {
+    DENY_WHEN(SYS_wait4, 2, BPF_JEQ, 0U, EINTR);
+  }
+  if (denied.stateLook) {
+    DENY_CALL(SYS_waitid, EINTR);
   }
   if (denied.nullOpen) {
     DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
@@ -1001,10 +1055,57 @@ bool deny(const Denied& denied) {
   if (denied.flagSet >= 0) {
     DENY_FCNTL(denied.flagSet, static_cast<unsigned>(F_SETFD), EPERM);
   }
+#ifdef SECCOMP_RET_USER_NOTIF
+  if (denied.execHeld) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+  }
+  // dup3(2) and, where it exists, dup2(2) onto `interruptOnce` wait for the
+  // listener's answer.
+  if (denied.interruptOnce >= 0) {
+    std::vector<unsigned> duplicates = {SYS_dup3};
+#ifdef SYS_dup2
+    duplicates.push_back(SYS_dup2);
+#endif
+    for (const unsigned CALL : duplicates) {
+      filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CALL, 0, 4));
+      filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD)));
+      filter.push_back(
+          BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(denied.interruptOnce), 0, 1));
+      filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+      filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+    }
+  }
+#endif
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
   const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
-  return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 &&
-         ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
+  if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+    return false;
+  }
+  if (!denied.execHeld && denied.interruptOnce < 0) {
+    return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
+  }
+#ifdef SECCOMP_RET_USER_NOTIF
+  // The listener stays open until this process exits: a held exec waits for
+  // an answer that never comes, until then or until it is killed; a held
+  // duplicate is answered by answerDuplicates(), on a thread of this process.
+  const long LISTENER =
+      ::syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &PROGRAM);
+  if (LISTENER < 0) {
+    return false;
+  }
+  if (denied.interruptOnce >= 0) {
+#ifdef SECCOMP_USER_NOTIF_FLAG_CONTINUE
+    std::thread(answerDuplicates, static_cast<int>(LISTENER)).detach();
+#else
+    return false;
+#endif
+  }
+  return true;
+#else
+  return false;
+#endif
 #else
   (void)denied;
   return false;
@@ -1329,6 +1430,218 @@ enum class StreamDenial : std::uint8_t {
   ::dprintf(OUT, AS_DUE ? "a stream that could not be set failed the start\n"
                         : "a start went on without a stream it could not set\n");
   std::_Exit(AS_DUE ? 0 : 1);
+}
+
+/** @brief What the start control keeps from going on, for every process (deny()). */
+enum class StartHazard : std::uint8_t {
+  DUPLICATE_INTERRUPTED,      ///< Every duplicate onto stdout interrupted (EINTR).
+  REPORT_WRITE_INTERRUPTED,   ///< Every write of a start report interrupted; no program to run.
+  EXEC_HELD,                  ///< Every exec held, never answered.
+  REAP_INTERRUPTED,           ///< Every blocking wait interrupted; no program to run.
+  LOOK_INTERRUPTED,           ///< Every waitid interrupted; the keeper refuses (stdout kept).
+  DUPLICATE_INTERRUPTED_ONCE, ///< A program's first duplicate onto stdout interrupted.
+  NOTHING_DENIED              ///< Nothing: the starts as they ordinarily go.
+};
+
+/**
+ * @brief In a child of the death test's process, with @p which denied there
+ * alone: an owned helper and a probe are started, and each must end within
+ * its bound, its children reaped (the reaps here do not block). Where every
+ * duplicate onto stdout is interrupted, both fail with EINTR at once; where
+ * every start report's write is interrupted and the program cannot run, the
+ * report is lost and both end at once as a program that exited with 127;
+ * where every exec is held, both fail with ETIMEDOUT after the start
+ * report's bound, 5 s; where every blocking wait is interrupted and the
+ * program cannot run, both fail with ENOENT at once; where every waitid is
+ * interrupted, a probe whose keeper refuses (EACCES) ends at once. Where a
+ * program's first duplicate onto stdout is interrupted, once in each start,
+ * the duplicate is tried again and both complete as they do with nothing
+ * denied: the program exits 7, its output and errors captured apart. Prints
+ * how each ended and exits 0 when every one did so.
+ */
+[[noreturn]] void startsUnderInterruptions(StartHazard which) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  Denied denied{.closeRange = false};
+  const std::vector<std::string> ABSENT = {"/nonexistent/vernier-program"};
+  std::vector<std::string> program = {"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"};
+  switch (which) {
+  case StartHazard::DUPLICATE_INTERRUPTED:
+    denied.replace = STDOUT_FILENO;
+    denied.replaceErrno = EINTR;
+    break;
+  case StartHazard::REPORT_WRITE_INTERRUPTED:
+    denied.reportWrite = true;
+    program = ABSENT;
+    break;
+  case StartHazard::EXEC_HELD:
+    denied.execHeld = true;
+    break;
+  case StartHazard::REAP_INTERRUPTED:
+    denied.blockingWait = true;
+    program = ABSENT;
+    break;
+  case StartHazard::LOOK_INTERRUPTED:
+    denied = {.closeRange = false, .close = STDOUT_FILENO, .nullOpen = true, .stateLook = true};
+    break;
+  case StartHazard::DUPLICATE_INTERRUPTED_ONCE:
+    denied.interruptOnce = STDOUT_FILENO;
+    break;
+  case StartHazard::NOTHING_DENIED:
+    break;
+  }
+  if (!deny(denied)) {
+    std::fprintf(stderr, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  using Clock = std::chrono::steady_clock;
+  const auto MS = [](Clock::time_point since) {
+    return static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - since).count());
+  };
+  auto since = Clock::now();
+  HelperStart helper{};
+  long long helperMs = 0;
+  int helperInterrupted = 0;
+  if (which != StartHazard::LOOK_INTERRUPTED) {
+    OwnedHelper owned(quickPolicy());
+    helper = owned.start(program, "", "", 200, nullptr);
+    helperInterrupted = duplicatesInterrupted.load();
+    (void)owned.stop();
+    helperMs = MS(since);
+  }
+  since = Clock::now();
+  const ProbeResult PROBE = runBoundedProbe(program, 5000, CTX, ProbeStreams::SEPARATE);
+  const long long PROBE_MS = MS(since);
+  const int PROBE_INTERRUPTED = duplicatesInterrupted.load() - helperInterrupted;
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  const auto HELPER_EXITED = [&helper](int code) {
+    return helper.started && helper.exitedEarly && helper.statusObtained &&
+           WIFEXITED(helper.waitStatus) && WEXITSTATUS(helper.waitStatus) == code;
+  };
+  const bool HELPER_127 = HELPER_EXITED(127);
+  const bool BOTH_COMPLETED = HELPER_EXITED(7) && helperMs < 2000 && PROBE.started &&
+                              PROBE.exited && PROBE.exitCode == 7 && PROBE.output == "out\n" &&
+                              PROBE.errorOutput == "err\n" && PROBE_MS < 2000;
+  bool asDue = LEFT.empty();
+  switch (which) {
+  case StartHazard::DUPLICATE_INTERRUPTED:
+    asDue = asDue && !helper.started && helper.spawnErrno == EINTR && helperMs < 2000 &&
+            !PROBE.started && PROBE.spawnErrno == EINTR && PROBE_MS < 2000;
+    break;
+  case StartHazard::REPORT_WRITE_INTERRUPTED:
+    asDue = asDue && HELPER_127 && helperMs < 2000 && PROBE.started && PROBE.exited &&
+            PROBE.exitCode == 127 && PROBE_MS < 2000;
+    break;
+  case StartHazard::EXEC_HELD:
+    asDue = asDue && !helper.started && helper.spawnErrno == ETIMEDOUT && helperMs >= 4500 &&
+            helperMs < 9000 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE_MS >= 4500 && PROBE_MS < 9000;
+    break;
+  case StartHazard::REAP_INTERRUPTED:
+    asDue = asDue && !helper.started && helper.spawnErrno == ENOENT && helperMs < 2000 &&
+            !PROBE.started && PROBE.spawnErrno == ENOENT && PROBE_MS < 2000;
+    break;
+  case StartHazard::LOOK_INTERRUPTED:
+    asDue = asDue && !PROBE.started && PROBE.spawnErrno == EACCES && PROBE_MS < 2000;
+    break;
+  case StartHazard::DUPLICATE_INTERRUPTED_ONCE:
+    asDue = asDue && BOTH_COMPLETED && helperInterrupted == 1 && PROBE_INTERRUPTED == 1;
+    break;
+  case StartHazard::NOTHING_DENIED:
+    asDue = asDue && BOTH_COMPLETED;
+    break;
+  }
+  std::fprintf(stderr,
+               "the helper started=%d errno=%d early=%d %s after %lld ms, %d interrupted; the "
+               "probe %s, output [%s] errors [%s] after %lld ms, %d interrupted; children left: "
+               "%zu\n",
+               helper.started ? 1 : 0, helper.spawnErrno, helper.exitedEarly ? 1 : 0,
+               helper.errorTail.c_str(), helperMs, helperInterrupted, PROBE.describe().c_str(),
+               PROBE.output.c_str(), PROBE.errorOutput.c_str(), PROBE_MS, PROBE_INTERRUPTED,
+               LEFT.size());
+  std::_Exit(asDue ? 0 : 1);
+}
+
+/**
+ * @brief The body of a death test that supervises startsUnderInterruptions():
+ * it runs in a child of this process, which this process ends after 30 s;
+ * whatever that child left (a start's child that never ended) comes here,
+ * this process being a subreaper, and is ended and reaped before this one
+ * exits. Exits 0 when the child exited 0 within the 30 s.
+ */
+[[noreturn]] void startEndsUnderInterruptions(StartHazard which) {
+  using Clock = std::chrono::steady_clock;
+  if (::prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) {
+    std::fprintf(stderr, "this process could not be made a subreaper\n");
+    std::_Exit(4);
+  }
+  const pid_t RUNNER = ::fork();
+  if (RUNNER < 0) {
+    std::fprintf(stderr, "the starts could not be run\n");
+    std::_Exit(4);
+  }
+  if (RUNNER == 0) {
+    startsUnderInterruptions(which);
+  }
+  int status = 0;
+  bool ended = false;
+  for (const auto UNTIL = Clock::now() + std::chrono::seconds(30); Clock::now() < UNTIL;) {
+    if (::waitpid(RUNNER, &status, WNOHANG) == RUNNER) {
+      ended = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!ended) {
+    (void)::kill(RUNNER, SIGKILL);
+  }
+  for (const auto UNTIL = Clock::now() + std::chrono::seconds(5); Clock::now() < UNTIL;) {
+    const std::vector<pid_t> LEFT = childProcesses(::getpid());
+    if (LEFT.empty()) {
+      break;
+    }
+    for (const pid_t PID : LEFT) {
+      (void)::kill(PID, SIGKILL);
+    }
+    int reaped = 0;
+    while (::waitpid(-1, &reaped, WNOHANG) > 0) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const bool AS_DUE = ended && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  std::fprintf(stderr, "%s\n",
+               AS_DUE  ? "the start ended within its bound"
+               : ended ? "the start did not end as it should"
+                       : "the start did not end within 30 s: ended with what it left");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
+/** @brief Whether this kernel can hold a call for a seccomp listener (user_notif). */
+bool callsCanBeHeld() {
+#ifdef SECCOMP_RET_USER_NOTIF
+  std::ifstream actions("/proc/sys/kernel/seccomp/actions_avail");
+  std::string text;
+  std::getline(actions, text);
+  return text.find("user_notif") != std::string::npos;
+#else
+  return false;
+#endif
+}
+
+/** @brief Whether this kernel can let a held call go on (Linux 5.5 and later). */
+bool callsCanGoOn() {
+#ifdef SECCOMP_USER_NOTIF_FLAG_CONTINUE
+  utsname name{};
+  if (!callsCanBeHeld() || ::uname(&name) != 0) {
+    return false;
+  }
+  char* rest = nullptr;
+  const long MAJOR = std::strtol(name.release, &rest, 10);
+  const long MINOR = *rest == '.' ? std::strtol(rest + 1, nullptr, 10) : 0;
+  return MAJOR > 5 || (MAJOR == 5 && MINOR >= 5);
+#else
+  return false;
+#endif
 }
 
 /** @brief Where the lock control holds its lock, what fails there, and the limits. */
@@ -1793,6 +2106,58 @@ TEST(ReadinessProbes, StreamThatCannotBeSetFailsTheStart) {
   EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::UNDUPLICABLE),
               ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
       << "nothing duplicated onto stdout";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start ends within its bound whatever keeps its calls from going
+ * on, its children reaped: with every duplicate onto stdout interrupted
+ * (EINTR), the owned helper and the probe fail with EINTR at once, the
+ * duplicate tried a few times; with every start report's write interrupted
+ * and a program that cannot run, the report is lost and both end at once as
+ * a program that exited with 127; with every exec held, both fail with
+ * ETIMEDOUT after the start report's bound (5 s), the held child ended; with
+ * every blocking wait interrupted and a program that cannot run, both fail
+ * with ENOENT at once, the child reaped without blocking; with every waitid
+ * interrupted, a probe whose keeper refuses ends at once. With a program's
+ * first duplicate onto stdout interrupted, once in each start, both
+ * complete as they do with nothing denied: exit 7, the program's output and
+ * errors captured apart. Each case in a process of its own, which its
+ * parent ends after 30 s with whatever it left.
+ */
+TEST(ReadinessProbes, StartEndsWithinItsBound) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::DUPLICATE_INTERRUPTED, "every duplicate onto stdout interrupted"},
+      {StartHazard::REPORT_WRITE_INTERRUPTED, "every start report's write interrupted"},
+      {StartHazard::EXEC_HELD, "every exec held"},
+      {StartHazard::REAP_INTERRUPTED, "every blocking wait interrupted"},
+      {StartHazard::LOOK_INTERRUPTED, "every waitid interrupted"},
+      {StartHazard::DUPLICATE_INTERRUPTED_ONCE,
+       "a program's first duplicate onto stdout interrupted"},
+      {StartHazard::NOTHING_DENIED, "nothing denied"},
+  };
+  for (const auto& c : CASES) {
+    if (c.which == StartHazard::EXEC_HELD && !callsCanBeHeld()) {
+      std::fprintf(stderr, "this kernel cannot hold a call for a listener: %s not run\n", c.name);
+      continue;
+    }
+    if (c.which == StartHazard::DUPLICATE_INTERRUPTED_ONCE && !callsCanGoOn()) {
+      std::fprintf(stderr, "this kernel cannot let a held call go on: %s not run\n", c.name);
+      continue;
+    }
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif

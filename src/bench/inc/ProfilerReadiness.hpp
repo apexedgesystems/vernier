@@ -434,9 +434,12 @@ enum class ProbeStreams : std::uint8_t {
  * end of the anchor not put on its stdin, its stdout or stderr neither
  * replaced by /dev/null nor closed, the list unreadable, a descriptor that
  * would not close) fails the call with the errno it reports, and one that
- * says nothing within 5 s with ETIMEDOUT. A
- * call whose setup fails after the keeper started ends and reaps the keeper
- * before it returns.
+ * says nothing within 5 s with ETIMEDOUT. The program's own start (its
+ * group joined, its streams set, its exec) fails the call with the errno of
+ * the step that failed, or with ETIMEDOUT when neither its exec nor a
+ * failure is reported within 5 s; that program is then ended with its group.
+ * A call whose setup fails after the keeper started ends and reaps the
+ * keeper before it returns.
  * Output still in the pipes is read for at most
  * PROBE_DRAIN_MS, and the call returns once the program is reaped and no
  * process of its group runs, or PROBE_REAP_MS later at the most. A process
@@ -617,7 +620,9 @@ public:
 
   /**
    * @brief Start @p argv; stdout to @p stdoutPath ("" for /dev/null), stderr to
-   * @p stderrPath ("" for /dev/null); wait up to @p graceMs.
+   * @p stderrPath ("" for /dev/null); wait up to @p graceMs. A start that
+   * reports neither its exec nor what failed within 5 s fails with ETIMEDOUT,
+   * the child ended and reaped.
    * @param probeEnv Null: the helper inherits this process's environment.
    *                 Otherwise it gets that context's probe environment.
    */
