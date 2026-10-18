@@ -966,6 +966,7 @@ struct Denied {
                                ///< answerDuplicates(): a process's first fails with EINTR.
   bool reportWrite = false;    ///< Every write(2) of 8 bytes, a start report's: EINTR.
   bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
+  bool noHangWait = false;     ///< Every wait4(2) that does not block (WNOHANG): EINTR.
   bool stateLook = false;      ///< Every waitid(2): EINTR.
   bool execHeld = false;       ///< Every execve(2) held, for a listener that never answers.
   bool joinHeld = false;       ///< A process's join of another's group (setpgid(0, g), g not
@@ -1034,6 +1035,9 @@ bool deny(const Denied& denied) {
   }
   if (denied.blockingWait) {
     DENY_WHEN(SYS_wait4, 2, BPF_JEQ, 0U, EINTR);
+  }
+  if (denied.noHangWait) {
+    DENY_WHEN(SYS_wait4, 2, BPF_JSET, static_cast<unsigned>(WNOHANG), EINTR);
   }
   if (denied.stateLook) {
     DENY_CALL(SYS_waitid, EINTR);
@@ -1481,7 +1485,12 @@ enum class StartHazard : std::uint8_t {
   REAP_INTERRUPTED,           ///< Every blocking wait interrupted; no program to run.
   LOOK_INTERRUPTED,           ///< Every waitid interrupted; the keeper refuses (stdout kept).
   DUPLICATE_INTERRUPTED_ONCE, ///< A program's first duplicate onto stdout interrupted.
-  NOTHING_DENIED              ///< Nothing: the starts as they ordinarily go.
+  NOTHING_DENIED,             ///< Nothing: the starts as they ordinarily go.
+  LIVE_ORDINARY,              ///< Nothing; a program that runs past its bound and leaves a
+                              ///< child in its group: the probe alone.
+  LOOK_INTERRUPTED_LIVE,      ///< Every waitid interrupted; that program: the probe alone.
+  LOOK_AND_WAIT_INTERRUPTED   ///< Every waitid and every wait that does not block
+                              ///< interrupted; that program: the probe alone.
 };
 
 /**
@@ -1500,14 +1509,37 @@ enum class StartHazard : std::uint8_t {
  * keeper refuses (EACCES) ends at once. Where a program's first duplicate
  * onto stdout is interrupted, once in each start, the duplicate is tried
  * again and both complete as they do with nothing denied: the program exits
- * 7, its output and errors captured apart. Prints how each ended and exits 0
- * when every one did so.
+ * 7, its output and errors captured apart. A program that runs past its
+ * bound and leaves a child in its group (the fake helper's "orphan quiet
+ * stay", bounded at 300 ms) is ended, that child with it, and no process of
+ * either is left running: with nothing denied and with every waitid
+ * interrupted, it is killed at its bound and its status read (the wait that
+ * does not block decides where the look cannot); with every waitid and
+ * every wait that does not block interrupted, its group is ended and it is
+ * reported unreaped, never as reaped by another wait. Prints how each ended
+ * and exits 0 when every one did so.
  */
 [[noreturn]] void startsUnderInterruptions(StartHazard which) {
-  const ReadinessContext CTX = ReadinessContext::capture();
+  const bool LIVE = which == StartHazard::LIVE_ORDINARY ||
+                    which == StartHazard::LOOK_INTERRUPTED_LIVE ||
+                    which == StartHazard::LOOK_AND_WAIT_INTERRUPTED;
+  std::unique_ptr<FakeToolDir> dir;
+  if (LIVE) {
+    dir = std::make_unique<FakeToolDir>();
+    if (!dir->ok()) {
+      std::fprintf(stderr, "no fake tool directory\n");
+      std::_Exit(3);
+    }
+  }
+  const ReadinessContext CTX = LIVE ? dir->context() : ReadinessContext::capture();
   Denied denied{.closeRange = false};
   const std::vector<std::string> ABSENT = {"/nonexistent/vernier-program"};
   std::vector<std::string> program = {"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"};
+  int timeoutMs = 5000;
+  if (LIVE) {
+    program = {dir->install("fake_helper.sh", "helper"), "orphan", "quiet", "stay"};
+    timeoutMs = 300;
+  }
   switch (which) {
   case StartHazard::DUPLICATE_INTERRUPTED:
     denied.replace = STDOUT_FILENO;
@@ -1534,6 +1566,14 @@ enum class StartHazard : std::uint8_t {
     denied.interruptOnce = STDOUT_FILENO;
     break;
   case StartHazard::NOTHING_DENIED:
+  case StartHazard::LIVE_ORDINARY:
+    break;
+  case StartHazard::LOOK_INTERRUPTED_LIVE:
+    denied.stateLook = true;
+    break;
+  case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
+    denied.stateLook = true;
+    denied.noHangWait = true;
     break;
   }
   if (!deny(denied)) {
@@ -1549,7 +1589,7 @@ enum class StartHazard : std::uint8_t {
   HelperStart helper{};
   long long helperMs = 0;
   int helperInterrupted = 0;
-  if (which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD) {
+  if (which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD && !LIVE) {
     OwnedHelper owned(quickPolicy());
     helper = owned.start(program, "", "", 200, nullptr);
     helperInterrupted = duplicatesInterrupted.load();
@@ -1557,7 +1597,7 @@ enum class StartHazard : std::uint8_t {
     helperMs = MS(since);
   }
   since = Clock::now();
-  const ProbeResult PROBE = runBoundedProbe(program, 5000, CTX, ProbeStreams::SEPARATE);
+  const ProbeResult PROBE = runBoundedProbe(program, timeoutMs, CTX, ProbeStreams::SEPARATE);
   const long long PROBE_MS = MS(since);
   const int PROBE_INTERRUPTED = duplicatesInterrupted.load() - helperInterrupted;
   const std::vector<pid_t> LEFT = childProcesses(::getpid());
@@ -1569,6 +1609,19 @@ enum class StartHazard : std::uint8_t {
   const bool BOTH_COMPLETED = HELPER_EXITED(7) && helperMs < 2000 && PROBE.started &&
                               PROBE.exited && PROBE.exitCode == 7 && PROBE.output == "out\n" &&
                               PROBE.errorOutput == "err\n" && PROBE_MS < 2000;
+  // The live program's child, and whether any process of the call still runs.
+  pid_t left = -1;
+  if (LIVE) {
+    const std::vector<std::string> LOGGED = dir->logLines("helper child pid=");
+    if (!LOGGED.empty()) {
+      left = static_cast<pid_t>(std::stol(LOGGED.front().substr(LOGGED.front().find('=') + 1)));
+    }
+  }
+  const bool LEFT_ENDED = left > 0 && ended(left);
+  const std::size_t RUNNING_LEFT = static_cast<std::size_t>(
+      std::count_if(LEFT.begin(), LEFT.end(), [](pid_t pid) { return !ended(pid); }));
+  const bool LIVE_KILLED = PROBE.started && PROBE.timedOut && PROBE.statusObtained &&
+                           PROBE_MS < 2500 && LEFT_ENDED && LEFT.empty();
   bool asDue = LEFT.empty();
   switch (which) {
   case StartHazard::DUPLICATE_INTERRUPTED:
@@ -1601,15 +1654,25 @@ enum class StartHazard : std::uint8_t {
   case StartHazard::NOTHING_DENIED:
     asDue = asDue && BOTH_COMPLETED;
     break;
+  case StartHazard::LIVE_ORDINARY:
+  case StartHazard::LOOK_INTERRUPTED_LIVE:
+    asDue = LIVE_KILLED;
+    break;
+  case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
+    asDue = PROBE.started && !PROBE.timedOut && !PROBE.statusObtained &&
+            PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 && LEFT_ENDED &&
+            RUNNING_LEFT == 0;
+    break;
   }
   std::fprintf(stderr,
                "the helper started=%d errno=%d early=%d %s after %lld ms, %d interrupted; the "
                "probe %s, output [%s] errors [%s] after %lld ms, %d interrupted; children left: "
-               "%zu\n",
+               "%zu, %zu running; the program's child %d ended=%d\n",
                helper.started ? 1 : 0, helper.spawnErrno, helper.exitedEarly ? 1 : 0,
                helper.errorTail.c_str(), helperMs, helperInterrupted, PROBE.describe().c_str(),
                PROBE.output.c_str(), PROBE.errorOutput.c_str(), PROBE_MS, PROBE_INTERRUPTED,
-               LEFT.size());
+               LEFT.size(), RUNNING_LEFT, static_cast<int>(left), LEFT_ENDED ? 1 : 0);
+  dir.reset();
   std::_Exit(asDue ? 0 : 1);
 }
 
@@ -2282,6 +2345,44 @@ TEST(ReadinessProbes, StartEndsWithinItsBound) {
       std::fprintf(stderr, "this kernel cannot let a held call go on: %s not run\n", c.name);
       continue;
     }
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A program whose state cannot be read is not taken for one reaped
+ * elsewhere, and still ends with the probe. A program that runs past its
+ * bound and leaves a child in its group (the fake helper's "orphan quiet
+ * stay", bounded at 300 ms) is killed at its bound and its status read with
+ * nothing denied and with every waitid interrupted, where a wait that does
+ * not block says that it runs and reaps it once it is killed. With every
+ * waitid and every wait that does not block interrupted, its group is ended
+ * while the keeper's end of their link shows the keeper running, nothing is
+ * signalled by the program's pid, and the result says that it was not
+ * reaped within the bound, never that another wait reaped it. No process of
+ * the program or of its child is left running. Each case in a process of its
+ * own, which its parent ends after 30 s with whatever it left.
+ */
+TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::LIVE_ORDINARY, "nothing denied"},
+      {StartHazard::LOOK_INTERRUPTED_LIVE, "every waitid interrupted"},
+      {StartHazard::LOOK_AND_WAIT_INTERRUPTED,
+       "every waitid and every wait that does not block interrupted"},
+  };
+  for (const auto& c : CASES) {
     EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
                 "the start ended within its bound")
         << c.name;

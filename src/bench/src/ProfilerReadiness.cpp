@@ -568,18 +568,22 @@ void reapWithin(pid_t pid, int& status) {
   }
 }
 
-/** @brief Where a probe's program stands. */
+/** @brief Where a child of this process stands: a probe's keeper or its program. */
 enum class LeaderState : std::uint8_t {
-  RUNNING, ///< Still running.
-  ENDED,   ///< Ended, not yet reaped: its pid, which is its group's id, cannot be reused.
-  GONE     ///< Reaped elsewhere (ECHILD), or unreadable: nothing of it may be signalled.
+  RUNNING, ///< Still running, not reaped: its pid is its own, so it may be signalled.
+  ENDED,   ///< Ended, not yet reaped: its pid, and a group's id it gives, cannot be reused.
+  REAPED,  ///< Ended and reaped here, its status read: its pid may be another's by now.
+  GONE,    ///< Reaped elsewhere (ECHILD): nothing of it may be signalled.
+  UNKNOWN  ///< Its state could not be read: not taken for an end, and never signalled.
 };
 
 /**
- * @brief The state of @p child, observed without reaping it; GONE also when
- * an interrupted look (EINTR, which a look that does not block is not given
- * but by a policy) failed INTERRUPTED_TRIES times: then nothing of it is
- * signalled.
+ * @brief The state of @p child, observed without reaping it (waitid
+ * WNOWAIT): RUNNING, ENDED, GONE when it is not this process's child any
+ * more (ECHILD), or UNKNOWN when the look fails otherwise, as an interrupted
+ * look (EINTR, which a look that does not block is not given but by a
+ * policy) does INTERRUPTED_TRIES times. An unknown state is no loss: nothing
+ * of the child is signalled on it, and nothing says another wait took it.
  */
 LeaderState leaderState(pid_t child) {
   siginfo_t info{};
@@ -590,9 +594,36 @@ LeaderState leaderState(pid_t child) {
     rc = ::waitid(P_PID, static_cast<id_t>(child), &info, WEXITED | WNOHANG | WNOWAIT);
   } while (rc < 0 && errno == EINTR && --tries > 0);
   if (rc < 0) {
-    return LeaderState::GONE;
+    return errno == ECHILD ? LeaderState::GONE : LeaderState::UNKNOWN;
   }
   return info.si_pid == child ? LeaderState::ENDED : LeaderState::RUNNING;
+}
+
+/**
+ * @brief The state of @p child, a probe's program, as leaderState() reads
+ * it; where that look fails (UNKNOWN), as a wait that does not block reads
+ * it, its interruptions tried INTERRUPTED_TRIES times: RUNNING while it runs
+ * (the wait answers 0 only for an unreaped child that runs), REAPED with
+ * @p status once it has ended (it is reaped then, so its pid is never
+ * signalled again), GONE on ECHILD, and UNKNOWN when that wait fails too.
+ */
+LeaderState childState(pid_t child, int& status) {
+  const LeaderState LOOKED = leaderState(child);
+  if (LOOKED != LeaderState::UNKNOWN) {
+    return LOOKED;
+  }
+  pid_t w = 0;
+  int tries = INTERRUPTED_TRIES;
+  do {
+    w = ::waitpid(child, &status, WNOHANG);
+  } while (w < 0 && errno == EINTR && --tries > 0);
+  if (w == child) {
+    return LeaderState::REAPED;
+  }
+  if (w == 0) {
+    return LeaderState::RUNNING;
+  }
+  return errno == ECHILD ? LeaderState::GONE : LeaderState::UNKNOWN;
 }
 
 #ifdef __linux__
@@ -1103,15 +1134,35 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   }
   (void)::setpgid(KEEPER, KEEPER); // both sides set it; whichever runs first wins the race
   ::close(anchor[KEEPER_END]);
+  // Whether the keeper runs. Its end of the anchor, which no other process
+  // holds, closes only when it ends, and it cannot end by itself before this
+  // process closes its own end: while this end shows no hang-up, the keeper
+  // runs and its pid, the group's id, is its own, whatever a look at it can
+  // read. Without that answer (this end closed, or the poll failing), a look
+  // decides, and one that cannot be read says no.
+  const auto KEEPER_RUNS = [&] {
+    if (anchor[OWN_END] >= 0) {
+      pollfd hangUp{anchor[OWN_END], POLLIN, 0};
+      if (::poll(&hangUp, 1, 0) >= 0) {
+        return (hangUp.revents & POLLHUP) == 0;
+      }
+    }
+    return leaderState(KEEPER) == LeaderState::RUNNING;
+  };
+  // The group's id is this call's while the keeper is not reaped: it runs,
+  // or a look shows it ended and still unreaped. A keeper reaped elsewhere,
+  // or one whose state cannot be read, leaves nothing to signal by its id.
+  const auto GROUP_IS_OURS = [&] {
+    return KEEPER_RUNS() || leaderState(KEEPER) == LeaderState::ENDED;
+  };
   // Ends the keeper on every path, then reaps it within PROBE_REAP_MS. A
   // keeper still running that the group's end has not signalled (a setup
-  // that failed before the program ran) is killed while this process still
-  // holds its end of the anchor: it cannot have ended by itself, so its pid
-  // is still its own. Then the anchor closes, and a keeper reaped elsewhere
-  // is gone.
+  // that failed before the program ran) is killed while it runs. Then the
+  // anchor closes (a keeper waiting on it ends), and a keeper reaped
+  // elsewhere is gone.
   bool keeperSignalled = false;
   const auto END_KEEPER = [&] {
-    if (!keeperSignalled && leaderState(KEEPER) == LeaderState::RUNNING) {
+    if (!keeperSignalled && KEEPER_RUNS()) {
       (void)::kill(KEEPER, SIGKILL);
       keeperSignalled = true;
     }
@@ -1231,12 +1282,12 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     // this call's child, so it is killed itself while a look shows it running
     // (not reaped, its pid is still its own), and then with its group, the
     // keeper's, whose id the unreaped keeper still holds.
-    if (step == 0 && leaderState(CHILD) == LeaderState::RUNNING) {
+    int status = 0;
+    if (step == 0 && childState(CHILD, status) == LeaderState::RUNNING) {
       (void)::kill(CHILD, SIGKILL);
     }
     (void)::killpg(KEEPER, SIGKILL);
     keeperSignalled = true;
-    int status = 0;
     reapWithin(CHILD, status);
     CLOSE_ALL();
     END_KEEPER();
@@ -1287,7 +1338,11 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
 
   // Run until the program ends or the bound passes. The program is observed,
   // not reaped, so that its pid stays its own while it is signalled below
-  // (unless the system reaped it already: then it is gone).
+  // (unless the system reaped it already: then it is gone). Where the look
+  // fails, a wait that does not block decides (childState()), and reaps a
+  // program that has ended; where that fails too, the state is unknown:
+  // watching stops, and nothing below takes it for an end.
+  int status = 0;
   const auto DEADLINE = Clock::now() + std::chrono::milliseconds(std::max(timeoutMs, 0));
   LeaderState leader = LeaderState::RUNNING;
   while (true) {
@@ -1298,7 +1353,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     } else {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    leader = leaderState(CHILD);
+    leader = childState(CHILD, status);
     if (leader != LeaderState::RUNNING) {
       break;
     }
@@ -1311,14 +1366,18 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   // Finish the group on every path: nothing the probe started may run on
   // into the measurement it precedes. The unreaped keeper keeps the group's
   // id this call's; a keeper reaped elsewhere (another wait, against the
-  // documented ownership of children) is gone, and nothing is signalled by
-  // its id.
-  if (leaderState(KEEPER) != LeaderState::GONE) {
+  // documented ownership of children), or one whose state cannot be read, is
+  // not signalled by its id. The program itself, had it left the group, is
+  // killed only while a look still shows it running.
+  if (GROUP_IS_OURS()) {
     (void)::kill(-KEEPER, SIGKILL);
     keeperSignalled = true;
   }
-  if (leader != LeaderState::GONE) {
-    (void)::kill(CHILD, SIGKILL); // the program itself, had it left the group
+  if (leader == LeaderState::RUNNING) {
+    leader = childState(CHILD, status);
+    if (leader == LeaderState::RUNNING) {
+      (void)::kill(CHILD, SIGKILL);
+    }
   }
 
   // What the pipes still hold. Processes the signal ended close them; one
@@ -1335,19 +1394,19 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
 
   // Reap the program, wait for the rest of its group, then reap the keeper;
   // each bounded. A program reaped elsewhere (ECHILD) is gone without a
-  // status: its end is unobserved, never read as an exit.
-  int status = 0;
-  bool reaped = leader == LeaderState::GONE;
-  bool lost = reaped;
+  // status: its end is unobserved, never read as an exit. One whose state
+  // could not be read is no loss: unreaped within the bound, it says so,
+  // never that another wait took it.
+  bool reaped = leader == LeaderState::REAPED;
+  bool lost = leader == LeaderState::GONE;
   const auto REAP_END = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
-  while (!reaped) {
+  while (!reaped && !lost) {
     const pid_t W = ::waitpid(CHILD, &status, WNOHANG);
     if (W == CHILD) {
       reaped = true;
       break;
     }
     if (W < 0 && errno != EINTR) {
-      reaped = true;
       lost = true;
       break;
     }
@@ -1359,7 +1418,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   waitForGroup(KEEPER, REAP_END);
   END_KEEPER();
   CLOSE_ALL();
-  result.statusObtained = reaped && !lost;
+  result.statusObtained = reaped;
   if (lost) {
     result.statusLoss = currentStatusLoss();
   }

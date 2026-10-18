@@ -427,18 +427,25 @@ enum class ProbeStreams : std::uint8_t {
  * cannot belong to another process, so the group is ended also when the
  * system reaps the program as it exits (this process ignores SIGCHLD or
  * sets SA_NOCLDWAIT), and no id that may have passed to another process is
- * ever signalled. The program starts only once the keeper reports that it
- * holds nothing of this process's: where no keeper could (no close_range, and
- * /proc/self/fd cannot be opened) nothing is started and the call fails
- * (ENOSYS); a keeper that could not let go of everything it inherits (its
- * end of the anchor not put on its stdin, its stdout or stderr neither
- * replaced by /dev/null nor closed, the list unreadable, a descriptor that
- * would not close) fails the call with the errno it reports, and one that
- * says nothing within 5 s with ETIMEDOUT. The program's own start (its
- * group joined, its streams set, its exec) fails the call with the errno of
- * the step that failed, or with ETIMEDOUT when neither its exec nor a
- * failure is reported within 5 s; that program is then ended, itself while it
- * runs, whether or not it has joined the group yet, and with its group.
+ * ever signalled. A look at a process that cannot be read is not taken for
+ * its end: where the program's state cannot be read (a look at it, then a
+ * wait that does not block, interrupted every time), watching stops, the
+ * group is ended while the keeper is shown running (its end of their link
+ * still open), the program is not signalled by its pid, and if it is not
+ * reaped within the bound the result says so (statusObtained false,
+ * statusLoss NONE), never that another wait took it. The program starts
+ * only once the keeper reports that it holds nothing of this process's:
+ * where no keeper could (no close_range, and /proc/self/fd cannot be
+ * opened) nothing is started and the call fails (ENOSYS); a keeper that
+ * could not let go of everything it inherits (its end of the anchor not put
+ * on its stdin, its stdout or stderr neither replaced by /dev/null nor
+ * closed, the list unreadable, a descriptor that would not close) fails the
+ * call with the errno it reports, and one that says nothing within 5 s with
+ * ETIMEDOUT. The program's own start (its group joined, its streams set,
+ * its exec) fails the call with the errno of the step that failed, or with
+ * ETIMEDOUT when neither its exec nor a failure is reported within 5 s; that
+ * program is then ended, itself while it runs, whether or not it has joined
+ * the group yet, and with its group.
  * A call whose setup fails after the keeper started ends and reaps the
  * keeper before it returns.
  * Output still in the pipes is read for at most
