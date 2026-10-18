@@ -638,6 +638,22 @@ run of the same command can land outside them.
   join never sleeps. `JoinV0`, the first case of that run, printed the same
   line.
 
+- **`completion: unusable: the tracer's output ... is incomplete` instead of
+  `stacks written`.** On this rig, with bpftrace 0.23.2, a capture can come
+  back incomplete when the tracer shuts down and turns its stacks into names:
+  its dump ends before the `@recorded` line, or a stack entry prints without
+  frames and the tracer's error file names a stack it could not look up. The
+  evidence points to an intermittent problem in the tracer while it symbolizes
+  the stacks at its exit; the defect behind it is not established. The backend
+  reports such a capture as unusable even if the tracer exited 0, prints no
+  `stacks written` line, and keeps the capture folder, its dump and its error
+  file as the tracer left them. Once its tests pass, the benchmark ends with
+  status 4 (a failing test's status comes first) and `bench run` with status 1.
+  Keep that folder and run the command again with `--profile-output-dir` naming
+  a new directory, so that the new capture cannot replace the failed one. If
+  captures keep failing, keep the runs' output, their capture folders and the
+  versions of bpftrace, the kernel and Vernier for diagnosis.
+
 - **The stacks stop after a frame or two and name nothing of the demo.**
   bpftrace's user stacks follow frame pointers, and a function built without
   them breaks the walk. On an x86-64 laptop with Ubuntu 22.04, whose C library
