@@ -443,9 +443,12 @@ enum class ProbeStreams : std::uint8_t {
  * call with the errno it reports, and one that says nothing within 5 s with
  * ETIMEDOUT. The program's own start (its group joined, its streams set,
  * its exec) fails the call with the errno of the step that failed, or with
- * ETIMEDOUT when neither its exec nor a failure is reported within 5 s; that
- * program is then ended, itself while it runs, whether or not it has joined
- * the group yet, and with its group.
+ * ETIMEDOUT when neither its exec nor a failure is reported within 5 s. A
+ * program that reported what failed ends by itself and is reaped, not
+ * signalled; one that did not is killed itself while a look shows it running,
+ * whether or not it has joined the group yet, and with its group while the
+ * keeper holds the group's id. Nothing reaped elsewhere, or whose state
+ * cannot be read, is signalled.
  * A call whose setup fails after the keeper started ends and reaps the
  * keeper before it returns.
  * Output still in the pipes is read for at most
@@ -632,7 +635,9 @@ public:
    * @p graceMs. A stream it cannot set, or SIGINT and SIGTERM it cannot give
    * their default action, fails the start with that errno. A start that
    * reports neither its exec nor what failed within 5 s fails with ETIMEDOUT,
-   * the child ended and reaped.
+   * the child killed while a look shows it running, then reaped; a child
+   * that reported what failed is only reaped, and none reaped elsewhere
+   * (this process ignores SIGCHLD or sets SA_NOCLDWAIT) is signalled.
    * @param probeEnv Null: the helper inherits this process's environment.
    *                 Otherwise it gets that context's probe environment.
    */

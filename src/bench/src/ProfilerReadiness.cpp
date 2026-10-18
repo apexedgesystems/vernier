@@ -553,21 +553,6 @@ bool readSpawnFailure(int fd, int& step, int& err) {
   return true;
 }
 
-/**
- * @brief Reap @p pid, a child that has been ended or is ending, PROBE_REAP_MS
- * at the most (an interrupted wait tried again until then).
- */
-void reapWithin(pid_t pid, int& status) {
-  const auto UNTIL = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
-  while (true) {
-    const pid_t W = ::waitpid(pid, &status, WNOHANG);
-    if (W == pid || (W < 0 && errno != EINTR) || Clock::now() >= UNTIL) {
-      return;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-  }
-}
-
 /** @brief Where a child of this process stands: a probe's keeper or its program. */
 enum class LeaderState : std::uint8_t {
   RUNNING, ///< Still running, not reaped: its pid is its own, so it may be signalled.
@@ -624,6 +609,54 @@ LeaderState childState(pid_t child, int& status) {
     return LeaderState::RUNNING;
   }
   return errno == ECHILD ? LeaderState::GONE : LeaderState::UNKNOWN;
+}
+
+/**
+ * @brief Reap @p pid, a child that has been ended or is ending, PROBE_REAP_MS
+ * at the most (an interrupted wait tried again until then): REAPED with
+ * @p status, GONE when it is not this process's child any more (ECHILD), or
+ * as the last wait left it: RUNNING (an unreaped child that runs) or
+ * UNKNOWN (that wait interrupted).
+ */
+LeaderState reapWithin(pid_t pid, int& status) {
+  const auto UNTIL = Clock::now() + std::chrono::milliseconds(PROBE_REAP_MS);
+  while (true) {
+    const pid_t W = ::waitpid(pid, &status, WNOHANG);
+    if (W == pid) {
+      return LeaderState::REAPED;
+    }
+    if (W < 0 && errno != EINTR) {
+      return LeaderState::GONE;
+    }
+    if (Clock::now() >= UNTIL) {
+      return W == 0 ? LeaderState::RUNNING : LeaderState::UNKNOWN;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+}
+
+/**
+ * @brief End and reap @p child, a direct child of this process whose start
+ * failed, each step bounded; it is signalled only while it is shown running,
+ * not reaped, so its pid is its own. A child that reported what failed
+ * (@p reported) ends by itself: it is only reaped, and killed only if it
+ * still runs once PROBE_REAP_MS has passed. One whose report did not come
+ * (none in time, or one that could not be read) may still run: it is killed
+ * first while a look shows it running, whatever its group, then reaped. A
+ * child reaped elsewhere (ECHILD), the system's reap of one that ended under
+ * an ignored SIGCHLD among them, is never signalled, nor is one whose state
+ * cannot be read. Returns how it was left: REAPED (@p status read), GONE, or
+ * the state the last wait left it in.
+ */
+LeaderState endFailedStart(pid_t child, bool reported, int& status) {
+  LeaderState state = reported ? reapWithin(child, status) : childState(child, status);
+  if (state == LeaderState::RUNNING) {
+    (void)::kill(child, SIGKILL);
+    state = reapWithin(child, status);
+  } else if (state == LeaderState::ENDED || (!reported && state == LeaderState::UNKNOWN)) {
+    state = reapWithin(child, status);
+  }
+  return state;
 }
 
 #ifdef __linux__
@@ -1277,18 +1310,20 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   int execErrno = 0;
   const bool SPAWN_FAILED = readSpawnFailure(report[0], step, execErrno);
   if (SPAWN_FAILED) {
-    // A child that reported exits by itself. One whose report did not come
-    // may still run, and may not have joined the keeper's group yet: it is
-    // this call's child, so it is killed itself while a look shows it running
-    // (not reaped, its pid is still its own), and then with its group, the
-    // keeper's, whose id the unreaped keeper still holds.
-    int status = 0;
-    if (step == 0 && childState(CHILD, status) == LeaderState::RUNNING) {
-      (void)::kill(CHILD, SIGKILL);
+    // A failure report is no proof that anything is still this call's, and
+    // neither is a report that did not come. A child that reported ends by
+    // itself and is only reaped; it never exec'd, so nothing else is in the
+    // group, which is left to the keeper's end. One whose report did not come
+    // may still run, joined to the keeper's group or not yet: the group is
+    // killed while its id is this call's, and the child itself while a look
+    // shows it running (endFailedStart()); one reaped elsewhere, or whose
+    // state cannot be read, is not signalled.
+    if (step == 0 && GROUP_IS_OURS()) {
+      (void)::kill(-KEEPER, SIGKILL);
+      keeperSignalled = true;
     }
-    (void)::killpg(KEEPER, SIGKILL);
-    keeperSignalled = true;
-    reapWithin(CHILD, status);
+    int status = 0;
+    (void)endFailedStart(CHILD, step != 0, status);
     CLOSE_ALL();
     END_KEEPER();
     result.spawnErrno = execErrno;
@@ -1760,10 +1795,12 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   const bool FAILED = readSpawnFailure(report[0], step, err);
   ::close(report[0]);
   if (FAILED) {
-    // A child whose report did not come may still run: it is ended first.
-    (void)::kill(CHILD, SIGKILL);
+    // A child that reported what failed ends by itself and is only reaped;
+    // one whose report did not come may still run, and is killed while a look
+    // shows it running. Neither is signalled once reaped elsewhere (a child
+    // that ends under an ignored SIGCHLD is reaped by the system).
     int status = 0;
-    reapWithin(CHILD, status);
+    (void)endFailedStart(CHILD, step != 0, status);
     outcome.spawnErrno = err;
     const std::string WHAT = step == 1   ? OUT_PATH
                              : step == 2 ? ERR_PATH

@@ -915,40 +915,32 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
 #ifdef __linux__
 namespace {
 
-/** @brief The duplicates answerDuplicates() has failed with EINTR in this process. */
+/** @brief The duplicates answerHeldCalls() has failed with EINTR in this process. */
 std::atomic<int> duplicatesInterrupted{0};
 
-#if defined(SECCOMP_RET_USER_NOTIF) && defined(SECCOMP_USER_NOTIF_FLAG_CONTINUE)
-/**
- * @brief Answers the duplicates deny() holds on @p listener, for as long as
- * this process lives: a process's first fails with EINTR and its later ones
- * are carried out; a group's leader (the probe's keeper) goes on at once.
- */
-void answerDuplicates(int listener) {
-  std::vector<std::uint32_t> interrupted;
-  for (;;) {
-    seccomp_notif request{};
-    if (::ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) != 0) {
-      if (errno == EINTR || errno == ENOENT) {
-        continue;
-      }
-      return;
-    }
-    seccomp_notif_resp response{};
-    response.id = request.id;
-    const auto PID = static_cast<pid_t>(request.pid);
-    if (::getpgid(PID) != PID &&
-        std::find(interrupted.begin(), interrupted.end(), request.pid) == interrupted.end()) {
-      interrupted.push_back(request.pid);
-      duplicatesInterrupted.fetch_add(1);
-      response.error = -EINTR;
-    } else {
-      response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
-    }
-    (void)::ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response);
-  }
-}
-#endif
+/** @brief The kill(2) calls answerHeldCalls() has held in this process (signal 0 aside). */
+std::atomic<int> killsSeen{0};
+
+/** @brief Those of them aimed at the keeper answerHeldCalls() ended, by its pid or group. */
+std::atomic<int> killsOnLost{0};
+
+/** @brief The keeper answerHeldCalls() ended (Denied::keeperLoss), once it is gone; or 0. */
+std::atomic<pid_t> keeperEnded{0};
+
+/** @brief What deny()'s listener does with each kill(2) it holds (Denied::kills). */
+enum class KillWatch : std::uint8_t {
+  NONE,        ///< kill(2) is not held.
+  REFUSED,     ///< Each counted and refused (EPERM): none is expected.
+  LOST_REFUSED ///< Each counted; one aimed at the keeper the listener ended, by its pid or its
+               ///< group, also counted apart and refused (EPERM); the others carried out.
+};
+
+/** @brief What deny()'s listener does with each execve(2) it holds (Denied::keeperLoss). */
+enum class KeeperLoss : std::uint8_t {
+  NONE,         ///< Nothing of this: execve(2) is held only by execHeld.
+  THEN_REFUSED, ///< The caller's keeper ended and awaited, then the exec refused (ENOENT).
+  THEN_HELD     ///< The caller's keeper ended and awaited, then the exec left held.
+};
 
 /** @brief The calls deny() makes fail, and how. */
 struct Denied {
@@ -963,7 +955,7 @@ struct Denied {
   int flagSet = -1;            ///< fcntl(2) F_SETFD of this descriptor: EPERM.
   int replaceErrno = EPERM;    ///< What the duplicates onto `replace` fail with.
   int interruptOnce = -1;      ///< dup2(2) and dup3(2) onto this descriptor held for
-                               ///< answerDuplicates(): a process's first fails with EINTR.
+                               ///< answerHeldCalls(): a process's first fails with EINTR.
   bool reportWrite = false;    ///< Every write(2) of 8 bytes, a start report's: EINTR.
   bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
   bool noHangWait = false;     ///< Every wait4(2) that does not block (WNOHANG): EINTR.
@@ -976,7 +968,103 @@ struct Denied {
   bool stopAction = false;     ///< sigaction(2) of SIGINT: EPERM.
   bool stopUnblock = false;    ///< sigprocmask(2) SIG_UNBLOCK: EPERM.
   int readOpen = -1;           ///< An open with exactly these flags: EACCES.
+
+  /// Every kill(2) held for the listener, which counts and refuses it as KillWatch says.
+  KillWatch kills = KillWatch::NONE;
+  /// Every execve(2) held: the caller's group leader, the probe's keeper, ended first.
+  KeeperLoss keeperLoss = KeeperLoss::NONE;
+  /// Every poll(2) and ppoll(2) held until this process has no child left, 3 s at most.
+  bool reportHeld = false;
 };
+
+#if defined(SECCOMP_RET_USER_NOTIF) && defined(SECCOMP_USER_NOTIF_FLAG_CONTINUE)
+/**
+ * @brief Answers the calls deny() holds on @p listener as @p denied asks, for
+ * as long as this process lives; a call it does not answer stays held (a
+ * held exec or join). A duplicate onto `interruptOnce`: a process's first
+ * fails with EINTR and its later ones are carried out; a group's leader (the
+ * probe's keeper) goes on at once. A kill (`kills`): counted and refused as
+ * KillWatch says; signal 0, which signals nothing, carried out uncounted. An
+ * exec (`keeperLoss`): the caller's group leader, the probe's keeper, when
+ * it is not this process's, is ended (tgkill(2), which is not held) and
+ * awaited until it is gone, 2 s at most, then the exec refused (ENOENT) or
+ * left held. A poll (`reportHeld`): carried out once this process has no
+ * child left, 3 s at most.
+ */
+void answerHeldCalls(int listener, Denied denied) {
+  std::vector<std::uint32_t> interrupted;
+  for (;;) {
+    seccomp_notif request{};
+    if (::ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) != 0) {
+      if (errno == EINTR || errno == ENOENT) {
+        continue;
+      }
+      return;
+    }
+    seccomp_notif_resp response{};
+    response.id = request.id;
+    response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+    const auto CALL = static_cast<long>(request.data.nr);
+    const auto PID = static_cast<pid_t>(request.pid);
+    bool duplicate = CALL == SYS_dup3;
+    bool polling = CALL == SYS_ppoll;
+#ifdef SYS_dup2
+    duplicate = duplicate || CALL == SYS_dup2;
+#endif
+#ifdef SYS_poll
+    polling = polling || CALL == SYS_poll;
+#endif
+    if (CALL == SYS_kill && denied.kills != KillWatch::NONE) {
+      const auto TARGET =
+          static_cast<pid_t>(static_cast<std::int32_t>(request.data.args[0] & 0xffffffffU));
+      const pid_t LOST = keeperEnded.load();
+      const bool AT_LOST = LOST > 0 && (TARGET == LOST || TARGET == -LOST);
+      if (request.data.args[1] != 0) {
+        killsSeen.fetch_add(1);
+        if (AT_LOST) {
+          killsOnLost.fetch_add(1);
+        }
+        if (denied.kills == KillWatch::REFUSED || AT_LOST) {
+          response.flags = 0;
+          response.error = -EPERM;
+        }
+      }
+    } else if (CALL == SYS_execve && denied.keeperLoss != KeeperLoss::NONE) {
+      const pid_t KEEPER = ::getpgid(PID);
+      if (KEEPER > 0 && KEEPER != ::getpgrp()) {
+        (void)::syscall(SYS_tgkill, KEEPER, KEEPER, SIGKILL);
+        const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < UNTIL &&
+               !(::syscall(SYS_tgkill, KEEPER, KEEPER, 0) != 0 && errno == ESRCH)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        keeperEnded.store(KEEPER);
+      }
+      if (denied.keeperLoss == KeeperLoss::THEN_HELD) {
+        continue;
+      }
+      response.flags = 0;
+      response.error = -ENOENT;
+    } else if (polling && denied.reportHeld) {
+      const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!childProcesses(::getpid()).empty() && std::chrono::steady_clock::now() < UNTIL) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    } else if (duplicate && denied.interruptOnce >= 0) {
+      if (::getpgid(PID) != PID &&
+          std::find(interrupted.begin(), interrupted.end(), request.pid) == interrupted.end()) {
+        interrupted.push_back(request.pid);
+        duplicatesInterrupted.fetch_add(1);
+        response.flags = 0;
+        response.error = -EINTR;
+      }
+    } else {
+      continue;
+    }
+    (void)::ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response);
+  }
+}
+#endif
 
 /**
  * @brief In a process of its own (a death test's): from now on the calls
@@ -1080,9 +1168,22 @@ bool deny(const Denied& denied) {
     DENY_FCNTL(denied.flagSet, static_cast<unsigned>(F_SETFD), EPERM);
   }
 #ifdef SECCOMP_RET_USER_NOTIF
-  if (denied.execHeld) {
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_execve, 0, 1));
+  // A call held for the listener, whatever its arguments.
+  const auto HOLD_CALL = [&filter](unsigned call) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 1));
     filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+  };
+  if (denied.execHeld || denied.keeperLoss != KeeperLoss::NONE) {
+    HOLD_CALL(SYS_execve);
+  }
+  if (denied.kills != KillWatch::NONE) {
+    HOLD_CALL(SYS_kill);
+  }
+  if (denied.reportHeld) {
+    HOLD_CALL(SYS_ppoll);
+#ifdef SYS_poll
+    HOLD_CALL(SYS_poll);
+#endif
   }
   // setpgid(2)'s pid and group are its first and second arguments.
   if (denied.joinHeld) {
@@ -1125,22 +1226,24 @@ bool deny(const Denied& denied) {
   if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
     return false;
   }
-  if (!denied.execHeld && !denied.joinHeld && denied.interruptOnce < 0) {
+  const bool ANSWERED = denied.interruptOnce >= 0 || denied.kills != KillWatch::NONE ||
+                        denied.keeperLoss != KeeperLoss::NONE || denied.reportHeld;
+  if (!denied.execHeld && !denied.joinHeld && !ANSWERED) {
     return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
   }
 #ifdef SECCOMP_RET_USER_NOTIF
   // The listener stays open until this process exits: a held exec or join
-  // waits for an answer that never comes, until then or until it is killed; a
-  // held duplicate is answered by answerDuplicates(), on a thread of this
-  // process.
+  // waits for an answer that never comes, until then or until it is killed;
+  // the other held calls are answered by answerHeldCalls(), on a thread of
+  // this process.
   const long LISTENER =
       ::syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &PROGRAM);
   if (LISTENER < 0) {
     return false;
   }
-  if (denied.interruptOnce >= 0) {
+  if (ANSWERED) {
 #ifdef SECCOMP_USER_NOTIF_FLAG_CONTINUE
-    std::thread(answerDuplicates, static_cast<int>(LISTENER)).detach();
+    std::thread(answerHeldCalls, static_cast<int>(LISTENER), denied).detach();
 #else
     return false;
 #endif
@@ -1489,8 +1592,14 @@ enum class StartHazard : std::uint8_t {
   LIVE_ORDINARY,              ///< Nothing; a program that runs past its bound and leaves a
                               ///< child in its group: the probe alone.
   LOOK_INTERRUPTED_LIVE,      ///< Every waitid interrupted; that program: the probe alone.
-  LOOK_AND_WAIT_INTERRUPTED   ///< Every waitid and every wait that does not block
+  LOOK_AND_WAIT_INTERRUPTED,  ///< Every waitid and every wait that does not block
                               ///< interrupted; that program: the probe alone.
+  HELPER_LOST_FIRST,          ///< SIGCHLD ignored; a program that cannot run; the start report's
+                              ///< read held until no child is left; every kill refused: the
+                              ///< helper alone.
+  KEEPER_LOST_REPORTED,       ///< SIGCHLD ignored; the keeper ended at the program's exec, then
+                              ///< the exec refused; a kill at it refused: the probe alone.
+  KEEPER_LOST_UNREPORTED      ///< As KEEPER_LOST_REPORTED, the exec left held: the probe alone.
 };
 
 /**
@@ -1516,10 +1625,30 @@ enum class StartHazard : std::uint8_t {
  * interrupted, it is killed at its bound and its status read (the wait that
  * does not block decides where the look cannot); with every waitid and
  * every wait that does not block interrupted, its group is ended and it is
- * reported unreaped, never as reaped by another wait. Prints how each ended
+ * reported unreaped, never as reaped by another wait. With SIGCHLD ignored
+ * (the system reaps each child as it ends) and every kill held and counted:
+ * the owned helper's child that cannot execute its program, reaped before
+ * its report is read (that read held until no child is left), fails the
+ * start with ENOENT and is sent no signal; the probe whose keeper is ended,
+ * and reaped by the system, at its program's exec fails with ENOENT when
+ * that exec is then refused, sending no signal, or with ETIMEDOUT after the
+ * start report's bound when it is left held, killing its program, still its
+ * own, once and nothing by the keeper's pid or group. Prints how each ended
  * and exits 0 when every one did so.
  */
 [[noreturn]] void startsUnderInterruptions(StartHazard which) {
+  const bool LOST = which == StartHazard::HELPER_LOST_FIRST ||
+                    which == StartHazard::KEEPER_LOST_REPORTED ||
+                    which == StartHazard::KEEPER_LOST_UNREPORTED;
+  // The system reaps each child of this process as it ends.
+  std::unique_ptr<ChildReaping> reaping;
+  if (LOST) {
+    reaping = std::make_unique<ChildReaping>(ChildReaping::Policy::IGNORED);
+    if (!reaping->ok()) {
+      std::fprintf(stderr, "SIGCHLD could not be ignored\n");
+      std::_Exit(3);
+    }
+  }
   const bool LIVE = which == StartHazard::LIVE_ORDINARY ||
                     which == StartHazard::LOOK_INTERRUPTED_LIVE ||
                     which == StartHazard::LOOK_AND_WAIT_INTERRUPTED;
@@ -1575,6 +1704,19 @@ enum class StartHazard : std::uint8_t {
     denied.stateLook = true;
     denied.noHangWait = true;
     break;
+  case StartHazard::HELPER_LOST_FIRST:
+    denied.kills = KillWatch::REFUSED;
+    denied.reportHeld = true;
+    program = ABSENT;
+    break;
+  case StartHazard::KEEPER_LOST_REPORTED:
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.keeperLoss = KeeperLoss::THEN_REFUSED;
+    break;
+  case StartHazard::KEEPER_LOST_UNREPORTED:
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.keeperLoss = KeeperLoss::THEN_HELD;
+    break;
   }
   if (!deny(denied)) {
     std::fprintf(stderr, "the calls could not be denied\n");
@@ -1589,7 +1731,10 @@ enum class StartHazard : std::uint8_t {
   HelperStart helper{};
   long long helperMs = 0;
   int helperInterrupted = 0;
-  if (which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD && !LIVE) {
+  const bool HELPER_RUNS =
+      which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD && !LIVE &&
+      which != StartHazard::KEEPER_LOST_REPORTED && which != StartHazard::KEEPER_LOST_UNREPORTED;
+  if (HELPER_RUNS) {
     OwnedHelper owned(quickPolicy());
     helper = owned.start(program, "", "", 200, nullptr);
     helperInterrupted = duplicatesInterrupted.load();
@@ -1597,7 +1742,9 @@ enum class StartHazard : std::uint8_t {
     helperMs = MS(since);
   }
   since = Clock::now();
-  const ProbeResult PROBE = runBoundedProbe(program, timeoutMs, CTX, ProbeStreams::SEPARATE);
+  const ProbeResult PROBE = which == StartHazard::HELPER_LOST_FIRST
+                                ? ProbeResult{}
+                                : runBoundedProbe(program, timeoutMs, CTX, ProbeStreams::SEPARATE);
   const long long PROBE_MS = MS(since);
   const int PROBE_INTERRUPTED = duplicatesInterrupted.load() - helperInterrupted;
   const std::vector<pid_t> LEFT = childProcesses(::getpid());
@@ -1663,15 +1810,30 @@ enum class StartHazard : std::uint8_t {
             PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 && LEFT_ENDED &&
             RUNNING_LEFT == 0;
     break;
+  case StartHazard::HELPER_LOST_FIRST:
+    asDue = asDue && !helper.started && helper.spawnErrno == ENOENT &&
+            helper.errorTail.rfind("could not execute ", 0) == 0 && helperMs < 3000 &&
+            killsSeen.load() == 0;
+    break;
+  case StartHazard::KEEPER_LOST_REPORTED:
+    asDue = asDue && keeperEnded.load() > 0 && !PROBE.started && PROBE.spawnErrno == ENOENT &&
+            PROBE_MS < 3000 && killsSeen.load() == 0;
+    break;
+  case StartHazard::KEEPER_LOST_UNREPORTED:
+    asDue = asDue && keeperEnded.load() > 0 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE_MS >= 4500 && PROBE_MS < 9000 && killsOnLost.load() == 0 && killsSeen.load() == 1;
+    break;
   }
   std::fprintf(stderr,
                "the helper started=%d errno=%d early=%d %s after %lld ms, %d interrupted; the "
                "probe %s, output [%s] errors [%s] after %lld ms, %d interrupted; children left: "
-               "%zu, %zu running; the program's child %d ended=%d\n",
+               "%zu, %zu running; the program's child %d ended=%d; kills %d, at the lost keeper "
+               "%d (%d)\n",
                helper.started ? 1 : 0, helper.spawnErrno, helper.exitedEarly ? 1 : 0,
                helper.errorTail.c_str(), helperMs, helperInterrupted, PROBE.describe().c_str(),
                PROBE.output.c_str(), PROBE.errorOutput.c_str(), PROBE_MS, PROBE_INTERRUPTED,
-               LEFT.size(), RUNNING_LEFT, static_cast<int>(left), LEFT_ENDED ? 1 : 0);
+               LEFT.size(), RUNNING_LEFT, static_cast<int>(left), LEFT_ENDED ? 1 : 0,
+               killsSeen.load(), killsOnLost.load(), static_cast<int>(keeperEnded.load()));
   dir.reset();
   std::_Exit(asDue ? 0 : 1);
 }
@@ -2381,6 +2543,45 @@ TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
       {StartHazard::LOOK_INTERRUPTED_LIVE, "every waitid interrupted"},
       {StartHazard::LOOK_AND_WAIT_INTERRUPTED,
        "every waitid and every wait that does not block interrupted"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A failed start signals nothing it may have lost, and still ends what
+ * is its own. With SIGCHLD ignored, so that the system reaps each child as it
+ * ends, and every kill(2) held, counted and, when aimed at what was lost,
+ * refused: the owned helper's child that cannot execute its program, reaped
+ * before its report is read, fails the start with ENOENT and is sent no
+ * signal; the probe's keeper, ended and reaped at the program's exec, leaves
+ * a start that fails with ENOENT (the exec then refused) and sends no signal,
+ * or with ETIMEDOUT after 5 s (the exec left held), its program, still its
+ * own, killed once and nothing sent to the keeper's pid or group. Each case
+ * in a process of its own, which its parent ends after 30 s with whatever it
+ * left.
+ */
+TEST(ReadinessProbes, FailedStartSignalsOnlyWhatItOwns) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  if (!callsCanGoOn()) {
+    GTEST_SKIP() << "this kernel cannot let a held call go on";
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::HELPER_LOST_FIRST, "the helper's child reaped before its report is read"},
+      {StartHazard::KEEPER_LOST_REPORTED, "the keeper reaped, then the exec refused"},
+      {StartHazard::KEEPER_LOST_UNREPORTED, "the keeper reaped, the exec left held"},
   };
   for (const auto& c : CASES) {
     EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
