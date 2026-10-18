@@ -1350,8 +1350,9 @@ enum class LockCase : std::uint8_t {
   STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated (likewise).
   STDERR_UNRELEASABLE,  ///< On stderr, onto which nothing can be duplicated and which cannot
                         ///< be closed.
-  STDOUT_UNKNOWN,       ///< On stdout, as STDOUT_UNRELEASABLE, and whose flags cannot be read.
-  STDERR_UNKNOWN,       ///< On stderr, as STDERR_UNRELEASABLE, and whose flags cannot be read.
+  STDOUT_UNKNOWN,       ///< On stdout; the keeper's /dev/null not opened, stdout neither closed
+                        ///< nor its flags read; duplicating onto it allowed.
+  STDERR_UNKNOWN,       ///< On stderr, likewise.
   NO_NULL,              ///< On stdout; /dev/null cannot be opened for writing.
   NO_NULL_UNCLOSABLE    ///< On stdout; /dev/null cannot be opened for writing, nor stdout closed.
 };
@@ -1422,8 +1423,11 @@ enum class LockCase : std::uint8_t {
     break;
   case LockCase::STDOUT_UNKNOWN:
   case LockCase::STDERR_UNKNOWN:
+    // The keeper alone is refused: duplicating onto the stream stays
+    // allowed, so the program's own start could set it, and only the
+    // keeper's refusal (the query's errno) keeps the program from running.
     slot = which == LockCase::STDOUT_UNKNOWN ? STDOUT_FILENO : STDERR_FILENO;
-    denied = {.closeRange = false, .close = slot, .replace = slot, .query = slot};
+    denied = {.closeRange = false, .close = slot, .nullOpen = true, .query = slot};
     refusal = EPERM;
     break;
   case LockCase::NO_NULL:
@@ -1640,10 +1644,13 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
  * cannot set that stream either, fails. Where its end of the anchor cannot
  * be put on stdin, or a stream can be neither replaced nor closed, or
  * whether it is closed cannot be read (its F_GETFD refused), the setup fails
- * before the program starts. A setup or start that fails does so with the
- * errno of the step that failed (EPERM, EACCES), no child is left, and the
- * lock is free once this process releases its copy. Each case in a process
- * of its own.
+ * before the program starts; where only the keeper is refused (its
+ * /dev/null, its close and its query of the stream), duplicating onto the
+ * stream staying allowed, it is the keeper's refusal, with the query's
+ * errno, that keeps the program from running. A setup or start that fails
+ * does so with the errno of the step that failed (EPERM, EACCES), no child
+ * is left, and the lock is free once this process releases its copy. Each
+ * case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
@@ -1670,9 +1677,9 @@ TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
        "stderr, nothing put there: closed, then the start refused (EPERM)"},
       {LockCase::STDERR_UNRELEASABLE, "stderr, neither replaced nor closed: refused (EPERM)"},
       {LockCase::STDOUT_UNKNOWN,
-       "stdout, neither replaced nor closed, unreadable: refused (EPERM)"},
+       "stdout, the keeper's /dev/null not opened, not closed, unreadable: refused (EPERM)"},
       {LockCase::STDERR_UNKNOWN,
-       "stderr, neither replaced nor closed, unreadable: refused (EPERM)"},
+       "stderr, the keeper's /dev/null not opened, not closed, unreadable: refused (EPERM)"},
       {LockCase::NO_NULL, "stdout, /dev/null not opened: closed"},
       {LockCase::NO_NULL_UNCLOSABLE, "stdout, /dev/null not opened, not closed: refused (EACCES)"},
   };
