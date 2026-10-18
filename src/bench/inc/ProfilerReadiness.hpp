@@ -619,8 +619,10 @@ public:
   OwnedHelper& operator=(OwnedHelper&& other) noexcept;
 
   /**
-   * @brief Start @p argv; stdout to @p stdoutPath ("" for /dev/null), stderr to
-   * @p stderrPath ("" for /dev/null); wait up to @p graceMs. A start that
+   * @brief Start @p argv, stdin /dev/null; stdout to @p stdoutPath ("" for
+   * /dev/null), stderr to @p stderrPath ("" for /dev/null); wait up to
+   * @p graceMs. A stream it cannot set, or SIGINT and SIGTERM it cannot give
+   * their default action, fails the start with that errno. A start that
    * reports neither its exec nor what failed within 5 s fails with ETIMEDOUT,
    * the child ended and reaped.
    * @param probeEnv Null: the helper inherits this process's environment.

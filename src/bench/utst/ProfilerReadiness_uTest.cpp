@@ -968,6 +968,9 @@ struct Denied {
   bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
   bool stateLook = false;      ///< Every waitid(2): EINTR.
   bool execHeld = false;       ///< Every execve(2) held, for a listener that never answers.
+  bool stopAction = false;     ///< sigaction(2) of SIGINT: EPERM.
+  bool stopUnblock = false;    ///< sigprocmask(2) SIG_UNBLOCK: EPERM.
+  int readOpen = -1;           ///< An open with exactly these flags: EACCES.
 };
 
 /**
@@ -1030,6 +1033,19 @@ bool deny(const Denied& denied) {
   }
   if (denied.stateLook) {
     DENY_CALL(SYS_waitid, EINTR);
+  }
+  // rt_sigaction(2)'s signal and rt_sigprocmask(2)'s how are their first argument.
+  if (denied.stopAction) {
+    DENY_WHEN(SYS_rt_sigaction, 0, BPF_JEQ, static_cast<unsigned>(SIGINT), EPERM);
+  }
+  if (denied.stopUnblock) {
+    DENY_WHEN(SYS_rt_sigprocmask, 0, BPF_JEQ, static_cast<unsigned>(SIG_UNBLOCK), EPERM);
+  }
+  if (denied.readOpen >= 0) {
+    DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(denied.readOpen), EACCES);
+#ifdef SYS_open
+    DENY_WHEN(SYS_open, 1, BPF_JEQ, static_cast<unsigned>(denied.readOpen), EACCES);
+#endif
   }
   if (denied.nullOpen) {
     DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
@@ -1616,6 +1632,79 @@ enum class StartHazard : std::uint8_t {
   std::_Exit(AS_DUE ? 0 : 1);
 }
 
+/** @brief What the setup control keeps a start from setting, for every process (deny()). */
+enum class StartSetup : std::uint8_t {
+  STOP_ACTION_REFUSED,  ///< SIGINT's default action (sigaction refused).
+  STOP_UNBLOCK_REFUSED, ///< The stop signals unblocked (sigprocmask SIG_UNBLOCK refused).
+  PROBE_STDIN_UNOPENED, ///< The probe's /dev/null for its program's stdin (its open refused).
+  HELPER_STDIN_UNOPENED ///< The owned helper's /dev/null for its stdin (its open refused).
+};
+
+/**
+ * @brief The body of a death test: with @p which refused, the start fails
+ * with that errno before its program runs, and leaves no child: the owned
+ * helper and the probe where the stop signals' default action or their
+ * unblocking is refused (EPERM); the probe where its /dev/null cannot be
+ * opened, and the helper where its own cannot (EACCES, "could not open
+ * /dev/null"). Prints how each start ended and exits 0 when every one did
+ * so.
+ */
+[[noreturn]] void startRefusesWhatItCannotSet(StartSetup which) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  Denied denied{.closeRange = false};
+  bool helperRuns = true;
+  bool probeRuns = true;
+  int expected = EPERM;
+  switch (which) {
+  case StartSetup::STOP_ACTION_REFUSED:
+    denied.stopAction = true;
+    break;
+  case StartSetup::STOP_UNBLOCK_REFUSED:
+    denied.stopUnblock = true;
+    break;
+  case StartSetup::PROBE_STDIN_UNOPENED:
+    denied.readOpen = O_RDONLY | O_CLOEXEC;
+    helperRuns = false;
+    expected = EACCES;
+    break;
+  case StartSetup::HELPER_STDIN_UNOPENED:
+    denied.readOpen = O_RDONLY;
+    probeRuns = false;
+    expected = EACCES;
+    break;
+  }
+  if (!deny(denied)) {
+    std::fprintf(stderr, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  const std::vector<std::string> PROGRAM = {"/bin/sh", "-c", "exit 7"};
+  HelperStart helper{};
+  if (helperRuns) {
+    OwnedHelper owned(quickPolicy());
+    helper = owned.start(PROGRAM, "", "", 200, nullptr);
+    (void)owned.stop();
+  }
+  ProbeResult probe{};
+  if (probeRuns) {
+    probe = runBoundedProbe(PROGRAM, 5000, CTX);
+  }
+  int status = 0;
+  errno = 0;
+  const bool NO_CHILD = ::waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD;
+  const bool HELPER_AS_DUE =
+      !helperRuns || (!helper.started && helper.spawnErrno == expected &&
+                      (which != StartSetup::HELPER_STDIN_UNOPENED ||
+                       helper.errorTail.rfind("could not open /dev/null: ", 0) == 0));
+  const bool PROBE_AS_DUE = !probeRuns || (!probe.started && probe.spawnErrno == expected);
+  std::fprintf(stderr, "the helper started=%d errno=%d %s; the probe %s; no child: %d\n",
+               helper.started ? 1 : 0, helper.spawnErrno, helper.errorTail.c_str(),
+               probe.describe().c_str(), NO_CHILD ? 1 : 0);
+  const bool AS_DUE = NO_CHILD && HELPER_AS_DUE && PROBE_AS_DUE;
+  std::fprintf(stderr, AS_DUE ? "the start refused what it could not set\n"
+                              : "a start went on without what it could not set\n");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
 /** @brief Whether this kernel can hold a call for a seccomp listener (user_notif). */
 bool callsCanBeHeld() {
 #ifdef SECCOMP_RET_USER_NOTIF
@@ -2156,6 +2245,39 @@ TEST(ReadinessProbes, StartEndsWithinItsBound) {
     }
     EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
                 "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start that cannot set what its program needs fails with that
+ * errno before the program runs, and leaves no child: with SIGINT's default
+ * action or the stop signals' unblocking refused, the owned helper and the
+ * probe fail with EPERM; with the probe's /dev/null for its program's stdin
+ * unopenable, the probe fails with EACCES, and with the helper's own, the
+ * helper fails with EACCES, "could not open /dev/null". Each case in a
+ * process of its own.
+ */
+TEST(ReadinessProbes, StartRefusesWhatItCannotSet) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartSetup which;
+    const char* name;
+  } CASES[] = {
+      {StartSetup::STOP_ACTION_REFUSED, "SIGINT's default action refused"},
+      {StartSetup::STOP_UNBLOCK_REFUSED, "the stop signals' unblocking refused"},
+      {StartSetup::PROBE_STDIN_UNOPENED, "the probe's /dev/null for stdin unopenable"},
+      {StartSetup::HELPER_STDIN_UNOPENED, "the helper's /dev/null for stdin unopenable"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(startRefusesWhatItCannotSet(c.which), ::testing::ExitedWithCode(0),
+                "the start refused what it could not set")
         << c.name;
   }
   GTEST_FLAG_SET(death_test_style, SAVED);

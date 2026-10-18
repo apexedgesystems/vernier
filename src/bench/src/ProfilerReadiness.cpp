@@ -123,19 +123,23 @@ std::vector<char*> cStrings(std::vector<std::string>& strings) {
  * @brief Give the signals a helper is stopped with, SIGINT and SIGTERM, their
  * default action, unblocked, whatever this process inherited: a benchmark
  * started as a background job of a script ignores SIGINT, and a helper would
- * keep the ignore across exec. Async-signal-safe (used between fork and exec).
+ * keep the ignore across exec. Returns 0, or the errno of the sigaction or
+ * sigprocmask that failed: the start then fails with it, before the exec.
+ * Async-signal-safe (used between fork and exec).
  */
-void defaultStopSignals() {
+int defaultStopSignals() {
   struct sigaction action{};
   action.sa_handler = SIG_DFL;
   (void)::sigemptyset(&action.sa_mask);
   sigset_t stopSignals;
   (void)::sigemptyset(&stopSignals);
   for (const int SIGNAL : {SIGINT, SIGTERM}) {
-    (void)::sigaction(SIGNAL, &action, nullptr);
+    if (::sigaction(SIGNAL, &action, nullptr) != 0) {
+      return errno;
+    }
     (void)::sigaddset(&stopSignals, SIGNAL);
   }
-  (void)::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr);
+  return ::sigprocmask(SIG_UNBLOCK, &stopSignals, nullptr) == 0 ? 0 : errno;
 }
 
 /**
@@ -1142,15 +1146,20 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     END_KEEPER();
     return result;
   }
+  // The program's stdin is /dev/null, or nothing starts.
   const int DEV_NULL = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+  if (DEV_NULL < 0) {
+    result.spawnErrno = errno;
+    CLOSE_ALL();
+    END_KEEPER();
+    return result;
+  }
 
   const pid_t CHILD = ::fork();
   if (CHILD < 0) {
     result.spawnErrno = errno;
     CLOSE_ALL();
-    if (DEV_NULL >= 0) {
-      ::close(DEV_NULL);
-    }
+    ::close(DEV_NULL);
     END_KEEPER();
     return result;
   }
@@ -1162,7 +1171,11 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       writeAll(report[1], FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
-    defaultStopSignals();
+    if (const int UNSET = defaultStopSignals(); UNSET != 0) {
+      const int FAILURE[2] = {3, UNSET};
+      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     // What the child needs once a stream is set goes above the streams
     // first, but where it already is a stream it becomes.
     const int REPORT = clearOfStreams(report[1], 0U);
@@ -1175,13 +1188,13 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
     const int OUT =
         clearOfStreams(output[1], (1U << STDOUT_FILENO) | (SEPARATE ? 0U : 1U << STDERR_FILENO));
     const int ERR = SEPARATE ? clearOfStreams(errors[1], 1U << STDERR_FILENO) : OUT;
-    if (OUT < 0 || ERR < 0 || (DEV_NULL >= 0 && IN < 0)) {
+    if (IN < 0 || OUT < 0 || ERR < 0) {
       const int FAILURE[2] = {3, errno};
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
     // A stream that cannot be set fails the start, as a failed exec does.
-    int unset = IN >= 0 ? becomeStream(IN, STDIN_FILENO) : 0;
+    int unset = becomeStream(IN, STDIN_FILENO);
     if (unset == 0) {
       unset = becomeStream(OUT, STDOUT_FILENO);
     }
@@ -1207,9 +1220,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
   }
   ::close(report[1]);
   report[1] = -1;
-  if (DEV_NULL >= 0) {
-    ::close(DEV_NULL);
-  }
+  ::close(DEV_NULL);
 
   int step = 0;
   int execErrno = 0;
@@ -1611,8 +1622,12 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
   }
   if (CHILD == 0) {
     // stop() relies on SIGINT and SIGTERM: the helper takes them at their
-    // default action whatever this process inherited.
-    defaultStopSignals();
+    // default action whatever this process inherited, or does not start.
+    if (const int UNSET = defaultStopSignals(); UNSET != 0) {
+      const int FAILURE[2] = {3, UNSET};
+      writeAll(report[1], FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
     // The start report's end goes above the streams before any is set.
     const int REPORT = clearOfStreams(report[1], 0U);
     if (REPORT < 0) {
@@ -1622,17 +1637,21 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     }
     // Capture files are opened here, by the invoking user, before any
     // elevation: they stay the user's whatever the helper runs as.
-    // A stream that cannot be set fails the start, as a failed exec does.
+    // A stream that cannot be set fails the start, as a failed exec does;
+    // stdin is /dev/null, or the helper does not start.
     const int IN = ::open("/dev/null", O_RDONLY);
-    if (IN >= 0) {
-      if (const int UNSET = becomeStream(IN, STDIN_FILENO); UNSET != 0) {
-        const int FAILURE[2] = {3, UNSET};
-        writeAll(REPORT, FAILURE, sizeof(FAILURE));
-        ::_exit(127);
-      }
-      if (IN != STDIN_FILENO) {
-        ::close(IN);
-      }
+    if (IN < 0) {
+      const int FAILURE[2] = {4, errno};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(126);
+    }
+    if (const int UNSET = becomeStream(IN, STDIN_FILENO); UNSET != 0) {
+      const int FAILURE[2] = {3, UNSET};
+      writeAll(REPORT, FAILURE, sizeof(FAILURE));
+      ::_exit(127);
+    }
+    if (IN != STDIN_FILENO) {
+      ::close(IN);
     }
     const int OUT = ::open(OUT_PATH.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (OUT < 0) {
@@ -1682,7 +1701,10 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     int status = 0;
     reapWithin(CHILD, status);
     outcome.spawnErrno = err;
-    const std::string& WHAT = step == 1 ? OUT_PATH : (step == 2 ? ERR_PATH : argvIn.front());
+    const std::string WHAT = step == 1   ? OUT_PATH
+                             : step == 2 ? ERR_PATH
+                             : step == 4 ? std::string{"/dev/null"}
+                                         : argvIn.front();
     const char* const DOING = step == 0   ? "could not start "
                               : step == 3 ? "could not execute "
                                           : "could not open ";
