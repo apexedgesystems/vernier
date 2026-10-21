@@ -1614,7 +1614,8 @@ enum class StartHazard : std::uint8_t {
                               ///< child in its group: the probe alone.
   LOOK_INTERRUPTED_LIVE,      ///< Every waitid interrupted; that program: the probe alone.
   LOOK_AND_WAIT_INTERRUPTED,  ///< Every waitid and every wait that does not block
-                              ///< interrupted; that program: the probe alone.
+                              ///< interrupted; that program; every kill counted: the probe
+                              ///< alone.
   HELPER_LOST_FIRST,          ///< SIGCHLD ignored; a program that cannot run; the start report's
                               ///< read held until no child is left; every kill refused: the
                               ///< helper alone.
@@ -1648,22 +1649,24 @@ enum class StartHazard : std::uint8_t {
  * either is left running: with nothing denied and with every waitid
  * interrupted, it is killed at its bound and its status read (the wait that
  * does not block decides where the look cannot); with every waitid and
- * every wait that does not block interrupted, its group is ended and it is
- * reported unreaped, never as reaped by another wait. With SIGCHLD ignored
- * (the system reaps each child as it ends) and every kill held and counted:
- * the owned helper's child that cannot execute its program, reaped before
- * its report is read (that read held until no child is left), fails the
- * start with ENOENT and is sent no signal; the probe whose keeper is ended,
- * and reaped by the system, at its program's exec fails with ENOENT when
- * that exec is then refused, sending no signal, or with ETIMEDOUT after the
- * start report's bound when it is left held, killing its program, still its
- * own, once and nothing by the keeper's pid or group. With every look and
- * every wait that does not block interrupted and every kill counted by what
- * it is aimed at, no child is signalled, its state unread: the exec held,
- * both fail with ETIMEDOUT, the probe's group (the keeper shown running by
- * their link) killed once and the helper's held child left running; the
- * exec refused, both fail with ENOENT and only the probe's keeper is killed,
- * at its end. Prints how each ended and exits 0 when every one did so.
+ * every wait that does not block interrupted, its group is ended, one kill
+ * aimed at the group and none at the program's pid, whose state cannot be
+ * read, and it is reported unreaped, never as reaped by another wait. With
+ * SIGCHLD ignored (the system reaps each child as it ends) and every kill
+ * held and counted: the owned helper's child that cannot execute its
+ * program, reaped before its report is read (that read held until no child
+ * is left), fails the start with ENOENT and is sent no signal; the probe
+ * whose keeper is ended, and reaped by the system, at its program's exec
+ * fails with ENOENT when that exec is then refused, sending no signal, or
+ * with ETIMEDOUT after the start report's bound when it is left held,
+ * killing its program, still its own, once and nothing by the keeper's pid
+ * or group. With every look and every wait that does not block interrupted
+ * and every kill counted by what it is aimed at, no child is signalled, its
+ * state unread: the exec held, both fail with ETIMEDOUT, the probe's group
+ * (the keeper shown running by their link) killed once and the helper's held
+ * child left running; the exec refused, both fail with ENOENT and only the
+ * probe's keeper is killed, at its end. Prints how each ended and exits 0
+ * when every one did so.
  */
 [[noreturn]] void startsUnderInterruptions(StartHazard which) {
   const bool LOST = which == StartHazard::HELPER_LOST_FIRST ||
@@ -1732,6 +1735,7 @@ enum class StartHazard : std::uint8_t {
   case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
     denied.stateLook = true;
     denied.noHangWait = true;
+    denied.kills = KillWatch::LOST_REFUSED;
     break;
   case StartHazard::HELPER_LOST_FIRST:
     denied.kills = KillWatch::REFUSED;
@@ -1843,9 +1847,13 @@ enum class StartHazard : std::uint8_t {
     asDue = LIVE_KILLED;
     break;
   case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
+    // The group is the call's (the keeper shown running by its end of their
+    // link) and is killed once; the program, whose state cannot be read, is
+    // never signalled by its pid, nor the keeper by its own.
     asDue = PROBE.started && !PROBE.timedOut && !PROBE.statusObtained &&
             PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 && LEFT_ENDED &&
-            RUNNING_LEFT == 0;
+            RUNNING_LEFT == 0 && killsAtGroup.load() == 1 && killsAtChild.load() == 0 &&
+            killsAtLeader.load() == 0;
     break;
   case StartHazard::HELPER_LOST_FIRST:
     asDue = asDue && !helper.started && helper.spawnErrno == ENOENT &&
@@ -2583,11 +2591,13 @@ TEST(ReadinessProbes, StartEndsWithinItsBound) {
  * nothing denied and with every waitid interrupted, where a wait that does
  * not block says that it runs and reaps it once it is killed. With every
  * waitid and every wait that does not block interrupted, its group is ended
- * while the keeper's end of their link shows the keeper running, nothing is
- * signalled by the program's pid, and the result says that it was not
- * reaped within the bound, never that another wait reaped it. No process of
- * the program or of its child is left running. Each case in a process of its
- * own, which its parent ends after 30 s with whatever it left.
+ * while the keeper's end of their link shows the keeper running, with every
+ * kill counted by what it is aimed at: one at the group, none at the
+ * program's pid, whose state cannot be read, none at the keeper's own; and
+ * the result says that it was not reaped within the bound, never that
+ * another wait reaped it. No process of the program or of its child is left
+ * running. Each case in a process of its own, which its parent ends after
+ * 30 s with whatever it left.
  */
 TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(64);
@@ -2606,6 +2616,10 @@ TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
        "every waitid and every wait that does not block interrupted"},
   };
   for (const auto& c : CASES) {
+    if (c.which == StartHazard::LOOK_AND_WAIT_INTERRUPTED && !callsCanGoOn()) {
+      std::fprintf(stderr, "this kernel cannot let a held call go on: %s not run\n", c.name);
+      continue;
+    }
     EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
                 "the start ended within its bound")
         << c.name;
