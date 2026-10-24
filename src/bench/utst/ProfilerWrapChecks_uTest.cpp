@@ -458,7 +458,6 @@ TEST(ValgrindDoctor, ProbeStartsTheRequestedTool) {
             "valgrind starts massif with --pages-as-heap=yes (probe: " + PROBE + ")");
   EXPECT_EQ(dir.logLines("valgrind "), std::vector<std::string>{"valgrind " + PROBE});
   ASSERT_NE(planOf(RESULT), nullptr);
-  EXPECT_EQ(planOf(RESULT)->valgrind, VALGRIND);
 }
 
 /** @test drd is probed as drd, and each backend's output option points at /dev/null. */

@@ -102,12 +102,10 @@ ReadinessResult checkRocprofRequest(const ReadinessRequest& request, const Readi
   if (request.scope == ReadinessScope::RUNTIME) {
     const std::string MARKERS = injectionMarkers(ctx);
     if (!MARKERS.empty()) {
-      plan->launch = LaunchContext::MANUALLY_WRAPPED;
       result =
           readinessResult(ReadinessCause::UNVERIFIED,
                           "rocprof's injection is present (" + MARKERS + "); " + NOT_VALIDATED, "");
     } else {
-      plan->launch = LaunchContext::NOT_WRAPPED;
       result = !resolveExecutable("rocprof", ctx)
                    ? rocprofMissing()
                    : readinessResult(ReadinessCause::MISSING,
@@ -124,7 +122,6 @@ ReadinessResult checkRocprofRequest(const ReadinessRequest& request, const Readi
                                "Reinstall rocprofiler, or fix PATH so it finds a working "
                                "rocprof.");
     } else {
-      plan->rocprof = TOOL->path;
       result = readinessResult(ReadinessCause::UNVERIFIED,
                                std::string{NOT_VALIDATED} + ": rocprof is " + TOOL->path +
                                    "; no AMD device access or capture is checked",

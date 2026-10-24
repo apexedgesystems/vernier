@@ -49,7 +49,8 @@
  * Root never uses sudo.
  *
  * Notes:
- *  - Linux-only. Safe no-op on other platforms (compile-time guard).
+ *  - Linux-only: on other platforms a request is unsupported and fails the
+ *    run.
  */
 
 #include <atomic>
