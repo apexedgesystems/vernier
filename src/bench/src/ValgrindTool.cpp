@@ -337,6 +337,13 @@ ReadinessResult withAnalysis(ReadinessResult collection, ReadinessResult analysi
   return analysis;
 }
 
+std::shared_ptr<const ValgrindPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const ValgrindPlan>(result.plan);
+}
+
 } // namespace valgrind_tool
 } // namespace bench
 } // namespace vernier

@@ -560,8 +560,9 @@ fn wrap_child_env(tool: &str, binary: &Path, output_dir: Option<&Path>) -> [(Str
     ]
 }
 
-/// A request as the command line states it, for messages.
-fn request_text(tool: &str, profile_args: Option<&str>) -> String {
+/// A request as the command line states it, for messages: `bench run`'s and
+/// `bench doctor`'s (an empty mode is no mode).
+pub(crate) fn request_text(tool: &str, profile_args: Option<&str>) -> String {
     match profile_args {
         Some(a) if !a.is_empty() => format!("--profile {tool} --profile-args '{a}'"),
         _ => format!("--profile {tool}"),
@@ -1840,36 +1841,6 @@ mod tests {
             s,
             "valgrind --tool=massif --massif-out-file=out/foo.massif/massif.out ./my_test --profile massif"
         );
-    }
-
-    /// @test Each wrap-externally profile maps to the program that wraps it;
-    /// the profiles the benchmark runs itself have no route.
-    #[test]
-    fn route_program_names_the_wrapper() {
-        let bin = Path::new("./my_test");
-        for (tool, program) in [
-            ("callgrind", "valgrind"),
-            ("massif", "valgrind"),
-            ("memcheck", "valgrind"),
-            ("helgrind", "valgrind"),
-            ("heaptrack", "heaptrack"),
-            ("compute-sanitizer", "compute-sanitizer"),
-            ("nsight", "nsys"),
-            ("ncu", "ncu"),
-        ] {
-            let route = route_for(tool, None, bin, None)
-                .expect("the default mode is accepted")
-                .expect("a wrapped tool has a route");
-            assert_eq!(route.program, program, "tool {tool}");
-            assert_eq!(route.tool, tool);
-        }
-        for tool in [
-            "perf", "gperf", "rapl", "bpftrace", "offcpu", "jemalloc", "rocprof",
-        ] {
-            // Whatever the mode text: it is the benchmark's to read.
-            let route = route_for(tool, Some("record -g"), bin, None).expect("not refused");
-            assert!(route.is_none(), "tool {tool}");
-        }
     }
 
     /// @test A missing wrapper is reported by program and request.

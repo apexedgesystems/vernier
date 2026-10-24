@@ -488,14 +488,11 @@ void GperfProfiler::runPprofAnalysis() const {
   ssize_t len = ::readlink("/proc/self/exe", exePath.data(), exePath.size() - 1);
   if (len <= 0) {
     const std::string WHY = len < 0 ? std::strerror(errno) : "empty link";
-    ProfilerRegistry::instance().reportFailure(
-        "gperf", testName_,
-        readinessResult(ReadinessCause::MISSING,
-                        "the program to symbolize, /proc/self/exe, could not be read: " + WHY +
-                            "; raw profile kept at " + cpuPath_,
-                        "Analyze it by hand: " + plan_->analyzer + " --text <this program> " +
-                            cpuPath_,
-                        ReadinessStage::ANALYSIS));
+    fail(ReadinessCause::MISSING,
+         "the program to symbolize, /proc/self/exe, could not be read: " + WHY +
+             "; raw profile kept at " + cpuPath_,
+         "Analyze it by hand: " + plan_->analyzer + " --text <this program> " + cpuPath_,
+         ReadinessStage::ANALYSIS);
     return;
   }
   exePath[static_cast<std::size_t>(len)] = '\0';
@@ -523,13 +520,10 @@ void GperfProfiler::runPprofAnalysis() const {
       for (const std::string& part : argv) {
         command += (command.empty() ? "" : " ") + part;
       }
-      ProfilerRegistry::instance().reportFailure(
-          "gperf", testName_,
-          readinessResult(ReadinessCause::UNUSABLE,
-                          plan_->analyzer + " failed on the profile: " + RUN.describe() +
-                              (TAIL.empty() ? "" : ": " + TAIL) + "; raw profile kept at " +
-                              cpuPath_,
-                          "Run it by hand to see why: " + command, ReadinessStage::ANALYSIS));
+      fail(ReadinessCause::UNUSABLE,
+           plan_->analyzer + " failed on the profile: " + RUN.describe() +
+               (TAIL.empty() ? "" : ": " + TAIL) + "; raw profile kept at " + cpuPath_,
+           "Run it by hand to see why: " + command, ReadinessStage::ANALYSIS);
       return false;
     }
     const std::string REPORT = firstLines(RUN.output, lines);

@@ -269,15 +269,6 @@ struct SelectedRequest<'a> {
     profile_args: &'a str,
 }
 
-/// A request as the command line states it, for messages.
-fn request_text(backend: &str, profile_args: &str) -> String {
-    if profile_args.is_empty() {
-        format!("--profile {backend}")
-    } else {
-        format!("--profile {backend} --profile-args '{profile_args}'")
-    }
-}
-
 /// The --require verdict: every named backend must exist and report "ok".
 /// @p selected is the request the doctor was asked about: its backend is
 /// judged by the document's `selected` row, which must be that request's,
@@ -299,7 +290,7 @@ fn evaluate_required_backends(
             Some(request) => {
                 let label = format!(
                     "{want} ({})",
-                    request_text(request.backend, request.profile_args)
+                    super::runner::request_text(request.backend, Some(request.profile_args))
                 );
                 let Some(row) = doc.get("selected").filter(|row| row.is_object()) else {
                     failed += 1;
@@ -315,7 +306,7 @@ fn evaluate_required_backends(
                     (Some(name), Some(args)) if !name.is_empty() => {
                         let name = canonical_backend(name);
                         (name != request.backend || args != request.profile_args)
-                            .then(|| request_text(name, args))
+                            .then(|| super::runner::request_text(name, Some(args)))
                     }
                     _ => Some("no named request".to_string()),
                 };

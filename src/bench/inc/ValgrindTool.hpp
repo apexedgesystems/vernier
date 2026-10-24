@@ -20,6 +20,7 @@
 
 #include <sys/types.h>
 
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -189,6 +190,13 @@ struct ValgrindPlan final : ReadinessPlan {
  * capture still runs and the run fails at its end.
  */
 [[nodiscard]] ReadinessResult withAnalysis(ReadinessResult collection, ReadinessResult analysis);
+
+/**
+ * @brief The plan of @p result when a valgrind backend may collect from it:
+ * its ValgrindPlan when the decision is collectionReady(), null otherwise (a
+ * decision that cannot collect, or a plan of another kind).
+ */
+[[nodiscard]] std::shared_ptr<const ValgrindPlan> readyPlan(const ReadinessResult& result);
 
 } // namespace valgrind_tool
 } // namespace bench
