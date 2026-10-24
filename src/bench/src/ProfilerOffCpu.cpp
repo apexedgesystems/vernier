@@ -217,6 +217,12 @@ void OffCpuProfiler::spawnBpftrace() {
       helper_->start(argv, outputPath_, errorPath_, START_GRACE_MS, nullptr);
   if (!STARTED.started) {
     std::fprintf(stderr, "[offcpu] could not start bpftrace: %s\n", STARTED.errorTail.c_str());
+    // Nothing is collected: the run's failure.
+    ProfilerRegistry::instance().reportFailure(
+        "offcpu", testName_,
+        readinessResult(ReadinessCause::UNUSABLE,
+                        std::string{WHAT} + " could not start: " + STARTED.errorTail,
+                        "Check that " + argv.front() + " can be executed."));
     helper_.reset();
     return;
   }
@@ -229,6 +235,7 @@ void OffCpuProfiler::spawnBpftrace() {
     if (!WHY.report.hint.empty()) {
       std::fprintf(stderr, "[offcpu] %s\n", WHY.report.hint.c_str());
     }
+    ProfilerRegistry::instance().reportFailure("offcpu", testName_, WHY);
     helper_.reset();
   }
 }
@@ -241,13 +248,16 @@ void OffCpuProfiler::stopBpftrace() {
   // escalates through the plan's route and reports every delivery it could
   // not make, and a tracer not seen to end so, whose stacks are not claimed.
   const HelperStopResult STOPPED = helper_->stop();
-  const bool COMPLETED =
-      !bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_)
-           .has_value();
+  const std::optional<ReadinessResult> INCOMPLETE =
+      bpftrace_tool::reportStop("offcpu", WHAT, STOPPED, plan_->route, errorPath_, outputPath_);
   helper_.reset();
-  if (COMPLETED) {
+  if (!INCOMPLETE) {
     std::fprintf(stderr, "[offcpu] stacks written to %s\n", outputPath_.c_str());
+    return;
   }
+  // A stop not seen to end with status 0, an end this process could not
+  // observe among them, claims no stacks and fails the run.
+  ProfilerRegistry::instance().reportFailure("offcpu", testName_, *INCOMPLETE);
 }
 
 /* --------------------------------- API --------------------------------- */

@@ -11,8 +11,10 @@
  *  - Under an nsys or ncu session (`bench run --profile nsight|ncu`, or a
  *    wrap typed by hand) the backend stays passive and says which tool owns
  *    the capture.
- *  - Without a session it prints the command that captures this run for the
- *    selected mode, and the measurement proceeds unprofiled.
+ *  - Without a session the request fails at its readiness check
+ *    (ProfilerNsightChecks.hpp), which prints the command that captures the
+ *    run, and no backend is built. A backend built directly prints that
+ *    command once per test, and its measurement proceeds unprofiled.
  *  - Each measured window is marked with an NVTX range named after the test.
  *  - Artifact folder: `<artifactRoot>/<Suite.Case>.nsight/` (`.ncu/` for
  *    --profile ncu), or the runner's folder under `bench run`.

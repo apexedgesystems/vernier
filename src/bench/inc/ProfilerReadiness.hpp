@@ -87,10 +87,11 @@ enum class LaunchContext : std::uint8_t {
   NOT_WRAPPED       ///< The backend needs a wrapper and none is present.
 };
 
-/** @brief Which stage of the request a decision concerns. */
+/** @brief Which stage of the request a decision or an outcome concerns. */
 enum class ReadinessStage : std::uint8_t {
   COLLECTION, ///< Capturing data; an Error here means nothing is collected.
-  ANALYSIS    ///< A promised analysis; an Error here still collects and keeps the raw data.
+  ANALYSIS,   ///< A promised analysis; an Error here still collects and keeps the raw data.
+  COMPLETION  ///< The capture's finished output; outcomes only, never a decision.
 };
 
 /** @brief Why a decision came out as it did; selects the status and the message prefix. */
@@ -171,6 +172,16 @@ struct ReadinessRequest {
   bool analyze = false;                ///< --profile-analyze promised an analysis.
   ReadinessScope scope = ReadinessScope::DEFAULT_INVENTORY;
   LaunchContext launch = LaunchContext::IN_PROCESS;
+
+  /**
+   * @brief Every field of the request as one key, each length-prefixed.
+   *
+   * Two requests have the same identity exactly when all their fields are
+   * equal. The registry keeps one decision per identity, context and
+   * registration, so a field added to this struct is added here too, or two
+   * different requests would share a decision.
+   */
+  [[nodiscard]] std::string identity() const;
 };
 
 /**
@@ -194,7 +205,7 @@ struct ReadinessResult {
 
   /** @brief True unless collection itself cannot run (an Error at the collection stage). */
   [[nodiscard]] bool collectionReady() const noexcept {
-    return report.status != EnvReport::Status::Error || stage == ReadinessStage::ANALYSIS;
+    return report.status != EnvReport::Status::Error || stage != ReadinessStage::COLLECTION;
   }
 };
 
@@ -213,7 +224,8 @@ using PlannedFactory = std::function<std::unique_ptr<Profiler>(
  * UNVERIFIED gives Warning prefixed "unverified: "; every other cause gives
  * Error prefixed "missing: ", "unusable: ", "unsupported: ", "denied: ",
  * "configuration: ", "missing helper: " or "internal: ". An ANALYSIS-stage
- * result is further prefixed "analysis: ". @p remedy becomes the hint.
+ * result is further prefixed "analysis: ", a COMPLETION-stage one
+ * "completion: ". @p remedy becomes the hint.
  */
 [[nodiscard]] ReadinessResult readinessResult(ReadinessCause cause, std::string detail,
                                               std::string remedy,
@@ -325,25 +337,66 @@ enum class StatusLoss : std::uint8_t {
 
 /* ------------------------------ Bounded Probes ------------------------------ */
 
-/** @brief Outcome of one bounded probe. */
+/**
+ * @brief Outcome of one bounded probe.
+ *
+ * A program reaped elsewhere (this process ignores SIGCHLD, sets
+ * SA_NOCLDWAIT, or another wait took it) leaves no exit status to read: its
+ * end is unobserved (statusObtained false, statusLoss saying why), and it
+ * neither exited nor was signalled as far as this result says. Such an end
+ * is neither a success nor a failure: a consumer that needs a proven success
+ * (a readiness check) reads it as none, and says so (unobservedProbe()); one
+ * that needs a proven failure (a refused stop signal) reads it as none
+ * either.
+ */
 struct ProbeResult {
-  bool started = false;    ///< The program was executed.
-  int spawnErrno = 0;      ///< errno of a failed fork or exec.
-  bool exited = false;     ///< Ended normally; exitCode is valid.
-  int exitCode = -1;       ///< Exit status when exited.
-  int termSignal = 0;      ///< Signal that ended it, 0 if it exited.
-  bool timedOut = false;   ///< Killed at the bound.
+  bool started = false;                     ///< The program was executed.
+  int spawnErrno = 0;                       ///< errno of a failed setup, fork or exec.
+  bool exited = false;                      ///< Ended normally; exitCode is valid.
+  int exitCode = -1;                        ///< Exit status when exited.
+  int termSignal = 0;                       ///< Signal that ended it, 0 if it exited.
+  bool timedOut = false;                    ///< Killed at the bound.
+  bool statusObtained = false;              ///< Its wait status was read here.
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why it ended without its status.
   std::string output;      ///< stdout (and stderr when MERGED), truncated at PROBE_OUTPUT_LIMIT.
   std::string errorOutput; ///< stderr when SEPARATE, truncated likewise.
 
-  /** @brief Started, exited with status 0 and did not time out. */
+  /** @brief A proven success: its status read here, an exit with status 0, within the bound. */
   [[nodiscard]] bool succeeded() const noexcept {
-    return started && exited && exitCode == 0 && !timedOut;
+    return started && statusObtained && exited && exitCode == 0 && !timedOut;
   }
 
-  /** @brief One phrase: "exit status 2", "killed by signal 9", "timed out after the bound", ... */
+  /** @brief It ended within the bound, but its status was not read here. */
+  [[nodiscard]] bool endUnobserved() const noexcept {
+    return started && !timedOut && !statusObtained;
+  }
+
+  /**
+   * @brief One phrase: "exit status 2", "ended by signal 9", "did not finish
+   * within its bound and was killed", "ended without an exit status this
+   * process could read: <why>", ...
+   */
   [[nodiscard]] std::string describe() const;
 };
+
+/**
+ * @brief What a readiness check, or a run, that needs a proven success from
+ * its probe does when the probe's end is unobserved: leave SIGCHLD alone.
+ */
+inline constexpr const char* CHILD_STATUS_REMEDY =
+    "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for this program's "
+    "own children while it is profiled, so the end of each program the profiler runs can be read.";
+
+/**
+ * @brief For a check that needs @p probe's proven success: when the probe's
+ * end is unobserved (ProbeResult::endUnobserved()), an UNUSABLE result at
+ * @p stage that says so: "<what>: ended without an exit status this process
+ * could read: <why>[: <the end of its output>]", with CHILD_STATUS_REMEDY;
+ * otherwise nothing, and the check reads the probe as it does.
+ */
+[[nodiscard]] std::optional<ReadinessResult>
+unobservedProbe(const std::string& what, const ProbeResult& probe,
+                ReadinessStage stage = ReadinessStage::COLLECTION);
 
 /** @brief Bytes of output a probe keeps, per stream. */
 inline constexpr std::size_t PROBE_OUTPUT_LIMIT = 64 * 1024;
@@ -364,17 +417,51 @@ enum class ProbeStreams : std::uint8_t {
  * @brief Run @p argv once, bounded, and collect its status and output.
  *
  * argv[0] is executed as given (a resolved absolute path; no PATH search),
- * with stdin from /dev/null, in its own process group, in the probe
+ * with stdin from /dev/null, in a process group of its own, in the probe
  * environment of @p ctx, with SIGINT and SIGTERM at their default action,
  * unblocked, as OwnedHelper starts its helpers. When the program ends,
  * whatever its status, or at @p timeoutMs, the whole group is killed, so
- * nothing the probe started runs on after it. The group is signalled before
- * the program is reaped: its pid, the group's id, cannot belong to another
- * process then. Output still in the pipes is read for at most PROBE_DRAIN_MS,
- * and the call returns once the program is reaped and no process of its group
- * runs, or PROBE_REAP_MS later at the most. A process that leaves the group,
- * or that this user may not signal, is beyond its reach. Needs no external
- * helper such as timeout(1).
+ * nothing the probe started runs on after it. The group is led by a keeper
+ * process the call forks first, which holds nothing open of this process's
+ * and is reaped last, after the group has ended: until then the group's id
+ * cannot belong to another process, so the group is ended also when the
+ * system reaps the program as it exits (this process ignores SIGCHLD or
+ * sets SA_NOCLDWAIT), and no id that may have passed to another process is
+ * ever signalled. A look at a process that cannot be read is not taken for
+ * its end: where the program's state cannot be read (a look at it, then a
+ * wait that does not block, interrupted every time), watching stops, the
+ * group is ended while the keeper is shown running (its end of their link
+ * still open), the program is not signalled by its pid, and if it is not
+ * reaped within the bound the result says so (statusObtained false,
+ * statusLoss NONE), never that another wait took it. The program starts
+ * only once the keeper reports that it holds nothing of this process's:
+ * where no keeper could (no close_range, and /proc/self/fd cannot be
+ * opened) nothing is started and the call fails: EMFILE or ENFILE when no
+ * descriptor was left to open the list with, ENOSYS otherwise. A keeper
+ * that could not let go of everything it inherits (its end of the anchor
+ * not put on its stdin, its stdout or stderr neither replaced by /dev/null
+ * nor closed, the list unreadable, a descriptor that would not close) fails
+ * the call with the errno it reports (EIO when it reports none), one that
+ * ends without a report with ESRCH, and one that says nothing within 5 s
+ * with ETIMEDOUT. The program's own start (its group joined, its streams set,
+ * its exec) fails the call with the errno of the step that failed, or with
+ * ETIMEDOUT when neither its exec nor a failure is reported within 5 s. A
+ * program that reported what failed ends by itself and is reaped, not
+ * signalled; one that did not is killed itself while a look shows it running,
+ * whether or not it has joined the group yet, and with its group while the
+ * keeper holds the group's id. Nothing reaped elsewhere, or whose state
+ * cannot be read, is signalled.
+ * A call whose setup fails after the keeper started ends and reaps the
+ * keeper before it returns.
+ * Output still in the pipes is read for at most
+ * PROBE_DRAIN_MS; then the program's reaping and the end of the rest of its
+ * group are awaited for PROBE_REAP_MS at the most, and the keeper's reaping
+ * for PROBE_REAP_MS more, so the call returns at most PROBE_DRAIN_MS and
+ * twice PROBE_REAP_MS after the program ended or was killed. A process
+ * that leaves the group, or that this user may not signal, is beyond its
+ * reach, and so is the group when another wait in this process reaps the
+ * keeper, which the ownership of children CHILD_STATUS_REMEDY states rules
+ * out. Needs no external helper such as timeout(1).
  */
 [[nodiscard]] ProbeResult runBoundedProbe(const std::vector<std::string>& argv, int timeoutMs,
                                           const ReadinessContext& ctx,
@@ -386,6 +473,25 @@ enum class ProbeStreams : std::uint8_t {
  * For one-line reports of a tool's output.
  */
 [[nodiscard]] std::string outputTail(const std::string& text, std::size_t maxLines = 2);
+
+namespace detail {
+
+/**
+ * @brief @p word as one POSIX shell word: unchanged when every character is
+ * safe (letters, digits and `_@%+=:,./-`), otherwise in single quotes with
+ * each quote written as '\''. For the commands the backends run through
+ * `/bin/sh -c` and the ones they print for a user to run.
+ */
+[[nodiscard]] std::string shellQuote(const std::string& word);
+
+/**
+ * @brief @p path as a tool that expands macros in its output names reads it:
+ * each '%' written "%%". compute-sanitizer's --log-file takes %p, %q{VAR} and
+ * %% and refuses any other '%'.
+ */
+[[nodiscard]] std::string escapePercent(const std::string& path);
+
+} // namespace detail
 
 /**
  * @brief A private directory for one decision's probe files, removed on destruction.
@@ -437,7 +543,7 @@ inline constexpr int HELPER_STATUS_UNAVAILABLE = -1;
 /** @brief How an owned helper's start went. */
 struct HelperStart {
   bool started = false;     ///< The program was executed.
-  int spawnErrno = 0;       ///< errno of a failed fork or exec.
+  int spawnErrno = 0;       ///< errno of a failed fork, stream setup or exec.
   bool exitedEarly = false; ///< It ended within the start grace.
   /// Its wait status when it ended early and was reaped here; otherwise
   /// HELPER_STATUS_UNAVAILABLE.
@@ -454,9 +560,14 @@ struct HelperStart {
 struct StopDelivery {
   int signal = 0;
   pid_t target = -1;
-  bool delivered = false;
-  std::string command; ///< "kill(2)" or the exact sudo command line.
-  std::string detail;  ///< errno text or the refusing command's output.
+  bool delivered = false; ///< Proven: kill(2) returned 0, or the sudo kill exited 0.
+  /// The sudo kill's end was read; false when it was reaped elsewhere
+  /// (statusLoss says why): then the signal is neither proven delivered nor
+  /// proven refused, and the stop waits for the helper as after a delivery.
+  bool statusObtained = true;
+  StatusLoss statusLoss = StatusLoss::NONE; ///< Why the sudo kill's status was not read.
+  std::string command;                      ///< "kill(2)" or the exact sudo command line.
+  std::string detail; ///< errno text, the refusing command's output, or why it is not known.
 };
 
 /** @brief How an owned helper's stop went. */
@@ -472,9 +583,27 @@ struct HelperStopResult {
   bool statusObtained = false;              ///< waitStatus was read here.
   StatusLoss statusLoss = StatusLoss::NONE; ///< Why it is gone without its status.
 
-  /** @brief True when every delivery succeeded; false names a refused one. */
+  /**
+   * @brief True when every delivery is proven; false names one refused, or
+   * one whose outcome is not known (statusObtained false).
+   */
   [[nodiscard]] bool allDelivered() const noexcept;
 };
+
+/**
+ * @brief The children of process @p parent, in pid order.
+ *
+ * Read from `<procRoot>/<parent>/task/<parent>/children` where the kernel
+ * provides that list; a kernel built without it (CONFIG_PROC_CHILDREN off)
+ * has no such file, and then every `<procRoot>/<pid>/stat` is read for its
+ * parent id (the field after the command name's closing parenthesis, so a
+ * command name holding spaces or parentheses cannot shift it). An empty list
+ * when @p parent has no child or does not exist. Entries that cannot be read
+ * or parsed are skipped, and nothing but an allocation failure throws.
+ * @p procRoot lets tests use a tree of their own.
+ */
+[[nodiscard]] std::vector<pid_t> childProcesses(pid_t parent,
+                                                const std::string& procRoot = "/proc");
 
 /**
  * @brief A helper process this benchmark started and alone may signal.
@@ -487,9 +616,12 @@ struct HelperStopResult {
  * helper ends. stop() delivers SIGINT, then SIGTERM, then SIGKILL through the
  * policy's route, waiting a bounded time after each and reporting every
  * delivery. Only processes this object started are signalled: its direct
- * child while that is not yet reaped, or, on the sudo route, the single child
- * listed under it (sudo may keep a monitor process between the two). An
- * empty or ambiguous list falls back to the direct child.
+ * child while that is not yet reaped, or, on the sudo route, the process that
+ * runs the tool: below the direct child while that is still sudo (by its
+ * command name) with exactly one child, through a monitor sudo may keep
+ * between itself and the tool; the direct child itself once sudo has
+ * executed the tool in it, whatever children the tool has. A sudo with no
+ * child or several is signalled itself.
  */
 class OwnedHelper {
 public:
@@ -502,8 +634,14 @@ public:
   OwnedHelper& operator=(OwnedHelper&& other) noexcept;
 
   /**
-   * @brief Start @p argv; stdout to @p stdoutPath ("" for /dev/null), stderr to
-   * @p stderrPath ("" for /dev/null); wait up to @p graceMs.
+   * @brief Start @p argv, stdin /dev/null; stdout to @p stdoutPath ("" for
+   * /dev/null), stderr to @p stderrPath ("" for /dev/null); wait up to
+   * @p graceMs. A stream it cannot set, or SIGINT and SIGTERM it cannot give
+   * their default action, fails the start with that errno. A start that
+   * reports neither its exec nor what failed within 5 s fails with ETIMEDOUT,
+   * the child killed while a look shows it running, then reaped; a child
+   * that reported what failed is only reaped, and none reaped elsewhere
+   * (this process ignores SIGCHLD or sets SA_NOCLDWAIT) is signalled.
    * @param probeEnv Null: the helper inherits this process's environment.
    *                 Otherwise it gets that context's probe environment.
    */
