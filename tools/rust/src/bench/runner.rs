@@ -13,6 +13,7 @@
 //! exits), and for compute-sanitizer it reads the tool's report to tell the
 //! errors the tool found from the benchmark's own status.
 
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
@@ -138,26 +139,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .as_ref()
         .map(|r| (r.program.to_string(), r.args.clone()));
 
-    let mut cmd = match (&cfg.taskset, &wrap) {
-        (Some(cpuset), Some((prog, prefix))) => {
-            let mut c = Command::new("taskset");
-            c.arg("-c").arg(cpuset).arg(prog).args(prefix);
-            c
-        }
-        (Some(cpuset), None) => {
-            let mut c = Command::new("taskset");
-            c.arg("-c").arg(cpuset).arg(&cfg.binary);
-            c
-        }
-        (None, Some((prog, prefix))) => {
-            let mut c = Command::new(prog);
-            c.args(prefix);
-            c
-        }
-        (None, None) => Command::new(&cfg.binary),
-    };
-
-    cmd.args(&args)
+    let launch = launch_command(&cfg.binary, &cfg.taskset, &wrap);
+    let mut cmd = Command::new(&launch[0]);
+    cmd.args(&launch[1..])
+        .args(&args)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
@@ -194,11 +179,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
                 .collect::<String>()
         })
         .unwrap_or_default();
-    println!(
-        "Running: {}{}",
-        env_prefix,
-        format_command(&cfg.binary, &cfg.taskset, &wrap, &args)
-    );
+    println!("Running: {}{}", env_prefix, format_command(&launch, &args));
 
     let status = cmd.status()?;
 
@@ -1325,23 +1306,34 @@ fn check_sanitizer_run(report: &Path, status: ExitStatus, request: &str) -> Resu
 
 /* ----------------------------- Helpers ----------------------------- */
 
-fn format_command(
+/// The program a run starts and its arguments before the benchmark's own,
+/// each element one argument: `taskset -c <cpuset>` when pinning, then the
+/// route's wrapper and its arguments (which end at the benchmark), or the
+/// benchmark itself, its path as the OS has it.
+fn launch_command(
     binary: &Path,
     taskset: &Option<String>,
     wrap: &Option<(String, Vec<String>)>,
-    args: &[String],
-) -> String {
-    let mut parts = Vec::new();
-    if let Some(ref cpuset) = taskset {
-        parts.push(format!("taskset -c {cpuset}"));
-    }
+) -> Vec<OsString> {
+    let mut launch: Vec<OsString> = match taskset {
+        Some(cpuset) => vec!["taskset".into(), "-c".into(), cpuset.into()],
+        None => Vec::new(),
+    };
     match wrap {
         Some((prog, prefix)) => {
-            parts.push(prog.clone());
-            parts.extend(prefix.iter().cloned());
+            launch.extend(std::iter::once(prog).chain(prefix).map(OsString::from));
         }
-        None => parts.push(binary.display().to_string()),
+        None => launch.push(binary.as_os_str().to_owned()),
     }
+    launch
+}
+
+/// The `Running:` line's command: @p launch (`launch_command`), then @p args.
+fn format_command(launch: &[OsString], args: &[String]) -> String {
+    let mut parts: Vec<String> = launch
+        .iter()
+        .map(|part| part.to_string_lossy().into_owned())
+        .collect();
     parts.extend(args.iter().cloned());
     parts.join(" ")
 }
@@ -1389,9 +1381,7 @@ mod tests {
     #[test]
     fn format_command_basic() {
         let s = format_command(
-            Path::new("./my_test"),
-            &None,
-            &None,
+            &launch_command(Path::new("./my_test"), &None, &None),
             &["--csv".to_string(), "out.csv".to_string()],
         );
         assert_eq!(s, "./my_test --csv out.csv");
@@ -1401,9 +1391,7 @@ mod tests {
     #[test]
     fn format_command_taskset() {
         let s = format_command(
-            Path::new("./my_test"),
-            &Some("0,1".to_string()),
-            &None,
+            &launch_command(Path::new("./my_test"), &Some("0,1".to_string()), &None),
             &["--quick".to_string()],
         );
         assert_eq!(s, "taskset -c 0,1 ./my_test --quick");
@@ -1421,14 +1409,61 @@ mod tests {
             ],
         ));
         let s = format_command(
-            Path::new("./my_test"),
-            &None,
-            &wrap,
+            &launch_command(Path::new("./my_test"), &None, &wrap),
             &["--profile".to_string(), "massif".to_string()],
         );
         assert_eq!(
             s,
             "valgrind --tool=massif --massif-out-file=out/foo.massif/massif.out ./my_test --profile massif"
+        );
+        let s = format_command(
+            &launch_command(Path::new("./my_test"), &Some("0,1".to_string()), &wrap),
+            &["--profile".to_string(), "massif".to_string()],
+        );
+        assert_eq!(
+            s,
+            "taskset -c 0,1 valgrind --tool=massif --massif-out-file=out/foo.massif/massif.out \
+             ./my_test --profile massif"
+        );
+    }
+
+    /// @test The launch keeps each argument whole, a path with a space in it
+    /// too, in the order taskset, wrapper, benchmark.
+    #[test]
+    fn launch_command_keeps_each_argument_whole() {
+        let binary = Path::new("./my bench");
+        let wrap = Some((
+            "valgrind".to_string(),
+            vec![
+                "--log-file=out/a b/log".to_string(),
+                "./my bench".to_string(),
+            ],
+        ));
+        let words = |launch: Vec<OsString>| -> Vec<String> {
+            launch
+                .into_iter()
+                .map(|part| part.into_string().expect("UTF-8"))
+                .collect()
+        };
+        assert_eq!(words(launch_command(binary, &None, &None)), ["./my bench"]);
+        assert_eq!(
+            words(launch_command(binary, &Some("0,1".to_string()), &None)),
+            ["taskset", "-c", "0,1", "./my bench"]
+        );
+        assert_eq!(
+            words(launch_command(binary, &None, &wrap)),
+            ["valgrind", "--log-file=out/a b/log", "./my bench"]
+        );
+        assert_eq!(
+            words(launch_command(binary, &Some("0,1".to_string()), &wrap)),
+            [
+                "taskset",
+                "-c",
+                "0,1",
+                "valgrind",
+                "--log-file=out/a b/log",
+                "./my bench"
+            ]
         );
     }
 
