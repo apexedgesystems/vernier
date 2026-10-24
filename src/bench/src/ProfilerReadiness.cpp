@@ -645,18 +645,17 @@ LeaderState reapWithin(pid_t pid, int& status) {
  * first while a look shows it running, whatever its group, then reaped. A
  * child reaped elsewhere (ECHILD), the system's reap of one that ended under
  * an ignored SIGCHLD among them, is never signalled, nor is one whose state
- * cannot be read. Returns how it was left: REAPED (@p status read), GONE, or
- * the state the last wait left it in.
+ * cannot be read.
  */
-LeaderState endFailedStart(pid_t child, bool reported, int& status) {
+void endFailedStart(pid_t child, bool reported) {
+  int status = 0;
   LeaderState state = reported ? reapWithin(child, status) : childState(child, status);
   if (state == LeaderState::RUNNING) {
     (void)::kill(child, SIGKILL);
     state = reapWithin(child, status);
   } else if (state == LeaderState::ENDED || (!reported && state == LeaderState::UNKNOWN)) {
-    state = reapWithin(child, status);
+    (void)reapWithin(child, status);
   }
-  return state;
 }
 
 #ifdef __linux__
@@ -1322,8 +1321,7 @@ ProbeResult runBoundedProbe(const std::vector<std::string>& argvIn, int timeoutM
       (void)::kill(-KEEPER, SIGKILL);
       keeperSignalled = true;
     }
-    int status = 0;
-    (void)endFailedStart(CHILD, step != 0, status);
+    endFailedStart(CHILD, step != 0);
     CLOSE_ALL();
     END_KEEPER();
     result.spawnErrno = execErrno;
@@ -1799,8 +1797,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     // one whose report did not come may still run, and is killed while a look
     // shows it running. Neither is signalled once reaped elsewhere (a child
     // that ends under an ignored SIGCHLD is reaped by the system).
-    int status = 0;
-    (void)endFailedStart(CHILD, step != 0, status);
+    endFailedStart(CHILD, step != 0);
     outcome.spawnErrno = err;
     const std::string WHAT = step == 1   ? OUT_PATH
                              : step == 2 ? ERR_PATH

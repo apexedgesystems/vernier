@@ -135,9 +135,7 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 /// Run a binary's `--profile-check` (binary readiness + backend doctor),
 /// with @p request's profile flags spelled as `bench run` passes them
 /// (`runner::effective_request`, `runner::profile_request_args`, then its
-/// other arguments after `--`), and
-/// @p env added to the binary's environment. Text mode streams the human
-/// report. `json` prints the binary's JSON document, once it parses, and
+/// other arguments after `--`). Text mode streams the human report. `json` prints the binary's JSON document, once it parses, and
 /// nothing else on stdout (fleet capability records). `require` reads that
 /// document and exits 1 unless every named backend reports OK -- warn is not
 /// good enough for a profile lane; the requested backend is judged by the
@@ -147,7 +145,6 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 pub fn doctor(
     binary: &Path,
     request: &super::runner::RunConfig,
-    env: &[(String, String)],
     json: bool,
     require: &[String],
 ) -> Result<i32, Error> {
@@ -162,7 +159,7 @@ pub fn doctor(
         profile_args: request.profile_args.as_deref().unwrap_or(""),
     });
     if json || !require.is_empty() {
-        let doc = read_doctor_document(&bin, &request_args, env)?;
+        let doc = read_doctor_document(&bin, &request_args)?;
         if json {
             print!("{}", doc.text);
         }
@@ -182,7 +179,6 @@ pub fn doctor(
     let status = Command::new(&bin)
         .arg("--profile-check")
         .args(&request_args)
-        .envs(env.iter().map(|(k, v)| (k, v)))
         .status()
         .map_err(|e| did_not_start(&bin, e))?;
     Ok(status.code().unwrap_or(1))
@@ -218,20 +214,18 @@ fn require_binary(binary: &Path) -> Result<PathBuf, Error> {
     Ok(super::launch_path(binary))
 }
 
-/// Run `<binary> --profile-check-json <args>` with @p env added to its
-/// environment, and parse what it prints: the doctor's reader, shared by
-/// `bench doctor` and `bench validate <binary>`. A binary that is not a file
-/// or does not start, and output that is not a JSON document, are errors.
+/// Run `<binary> --profile-check-json <args>` and parse what it prints: the
+/// doctor's reader, shared by `bench doctor` and `bench validate <binary>`. A
+/// binary that is not a file or does not start, and output that is not a JSON
+/// document, are errors.
 pub(crate) fn read_doctor_document(
     binary: &Path,
     args: &[String],
-    env: &[(String, String)],
 ) -> Result<DoctorDocument, Error> {
     let bin = require_binary(binary)?;
     let out = Command::new(&bin)
         .arg("--profile-check-json")
         .args(args)
-        .envs(env.iter().map(|(k, v)| (k, v)))
         .output()
         .map_err(|e| did_not_start(&bin, e))?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();

@@ -98,13 +98,13 @@ inline constexpr int PROBE_TIMEOUT_MS = 30000;
  *
  * Resolves valgrind and /bin/true in @p ctx, then runs `valgrind --tool=<tool>
  * <options> <output option>=/dev/null /bin/true`, bounded, so the probe
- * writes nothing. Sets @p valgrindPath to the resolved valgrind.
+ * writes nothing.
  * @return READY naming the probe; MISSING without valgrind; MISSING_HELPER
  *         without /bin/true; UNUSABLE, with valgrind's words, when the tool
  *         does not start.
  */
 [[nodiscard]] ReadinessResult probeTool(const std::string& backend, const ValgrindMode& mode,
-                                        const ReadinessContext& ctx, std::string& valgrindPath);
+                                        const ReadinessContext& ctx);
 
 /** @brief The MISSING result of a request whose valgrind is not on PATH. */
 [[nodiscard]] ReadinessResult valgrindMissing();
@@ -146,10 +146,7 @@ struct ValgrindIdentity {
 
 /** @brief What a valgrind backend's check verified, for the launch to use. */
 struct ValgrindPlan final : ReadinessPlan {
-  std::string backend;                              ///< The registered name.
-  ValgrindMode mode;                                ///< The tool and options of the request.
   LaunchContext launch = LaunchContext::IN_PROCESS; ///< At the runtime scope: how the wrap began.
-  std::string valgrind;                             ///< The resolved valgrind (doctor scopes).
   bool canToggle = false; ///< callgrind: instrumentation can be switched for the window.
 };
 

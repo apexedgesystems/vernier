@@ -44,9 +44,7 @@ namespace bench {
 
 /** @brief What the rocprof check verified, for the launch to use. */
 struct RocprofPlan final : ReadinessPlan {
-  std::string rocprof;                              ///< The resolved rocprof (doctor scopes).
-  std::vector<std::string> flags;                   ///< rocprof's flags for the requested modes.
-  LaunchContext launch = LaunchContext::IN_PROCESS; ///< At the runtime scope: how the wrap began.
+  std::vector<std::string> flags; ///< rocprof's flags for the requested modes.
 };
 
 /* ----------------------------- RocprofProfiler ----------------------------- */
