@@ -716,8 +716,9 @@ fn route_for(
         .to_string();
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     let d = dir.display().to_string();
-    // The folder as the tools' output options read it (valgrind's,
-    // compute-sanitizer's, and the -o of nsys and ncu): each '%' doubled.
+    // The folder as valgrind's output options and the -o of nsys and ncu
+    // read it: each '%' doubled. compute-sanitizer's log escapes the folder
+    // made absolute, and heaptrack's -o takes it unescaped (both below).
     let escaped = escape_percent(&d);
     let ncu = |d: &str| -> Vec<String> {
         vec![

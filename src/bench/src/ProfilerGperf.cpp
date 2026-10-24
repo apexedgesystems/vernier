@@ -555,7 +555,7 @@ std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::st
   auto plan = ProfilerRegistry::instance().reportDecision("gperf", DECISION) ? readyPlan(DECISION)
                                                                              : nullptr;
   if (!plan) {
-    return nullptr; // not compiled in, or an unsupported mode -> the factory falls back to no-op
+    return nullptr; // not compiled in, or an unsupported mode: reported, and the run fails
   }
   return std::make_unique<GperfProfiler>(cfg, testName, std::move(plan));
 }

@@ -488,7 +488,8 @@ int clearOfStreams(int fd, unsigned becomes) {
  * @brief write() all of @p len bytes, interrupted writes tried
  * INTERRUPTED_TRIES times at the most; async-signal-safe (used between fork
  * and exec). A report it cannot write is lost: the parent reads end-of-file,
- * and the child's exit, status 127, is what it sees of the start.
+ * and the child's exit, status 127 (126 where the owned helper could not
+ * open a stream's file), is what it sees of the start.
  */
 void writeAll(int fd, const void* data, std::size_t len) {
   const char* p = static_cast<const char*>(data);

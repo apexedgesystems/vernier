@@ -252,7 +252,7 @@ impl std::str::FromStr for SortColumn {
     }
 }
 
-/* ----------------------------- Validate Result ----------------------------- */
+/* ----------------------------- Check Result ----------------------------- */
 
 /// Result of a single environment validation check.
 #[derive(Debug, Clone)]

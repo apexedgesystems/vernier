@@ -436,12 +436,14 @@ enum class ProbeStreams : std::uint8_t {
  * statusLoss NONE), never that another wait took it. The program starts
  * only once the keeper reports that it holds nothing of this process's:
  * where no keeper could (no close_range, and /proc/self/fd cannot be
- * opened) nothing is started and the call fails (ENOSYS); a keeper that
- * could not let go of everything it inherits (its end of the anchor not put
- * on its stdin, its stdout or stderr neither replaced by /dev/null nor
- * closed, the list unreadable, a descriptor that would not close) fails the
- * call with the errno it reports, and one that says nothing within 5 s with
- * ETIMEDOUT. The program's own start (its group joined, its streams set,
+ * opened) nothing is started and the call fails: EMFILE or ENFILE when no
+ * descriptor was left to open the list with, ENOSYS otherwise. A keeper
+ * that could not let go of everything it inherits (its end of the anchor
+ * not put on its stdin, its stdout or stderr neither replaced by /dev/null
+ * nor closed, the list unreadable, a descriptor that would not close) fails
+ * the call with the errno it reports (EIO when it reports none), one that
+ * ends without a report with ESRCH, and one that says nothing within 5 s
+ * with ETIMEDOUT. The program's own start (its group joined, its streams set,
  * its exec) fails the call with the errno of the step that failed, or with
  * ETIMEDOUT when neither its exec nor a failure is reported within 5 s. A
  * program that reported what failed ends by itself and is reaped, not
@@ -452,8 +454,10 @@ enum class ProbeStreams : std::uint8_t {
  * A call whose setup fails after the keeper started ends and reaps the
  * keeper before it returns.
  * Output still in the pipes is read for at most
- * PROBE_DRAIN_MS, and the call returns once the program is reaped and no
- * process of its group runs, or PROBE_REAP_MS later at the most. A process
+ * PROBE_DRAIN_MS; then the program's reaping and the end of the rest of its
+ * group are awaited for PROBE_REAP_MS at the most, and the keeper's reaping
+ * for PROBE_REAP_MS more, so the call returns at most PROBE_DRAIN_MS and
+ * twice PROBE_REAP_MS after the program ended or was killed. A process
  * that leaves the group, or that this user may not signal, is beyond its
  * reach, and so is the group when another wait in this process reaps the
  * keeper, which the ownership of children CHILD_STATUS_REMEDY states rules
