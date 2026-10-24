@@ -745,15 +745,25 @@ on every kernel.
 
 ### Energy Measurement with RAPL
 
-Measure power consumption (Intel CPUs):
+Measure the energy a test's calls cost (Intel CPUs):
 
 ```bash
-# Requires root for /dev/cpu/*/msr access
-sudo ./MyComponent_PTEST --profile rapl --csv energy_results.csv
+# Needs read access to /dev/cpu/0/msr: root, or CAP_SYS_RAWIO together with
+# read permission on the device (the capability alone does not give it)
+sudo ./MyComponent_PTEST --profile rapl
 
-# Energy summary is printed and written to <Test>.rapl/energy.txt
-# Fields: Energy consumed (J), Average power (W), Energy per operation (mJ/call), Duration (s)
+# Each case's report is <Test>.rapl/energy.txt, one numbered section per
+# measured window: Energy consumed (J), Duration (s), Average power (W),
+# Energy per operation (mJ/call), and the counters
 ```
+
+The counter is package 0's: every core of the package counts, not the
+test's thread alone. Energy per operation is the window's average package
+power times its median time per call. The CSV gets no energy columns; with
+`--csv`, a row's `profileDir` names its case's folder. A run that cannot read
+the counter fails with exit status 4 and says why (`denied`, `missing`,
+`unsupported`); `bench doctor <binary> --profile rapl` shows the same row.
+[Walkthrough 08](../demo/docs/08_RAPL_PROFILER.md) runs it on the join example.
 
 ---
 
@@ -1245,8 +1255,8 @@ ls -la results.csv
 # perf requires kernel support
 sudo sysctl -w kernel.perf_event_paranoid=-1
 
-# RAPL requires root access
-sudo ./MyComponent_PTEST --profile rapl
+# RAPL needs read access to /dev/cpu/0/msr; the doctor names what is missing
+bench doctor ./MyComponent_PTEST --profile rapl
 ```
 
 ---

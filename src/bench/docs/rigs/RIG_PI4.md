@@ -150,8 +150,7 @@ it left out:
              Install the CUDA toolkit's Nsight Systems (nsys), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
   [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [WARN] perf       perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events
-  [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
-             sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO).
+  [FAIL] rapl       unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
   [FAIL] rocprof    missing: rocprof not found on PATH
              Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
 
@@ -163,6 +162,10 @@ it left out:
   [--profile-args <args>] to --profile-check to check one request.
   --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
+
+The `rapl` row in this block was not captured on this rig: it is the row
+the backend prints where `/proc/cpuinfo` names no CPU vendor, as on an
+ARM CPU, and the block is still to be recaptured here.
 
 Five backends fail here: the three NVIDIA tools, which this rig does not
 have, `rapl`, which is Intel-only, and `rocprof`, which is AMD's. `perf`

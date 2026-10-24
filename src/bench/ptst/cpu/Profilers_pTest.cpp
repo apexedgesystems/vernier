@@ -36,9 +36,9 @@
  *  - Runtime: ~5 seconds total (when profilers enabled)
  *  - Pass rate: 100% (or skip if profiler unavailable)
  *
- * @note UB_PERF_GUARD attaches the profiler hooks itself, and HookAttachment
- *       uses it. The *Integration tests construct a PerfCase without the
- *       hooks, so --profile attaches no profiler to them.
+ * @note UB_PERF_GUARD attaches the profiler hooks itself; HookAttachment and
+ *       RAPLIntegration use it. The other *Integration tests construct a
+ *       PerfCase without the hooks, so --profile attaches no profiler to them.
  *
  * @see makePerfCaseWithProfiler
  * @see attachProfilerHooks
@@ -237,7 +237,8 @@ PERF_TEST(Profilers, BpftraceIntegration) {
  * @brief RAPL profiler integration smoke test
  *
  * Validates that RAPL (power measurement) profiler integration works when enabled.
- * Test skips if RAPL profiler not enabled.
+ * Test skips if RAPL profiler not enabled. UB_PERF_GUARD builds the case, so
+ * --profile rapl attaches the RAPL profiler to it.
  *
  * @test RAPLIntegration
  *
@@ -255,7 +256,7 @@ PERF_TEST(Profilers, RAPLIntegration) {
     GTEST_SKIP() << "Test requires --profile rapl";
   }
 
-  ub::PerfCase perf{"Profilers.RAPLIntegration", config()};
+  UB_PERF_GUARD(perf);
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);

@@ -9,6 +9,16 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 08 measures the shared join example** -- `BenchDemo_08_RaplProfiler`
+  measures `joinV0` and `joinV1`, one test each, instead of a naive and a
+  "vectorized" dot product that a Release build compiles to the same scalar
+  arithmetic, and its [walkthrough](src/bench/demo/docs/08_RAPL_PROFILER.md) is
+  written for an Intel laptop, outside the reference rigs. RAPL's energy is in
+  each case's `energy.txt`, which the CSV row's `profileDir` names, not in CSV
+  columns. **Action needed:** its test names change (`NaiveDotProduct` and
+  `VectorizedDotProduct` become `JoinV0` and `JoinV1`), so demo 08 CSVs from
+  before this release do not join with newer ones, and
+  `helpers/DemoWorkloads.hpp`, whose last helpers were demo 08's, is removed.
 - **Demo 09 traces writes and lock hand-offs on the shared join example** --
   its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
   from a run on the documented Raspberry Pi 4 rig.
@@ -318,6 +328,30 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **RAPL's energy report is the run's evidence, kept and checked** -- a start
+  reading of zero is measured, and a counter that cannot be read at either
+  end of a window, or an `energy.txt` that cannot be written, fails the run
+  with status 4, naming the cause or the file. The summary follows the
+  written report and names it, without the power and per-call hints. The
+  report holds one numbered section per measured window, in the order of the
+  case's rows, and states its scope (package 0, nothing off it), the
+  counter's 32-bit wrap and that energy per call is the window's average
+  package power times its median call time.
+- **`--profile rapl` reads the energy registers before it says yes, and says
+  why when it cannot** -- the doctor and the run read the power-unit and
+  package-energy registers through `/dev/cpu/0/msr` and name the cause of a
+  refusal: `denied` (it needs root, or CAP_SYS_RAWIO and read access to the
+  device), `missing` (no msr driver or device), `unsupported` (not an Intel
+  CPU, or a register the CPU lacks) or `unusable`. A refused request fails
+  the run with status 4 and creates no folder, through the registry, the
+  `RAPLProfiler` constructor or `makeRAPLProfiler()`. **Action needed:** drop
+  `--profile-args` from a rapl request, which takes no mode word, and
+  `--profile-analyze`, with which the capture runs and the run then fails.
+- **The RAPL performance sample runs with the RAPL profiler** --
+  `Profilers.RAPLIntegration` (`BenchmarkCPU_PTEST`) built its case without
+  the profiler guard, so `--profile rapl` never reached the RAPL backend and
+  the sample passed without measuring energy; it builds the case with
+  `UB_PERF_GUARD`.
 - **`bench run` runs the tool and mode a request names** -- `--profile nsys`
   is wrapped as `nsight` is, and a wrapped profile's `--profile-args` mode
   reaches its tool, also from a request given after `--`; a word the profile
