@@ -142,6 +142,41 @@ TEST(PerfCaseTargetTimeTest, StretchedCalibrationSampleKeepsTheRoundNearTarget) 
   EXPECT_LT(roundUs, TARGET_US * 4.0) << "cycles=" << perf.cycles();
 }
 
+/** @test Sizes the repeat from earlier samples when the last calibration sample is stretched */
+TEST(PerfCaseTargetTimeTest, StretchedLastCalibrationSampleKeepsTheRoundNearTarget) {
+  constexpr int TARGET_US = 40000;
+  constexpr int REPEATS = 5;
+  vernier::bench::PerfConfig cfg;
+  cfg.targetTimeUs = TARGET_US;
+  cfg.repeats = REPEATS;
+
+  // Each call spins 5 us on the steady clock, so the calibration's batches
+  // do not depend on the core: the batches of 64 (320 us) and 128 (640 us)
+  // resolve, and the batch of 256 (1.28 ms) spans the 1 ms sample after them
+  // and ends the doubling. Its first call, the 256th, sleeps 10 ms: another
+  // thread's slice on the sample that ends the calibration.
+  constexpr auto CALL = std::chrono::microseconds(5);
+  constexpr long long STRETCHED_CALL = 256;
+  long long calls = 0;
+  const auto op = [&] {
+    if (++calls == STRETCHED_CALL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto until = std::chrono::steady_clock::now() + CALL;
+    while (std::chrono::steady_clock::now() < until) {
+    }
+  };
+
+  vernier::bench::PerfCase perf{"TargetTime.StretchedLastSample", cfg};
+  const vernier::bench::PerfResult result = perf.throughputLoop(op);
+
+  // Sized from the last sample alone, about 44 us a call, the round would be
+  // about a tenth of the target.
+  const double roundUs = result.stats.median * static_cast<double>(perf.cycles());
+  EXPECT_GT(roundUs, TARGET_US / 4.0) << "cycles=" << perf.cycles();
+  EXPECT_LT(roundUs, TARGET_US * 4.0) << "cycles=" << perf.cycles();
+}
+
 /** @test Runs one cycle per repeat when a single call already exceeds the requested time */
 TEST(PerfCaseTargetTimeTest, SlowOperationRunsOneCycle) {
   constexpr int REPEATS = 2;
