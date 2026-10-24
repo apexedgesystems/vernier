@@ -680,6 +680,38 @@ TEST_F(ProfilerOutcomeTest, TestFailureWins) {
       << ERR;
 }
 
+/**
+ * @test A failure that is not the --profile request's (a profiler the
+ * benchmark built itself, the GPU harness's answer to --capture-um) fails the
+ * run without reading as the request's: the report names no request, even
+ * beside a request of its own that failed or one that cannot fail
+ */
+TEST_F(ProfilerOutcomeTest, AnotherFailureDoesNotNameTheRequest) {
+  ScopedBackend backend("outcome-other");
+  backend.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::READY, "ok", ""); });
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  StderrCapture capture;
+  reg.reportFailure("outcome-elsewhere", "",
+                    readinessResult(ReadinessCause::UNSUPPORTED, "not here", ""));
+  EXPECT_EQ(reg.finishRun(configFor(backend.name()), 0, 1), 4);
+  EXPECT_EQ(reg.finishRun(configFor("cupti"), 0, 1), 4);
+  reg.reportFailure(backend.name(), "", readinessResult(ReadinessCause::MISSING, "no output", ""));
+  EXPECT_EQ(reg.finishRun(configFor(backend.name()), 1, 1), 1);
+  const std::string ERR = capture.text();
+  EXPECT_EQ(ERR.find("--profile"), std::string::npos) << "a request named as failed:\n" << ERR;
+  const std::string ALONE = "[profile] a profile failed; the run exits with status 4:\n"
+                            "[profile]   outcome-elsewhere: unsupported: not here\n\n";
+  EXPECT_NE(ERR.find(ALONE), std::string::npos) << ERR;
+  EXPECT_NE(ERR.find(ALONE, ERR.find(ALONE) + 1), std::string::npos) << "with cupti:\n" << ERR;
+  EXPECT_NE(ERR.find("[profile] a profile failed; the run exits with the tests' status 1:\n"
+                     "[profile]   outcome-elsewhere: unsupported: not here\n"
+                     "[profile]   " +
+                     backend.name() + ": missing: no output\n"),
+            std::string::npos)
+      << ERR;
+}
+
 /** @test Nothing recorded: the tests' status, and nothing printed without a request. */
 TEST_F(ProfilerOutcomeTest, NothingFailedKeepsTheTestsStatus) {
   StderrCapture capture;

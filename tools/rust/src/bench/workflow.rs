@@ -135,10 +135,9 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 /// Run a binary's `--profile-check` (binary readiness + backend doctor),
 /// with @p request's profile flags spelled as `bench run` passes them
 /// (`runner::effective_request`, `runner::profile_request_args`, then its
-/// other arguments after `--`), and
-/// @p env, then the start-up setting `bench run` would give the request
-/// (`runner::startup_env`), added to the binary's environment. Text mode streams the human
-/// report. `json` prints the binary's JSON document, once it parses, and
+/// other arguments after `--`), and with the start-up setting `bench run`
+/// would give the request (`runner::startup_env`) added to the binary's
+/// environment. Text mode streams the human report. `json` prints the binary's JSON document, once it parses, and
 /// nothing else on stdout (fleet capability records). `require` reads that
 /// document and exits 1 unless every named backend reports OK -- warn is not
 /// good enough for a profile lane; the requested backend is judged by the
@@ -148,7 +147,6 @@ pub(crate) fn canonical_backend(name: &str) -> &str {
 pub fn doctor(
     binary: &Path,
     request: &super::runner::RunConfig,
-    env: &[(String, String)],
     json: bool,
     require: &[String],
 ) -> Result<i32, Error> {
@@ -158,9 +156,7 @@ pub fn doctor(
     let request = &super::runner::effective_request(request, "bench doctor")?;
     // And the start bench run would give it (gperf's sampling rate), so the
     // row answers for that start.
-    let mut env = env.to_vec();
-    env.extend(super::runner::startup_env(request)?);
-    let env = env.as_slice();
+    let env = super::runner::startup_env(request)?;
     let mut request_args = super::runner::profile_request_args(request);
     request_args.extend(request.extra_args.iter().cloned());
     let selected = request.profile.as_deref().map(|profile| SelectedRequest {
@@ -168,7 +164,7 @@ pub fn doctor(
         profile_args: request.profile_args.as_deref().unwrap_or(""),
     });
     if json || !require.is_empty() {
-        let doc = read_doctor_document(&bin, &request_args, env)?;
+        let doc = read_doctor_document(&bin, &request_args, &env)?;
         if json {
             print!("{}", doc.text);
         }
@@ -225,8 +221,9 @@ fn require_binary(binary: &Path) -> Result<PathBuf, Error> {
 }
 
 /// Run `<binary> --profile-check-json <args>` with @p env added to its
-/// environment, and parse what it prints: the doctor's reader, shared by
-/// `bench doctor` and `bench validate <binary>`. A binary that is not a file
+/// environment (the start-up setting `bench doctor` gives a request; `bench
+/// validate` adds none), and parse what it prints: the doctor's reader, shared
+/// by `bench doctor` and `bench validate <binary>`. A binary that is not a file
 /// or does not start, and output that is not a JSON document, are errors.
 pub(crate) fn read_doctor_document(
     binary: &Path,
@@ -281,15 +278,6 @@ struct SelectedRequest<'a> {
     profile_args: &'a str,
 }
 
-/// A request as the command line states it, for messages.
-fn request_text(backend: &str, profile_args: &str) -> String {
-    if profile_args.is_empty() {
-        format!("--profile {backend}")
-    } else {
-        format!("--profile {backend} --profile-args '{profile_args}'")
-    }
-}
-
 /// The --require verdict: every named backend must exist and report "ok".
 /// @p selected is the request the doctor was asked about: its backend is
 /// judged by the document's `selected` row, which must be that request's,
@@ -311,7 +299,7 @@ fn evaluate_required_backends(
             Some(request) => {
                 let label = format!(
                     "{want} ({})",
-                    request_text(request.backend, request.profile_args)
+                    super::runner::request_text(request.backend, Some(request.profile_args))
                 );
                 let Some(row) = doc.get("selected").filter(|row| row.is_object()) else {
                     failed += 1;
@@ -327,7 +315,7 @@ fn evaluate_required_backends(
                     (Some(name), Some(args)) if !name.is_empty() => {
                         let name = canonical_backend(name);
                         (name != request.backend || args != request.profile_args)
-                            .then(|| request_text(name, args))
+                            .then(|| super::runner::request_text(name, Some(args)))
                     }
                     _ => Some("no named request".to_string()),
                 };

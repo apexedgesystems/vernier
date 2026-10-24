@@ -27,8 +27,10 @@
 #include <linux/filter.h>
 #include <linux/seccomp.h>
 #include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #endif
 
 #include <algorithm>
@@ -47,6 +49,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -918,54 +921,366 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
 #ifdef __linux__
 namespace {
 
+/** @brief The duplicates answerHeldCalls() has failed with EINTR in this process. */
+std::atomic<int> duplicatesInterrupted{0};
+
+/** @brief The kill(2) calls answerHeldCalls() has held in this process (signal 0 aside). */
+std::atomic<int> killsSeen{0};
+
+/** @brief Those of them aimed at the keeper answerHeldCalls() ended, by its pid or group. */
+std::atomic<int> killsOnLost{0};
+
+/** @brief The keeper answerHeldCalls() ended (Denied::keeperLoss), once it is gone; or 0. */
+std::atomic<pid_t> keeperEnded{0};
+
 /**
- * @brief In a process of its own (a death test's): from now on close_range(2)
- * fails with ENOSYS, as on a kernel before 5.9, for this process and every
- * process it starts; when @p unclosable is 0 or more, close(2) of that
- * descriptor fails too (EBADF), so that no process can close it; with
- * @p unlistable no directory can be opened (ENOENT), so /proc/self/fd cannot
- * be listed. Seccomp, no privilege needed; false when the filter cannot be
- * installed.
+ * @brief The counted kills by what they were aimed at: a group (a negative
+ * target), a group's leader (a probe's keeper), or any other process (the
+ * probe's program, the helper's child).
  */
-bool withoutCloseRange(int unclosable, bool unlistable = false) {
+std::atomic<int> killsAtGroup{0};
+std::atomic<int> killsAtLeader{0};
+std::atomic<int> killsAtChild{0};
+
+/** @brief What deny()'s listener does with each kill(2) it holds (Denied::kills). */
+enum class KillWatch : std::uint8_t {
+  NONE,        ///< kill(2) is not held.
+  REFUSED,     ///< Each counted and refused (EPERM): none is expected.
+  LOST_REFUSED ///< Each counted; one aimed at the keeper the listener ended, by its pid or its
+               ///< group, also counted apart and refused (EPERM); the others carried out.
+};
+
+/** @brief What deny()'s listener does with each execve(2) it holds (Denied::keeperLoss). */
+enum class KeeperLoss : std::uint8_t {
+  NONE,         ///< Nothing of this: execve(2) is held only by execHeld.
+  THEN_REFUSED, ///< The caller's keeper ended and awaited, then the exec refused (ENOENT).
+  THEN_HELD     ///< The caller's keeper ended and awaited, then the exec left held.
+};
+
+/** @brief The calls deny() makes fail, and how. */
+struct Denied {
+  bool closeRange = true;      ///< close_range(2): ENOSYS, as on a kernel before 5.9.
+  int close = -1;              ///< close(2) of this descriptor: EBADF, so no process can close it.
+  bool directories = false;    ///< Opening a directory: ENOENT, so /proc/self/fd cannot be listed.
+  bool directoryReads = false; ///< Reading a directory (getdents64): EPERM; it still opens.
+  int replace = -1;            ///< dup2(2) and dup3(2) onto this descriptor: EPERM.
+  bool nullOpen = false;       ///< An open for writing and nothing else, as the keeper opens
+                               ///< /dev/null: EACCES.
+  int query = -1;              ///< fcntl(2) F_GETFD of this descriptor: EPERM.
+  int flagSet = -1;            ///< fcntl(2) F_SETFD of this descriptor: EPERM.
+  int replaceErrno = EPERM;    ///< What the duplicates onto `replace` fail with.
+  int interruptOnce = -1;      ///< dup2(2) and dup3(2) onto this descriptor held for
+                               ///< answerHeldCalls(): a process's first fails with EINTR.
+  bool reportWrite = false;    ///< Every write(2) of 8 bytes, a start report's: EINTR.
+  bool blockingWait = false;   ///< Every wait4(2) that blocks (no options): EINTR.
+  bool noHangWait = false;     ///< Every wait4(2) that does not block (WNOHANG): EINTR.
+  bool stateLook = false;      ///< Every waitid(2): EINTR.
+  bool execHeld = false;       ///< Every execve(2) held, for a listener that never answers.
+  bool joinHeld = false;       ///< A process's join of another's group (setpgid(0, g), g not
+                               ///< 0) held, for a listener that never answers; a process's
+                               ///< join of another to a group not that one's own (setpgid(p,
+                               ///< g), p not 0, g not p): EPERM.
+  bool stopAction = false;     ///< sigaction(2) of SIGINT: EPERM.
+  bool stopUnblock = false;    ///< sigprocmask(2) SIG_UNBLOCK: EPERM.
+  int readOpen = -1;           ///< An open with exactly these flags: EACCES.
+
+  /// Every kill(2) held for the listener, which counts and refuses it as KillWatch says.
+  KillWatch kills = KillWatch::NONE;
+  /// Every execve(2) held: the caller's group leader, the probe's keeper, ended first.
+  KeeperLoss keeperLoss = KeeperLoss::NONE;
+  /// Every poll(2) and ppoll(2) held until this process has no child left, 3 s at most.
+  bool reportHeld = false;
+  /// Every execve(2): ENOENT, so that a start's child reports its exec failing.
+  bool execRefused = false;
+};
+
+#if defined(SECCOMP_RET_USER_NOTIF) && defined(SECCOMP_USER_NOTIF_FLAG_CONTINUE)
+/**
+ * @brief Answers the calls deny() holds on @p listener as @p denied asks, for
+ * as long as this process lives; a call it does not answer stays held (a
+ * held exec or join). A duplicate onto `interruptOnce`: a process's first
+ * fails with EINTR and its later ones are carried out; a group's leader (the
+ * probe's keeper) goes on at once. A kill (`kills`): counted and refused as
+ * KillWatch says; signal 0, which signals nothing, carried out uncounted. An
+ * exec (`keeperLoss`): the caller's group leader, the probe's keeper, when
+ * it is not this process's, is ended (tgkill(2), which is not held) and
+ * awaited until it is gone, 2 s at most, then the exec refused (ENOENT) or
+ * left held. A poll (`reportHeld`): carried out once this process has no
+ * child left, 3 s at most.
+ */
+void answerHeldCalls(int listener, Denied denied) {
+  std::vector<std::uint32_t> interrupted;
+  for (;;) {
+    seccomp_notif request{};
+    if (::ioctl(listener, SECCOMP_IOCTL_NOTIF_RECV, &request) != 0) {
+      if (errno == EINTR || errno == ENOENT) {
+        continue;
+      }
+      return;
+    }
+    seccomp_notif_resp response{};
+    response.id = request.id;
+    response.flags = SECCOMP_USER_NOTIF_FLAG_CONTINUE;
+    const auto CALL = static_cast<long>(request.data.nr);
+    const auto PID = static_cast<pid_t>(request.pid);
+    bool duplicate = CALL == SYS_dup3;
+    bool polling = CALL == SYS_ppoll;
+#ifdef SYS_dup2
+    duplicate = duplicate || CALL == SYS_dup2;
+#endif
+#ifdef SYS_poll
+    polling = polling || CALL == SYS_poll;
+#endif
+    if (CALL == SYS_kill && denied.kills != KillWatch::NONE) {
+      const auto TARGET =
+          static_cast<pid_t>(static_cast<std::int32_t>(request.data.args[0] & 0xffffffffU));
+      const pid_t LOST = keeperEnded.load();
+      const bool AT_LOST = LOST > 0 && (TARGET == LOST || TARGET == -LOST);
+      if (request.data.args[1] != 0) {
+        killsSeen.fetch_add(1);
+        if (TARGET < 0) {
+          killsAtGroup.fetch_add(1);
+        } else if (::getpgid(TARGET) == TARGET) {
+          killsAtLeader.fetch_add(1);
+        } else {
+          killsAtChild.fetch_add(1);
+        }
+        if (AT_LOST) {
+          killsOnLost.fetch_add(1);
+        }
+        if (denied.kills == KillWatch::REFUSED || AT_LOST) {
+          response.flags = 0;
+          response.error = -EPERM;
+        }
+      }
+    } else if (CALL == SYS_execve && denied.keeperLoss != KeeperLoss::NONE) {
+      const pid_t KEEPER = ::getpgid(PID);
+      if (KEEPER > 0 && KEEPER != ::getpgrp()) {
+        (void)::syscall(SYS_tgkill, KEEPER, KEEPER, SIGKILL);
+        const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+        while (std::chrono::steady_clock::now() < UNTIL &&
+               !(::syscall(SYS_tgkill, KEEPER, KEEPER, 0) != 0 && errno == ESRCH)) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        keeperEnded.store(KEEPER);
+      }
+      if (denied.keeperLoss == KeeperLoss::THEN_HELD) {
+        continue;
+      }
+      response.flags = 0;
+      response.error = -ENOENT;
+    } else if (polling && denied.reportHeld) {
+      const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+      while (!childProcesses(::getpid()).empty() && std::chrono::steady_clock::now() < UNTIL) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      }
+    } else if (duplicate && denied.interruptOnce >= 0) {
+      if (::getpgid(PID) != PID &&
+          std::find(interrupted.begin(), interrupted.end(), request.pid) == interrupted.end()) {
+        interrupted.push_back(request.pid);
+        duplicatesInterrupted.fetch_add(1);
+        response.flags = 0;
+        response.error = -EINTR;
+      }
+    } else {
+      continue;
+    }
+    (void)::ioctl(listener, SECCOMP_IOCTL_NOTIF_SEND, &response);
+  }
+}
+#endif
+
+/**
+ * @brief In a process of its own (a death test's): from now on the calls
+ * @p denied names fail, for this process and every process it starts.
+ * Seccomp, no privilege needed; false when the filter cannot be installed.
+ */
+bool deny(const Denied& denied) {
 #ifdef SYS_close_range
   constexpr unsigned WORD = __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__ ? 4U : 0U;
-  constexpr unsigned FIRST_ARGUMENT = offsetof(seccomp_data, args) + WORD;
-  std::vector<sock_filter> filter = {
-      BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)),
-      BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close_range, 0, 1),
-      BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+  constexpr unsigned NUMBER = offsetof(seccomp_data, nr);
+  std::vector<sock_filter> filter = {BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER)};
+  // The call fails with @p error.
+  const auto DENY_CALL = [&filter](unsigned call, int error) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
   };
-  // An open of a directory, by openat(2) (its flags the third argument) or,
-  // where it exists, open(2) (the second), fails; anything else goes on to
-  // the checks below with the call's number loaded again.
-  const auto NO_DIRECTORY = [&filter](unsigned call, unsigned flagsArgument) {
+  // The call fails with @p error when the low word of its argument @p n
+  // equals @p value (@p test BPF_JEQ) or has a bit of it set (BPF_JSET);
+  // anything else goes on to the checks below with the call's number loaded
+  // again.
+  const auto DENY_WHEN = [&filter](unsigned call, unsigned n, unsigned test, unsigned value,
+                                   int error) {
     filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 4));
-    const auto FLAGS = static_cast<__u32>(offsetof(seccomp_data, args) + 8U * flagsArgument + WORD);
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FLAGS));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_DIRECTORY, 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOENT));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(seccomp_data, nr)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + 8U * n + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | test | BPF_K, value, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
   };
-  if (unlistable) {
-    NO_DIRECTORY(SYS_openat, 2);
+  if (denied.closeRange) {
+    DENY_CALL(SYS_close_range, ENOSYS);
+  }
+  // An open's flags: openat(2)'s third argument, open(2)'s, where it exists, second.
+  if (denied.directories) {
+    DENY_WHEN(SYS_openat, 2, BPF_JSET, static_cast<unsigned>(O_DIRECTORY), ENOENT);
 #ifdef SYS_open
-    NO_DIRECTORY(SYS_open, 1);
+    DENY_WHEN(SYS_open, 1, BPF_JSET, static_cast<unsigned>(O_DIRECTORY), ENOENT);
 #endif
   }
-  if (unclosable >= 0) {
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_close, 0, 3));
-    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, FIRST_ARGUMENT));
-    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(unclosable), 0, 1));
-    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EBADF));
+  if (denied.directoryReads) {
+    DENY_CALL(SYS_getdents64, EPERM);
   }
+  if (denied.close >= 0) {
+    DENY_WHEN(SYS_close, 0, BPF_JEQ, static_cast<unsigned>(denied.close), EBADF);
+  }
+  // The new descriptor: dup2(2)'s second argument, and dup3(2)'s.
+  if (denied.replace >= 0) {
+#ifdef SYS_dup2
+    DENY_WHEN(SYS_dup2, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), denied.replaceErrno);
+#endif
+    DENY_WHEN(SYS_dup3, 1, BPF_JEQ, static_cast<unsigned>(denied.replace), denied.replaceErrno);
+  }
+  // write(2)'s count is its third argument; wait4(2)'s options its third.
+  if (denied.reportWrite) {
+    DENY_WHEN(SYS_write, 2, BPF_JEQ, 8U, EINTR);
+  }
+  if (denied.blockingWait) {
+    DENY_WHEN(SYS_wait4, 2, BPF_JEQ, 0U, EINTR);
+  }
+  if (denied.noHangWait) {
+    DENY_WHEN(SYS_wait4, 2, BPF_JSET, static_cast<unsigned>(WNOHANG), EINTR);
+  }
+  if (denied.stateLook) {
+    DENY_CALL(SYS_waitid, EINTR);
+  }
+  if (denied.execRefused) {
+    DENY_CALL(SYS_execve, ENOENT);
+  }
+  // rt_sigaction(2)'s signal and rt_sigprocmask(2)'s how are their first argument.
+  if (denied.stopAction) {
+    DENY_WHEN(SYS_rt_sigaction, 0, BPF_JEQ, static_cast<unsigned>(SIGINT), EPERM);
+  }
+  if (denied.stopUnblock) {
+    DENY_WHEN(SYS_rt_sigprocmask, 0, BPF_JEQ, static_cast<unsigned>(SIG_UNBLOCK), EPERM);
+  }
+  if (denied.readOpen >= 0) {
+    DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(denied.readOpen), EACCES);
+#ifdef SYS_open
+    DENY_WHEN(SYS_open, 1, BPF_JEQ, static_cast<unsigned>(denied.readOpen), EACCES);
+#endif
+  }
+  if (denied.nullOpen) {
+    DENY_WHEN(SYS_openat, 2, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
+#ifdef SYS_open
+    DENY_WHEN(SYS_open, 1, BPF_JEQ, static_cast<unsigned>(O_WRONLY), EACCES);
+#endif
+  }
+  // fcntl(2) of one descriptor (its first argument) with one command (its second).
+  const auto DENY_FCNTL = [&filter](int fd, unsigned command, int error) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_fcntl, 0, 6));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(fd), 0, 3));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                              static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, command, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(error)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+  };
+  if (denied.query >= 0) {
+    DENY_FCNTL(denied.query, static_cast<unsigned>(F_GETFD), EPERM);
+  }
+  if (denied.flagSet >= 0) {
+    DENY_FCNTL(denied.flagSet, static_cast<unsigned>(F_SETFD), EPERM);
+  }
+#ifdef SECCOMP_RET_USER_NOTIF
+  // A call held for the listener, whatever its arguments.
+  const auto HOLD_CALL = [&filter](unsigned call) {
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, call, 0, 1));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+  };
+  if (denied.execHeld || denied.keeperLoss != KeeperLoss::NONE) {
+    HOLD_CALL(SYS_execve);
+  }
+  if (denied.kills != KillWatch::NONE) {
+    HOLD_CALL(SYS_kill);
+  }
+  if (denied.reportHeld) {
+    HOLD_CALL(SYS_ppoll);
+#ifdef SYS_poll
+    HOLD_CALL(SYS_poll);
+#endif
+  }
+  // setpgid(2)'s pid and group are its first and second arguments.
+  if (denied.joinHeld) {
+    constexpr auto PID_ARG = static_cast<__u32>(offsetof(seccomp_data, args) + WORD);
+    constexpr auto GROUP_ARG = static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD);
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SYS_setpgid, 0, 9));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, PID_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 0, 3));
+    // Its own join: of a group of its own (0) allowed, of another's held.
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, GROUP_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 5, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+    // Another's join: to that one's own group (pid and group alike) allowed.
+    filter.push_back(BPF_STMT(BPF_MISC | BPF_TAX, 0));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, GROUP_ARG));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_X, 0, 1, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | static_cast<__u32>(EPERM)));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+  }
+  // dup3(2) and, where it exists, dup2(2) onto `interruptOnce` wait for the
+  // listener's answer.
+  if (denied.interruptOnce >= 0) {
+    std::vector<unsigned> duplicates = {SYS_dup3};
+#ifdef SYS_dup2
+    duplicates.push_back(SYS_dup2);
+#endif
+    for (const unsigned CALL : duplicates) {
+      filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, CALL, 0, 4));
+      filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                                static_cast<__u32>(offsetof(seccomp_data, args) + 8U + WORD)));
+      filter.push_back(
+          BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<unsigned>(denied.interruptOnce), 0, 1));
+      filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_USER_NOTIF));
+      filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, NUMBER));
+    }
+  }
+#endif
   filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
   const sock_fprog PROGRAM{static_cast<unsigned short>(filter.size()), filter.data()};
-  return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0 &&
-         ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
+  if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+    return false;
+  }
+  const bool ANSWERED = denied.interruptOnce >= 0 || denied.kills != KillWatch::NONE ||
+                        denied.keeperLoss != KeeperLoss::NONE || denied.reportHeld;
+  if (!denied.execHeld && !denied.joinHeld && !ANSWERED) {
+    return ::prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &PROGRAM) == 0;
+  }
+#ifdef SECCOMP_RET_USER_NOTIF
+  // The listener stays open until this process exits: a held exec or join
+  // waits for an answer that never comes, until then or until it is killed;
+  // the other held calls are answered by answerHeldCalls(), on a thread of
+  // this process.
+  const long LISTENER =
+      ::syscall(SYS_seccomp, SECCOMP_SET_MODE_FILTER, SECCOMP_FILTER_FLAG_NEW_LISTENER, &PROGRAM);
+  if (LISTENER < 0) {
+    return false;
+  }
+  if (ANSWERED) {
+#ifdef SECCOMP_USER_NOTIF_FLAG_CONTINUE
+    std::thread(answerHeldCalls, static_cast<int>(LISTENER), denied).detach();
 #else
-  (void)unclosable;
-  (void)unlistable;
+    return false;
+#endif
+  }
+  return true;
+#else
+  return false;
+#endif
+#else
+  (void)denied;
   return false;
 #endif
 }
@@ -1001,11 +1316,13 @@ bool softDescriptorLimit(rlim_t softLimit) {
 
 /**
  * @brief The body of a death test: descriptors run out under a soft limit of
- * @p softLimit but for the two highest, which a probe's anchor pipe then
- * takes, so that the probe's next pipe cannot be made and its setup fails
- * after its keeper started. With @p withoutRange close_range is unavailable
- * (withoutCloseRange), and with @p unclosableAnchor the anchor's write end
- * cannot be closed either, so the keeper never sees end-of-file. Prints what
+ * @p softLimit but for the two highest, which a probe's anchor then takes
+ * (this process's end the higher), so that the probe's next pipe cannot be
+ * made and its setup fails (EMFILE) after its keeper started. With
+ * @p withoutRange close_range is unavailable (deny()), and with
+ * @p unclosableAnchor this process's end of the anchor cannot be closed
+ * either, so the keeper never sees end-of-file and cannot close everything
+ * it inherits: the setup fails with the keeper's report (EBADF). Prints what
  * the call came to and exits 0 when it returned with that failure and left
  * no child of this process behind, running or unreaped.
  */
@@ -1026,8 +1343,8 @@ bool softDescriptorLimit(rlim_t softLimit) {
     ::close(held.back());
     held.pop_back();
   }
-  const int ANCHOR_WRITE = static_cast<int>(softLimit) - 1;
-  if (withoutRange && !withoutCloseRange(unclosableAnchor ? ANCHOR_WRITE : -1)) {
+  const int ANCHOR_OWN_END = static_cast<int>(softLimit) - 1;
+  if (withoutRange && !deny({.close = unclosableAnchor ? ANCHOR_OWN_END : -1})) {
     std::fprintf(stderr, "close_range could not be made unavailable\n");
     std::_Exit(3);
   }
@@ -1049,30 +1366,46 @@ bool softDescriptorLimit(rlim_t softLimit) {
   std::fprintf(stderr, "started=%d errno=%d returned after %lld ms, children left: %zu\n",
                RESULT.started ? 1 : 0, RESULT.spawnErrno, static_cast<long long>(ELAPSED.count()),
                LEFT.size());
-  const bool ENDED = !RESULT.started && RESULT.spawnErrno == EMFILE && LEFT.empty();
-  std::fprintf(stderr, ENDED ? "the keeper ended with the call\n" : "the call left its keeper\n");
-  std::_Exit(ENDED ? 0 : 1);
+  const bool FAILED_AS_EXPECTED =
+      !RESULT.started && RESULT.spawnErrno == (unclosableAnchor ? EBADF : EMFILE);
+  std::fprintf(stderr, "%s\n",
+               !LEFT.empty()         ? "the call left its keeper"
+               : !FAILED_AS_EXPECTED ? "the setup did not fail as expected"
+                                     : "the keeper ended with the call");
+  std::_Exit(LEFT.empty() && FAILED_AS_EXPECTED ? 0 : 1);
 }
 
 /**
  * @brief The body of a death test: this process holds a descriptor at
  * @p planted, inherited by whatever it starts, and close_range is
- * unavailable when @p withoutRange. A probe runs a program that lists, once
- * their count settles, the descriptors its process group's leader (the
- * probe's keeper) holds. Prints the list and exits 0 when it is the keeper's
- * stdin, a pipe, and /dev/null on stdout and stderr, nothing else.
+ * unavailable when @p withoutRange. With @p closedStreams (bit 0 stdin, 1
+ * stdout, 2 stderr) this process has those standard streams closed, so that
+ * the probe's anchor and the keeper's /dev/null may take their numbers; with
+ * @p noNull the keeper cannot open /dev/null (deny()). A probe runs a program
+ * that lists, once their count settles, the descriptors its process group's
+ * leader (the probe's keeper) holds. Prints the list and exits 0 when it is
+ * the keeper's stdin, its end of the anchor (a socket), and /dev/null on
+ * stdout and stderr (nothing there with @p noNull), nothing else.
  */
-[[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange) {
+[[noreturn]] void keeperHoldsNothingOfThisProcess(int planted, bool withoutRange,
+                                                  int closedStreams = 0, bool noNull = false) {
   const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr where closing the standard streams leaves it, for what it prints.
+  const int OUT = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100);
   const int NUL = ::open("/dev/null", O_RDONLY);
-  if (!softDescriptorLimit(static_cast<rlim_t>(planted) + 10) || NUL < 0 ||
+  if (OUT < 0 || !softDescriptorLimit(static_cast<rlim_t>(planted) + 10) || NUL < 0 ||
       ::dup2(NUL, planted) != planted) {
     std::fprintf(stderr, "the descriptor could not be planted\n");
     std::_Exit(4);
   }
   ::close(NUL);
-  if (withoutRange && !withoutCloseRange(-1)) {
-    std::fprintf(stderr, "close_range could not be made unavailable\n");
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    if ((closedStreams & (1 << stream)) != 0) {
+      ::close(stream);
+    }
+  }
+  if ((withoutRange || noNull) && !deny({.closeRange = withoutRange, .nullOpen = noNull})) {
+    ::dprintf(OUT, "the calls could not be denied\n");
     std::_Exit(3);
   }
   const std::string LIST =
@@ -1084,41 +1417,780 @@ bool softDescriptorLimit(rlim_t softLimit) {
       "done\n"
       "for f in /proc/$k/fd/*; do printf '%s=%s ' \"${f##*/}\" \"$(readlink \"$f\")\"; done\n";
   const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", LIST}, 10000, CTX);
-  std::fprintf(stderr, "the keeper's descriptors: %s\n", R.output.c_str());
-  const std::size_t PIPE_END = R.output.find("] ");
-  const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=pipe:[", 0) == 0 &&
-                            PIPE_END != std::string::npos &&
-                            R.output.substr(PIPE_END) == "] 1=/dev/null 2=/dev/null ";
-  std::fprintf(stderr, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
-                                    : "the keeper holds more than its own\n");
+  ::dprintf(OUT, "the keeper's descriptors: %s\n", R.output.c_str());
+  const std::size_t ANCHOR_END = R.output.find("] ");
+  const std::string STREAMS = noNull ? "" : "1=/dev/null 2=/dev/null ";
+  const bool NOTHING_ELSE = R.succeeded() && R.output.rfind("0=socket:[", 0) == 0 &&
+                            ANCHOR_END != std::string::npos &&
+                            R.output.substr(ANCHOR_END) == "] " + STREAMS;
+  ::dprintf(OUT, NOTHING_ELSE ? "the keeper holds nothing of this process\n"
+                              : "the keeper holds more than its own\n");
   std::_Exit(NOTHING_ELSE ? 0 : 1);
 }
 
-/** @brief What a forked keeper can use in the lock control, and the limits there. */
+/**
+ * @brief The body of a death test: with each combination of this process's
+ * standard streams closed (none, each, and all three; restored after each),
+ * a probe runs a program that writes "out" to its stdout, "err" to its
+ * stderr, and exits 7 once both writes succeeded, its output merged and
+ * separate. Prints what each run read and exits 0 when every run read both
+ * lines and the program's status, 7.
+ */
+[[noreturn]] void programHasItsStreams() {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's standard streams, kept above them to restore them and to print with.
+  int saved[3] = {-1, -1, -1};
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    saved[stream] = ::fcntl(stream, F_DUPFD_CLOEXEC, 100);
+  }
+  const int OUT = saved[STDERR_FILENO];
+  if (saved[STDIN_FILENO] < 0 || saved[STDOUT_FILENO] < 0 || OUT < 0) {
+    std::fprintf(stderr, "the standard streams could not be kept\n");
+    std::_Exit(4);
+  }
+  bool every = true;
+  for (int closed = 0; closed < 8; ++closed) {
+    for (const ProbeStreams STREAMS : {ProbeStreams::MERGED, ProbeStreams::SEPARATE}) {
+      for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+        if ((closed & (1 << stream)) != 0) {
+          ::close(stream);
+        }
+      }
+      const ProbeResult R = runBoundedProbe({"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"},
+                                            5000, CTX, STREAMS);
+      for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+        (void)::dup2(saved[stream], stream);
+      }
+      const bool SEPARATE = STREAMS == ProbeStreams::SEPARATE;
+      const bool BOTH =
+          SEPARATE ? R.output == "out\n" && R.errorOutput == "err\n" : R.output == "out\nerr\n";
+      const bool AS_IT_SAID = R.started && R.exited && R.exitCode == 7 && BOTH;
+      ::dprintf(OUT,
+                "closed %d (bit 0 stdin, 1 stdout, 2 stderr), %s: %s; output [%s], errors [%s]\n",
+                closed, SEPARATE ? "separate" : "merged", R.describe().c_str(), R.output.c_str(),
+                R.errorOutput.c_str());
+      every = every && AS_IT_SAID;
+    }
+  }
+  ::dprintf(OUT, every ? "the program had both its streams every time\n"
+                       : "the program lost a stream\n");
+  std::_Exit(every ? 0 : 1);
+}
+
+/**
+ * @brief The body of a death test: with each combination of this process's
+ * standard streams closed (none, each, and all three; restored after each),
+ * an owned helper and a probe, its output merged and separate, are started
+ * on a program that does not exist. Prints how each start came out and
+ * exits 0 when none started and every one failed with ENOENT, the exec's
+ * own errno: where the streams are closed, the descriptor a start reports
+ * on may have taken a stream's number.
+ */
+[[noreturn]] void programThatCannotRunIsReported() {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's standard streams, kept above them to restore them and to print with.
+  int saved[3] = {-1, -1, -1};
+  for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+    saved[stream] = ::fcntl(stream, F_DUPFD_CLOEXEC, 100);
+  }
+  const int OUT = saved[STDERR_FILENO];
+  if (saved[STDIN_FILENO] < 0 || saved[STDOUT_FILENO] < 0 || OUT < 0) {
+    std::fprintf(stderr, "the standard streams could not be kept\n");
+    std::_Exit(4);
+  }
+  const std::string ABSENT = "/nonexistent/vernier-program";
+  bool every = true;
+  for (int closed = 0; closed < 8; ++closed) {
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      if ((closed & (1 << stream)) != 0) {
+        ::close(stream);
+      }
+    }
+    OwnedHelper helper(quickPolicy());
+    const HelperStart HELPER = helper.start({ABSENT}, "", "", 200, nullptr);
+    (void)helper.stop();
+    const ProbeResult MERGED = runBoundedProbe({ABSENT}, 2000, CTX);
+    const ProbeResult SEPARATE = runBoundedProbe({ABSENT}, 2000, CTX, ProbeStreams::SEPARATE);
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      (void)::dup2(saved[stream], stream);
+    }
+    const bool REPORTED = !HELPER.started && HELPER.spawnErrno == ENOENT && !MERGED.started &&
+                          MERGED.spawnErrno == ENOENT && !SEPARATE.started &&
+                          SEPARATE.spawnErrno == ENOENT;
+    ::dprintf(OUT,
+              "closed %d (bit 0 stdin, 1 stdout, 2 stderr): the helper started=%d errno=%d; the "
+              "probe started=%d errno=%d, separate started=%d errno=%d\n",
+              closed, HELPER.started ? 1 : 0, HELPER.spawnErrno, MERGED.started ? 1 : 0,
+              MERGED.spawnErrno, SEPARATE.started ? 1 : 0, SEPARATE.spawnErrno);
+    every = every && REPORTED;
+  }
+  ::dprintf(OUT, every ? "every start reported the program that cannot run\n"
+                       : "a start took a program that cannot run for one that ran\n");
+  std::_Exit(every ? 0 : 1);
+}
+
+/** @brief How the stream control keeps a program's stream from being set. */
+enum class StreamDenial : std::uint8_t {
+  FLAGS_UNREADABLE, ///< This process's streams closed; F_GETFD of descriptor 2 refused.
+  FLAGS_UNSETTABLE, ///< This process's streams closed; F_SETFD of descriptor 2 refused.
+  UNDUPLICABLE      ///< Nothing duplicated onto stdout (dup2, dup3).
+};
+
+/**
+ * @brief The body of a death test: with @p which denied, an owned helper and
+ * a probe, its output merged and separate, start a program that writes
+ * "out" to its stdout and "err" to its stderr and exits 7 once both writes
+ * succeeded. Where a start cannot set a stream (with this process's streams
+ * closed, the merged output's pipe and the helper's error file take
+ * descriptor 2, whose close-on-exec cannot then be read or cleared; or
+ * nothing can be put on stdout), it must fail with EPERM, the helper with
+ * "could not set up /bin/sh"; where it starts, both lines must be read and
+ * the status be 7. Prints how each start came out and exits 0 when every one
+ * did so, with no child of this process left.
+ */
+[[noreturn]] void streamThatCannotBeSetFailsTheStart(StreamDenial which) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr, kept where closing the standard streams leaves it, for what it prints.
+  const int OUT = ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100);
+  if (OUT < 0) {
+    std::fprintf(stderr, "stderr could not be kept\n");
+    std::_Exit(4);
+  }
+  Denied denied{.closeRange = false};
+  if (which == StreamDenial::UNDUPLICABLE) {
+    denied.replace = STDOUT_FILENO;
+  } else {
+    for (int stream = STDIN_FILENO; stream <= STDERR_FILENO; ++stream) {
+      ::close(stream);
+    }
+    (which == StreamDenial::FLAGS_UNREADABLE ? denied.query : denied.flagSet) = STDERR_FILENO;
+  }
+  if (!deny(denied)) {
+    ::dprintf(OUT, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  const std::vector<std::string> PROGRAM = {"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"};
+  OwnedHelper helper(quickPolicy());
+  const HelperStart HELPER = helper.start(PROGRAM, "", "", 200, nullptr);
+  (void)helper.stop();
+  const ProbeResult MERGED = runBoundedProbe(PROGRAM, 5000, CTX);
+  const ProbeResult SEPARATE = runBoundedProbe(PROGRAM, 5000, CTX, ProbeStreams::SEPARATE);
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  for (const pid_t PID : LEFT) {
+    (void)::kill(PID, SIGKILL);
+    int status = 0;
+    (void)::waitpid(PID, &status, 0);
+  }
+  // A start that sets every stream runs the program whole; one that cannot fails with EPERM.
+  const auto PROBE_AS_DUE = [](const ProbeResult& r, bool refused, bool separate) {
+    if (refused) {
+      return !r.started && r.spawnErrno == EPERM;
+    }
+    const bool BOTH =
+        separate ? r.output == "out\n" && r.errorOutput == "err\n" : r.output == "out\nerr\n";
+    return r.started && r.exited && r.exitCode == 7 && BOTH;
+  };
+  // The separate output's pipe is moved above the streams, so no stream's flag is read there.
+  const bool SEPARATE_REFUSED = which == StreamDenial::UNDUPLICABLE;
+  const bool AS_DUE =
+      LEFT.empty() && !HELPER.started && HELPER.spawnErrno == EPERM &&
+      HELPER.errorTail == "could not set up /bin/sh: " + std::system_category().message(EPERM) &&
+      PROBE_AS_DUE(MERGED, true, false) && PROBE_AS_DUE(SEPARATE, SEPARATE_REFUSED, true);
+  ::dprintf(OUT,
+            "the helper started=%d errno=%d %s; merged: %s, output [%s]; separate: %s, output "
+            "[%s], errors [%s]; children left: %zu\n",
+            HELPER.started ? 1 : 0, HELPER.spawnErrno, HELPER.errorTail.c_str(),
+            MERGED.describe().c_str(), MERGED.output.c_str(), SEPARATE.describe().c_str(),
+            SEPARATE.output.c_str(), SEPARATE.errorOutput.c_str(), LEFT.size());
+  ::dprintf(OUT, AS_DUE ? "a stream that could not be set failed the start\n"
+                        : "a start went on without a stream it could not set\n");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
+/** @brief What the start control keeps from going on, for every process (deny()). */
+enum class StartHazard : std::uint8_t {
+  DUPLICATE_INTERRUPTED,      ///< Every duplicate onto stdout interrupted (EINTR).
+  REPORT_WRITE_INTERRUPTED,   ///< Every write of a start report interrupted; no program to run.
+  EXEC_HELD,                  ///< Every exec held, never answered.
+  JOIN_HELD,                  ///< The program's join of the keeper's group held, never answered,
+                              ///< and the parent's join of it refused: the probe alone.
+  REAP_INTERRUPTED,           ///< Every blocking wait interrupted; no program to run.
+  LOOK_INTERRUPTED,           ///< Every waitid interrupted; the keeper refuses (stdout kept).
+  DUPLICATE_INTERRUPTED_ONCE, ///< A program's first duplicate onto stdout interrupted.
+  NOTHING_DENIED,             ///< Nothing: the starts as they ordinarily go.
+  LIVE_ORDINARY,              ///< Nothing; a program that runs past its bound and leaves a
+                              ///< child in its group: the probe alone.
+  LOOK_INTERRUPTED_LIVE,      ///< Every waitid interrupted; that program: the probe alone.
+  LOOK_AND_WAIT_INTERRUPTED,  ///< Every waitid and every wait that does not block
+                              ///< interrupted; that program; every kill counted: the probe
+                              ///< alone.
+  HELPER_LOST_FIRST,          ///< SIGCHLD ignored; a program that cannot run; the start report's
+                              ///< read held until no child is left; every kill refused: the
+                              ///< helper alone.
+  KEEPER_LOST_REPORTED,       ///< SIGCHLD ignored; the keeper ended at the program's exec, then
+                              ///< the exec refused; a kill at it refused: the probe alone.
+  KEEPER_LOST_UNREPORTED,     ///< As KEEPER_LOST_REPORTED, the exec left held: the probe alone.
+  UNREAD_EXEC_HELD,           ///< Every waitid and every wait that does not block interrupted;
+                              ///< every exec held; every kill counted.
+  UNREAD_EXEC_REFUSED         ///< The same, every exec refused (ENOENT).
+};
+
+/**
+ * @brief In a child of the death test's process, with @p which denied there
+ * alone: an owned helper and a probe are started, and each must end within
+ * its bound, its children reaped (the reaps here do not block). Where every
+ * duplicate onto stdout is interrupted, both fail with EINTR at once; where
+ * every start report's write is interrupted and the program cannot run, the
+ * report is lost and both end at once as a program that exited with 127;
+ * where every exec is held, both fail with ETIMEDOUT after the start
+ * report's bound, 5 s; where the program's join of the keeper's group is held
+ * and the parent's join of it refused, the probe alone runs, fails with
+ * ETIMEDOUT, and its program, outside the group, is killed itself; where
+ * every blocking wait is interrupted and the program cannot run, both fail
+ * with ENOENT at once; where every waitid is interrupted, a probe whose
+ * keeper refuses (EACCES) ends at once. Where a program's first duplicate
+ * onto stdout is interrupted, once in each start, the duplicate is tried
+ * again and both complete as they do with nothing denied: the program exits
+ * 7, its output and errors captured apart. A program that runs past its
+ * bound and leaves a child in its group (the fake helper's "orphan quiet
+ * stay", bounded at 300 ms) is ended, that child with it, and no process of
+ * either is left running: with nothing denied and with every waitid
+ * interrupted, it is killed at its bound and its status read (the wait that
+ * does not block decides where the look cannot); with every waitid and
+ * every wait that does not block interrupted, its group is ended, one kill
+ * aimed at the group and none at the program's pid, whose state cannot be
+ * read, and it is reported unreaped, never as reaped by another wait. With
+ * SIGCHLD ignored (the system reaps each child as it ends) and every kill
+ * held and counted: the owned helper's child that cannot execute its
+ * program, reaped before its report is read (that read held until no child
+ * is left), fails the start with ENOENT and is sent no signal; the probe
+ * whose keeper is ended, and reaped by the system, at its program's exec
+ * fails with ENOENT when that exec is then refused, sending no signal, or
+ * with ETIMEDOUT after the start report's bound when it is left held,
+ * killing its program, still its own, once and nothing by the keeper's pid
+ * or group. With every look and every wait that does not block interrupted
+ * and every kill counted by what it is aimed at, no child is signalled, its
+ * state unread: the exec held, both fail with ETIMEDOUT, the probe's group
+ * (the keeper shown running by their link) killed once and the helper's held
+ * child left running; the exec refused, both fail with ENOENT and only the
+ * probe's keeper is killed, at its end. Prints how each ended and exits 0
+ * when every one did so.
+ */
+[[noreturn]] void startsUnderInterruptions(StartHazard which) {
+  const bool LOST = which == StartHazard::HELPER_LOST_FIRST ||
+                    which == StartHazard::KEEPER_LOST_REPORTED ||
+                    which == StartHazard::KEEPER_LOST_UNREPORTED;
+  // The system reaps each child of this process as it ends.
+  std::unique_ptr<ChildReaping> reaping;
+  if (LOST) {
+    reaping = std::make_unique<ChildReaping>(ChildReaping::Policy::IGNORED);
+    if (!reaping->ok()) {
+      std::fprintf(stderr, "SIGCHLD could not be ignored\n");
+      std::_Exit(3);
+    }
+  }
+  const bool LIVE = which == StartHazard::LIVE_ORDINARY ||
+                    which == StartHazard::LOOK_INTERRUPTED_LIVE ||
+                    which == StartHazard::LOOK_AND_WAIT_INTERRUPTED;
+  std::unique_ptr<FakeToolDir> dir;
+  if (LIVE) {
+    dir = std::make_unique<FakeToolDir>();
+    if (!dir->ok()) {
+      std::fprintf(stderr, "no fake tool directory\n");
+      std::_Exit(3);
+    }
+  }
+  const ReadinessContext CTX = LIVE ? dir->context() : ReadinessContext::capture();
+  Denied denied{.closeRange = false};
+  const std::vector<std::string> ABSENT = {"/nonexistent/vernier-program"};
+  std::vector<std::string> program = {"/bin/sh", "-c", "echo out; echo err >&2 && exit 7"};
+  int timeoutMs = 5000;
+  if (LIVE) {
+    program = {dir->install("fake_helper.sh", "helper"), "orphan", "quiet", "stay"};
+    timeoutMs = 300;
+  }
+  switch (which) {
+  case StartHazard::DUPLICATE_INTERRUPTED:
+    denied.replace = STDOUT_FILENO;
+    denied.replaceErrno = EINTR;
+    break;
+  case StartHazard::REPORT_WRITE_INTERRUPTED:
+    denied.reportWrite = true;
+    program = ABSENT;
+    break;
+  case StartHazard::EXEC_HELD:
+    denied.execHeld = true;
+    break;
+  case StartHazard::JOIN_HELD:
+    denied.joinHeld = true;
+    break;
+  case StartHazard::REAP_INTERRUPTED:
+    denied.blockingWait = true;
+    program = ABSENT;
+    break;
+  case StartHazard::LOOK_INTERRUPTED:
+    denied = {.closeRange = false, .close = STDOUT_FILENO, .nullOpen = true, .stateLook = true};
+    break;
+  case StartHazard::DUPLICATE_INTERRUPTED_ONCE:
+    denied.interruptOnce = STDOUT_FILENO;
+    break;
+  case StartHazard::NOTHING_DENIED:
+  case StartHazard::LIVE_ORDINARY:
+    break;
+  case StartHazard::LOOK_INTERRUPTED_LIVE:
+    denied.stateLook = true;
+    break;
+  case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
+    denied.stateLook = true;
+    denied.noHangWait = true;
+    denied.kills = KillWatch::LOST_REFUSED;
+    break;
+  case StartHazard::HELPER_LOST_FIRST:
+    denied.kills = KillWatch::REFUSED;
+    denied.reportHeld = true;
+    program = ABSENT;
+    break;
+  case StartHazard::KEEPER_LOST_REPORTED:
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.keeperLoss = KeeperLoss::THEN_REFUSED;
+    break;
+  case StartHazard::KEEPER_LOST_UNREPORTED:
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.keeperLoss = KeeperLoss::THEN_HELD;
+    break;
+  case StartHazard::UNREAD_EXEC_HELD:
+  case StartHazard::UNREAD_EXEC_REFUSED:
+    denied.stateLook = true;
+    denied.noHangWait = true;
+    denied.kills = KillWatch::LOST_REFUSED;
+    denied.execHeld = which == StartHazard::UNREAD_EXEC_HELD;
+    denied.execRefused = which == StartHazard::UNREAD_EXEC_REFUSED;
+    break;
+  }
+  if (!deny(denied)) {
+    std::fprintf(stderr, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  using Clock = std::chrono::steady_clock;
+  const auto MS = [](Clock::time_point since) {
+    return static_cast<long long>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - since).count());
+  };
+  auto since = Clock::now();
+  HelperStart helper{};
+  long long helperMs = 0;
+  int helperInterrupted = 0;
+  const bool HELPER_RUNS =
+      which != StartHazard::LOOK_INTERRUPTED && which != StartHazard::JOIN_HELD && !LIVE &&
+      which != StartHazard::KEEPER_LOST_REPORTED && which != StartHazard::KEEPER_LOST_UNREPORTED;
+  if (HELPER_RUNS) {
+    OwnedHelper owned(quickPolicy());
+    helper = owned.start(program, "", "", 200, nullptr);
+    helperInterrupted = duplicatesInterrupted.load();
+    (void)owned.stop();
+    helperMs = MS(since);
+  }
+  since = Clock::now();
+  const ProbeResult PROBE = which == StartHazard::HELPER_LOST_FIRST
+                                ? ProbeResult{}
+                                : runBoundedProbe(program, timeoutMs, CTX, ProbeStreams::SEPARATE);
+  const long long PROBE_MS = MS(since);
+  const int PROBE_INTERRUPTED = duplicatesInterrupted.load() - helperInterrupted;
+  const std::vector<pid_t> LEFT = childProcesses(::getpid());
+  const auto HELPER_EXITED = [&helper](int code) {
+    return helper.started && helper.exitedEarly && helper.statusObtained &&
+           WIFEXITED(helper.waitStatus) && WEXITSTATUS(helper.waitStatus) == code;
+  };
+  const bool HELPER_127 = HELPER_EXITED(127);
+  const bool BOTH_COMPLETED = HELPER_EXITED(7) && helperMs < 2000 && PROBE.started &&
+                              PROBE.exited && PROBE.exitCode == 7 && PROBE.output == "out\n" &&
+                              PROBE.errorOutput == "err\n" && PROBE_MS < 2000;
+  // The live program's child, and whether any process of the call still runs.
+  pid_t left = -1;
+  if (LIVE) {
+    const std::vector<std::string> LOGGED = dir->logLines("helper child pid=");
+    if (!LOGGED.empty()) {
+      left = static_cast<pid_t>(std::stol(LOGGED.front().substr(LOGGED.front().find('=') + 1)));
+    }
+  }
+  const bool LEFT_ENDED = left > 0 && ended(left);
+  const std::size_t RUNNING_LEFT = static_cast<std::size_t>(
+      std::count_if(LEFT.begin(), LEFT.end(), [](pid_t pid) { return !ended(pid); }));
+  const bool LIVE_KILLED = PROBE.started && PROBE.timedOut && PROBE.statusObtained &&
+                           PROBE_MS < 2500 && LEFT_ENDED && LEFT.empty();
+  bool asDue = LEFT.empty();
+  switch (which) {
+  case StartHazard::DUPLICATE_INTERRUPTED:
+    asDue = asDue && !helper.started && helper.spawnErrno == EINTR && helperMs < 2000 &&
+            !PROBE.started && PROBE.spawnErrno == EINTR && PROBE_MS < 2000;
+    break;
+  case StartHazard::REPORT_WRITE_INTERRUPTED:
+    asDue = asDue && HELPER_127 && helperMs < 2000 && PROBE.started && PROBE.exited &&
+            PROBE.exitCode == 127 && PROBE_MS < 2000;
+    break;
+  case StartHazard::EXEC_HELD:
+    asDue = asDue && !helper.started && helper.spawnErrno == ETIMEDOUT && helperMs >= 4500 &&
+            helperMs < 9000 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE_MS >= 4500 && PROBE_MS < 9000;
+    break;
+  case StartHazard::JOIN_HELD:
+    asDue = asDue && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT && PROBE_MS >= 4500 &&
+            PROBE_MS < 9000;
+    break;
+  case StartHazard::REAP_INTERRUPTED:
+    asDue = asDue && !helper.started && helper.spawnErrno == ENOENT && helperMs < 2000 &&
+            !PROBE.started && PROBE.spawnErrno == ENOENT && PROBE_MS < 2000;
+    break;
+  case StartHazard::LOOK_INTERRUPTED:
+    asDue = asDue && !PROBE.started && PROBE.spawnErrno == EACCES && PROBE_MS < 2000;
+    break;
+  case StartHazard::DUPLICATE_INTERRUPTED_ONCE:
+    asDue = asDue && BOTH_COMPLETED && helperInterrupted == 1 && PROBE_INTERRUPTED == 1;
+    break;
+  case StartHazard::NOTHING_DENIED:
+    asDue = asDue && BOTH_COMPLETED;
+    break;
+  case StartHazard::LIVE_ORDINARY:
+  case StartHazard::LOOK_INTERRUPTED_LIVE:
+    asDue = LIVE_KILLED;
+    break;
+  case StartHazard::LOOK_AND_WAIT_INTERRUPTED:
+    // The group is the call's (the keeper shown running by its end of their
+    // link) and is killed once; the program, whose state cannot be read, is
+    // never signalled by its pid, nor the keeper by its own.
+    asDue = PROBE.started && !PROBE.timedOut && !PROBE.statusObtained &&
+            PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 && LEFT_ENDED &&
+            RUNNING_LEFT == 0 && killsAtGroup.load() == 1 && killsAtChild.load() == 0 &&
+            killsAtLeader.load() == 0;
+    break;
+  case StartHazard::HELPER_LOST_FIRST:
+    asDue = asDue && !helper.started && helper.spawnErrno == ENOENT &&
+            helper.errorTail.rfind("could not execute ", 0) == 0 && helperMs < 3000 &&
+            killsSeen.load() == 0;
+    break;
+  case StartHazard::KEEPER_LOST_REPORTED:
+    asDue = asDue && keeperEnded.load() > 0 && !PROBE.started && PROBE.spawnErrno == ENOENT &&
+            PROBE_MS < 3000 && killsSeen.load() == 0;
+    break;
+  case StartHazard::KEEPER_LOST_UNREPORTED:
+    asDue = asDue && keeperEnded.load() > 0 && !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE_MS >= 4500 && PROBE_MS < 9000 && killsOnLost.load() == 0 && killsSeen.load() == 1;
+    break;
+  case StartHazard::UNREAD_EXEC_HELD:
+    // No child's state can be read: none is signalled. The probe's group,
+    // its id the call's while the keeper's end of their link shows it
+    // running, is killed once, the probe's program in it; the helper's held
+    // child, in no group of the call's, is left running to this fixture's
+    // parent. What was killed stays unreaped (no wait can be read).
+    asDue = !helper.started && helper.spawnErrno == ETIMEDOUT &&
+            helper.statusLoss == StatusLoss::NONE && helperMs >= 4500 && helperMs < 9000 &&
+            !PROBE.started && PROBE.spawnErrno == ETIMEDOUT &&
+            PROBE.statusLoss == StatusLoss::NONE && PROBE_MS >= 4500 && PROBE_MS < 9500 &&
+            killsAtChild.load() == 0 && killsAtGroup.load() == 1 && killsAtLeader.load() == 0 &&
+            RUNNING_LEFT == 1;
+    break;
+  case StartHazard::UNREAD_EXEC_REFUSED:
+    // The children reported their exec failing and ended by themselves:
+    // none is signalled; no group is, the program never having run; the
+    // keeper, running, is killed at its end. Nothing is left running.
+    asDue = !helper.started && helper.spawnErrno == ENOENT &&
+            helper.statusLoss == StatusLoss::NONE && helperMs < 3000 && !PROBE.started &&
+            PROBE.spawnErrno == ENOENT && PROBE.statusLoss == StatusLoss::NONE && PROBE_MS < 3500 &&
+            killsAtChild.load() == 0 && killsAtGroup.load() == 0 && killsAtLeader.load() == 1 &&
+            RUNNING_LEFT == 0;
+    break;
+  }
+  std::fprintf(stderr,
+               "the helper started=%d errno=%d early=%d %s after %lld ms, %d interrupted; the "
+               "probe %s, output [%s] errors [%s] after %lld ms, %d interrupted; children left: "
+               "%zu, %zu running; the program's child %d ended=%d; kills %d, at the lost keeper "
+               "%d (%d), at a group %d, at a leader %d, at a child %d\n",
+               helper.started ? 1 : 0, helper.spawnErrno, helper.exitedEarly ? 1 : 0,
+               helper.errorTail.c_str(), helperMs, helperInterrupted, PROBE.describe().c_str(),
+               PROBE.output.c_str(), PROBE.errorOutput.c_str(), PROBE_MS, PROBE_INTERRUPTED,
+               LEFT.size(), RUNNING_LEFT, static_cast<int>(left), LEFT_ENDED ? 1 : 0,
+               killsSeen.load(), killsOnLost.load(), static_cast<int>(keeperEnded.load()),
+               killsAtGroup.load(), killsAtLeader.load(), killsAtChild.load());
+  dir.reset();
+  std::_Exit(asDue ? 0 : 1);
+}
+
+/**
+ * @brief The body of a death test that supervises startsUnderInterruptions():
+ * it runs in a child of this process, which this process ends after 30 s;
+ * whatever that child left (a start's child that never ended) comes here,
+ * this process being a subreaper, and is ended and reaped before this one
+ * exits. Exits 0 when the child exited 0 within the 30 s.
+ */
+[[noreturn]] void startEndsUnderInterruptions(StartHazard which) {
+  using Clock = std::chrono::steady_clock;
+  if (::prctl(PR_SET_CHILD_SUBREAPER, 1) != 0) {
+    std::fprintf(stderr, "this process could not be made a subreaper\n");
+    std::_Exit(4);
+  }
+  const pid_t RUNNER = ::fork();
+  if (RUNNER < 0) {
+    std::fprintf(stderr, "the starts could not be run\n");
+    std::_Exit(4);
+  }
+  if (RUNNER == 0) {
+    startsUnderInterruptions(which);
+  }
+  int status = 0;
+  bool ended = false;
+  for (const auto UNTIL = Clock::now() + std::chrono::seconds(30); Clock::now() < UNTIL;) {
+    if (::waitpid(RUNNER, &status, WNOHANG) == RUNNER) {
+      ended = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  if (!ended) {
+    (void)::kill(RUNNER, SIGKILL);
+  }
+  for (const auto UNTIL = Clock::now() + std::chrono::seconds(5); Clock::now() < UNTIL;) {
+    const std::vector<pid_t> LEFT = childProcesses(::getpid());
+    if (LEFT.empty()) {
+      break;
+    }
+    for (const pid_t PID : LEFT) {
+      (void)::kill(PID, SIGKILL);
+    }
+    int reaped = 0;
+    while (::waitpid(-1, &reaped, WNOHANG) > 0) {
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  const bool AS_DUE = ended && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  std::fprintf(stderr, "%s\n",
+               AS_DUE  ? "the start ended within its bound"
+               : ended ? "the start did not end as it should"
+                       : "the start did not end within 30 s: ended with what it left");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
+/** @brief What the setup control keeps a start from setting, for every process (deny()). */
+enum class StartSetup : std::uint8_t {
+  STOP_ACTION_REFUSED,  ///< SIGINT's default action (sigaction refused).
+  STOP_UNBLOCK_REFUSED, ///< The stop signals unblocked (sigprocmask SIG_UNBLOCK refused).
+  PROBE_STDIN_UNOPENED, ///< The probe's /dev/null for its program's stdin (its open refused).
+  HELPER_STDIN_UNOPENED ///< The owned helper's /dev/null for its stdin (its open refused).
+};
+
+/**
+ * @brief The body of a death test: with @p which refused, the start fails
+ * with that errno before its program runs, and leaves no child: the owned
+ * helper and the probe where the stop signals' default action or their
+ * unblocking is refused (EPERM, the helper's "could not set up /bin/sh");
+ * the probe where its /dev/null cannot be opened, and the helper where its
+ * own cannot (EACCES, "could not open /dev/null"). Prints how each start
+ * ended and exits 0 when every one did so.
+ */
+[[noreturn]] void startRefusesWhatItCannotSet(StartSetup which) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  Denied denied{.closeRange = false};
+  bool helperRuns = true;
+  bool probeRuns = true;
+  int expected = EPERM;
+  switch (which) {
+  case StartSetup::STOP_ACTION_REFUSED:
+    denied.stopAction = true;
+    break;
+  case StartSetup::STOP_UNBLOCK_REFUSED:
+    denied.stopUnblock = true;
+    break;
+  case StartSetup::PROBE_STDIN_UNOPENED:
+    denied.readOpen = O_RDONLY | O_CLOEXEC;
+    helperRuns = false;
+    expected = EACCES;
+    break;
+  case StartSetup::HELPER_STDIN_UNOPENED:
+    denied.readOpen = O_RDONLY;
+    probeRuns = false;
+    expected = EACCES;
+    break;
+  }
+  if (!deny(denied)) {
+    std::fprintf(stderr, "the calls could not be denied\n");
+    std::_Exit(3);
+  }
+  const std::vector<std::string> PROGRAM = {"/bin/sh", "-c", "exit 7"};
+  HelperStart helper{};
+  if (helperRuns) {
+    OwnedHelper owned(quickPolicy());
+    helper = owned.start(PROGRAM, "", "", 200, nullptr);
+    (void)owned.stop();
+  }
+  ProbeResult probe{};
+  if (probeRuns) {
+    probe = runBoundedProbe(PROGRAM, 5000, CTX);
+  }
+  int status = 0;
+  errno = 0;
+  const bool NO_CHILD = ::waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD;
+  // The helper names the step that failed and its errno.
+  const std::string HELPER_TEXT =
+      (which == StartSetup::HELPER_STDIN_UNOPENED ? "could not open /dev/null: "
+                                                  : "could not set up /bin/sh: ") +
+      std::system_category().message(expected);
+  const bool HELPER_AS_DUE = !helperRuns || (!helper.started && helper.spawnErrno == expected &&
+                                             helper.errorTail == HELPER_TEXT);
+  const bool PROBE_AS_DUE = !probeRuns || (!probe.started && probe.spawnErrno == expected);
+  std::fprintf(stderr, "the helper started=%d errno=%d %s; the probe %s; no child: %d\n",
+               helper.started ? 1 : 0, helper.spawnErrno, helper.errorTail.c_str(),
+               probe.describe().c_str(), NO_CHILD ? 1 : 0);
+  const bool AS_DUE = NO_CHILD && HELPER_AS_DUE && PROBE_AS_DUE;
+  std::fprintf(stderr, AS_DUE ? "the start refused what it could not set\n"
+                              : "a start went on without what it could not set\n");
+  std::_Exit(AS_DUE ? 0 : 1);
+}
+
+/** @brief Whether this kernel can hold a call for a seccomp listener (user_notif). */
+bool callsCanBeHeld() {
+#ifdef SECCOMP_RET_USER_NOTIF
+  std::ifstream actions("/proc/sys/kernel/seccomp/actions_avail");
+  std::string text;
+  std::getline(actions, text);
+  return text.find("user_notif") != std::string::npos;
+#else
+  return false;
+#endif
+}
+
+/** @brief Whether this kernel can let a held call go on (Linux 5.5 and later). */
+bool callsCanGoOn() {
+#ifdef SECCOMP_USER_NOTIF_FLAG_CONTINUE
+  utsname name{};
+  if (!callsCanBeHeld() || ::uname(&name) != 0) {
+    return false;
+  }
+  char* rest = nullptr;
+  const long MAJOR = std::strtol(name.release, &rest, 10);
+  const long MINOR = *rest == '.' ? std::strtol(rest + 1, nullptr, 10) : 0;
+  return MAJOR > 5 || (MAJOR == 5 && MINOR >= 5);
+#else
+  return false;
+#endif
+}
+
+/** @brief Where the lock control holds its lock, what fails there, and the limits. */
 enum class LockCase : std::uint8_t {
-  NATIVE,             ///< close_range.
-  LISTED,             ///< No close_range; /proc/self/fd can be listed.
-  UNLISTED,           ///< Neither: no close_range, and no directory can be opened.
-  LISTED_HARD_LOWERED ///< No close_range, the list, and the hard limit lowered too.
+  NATIVE,               ///< At 65590; close_range.
+  LISTED,               ///< At 65590; no close_range; /proc/self/fd can be listed.
+  UNLISTED,             ///< At 65590; neither: no close_range, and no directory can be opened.
+  LISTED_HARD_LOWERED,  ///< At 65590; no close_range, the list, and the hard limit lowered too.
+  UNREADABLE,           ///< At 65590; no close_range, /proc/self/fd opens but cannot be read;
+                        ///< the hard limit lowered too.
+  STDIN,                ///< On stdin.
+  STDIN_UNREPLACEABLE,  ///< On stdin, onto which nothing can be duplicated (dup2, dup3).
+  STDOUT,               ///< On stdout.
+  STDOUT_UNREPLACEABLE, ///< On stdout, onto which nothing can be duplicated (by the keeper, or
+                        ///< by the program's start).
+  STDOUT_UNRELEASABLE,  ///< On stdout, onto which nothing can be duplicated and which cannot
+                        ///< be closed.
+  STDERR,               ///< On stderr.
+  STDERR_UNREPLACEABLE, ///< On stderr, onto which nothing can be duplicated (likewise).
+  STDERR_UNRELEASABLE,  ///< On stderr, onto which nothing can be duplicated and which cannot
+                        ///< be closed.
+  STDOUT_UNKNOWN,       ///< On stdout; the keeper's /dev/null not opened, stdout neither closed
+                        ///< nor its flags read; duplicating onto it allowed.
+  STDERR_UNKNOWN,       ///< On stderr, likewise.
+  NO_NULL,              ///< On stdout; /dev/null cannot be opened for writing.
+  NO_NULL_UNCLOSABLE    ///< On stdout; /dev/null cannot be opened for writing, nor stdout closed.
 };
 
 /**
  * @brief The body of a death test: this process holds a lock (flock) through a
- * close-on-exec descriptor at 65590, then lowers its soft limit on descriptors
- * to 64 (and its hard limit, with LISTED_HARD_LOWERED); close_range is
- * unavailable but in NATIVE. A probe's program waits until its keeper has
- * dropped that descriptor (3 s at the most), says it is ready, and once another
- * thread here has closed this process's descriptor, which releases the lock as
- * far as this process goes, tries the lock. Prints how the call came out and
- * exits 0 when the program got the lock, or, in UNLISTED, when the call refused
- * the setup (ENOSYS) before anything started; in both cases with no child of
- * this process left behind.
+ * close-on-exec descriptor: at 65590, under a soft limit on descriptors then
+ * lowered to 64 (and the hard limit too, with LISTED_HARD_LOWERED and
+ * UNREADABLE), close_range unavailable but in NATIVE; or on one of its
+ * standard streams, with close_range, and dup2 and dup3 onto it, close of it
+ * or the keeper's open of /dev/null failing as @p which says (deny()). A
+ * probe's program waits until its keeper's descriptor of that number is no
+ * longer the lock (3 s at the most), says it is ready, and once another
+ * thread here has released this process's descriptor (closed it), which
+ * releases the lock as far as this process goes, tries the lock. Prints how
+ * the call came out and exits 0 when the program got the lock, or, where
+ * the keeper cannot let go of the lock, when the call refused the setup with
+ * the errno the case expects (ENOSYS, EPERM, EACCES) and the lock was free
+ * once this process released it; in every case with no child of this
+ * process left behind.
  */
 [[noreturn]] void keeperReleasesTheCallersLock(LockCase which) {
   constexpr int PLANTED = 65590;
+  int slot = PLANTED;
+  Denied denied;
+  int refusal = 0;
+  switch (which) {
+  case LockCase::NATIVE:
+    denied.closeRange = false;
+    break;
+  case LockCase::LISTED:
+  case LockCase::LISTED_HARD_LOWERED:
+    break;
+  case LockCase::UNLISTED:
+    denied.directories = true;
+    refusal = ENOSYS;
+    break;
+  case LockCase::UNREADABLE:
+    denied.directoryReads = true;
+    refusal = EPERM;
+    break;
+  case LockCase::STDIN:
+  case LockCase::STDOUT:
+  case LockCase::STDERR:
+    slot = which == LockCase::STDIN    ? STDIN_FILENO
+           : which == LockCase::STDOUT ? STDOUT_FILENO
+                                       : STDERR_FILENO;
+    denied.closeRange = false;
+    break;
+  case LockCase::STDIN_UNREPLACEABLE:
+    slot = STDIN_FILENO;
+    denied = {.closeRange = false, .replace = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::STDOUT_UNREPLACEABLE:
+  case LockCase::STDERR_UNREPLACEABLE:
+    // The keeper closes the stream it cannot replace; then the program's
+    // start cannot set the same stream either, and fails with that errno.
+    slot = which == LockCase::STDOUT_UNREPLACEABLE ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .replace = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::STDOUT_UNRELEASABLE:
+  case LockCase::STDERR_UNRELEASABLE:
+    slot = which == LockCase::STDOUT_UNRELEASABLE ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .close = slot, .replace = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::STDOUT_UNKNOWN:
+  case LockCase::STDERR_UNKNOWN:
+    // The keeper alone is refused: duplicating onto the stream stays
+    // allowed, so the program's own start could set it, and only the
+    // keeper's refusal (the query's errno) keeps the program from running.
+    slot = which == LockCase::STDOUT_UNKNOWN ? STDOUT_FILENO : STDERR_FILENO;
+    denied = {.closeRange = false, .close = slot, .nullOpen = true, .query = slot};
+    refusal = EPERM;
+    break;
+  case LockCase::NO_NULL:
+    slot = STDOUT_FILENO;
+    denied = {.closeRange = false, .nullOpen = true};
+    break;
+  case LockCase::NO_NULL_UNCLOSABLE:
+    slot = STDOUT_FILENO;
+    denied = {.closeRange = false, .close = slot, .nullOpen = true};
+    refusal = EACCES;
+    break;
+  }
+  const bool DENIES = denied.closeRange || denied.close >= 0 || denied.directories ||
+                      denied.directoryReads || denied.replace >= 0 || denied.nullOpen ||
+                      denied.query >= 0;
   const ReadinessContext CTX = ReadinessContext::capture();
+  // This process's stderr, where the lock on stderr leaves it, for what it prints.
+  const int OUT =
+      slot == STDERR_FILENO ? ::fcntl(STDERR_FILENO, F_DUPFD_CLOEXEC, 100) : STDERR_FILENO;
   char directory[] = "/tmp/keeper_lock_XXXXXX";
-  if (::mkdtemp(directory) == nullptr || !softDescriptorLimit(PLANTED + 10)) {
+  if (OUT < 0 || ::mkdtemp(directory) == nullptr || !softDescriptorLimit(PLANTED + 10)) {
     std::fprintf(stderr, "the control could not be set up\n");
     std::_Exit(4);
   }
@@ -1126,31 +2198,34 @@ enum class LockCase : std::uint8_t {
   const std::string LOCK = FOLDER + "/lock";
   const std::string READY = FOLDER + "/ready";
   const std::string RELEASED = FOLDER + "/released";
+  const std::string RESULT = FOLDER + "/result";
   const int FD = ::open(LOCK.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
-  if (FD < 0 || ::flock(FD, LOCK_EX | LOCK_NB) != 0 || ::dup3(FD, PLANTED, O_CLOEXEC) != PLANTED) {
-    std::fprintf(stderr, "the lock could not be planted\n");
+  if (FD < 0 || ::flock(FD, LOCK_EX | LOCK_NB) != 0 || ::dup3(FD, slot, O_CLOEXEC) != slot) {
+    ::dprintf(OUT, "the lock could not be planted\n");
     std::_Exit(4);
   }
   ::close(FD);
-  struct rlimit limit{};
-  (void)::getrlimit(RLIMIT_NOFILE, &limit);
-  limit.rlim_cur = 64;
-  if (which == LockCase::LISTED_HARD_LOWERED) {
-    limit.rlim_max = 64;
+  if (slot == PLANTED) {
+    struct rlimit limit{};
+    (void)::getrlimit(RLIMIT_NOFILE, &limit);
+    limit.rlim_cur = 64;
+    if (which == LockCase::LISTED_HARD_LOWERED || which == LockCase::UNREADABLE) {
+      limit.rlim_max = 64;
+    }
+    if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
+      ::dprintf(OUT, "the limits could not be lowered\n");
+      std::_Exit(4);
+    }
   }
-  if (::setrlimit(RLIMIT_NOFILE, &limit) != 0) {
-    std::fprintf(stderr, "the limits could not be lowered\n");
-    std::_Exit(4);
-  }
-  if (which != LockCase::NATIVE && !withoutCloseRange(-1, which == LockCase::UNLISTED)) {
-    std::fprintf(stderr, "close_range could not be made unavailable\n");
+  if (DENIES && !deny(denied)) {
+    ::dprintf(OUT, "the calls could not be denied\n");
     std::_Exit(3);
   }
-  const std::string HELD = "/proc/$k/fd/" + std::to_string(PLANTED);
+  const std::string HELD = "/proc/$k/fd/" + std::to_string(slot);
   const std::string SCRIPT = "PATH=/usr/bin:/bin; read -r s < /proc/$$/stat; set -- $s; k=$5\n"
-                             "i=0; while [ -e " +
-                             HELD +
-                             " ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
+                             "i=0; while [ \"$(readlink " +
+                             HELD + ")\" = '" + LOCK +
+                             "' ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
                              ": > '" +
                              READY +
                              "'\n"
@@ -1158,7 +2233,8 @@ enum class LockCase : std::uint8_t {
                              RELEASED +
                              "' ] && [ $i -lt 300 ]; do sleep 0.01; i=$((i + 1)); done\n"
                              "flock -n '" +
-                             LOCK + "' true; e=$?; echo \"lock_acquire_status=$e\"; exit $e\n";
+                             LOCK + "' true; e=$?; echo \"lock_acquire_status=$e\" > '" + RESULT +
+                             "'; exit $e\n";
   std::atomic<bool> returned{false};
   std::thread release([&] {
     const auto UNTIL = std::chrono::steady_clock::now() + std::chrono::seconds(5);
@@ -1166,7 +2242,11 @@ enum class LockCase : std::uint8_t {
            std::chrono::steady_clock::now() < UNTIL) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    ::close(PLANTED);
+    // Where close(2) of it fails, as for the keeper, close_range(2) releases it.
+    if (::close(slot) != 0 && errno == EBADF) {
+      (void)::syscall(SYS_close_range, static_cast<unsigned>(slot), static_cast<unsigned>(slot),
+                      0U);
+    }
     const int MARK = ::open(RELEASED.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
     if (MARK >= 0) {
       ::close(MARK);
@@ -1181,27 +2261,38 @@ enum class LockCase : std::uint8_t {
     int status = 0;
     (void)::waitpid(PID, &status, 0);
   }
-  for (const std::string& path : {LOCK, READY, RELEASED}) {
+  // Once this process released its descriptor, nothing else holds the lock.
+  const int AGAIN = ::open(LOCK.c_str(), O_RDWR | O_CLOEXEC);
+  const bool FREE = AGAIN >= 0 && ::flock(AGAIN, LOCK_EX | LOCK_NB) == 0;
+  if (AGAIN >= 0) {
+    ::close(AGAIN);
+  }
+  std::string result;
+  std::getline(std::ifstream(RESULT), result);
+  for (const std::string& path : {LOCK, READY, RELEASED, RESULT}) {
     (void)::unlink(path.c_str());
   }
   (void)::rmdir(FOLDER.c_str());
-  std::fprintf(stderr, "started=%d errno=%d %s; output: %s; children left: %zu\n",
-               R.started ? 1 : 0, R.spawnErrno, R.describe().c_str(), R.output.c_str(),
-               LEFT.size());
+  ::dprintf(
+      OUT, "started=%d errno=%d %s; the program: %s; children left: %zu; the lock free after: %d\n",
+      R.started ? 1 : 0, R.spawnErrno, R.describe().c_str(), result.c_str(), LEFT.size(),
+      FREE ? 1 : 0);
   const char* wrong = nullptr;
   if (!LEFT.empty()) {
     wrong = "a child of this process was left behind";
-  } else if (which == LockCase::UNLISTED) {
+  } else if (refusal != 0) {
     if (R.started) {
-      wrong = "the probe started where its keeper could not close what it inherits";
-    } else if (R.spawnErrno != ENOSYS) {
+      wrong = "the probe started where its keeper could not let go of what it inherits";
+    } else if (R.spawnErrno != refusal) {
       wrong = "the setup failed for another reason";
+    } else if (!FREE) {
+      wrong = "the lock was held once this process released it";
     }
-  } else if (!R.succeeded() || R.output != "lock_acquire_status=0\n") {
+  } else if (!R.succeeded() || result != "lock_acquire_status=0") {
     wrong = "the program did not get the lock the caller released";
   }
-  std::fprintf(stderr, "%s\n",
-               wrong == nullptr ? "the caller's lock was the caller's to release" : wrong);
+  ::dprintf(OUT, "%s\n",
+            wrong == nullptr ? "the caller's lock was the caller's to release" : wrong);
   std::_Exit(wrong == nullptr ? 0 : 1);
 }
 
@@ -1209,11 +2300,12 @@ enum class LockCase : std::uint8_t {
 
 /**
  * @test The keeper of a probe whose setup fails after the keeper started (its
- * second pipe cannot be made: descriptors ran out) is ended and reaped before
+ * first pipe cannot be made: descriptors ran out) is ended and reaped before
  * the call returns, wherever the descriptors lie and whether or not the system
  * has close_range: with descriptors below 64 and above 65535, with close_range
- * and without it, and with the anchor's write end that no process can close,
- * so that the keeper never sees end-of-file. Each case in a process of its own.
+ * and without it, and with this process's end of the anchor that no process
+ * can close, so that the keeper never sees end-of-file (and reports that it
+ * could not close everything). Each case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
   constexpr rlim_t LOW = 64;
@@ -1249,7 +2341,10 @@ TEST(ReadinessProbes, KeeperEndsWhenTheProbeCannotBeSetUp) {
  * without it but with /proc/self/fd to list (also with the hard limit lowered
  * to 64, which only the list reaches past), the keeper drops it and the
  * program gets the lock; with neither, the setup is refused (ENOSYS) before
- * anything starts. Each case in a process of its own.
+ * anything starts; with the list opening but not readable (and the hard limit
+ * lowered), the setup fails with the keeper's EPERM and no keeper is left;
+ * refused, the lock is free once this process releases it. Each case in a
+ * process of its own.
  */
 TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
@@ -1273,13 +2368,79 @@ TEST(ReadinessProbes, KeeperNeverHoldsALockTheCallerReleased) {
   EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::LISTED_HARD_LOWERED),
               ::testing::ExitedWithCode(0), "the caller's lock was the caller's to release")
       << "no close_range, the list, the hard limit lowered";
+  EXPECT_EXIT(keeperReleasesTheCallersLock(LockCase::UNREADABLE), ::testing::ExitedWithCode(0),
+              "the caller's lock was the caller's to release")
+      << "no close_range, the list opens but cannot be read, the hard limit lowered";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test The keeper lets go of this process's standard streams, or the setup
+ * fails before the program starts: a lock this process holds through its
+ * stdin, stdout or stderr (close-on-exec) is released for the probe once
+ * this process releases its copy. Natively the keeper puts its end of the
+ * anchor on stdin and /dev/null on stdout and stderr; where /dev/null cannot
+ * be opened, the keeper closes them and the program gets the lock. Where
+ * nothing can be put on stdout or stderr (dup2 and dup3 onto it fail, for
+ * every process), the keeper closes it, and the program's start, which
+ * cannot set that stream either, fails. Where its end of the anchor cannot
+ * be put on stdin, or a stream can be neither replaced nor closed, or
+ * whether it is closed cannot be read (its F_GETFD refused), the setup fails
+ * before the program starts; where only the keeper is refused (its
+ * /dev/null, its close and its query of the stream), duplicating onto the
+ * stream staying allowed, it is the keeper's refusal, with the query's
+ * errno, that keeps the program from running. A setup or start that fails
+ * does so with the errno of the step that failed (EPERM, EACCES), no child
+ * is left, and the lock is free once this process releases its copy. Each
+ * case in a process of its own.
+ */
+TEST(ReadinessProbes, KeeperLetsGoOfTheStandardStreams) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(65600);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  if (::access("/usr/bin/flock", X_OK) != 0) {
+    GTEST_SKIP() << "flock(1) is not installed";
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    LockCase which;
+    const char* name;
+  } CASES[] = {
+      {LockCase::STDIN, "stdin"},
+      {LockCase::STDIN_UNREPLACEABLE, "stdin, the anchor not put there: refused (EPERM)"},
+      {LockCase::STDOUT, "stdout"},
+      {LockCase::STDOUT_UNREPLACEABLE,
+       "stdout, nothing put there: closed, then the start refused (EPERM)"},
+      {LockCase::STDOUT_UNRELEASABLE, "stdout, neither replaced nor closed: refused (EPERM)"},
+      {LockCase::STDERR, "stderr"},
+      {LockCase::STDERR_UNREPLACEABLE,
+       "stderr, nothing put there: closed, then the start refused (EPERM)"},
+      {LockCase::STDERR_UNRELEASABLE, "stderr, neither replaced nor closed: refused (EPERM)"},
+      {LockCase::STDOUT_UNKNOWN,
+       "stdout, the keeper's /dev/null not opened, not closed, unreadable: refused (EPERM)"},
+      {LockCase::STDERR_UNKNOWN,
+       "stderr, the keeper's /dev/null not opened, not closed, unreadable: refused (EPERM)"},
+      {LockCase::NO_NULL, "stdout, /dev/null not opened: closed"},
+      {LockCase::NO_NULL_UNCLOSABLE, "stdout, /dev/null not opened, not closed: refused (EACCES)"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(keeperReleasesTheCallersLock(c.which), ::testing::ExitedWithCode(0),
+                "the caller's lock was the caller's to release")
+        << c.name;
+  }
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 
 /**
  * @test The keeper holds nothing of the benchmark's while the probe runs: a
  * descriptor of this process's above 65535 is not among its descriptors,
- * with close_range and without it. Each case in a process of its own.
+ * with close_range and without it; where this process has standard streams
+ * closed, so that the anchor and /dev/null may take their numbers, the
+ * keeper still has its end of the anchor on stdin and /dev/null on stdout
+ * and stderr; where /dev/null cannot be opened, it holds its end of the
+ * anchor alone. Each case in a process of its own.
  */
 TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   constexpr int PLANTED = 65590;
@@ -1287,6 +2448,9 @@ TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   if (!UNAVAILABLE.empty()) {
     GTEST_SKIP() << UNAVAILABLE;
   }
+  constexpr int STDIN = 1 << STDIN_FILENO;
+  constexpr int STDOUT = 1 << STDOUT_FILENO;
+  constexpr int STDERR = 1 << STDERR_FILENO;
   const std::string SAVED = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false), ::testing::ExitedWithCode(0),
@@ -1295,6 +2459,263 @@ TEST(ReadinessProbes, KeeperHoldsNothingOfThisProcess) {
   EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, true), ::testing::ExitedWithCode(0),
               "the keeper holds nothing of this process")
       << "no close_range";
+  const struct {
+    int closed;
+    const char* name;
+  } CLOSED[] = {{STDIN, "stdin closed"},
+                {STDOUT, "stdout closed"},
+                {STDERR, "stderr closed"},
+                {STDIN | STDOUT | STDERR, "the three closed"}};
+  for (const auto& c : CLOSED) {
+    EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false, c.closed),
+                ::testing::ExitedWithCode(0), "the keeper holds nothing of this process")
+        << c.name;
+  }
+  EXPECT_EXIT(keeperHoldsNothingOfThisProcess(PLANTED, false, 0, true),
+              ::testing::ExitedWithCode(0), "the keeper holds nothing of this process")
+      << "/dev/null not opened";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+/**
+ * @test The program has its stdout and its stderr whatever of this process's
+ * standard streams are closed: with none, each and all three closed, merged
+ * and separate, both lines it writes are read and its status is its own.
+ * Where this process's streams are closed, a pipe the probe makes may take
+ * the number of the stream it becomes. In a process of its own.
+ */
+TEST(ReadinessProbes, ProgramHasItsStreamsWhateverThisProcessClosed) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(programHasItsStreams(), ::testing::ExitedWithCode(0),
+              "the program had both its streams every time");
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start reports a program that cannot run whatever of this
+ * process's standard streams are closed: with none, each and all three
+ * closed, an owned helper and a probe (merged and separate) started on a
+ * program that does not exist report it unstarted, with ENOENT. Where this
+ * process's streams are closed, the descriptor a start reports on may have
+ * taken a stream's number; the child moves it above them before it sets
+ * any. In a process of its own.
+ */
+TEST(ReadinessProbes, ProgramThatCannotRunIsReportedWhateverThisProcessClosed) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(programThatCannotRunIsReported(), ::testing::ExitedWithCode(0),
+              "every start reported the program that cannot run");
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A stream a start cannot set fails the start, with the errno of the
+ * step that failed, before the program runs: with this process's streams
+ * closed and descriptor 2's F_GETFD or F_SETFD refused, the owned helper's
+ * error file and the merged probe output's pipe, which already are
+ * descriptor 2, cannot be kept open across the exec; with nothing
+ * duplicated onto stdout, no start can set it. The helper and the probe
+ * fail with EPERM there and leave no child, the helper with "could not set
+ * up /bin/sh"; the separate probe, whose pipe is moved above the streams,
+ * runs whole where its streams can be set. Each case in a process of its
+ * own.
+ */
+TEST(ReadinessProbes, StreamThatCannotBeSetFailsTheStart) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::FLAGS_UNREADABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "descriptor 2's F_GETFD refused";
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::FLAGS_UNSETTABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "descriptor 2's F_SETFD refused";
+  EXPECT_EXIT(streamThatCannotBeSetFailsTheStart(StreamDenial::UNDUPLICABLE),
+              ::testing::ExitedWithCode(0), "a stream that could not be set failed the start")
+      << "nothing duplicated onto stdout";
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start ends within its bound whatever keeps its calls from going
+ * on, its children reaped: with every duplicate onto stdout interrupted
+ * (EINTR), the owned helper and the probe fail with EINTR at once, the
+ * duplicate tried a few times; with every start report's write interrupted
+ * and a program that cannot run, the report is lost and both end at once as
+ * a program that exited with 127; with every exec held, both fail with
+ * ETIMEDOUT after the start report's bound (5 s), the held child ended; with
+ * the program's join of the keeper's group held and the parent's join of it
+ * refused, the probe fails with ETIMEDOUT and its program, never in the
+ * group, is ended itself; with every blocking wait interrupted and a program
+ * that cannot run, both fail with ENOENT at once, the child reaped without
+ * blocking; with every waitid interrupted, a probe whose keeper refuses ends
+ * at once. With a program's first duplicate onto stdout interrupted, once in
+ * each start, both complete as they do with nothing denied: exit 7, the
+ * program's output and errors captured apart. Each case in a process of its
+ * own, which its parent ends after 30 s with whatever it left.
+ */
+TEST(ReadinessProbes, StartEndsWithinItsBound) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::DUPLICATE_INTERRUPTED, "every duplicate onto stdout interrupted"},
+      {StartHazard::REPORT_WRITE_INTERRUPTED, "every start report's write interrupted"},
+      {StartHazard::EXEC_HELD, "every exec held"},
+      {StartHazard::JOIN_HELD, "the program's join held, the parent's refused"},
+      {StartHazard::REAP_INTERRUPTED, "every blocking wait interrupted"},
+      {StartHazard::LOOK_INTERRUPTED, "every waitid interrupted"},
+      {StartHazard::DUPLICATE_INTERRUPTED_ONCE,
+       "a program's first duplicate onto stdout interrupted"},
+      {StartHazard::NOTHING_DENIED, "nothing denied"},
+  };
+  for (const auto& c : CASES) {
+    if ((c.which == StartHazard::EXEC_HELD || c.which == StartHazard::JOIN_HELD) &&
+        !callsCanBeHeld()) {
+      std::fprintf(stderr, "this kernel cannot hold a call for a listener: %s not run\n", c.name);
+      continue;
+    }
+    if (c.which == StartHazard::DUPLICATE_INTERRUPTED_ONCE && !callsCanGoOn()) {
+      std::fprintf(stderr, "this kernel cannot let a held call go on: %s not run\n", c.name);
+      continue;
+    }
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A program whose state cannot be read is not taken for one reaped
+ * elsewhere, and still ends with the probe. A program that runs past its
+ * bound and leaves a child in its group (the fake helper's "orphan quiet
+ * stay", bounded at 300 ms) is killed at its bound and its status read with
+ * nothing denied and with every waitid interrupted, where a wait that does
+ * not block says that it runs and reaps it once it is killed. With every
+ * waitid and every wait that does not block interrupted, its group is ended
+ * while the keeper's end of their link shows the keeper running, with every
+ * kill counted by what it is aimed at: one at the group, none at the
+ * program's pid, whose state cannot be read, none at the keeper's own; and
+ * the result says that it was not reaped within the bound, never that
+ * another wait reaped it. No process of the program or of its child is left
+ * running. Each case in a process of its own, which its parent ends after
+ * 30 s with whatever it left.
+ */
+TEST(ReadinessProbes, ProgramWhoseStateCannotBeReadStillEnds) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::LIVE_ORDINARY, "nothing denied"},
+      {StartHazard::LOOK_INTERRUPTED_LIVE, "every waitid interrupted"},
+      {StartHazard::LOOK_AND_WAIT_INTERRUPTED,
+       "every waitid and every wait that does not block interrupted"},
+  };
+  for (const auto& c : CASES) {
+    if (c.which == StartHazard::LOOK_AND_WAIT_INTERRUPTED && !callsCanGoOn()) {
+      std::fprintf(stderr, "this kernel cannot let a held call go on: %s not run\n", c.name);
+      continue;
+    }
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A failed start signals nothing it may have lost, and still ends what
+ * is its own. With SIGCHLD ignored, so that the system reaps each child as it
+ * ends, and every kill(2) held, counted and, when aimed at what was lost,
+ * refused: the owned helper's child that cannot execute its program, reaped
+ * before its report is read, fails the start with ENOENT and is sent no
+ * signal; the probe's keeper, ended and reaped at the program's exec, leaves
+ * a start that fails with ENOENT (the exec then refused) and sends no signal,
+ * or with ETIMEDOUT after 5 s (the exec left held), its program, still its
+ * own, killed once and nothing sent to the keeper's pid or group. With
+ * SIGCHLD at its default action and every look and every wait that does not
+ * block interrupted, no child's state can be read and no child is signalled:
+ * the exec held, both starts fail with ETIMEDOUT, the probe's group, its id
+ * the call's while the keeper is shown running, killed once with the
+ * program in it, the helper's held child left running; the exec refused,
+ * both fail with ENOENT, the children ending by themselves, the keeper
+ * killed at its end. Neither result names a loss. Each case in a process of
+ * its own, which its parent ends after 30 s with whatever it left.
+ */
+TEST(ReadinessProbes, FailedStartSignalsOnlyWhatItOwns) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  if (!callsCanGoOn()) {
+    GTEST_SKIP() << "this kernel cannot let a held call go on";
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartHazard which;
+    const char* name;
+  } CASES[] = {
+      {StartHazard::HELPER_LOST_FIRST, "the helper's child reaped before its report is read"},
+      {StartHazard::KEEPER_LOST_REPORTED, "the keeper reaped, then the exec refused"},
+      {StartHazard::KEEPER_LOST_UNREPORTED, "the keeper reaped, the exec left held"},
+      {StartHazard::UNREAD_EXEC_HELD, "no state readable, the exec held"},
+      {StartHazard::UNREAD_EXEC_REFUSED, "no state readable, the exec refused"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(startEndsUnderInterruptions(c.which), ::testing::ExitedWithCode(0),
+                "the start ended within its bound")
+        << c.name;
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A start that cannot set what its program needs fails with that
+ * errno before the program runs, and leaves no child: with SIGINT's default
+ * action or the stop signals' unblocking refused, the owned helper and the
+ * probe fail with EPERM, the helper with "could not set up /bin/sh"; with
+ * the probe's /dev/null for its program's stdin unopenable, the probe fails
+ * with EACCES, and with the helper's own, the helper fails with EACCES,
+ * "could not open /dev/null". Each case in a process of its own.
+ */
+TEST(ReadinessProbes, StartRefusesWhatItCannotSet) {
+  const std::string UNAVAILABLE = keeperTestsUnavailable(64);
+  if (!UNAVAILABLE.empty()) {
+    GTEST_SKIP() << UNAVAILABLE;
+  }
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const struct {
+    StartSetup which;
+    const char* name;
+  } CASES[] = {
+      {StartSetup::STOP_ACTION_REFUSED, "SIGINT's default action refused"},
+      {StartSetup::STOP_UNBLOCK_REFUSED, "the stop signals' unblocking refused"},
+      {StartSetup::PROBE_STDIN_UNOPENED, "the probe's /dev/null for stdin unopenable"},
+      {StartSetup::HELPER_STDIN_UNOPENED, "the helper's /dev/null for stdin unopenable"},
+  };
+  for (const auto& c : CASES) {
+    EXPECT_EXIT(startRefusesWhatItCannotSet(c.which), ::testing::ExitedWithCode(0),
+                "the start refused what it could not set")
+        << c.name;
+  }
   GTEST_FLAG_SET(death_test_style, SAVED);
 }
 #endif

@@ -531,7 +531,7 @@ TEST_F(GperfLifecycleTest, PreviousCaptureThatCannotBeRemovedFailsTheStart) {
 }
 
 /**
- * @test In a build with heap profiling, the reviewer's sequence on one case:
+ * @test In a build with heap profiling, three heap captures of one case:
  * its first heap capture writes a dump (the fresh control); its second, in
  * the same folder, removes that dump and writes its own (the writable-reuse
  * control); with the folder then made read-only, its third fails at

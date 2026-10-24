@@ -628,7 +628,7 @@ fn run(args: Args) -> Result<(), Error> {
                 extra_args,
                 ..Default::default()
             };
-            let rc = bench::workflow::doctor(&binary, &request, &[], json, &require)?;
+            let rc = bench::workflow::doctor(&binary, &request, json, &require)?;
             std::process::exit(rc);
         }
 
