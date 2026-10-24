@@ -310,8 +310,9 @@ private:
                      const ReadinessResult& failure) const;
 
   /**
-   * @brief What make() and reportDecision() do with a decision: print it
-   * once per @p noticeKey unless it is Ok, and record it when it is an Error.
+   * @brief What make(), finishRun() and reportDecision() do with a decision:
+   * print it once per @p noticeKey unless it is Ok, and record it when it is
+   * an Error.
    */
   void announce(const std::string& backend, const ReadinessResult& decision,
                 const std::string& noticeKey) const;

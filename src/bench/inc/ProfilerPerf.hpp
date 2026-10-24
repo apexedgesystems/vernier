@@ -32,7 +32,8 @@
  * verified (PerfPlan).
  *
  * Notes:
- *  - Linux-only. Safe no-op on other platforms (compile-time guard).
+ *  - Linux-only: on other platforms a request is unsupported and fails the
+ *    run.
  *  - vernier never elevates perf: counter access comes from root, CAP_PERFMON or
  *    kernel.perf_event_paranoid.
  */

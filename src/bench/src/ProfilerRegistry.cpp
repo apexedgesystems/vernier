@@ -364,11 +364,7 @@ int ProfilerRegistry::finishRun(const PerfConfig& cfg, int testStatus, int tests
   const ReadinessContext CTX = ReadinessContext::capture();
   if (!NAME.empty() && NAME != "cupti" && backends_.find(NAME) == backends_.end()) {
     // An unknown name fails the run even when no case asked for a profiler.
-    const ReadinessResult UNKNOWN = unknownResult(NAME, CTX);
-    if (memo_.claimNotice("unknown;" + NAME)) {
-      printNotice(NAME, UNKNOWN);
-    }
-    (void)recordFailure(NAME, "", UNKNOWN);
+    announce(NAME, unknownResult(NAME, CTX), "unknown;" + NAME);
   }
 
   const std::vector<ProfileFailure> FAILED = failures();
@@ -437,11 +433,7 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
   }
   const auto it = backends_.find(name);
   if (it == backends_.end()) {
-    const ReadinessResult UNKNOWN = unknownResult(name, ctx);
-    if (memo_.claimNotice("unknown;" + name)) {
-      printNotice(name, UNKNOWN);
-    }
-    (void)recordFailure(name, "", UNKNOWN);
+    announce(name, unknownResult(name, ctx), "unknown;" + name);
     return std::make_unique<detail::NoOpProfiler>();
   }
   const Entry& entry = it->second;
@@ -470,12 +462,10 @@ std::unique_ptr<Profiler> ProfilerRegistry::make(const std::string& rawName, con
   }
 
   // A build or platform guard in the factory: nothing can collect here.
-  const ReadinessResult UNAVAILABLE = readinessResult(
-      ReadinessCause::UNUSABLE, name + " is unavailable on this platform", entry.unavailableHint);
-  if (memo_.claimNotice("unavailable;" + KEY)) {
-    printNotice(name, UNAVAILABLE);
-  }
-  (void)recordFailure(name, "", UNAVAILABLE);
+  announce(name,
+           readinessResult(ReadinessCause::UNUSABLE, name + " is unavailable on this platform",
+                           entry.unavailableHint),
+           "unavailable;" + KEY);
   return std::make_unique<detail::NoOpProfiler>();
 }
 

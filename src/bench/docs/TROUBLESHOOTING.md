@@ -384,14 +384,17 @@ status and the report still lists the profile failure.
 
 **Fix:** apply the remedy printed with the `[FAIL]` line, and check the
 request before the next run: `--profile-check` with the same `--profile`
-options prints the same verdict. `--profile cupti` never fails, and a run
-fails for something other than its `--profile` request only when a profiler
-the benchmark constructs itself reports a failure, or when a GPU benchmark is
-given `--capture-um`, which asks for counters the harness does not collect
-([GPU guide](GPU_GUIDE.md#unified-memory-counters)); the report then reads
+options prints the same verdict. `--profile cupti` records no failure of its
+own, even where CUPTI is unavailable, and neither does a run without
+`--profile`: either exits 4 only when another failure is recorded, as when a
+profiler the benchmark constructs itself reports one, or when a GPU benchmark
+is given `--capture-um`, which asks for counters the harness does not collect
+([GPU guide](GPU_GUIDE.md#unified-memory-counters)), and the tests passed;
+when tests fail, their status stands. The report then reads
 `[profile] a profile failed` and lists what failed. A benchmark with its own
 `main()` returns this status from `ProfilerRegistry::finishRun()`, called after
-`RUN_ALL_TESTS()` as in [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
+`RUN_ALL_TESTS()` as in
+[the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
 
 ---
 

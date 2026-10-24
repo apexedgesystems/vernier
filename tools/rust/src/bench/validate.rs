@@ -100,7 +100,7 @@ pub fn run_checks() -> Vec<Row> {
 /// The rows for @p binary: the host facts, then the binary's default-mode
 /// doctor rows at advisory severity (its `--profile-check-json` document).
 pub fn binary_rows(binary: &Path) -> Result<Vec<Row>, Error> {
-    let doc = super::workflow::read_doctor_document(binary, &[], &[])?;
+    let doc = super::workflow::read_doctor_document(binary, &[])?;
     let backends = advisory_rows(&doc.value).map_err(|why| {
         Error::Parse(format!(
             "{} --profile-check-json printed no usable doctor document: {why}",
@@ -450,8 +450,9 @@ fn check_rapl() -> Row {
         Row::fact(
             "rapl",
             CheckStatus::Ok,
-            "/dev/cpu/0/msr present; energy access (an Intel CPU, root or CAP_SYS_RAWIO): \
-             bench doctor <binary>",
+            "/dev/cpu/0/msr present; energy access requires an Intel CPU and either root or \
+             CAP_SYS_RAWIO with read access to the device; whether it works here: bench doctor \
+             <binary>",
         )
     } else {
         Row::fact(
@@ -705,9 +706,19 @@ mod tests {
         );
     }
 
+    /// Shell that waits, 5 s at the most, until the process `$!` leads a
+    /// session of its own, as setsid makes it: only then has it left the
+    /// group the script runs in.
+    #[cfg(target_os = "linux")]
+    const UNTIL_ITS_OWN_SESSION: &str = "i=0; while read -r s < /proc/$!/stat && set -- $s && \
+        [ \"$6\" != \"$!\" ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;";
+
     /// @test The held-pipe control: a process that leaves the tool's group
     /// (setsid) and keeps its output open is not the probe's: the probe
     /// neither ends it nor waits on it, and returns with what the tool wrote.
+    /// The tool exits only once that process has left its group, which a
+    /// background start may take longer to do than the probe takes to see
+    /// the tool exit.
     #[test]
     #[cfg(target_os = "linux")]
     fn version_probe_does_not_wait_on_a_process_outside_its_group() {
@@ -715,8 +726,9 @@ mod tests {
         let outside = dir.path().join("outside.pid");
         let (run, took) = probe_sh(
             &format!(
-                "echo 'tool 4.5.6'; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; exit 0",
-                outside.display()
+                "echo 'tool 4.5.6'; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; {} exit 0",
+                outside.display(),
+                UNTIL_ITS_OWN_SESSION
             ),
             Duration::from_secs(30),
         );

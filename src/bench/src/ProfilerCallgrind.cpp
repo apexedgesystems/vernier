@@ -133,13 +133,6 @@ ReadinessResult checkCallgrindRequestWithIdentity(const ReadinessRequest& reques
 
 namespace {
 
-std::shared_ptr<const valgrind_tool::ValgrindPlan> readyPlan(const ReadinessResult& result) {
-  if (!result.collectionReady()) {
-    return nullptr;
-  }
-  return std::dynamic_pointer_cast<const valgrind_tool::ValgrindPlan>(result.plan);
-}
-
 ReadinessResult decideNow(const PerfConfig& cfg) {
   const ReadinessContext CTX = ReadinessContext::capture();
   ReadinessRequest request = readinessRequestFor(cfg, ReadinessScope::RUNTIME, CTX);
@@ -169,7 +162,7 @@ CallgrindProfiler::CallgrindProfiler(const PerfConfig& cfg, std::string testName
   // request that cannot collect creates nothing.
   const ReadinessResult DECISION = decideNow(cfg_);
   if (ProfilerRegistry::instance().reportDecision("callgrind", DECISION)) {
-    plan_ = readyPlan(DECISION);
+    plan_ = valgrind_tool::readyPlan(DECISION);
     artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
                                                     "callgrind");
   }
@@ -239,7 +232,7 @@ namespace {
 std::unique_ptr<Profiler> makePlannedCallgrindProfiler(const PerfConfig& cfg,
                                                        const std::string& testName,
                                                        const ReadinessResult& result) {
-  auto plan = readyPlan(result);
+  auto plan = valgrind_tool::readyPlan(result);
   if (!plan) {
     return nullptr;
   }
