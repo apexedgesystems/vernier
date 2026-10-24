@@ -25,9 +25,11 @@
 #include <sys/wait.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -65,6 +67,27 @@ constexpr const char* CUSTOM_MAIN = VERNIER_READINESS_CUSTOM_MAIN_TARGET;
 
 /// Heap profiling is compiled into libbench (VERNIER_LINK_TCMALLOC=ON).
 constexpr bool HEAP_BUILT = VERNIER_READINESS_HEAP_BUILT != 0;
+
+/// The fixtures are built with a sanitizer jemalloc does not profile under,
+/// as this test is: the address or thread sanitizer, whose allocator serves
+/// the program, or clang's undefined-behaviour sanitizer, whose runtime,
+/// linked into the program, keeps a preloaded jemalloc from taking
+/// MALLOC_CONF.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr bool SANITIZED = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(undefined_behavior_sanitizer)
+constexpr bool SANITIZED = true;
+#else
+constexpr bool SANITIZED = false;
+#endif
+#else
+constexpr bool SANITIZED = false;
+#endif
+
+/// The options bench run sets for jemalloc, before the dumps' prefix.
+constexpr const char* JEMALLOC_OPTIONS = "prof:true,prof_final:true,prof_accum:true";
 
 /// What the fake perf logs after its own directory for a run's launch, up to the pid.
 constexpr const char* PERF_STAT =
@@ -182,6 +205,47 @@ std::vector<std::map<std::string, std::string>> csvRows(const std::string& path)
     rows.push_back(std::move(row));
   }
   return rows;
+}
+
+/**
+ * @brief Why no jemalloc with profiling can be preloaded here, or why that
+ * could not be checked; empty when one can. The test's own check, apart from
+ * the backend's: preloaded into /bin/true with profiling and a dump at exit,
+ * jemalloc leaves that dump in @p dir. The dump decides. Without it,
+ * std::system's result says whether the check ran: -1 when it could not
+ * start the shell or read its end; a shell that never ran leaves no stderr
+ * file (glibc reports one it could not start as exit status 127).
+ */
+std::string noProfilingJemalloc(const std::string& dir) {
+  const std::string ERR = dir + "/check.err";
+  const std::string COMMAND =
+      "/usr/bin/env LD_PRELOAD=libjemalloc.so.2 " +
+      shellQuote("MALLOC_CONF=prof:true,prof_final:true,prof_prefix:" + dir + "/check") +
+      " /bin/true 2>" + shellQuote(ERR);
+  const int STATUS = std::system(COMMAND.c_str());
+  const int SYSTEM_ERRNO = errno;
+  if (!namesEndingWith(dir, ".f.heap").empty()) {
+    return "";
+  }
+  std::string why = readText(ERR);
+  while (!why.empty() && why.back() == '\n') {
+    why.pop_back();
+  }
+  const std::string SAID = why.empty() ? std::string{} : ": " + why;
+  if (STATUS == -1) {
+    return "the check for a jemalloc with profiling did not complete: std::system could not "
+           "start its shell or read its end (" +
+           std::string(std::strerror(SYSTEM_ERRNO)) + ")" + SAID;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(ERR, ec)) {
+    const std::string ENDED = WIFEXITED(STATUS)
+                                  ? "exit status " + std::to_string(WEXITSTATUS(STATUS))
+                                  : "wait status " + std::to_string(STATUS);
+    return "the check for a jemalloc with profiling did not run: its shell wrote no stderr file (" +
+           ENDED + ")";
+  }
+  return "no jemalloc with profiling can be preloaded here" + SAID;
 }
 
 /// How one run of a fixture ended.
@@ -714,4 +778,132 @@ TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
                                  MESSAGE))
       << "run-end report";
   EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
+
+/* --------------------------------- jemalloc --------------------------------- */
+
+/**
+ * @test A file that is not a library, first on LD_LIBRARY_PATH, which the
+ * loader refuses to preload: the doctor and a run name the same cause. Not
+ * wrapped, the run fails with the wrap command; wrapped by hand, the loader
+ * says why at start-up and the run fails naming the preload it refused.
+ * Nothing is written for the request.
+ */
+TEST_F(ReadinessFixtureRun, JemallocUnloadableDoctorAndRunAgree) {
+  dir_.writeFile("libjemalloc.so.2", "this is not a shared library, only a file with its name\n");
+  env_.push_back("LD_LIBRARY_PATH=" + dir_.path());
+  const std::string CAUSE = SANITIZED ? "unsupported: " : "missing: ";
+  const std::string DOCTOR = doctorJson({"--profile", "jemalloc"});
+  EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << "doctor status";
+  EXPECT_THAT(selectedField(DOCTOR, "message"),
+              HasSubstr(SANITIZED ? "unsupported: jemalloc does not profile a program built with "
+                                  : "missing: the loader cannot preload libjemalloc.so.2 ("))
+      << "doctor message";
+
+  const RunResult PLAIN = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(PLAIN.status, 4) << "unwrapped run exit status";
+  EXPECT_THAT(PLAIN.err, HasSubstr("[FAIL] Profiler 'jemalloc': " + CAUSE)) << "unwrapped notice";
+  if (!SANITIZED) {
+    EXPECT_THAT(
+        PLAIN.err,
+        HasSubstr("missing: jemalloc collects only as the process's allocator, and this "
+                  "process does not run on jemalloc\n   Wrap it: LD_PRELOAD=libjemalloc.so.2 "
+                  "MALLOC_CONF=" +
+                  std::string{JEMALLOC_OPTIONS} +
+                  ",prof_prefix:./jeprof <this-binary> --profile jemalloc [...]; or run "
+                  "it with bench run --profile jemalloc, which wraps it.\n"))
+        << "unwrapped notice";
+  }
+
+  const std::string DUMPS = dir_.path() + "/dumps";
+  env_.push_back("LD_PRELOAD=libjemalloc.so.2");
+  env_.push_back(std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS +
+                 "/jeprof");
+  const RunResult WRAPPED = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(WRAPPED.status, 4) << "wrapped run exit status";
+  EXPECT_THAT(WRAPPED.err, HasSubstr("from LD_PRELOAD cannot be preloaded"))
+      << "the loader's own refusal";
+  EXPECT_THAT(WRAPPED.err, HasSubstr("[FAIL] Profiler 'jemalloc': " + CAUSE)) << "wrapped notice";
+  if (!SANITIZED) {
+    EXPECT_THAT(WRAPPED.err, HasSubstr("missing: LD_PRELOAD names libjemalloc.so.2, but jemalloc "
+                                       "is not this process's allocator"))
+        << "wrapped notice";
+  }
+  EXPECT_THAT(namesEndingWith(work_, ".jemalloc"), IsEmpty()) << "folders of a refused request";
+  EXPECT_FALSE(std::filesystem::exists(DUMPS)) << "dumps of a refused request";
+}
+
+/**
+ * @test Where a jemalloc with profiling can be preloaded (the test checks so
+ * itself): the doctor is ok and says jeprof is missing without failing; a
+ * run wrapped by hand with bench run's options exits 0, announces the dump
+ * without claiming it, and after its exit the folder holds one final dump,
+ * of the run's own process. With profiling off, or no dump configured, the
+ * run fails with a configuration error and writes nothing; with the bytes
+ * not accumulated it collects, with a caveat.
+ */
+TEST_F(ReadinessFixtureRun, JemallocProfilingRunLeavesItsOwnDump) {
+  if (SANITIZED) {
+    GTEST_SKIP() << "the fixture is built with a sanitizer jemalloc does not profile under (the "
+                    "address or thread sanitizer's allocator, or clang's undefined-behaviour "
+                    "sanitizer linked in)";
+  }
+  if (const std::string WHY = noProfilingJemalloc(dir_.makeDirectory("check")); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const std::string DOCTOR = doctorJson({"--profile", "jemalloc"});
+  EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status";
+  EXPECT_THAT(selectedField(DOCTOR, "message"),
+              HasSubstr(" profiles: preloaded with bench run's options, it wrote its final heap "
+                        "dump at exit (probe: /bin/cat /proc/self/maps); jeprof is not on PATH "
+                        "(only reading the dumps needs it)"))
+      << "doctor message";
+
+  const std::string DUMPS = dir_.makeDirectory("dumps");
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS + "/jeprof"};
+  const RunResult RUN = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[jemalloc] jemalloc profiles this process and writes its heap "
+                                 "dump when the\n[jemalloc] process exits, as " +
+                                 DUMPS + "/jeprof."))
+      << "announcement";
+  EXPECT_THAT(RUN.err, HasSubstr("[jemalloc] This run does not check that dump; bench run "
+                                 "--profile jemalloc does."))
+      << "announcement";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("written"))) << "a dump announced as written";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("Profiler 'jemalloc'"))) << "a notice for a ready request";
+  const std::vector<std::string> FINAL = namesEndingWith(DUMPS, ".f.heap");
+  ASSERT_EQ(FINAL.size(), 1U) << "final dumps after the run's exit";
+  const std::string DUMP = readText(DUMPS + "/" + FINAL.front());
+  EXPECT_EQ(DUMP.compare(0, 8, "heap_v2/"), 0) << FINAL.front() << " is not a heap profile";
+  EXPECT_THAT(DUMP, HasSubstr(std::filesystem::canonical(FIXTURE).string()))
+      << FINAL.front() << " does not map the fixture";
+
+  struct Options {
+    const char* what;
+    const char* options;
+    int status;
+    const char* words;
+  };
+  const Options OTHERS[] = {
+      {"profiling off", "prof_final:true", 4,
+       "), but its profiling is off: MALLOC_CONF has no prof:true"},
+      {"no dump", "prof:true", 4,
+       ") but writes no dump: MALLOC_CONF has no prof_final:true, and no interval or growth "
+       "dumps"},
+      {"bytes not accumulated", "prof:true,prof_final:true", 0,
+       "[WARN] Profiler 'jemalloc': jemalloc profiles this process ("},
+  };
+  int other = 0;
+  for (const Options& OTHER : OTHERS) {
+    // Named without the options: a ',' in the prefix would end it.
+    const std::string FOLDER = dir_.makeDirectory("other_" + std::to_string(other++));
+    env_ = {"LD_PRELOAD=libjemalloc.so.2",
+            std::string{"MALLOC_CONF="} + OTHER.options + ",prof_prefix:" + FOLDER + "/jeprof"};
+    const RunResult OTHER_RUN = run(quick({"--profile", "jemalloc"}));
+    EXPECT_EQ(OTHER_RUN.status, OTHER.status) << OTHER.what;
+    EXPECT_THAT(OTHER_RUN.err, HasSubstr(OTHER.words)) << OTHER.what;
+    EXPECT_EQ(namesEndingWith(FOLDER, ".f.heap").size(), OTHER.status == 0 ? 1U : 0U) << OTHER.what;
+  }
 }

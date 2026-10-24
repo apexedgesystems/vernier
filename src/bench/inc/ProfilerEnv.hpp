@@ -289,8 +289,8 @@ inline std::string externalWrapDir() {
  *
  * The escape is '+' because the folder is handed on, in hints and in commands
  * the backends run, to tools with substitution characters of their own:
- * valgrind and nsys expand '%' in output paths, jemalloc's MALLOC_CONF splits
- * on ',' and ':', and an unquoted shell word must not gain a metacharacter.
+ * valgrind and nsys expand '%' in output paths, jemalloc's MALLOC_CONF ends an
+ * option at ',', and an unquoted shell word must not gain a metacharacter.
  * '+' means nothing to any of them, also at the start of a word or where a
  * word with '=' would read as an assignment.
  */

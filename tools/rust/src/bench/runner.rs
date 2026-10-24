@@ -11,7 +11,10 @@
 //! nsight's nsys route the runner also extracts the canonical `nsys stats`
 //! reports after the run (the .nsys-rep only exists once the wrapped process
 //! exits), and for compute-sanitizer it reads the tool's report to tell the
-//! errors the tool found from the benchmark's own status.
+//! errors the tool found from the benchmark's own status. jemalloc is wrapped
+//! through the environment instead (`env_wrap_for`): the library preloaded
+//! and its profiling options set, refused before anything starts when the
+//! loader cannot preload it, and its exit dump checked after the run.
 
 use std::ffi::OsString;
 use std::fs;
@@ -151,6 +154,9 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         Some(t) => env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref())?,
         None => None,
     };
+    // The benchmark as a process's memory map names it, for the completion
+    // check of an environment wrap's dump.
+    let binary_path = fs::canonicalize(&cfg.binary).unwrap_or_else(|_| cfg.binary.clone());
     if let Some(ref pairs) = env_wrap {
         for (k, v) in pairs {
             cmd.env(k, v);
@@ -181,7 +187,11 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         .unwrap_or_default();
     println!("Running: {}{}", env_prefix, format_command(&launch, &args));
 
-    let status = cmd.status()?;
+    // The process started here is the benchmark (taskset execs it): jemalloc
+    // names its exit dump after this process id.
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let status = child.wait()?;
 
     // compute-sanitizer's status mixes its own verdict with the benchmark's:
     // its report decides which one this is.
@@ -214,10 +224,15 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     if env_wrap.is_some() {
         if let Some(tool) = tool {
-            require_jemalloc_dumps(
+            let dump = require_jemalloc_dump(
                 &wrap_artifact_dir(tool, &cfg.binary, cfg.profile_output_dir.as_deref()),
                 &request_text(tool, cfg.profile_args.as_deref()),
+                pid,
+                &binary_path,
             )?;
+            for line in jeprof_hint(&cfg.binary, &dump, lookup_in_path) {
+                println!("{line}");
+            }
         }
     }
 
@@ -443,30 +458,165 @@ fn jemalloc_dumps(dir: &Path) -> Vec<PathBuf> {
     dumps
 }
 
-/// Require a non-empty jemalloc dump from this run, and print each.
-fn require_jemalloc_dumps(dir: &Path, request: &str) -> Result<(), Error> {
-    let dumps: Vec<(PathBuf, u64)> = jemalloc_dumps(dir)
-        .into_iter()
-        .map(|p| {
-            let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            (p, size)
-        })
-        .filter(|(_, size)| *size > 0)
-        .collect();
-    if dumps.is_empty() {
-        return Err(profile_failure(
+/// The process id and kind a jemalloc dump's name carries,
+/// `jeprof.<pid>.<n>.<kind>.heap`: `f` for the dump written at exit.
+fn jemalloc_dump_owner(dump: &Path) -> Option<(u32, String)> {
+    let name = dump.file_name()?.to_str()?;
+    let middle = name.strip_prefix("jeprof.")?.strip_suffix(".heap")?;
+    let mut parts = middle.split('.');
+    let pid = parts.next()?.parse().ok()?;
+    let _sequence = parts.next()?;
+    Some((pid, parts.next()?.to_string()))
+}
+
+/// What a jemalloc heap profile's totals line says,
+/// `t*: <in use>: <bytes> [<sampled>: <bytes>]`: the samples still in use
+/// when the dump was written and those taken over the whole run (with
+/// `prof_accum`), each with the bytes of the sampled objects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DumpTotals {
+    in_use: u64,
+    in_use_bytes: u64,
+    sampled: u64,
+    sampled_bytes: u64,
+}
+
+/// The totals line of a heap profile's text, if it has one.
+fn dump_totals(text: &str) -> Option<DumpTotals> {
+    let line = text.lines().find_map(|l| l.trim().strip_prefix("t*:"))?;
+    let numbers: Vec<u64> = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|n| !n.is_empty())
+        .map(str::parse)
+        .collect::<Result<_, _>>()
+        .ok()?;
+    match numbers[..] {
+        [in_use, in_use_bytes, sampled, sampled_bytes] => Some(DumpTotals {
+            in_use,
+            in_use_bytes,
+            sampled,
+            sampled_bytes,
+        }),
+        _ => None,
+    }
+}
+
+/// True when the `MAPPED_LIBRARIES:` section of a heap profile's text maps
+/// @p binary: a line whose path, from its first '/', is the binary's.
+fn dump_maps(text: &str, binary: &Path) -> bool {
+    text.lines()
+        .skip_while(|l| !l.starts_with("MAPPED_LIBRARIES:"))
+        .filter_map(|l| l.find('/').map(|at| &l[at..]))
+        .any(|path| Path::new(path.trim_end()) == binary)
+}
+
+/// The dump jemalloc writes when the benchmark exits,
+/// `jeprof.<pid>.<n>.f.heap` for the process `bench run` started (@p pid),
+/// checked after that exit: present, not empty, a heap profile (`heap_v2/`)
+/// and mapping @p binary (the benchmark, as a memory map names it). Every
+/// other dump in the folder, of a process the benchmark started under the same
+/// preload for one, is named and never taken for the benchmark's. Prints the
+/// dump with its sampled totals, zero being a valid run's, and returns it.
+fn require_jemalloc_dump(
+    dir: &Path,
+    request: &str,
+    pid: u32,
+    binary: &Path,
+) -> Result<PathBuf, Error> {
+    let fail = |message: String| Err(profile_failure(request, "completion", message));
+    let (own, others): (Vec<PathBuf>, Vec<PathBuf>) =
+        jemalloc_dumps(dir).into_iter().partition(|dump| {
+            jemalloc_dump_owner(dump).is_some_and(|(owner, kind)| owner == pid && kind == "f")
+        });
+    for other in &others {
+        println!(
+            "[bench] jemalloc: {} is not the benchmark's exit dump (the benchmark is process \
+             {pid}); it is not this run's profile",
+            other.display()
+        );
+    }
+    let Some(dump) = own.into_iter().next() else {
+        let held = if others.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; the folder holds only other dumps: {}",
+                others
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        return fail(format!(
+            "jemalloc wrote no exit dump of the benchmark (process {pid}), \
+             jeprof.{pid}.<n>.f.heap, in {}{held}",
+            dir.display()
+        ));
+    };
+    let bytes = fs::read(&dump).map_err(|e| {
+        profile_failure(
             request,
             "completion",
-            format!(
-                "no jemalloc dump (jeprof.*.heap) was written in {}",
-                dir.display()
-            ),
+            format!("{} cannot be read: {e}", dump.display()),
+        )
+    })?;
+    if bytes.is_empty() {
+        return fail(format!("{} is empty", dump.display()));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !text.starts_with("heap_v2/") {
+        let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+        return fail(format!(
+            "{} is not a heap profile: it starts '{head}'",
+            dump.display()
         ));
     }
-    for (dump, size) in dumps {
-        println!("[bench] jemalloc wrote {} ({size} bytes)", dump.display());
+    if !dump_maps(&text, binary) {
+        return fail(format!(
+            "{} does not map the benchmark, {}: it is not this run's profile",
+            dump.display(),
+            binary.display()
+        ));
     }
-    Ok(())
+    let Some(totals) = dump_totals(&text) else {
+        return fail(format!(
+            "{} has no totals line (t*:); it is not a whole heap profile",
+            dump.display()
+        ));
+    };
+    let sampled = match totals.sampled {
+        0 => "no allocation was sampled over the run".to_string(),
+        1 => "1 allocation sampled over the run".to_string(),
+        n => format!("{n} allocations sampled over the run"),
+    };
+    println!(
+        "[bench] jemalloc wrote {} ({} bytes) when the benchmark exited: {sampled}, {} of \
+         them in use at exit",
+        dump.display(),
+        bytes.len(),
+        totals.in_use
+    );
+    Ok(dump)
+}
+
+/// After a jemalloc capture, what bench run prints: the command that reads
+/// its dump, and, when `jeprof` is not on PATH (@p lookup), that only reading
+/// needs it.
+fn jeprof_hint(binary: &Path, dump: &Path, lookup: impl Fn(&str) -> InPath) -> Vec<String> {
+    let mut lines = vec![format!(
+        "[bench] Read it: jeprof --text --alloc_space {} {}",
+        binary.display(),
+        dump.display()
+    )];
+    if !matches!(lookup("jeprof"), InPath::Executable(_)) {
+        lines.push(
+            "[bench] jeprof is not on PATH: reading the dump needs it (Debian and Ubuntu ship \
+             it in libjemalloc-dev); collecting it did not"
+                .to_string(),
+        );
+    }
+    lines
 }
 
 /// How a helper program ended, for messages.
@@ -673,14 +823,18 @@ fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
 /// (perf, gperf, rapl, bpftrace, offcpu), jemalloc's environment wrap and
 /// rocprof. A word the tool does not take, a combination it cannot run, a
 /// mode `bench run` does not wrap and an output folder the tool would
-/// rewrite (heaptrack's %h and %p) are refused, naming what is accepted.
-/// Creates nothing.
+/// rewrite (heaptrack's %h and %p) or misread (jemalloc's ',') are refused,
+/// naming what is accepted. Creates nothing.
 fn route_for(
     tool: &str,
     profile_args: Option<&str>,
     binary: &Path,
     output_dir: Option<&Path>,
 ) -> Result<Option<Route>, Error> {
+    if tool == "jemalloc" {
+        refuse_for_jemalloc(profile_args, binary, output_dir)?;
+        return Ok(None);
+    }
     let Some(accepted) = wrapped_modes(tool) else {
         return Ok(None);
     };
@@ -868,6 +1022,34 @@ fn route_for(
     }))
 }
 
+/// What jemalloc's environment wrap refuses before anything is created or
+/// started: any `--profile-args` word (jemalloc takes no mode), and a folder
+/// holding ',', since the folder reaches jemalloc inside MALLOC_CONF, which
+/// ends an option at ',' and has no escape (the rest would be lost, or read
+/// as options of its own).
+fn refuse_for_jemalloc(
+    profile_args: Option<&str>,
+    binary: &Path,
+    output_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let request = request_text("jemalloc", profile_args);
+    if let Some(word) = mode_words(profile_args).first() {
+        return Err(Error::InvalidArgs(format!(
+            "{request}: '{word}' is not a mode of jemalloc, which takes none"
+        )));
+    }
+    let dir = wrap_artifact_dir("jemalloc", binary, output_dir);
+    let d = dir.display().to_string();
+    if d.contains(',') {
+        return Err(Error::InvalidArgs(format!(
+            "{request}: jemalloc reads its dump folder inside MALLOC_CONF, which ends an \
+             option at ',' and has no escape, so it cannot write into {d}, which holds ','; \
+             choose a --profile-output-dir (and a binary name) without ','"
+        )));
+    }
+    Ok(())
+}
+
 /// A route's program, arguments and required outputs, as `route_for` builds them.
 type Routed = (
     &'static str,
@@ -875,17 +1057,22 @@ type Routed = (
     &'static [&'static [&'static str]],
 );
 
-/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
-/// prof_final:true guarantees the exit-time dump the backend's docs promise.
-/// The preload is by soname: ld.so searches the same dirs for LD_PRELOAD as
-/// for any other resolution, so no path lookup is needed or wanted.
+/// What jemalloc's environment wrap preloads: its soname, which ld.so
+/// resolves through LD_LIBRARY_PATH first, as for any other library.
+const JEMALLOC_PRELOAD: &str = "libjemalloc.so.2";
+
+/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing its dumps at @p dir:
+/// profiling on (`prof`), a dump written when the process exits
+/// (`prof_final`), holding the bytes allocated over the whole run
+/// (`prof_accum`, which `jeprof --alloc_space` reads). The shared route table
+/// pins the pairs, which the benchmark's jemalloc backend probes with too.
 fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
     vec![
-        ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string()),
+        ("LD_PRELOAD".to_string(), JEMALLOC_PRELOAD.to_string()),
         (
             "MALLOC_CONF".to_string(),
             format!(
-                "prof:true,prof_final:true,prof_prefix:{}/jeprof",
+                "prof:true,prof_final:true,prof_accum:true,prof_prefix:{}/jeprof",
                 dir.display()
             ),
         ),
@@ -893,18 +1080,29 @@ fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
 }
 
 /// Wrap for backends that inject via environment rather than argv.
-/// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
+/// jemalloc: LD_PRELOAD the library and enable profiling with a dump at exit
 /// into the per-binary artifact dir, whose previous dumps are removed first.
-/// `Ok(None)` when the tool is not env-shaped or the loader cannot resolve
-/// the library (the binary's own hint then explains the manual setup); an
-/// error when the folder cannot be prepared.
+/// A library the loader cannot preload is refused before anything is created
+/// or started: the benchmark would run without it, the loader only warning.
+/// Whether the library profiles is the benchmark's backend's decision, made
+/// when its profiler is created. `Ok(None)` when the tool is not env-shaped;
+/// an error when the folder cannot be prepared.
 fn env_wrap_for(
     tool: &str,
     binary: &Path,
     output_dir: Option<&Path>,
 ) -> Result<Option<Vec<(String, String)>>, Error> {
-    if tool != "jemalloc" || !jemalloc_preloadable() {
+    if tool != "jemalloc" {
         return Ok(None);
+    }
+    if let Some(refusal) = jemalloc_preload_refusal()? {
+        return Err(Error::ToolNotFound(format!(
+            "the loader cannot preload {JEMALLOC_PRELOAD} (\"{refusal}\"), and --profile \
+             jemalloc runs the benchmark with it preloaded. Use a jemalloc built with profiling \
+             (configure --enable-prof; Debian's and Ubuntu's libjemalloc2 have it on amd64 and \
+             i386, not on arm64), with its library folder first on LD_LIBRARY_PATH when it is \
+             not the system's; bench doctor <binary> --profile jemalloc checks it"
+        )));
     }
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     prepare_folder(&dir, &[])?;
@@ -914,17 +1112,34 @@ fn env_wrap_for(
     Ok(Some(jemalloc_env(&dir)))
 }
 
-/// The loader is the only honest oracle for "will LD_PRELOAD work": preload
-/// by soname against /bin/true and let ld.so answer. Stderr stays silent on
-/// success; "cannot be preloaded" means the wrapped binary would not get the
-/// library either (ld.so warns and continues, and the C++ side would then
-/// see LD_PRELOAD set and believe it is profiled -- this gate prevents that).
-fn jemalloc_preloadable() -> bool {
-    Command::new("/bin/true")
-        .env("LD_PRELOAD", "libjemalloc.so.2")
-        .output()
-        .map(|o| !String::from_utf8_lossy(&o.stderr).contains("cannot be preloaded"))
-        .unwrap_or(false)
+/// How long the loader's check of jemalloc's preload may take.
+const PRELOAD_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The loader is the only honest oracle for "will LD_PRELOAD work": it
+/// preloads jemalloc by soname into /bin/true, an owned run, and its
+/// "cannot be preloaded" line, if it prints one, is returned (the wrapped
+/// benchmark would not get the library either: ld.so warns and continues).
+/// None when the library loads.
+fn jemalloc_preload_refusal() -> Result<Option<String>, Error> {
+    let mut command = Command::new("/bin/true");
+    command
+        .env("LD_PRELOAD", JEMALLOC_PRELOAD)
+        .env_remove("MALLOC_CONF");
+    let what = format!("/bin/true with {JEMALLOC_PRELOAD} preloaded");
+    match run_owned(&mut command, &what, PRELOAD_CHECK_BOUND) {
+        Ok(OwnedEnd::Exited(_, _, stderr)) => Ok(stderr
+            .lines()
+            .find(|l| l.contains("cannot be preloaded"))
+            .map(|l| l.trim().to_string())),
+        Ok(OwnedEnd::TimedOut) => Err(Error::ToolNotFound(format!(
+            "{what} did not end within {} s, so whether the loader preloads it is not known",
+            PRELOAD_CHECK_BOUND.as_secs()
+        ))),
+        Err(OwnedError::Start(e) | OwnedError::Wait(e)) => Err(Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("{what}: {e}"),
+        ))),
+    }
 }
 
 /// How long `callgrind_annotate` may take on one profile.
@@ -1344,7 +1559,6 @@ fn format_command(launch: &[OsString], args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bench::tempfile_dir;
 
     /// @test Each way a benchmark can end maps to one report; success to none.
     #[test]
@@ -1919,55 +2133,240 @@ mod tests {
         assert_eq!(d, PathBuf::from("out/t.massif"));
     }
 
-    /// @test jemalloc env wrap composes LD_PRELOAD + MALLOC_CONF with a
-    /// final dump into the artifact dir. The preload is by soname: ld.so
-    /// owns the search, so no path appears anywhere.
+    /// @test jemalloc's environment wrap is the shared table's `env` rows, in
+    /// order: the preload by soname (ld.so owns the search, so no path
+    /// appears), profiling on, a dump at exit, the bytes allocated over the
+    /// run, into the folder. The benchmark's backend probes with the same rows.
     #[test]
-    fn jemalloc_env_composition() {
-        let pairs = jemalloc_env(Path::new("out/t.jemalloc"));
+    fn jemalloc_env_matches_the_shared_table() {
+        let rows: Vec<(String, String)> = table_rows("env")
+            .into_iter()
+            .filter(|row| row[1] == "jemalloc")
+            .map(|row| (row[2].clone(), row[3].replace("<dir>", "out/t.jemalloc")))
+            .collect();
+        assert_eq!(rows.len(), 2, "the table lost jemalloc's environment rows");
+        assert_eq!(jemalloc_env(Path::new("out/t.jemalloc")), rows);
         assert_eq!(
-            pairs[0],
-            ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string())
-        );
-        assert_eq!(
-            pairs[1],
-            (
-                "MALLOC_CONF".to_string(),
-                "prof:true,prof_final:true,prof_prefix:out/t.jemalloc/jeprof".to_string()
-            )
+            rows[1].1,
+            "prof:true,prof_final:true,prof_accum:true,prof_prefix:out/t.jemalloc/jeprof"
         );
     }
 
-    /// @test jemalloc's dumps are found by the wrap's prefix and suffix only,
-    /// and a run needs a non-empty one.
+    /// @test jemalloc's dumps are found by the wrap's prefix and suffix, and
+    /// their names give the process and the kind.
     #[test]
     fn jemalloc_dumps_match_the_wrap_prefix() {
-        let dir = tempfile_dir("vernier_runner_utst_jemalloc_dumps");
+        let dir = tempfile::tempdir().expect("tempdir");
         for (name, text) in [
             ("jeprof.41.0.f.heap", "heap"),
             ("jeprof.41.1.i0.heap", ""),
             ("jeprof.txt", "not a dump"),
             ("other.heap", "not the wrap's"),
         ] {
-            fs::write(dir.join(name), text).expect("write");
+            fs::write(dir.path().join(name), text).expect("write");
         }
-        let names: Vec<String> = jemalloc_dumps(&dir)
+        let names: Vec<String> = jemalloc_dumps(dir.path())
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["jeprof.41.0.f.heap", "jeprof.41.1.i0.heap"]);
-        assert!(require_jemalloc_dumps(&dir, "--profile jemalloc").is_ok());
-        fs::remove_file(dir.join("jeprof.41.0.f.heap")).expect("remove");
-        let err = require_jemalloc_dumps(&dir, "--profile jemalloc")
-            .expect_err("only an empty dump is left");
-        assert!(
-            err.to_string().starts_with(
-                "--profile jemalloc failed: completion: no jemalloc dump (jeprof.*.heap) was \
-                 written in"
-            ),
-            "{err}"
+        assert_eq!(
+            jemalloc_dump_owner(Path::new("d/jeprof.41.0.f.heap")),
+            Some((41, "f".to_string()))
         );
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            jemalloc_dump_owner(Path::new("jeprof.7.3.i0.heap")),
+            Some((7, "i0".to_string()))
+        );
+        assert_eq!(jemalloc_dump_owner(Path::new("jeprof.x.0.f.heap")), None);
+        assert_eq!(jemalloc_dump_owner(Path::new("jeprof.41.heap")), None);
+    }
+
+    /// @test A heap profile's totals line gives its samples in use and over
+    /// the run, with their bytes; a text without one gives none.
+    #[test]
+    fn dump_totals_read_the_totals_line() {
+        let text = "heap_v2/524288\n  t*: 1: 82338 [2287: 14782155]\n  t0: 1: 82338 [2287: \
+                    14782155]\n";
+        assert_eq!(
+            dump_totals(text),
+            Some(DumpTotals {
+                in_use: 1,
+                in_use_bytes: 82338,
+                sampled: 2287,
+                sampled_bytes: 14782155
+            })
+        );
+        assert_eq!(
+            dump_totals("heap_v2/524288\n  t*: 0: 0 [0: 0]\n")
+                .unwrap()
+                .sampled,
+            0
+        );
+        assert_eq!(dump_totals("heap_v2/524288\n"), None);
+        assert_eq!(dump_totals("  t*: 1: 2\n"), None);
+    }
+
+    /// A heap profile of process @p binary with @p sampled samples over the
+    /// run, as jemalloc 5.3.0 writes one (header, totals, a stack, the map).
+    fn heap_profile(binary: &Path, sampled: u64) -> String {
+        format!(
+            "heap_v2/524288\n  t*: 1: 82338 [{sampled}: {}]\n  t0: 1: 82338 [{sampled}: {}]\n\
+             @ 0x7f0000001000 0x55d0c1a01000\n  t*: 1: 82338 [{sampled}: {}]\n\n\
+             MAPPED_LIBRARIES:\n\
+             55d0c1a00000-55d0c1a2f000 r-xp 00000000 fd:01 1048601 {}\n\
+             7f0000000000-7f00000a0000 r-xp 00000000 fd:01 900001 /usr/lib/libjemalloc.so.2\n",
+            sampled * 6000,
+            sampled * 6000,
+            sampled * 6000,
+            binary.display()
+        )
+    }
+
+    /// @test The completion check takes the benchmark's own exit dump and
+    /// nothing else: another process's dump is named and never accepted, an
+    /// empty dump, a text that is not a heap profile and a profile of another
+    /// program fail at completion, and a run that sampled nothing passes.
+    #[test]
+    fn jemalloc_completion_takes_the_benchmarks_own_dump() {
+        let binary = Path::new("/opt/bench/bin/MyTest");
+        let check = |files: &[(&str, String)]| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            for (name, text) in files {
+                fs::write(dir.path().join(name), text).expect("write");
+            }
+            let result = require_jemalloc_dump(dir.path(), "--profile jemalloc", 4711, binary);
+            (dir, result)
+        };
+        let own = heap_profile(binary, 2287);
+        let (dir, ok) = check(&[("jeprof.4711.0.f.heap", own.clone())]);
+        assert_eq!(
+            ok.expect("the benchmark's dump"),
+            dir.path().join("jeprof.4711.0.f.heap")
+        );
+
+        let (dir, both) = check(&[
+            ("jeprof.4711.0.f.heap", own.clone()),
+            (
+                "jeprof.4713.0.f.heap",
+                heap_profile(Path::new("/usr/bin/git"), 3),
+            ),
+        ]);
+        assert_eq!(
+            both.expect("the benchmark's dump"),
+            dir.path().join("jeprof.4711.0.f.heap")
+        );
+
+        let (_dir, zero) = check(&[("jeprof.4711.0.f.heap", heap_profile(binary, 0))]);
+        assert!(
+            zero.is_ok(),
+            "a run that sampled nothing is a valid run: {zero:?}"
+        );
+
+        let failures = [
+            (
+                vec![(
+                    "jeprof.4713.0.f.heap",
+                    heap_profile(Path::new("/usr/bin/git"), 3),
+                )],
+                "jemalloc wrote no exit dump of the benchmark (process 4711), \
+                 jeprof.4711.<n>.f.heap, in ",
+            ),
+            (
+                vec![],
+                "jemalloc wrote no exit dump of the benchmark (process 4711)",
+            ),
+            (
+                vec![("jeprof.4711.0.i0.heap", own.clone())],
+                "the folder holds only other dumps: ",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", String::new())],
+                "jeprof.4711.0.f.heap is empty",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", "garbage\n".to_string())],
+                "jeprof.4711.0.f.heap is not a heap profile: it starts 'garbage'",
+            ),
+            (
+                vec![(
+                    "jeprof.4711.0.f.heap",
+                    heap_profile(Path::new("/usr/bin/git"), 3),
+                )],
+                "jeprof.4711.0.f.heap does not map the benchmark, /opt/bench/bin/MyTest: it \
+                 is not this run's profile",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", own.replace("t*:", "t?:"))],
+                "has no totals line (t*:)",
+            ),
+        ];
+        for (files, words) in failures {
+            let (_dir, result) = check(&files);
+            let err = result.expect_err(words);
+            let text = err.to_string();
+            assert!(
+                text.starts_with("--profile jemalloc failed: completion: "),
+                "{words}: {text}"
+            );
+            assert!(text.contains(words), "{words}: {text}");
+        }
+    }
+
+    /// @test After a capture bench run prints the jeprof command, and says
+    /// that only reading needs jeprof when it is not on PATH.
+    #[test]
+    fn jeprof_hint_names_the_command_and_a_missing_analyzer() {
+        let binary = Path::new("./build/MyTest");
+        let dump = Path::new("bench-out/MyTest.jemalloc/jeprof.4711.0.f.heap");
+        let found = jeprof_hint(binary, dump, |_| {
+            InPath::Executable(PathBuf::from("/usr/bin/jeprof"))
+        });
+        assert_eq!(
+            found,
+            [
+                "[bench] Read it: jeprof --text --alloc_space ./build/MyTest \
+              bench-out/MyTest.jemalloc/jeprof.4711.0.f.heap"
+            ]
+        );
+        let missing = jeprof_hint(binary, dump, |_| InPath::Absent);
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0], found[0]);
+        assert!(
+            missing[1].starts_with("[bench] jeprof is not on PATH: reading the dump needs it"),
+            "{}",
+            missing[1]
+        );
+    }
+
+    /// @test jemalloc takes no mode and cannot write into a folder holding
+    /// ',', from the output folder or the binary's name: both are refused
+    /// before anything is created, naming the folder.
+    #[test]
+    fn jemalloc_refusals_create_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let out = root.path().join("out");
+        let refused = route_for("jemalloc", Some("pages"), Path::new("./b"), Some(&out))
+            .expect_err("a mode word");
+        assert_eq!(
+            refused.to_string(),
+            "invalid arguments: --profile jemalloc --profile-args 'pages': 'pages' is not a \
+             mode of jemalloc, which takes none"
+        );
+        let named = route_for("jemalloc", None, Path::new("./a,b"), Some(&out))
+            .expect_err("a binary name with ','");
+        assert!(
+            named.to_string().contains(&format!(
+                "cannot write into {}/a,b.jemalloc, which holds ','",
+                out.display()
+            )),
+            "{named}"
+        );
+        assert!(matches!(
+            route_for("jemalloc", None, Path::new("./b"), Some(&out)),
+            Ok(None)
+        ));
+        assert!(!out.exists(), "a refusal or a decision created the folder");
     }
 
     /// @test env_wrap_for is None for tools that are not env-shaped.

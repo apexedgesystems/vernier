@@ -201,6 +201,7 @@ bench run MyComponent --taskset 2-9 --profile perf
 bench run MyComponent --csv results.csv --analyze
 bench run MyComponent --profile massif                    # auto-wraps with valgrind
 bench run MyComponent --profile heaptrack                 # auto-wraps with heaptrack
+bench run MyComponent --profile jemalloc                  # preloads jemalloc, checks its dump
 ```
 
 **Options:**
@@ -233,7 +234,7 @@ anything starts:
 | `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
 | `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
 
-`callgrind`, `heaptrack` and `ncu` take no mode. A kernel replay
+`callgrind`, `heaptrack`, `jemalloc` and `ncu` take no mode. A kernel replay
 (`--profile-args replay`) is refused: its metrics are the benchmark's own, so
 run the benchmark directly, and it prints the `ncu` command that replays its
 kernels. In-process backends
@@ -280,6 +281,27 @@ still running when the program exits is ended, and `bench run` says so, while
 the program's own exit status decides the analysis; SIGINT, SIGTERM or SIGHUP
 sent to `bench run` meanwhile ends the group, then `bench run` itself (a
 signal `bench run` was started with ignored stays ignored).
+
+**jemalloc's wrap.** jemalloc has no program to start the benchmark under:
+`bench run` starts the benchmark itself with `LD_PRELOAD=libjemalloc.so.2`
+and `MALLOC_CONF=prof:true,prof_final:true,prof_accum:true,prof_prefix:<folder>/jeprof`,
+so jemalloc samples allocations with their stacks and writes, when the
+process exits, a dump holding the bytes allocated over the whole run. The
+loader resolves `libjemalloc.so.2` through `LD_LIBRARY_PATH` first, which is
+how a jemalloc built with profiling outside the system's folders is selected.
+Before anything starts, `bench run` refuses a library the loader cannot
+preload (quoting the loader) and a folder holding `,`, which `MALLOC_CONF`
+cannot carry; whether the library profiles is the benchmark's to decide, and
+a run whose jemalloc cannot exits with status 4. After the benchmark exits 0,
+only the dump named after its own process, `jeprof.<pid>.<n>.f.heap`, counts:
+it must be a heap profile that maps the benchmark. The run prints
+`[bench] jemalloc wrote <dump> (<n> bytes) when the benchmark exited: <N> allocations sampled over the run, <M> of them in use at exit`
+(zero sampled is a valid run) and the `jeprof --text --alloc_space` command
+that reads it, and names any other process's dump in the folder as not this
+run's. Otherwise it fails with
+`completion: jemalloc wrote no exit dump of the benchmark ...`, or says what
+is wrong with the dump. Without `jeprof` on `PATH` it says that only reading
+the dump needs it.
 
 **compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
 tool ends with status 5 when it reports errors, whatever the benchmark itself
@@ -530,7 +552,7 @@ run started without it fails with the command that would start it.
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, lock order)  |
 | `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)       |
 | `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |
+| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded)     |
 | `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)    |
 | `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)       |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init) |

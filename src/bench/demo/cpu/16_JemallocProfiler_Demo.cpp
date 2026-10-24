@@ -1,120 +1,87 @@
 /**
  * @file 16_JemallocProfiler_Demo.cpp
- * @brief Demo 16: jemalloc prof sampling -- find the allocation hotspot.
+ * @brief Demo 16: jemalloc's heap profiler -- which function allocates the bytes
  *
- * jemalloc's heap profiler samples allocations (sampled by bytes, so it stays
- * cheap on allocation-heavy code) and attributes them to call stacks. `jeprof`
- * then ranks the sites by sampled bytes, surfacing the allocation hotspot the
- * same way a CPU profiler surfaces a compute hotspot.
+ * Measures the two versions of the shared join example, one version per test,
+ * so each can be run under jemalloc's profiler on its own:
+ *  1. One measurement per test, so each writes its own CSV row
+ *  2. A profiled run makes a known number of calls: one to check the answer,
+ *     the warmup, then cycles x repeats
+ *  3. Each test calls only its own version, so its dump holds no allocation
+ *     of the other one
  *
- * Two variants exercise the same work at different allocation churn:
- *   Slow: ChurningStrings -- a fresh std::string built per iteration (heap)
- *   Fast: ReusedBuffer    -- one string reused across iterations (no churn)
- *
- * Story: building a transient string by repeated append allocates and grows on
- * the heap every iteration. jemalloc's sampled profile shows the append/string
- * growth as the dominant site; reusing one buffer (clear + append into reserved
- * capacity) makes the sampled bytes collapse.
+ * jemalloc samples allocations inside the allocator, about one per 512 KiB
+ * allocated, with their stacks, and writes them when the process exits;
+ * `jeprof --alloc_space` reads the bytes allocated over the run. It needs a
+ * jemalloc built with profiling (configure --enable-prof). What this demo
+ * shows is checked by TestDemoJemalloc (utst/16_JemallocProfiler_uTest.cpp),
+ * which fails when JoinV0's bytes stop being sampled under joinV0 or JoinV1
+ * stops allocating a small fraction of them.
  *
  * Usage:
  *   @code{.sh}
- *   # Resolve libjemalloc, enable prof sampling, and run the slow path:
- *   LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \
- *   MALLOC_CONF=prof:true,prof_prefix:/tmp/jeprof.slow \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_16_JemallocProfiler \
- *       --profile jemalloc --cycles 200 --gtest_filter='Jemalloc.ChurningStrings'
- *   jeprof --text \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_16_JemallocProfiler \
- *       /tmp/jeprof.slow.*.heap | head -20
+ *   # Measure, sizing each repeat to about 50 ms
+ *   ./BenchDemo_16_JemallocProfiler --target-time 50ms --repeats 10 --csv run.csv
  *
- *   # Fast path -- reused buffer, far fewer sampled bytes:
- *   LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \
- *   MALLOC_CONF=prof:true,prof_prefix:/tmp/jeprof.fast \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_16_JemallocProfiler \
- *       --profile jemalloc --cycles 200 --gtest_filter='Jemalloc.ReusedBuffer'
- *   jeprof --text \
- *       ./build/native-linux-debug/bin/ptests/BenchDemo_16_JemallocProfiler \
- *       /tmp/jeprof.fast.*.heap | head -20
+ *   # Profile V0: 102 calls (check, warmup, 100 measured); bench run preloads
+ *   # jemalloc with prof:true,prof_final:true,prof_accum:true and checks the dump
+ *   bench run ./BenchDemo_16_JemallocProfiler --profile jemalloc --cycles 100 \
+ *     --repeats 1 --profile-output-dir jemalloc-v0 -- --gtest_filter='Jemalloc.JoinV0'
+ *
+ *   # Read the bytes allocated over the run, by function
+ *   jeprof --text --alloc_space --cum ./BenchDemo_16_JemallocProfiler \
+ *     jemalloc-v0/BenchDemo_16_JemallocProfiler.jemalloc/jeprof.*.f.heap
  *   @endcode
  *
- * @see docs/22_JEMALLOC_PROFILER.md for the step-by-step walkthrough.
+ * @see docs/22_JEMALLOC_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
 
 #include <cstddef>
+
 #include <string>
+#include <vector>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-static constexpr std::size_t APPENDS = 4096;
+namespace demo = vernier::bench::demo;
 
-/**
- * @test Slow: a fresh string built by repeated append each iteration.
- *
- * Each iteration allocates a new std::string and grows it on the heap as it is
- * appended to. jemalloc's sampled profile attributes the bulk of sampled bytes
- * to this string growth, ranking it at the top of the `jeprof --text` output.
- */
-PERF_THROUGHPUT(Jemalloc, ChurningStrings) {
-  UB_PERF_GUARD(perf);
+/* ----------------------------- Constants ----------------------------- */
 
-  perf.warmup([&] {
-    std::string s;
-    for (std::size_t i = 0; i < APPENDS; ++i)
-      s.append("payload");
-  });
+/// Parts per join, as in demos 01 and 15, so the walkthroughs measure the same call.
+static constexpr std::size_t PART_COUNT = 1000;
+
+/// Fixed seed: every run joins the same words.
+static constexpr unsigned PART_SEED = 42;
+
+static constexpr char SEPARATOR = ',';
+
+/* ----------------------------- Tests ----------------------------- */
+
+/** @test Throughput of the one-liner: two temporaries and a full copy per part. */
+PERF_THROUGHPUT(Jemalloc, JoinV0) {
+  PERF_GUARD(perf);
+
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        // Fresh string each iteration -- repeated heap growth is the
-        // allocation churn jemalloc's sampled profile reveals.
-        std::string s;
-        for (std::size_t i = 0; i < APPENDS; ++i)
-          s.append("payload");
-        sink = s.size();
-      },
-      "churning_strings");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); }, "join_v0");
 }
 
-/**
- * @test Fast: one string reserved up-front, cleared and reused per iteration.
- *
- * Same characters appended; the single up-front reserve plus clear()-keeps-
- * capacity removes the per-iteration allocation and growth. jemalloc's sampled
- * bytes for the loop collapse because no allocation happens inside it.
- */
-PERF_THROUGHPUT(Jemalloc, ReusedBuffer) {
-  UB_PERF_GUARD(perf);
+/** @test Throughput of the reserving version: one allocation per call. */
+PERF_THROUGHPUT(Jemalloc, JoinV1) {
+  PERF_GUARD(perf);
 
-  // Allocate ONCE outside the measured loop, with the final capacity.
-  std::string s;
-  s.reserve(APPENDS * 7); // "payload" is 7 chars
-
-  perf.warmup([&] {
-    s.clear();
-    for (std::size_t i = 0; i < APPENDS; ++i)
-      s.append("payload");
-  });
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
   volatile std::size_t sink = 0;
-  auto result = perf.throughputLoop(
-      [&] {
-        // clear() keeps capacity, so append reuses the existing buffer --
-        // no allocation happens inside the measured loop.
-        s.clear();
-        for (std::size_t i = 0; i < APPENDS; ++i)
-          s.append("payload");
-        sink = s.size();
-      },
-      "reused_buffer");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sink;
+  perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); }, "join_v1");
 }
 
 PERF_MAIN()
