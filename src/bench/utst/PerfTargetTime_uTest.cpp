@@ -177,6 +177,40 @@ TEST(PerfCaseTargetTimeTest, StretchedLastCalibrationSampleKeepsTheRoundNearTarg
   EXPECT_LT(roundUs, TARGET_US * 4.0) << "cycles=" << perf.cycles();
 }
 
+/** @test Keeps sampling when a stretched first call spans the sample but not the target */
+TEST(PerfCaseTargetTimeTest, StretchedFirstCallKeepsTheRoundNearTarget) {
+  constexpr int TARGET_US = 40000;
+  constexpr int REPEATS = 5;
+  vernier::bench::PerfConfig cfg;
+  cfg.targetTimeUs = TARGET_US;
+  cfg.repeats = REPEATS;
+
+  // Each call spins 300 us on the steady clock. The first call, the whole
+  // first sample, sleeps 10 ms first: another thread's slice on a single call,
+  // which then spans the 1 ms sample but not the 40 ms target. The batches of
+  // 2 and 4 that follow resolve at 300 us a call.
+  constexpr auto CALL = std::chrono::microseconds(300);
+  bool first = true;
+  const auto op = [&] {
+    if (first) {
+      first = false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto until = std::chrono::steady_clock::now() + CALL;
+    while (std::chrono::steady_clock::now() < until) {
+    }
+  };
+
+  vernier::bench::PerfCase perf{"TargetTime.StretchedFirstCall", cfg};
+  const vernier::bench::PerfResult result = perf.throughputLoop(op);
+
+  // Sized from the first call alone, three cycles of 300 us, the round would
+  // be under a millisecond.
+  const double roundUs = result.stats.median * static_cast<double>(perf.cycles());
+  EXPECT_GT(roundUs, TARGET_US / 4.0) << "cycles=" << perf.cycles();
+  EXPECT_LT(roundUs, TARGET_US * 4.0) << "cycles=" << perf.cycles();
+}
+
 /** @test Runs one cycle per repeat when a single call already exceeds the requested time */
 TEST(PerfCaseTargetTimeTest, SlowOperationRunsOneCycle) {
   constexpr int REPEATS = 2;

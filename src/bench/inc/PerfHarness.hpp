@@ -812,9 +812,8 @@ private:
    * The clock resolves microseconds, so a single call of a sub-microsecond
    * operation reads as zero or one. The estimate instead times batches of
    * calls, doubling the batch until a sample spans CALIBRATION_SAMPLE_US, and
-   * divides. An operation slower than that is sampled once. Calibration
-   * finishes before the measured phase starts, so none of it is inside a
-   * timed window.
+   * divides. Calibration finishes before the measured phase starts, so none
+   * of it is inside a timed window.
    *
    * A sample's wall time also counts time the thread did not run, such as
    * another thread's share of the core: interference lengthens a sample and
@@ -825,6 +824,14 @@ private:
    * which doubling alone cannot do, so it is not taken for the operation's
    * cost. Without interference the doubling stops at the same batch as a
    * single sample would, so the calibration costs no more.
+   *
+   * A single call ends the calibration at once only when it spans the
+   * requested time: the window is then one call whatever the estimate, since
+   * calibratedCycles() never gives fewer, so no interruption can shorten it,
+   * and a slow operation is called once. A shorter single call is as exposed as
+   * any other sample, so the doubling goes on under the rules above; an
+   * operation between the sample span and the requested time costs three
+   * calls instead of one.
    *
    * cfg_ is a per-case copy, so the division in measured(), the CSV row, and
    * the loops all follow automatically; raw measured() users keep explicit
@@ -861,9 +868,12 @@ private:
         }
         resolved = true;
       }
-      // One call that spans the sample is sampled once, as before.
-      const bool GREW_INTO_IT = batch == 1 || previousUs >= CALIBRATION_RESOLVED_US;
-      if ((elapsedUs >= CALIBRATION_SAMPLE_US && GREW_INTO_IT) || batch >= CALIBRATION_MAX_BATCH) {
+      // One call that spans the requested time is the whole window anyway.
+      const bool SPANS_THE_TARGET =
+          batch == 1 && elapsedUs >= static_cast<double>(cfg_.targetTimeUs);
+      const bool GREW_INTO_IT = previousUs >= CALIBRATION_RESOLVED_US;
+      if (SPANS_THE_TARGET || (elapsedUs >= CALIBRATION_SAMPLE_US && GREW_INTO_IT) ||
+          batch >= CALIBRATION_MAX_BATCH) {
         break;
       }
       previousUs = elapsedUs;
