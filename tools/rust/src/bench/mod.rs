@@ -367,6 +367,7 @@ pub mod gpu_lock;
 pub mod gpu_monitor;
 pub mod gpu_topo;
 pub mod nsight_report;
+mod owned_run;
 pub mod report;
 pub mod runner;
 pub mod stats;
@@ -384,6 +385,16 @@ pub use stats::{median, percentile};
 pub use validate::run_checks;
 
 /* ----------------------------- Tests ----------------------------- */
+
+/// A fresh, empty directory under the system's temporary directory, for the
+/// tests of the modules here.
+#[cfg(test)]
+pub(crate) fn tempfile_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("{name}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the test directory");
+    dir
+}
 
 #[cfg(all(test, unix))]
 mod tests {
