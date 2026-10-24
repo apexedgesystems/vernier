@@ -39,14 +39,18 @@
  *    stop with status 0, as bpftrace does once it has printed its maps, and
  *    printed more than the capture window's lines; CAVEAT when one printed
  *    nothing else. An end this process could not observe (it ignores
- *    SIGCHLD or sets SA_NOCLDWAIT) never counts as status 0.
+ *    SIGCHLD or sets SA_NOCLDWAIT) never counts as status 0. Every failure
+ *    of a tracer is also the run's: it is reported through
+ *    ProfilerRegistry::reportFailure(), which fails the run with status 4
+ *    once the tests pass; a caveat is printed and does not fail it.
  *
  * Privileges: bpftrace runs as the current user unless BENCH_SUDO opts in to
  * `sudo -n`; PERF_BPF_SUDO is a deprecated alias that BENCH_SUDO overrides.
  * Root never uses sudo.
  *
  * Notes:
- *  - Linux-only. Safe no-op on other platforms (compile-time guard).
+ *  - Linux-only: on other platforms a request is unsupported and fails the
+ *    run.
  */
 
 #include <atomic>
@@ -101,7 +105,15 @@ namespace bpftrace_tool {
 std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
                                             std::string_view legacyAlias, BpftraceRoute& route);
 
-/** @brief `<bpftrace> --version` as the current user: the executable runs. */
+/**
+ * @brief `<bpftrace> --version` as the current user: the executable runs.
+ *
+ * A probe gone without a status this process could read (it ignores SIGCHLD
+ * or sets SA_NOCLDWAIT) proves nothing either way and is not judged here:
+ * every caller runs probeAttach() next, which decides on the probe tracer's
+ * attach line and reads an end it cannot observe either as unverified.
+ * @return nullopt then, and when it exited with status 0; otherwise the Error.
+ */
 std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
                                                const ReadinessContext& ctx);
 
@@ -484,8 +496,10 @@ public:
   /**
    * @brief Construct bpftrace profiler, deciding the request itself.
    *
-   * Captures the environment and runs checkBpftraceRequest(); when the
-   * request cannot run, prints why and does nothing in the hooks.
+   * Captures the environment and runs checkBpftraceRequest(), reporting the
+   * decision as the registry does (ProfilerRegistry::reportDecision()): a
+   * request that cannot run fails the run, creates no folder and does
+   * nothing in the hooks.
    * @param cfg Configuration with bpfScripts and artifactRoot
    * @param testName Test identifier (e.g., "Suite.Case")
    */
@@ -516,6 +530,7 @@ public:
    * an empty one, or one without the
    * acknowledgements; or measured repeats that ended on another thread than
    * they started on. The first failure is kept, and the capture's files stay.
+   * Each failure is also recorded as the run's (ProfilerRegistry::reportFailure()).
    */
   [[nodiscard]] const std::optional<ReadinessResult>& captureOutcome() const noexcept;
 
@@ -534,7 +549,8 @@ private:
 /**
  * @brief Factory function for bpftrace profiler.
  *
- * Decides the request in a snapshot of this process first.
+ * Decides the request in a snapshot of this process first, and reports the
+ * decision as the registry does (ProfilerRegistry::reportDecision()).
  * @return Profiler instance, or nullptr if the request cannot run here.
  */
 std::unique_ptr<Profiler> makeBpftraceProfiler(const PerfConfig& cfg, const std::string& testName);

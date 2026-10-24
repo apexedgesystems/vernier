@@ -277,7 +277,11 @@ std::optional<ReadinessResult> resolveRoute(const ReadinessContext& ctx,
 std::optional<ReadinessResult> probeExecutable(const BpftraceRoute& route,
                                                const ReadinessContext& ctx) {
   const ProbeResult VERSION = runBoundedProbe({route.bpftrace, "--version"}, 5000, ctx);
-  if (VERSION.succeeded()) {
+  // A version probe gone without a status this process could read proves
+  // nothing either way. Every caller runs an attach probe next, which decides
+  // on what it sees (its attach line), and reads an end it cannot observe
+  // either as unverified, naming the cause (probeAttach()).
+  if (VERSION.succeeded() || VERSION.endUnobserved()) {
     return std::nullopt;
   }
   const std::string TAIL = outputTail(VERSION.output);
@@ -401,7 +405,9 @@ std::optional<ReadinessResult> probeAttach(const BpftraceRoute& route, const Att
                      : std::string{});
   }
   for (const StopDelivery& delivery : STOP.deliveries) {
-    if (delivery.delivered) {
+    // Only a refusal shown is one: a delivery whose outcome is not known is
+    // neither, and the stop waited for the tracer after it.
+    if (delivery.delivered || !delivery.statusObtained) {
       continue;
     }
     // The run's stop would be refused the same way, losing the flush on SIGINT.
@@ -473,7 +479,11 @@ std::optional<ReadinessResult> reportStop(const char* tag, const std::string& wh
                                           const std::string& errorPath,
                                           const std::string& outputPath) {
   for (const StopDelivery& delivery : stop.deliveries) {
-    if (!delivery.delivered) {
+    if (!delivery.statusObtained) {
+      std::fprintf(stderr, "[%s] %s: whether %s reached tracer %d is not known: %s: %s\n", tag,
+                   what.c_str(), signalName(delivery.signal), static_cast<int>(delivery.target),
+                   delivery.command.c_str(), delivery.detail.c_str());
+    } else if (!delivery.delivered) {
       std::fprintf(stderr, "[%s] %s: could not deliver %s to tracer %d: %s: %s\n", tag,
                    what.c_str(), signalName(delivery.signal), static_cast<int>(delivery.target),
                    delivery.command.c_str(), delivery.detail.c_str());
@@ -1646,7 +1656,7 @@ ReadinessResult checkBpftraceRequest(const ReadinessRequest& request, const Read
 class BpftraceProfiler::Impl {
 public:
   Impl(const PerfConfig& cfg, const std::string& testName, std::shared_ptr<const BpftracePlan> plan)
-      : plan_(std::move(plan)) {
+      : plan_(std::move(plan)), testName_(testName) {
     enabled_ = cfg.profileTool == "bpftrace" || plan_->envEnabled;
     std::string outputDir = plan_->outputDir;
     if (!cfg.artifactRoot.empty()) {
@@ -1756,11 +1766,16 @@ public:
 private:
   /**
    * @brief Keep the capture's gravest outcome, the first of its kind: a
-   * failure over a caveat, a caveat over READY.
+   * failure over a caveat, a caveat over READY. Every failure is also the
+   * run's (ProfilerRegistry::reportFailure()), which fails it with status 4
+   * once the tests pass; a caveat is not.
    */
   void record(const std::optional<ReadinessResult>& result) {
     if (!result) {
       return;
+    }
+    if (result->report.status == EnvReport::Status::Error) {
+      ProfilerRegistry::instance().reportFailure("bpftrace", testName_, *result);
     }
     if (!outcome_ || result->report.status > outcome_->report.status) {
       outcome_ = *result;
@@ -1768,6 +1783,7 @@ private:
   }
 
   std::shared_ptr<const BpftracePlan> plan_;
+  std::string testName_; ///< The case whose capture this is, as the run's record names it.
   bool enabled_ = false;
   std::string artifactDir_;
   std::vector<std::unique_ptr<BpfRunner>> runners_;
@@ -1814,13 +1830,14 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 BpftraceProfiler::BpftraceProfiler(const PerfConfig& cfg, std::string testName)
     : cfg_(cfg), testName_(std::move(testName)) {
 #ifdef __linux__
+  // Reported as the registry reports its own decisions; a rejected request
+  // leaves no folder behind.
   const ReadinessResult DECISION = decideNow(cfg_);
+  if (!ProfilerRegistry::instance().reportDecision("bpftrace", DECISION)) {
+    return;
+  }
   auto plan = readyPlan(DECISION);
   if (!plan) {
-    std::fprintf(stderr, "[bpftrace] not started: %s\n", DECISION.report.message.c_str());
-    if (!DECISION.report.hint.empty()) {
-      std::fprintf(stderr, "[bpftrace] %s\n", DECISION.report.hint.c_str());
-    }
     return;
   }
   impl_ = std::make_unique<Impl>(cfg_, testName_, std::move(plan));
@@ -1871,7 +1888,10 @@ void BpftraceProfiler::afterMeasure(const Stats& /*s*/) {
 
 std::unique_ptr<Profiler> makeBpftraceProfiler(const PerfConfig& cfg, const std::string& testName) {
 #ifdef __linux__
-  auto plan = readyPlan(decideNow(cfg));
+  const ReadinessResult DECISION = decideNow(cfg);
+  auto plan = ProfilerRegistry::instance().reportDecision("bpftrace", DECISION)
+                  ? readyPlan(DECISION)
+                  : nullptr;
   if (!plan) {
     return nullptr;
   }

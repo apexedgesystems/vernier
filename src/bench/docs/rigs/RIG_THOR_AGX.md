@@ -173,27 +173,49 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
 BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkGPU_PTEST
 ```
 
-Expected on this rig:
+Expected on this rig, captured 2026-10-03 (UTC) from the development tree at
+project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
+it left out:
 
 ```
-  [OK]   bpftrace   bpftrace available via BENCH_SUDO (tracepoint attach verified)
-  [OK]   callgrind  valgrind available
-  [OK]   compute-sanitizer compute-sanitizer available
-  [OK]   gperf      gperftools linked: cpu
-  [OK]   heaptrack  heaptrack available
-  [OK]   helgrind   valgrind available (helgrind + drd thread-error detectors ship with it)
+=== Profiler Backend Doctor (default mode of each backend) ===
+
+  [FAIL] bpftrace   unsupported: script 'write_latency': /tmp/vernier_probe_Ms4tml/probe0.bt:1-14: ERROR: tracepoint not found: syscalls:sys_enter_write
+             The kernel lacks a probe the script uses, or tracefs is not mounted (mount -t tracefs tracefs /sys/kernel/tracing); select a script whose probes exist here.
+  [OK]   callgrind  valgrind starts callgrind (probe: /usr/bin/valgrind --tool=callgrind --callgrind-out-file=/dev/null /bin/true)
+  [WARN] compute-sanitizer unverified: /usr/local/cuda/bin/compute-sanitizer runs here (Version 2025.3.1.0 (build 36400806) (public-release)); whether its memcheck checks the benchmark's kernels is not checked before the run
+  [OK]   gperf      gperftools profiles cpu (built: cpu); analyzer /usr/bin/google-pprof
+  [OK]   heaptrack  heaptrack records /bin/true (probe: /usr/bin/heaptrack -o <private directory>/probe /bin/true, which wrote probe.zst)
+  [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
   [WARN] jemalloc   libjemalloc present but built without profiling (prof:true rejected)
-  [OK]   massif     valgrind available (massif tool ships with it)
-  [OK]   memcheck   valgrind available (memcheck is the default tool)
-  [OK]   ncu        ncu available
-  [OK]   nsight     nsys + ncu available
-  [OK]   offcpu     bpftrace available via BENCH_SUDO (tracepoint attach verified)
-  [WARN] perf       perf_event_paranoid=2 (kernel profiling blocked; userspace counters still work)
+             Debian/Ubuntu ship jemalloc without --enable-prof, so no heap profile can be written. Build jemalloc from source with --enable-prof, or use the heaptrack backend.
+  [OK]   massif     valgrind starts massif (probe: /usr/bin/valgrind --tool=massif --massif-out-file=/dev/null /bin/true)
+  [OK]   memcheck   valgrind starts memcheck (probe: /usr/bin/valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=/dev/null /bin/true)
+  [WARN] ncu        unverified: /usr/local/cuda/bin/ncu runs here (Version 2025.3.1.0 (build 36398880) (public-release)); whether it captures the benchmark's GPU work is not checked before the run; the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params), and this process is not root
+  [WARN] nsight     unverified: /usr/local/cuda/bin/nsys runs here (NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0); whether it captures the benchmark's GPU work is not checked before the run
+  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   perf       perf stat counted cpu-cycles,instructions,branches,branch-misses,cache-misses on this process (probe with /usr/local/bin/perf); kernel.perf_event_paranoid=2 limits this user to user-space events
   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
-  [FAIL] rocprof    ROCm not detected (no rocprof on PATH, no /opt/rocm)
-  15 backend(s), 2 fail.
+             sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO).
+  [FAIL] rocprof    missing: rocprof not found on PATH
+             Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
+
+  15 backend(s), 3 fail.
+
+  Each row checks one backend's default mode for this user and environment.
+  A run checks its own --profile request when its profiler is created, and
+  only cases built with the profiler guard create one. Add --profile <name>
+  [--profile-args <args>] to --profile-check to check one request.
+  --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
 
-The two failures are an Intel-only and an AMD-only backend. Without
-`BENCH_SUDO=1`, `bpftrace` and `offcpu` report `[WARN] ... not running as
-root`.
+Three backends fail here. The `bpftrace` row runs the backend's default
+script, `write_latency`, whose `syscalls` tracepoints this rig's kernel does
+not have. `rapl` is Intel-only and `rocprof` is AMD's. The GPU rows are
+`unverified`: the doctor runs each tool's `--version`, and cannot see before
+a run whether the tool captures the benchmark's GPU work; `ncu`'s row also
+names the driver's setting that keeps the counters for root (see
+[walkthrough 11](../../demo/docs/11_NSIGHT_PROFILER.md#if-it-does-not-match)).
+Without `BENCH_SUDO=1`, `bpftrace` and `offcpu` fail as `denied:`, quoting
+bpftrace: `ERROR: bpftrace currently only supports running as the root
+user.`

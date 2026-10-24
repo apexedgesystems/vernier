@@ -66,13 +66,13 @@ of you and prints what is missing and the command that fixes it.
 
 Treat a matching doctor output as a prerequisite, not a guarantee. The
 doctor checks backend-specific prerequisites, such as tool availability
-and permissions; it does not check that the tool can see what a
-walkthrough needs it to see. The known case is heaptrack in a build configured with
-`-DVERNIER_LINK_TCMALLOC=ON`: tcmalloc provides its own `operator new`,
-which heaptrack does not intercept, so heaptrack misses C++ allocations
-while the doctor reports heaptrack `[OK]`. The default build does not link
-tcmalloc. Each rig document lists such
-limits under its rig-specific behavior.
+and permissions, and starts most of the tools once to see that they run;
+it does not check that the tool can see what a walkthrough needs it to
+see. Where it cannot tell, the
+row says so: the GPU tools' rows are `[WARN]` and `unverified`, because
+whether nsys, ncu or compute-sanitizer captures a benchmark's GPU work is
+not something the doctor can check before the run. Each rig document lists
+such limits under its rig-specific behavior.
 
 ## 5. Using Another Machine
 
