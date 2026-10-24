@@ -187,6 +187,77 @@ std::vector<pid_t> zombieChildren() {
   return zombies;
 }
 
+/** @brief The whole of /proc/<pid>/@p file, "" when it cannot be read. */
+std::string procFile(pid_t pid, const char* file) {
+  std::ifstream in("/proc/" + std::to_string(pid) + "/" + file, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/**
+ * @brief Each zombie child of this process, named for a failure message and
+ * read from /proc before anything reaps it: its pid, its command line (a
+ * zombie keeps none: its command name stands for it), its state, parent,
+ * process group and session, and which of a probe's processes it is, against
+ * the pids the fake helper logged in @p dir: the program ("helper orphan ...
+ * pid=N"), the child the program left ("helper child pid=N"), or the keeper,
+ * a fork of this binary leading a group of its own; otherwise none of them.
+ */
+std::string namedZombieChildren(const FakeToolDir& dir) {
+  const auto LOGGED = [&dir](const std::string& prefix) {
+    std::vector<pid_t> pids;
+    for (const std::string& line : dir.logLines(prefix)) {
+      const std::size_t AT = line.rfind("pid=");
+      if (AT != std::string::npos) {
+        pids.push_back(static_cast<pid_t>(std::stol(line.substr(AT + 4))));
+      }
+    }
+    return pids;
+  };
+  // "<pid> (<comm>) <state> <ppid> <pgrp> <session> ...": comm may hold spaces and ')'.
+  const auto COMM = [](const std::string& stat) {
+    const std::size_t OPEN = stat.find('(');
+    const std::size_t CLOSE = stat.rfind(')');
+    return OPEN == std::string::npos || CLOSE == std::string::npos || CLOSE < OPEN
+               ? std::string{"?"}
+               : stat.substr(OPEN + 1, CLOSE - OPEN - 1);
+  };
+  const std::vector<pid_t> PROGRAMS = LOGGED("helper orphan ");
+  const std::vector<pid_t> LEFT = LOGGED("helper child pid=");
+  const std::string SELF = COMM(procFile(::getpid(), "stat"));
+  std::string named;
+  for (const pid_t CHILD : zombieChildren()) {
+    const std::string STAT = procFile(CHILD, "stat");
+    std::string command = procFile(CHILD, "cmdline");
+    std::replace(command.begin(), command.end(), '\0', ' ');
+    while (!command.empty() && command.back() == ' ') {
+      command.pop_back();
+    }
+    char state = '?';
+    int parent = 0;
+    int group = 0;
+    int session = 0;
+    const std::size_t CLOSE = STAT.rfind(')');
+    if (CLOSE != std::string::npos) {
+      (void)std::sscanf(STAT.c_str() + CLOSE + 1, " %c %d %d %d", &state, &parent, &group,
+                        &session);
+    }
+    const std::string ROLE =
+        std::find(PROGRAMS.begin(), PROGRAMS.end(), CHILD) != PROGRAMS.end()
+            ? "the program (logged \"helper orphan ... pid=" + std::to_string(CHILD) + "\")"
+        : std::find(LEFT.begin(), LEFT.end(), CHILD) != LEFT.end()
+            ? "the child the program left (logged \"helper child pid=" + std::to_string(CHILD) +
+                  "\")"
+        : COMM(STAT) == SELF && group == static_cast<int>(CHILD)
+            ? std::string{"the keeper: a fork of this binary leading its own group"}
+            : std::string{"none of the probe's processes"};
+    named += (named.empty() ? "" : "; ") + std::string{"pid "} + std::to_string(CHILD) +
+             ", command line " + (command.empty() ? "none" : "\"" + command + "\"") + ", comm " +
+             COMM(STAT) + ", state " + state + ", parent " + std::to_string(parent) + ", group " +
+             std::to_string(group) + ", session " + std::to_string(session) + ": " + ROLE;
+  }
+  return named.empty() ? "none left to name" : named;
+}
+
 /** @brief How a probe that leaves a child behind came out, observed as it returned. */
 struct OrphanOutcome {
   bool returned = false; ///< It returned within the watchdog.
@@ -225,6 +296,17 @@ OrphanOutcome runOrphanProbe(const FakeToolDir& dir, const std::string& helper,
   out.returned = RETURNED;
   killLoggedChildren(dir);
   return out;
+}
+
+/**
+ * @brief What a failed zombie check after @p out's probe in @p dir says
+ * besides its count: each zombie child named (namedZombieChildren()), how
+ * long the probe took and the check's @p iteration.
+ */
+std::string zombieReport(const FakeToolDir& dir, const OrphanOutcome& out,
+                         const std::string& iteration) {
+  return "zombie children: " + namedZombieChildren(dir) + "; the probe took " +
+         std::to_string(out.elapsed.count()) + " ms; iteration: " + iteration;
 }
 
 /**
@@ -851,8 +933,11 @@ TEST(ReadinessProbes, TimeoutKills) {
   EXPECT_NE(::kill(PID, 0), 0) << "the probe is still running after its bound";
 }
 
-/** @test A child the program leaves behind ends with the probe, whether it exits, fails or times
- * out. */
+/**
+ * @test A child the program leaves behind ends with the probe, whether it
+ * exits, fails or times out, and the call leaves no child of its own
+ * unreaped; a check that finds one names each zombie child.
+ */
 TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
   const struct {
     const char* kind;
@@ -869,6 +954,7 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
     FakeToolDir dir;
     ASSERT_TRUE(dir.ok());
     const std::string HELPER = dir.install("fake_helper.sh", "helper");
+    const std::size_t ZOMBIES_BEFORE = zombieChildren().size();
     const OrphanOutcome OUT = runOrphanProbe(dir, HELPER, row.kind, row.status, row.timeoutMs);
     ASSERT_TRUE(OUT.returned) << "the probe did not return";
     EXPECT_EQ(OUT.result.succeeded(), row.succeeded) << OUT.result.describe();
@@ -876,6 +962,9 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
     EXPECT_LT(OUT.elapsed, std::chrono::milliseconds(row.timeoutMs + 3000));
     ASSERT_GT(OUT.child, 0) << dir.log();
     EXPECT_TRUE(OUT.childEnded) << "child " << OUT.child << " outlived the probe";
+    EXPECT_LE(zombieChildren().size(), ZOMBIES_BEFORE)
+        << "the probe left a child unreaped; "
+        << zombieReport(dir, OUT, std::string{"orphan "} + row.kind + " " + row.status);
   }
 }
 
@@ -884,7 +973,9 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
  * whatever reaps the program. With SIGCHLD ignored, or with SA_NOCLDWAIT, the
  * system reaps the program as it exits, so the program's pid cannot name the
  * group any more; the group is still ended, and the call leaves no child of
- * its own unreaped. Here the program starts a 30 s sleep and exits at once.
+ * its own unreaped; a check that finds one names each zombie child, the
+ * probe's time and the policy. Here the program starts a 30 s sleep and exits
+ * at once.
  */
 TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
   using Policy = ChildReaping::Policy;
@@ -909,7 +1000,8 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
     EXPECT_TRUE(out.childEnded) << "child " << out.child << " outlived the probe";
     EXPECT_EQ(out.result.endUnobserved(), POLICY != Policy::DEFAULT) << out.result.describe();
     EXPECT_EQ(out.result.succeeded(), POLICY == Policy::DEFAULT) << out.result.describe();
-    EXPECT_LE(zombieChildren().size(), ZOMBIES_BEFORE) << "the probe left a child unreaped";
+    EXPECT_LE(zombieChildren().size(), ZOMBIES_BEFORE)
+        << "the probe left a child unreaped; " << zombieReport(dir, out, NAME);
   }
 }
 
