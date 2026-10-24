@@ -887,6 +887,7 @@ std::string ReadinessRequest::identity() const {
   FIELD(analyze ? "1" : "0");
   FIELD(std::to_string(static_cast<int>(scope)));
   FIELD(std::to_string(static_cast<int>(launch)));
+  FIELD(std::to_string(profileFrequency));
   return key;
 }
 
@@ -897,6 +898,7 @@ ReadinessRequest readinessRequestFor(const PerfConfig& cfg, ReadinessScope scope
   request.profileArgs = cfg.profileArgs;
   request.bpfScripts = cfg.bpfScripts;
   request.analyze = cfg.profileAnalyze;
+  request.profileFrequency = cfg.profileFrequency;
   request.scope = scope;
   const auto WRAP = ctx.get("VERNIER_EXTERNAL_WRAP");
   const bool WRAPPED =

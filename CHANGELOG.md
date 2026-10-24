@@ -348,6 +348,15 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   **Action needed:** under a `valgrind --tool=callgrind` wrap typed by hand,
   drop `--profile-analyze`, which fails such a run, and run
   `callgrind_annotate` on the profile after the process exits.
+- **`--profile-frequency` sets gperf's sampling rate** --
+  `bench run --profile gperf --profile-frequency HZ`, or the flag after `--`,
+  starts the benchmark with `CPUPROFILE_FREQUENCY` set, and every profile's
+  recorded period is checked; a direct run needs that variable set before it
+  starts and otherwise fails, printing the command that works (#68). **Action
+  needed:** a rate, given or in `CPUPROFILE_FREQUENCY`, is a whole number from
+  1 to 4000, and `PerfConfig::profileFrequency` defaults to 0 (gperftools' 100
+  Hz) instead of 10000, which is refused
+  ([API reference](src/bench/docs/API_REFERENCE.md#profilergperf)).
 - **`bench validate` reports facts, and a binary's own rows when given
   one** -- it lists each profiling tool's path and version instead of judging
   readiness from a tool's presence, or, given a binary, that binary's

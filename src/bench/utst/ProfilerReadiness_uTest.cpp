@@ -496,11 +496,13 @@ TEST(ReadinessContextTest, RequestForConfiguration) {
   cfg.profileArgs = "--stats";
   cfg.bpfScripts = {"a", "b"};
   cfg.profileAnalyze = true;
+  cfg.profileFrequency = 250;
   const ReadinessRequest PLAIN = readinessRequestFor(cfg, ReadinessScope::RUNTIME, contextWith({}));
   EXPECT_EQ(PLAIN.backend, "nsight");
   EXPECT_EQ(PLAIN.profileArgs, "--stats");
   EXPECT_EQ(PLAIN.bpfScripts, (std::vector<std::string>{"a", "b"}));
   EXPECT_TRUE(PLAIN.analyze);
+  EXPECT_EQ(PLAIN.profileFrequency, 250);
   EXPECT_EQ(PLAIN.scope, ReadinessScope::RUNTIME);
   EXPECT_EQ(PLAIN.launch, LaunchContext::IN_PROCESS);
 
@@ -524,13 +526,15 @@ TEST(ReadinessContextTest, RequestForConfiguration) {
 TEST(ReadinessRequestIdentityTest, NamesEveryField) {
   ReadinessRequest request;
   request.bpfScripts = {"s"};
-  const auto& [backend, profileArgs, bpfScripts, analyze, scope, launch] = request;
+  const auto& [backend, profileArgs, bpfScripts, analyze, scope, launch, profileFrequency] =
+      request;
   EXPECT_TRUE(backend.empty());
   EXPECT_TRUE(profileArgs.empty());
   EXPECT_EQ(bpfScripts.size(), 1U);
   EXPECT_FALSE(analyze);
   EXPECT_EQ(scope, ReadinessScope::DEFAULT_INVENTORY);
   EXPECT_EQ(launch, LaunchContext::IN_PROCESS);
+  EXPECT_EQ(profileFrequency, 0) << "no rate is asked for";
 }
 
 /** @test A change to any one field is a different identity, and no value imitates a separator. */
@@ -539,13 +543,14 @@ TEST(ReadinessRequestIdentityTest, EveryFieldChangesTheKey) {
   base.backend = "b";
   base.profileArgs = "m";
   base.bpfScripts = {"x"};
-  std::vector<ReadinessRequest> variants(6, base);
+  std::vector<ReadinessRequest> variants(7, base);
   variants[0].backend = "c";
   variants[1].profileArgs = "n";
   variants[2].bpfScripts = {"y"};
   variants[3].analyze = true;
   variants[4].scope = ReadinessScope::RUNTIME;
   variants[5].launch = LaunchContext::RUNNER_WRAPPED;
+  variants[6].profileFrequency = 250;
   std::vector<std::string> keys{base.identity()};
   for (const ReadinessRequest& variant : variants) {
     keys.push_back(variant.identity());

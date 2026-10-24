@@ -100,7 +100,7 @@ pub fn run_checks() -> Vec<Row> {
 /// The rows for @p binary: the host facts, then the binary's default-mode
 /// doctor rows at advisory severity (its `--profile-check-json` document).
 pub fn binary_rows(binary: &Path) -> Result<Vec<Row>, Error> {
-    let doc = super::workflow::read_doctor_document(binary, &[])?;
+    let doc = super::workflow::read_doctor_document(binary, &[], &[])?;
     let backends = advisory_rows(&doc.value).map_err(|why| {
         Error::Parse(format!(
             "{} --profile-check-json printed no usable doctor document: {why}",

@@ -847,7 +847,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind|massif|memcheck|helgrind|offcpu|heaptrack|jemalloc|nsight (or nsys)|ncu|compute-sanitizer|rocprof
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
---profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
+--profile-frequency N  # gperf CPU sampling rate, 1 to 4000 Hz (default: gperftools' 100); bench run applies it, see API_REFERENCE.md
 --profile-analyze      # Run the profile's analysis (callgrind: bench run, after valgrind exits)
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 --bpf-scripts DIR      # Directory --bpf names are looked up in (sets PERF_BPF_SCRIPTS)

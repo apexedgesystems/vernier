@@ -3181,6 +3181,367 @@ fn run_bare_name_not_executable_is_refused() {
     assert_eq!(log, "", "something ran: {log}");
 }
 
+/* ----------------------------- Run: Sampling Rate ----------------------------- */
+
+/// The variables a sampling-rate stand-in records: the start-up setting, and
+/// everything a wrap or a capture started at launch would add.
+const STARTUP_VARIABLES: &str =
+    "CPUPROFILE_FREQUENCY|CPUPROFILE|HEAPPROFILE|VERNIER_EXTERNAL_WRAP|\
+                                 VERNIER_EXTERNAL_WRAP_DIR|LD_PRELOAD|MALLOC_CONF";
+
+/// A private directory with a stand-in benchmark and, in its `tools/`, a
+/// stand-in valgrind. Each start of either appends to `record` a line naming
+/// it, then each of STARTUP_VARIABLES it was given as NAME=value (sorted; an
+/// unset one is absent), then its arguments, and exits 0; valgrind writes
+/// the massif output its arguments name, as the tool would.
+struct RateRig {
+    dir: tempfile::TempDir,
+    record: PathBuf,
+    bench: PathBuf,
+}
+
+fn rate_rig() -> RateRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let record = dir.path().join("record.log");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create the tools dir");
+    let recorder = |name: &str| {
+        format!(
+            "#!/bin/sh\n{{ echo \"== {name}\"; env | grep -E '^({STARTUP_VARIABLES})=' | \
+             LC_ALL=C sort; echo \"argv=$*\"; }} >> '{}'\n",
+            record.display()
+        )
+    };
+    let bench = dir.path().join("fake_bench");
+    write_executable(&bench, &recorder("bench"));
+    let valgrind = recorder("valgrind")
+        + "for a in \"$@\"; do case \"$a\" in --massif-out-file=*) echo fake > \"${a#*=}\" ;; \
+           esac; done\n";
+    write_executable(&tools.join("valgrind"), &valgrind);
+    RateRig { dir, record, bench }
+}
+
+/// `bench <command> <rig's benchmark> <args>` in the rig, with its stand-ins
+/// first on PATH, every STARTUP_VARIABLES removed and then @p env added;
+/// returns the exit status, stdout, stderr and the record.
+fn run_rate_command(
+    rig: &RateRig,
+    command: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String, String) {
+    let mut cmd = Command::new(bin());
+    cmd.arg(command)
+        .arg(&rig.bench)
+        .args(args)
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", rig.dir.path().join("tools").display()),
+        )
+        .current_dir(rig.dir.path());
+    for name in STARTUP_VARIABLES.split('|') {
+        cmd.env_remove(name);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = output_of(&mut cmd);
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.record).unwrap_or_default(),
+    )
+}
+
+/// `run_rate_command` for `bench run`.
+fn run_rate(rig: &RateRig, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String, String) {
+    run_rate_command(rig, "run", args, env)
+}
+
+/// @test --profile gperf --profile-frequency starts the benchmark with
+/// CPUPROFILE_FREQUENCY set to the rate's canonical value and the flag given
+/// once, and adds nothing else: no wrap metadata, no CPUPROFILE, no folder.
+/// The Running: line shows the setting.
+#[test]
+fn run_rate_starts_the_benchmark_with_it() {
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(
+        &rig,
+        &[
+            "--profile",
+            "gperf",
+            "--profile-frequency",
+            "0250",
+            "--",
+            "--gtest_filter=A.*",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile gperf --profile-frequency 250 \
+         --gtest_filter=A.*\n"
+    );
+    assert!(
+        out.contains("Running: CPUPROFILE_FREQUENCY=250 ")
+            && out.contains(" --profile gperf --profile-frequency 250 --gtest_filter=A.*"),
+        "{out}"
+    );
+    assert!(
+        !rig.dir.path().join("bench-out").exists(),
+        "a folder was created for a profile bench run does not wrap"
+    );
+}
+
+/// @test The rate given after `--`, where the benchmark reads it, is the
+/// request's: the benchmark starts with the variable and gets the flag once.
+#[test]
+fn run_forwarded_rate_is_the_requests() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &[
+            "--profile",
+            "gperf",
+            "--",
+            "--profile-frequency",
+            "1000",
+            "--cycles",
+            "5",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile gperf --profile-frequency 1000 \
+         --cycles 5\n"
+    );
+}
+
+/// @test Without a request bench run sets nothing: an inherited
+/// CPUPROFILE_FREQUENCY reaches the benchmark untouched, and none stays
+/// none; a request replaces the inherited value for the benchmark.
+#[test]
+fn run_inherited_rate_passes_and_a_request_overrides_it() {
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(&rig, &["--profile", "gperf"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(record, "== bench\nargv=--profile gperf\n");
+    assert!(!out.contains("CPUPROFILE_FREQUENCY"), "{out}");
+
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(
+        &rig,
+        &["--profile", "gperf"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile gperf\n"
+    );
+    assert!(!out.contains("CPUPROFILE_FREQUENCY"), "{out}");
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &["--profile", "gperf", "--profile-frequency", "1000"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile gperf --profile-frequency 1000\n"
+    );
+}
+
+/// @test A rate that cannot apply starts nothing and creates nothing: one
+/// that is not a whole number from 1 to 4000, the "=" spelling after `--`,
+/// two different rates, a rate with no profiler (none given, or cupti) and
+/// one for a profile that takes none, wrapped (massif) or not (perf,
+/// jemalloc's environment wrap).
+#[test]
+fn run_refuses_a_rate_that_cannot_apply() {
+    for (args, expected) in [
+        (
+            &["--profile", "gperf", "--profile-frequency", "abc"][..],
+            "--profile-frequency: 'abc' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--profile-frequency", "4001"][..],
+            "--profile-frequency: '4001' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--profile-frequency", "-5"][..],
+            "--profile-frequency: '-5' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--", "--profile-frequency=1000"][..],
+            "--profile-frequency=1000 after --: give it as --profile-frequency 1000",
+        ),
+        (
+            &[
+                "--profile",
+                "gperf",
+                "--profile-frequency",
+                "250",
+                "--",
+                "--profile-frequency",
+                "1000",
+            ][..],
+            "--profile-frequency is given more than once with different values",
+        ),
+        (
+            &["--profile-frequency", "250"][..],
+            "--profile-frequency 250 cannot apply: no profiler is selected",
+        ),
+        (
+            &["--profile", "cupti", "--profile-frequency", "250"][..],
+            "--profile-frequency 250 cannot apply: no profiler is selected",
+        ),
+        (
+            &["--profile", "perf", "--profile-frequency", "250"][..],
+            "--profile perf does not take it",
+        ),
+        (
+            &["--profile", "massif", "--profile-frequency", "250"][..],
+            "--profile massif does not take it",
+        ),
+        (
+            &["--profile", "jemalloc", "--profile-frequency", "250"][..],
+            "--profile jemalloc does not take it",
+        ),
+    ] {
+        let rig = rate_rig();
+        let (code, _, err, record) = run_rate(&rig, args, &[]);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(err.contains(expected), "{args:?}: {err}");
+        assert_eq!(record, "", "{args:?}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{args:?}: a folder was created"
+        );
+    }
+}
+
+/// @test The wraps keep their metadata and folder, and bench run gives them
+/// no rate: massif's valgrind is told its wrap and folder and nothing else,
+/// and an inherited CPUPROFILE_FREQUENCY reaches it untouched; jemalloc's
+/// environment wrap, where the loader can preload the library, keeps its
+/// preload, configuration and wrap variables.
+#[test]
+fn run_wraps_keep_their_metadata_and_get_no_rate() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(&rig, &["--profile", "massif"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        record.starts_with(
+            "== valgrind\nVERNIER_EXTERNAL_WRAP=massif\nVERNIER_EXTERNAL_WRAP_DIR=bench-out/\
+             fake_bench.massif\nargv=--tool=massif "
+        ),
+        "{record}"
+    );
+    assert!(rig
+        .dir
+        .path()
+        .join("bench-out/fake_bench.massif/massif.out")
+        .is_file());
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &["--profile", "massif"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        record.starts_with("== valgrind\nCPUPROFILE_FREQUENCY=250\nVERNIER_EXTERNAL_WRAP=massif\n"),
+        "{record}"
+    );
+
+    let rig = rate_rig();
+    let (_, _, _, record) = run_rate(&rig, &["--profile", "jemalloc"], &[]);
+    if !record.contains("LD_PRELOAD=libjemalloc.so.2") {
+        eprintln!("skipped jemalloc's wrap: the loader cannot preload libjemalloc.so.2 here");
+        return;
+    }
+    // The benchmark's own start: the lines before its first argv line.
+    let first: Vec<&str> = record
+        .lines()
+        .take_while(|line| !line.starts_with("argv="))
+        .collect();
+    assert_eq!(first[0], "== bench", "{record}");
+    let names: Vec<&str> = first[1..]
+        .iter()
+        .map(|line| line.split('=').next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "LD_PRELOAD",
+            "MALLOC_CONF",
+            "VERNIER_EXTERNAL_WRAP",
+            "VERNIER_EXTERNAL_WRAP_DIR"
+        ],
+        "{record}"
+    );
+    assert!(
+        first.contains(&"VERNIER_EXTERNAL_WRAP=jemalloc")
+            && first.contains(&"VERNIER_EXTERNAL_WRAP_DIR=bench-out/fake_bench.jemalloc")
+            && first.iter().any(|l| l.starts_with("MALLOC_CONF=prof:true,")
+                && l.ends_with("prof_prefix:bench-out/fake_bench.jemalloc/jeprof")),
+        "{record}"
+    );
+}
+
+/// @test bench doctor gives the benchmark the start-up setting bench run
+/// would, so its row answers for that start, by either spelling; a rate for
+/// a profile that takes none is refused before the benchmark starts.
+#[test]
+fn doctor_starts_the_benchmark_as_bench_run_would() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "gperf", "--profile-frequency", "250"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile-check --profile gperf \
+         --profile-frequency 250\n"
+    );
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "gperf", "--", "--profile-frequency", "1000"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile-check --profile gperf \
+         --profile-frequency 1000\n"
+    );
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "perf", "--profile-frequency", "250"],
+        &[],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("--profile perf does not take it"), "{err}");
+    assert_eq!(record, "", "the benchmark was started");
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status

@@ -1,0 +1,77 @@
+# The sampling-rate request: the rates both languages accept and refuse.
+# Read by the Rust tests (runner.rs) and the C++ tests (PerfConfig_uTest.cpp
+# and the gperf sampling tests, through VERNIER_SHARED_FIXTURE_DIR).
+#
+# Tab-separated; only a tab separates fields, so a field may hold a space.
+# '#' starts a comment line. A '-' field is empty.
+#
+# rate        <input> <ok|refused> <value in Hz> <period in microseconds>
+# variable    <the environment variable gperftools reads the rate from>
+# maximum     <the highest rate, in Hz>
+# noprofiler  <a --profile name that selects no profiler>
+# backend     <--profile name> <take|refuse>: whether a rate applies to it
+# precedence  <request> <inherited> <child> <decision> <period>: bench run
+#             given <request> (or none) and started from an environment
+#             whose CPUPROFILE_FREQUENCY is <inherited> (or unset) starts the
+#             benchmark with <child>; the benchmark, given <request>, decides
+#             <decision> (ready or configuration) with that <period> expected
+# direct      <request> <variable> <decision> <period>: a benchmark started
+#             directly with that request and that CPUPROFILE_FREQUENCY
+#
+# In precedence and direct rows a '-' request is none and a '-' variable is
+# unset.
+rate	250	ok	250	4000
+rate	1000	ok	1000	1000
+rate	4000	ok	4000	250
+rate	1	ok	1	1000000
+rate	100	ok	100	10000
+rate	3000	ok	3000	333
+rate	0250	ok	250	4000
+rate	4001	refused	-	-
+rate	10000	refused	-	-
+rate	99999999999	refused	-	-
+rate	0	refused	-	-
+rate	-5	refused	-	-
+rate	+250	refused	-	-
+rate	 250	refused	-	-
+rate	250 	refused	-	-
+rate	1000x	refused	-	-
+rate	1e3	refused	-	-
+rate	2.5	refused	-	-
+rate	abc	refused	-	-
+rate	-	refused	-	-
+variable	CPUPROFILE_FREQUENCY
+maximum	4000
+noprofiler	cupti
+backend	gperf	take
+backend	perf	refuse
+backend	bpftrace	refuse
+backend	offcpu	refuse
+backend	rapl	refuse
+backend	callgrind	refuse
+backend	massif	refuse
+backend	memcheck	refuse
+backend	helgrind	refuse
+backend	heaptrack	refuse
+backend	jemalloc	refuse
+backend	compute-sanitizer	refuse
+backend	nsight	refuse
+backend	nsys	refuse
+backend	ncu	refuse
+backend	rocprof	refuse
+precedence	-	-	-	ready	10000
+precedence	-	250	250	ready	4000
+precedence	-	abc	abc	configuration	-
+precedence	250	-	250	ready	4000
+precedence	1000	250	1000	ready	1000
+precedence	1000	abc	1000	ready	1000
+precedence	0250	-	250	ready	4000
+precedence	4000	-	4000	ready	250
+direct	1000	-	configuration	-
+direct	1000	250	configuration	-
+direct	1000	1000	ready	1000
+direct	250	0250	ready	4000
+direct	-	-	ready	10000
+direct	-	4001	configuration	-
+direct	-	 250	configuration	-
+direct	-	+250	configuration	-
