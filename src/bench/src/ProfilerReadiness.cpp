@@ -1718,17 +1718,20 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
     return outcome;
   }
   if (CHILD == 0) {
+    // The start report names the step that failed: 1 and 2 the stdout and
+    // stderr files, 4 stdin's /dev/null, 5 what is set up before the exec
+    // (the stop signals, the report's end, the streams), 3 the exec.
     // stop() relies on SIGINT and SIGTERM: the helper takes them at their
     // default action whatever this process inherited, or does not start.
     if (const int UNSET = defaultStopSignals(); UNSET != 0) {
-      const int FAILURE[2] = {3, UNSET};
+      const int FAILURE[2] = {5, UNSET};
       writeAll(report[1], FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
     // The start report's end goes above the streams before any is set.
     const int REPORT = clearOfStreams(report[1], 0U);
     if (REPORT < 0) {
-      const int FAILURE[2] = {3, errno};
+      const int FAILURE[2] = {5, errno};
       writeAll(report[1], FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
@@ -1743,7 +1746,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       ::_exit(126);
     }
     if (const int UNSET = becomeStream(IN, STDIN_FILENO); UNSET != 0) {
-      const int FAILURE[2] = {3, UNSET};
+      const int FAILURE[2] = {5, UNSET};
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
@@ -1757,7 +1760,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       ::_exit(126);
     }
     if (const int UNSET = becomeStream(OUT, STDOUT_FILENO); UNSET != 0) {
-      const int FAILURE[2] = {3, UNSET};
+      const int FAILURE[2] = {5, UNSET};
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
@@ -1771,7 +1774,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
       ::_exit(126);
     }
     if (const int UNSET = becomeStream(ERR, STDERR_FILENO); UNSET != 0) {
-      const int FAILURE[2] = {3, UNSET};
+      const int FAILURE[2] = {5, UNSET};
       writeAll(REPORT, FAILURE, sizeof(FAILURE));
       ::_exit(127);
     }
@@ -1805,6 +1808,7 @@ HelperStart OwnedHelper::start(const std::vector<std::string>& argvIn,
                                          : argvIn.front();
     const char* const DOING = step == 0   ? "could not start "
                               : step == 3 ? "could not execute "
+                              : step == 5 ? "could not set up "
                                           : "could not open ";
     outcome.errorTail = DOING + WHAT + ": " + errnoText(err);
     return outcome;

@@ -49,6 +49,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1537,9 +1538,10 @@ enum class StreamDenial : std::uint8_t {
  * succeeded. Where a start cannot set a stream (with this process's streams
  * closed, the merged output's pipe and the helper's error file take
  * descriptor 2, whose close-on-exec cannot then be read or cleared; or
- * nothing can be put on stdout), it must fail with EPERM; where it starts,
- * both lines must be read and the status be 7. Prints how each start came
- * out and exits 0 when every one did so, with no child of this process left.
+ * nothing can be put on stdout), it must fail with EPERM, the helper with
+ * "could not set up /bin/sh"; where it starts, both lines must be read and
+ * the status be 7. Prints how each start came out and exits 0 when every one
+ * did so, with no child of this process left.
  */
 [[noreturn]] void streamThatCannotBeSetFailsTheStart(StreamDenial which) {
   const ReadinessContext CTX = ReadinessContext::capture();
@@ -1585,9 +1587,10 @@ enum class StreamDenial : std::uint8_t {
   };
   // The separate output's pipe is moved above the streams, so no stream's flag is read there.
   const bool SEPARATE_REFUSED = which == StreamDenial::UNDUPLICABLE;
-  const bool AS_DUE = LEFT.empty() && !HELPER.started && HELPER.spawnErrno == EPERM &&
-                      PROBE_AS_DUE(MERGED, true, false) &&
-                      PROBE_AS_DUE(SEPARATE, SEPARATE_REFUSED, true);
+  const bool AS_DUE =
+      LEFT.empty() && !HELPER.started && HELPER.spawnErrno == EPERM &&
+      HELPER.errorTail == "could not set up /bin/sh: " + std::system_category().message(EPERM) &&
+      PROBE_AS_DUE(MERGED, true, false) && PROBE_AS_DUE(SEPARATE, SEPARATE_REFUSED, true);
   ::dprintf(OUT,
             "the helper started=%d errno=%d %s; merged: %s, output [%s]; separate: %s, output "
             "[%s], errors [%s]; children left: %zu\n",
@@ -1973,10 +1976,10 @@ enum class StartSetup : std::uint8_t {
  * @brief The body of a death test: with @p which refused, the start fails
  * with that errno before its program runs, and leaves no child: the owned
  * helper and the probe where the stop signals' default action or their
- * unblocking is refused (EPERM); the probe where its /dev/null cannot be
- * opened, and the helper where its own cannot (EACCES, "could not open
- * /dev/null"). Prints how each start ended and exits 0 when every one did
- * so.
+ * unblocking is refused (EPERM, the helper's "could not set up /bin/sh");
+ * the probe where its /dev/null cannot be opened, and the helper where its
+ * own cannot (EACCES, "could not open /dev/null"). Prints how each start
+ * ended and exits 0 when every one did so.
  */
 [[noreturn]] void startRefusesWhatItCannotSet(StartSetup which) {
   const ReadinessContext CTX = ReadinessContext::capture();
@@ -2020,10 +2023,13 @@ enum class StartSetup : std::uint8_t {
   int status = 0;
   errno = 0;
   const bool NO_CHILD = ::waitpid(-1, &status, WNOHANG) == -1 && errno == ECHILD;
-  const bool HELPER_AS_DUE =
-      !helperRuns || (!helper.started && helper.spawnErrno == expected &&
-                      (which != StartSetup::HELPER_STDIN_UNOPENED ||
-                       helper.errorTail.rfind("could not open /dev/null: ", 0) == 0));
+  // The helper names the step that failed and its errno.
+  const std::string HELPER_TEXT =
+      (which == StartSetup::HELPER_STDIN_UNOPENED ? "could not open /dev/null: "
+                                                  : "could not set up /bin/sh: ") +
+      std::system_category().message(expected);
+  const bool HELPER_AS_DUE = !helperRuns || (!helper.started && helper.spawnErrno == expected &&
+                                             helper.errorTail == HELPER_TEXT);
   const bool PROBE_AS_DUE = !probeRuns || (!probe.started && probe.spawnErrno == expected);
   std::fprintf(stderr, "the helper started=%d errno=%d %s; the probe %s; no child: %d\n",
                helper.started ? 1 : 0, helper.spawnErrno, helper.errorTail.c_str(),
@@ -2504,9 +2510,10 @@ TEST(ReadinessProbes, ProgramThatCannotRunIsReportedWhateverThisProcessClosed) {
  * error file and the merged probe output's pipe, which already are
  * descriptor 2, cannot be kept open across the exec; with nothing
  * duplicated onto stdout, no start can set it. The helper and the probe
- * fail with EPERM there and leave no child; the separate probe, whose
- * pipe is moved above the streams, runs whole where its streams can be
- * set. Each case in a process of its own.
+ * fail with EPERM there and leave no child, the helper with "could not set
+ * up /bin/sh"; the separate probe, whose pipe is moved above the streams,
+ * runs whole where its streams can be set. Each case in a process of its
+ * own.
  */
 TEST(ReadinessProbes, StreamThatCannotBeSetFailsTheStart) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(64);
@@ -2678,10 +2685,10 @@ TEST(ReadinessProbes, FailedStartSignalsOnlyWhatItOwns) {
  * @test A start that cannot set what its program needs fails with that
  * errno before the program runs, and leaves no child: with SIGINT's default
  * action or the stop signals' unblocking refused, the owned helper and the
- * probe fail with EPERM; with the probe's /dev/null for its program's stdin
- * unopenable, the probe fails with EACCES, and with the helper's own, the
- * helper fails with EACCES, "could not open /dev/null". Each case in a
- * process of its own.
+ * probe fail with EPERM, the helper with "could not set up /bin/sh"; with
+ * the probe's /dev/null for its program's stdin unopenable, the probe fails
+ * with EACCES, and with the helper's own, the helper fails with EACCES,
+ * "could not open /dev/null". Each case in a process of its own.
  */
 TEST(ReadinessProbes, StartRefusesWhatItCannotSet) {
   const std::string UNAVAILABLE = keeperTestsUnavailable(64);

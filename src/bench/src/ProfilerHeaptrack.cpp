@@ -115,12 +115,18 @@ ReadinessResult decideHeaptrack(const ReadinessRequest& request, const Readiness
       if (!resolveExecutable("heaptrack", ctx)) {
         result = heaptrackMissing();
       } else {
+        // bench run's wrap (heaptrackWrapArguments()), its trace in the working directory.
+        std::string wrap = "heaptrack";
+        for (const std::string& ARG : heaptrackWrapArguments(".")) {
+          wrap += " " + ARG;
+        }
         result = readinessResult(
             ReadinessCause::MISSING,
             "heaptrack collects only when heaptrack runs the process, and heaptrack does not run "
             "this one",
-            "Wrap it: heaptrack -o ./run <this-binary> --profile heaptrack [...]; or run it with "
-            "bench run --profile heaptrack, which wraps it.");
+            "Wrap it: " + wrap +
+                " <this-binary> --profile heaptrack [...]; or run it with bench run --profile "
+                "heaptrack, which wraps it.");
       }
     } else {
       const bool BY_RUNNER = request.launch == LaunchContext::RUNNER_WRAPPED;
