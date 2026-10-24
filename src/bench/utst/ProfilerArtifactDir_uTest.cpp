@@ -420,7 +420,7 @@ TEST_F(ProfilerArtifactDirTest, DirectRejectionIsTheRegistrys) {
   for (const DirectBackend& BACKEND : directBackends()) {
     const std::string NAME = BACKEND.name.substr(0, BACKEND.name.find(' '));
     PerfConfig cfg = configFor(NAME);
-    cfg.profileArgs = "review-invalid";
+    cfg.profileArgs = "not-a-mode";
     const Built REGISTRY = build(cfg, [&](const PerfConfig& c) {
       return ProfilerRegistry::instance().make(NAME, c, "Pair.Registry");
     });

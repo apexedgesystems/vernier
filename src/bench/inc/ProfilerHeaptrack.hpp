@@ -49,7 +49,6 @@ namespace bench {
 
 /** @brief What the heaptrack check verified, for the launch to use. */
 struct HeaptrackPlan final : ReadinessPlan {
-  std::string heaptrack;                            ///< The resolved heaptrack (doctor scopes).
   LaunchContext launch = LaunchContext::IN_PROCESS; ///< At the runtime scope: how the wrap began.
 };
 

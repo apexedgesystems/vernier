@@ -138,14 +138,14 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
 BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkCPU_PTEST
 ```
 
-Expected on this rig, captured 2026-10-03 (UTC) from the development tree at
+Expected on this rig, captured 2026-10-24 (UTC) from the development tree at
 project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
 it left out:
 
 ```
 === Profiler Backend Doctor (default mode of each backend) ===
 
-  [OK]   bpftrace   write_latency, fsync_latency: a probe copy of each with a 5 s self-exit stayed running for the 1000 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -q <capture folder>/write_latency.tmp.bt, /usr/bin/bpftrace -q <capture folder>/fsync_latency.tmp.bt), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   bpftrace   write_latency, fsync_latency: a probe copy of each with a 5 s self-exit stayed running for 1000 ms through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -q -B none <capture folder>/write_latency.tmp.bt, /usr/bin/bpftrace -q -B none <capture folder>/fsync_latency.tmp.bt), SIGTERM and SIGKILL through sudo, and the run's capture
   [OK]   callgrind  valgrind starts callgrind (probe: /usr/bin/valgrind --tool=callgrind --callgrind-out-file=/dev/null /bin/true)
   [FAIL] compute-sanitizer missing: compute-sanitizer not found on PATH
              Install the CUDA toolkit, which ships compute-sanitizer, or add its bin folder (for example /usr/local/cuda/bin) to PATH.

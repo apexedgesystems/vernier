@@ -59,7 +59,8 @@ public:
   /**
    * @brief Factory: returns a concrete profiler or a no-op based on cfg.
    * No-Op if cfg.profileTool is empty, or if the registry's readiness decision
-   * for the request says collection cannot run (the report is printed once).
+   * for the request says collection cannot run: the report is printed once,
+   * and the run then fails (exit status 4 if its tests pass).
    * With a request, the run's metadata is taken first (captureMetadata()), so
    * its `git describe` never runs while a profiler this process starts
    * records; a tool that runs the whole process still covers it.
@@ -102,7 +103,8 @@ inline std::unique_ptr<Profiler> Profiler::make(const PerfConfig& cfg,
   // taken here, it runs before this process starts any profiler.
   (void)captureMetadata(/*cacheMetadata=*/true);
   // Dispatch via registry. Backends self-register at static init via
-  // VERNIER_REGISTER_PROFILER_BACKEND in their translation units.
+  // VERNIER_REGISTER_PROFILER_BACKEND, VERNIER_REGISTER_READINESS_BACKEND or
+  // VERNIER_REGISTER_READINESS_FALLBACK in their translation units.
   return ProfilerRegistry::instance().make(cfg.profileTool, cfg, testName);
 }
 

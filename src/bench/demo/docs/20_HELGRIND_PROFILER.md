@@ -617,8 +617,8 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   ```
 
   valgrind is not installed, or not on `PATH`; the doctor's `helgrind` row then
-  reads `valgrind binary not found on PATH`. Install the package from the rig
-  document's one-time setup.
+  reads `missing: valgrind not found on PATH`. Install the package from the
+  rig document's one-time setup.
 
 - **The locked version reports five races in `contentionRun`.** The log ends
   `ERROR SUMMARY: 5 errors from 2 contexts`: a `write of size 1` by thread #1

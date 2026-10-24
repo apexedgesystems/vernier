@@ -19,7 +19,7 @@
  *  Run benchmark with: --profile rapl
  *
  * Notes:
- *  - Safe no-op when RAPL unavailable
+ *  - Where RAPL cannot be read, a request fails the run, saying why
  *  - Package-level measurement only (entire CPU socket)
  *  - Does not include PCIe devices or discrete GPUs
  */
