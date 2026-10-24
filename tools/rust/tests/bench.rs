@@ -1056,7 +1056,7 @@ fn validate_row<'a>(rows: &'a serde_json::Value, label: &str) -> &'a serde_json:
 }
 
 /// @test A tool whose --version starts a process that holds its output and
-/// then exits (a bpftrace stand-in, as the owner's reviewer wrote it):
+/// then exits (a bpftrace stand-in):
 /// validate returns at once with the tool's version, and that process is
 /// gone when it does.
 #[test]

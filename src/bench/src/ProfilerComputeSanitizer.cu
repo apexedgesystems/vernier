@@ -102,7 +102,9 @@ void ComputeSanitizerProfiler::beforeMeasure() {
 
 void ComputeSanitizerProfiler::afterMeasure(const Stats& /*s*/) {
   // Nothing to do post-measure: compute-sanitizer reports at process exit when
-  // it is wrapping the binary. When not wrapped, this backend is a no-op.
+  // it is wrapping the binary. A run it did not start fails (missing) and
+  // builds no backend; one built directly said how to run it under the tool
+  // before the measured window.
 }
 
 /* --------------------------------- API --------------------------------- */

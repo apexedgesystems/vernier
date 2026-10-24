@@ -50,7 +50,7 @@ ReadinessResult heaptrackMissing() {
 }
 
 /** @brief The doctor's probe: heaptrack records /bin/true into a private directory. */
-ReadinessResult probeHeaptrack(const ReadinessContext& ctx, std::string& heaptrackPath) {
+ReadinessResult probeHeaptrack(const ReadinessContext& ctx) {
   const auto TOOL = resolveExecutable("heaptrack", ctx);
   if (!TOOL) {
     return heaptrackMissing();
@@ -59,7 +59,6 @@ ReadinessResult probeHeaptrack(const ReadinessContext& ctx, std::string& heaptra
     return readinessResult(ReadinessCause::UNUSABLE, TOOL->path + " is not an executable file",
                            "Reinstall heaptrack, or fix PATH so it finds a working heaptrack.");
   }
-  heaptrackPath = TOOL->path;
   const auto TRUE_PROGRAM = resolveExecutable("/bin/true", ctx);
   if (!TRUE_PROGRAM || !TRUE_PROGRAM->executable) {
     return readinessResult(ReadinessCause::MISSING_HELPER,
@@ -116,12 +115,18 @@ ReadinessResult decideHeaptrack(const ReadinessRequest& request, const Readiness
       if (!resolveExecutable("heaptrack", ctx)) {
         result = heaptrackMissing();
       } else {
+        // bench run's wrap (heaptrackWrapArguments()), its trace in the working directory.
+        std::string wrap = "heaptrack";
+        for (const std::string& ARG : heaptrackWrapArguments(".")) {
+          wrap += " " + ARG;
+        }
         result = readinessResult(
             ReadinessCause::MISSING,
             "heaptrack collects only when heaptrack runs the process, and heaptrack does not run "
             "this one",
-            "Wrap it: heaptrack -o ./run <this-binary> --profile heaptrack [...]; or run it with "
-            "bench run --profile heaptrack, which wraps it.");
+            "Wrap it: " + wrap +
+                " <this-binary> --profile heaptrack [...]; or run it with bench run --profile "
+                "heaptrack, which wraps it.");
       }
     } else {
       const bool BY_RUNNER = request.launch == LaunchContext::RUNNER_WRAPPED;
@@ -133,7 +138,7 @@ ReadinessResult decideHeaptrack(const ReadinessRequest& request, const Readiness
                                "");
     }
   } else {
-    result = probeHeaptrack(ctx, plan->heaptrack);
+    result = probeHeaptrack(ctx);
     // The doctor runs inside the benchmark binary (--profile-check), so its
     // map is the map of the process heaptrack would record.
     if (result.report.status == EnvReport::Status::Ok && operatorNewReplaced(MAPS)) {

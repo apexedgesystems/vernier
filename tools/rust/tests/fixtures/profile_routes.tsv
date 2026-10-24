@@ -1,6 +1,7 @@
 # Profile routes: the names both languages agree on and what `bench run`
 # starts for each wrapped request. Read by the Rust tests (runner.rs) and the
-# C++ tests (ProfilerRegistry_uTest.cpp, through VERNIER_SHARED_FIXTURE_DIR).
+# C++ tests (ProfilerRegistry_uTest.cpp, ProfilerWrapChecks_uTest.cpp and
+# ProfilerGpuChecks_uTest.cpp, through VERNIER_SHARED_FIXTURE_DIR).
 #
 # Tab-separated. '#' starts a comment line. A '-' field is empty. In a route,
 # <dir> is the folder the wrap writes into (<output-dir>/<binary>.<canonical
