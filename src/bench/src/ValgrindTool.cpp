@@ -128,7 +128,7 @@ ReadinessResult valgrindMissing() {
 }
 
 ReadinessResult probeTool(const std::string& backend, const ValgrindMode& mode,
-                          const ReadinessContext& ctx, std::string& valgrindPath) {
+                          const ReadinessContext& ctx) {
   const auto TOOL = resolveExecutable("valgrind", ctx);
   if (!TOOL) {
     return valgrindMissing();
@@ -137,7 +137,6 @@ ReadinessResult probeTool(const std::string& backend, const ValgrindMode& mode,
     return readinessResult(ReadinessCause::UNUSABLE, TOOL->path + " is not an executable file",
                            "Reinstall valgrind, or fix PATH so it finds a working valgrind.");
   }
-  valgrindPath = TOOL->path;
   const auto TRUE_PROGRAM = resolveExecutable("/bin/true", ctx);
   if (!TRUE_PROGRAM || !TRUE_PROGRAM->executable) {
     return readinessResult(ReadinessCause::MISSING_HELPER,
@@ -267,8 +266,6 @@ ReadinessResult decideRuntime(const std::string& backend, const ValgrindMode& mo
                               LaunchContext launch, const std::string& remedy,
                               const ReadinessContext& ctx) {
   auto plan = std::make_shared<ValgrindPlan>();
-  plan->backend = backend;
-  plan->mode = mode;
   ReadinessResult result;
   if (!identity.underValgrind) {
     plan->launch = LaunchContext::NOT_WRAPPED;
@@ -326,11 +323,8 @@ ReadinessResult decideCollection(const std::string& backend, const ValgrindMode&
                          identity != nullptr ? *identity : identityOf(ctx.self()), request.launch,
                          remedy, ctx);
   }
-  auto plan = std::make_shared<ValgrindPlan>();
-  plan->backend = backend;
-  plan->mode = mode;
-  ReadinessResult result = probeTool(backend, mode, ctx, plan->valgrind);
-  result.plan = std::move(plan);
+  ReadinessResult result = probeTool(backend, mode, ctx);
+  result.plan = std::make_shared<ValgrindPlan>();
   return result;
 }
 
@@ -341,6 +335,13 @@ ReadinessResult withAnalysis(ReadinessResult collection, ReadinessResult analysi
   analysis.plan = std::move(collection.plan);
   analysis.context = std::move(collection.context);
   return analysis;
+}
+
+std::shared_ptr<const ValgrindPlan> readyPlan(const ReadinessResult& result) {
+  if (!result.collectionReady()) {
+    return nullptr;
+  }
+  return std::dynamic_pointer_cast<const ValgrindPlan>(result.plan);
 }
 
 } // namespace valgrind_tool

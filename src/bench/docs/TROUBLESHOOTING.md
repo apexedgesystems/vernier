@@ -384,11 +384,14 @@ status and the report still lists the profile failure.
 
 **Fix:** apply the remedy printed with the `[FAIL]` line, and check the
 request before the next run: `--profile-check` with the same `--profile`
-options prints the same verdict. `--profile cupti` never exits 4, and a run
-without `--profile` exits 4 only when a profiler the benchmark constructs
-itself reports a failure. A benchmark with its own `main()` returns this
-status from `ProfilerRegistry::finishRun()`, called after `RUN_ALL_TESTS()` as
-in [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
+options prints the same verdict. `--profile cupti` records no failure of its
+own, even where CUPTI is unavailable, and neither does a run without
+`--profile`: either exits 4 only when another failure is recorded, as when a
+profiler the benchmark constructs itself reports one, and the tests passed;
+when tests fail, their status stands. A benchmark with its own `main()`
+returns this status from `ProfilerRegistry::finishRun()`, called after
+`RUN_ALL_TESTS()` as in
+[the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
 
 ---
 

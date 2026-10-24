@@ -351,7 +351,7 @@ enum class StatusLoss : std::uint8_t {
  */
 struct ProbeResult {
   bool started = false;                     ///< The program was executed.
-  int spawnErrno = 0;                       ///< errno of a failed fork or exec.
+  int spawnErrno = 0;                       ///< errno of a failed setup, fork or exec.
   bool exited = false;                      ///< Ended normally; exitCode is valid.
   int exitCode = -1;                        ///< Exit status when exited.
   int termSignal = 0;                       ///< Signal that ended it, 0 if it exited.
@@ -427,14 +427,37 @@ enum class ProbeStreams : std::uint8_t {
  * cannot belong to another process, so the group is ended also when the
  * system reaps the program as it exits (this process ignores SIGCHLD or
  * sets SA_NOCLDWAIT), and no id that may have passed to another process is
- * ever signalled. The keeper holds nothing of this process's: where it could
- * not close every descriptor it inherits (no close_range, and /proc/self/fd
- * cannot be listed), nothing is started and the call fails (ENOSYS). A call
- * whose setup fails after the keeper started (a pipe or the program's
- * process cannot be made) ends and reaps the keeper before it returns.
+ * ever signalled. A look at a process that cannot be read is not taken for
+ * its end: where the program's state cannot be read (a look at it, then a
+ * wait that does not block, interrupted every time), watching stops, the
+ * group is ended while the keeper is shown running (its end of their link
+ * still open), the program is not signalled by its pid, and if it is not
+ * reaped within the bound the result says so (statusObtained false,
+ * statusLoss NONE), never that another wait took it. The program starts
+ * only once the keeper reports that it holds nothing of this process's:
+ * where no keeper could (no close_range, and /proc/self/fd cannot be
+ * opened) nothing is started and the call fails: EMFILE or ENFILE when no
+ * descriptor was left to open the list with, ENOSYS otherwise. A keeper
+ * that could not let go of everything it inherits (its end of the anchor
+ * not put on its stdin, its stdout or stderr neither replaced by /dev/null
+ * nor closed, the list unreadable, a descriptor that would not close) fails
+ * the call with the errno it reports (EIO when it reports none), one that
+ * ends without a report with ESRCH, and one that says nothing within 5 s
+ * with ETIMEDOUT. The program's own start (its group joined, its streams set,
+ * its exec) fails the call with the errno of the step that failed, or with
+ * ETIMEDOUT when neither its exec nor a failure is reported within 5 s. A
+ * program that reported what failed ends by itself and is reaped, not
+ * signalled; one that did not is killed itself while a look shows it running,
+ * whether or not it has joined the group yet, and with its group while the
+ * keeper holds the group's id. Nothing reaped elsewhere, or whose state
+ * cannot be read, is signalled.
+ * A call whose setup fails after the keeper started ends and reaps the
+ * keeper before it returns.
  * Output still in the pipes is read for at most
- * PROBE_DRAIN_MS, and the call returns once the program is reaped and no
- * process of its group runs, or PROBE_REAP_MS later at the most. A process
+ * PROBE_DRAIN_MS; then the program's reaping and the end of the rest of its
+ * group are awaited for PROBE_REAP_MS at the most, and the keeper's reaping
+ * for PROBE_REAP_MS more, so the call returns at most PROBE_DRAIN_MS and
+ * twice PROBE_REAP_MS after the program ended or was killed. A process
  * that leaves the group, or that this user may not signal, is beyond its
  * reach, and so is the group when another wait in this process reaps the
  * keeper, which the ownership of children CHILD_STATUS_REMEDY states rules
@@ -520,7 +543,7 @@ inline constexpr int HELPER_STATUS_UNAVAILABLE = -1;
 /** @brief How an owned helper's start went. */
 struct HelperStart {
   bool started = false;     ///< The program was executed.
-  int spawnErrno = 0;       ///< errno of a failed fork or exec.
+  int spawnErrno = 0;       ///< errno of a failed fork, stream setup or exec.
   bool exitedEarly = false; ///< It ended within the start grace.
   /// Its wait status when it ended early and was reaped here; otherwise
   /// HELPER_STATUS_UNAVAILABLE.
@@ -611,8 +634,14 @@ public:
   OwnedHelper& operator=(OwnedHelper&& other) noexcept;
 
   /**
-   * @brief Start @p argv; stdout to @p stdoutPath ("" for /dev/null), stderr to
-   * @p stderrPath ("" for /dev/null); wait up to @p graceMs.
+   * @brief Start @p argv, stdin /dev/null; stdout to @p stdoutPath ("" for
+   * /dev/null), stderr to @p stderrPath ("" for /dev/null); wait up to
+   * @p graceMs. A stream it cannot set, or SIGINT and SIGTERM it cannot give
+   * their default action, fails the start with that errno. A start that
+   * reports neither its exec nor what failed within 5 s fails with ETIMEDOUT,
+   * the child killed while a look shows it running, then reaped; a child
+   * that reported what failed is only reaped, and none reaped elsewhere
+   * (this process ignores SIGCHLD or sets SA_NOCLDWAIT) is signalled.
    * @param probeEnv Null: the helper inherits this process's environment.
    *                 Otherwise it gets that context's probe environment.
    */

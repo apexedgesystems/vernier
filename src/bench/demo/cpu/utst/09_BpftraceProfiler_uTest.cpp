@@ -546,7 +546,8 @@ TEST(BpftraceReportTest, CannotTraceHereQuotesTheNotice) {
       "user: ERROR: bpftrace currently only supports running as the root user.\n"
       "   Set BENCH_SUDO=1 with a scoped sudoers grant for /usr/bin/bpftrace and /usr/bin/kill, "
       "or run as root.\n"
-      "   Falling back to no-op (measurements will proceed without profiling).\n";
+      "   Nothing is collected for this request; the run will fail (exit status 4 if the tests "
+      "pass).\n";
   const std::string OUTPUT = "[ RUN      ] BpftraceProfiler.WritePerLine\n\n" + NOTICE +
                              "\n[BpftraceProfiler.WritePerLine]  530.1 us/call\n";
 

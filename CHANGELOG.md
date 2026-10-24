@@ -195,10 +195,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`--profile gperf`) is unaffected.
   **Action needed for gperftools heap profiling:** configure with
   `-DVERNIER_LINK_TCMALLOC=ON`. Without it, `--profile gperf --profile-args heap`
-  (or `both`) runs unprofiled and says why. With it, the heaptrack backend
-  warns that C++ allocations will be missing from its trace. Allocation-heavy
-  timings captured on a machine that had the dev package installed are not
-  comparable across this change.
+  (or `both`) runs unprofiled, says why and fails the run (exit status 4 if the
+  tests pass). With it, the heaptrack backend warns that C++ allocations will be
+  missing from its trace. Allocation-heavy timings captured on a machine that
+  had the dev package installed are not comparable across this change.
 - **One rule for profile artifact folders: a folder is named after what its
   data covers** -- per-test data goes to `<root>/<Suite.Case>.<tool>/`,
   per-process data (a tool that `bench run` wraps around the whole binary) to
