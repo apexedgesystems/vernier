@@ -176,21 +176,63 @@ bool ended(pid_t pid) {
          (text[COMM_END + 2] == 'Z' || text[COMM_END + 2] == 'X');
 }
 
-/** @brief The children of this process that have ended and wait to be reaped. */
-std::vector<pid_t> zombieChildren() {
-  std::vector<pid_t> zombies;
-  for (const pid_t CHILD : childProcesses(::getpid())) {
-    if (ended(CHILD)) {
-      zombies.push_back(CHILD);
-    }
-  }
-  return zombies;
-}
-
 /** @brief The whole of /proc/<pid>/@p file, "" when it cannot be read. */
 std::string procFile(pid_t pid, const char* file) {
   std::ifstream in("/proc/" + std::to_string(pid) + "/" + file, std::ios::binary);
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/** @brief The state letter of process @p pid in /proc/<pid>/stat, or '\0' when it has none. */
+char processState(pid_t pid) {
+  const std::string STAT = procFile(pid, "stat");
+  const std::size_t CLOSE = STAT.rfind(')');
+  return CLOSE != std::string::npos && CLOSE + 2 < STAT.size() ? STAT[CLOSE + 2] : '\0';
+}
+
+/** @brief The longest zombieChildren() gives a child the kernel is releasing to leave. */
+constexpr std::chrono::milliseconds VANISH_WAIT{200};
+
+/**
+ * @brief The children of this process that have ended and wait to be reaped.
+ * A zombie (state Z) that a look without reaping (waitid with WNOWAIT) still
+ * finds this process's counts at once. A child that ended while SIGCHLD was
+ * ignored or SA_NOCLDWAIT set is reaped by the kernel itself, which lists it
+ * among this process's children for a moment while it releases it: in state
+ * X (dead), or not this process's any more to that look (ECHILD). Such a child
+ * is vanishing: it is given up to VANISH_WAIT, polled, to leave this
+ * process's children, and counts only if it is still among them then. A
+ * child gone from /proc does not count.
+ */
+std::vector<pid_t> zombieChildren() {
+  std::vector<pid_t> zombies;
+  std::vector<pid_t> vanishing;
+  for (const pid_t CHILD : childProcesses(::getpid())) {
+    const char STATE = processState(CHILD);
+    if (STATE != 'Z' && STATE != 'X') {
+      continue;
+    }
+    siginfo_t info{};
+    const bool OURS =
+        ::waitid(P_PID, static_cast<id_t>(CHILD), &info, WEXITED | WNOHANG | WNOWAIT) == 0;
+    (STATE == 'Z' && OURS ? zombies : vanishing).push_back(CHILD);
+  }
+  const auto UNTIL = std::chrono::steady_clock::now() + VANISH_WAIT;
+  while (!vanishing.empty()) {
+    const std::vector<pid_t> LISTED = childProcesses(::getpid());
+    vanishing.erase(std::remove_if(vanishing.begin(), vanishing.end(),
+                                   [&LISTED](pid_t pid) {
+                                     return std::find(LISTED.begin(), LISTED.end(), pid) ==
+                                                LISTED.end() ||
+                                            processState(pid) == '\0';
+                                   }),
+                    vanishing.end());
+    if (vanishing.empty() || std::chrono::steady_clock::now() >= UNTIL) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  zombies.insert(zombies.end(), vanishing.begin(), vanishing.end());
+  return zombies;
 }
 
 /**
@@ -974,8 +1016,10 @@ TEST(ReadinessProbes, LeftChildEndsWithTheProbe) {
  * system reaps the program as it exits, so the program's pid cannot name the
  * group any more; the group is still ended, and the call leaves no child of
  * its own unreaped; a check that finds one names each zombie child, the
- * probe's time and the policy. Here the program starts a 30 s sleep and exits
- * at once.
+ * probe's time and the policy. A child the kernel is still releasing after it
+ * reaped it (the keeper in state X) is not one: the count gives it time to
+ * leave (zombieChildren()). Here the program starts a 30 s sleep and exits at
+ * once.
  */
 TEST(ReadinessProbes, LeftChildEndsWithTheProbeWhateverReapsTheProgram) {
   using Policy = ChildReaping::Policy;
