@@ -25,9 +25,11 @@
 #include <sys/wait.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <csignal>
 #include <cstddef>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -206,10 +208,13 @@ std::vector<std::map<std::string, std::string>> csvRows(const std::string& path)
 }
 
 /**
- * @brief Why no jemalloc with profiling can be preloaded here; empty when one
- * can. The test's own check, apart from the backend's: preloaded into
- * /bin/true with profiling and a dump at exit, jemalloc leaves that dump in
- * @p dir.
+ * @brief Why no jemalloc with profiling can be preloaded here, or why that
+ * could not be checked; empty when one can. The test's own check, apart from
+ * the backend's: preloaded into /bin/true with profiling and a dump at exit,
+ * jemalloc leaves that dump in @p dir. The dump decides. Without it,
+ * std::system's result says whether the check ran: -1 when it could not
+ * start the shell or read its end; a shell that never ran leaves no stderr
+ * file (glibc reports one it could not start as exit status 127).
  */
 std::string noProfilingJemalloc(const std::string& dir) {
   const std::string ERR = dir + "/check.err";
@@ -217,7 +222,8 @@ std::string noProfilingJemalloc(const std::string& dir) {
       "/usr/bin/env LD_PRELOAD=libjemalloc.so.2 " +
       shellQuote("MALLOC_CONF=prof:true,prof_final:true,prof_prefix:" + dir + "/check") +
       " /bin/true 2>" + shellQuote(ERR);
-  static_cast<void>(std::system(COMMAND.c_str()));
+  const int STATUS = std::system(COMMAND.c_str());
+  const int SYSTEM_ERRNO = errno;
   if (!namesEndingWith(dir, ".f.heap").empty()) {
     return "";
   }
@@ -225,8 +231,21 @@ std::string noProfilingJemalloc(const std::string& dir) {
   while (!why.empty() && why.back() == '\n') {
     why.pop_back();
   }
-  return "no jemalloc with profiling can be preloaded here" +
-         (why.empty() ? std::string{} : ": " + why);
+  const std::string SAID = why.empty() ? std::string{} : ": " + why;
+  if (STATUS == -1) {
+    return "the check for a jemalloc with profiling did not complete: std::system could not "
+           "start its shell or read its end (" +
+           std::string(std::strerror(SYSTEM_ERRNO)) + ")" + SAID;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(ERR, ec)) {
+    const std::string ENDED = WIFEXITED(STATUS)
+                                  ? "exit status " + std::to_string(WEXITSTATUS(STATUS))
+                                  : "wait status " + std::to_string(STATUS);
+    return "the check for a jemalloc with profiling did not run: its shell wrote no stderr file (" +
+           ENDED + ")";
+  }
+  return "no jemalloc with profiling can be preloaded here" + SAID;
 }
 
 /// How one run of a fixture ended.
