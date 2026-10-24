@@ -810,11 +810,21 @@ private:
    * this instance's cycle count so a repeat spans the requested wall time.
    *
    * The clock resolves microseconds, so a single call of a sub-microsecond
-   * operation reads as zero or one. The estimate instead times a batch of
-   * calls, doubling the batch until the sample spans CALIBRATION_SAMPLE_US,
-   * and divides: the quantization error is then a fraction of a percent. An
-   * operation slower than that is sampled once. Calibration finishes before
-   * the measured phase starts, so none of it is inside a timed window.
+   * operation reads as zero or one. The estimate instead times batches of
+   * calls, doubling the batch until a sample spans CALIBRATION_SAMPLE_US, and
+   * divides. An operation slower than that is sampled once. Calibration
+   * finishes before the measured phase starts, so none of it is inside a
+   * timed window.
+   *
+   * A sample's wall time also counts time the thread did not run, such as
+   * another thread's share of the core: interference lengthens a sample and
+   * never shortens it. The estimate is therefore the least per-call time
+   * among the samples long enough to resolve it (CALIBRATION_RESOLVED_US),
+   * and a sample ends the doubling only when the sample before it resolved
+   * too: an interrupted short sample jumps past the sample span in one step,
+   * which doubling alone cannot do, so it is not taken for the operation's
+   * cost. Without interference the doubling stops at the same batch as a
+   * single sample would, so the calibration costs no more.
    *
    * cfg_ is a per-case copy, so the division in measured(), the CSV row, and
    * the loops all follow automatically; raw measured() users keep explicit
@@ -826,26 +836,41 @@ private:
     }
     calibrated_ = true;
 
-    // 1 ms sample: 1000 clock ticks, so quantization is at most 0.1%.
+    // 1 ms sample: 1000 clock ticks.
     constexpr double CALIBRATION_SAMPLE_US = 1000.0;
+    // A quarter of the sample resolves the per-call time to 0.4%.
+    constexpr double CALIBRATION_RESOLVED_US = CALIBRATION_SAMPLE_US / 4.0;
     // Bounds the doubling when the operation costs next to nothing.
     constexpr long long CALIBRATION_MAX_BATCH = 1LL << 26;
 
     long long batch = 1;
     double elapsedUs = 0.0;
+    double previousUs = 0.0;
+    bool resolved = false;
+    double leastPerCallUs = 0.0;
     for (;;) {
       const double T0 = nowUs();
       for (long long i = 0; i < batch; ++i) {
         op();
       }
       elapsedUs = nowUs() - T0;
-      if (elapsedUs >= CALIBRATION_SAMPLE_US || batch >= CALIBRATION_MAX_BATCH) {
+      if (elapsedUs >= CALIBRATION_RESOLVED_US) {
+        const double PER_CALL_US = elapsedUs / static_cast<double>(batch);
+        if (!resolved || PER_CALL_US < leastPerCallUs) {
+          leastPerCallUs = PER_CALL_US;
+        }
+        resolved = true;
+      }
+      // One call that spans the sample is sampled once, as before.
+      const bool GREW_INTO_IT = batch == 1 || previousUs >= CALIBRATION_RESOLVED_US;
+      if ((elapsedUs >= CALIBRATION_SAMPLE_US && GREW_INTO_IT) || batch >= CALIBRATION_MAX_BATCH) {
         break;
       }
+      previousUs = elapsedUs;
       batch *= 2;
     }
 
-    const double EST = elapsedUs / static_cast<double>(batch);
+    const double EST = resolved ? leastPerCallUs : elapsedUs / static_cast<double>(batch);
     cfg_.cycles = calibratedCycles(cfg_.targetTimeUs, EST);
     std::fprintf(stderr,
                  "[target-time] %.3f ms -> cycles=%d (calibrated %.4f us/call, batch of %lld)\n",

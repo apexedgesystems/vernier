@@ -949,6 +949,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   `GpuMultiDevice.ScalingEfficiency`, `GpuProfilers.ArtifactGeneration`,
   `GpuSharedMemory.BankConflicts` and `GpuSharedMemory.ConflictFree` are
   removed; re-record a baseline that has them.
+- **`--target-time` sizes a window from the operation's own time** -- a
+  calibration sample stretched by another process on the same core no longer
+  cuts the window to a fraction of the requested time.
 
 ## v1.0.3 - 2026-06-28
 

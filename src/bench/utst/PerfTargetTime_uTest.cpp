@@ -97,6 +97,51 @@ TEST(PerfCaseTargetTimeTest, FastOperationRoundNearTarget) {
   EXPECT_LT(wallUs, 1e6) << "cycles=" << perf.cycles();
 }
 
+/** @test Sizes the repeat from the operation's time when a calibration sample is stretched */
+TEST(PerfCaseTargetTimeTest, StretchedCalibrationSampleKeepsTheRoundNearTarget) {
+  constexpr int TARGET_US = 40000;
+  constexpr int REPEATS = 5;
+  vernier::bench::PerfConfig cfg;
+  cfg.targetTimeUs = TARGET_US;
+  cfg.repeats = REPEATS;
+
+  // The calibration times batches of 1, 2, 4, ... calls, so the 100th call
+  // falls in the batch of 64, a few microseconds of work. A 3 ms sleep there
+  // stands for another thread holding the core: the sample's wall time counts
+  // it as it counts a preemption, and the sample spans the calibration's 1 ms.
+  constexpr long long STRETCHED_CALL = 100;
+  volatile std::uint64_t state = 88172645463325252ULL;
+  bool counting = false;
+  long long calls = 0;
+  const auto op = [&] {
+    if (counting && ++calls == STRETCHED_CALL) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    for (int i = 0; i < 16; ++i) {
+      std::uint64_t x = state;
+      x ^= x << 13;
+      x ^= x >> 7;
+      x ^= x << 17;
+      state = x;
+    }
+  };
+
+  const auto spinUntil = std::chrono::steady_clock::now() + std::chrono::milliseconds(20);
+  while (std::chrono::steady_clock::now() < spinUntil) {
+    op();
+  }
+  counting = true;
+
+  vernier::bench::PerfCase perf{"TargetTime.StretchedSample", cfg};
+  const vernier::bench::PerfResult result = perf.throughputLoop(op);
+
+  // The same bounds as an unstretched calibration: sized from the stretched
+  // sample, the round would be a few hundred times too short.
+  const double roundUs = result.stats.median * static_cast<double>(perf.cycles());
+  EXPECT_GT(roundUs, TARGET_US / 4.0) << "cycles=" << perf.cycles();
+  EXPECT_LT(roundUs, TARGET_US * 4.0) << "cycles=" << perf.cycles();
+}
+
 /** @test Runs one cycle per repeat when a single call already exceeds the requested time */
 TEST(PerfCaseTargetTimeTest, SlowOperationRunsOneCycle) {
   constexpr int REPEATS = 2;
