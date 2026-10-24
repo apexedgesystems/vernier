@@ -160,7 +160,7 @@ it left out:
              Install the CUDA toolkit's Nsight Compute (ncu), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
   [FAIL] nsight     missing: nsys not found on PATH
              Install the CUDA toolkit's Nsight Systems (nsys), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
-  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace), and a copy with unbuffered output armed on this process's arm thread (pid 33733, thread 33832); not checked: the grant for the run's own command (/usr/bin/bpftrace -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [WARN] perf       perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events
   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
              sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO).
