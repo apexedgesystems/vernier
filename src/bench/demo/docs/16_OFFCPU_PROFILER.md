@@ -43,15 +43,16 @@ stops is counted, with no time.
 - **Best for:** threads that wait: on a lock, on each other, on I/O, on a
   timer.
 - **Overhead:** the script runs on every context switch of the machine and
-  records a stack only for the benchmark's own sleeps. In the session of steps
-  2 to 4, the timed medians under the capture overlapped those without it: 19.9
-  to 21.0 us per call with the lock over eleven captures, against 20.1 to 21.2
-  us over eleven runs without, and 6.5 to 7.2 us against 6.7 to 7.1 us with
-  nothing shared. Its cost is at the start and the stop, outside the timed
-  repeats: before its first capture a run checks the request, as the doctor
-  does (below), and each capture waits for bpftrace to start and arm, then to
-  disarm and stop. Step 2's test took 4.3 s, against 0.6 s for the same test in
-  step 1.
+  records a stack only for the benchmark's own sleeps, so it also runs while
+  the timed repeats run. In the session of steps 2 to 4, the timed medians
+  under the capture overlapped those without it: 19.9 to 21.0 us per call with
+  the lock over eleven captures, against 20.1 to 21.2 us over eleven runs
+  without, and 6.5 to 7.2 us against 6.7 to 7.1 us with nothing shared; that
+  comparison does not quantify what tracing costs while the repeats run.
+  Starting and stopping add time outside the timed repeats: before its first
+  capture a run checks the request, as the doctor does (below), and each
+  capture waits for bpftrace to start and arm, then to disarm and stop. Step
+  2's test took 4.3 s, against 0.6 s for the same test in step 1.
 - **Not for:** where CPU time goes (gperftools, perf and callgrind,
   walkthroughs [03](03_GPERF_PROFILER.md), [02](02_PERF_PROFILER.md) and
   [07](07_CALLGRIND_PROFILER.md)), or data races (helgrind,
