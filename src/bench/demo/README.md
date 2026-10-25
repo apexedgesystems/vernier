@@ -82,7 +82,7 @@ to compare two runs, and how to measure your own code the same way.
 | 09  | bpftrace Profiler   | What the kernel did while a test ran           | write() per line; join, one lock held for the call          | one write() for the text; a total per thread | [09_BPFTRACE_PROFILER.md](docs/09_BPFTRACE_PROFILER.md)   |
 | 11  | Massif Profiler     | Peak heap, and who owns it                     | join V0 (old and new live)                                  | join V1 (one buffer)                         | [14_MASSIF_PROFILER.md](docs/14_MASSIF_PROFILER.md)       |
 | 12  | Memcheck Profiler   | A memory error a timer cannot see              | join with an off-by-one                                     | join V1 (correct)                            | [15_MEMCHECK_PROFILER.md](docs/15_MEMCHECK_PROFILER.md)   |
-| 13  | Off-CPU Profiler    | Where threads go to sleep                      | std::mutex contention                                       | std::atomic counter                          | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
+| 13  | Off-CPU Profiler    | Where threads go to sleep, and for how long    | join, one lock held for the whole call                      | join, a total per thread                     | [16_OFFCPU_PROFILER.md](docs/16_OFFCPU_PROFILER.md)       |
 | 14  | Helgrind Profiler   | Data races, and the lock that fixes one        | join length added to one total, no lock (a race)            | the same under a mutex (correct, serialized) | [20_HELGRIND_PROFILER.md](docs/20_HELGRIND_PROFILER.md)   |
 | 15  | Heaptrack Profiler  | Who allocates, and how often                   | join V0 (2 allocs per part)                                 | join V1 (1 alloc per call)                   | [21_HEAPTRACK_PROFILER.md](docs/21_HEAPTRACK_PROFILER.md) |
 | 16  | jemalloc Profiler   | Sampled allocation hotspots                    | Per-iter string churn                                       | Reserved + reused string                     | [22_JEMALLOC_PROFILER.md](docs/22_JEMALLOC_PROFILER.md)   |
@@ -188,11 +188,11 @@ hand on the rig and never registered, are in its `ptst` directory. The first
 is [examples/join](examples/join/inc/Join.hpp), and the table below names the
 demos that use each example.
 
-| Example                                  | Versions                                                                                                                                           | Used In                                  |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
-| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 09, 12, 14, 21 |
-| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                  |
-| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                 |
+| Example                                  | Versions                                                                                                                                           | Used In                                      |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| [join](examples/join/inc/Join.hpp)       | V0, rebuilds the string through temporaries for every part; V1, measures, reserves once, appends in place                                          | Demos 01, 02, 03, 06, 07, 09, 12, 14, 16, 21 |
+| [filter](examples/filter/inc/Filter.hpp) | branchy, keeps the values above a threshold with a conditional store per value; branchless, stores every value and advances the cursor by the test | Demo 02                                      |
+| [saxpy](examples/saxpy/inc/Saxpy.hpp)    | CPU loop; G0, one thread per block with per-call allocation; G1, buffers once at 256 threads                                                       | Demos 10, 11, 13, 17, 19                     |
 
 The saxpy library and its device tests are built only where the GPU demos are;
 its host tests on a stand-in runtime are built everywhere.

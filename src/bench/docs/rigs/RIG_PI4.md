@@ -119,6 +119,18 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
   (`prof:true` is rejected); the doctor reports it, and the jemalloc
   walkthrough does not use this rig.
 - **Energy.** RAPL is Intel-only and is not available here.
+- **Incomplete off-CPU captures.** With bpftrace 0.23.2, an `offcpu` capture
+  can come back incomplete when the tracer shuts down and symbolizes its
+  stacks: the dump ends before its `@recorded` line, or a stack entry has no
+  frames. The run reports the capture unusable, prints no `stacks written`
+  line, keeps the capture folder and ends with status 4 once its tests pass (a
+  failing test's status comes first); a tracer that exited 0 does not make the
+  dump usable. The cause is not established beyond an intermittent problem in
+  the tracer during symbolization. Keep the failed capture, run again with a
+  new `--profile-output-dir` so the next capture cannot replace it, and keep
+  the logs and the versions of bpftrace, the kernel and Vernier if it keeps
+  failing. The run's lines are in the
+  [off-CPU walkthrough](../../demo/docs/16_OFFCPU_PROFILER.md#if-it-does-not-match).
 
 ## 6. Verify Your Rig
 
@@ -148,7 +160,7 @@ it left out:
              Install the CUDA toolkit's Nsight Compute (ncu), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
   [FAIL] nsight     missing: nsys not found on PATH
              Install the CUDA toolkit's Nsight Systems (nsys), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
-  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
+  [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace), and a copy with unbuffered output armed on this process's arm thread (pid 33733, thread 33832); not checked: the grant for the run's own command (/usr/bin/bpftrace -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [WARN] perf       perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events
   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
              sudo modprobe msr (then re-run with sudo or CAP_SYS_RAWIO).

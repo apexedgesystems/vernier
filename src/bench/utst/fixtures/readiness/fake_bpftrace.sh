@@ -7,8 +7,8 @@
 #   ok           run until signalled; a program with an interval:s:N or
 #                interval:ms:N probe (a readiness probe's self-exit) ends by
 #                itself then; one without that exits on sched_process_exit
-#                ends when its target pid does, printing FAKE_BPFTRACE_EXIT
-#                (at most 30 s otherwise)
+#                ends when its target pid does, printing its maps (at most
+#                30 s otherwise)
 #   ignore-int   like ok, but ignore SIGINT
 #   ignore-target
 #                like ok, but a program never ends with its target (a pid
@@ -52,24 +52,36 @@
 # bpftrace answers it, once attached: when thread <arm id> of the target is
 # named vernier-arm, the fake prints "<label> armed <target> <arm id>"; after
 # that, when thread <stop id> is named vernier-stop, "<label> disarmed
-# <target> <stop id>". On SIGINT it then prints three empty lines and
-# FAKE_BPFTRACE_EXIT (default "@c: 1"), as bpftrace prints its maps, and exits
-# 0. A program that binds no thread ids is answered for the first thread of
-# the target, other than its main thread, named vernier-arm, and the first
-# named vernier-stop (its main thread's id where a mode prints a stop line
-# before any thread has that name), and a stop line whose printf takes a count
-# too gets a count of 0. FAKE_WINDOW changes the answer, for every
-# tracer, or, with FAKE_WINDOW_FOR set, only for one whose script path
-# contains that text:
+# <target> <stop id>". On SIGINT it then prints its maps, as bpftrace does, and
+# exits 0: the file FAKE_BPFTRACE_OUTPUT names, or three empty lines and
+# FAKE_BPFTRACE_EXIT (default "@armed: 2" for a program that keeps an @armed
+# map, as the off-CPU script does, "@c: 1" otherwise). A program filtered on
+# "pid == $1" (the off-CPU script) watches the positional pid. A program that
+# binds no thread ids is answered for the first thread of the target, other
+# than its main thread, named vernier-arm, and the first named vernier-stop
+# (its main thread's id where a mode prints a stop line before any thread has
+# that name). A stop line whose printf takes a count too gets
+# FAKE_OFFCPU_RECORDED, else the sum of the @offcpu_blocks counts in
+# FAKE_BPFTRACE_OUTPUT, else 0. A launch whose program exits on
+# sched_process_exit ends when its target pid does, printing its maps, unless
+# the mode is ignore-target. FAKE_TERM=maps answers SIGTERM as SIGINT, as
+# bpftrace does; otherwise SIGTERM ends the fake. FAKE_WINDOW changes the
+# answer, for every tracer, or, with FAKE_WINDOW_FOR set, only for one whose
+# script path contains that text:
 #   end-before-arm exit 0 at once, acknowledging nothing
 #   no-arm         never acknowledge the arm
 #   wrong-arm      acknowledge it with the main thread's id for the thread's
 #   wrong-pid      acknowledge it with a pid one above the target's
 #   disarm-first   print a stop line, then acknowledge the arm
+#   disarm-first-only
+#                  like disarm-first, and never acknowledge the stop again
 #   end-after-arm  exit 0 right after acknowledging the arm
+#   die-after-arm  kill itself (SIGKILL) right after acknowledging the arm
 #   early-disarm   print the stop line right after the arm line, before the
 #                  stop's thread takes its name, and never again
 #   no-disarm      never acknowledge the stop
+#   late-disarm    acknowledge the stop only at SIGINT, before the maps, as
+#                  bpftrace prints lines still queued at the stop
 #   wrong-disarm   acknowledge the stop with a thread id one above the thread's
 #   wrong-disarm-pid
 #                  acknowledge the stop with a pid one above the target's
@@ -79,12 +91,9 @@
 #   empty-output   on SIGINT, empty the output file, then exit 0
 #   replace-output on SIGINT, write the output file anew with FAKE_BPFTRACE_EXIT
 #                  alone, then exit 0
-#   flush-error    on SIGINT, print FAKE_BPFTRACE_EXIT, then an error on
-#                  stderr, and exit 42: a report that fails at the stop
+#   flush-error    on SIGINT, print the maps, then an error on stderr, and
+#                  exit 42: a report that fails at the stop
 #   stop-warning   on SIGINT, print a warning on stderr, then as ok
-# A run's launch without the capture window (the offcpu backend's) answers
-# SIGINT the same way: FAKE_BPFTRACE_EXIT and exit 0, or the mode's or
-# FAKE_WINDOW's answer at SIGINT.
 # Every invocation is recorded in FAKE_LOG with the fake's pid.
 
 PATH=/usr/bin:/bin
@@ -194,6 +203,9 @@ fi
 # arm and stop it.
 label=$(printf '%s\n' "$program" | sed -n 's/.*printf("\([A-Za-z0-9_-]*\) armed %d %d.*/\1/p' | head -n 1)
 watched=$(printf '%s\n' "$program" | sed -n 's/.*if (pid == \([0-9][0-9]*\) && (args->prev_state.*/\1/p' | head -n 1)
+if [ -z "$watched" ] && printf '%s\n' "$program" | grep -qF "if (pid == \$1 && (args->prev_state"; then
+  watched=$target
+fi
 arm_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-arm").*/\1/p' | head -n 1)
 stop_tid=$(printf '%s\n' "$program" | sed -n 's/.*if (tid == \([0-9][0-9]*\) && comm == "vernier-stop").*/\1/p' | head -n 1)
 has_window=yes
@@ -217,6 +229,22 @@ if [ -n "${FAKE_WINDOW_FOR:-}" ]; then
   *) window="" ;;
   esac
 fi
+
+# The maps the program leaves, as bpftrace prints them at its end.
+default_maps="@c: 1"
+if printf '%s\n' "$program" | grep -q '@armed = 2'; then
+  default_maps="@armed: 2"
+fi
+print_maps() {
+  if [ -n "${FAKE_BPFTRACE_OUTPUT:-}" ]; then
+    cat "$FAKE_BPFTRACE_OUTPUT"
+  else
+    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-$default_maps}"
+  fi
+}
+
+# A stop line held until the stop (late-disarm).
+held=""
 on_interrupt() {
   case "$mode" in
   silent-status) exit 3 ;;
@@ -225,13 +253,16 @@ on_interrupt() {
     exit 1
     ;;
   esac
+  if [ -n "$held" ]; then
+    printf '%s\n' "$held"
+  fi
   case "$window" in
   remove-output) [ -n "$output" ] && rm -f "$output" ;;
   empty-output) [ -n "$output" ] && : >"$output" ;;
-  replace-output) [ -n "$output" ] && printf '%s\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}" >"$output" ;;
+  replace-output) [ -n "$output" ] && printf '%s\n' "${FAKE_BPFTRACE_EXIT:-$default_maps}" >"$output" ;;
   marker-only) printf '\n\n\n' ;;
   flush-error)
-    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+    print_maps
     echo "ERROR: failed to flush report" >&2
     exit 42
     ;;
@@ -241,7 +272,7 @@ on_interrupt() {
     elif [ "$window" = stop-warning ]; then
       echo "WARNING: a warning at the stop, which still ends with status 0" >&2
     fi
-    printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
+    print_maps
     ;;
   esac
   exit 0
@@ -255,35 +286,12 @@ on_interrupt() {
 tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
 tail -s 0.1 -f /dev/null --pid=$$ >/dev/null 2>&1 &
 
-# A run's launch without the capture window, as the offcpu backend runs it:
-# SIGINT is answered as bpftrace answers it, and bpftrace's exit() on the
-# target's sched_process_exit ends the launch with its target, printing its
-# maps. Short naps, so a SIGINT is taken at once.
-if [ "$has_window" = no ] && [ "$run_launch" = yes ]; then
-  if [ "$mode" = "slow-attach" ]; then
-    sleep "${FAKE_ATTACH_S:-3}"
-  fi
-  if [ "$int_ignored" = no ]; then
-    trap on_interrupt INT
-  fi
-  follows_target=no
-  if [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
-    printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
-    follows_target=yes
-  fi
-  limit_ms=$(printf '%s\n' "$limit" | awk '{ printf "%d", $1 * 1000 }')
-  started=$(date +%s%N)
-  while :; do
-    if [ "$follows_target" = yes ] && [ ! -d "/proc/$target" ]; then
-      printf '\n\n\n%s\n\n' "${FAKE_BPFTRACE_EXIT:-@c: 1}"
-      exit 0
-    fi
-    now=$(date +%s%N)
-    if [ $(((now - started) / 1000000)) -ge "$limit_ms" ]; then
-      exit 0
-    fi
-    sleep 0.05
-  done
+# bpftrace's exit() on the target's sched_process_exit ends a launch with
+# its target, printing its maps.
+follows_target=no
+if [ "$run_launch" = yes ] && [ -n "$target" ] && [ "$mode" != "ignore-target" ] &&
+  printf '%s\n' "$program" | grep -q 'sched_process_exit'; then
+  follows_target=yes
 fi
 
 if [ "$mode" = "late-unsupported" ]; then
@@ -343,14 +351,25 @@ window_thread() {
 }
 early_stop_tid=${stop_tid:-$watched}
 
-# The stop line as the program prints it: with a count when its printf has one.
+# The stop line as the program prints it: with a count when its printf has
+# one, the count the dump's blocks sum to unless FAKE_OFFCPU_RECORDED gives it.
 stop_count=""
 if printf '%s\n' "$program" | grep -q 'disarmed %d %d %d'; then
-  stop_count=" 0"
+  recorded=${FAKE_OFFCPU_RECORDED:-}
+  if [ -z "$recorded" ]; then
+    recorded=0
+    if [ -n "${FAKE_BPFTRACE_OUTPUT:-}" ]; then
+      recorded=$(awk '/^, .*\]: [0-9]+$/ { n += $NF } END { print n + 0 }' "$FAKE_BPFTRACE_OUTPUT")
+    fi
+  fi
+  stop_count=" $recorded"
 fi
 
 if [ "$int_ignored" = no ]; then
   trap on_interrupt INT
+fi
+if [ "${FAKE_TERM:-}" = maps ]; then
+  trap on_interrupt TERM
 fi
 
 if [ "$window" = end-before-arm ]; then
@@ -374,12 +393,16 @@ while :; do
       case "$window" in
       wrong-arm) tid_shown=$watched ;;
       wrong-pid) pid_shown=$((watched + 1)) ;;
-      disarm-first) printf '%s disarmed %s %s%s\n' "$label" "$watched" "$early_stop_tid" "$stop_count" ;;
+      disarm-first | disarm-first-only) printf '%s disarmed %s %s%s\n' "$label" "$watched" "$early_stop_tid" "$stop_count" ;;
       esac
       printf '%s armed %s %s\n' "$label" "$pid_shown" "$tid_shown"
       armed=yes
       if [ "$window" = end-after-arm ]; then
         exit 0
+      elif [ "$window" = die-after-arm ]; then
+        kill -9 $$
+      elif [ "$window" = disarm-first-only ]; then
+        disarmed=yes
       fi
       if [ "$window" = early-disarm ]; then
         printf '%s disarmed %s %s%s\n' "$label" "$watched" "$early_stop_tid" "$stop_count"
@@ -395,9 +418,17 @@ while :; do
       wrong-disarm) tid_shown=$((tid + 1)) ;;
       wrong-disarm-pid) pid_shown=$((watched + 1)) ;;
       esac
-      printf '%s disarmed %s %s%s\n' "$label" "$pid_shown" "$tid_shown" "$stop_count"
+      if [ "$window" = late-disarm ]; then
+        held=$(printf '%s disarmed %s %s%s' "$label" "$pid_shown" "$tid_shown" "$stop_count")
+      else
+        printf '%s disarmed %s %s%s\n' "$label" "$pid_shown" "$tid_shown" "$stop_count"
+      fi
       disarmed=yes
     fi
+  fi
+  if [ "$follows_target" = yes ] && [ ! -d "/proc/$target" ]; then
+    print_maps
+    exit 0
   fi
   now=$(date +%s%N)
   if [ $(((now - started) / 1000000)) -ge "$limit_ms" ]; then
