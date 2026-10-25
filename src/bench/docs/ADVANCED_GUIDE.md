@@ -943,23 +943,32 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU Memory Strategy Selection
 
-Control memory management strategy via command-line:
+`--gpu-memory` records a memory strategy in the GPU configuration
+(`PerfGpuConfig::memStrategy`). The harness does not allocate a test's memory,
+so the flag changes no allocation by itself: a benchmark that offers the
+strategies reads the configured one (`perf.gpuConfig().memStrategy`) and
+allocates accordingly. Nor does the flag request unified-memory counters
+(see the GPU guide's
+[Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters)); its
+[Unified Memory](GPU_GUIDE.md#unified-memory) section shows a test that
+allocates managed memory itself. The commands record the strategy such a
+benchmark reads:
 
 ```bash
-# Explicit malloc/memcpy (default)
+# Record the explicit strategy (the default): device memory and copies
 ./test --gpu-memory explicit --csv results.csv
 
-# Unified memory (automatic migration)
+# Record the unified strategy: managed memory, which CUDA migrates on access
 ./test --gpu-memory unified --csv results.csv
 
-# Pinned host memory (faster transfers)
+# Record the pinned strategy: page-locked host memory
 ./test --gpu-memory pinned --csv results.csv
 
-# Mapped memory (zero-copy)
+# Record the mapped strategy: zero-copy host memory
 ./test --gpu-memory mapped --csv results.csv
 ```
 
-**Strategy comparison:**
+**What each strategy names**, for a benchmark that allocates by it:
 
 | Strategy   | Transfer Speed         | Use When                      |
 | ---------- | ---------------------- | ----------------------------- |
@@ -1068,13 +1077,18 @@ linked at build time; no `--profile` flag required. See
 
 #### Unified Memory Columns
 
-| Column              | Type   | Description               | Present When   |
-| ------------------- | ------ | ------------------------- | -------------- |
-| `umPageFaults`      | int64  | GPU page faults           | Unified memory |
-| `umH2DMigrations`   | int64  | Host->device migrations   | Unified memory |
-| `umD2HMigrations`   | int64  | Device->host migrations   | Unified memory |
-| `umMigrationTimeUs` | double | Total migration overhead  | Unified memory |
-| `umThrashing`       | bool   | Memory thrashing detected | Unified memory |
+| Column              | Type   | Description                       | Present When |
+| ------------------- | ------ | --------------------------------- | ------------ |
+| `umPageFaults`      | int64  | Unified-memory page faults        | Never        |
+| `umH2DMigrations`   | int64  | Host->device page migrations      | Never        |
+| `umD2HMigrations`   | int64  | Device->host page migrations      | Never        |
+| `umMigrationTimeUs` | double | Time spent migrating pages (us)   | Never        |
+| `umThrashing`       | bool   | Back-and-forth migration reported | Never        |
+
+The GPU harness collects no unified-memory counters: these cells are empty in
+every row it writes, with or without `--capture-um`, which fails a run whose
+tests pass with status 4. See
+[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration
 

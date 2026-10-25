@@ -1,16 +1,16 @@
 /**
  * @file PerfGpuHarness.cu
- * @brief Implementation of GPU performance test harness with multi-GPU support
- *        and Unified Memory profiling.
+ * @brief Implementation of GPU performance test harness with multi-GPU support.
  */
 
 #include "src/bench/inc/PerfGpuHarness.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfGpuTestMacros.hpp"
-#include "src/bench/inc/PerfUtils.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
 
 #include <cuda_runtime.h>
@@ -91,54 +91,6 @@ void calculateOccupancy(OccupancyMetrics& occ, dim3 grid, dim3 block, size_t sha
     occ.limitingFactor = OccupancyMetrics::LimitingFactor::Unknown;
   }
 }
-
-// ============================================================================
-// Unified Memory Profiling Helpers
-// ============================================================================
-
-#if CUDART_VERSION >= 8000
-
-struct UMSnapshot {
-  size_t totalMem = 0;
-  size_t freeMem = 0;
-  double timestamp = 0.0;
-};
-
-UMSnapshot captureUMSnapshot(int deviceId) {
-  UMSnapshot snap;
-  cudaSetDevice(deviceId);
-  cudaMemGetInfo(&snap.freeMem, &snap.totalMem);
-  snap.timestamp = nowUs();
-  return snap;
-}
-
-void trackUnifiedMemory(UnifiedMemoryProfile& profile, const UMSnapshot& before,
-                        const UMSnapshot& after, size_t managedBytes) {
-  const size_t MEM_CHANGE = (before.freeMem > after.freeMem) ? (before.freeMem - after.freeMem)
-                                                             : (after.freeMem - before.freeMem);
-
-  const size_t PAGE_SIZE = 4096;
-  profile.pageFaults = managedBytes / PAGE_SIZE;
-
-  if (MEM_CHANGE > managedBytes / 2) {
-    profile.h2dMigrations = profile.pageFaults / 2;
-  }
-
-  profile.migrationTimeUs = static_cast<double>(profile.pageFaults) * 1.0;
-  profile.thrashingEvents = (profile.h2dMigrations > profile.pageFaults / 4) ? 1 : 0;
-}
-
-#else
-
-struct UMSnapshot {
-  double timestamp = 0.0;
-};
-
-UMSnapshot captureUMSnapshot(int) { return UMSnapshot{}; }
-
-void trackUnifiedMemory(UnifiedMemoryProfile&, const UMSnapshot&, const UMSnapshot&, size_t) {}
-
-#endif
 
 // ============================================================================
 // Suite-wide CPU baseline
@@ -231,9 +183,11 @@ double sharedSuiteBaselineUs(const std::string& testName) {
 
 // ============================================================================
 // A GPU cell a run cannot measure is left empty, and the run says why. What
-// holds for the whole run (this build has no CUPTI, a provider refused) is
-// said once per process, at the first measurement it empties cells of; what
-// went wrong in one measured window is said for that window, naming the test.
+// holds for the whole run (this build has no CUPTI, a provider refused, the
+// run asked for unified-memory counters the harness does not collect, which
+// also fails the run) is said once per process, at the first measurement it
+// empties cells of; what went wrong in one measured window is said for that
+// window, naming the test.
 // ============================================================================
 
 namespace {
@@ -250,6 +204,36 @@ void stateOnce(const std::string& line) {
   const std::lock_guard<std::mutex> LOCK(mu);
   if (stated.insert(line).second) {
     std::fprintf(stderr, "%s\n", line.c_str());
+  }
+}
+
+/// Why a request for unified-memory counters cannot be met.
+constexpr const char* UM_NOT_COLLECTED =
+    "the GPU harness collects no unified-memory counters: umPageFaults, umH2DMigrations, "
+    "umD2HMigrations, umMigrationTimeUs and umThrashing stay empty";
+
+/// How a run with that request can pass.
+constexpr const char* UM_REMEDY = "Run without --capture-um (or leave "
+                                  "PerfGpuConfig::captureUnifiedMemory false); the timing and "
+                                  "the CSV do not change.";
+
+/**
+ * @brief Answers a request for unified-memory counters
+ *        (PerfGpuConfig::captureUnifiedMemory) at a measurement: the request
+ *        fails, as a profile that cannot collect does.
+ *
+ * The harness reads no page-fault or migration record, so
+ * GpuStats::unifiedMemory and a row's um* cells stay empty whether or not the
+ * counters were asked for. The profiler registry records the failure and
+ * reports it the first time (ProfilerRegistry::reportFailure()); the
+ * measurement goes on, and ProfilerRegistry::finishRun() gives a run whose
+ * tests pass exit status 4.
+ */
+void stateUnifiedMemoryRequest(const PerfGpuConfig& cfg) {
+  if (cfg.captureUnifiedMemory) {
+    ProfilerRegistry::instance().reportFailure(
+        "capture-um", "",
+        readinessResult(ReadinessCause::UNSUPPORTED, UM_NOT_COLLECTED, UM_REMEDY));
   }
 }
 
@@ -373,16 +357,8 @@ public:
                            "CUPTI CSV columns will be empty.\n");
     }
 
-    UnifiedMemoryProfile umProfile{};
-    UMSnapshot umBefore, umAfter;
-    size_t totalManagedBytes = 0;
-
-    if (gpuCfg_.captureUnifiedMemory) {
-      for (const auto& xfer : h2d) {
-        totalManagedBytes += xfer.bytes;
-      }
-      umBefore = captureUMSnapshot(gpuCfg_.deviceId);
-    }
+    // No unified-memory counters are collected; a request for them fails.
+    stateUnifiedMemoryRequest(gpuCfg_);
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
       // A test that declares no transfer has no leg to time: an event pair
@@ -429,11 +405,6 @@ public:
       // count above) and the transfer legs run once per repeat, so the sum is
       // the per-call wall time.
       totalTimes.push_back(h2dTimes.back() + kernelTimes.back() + d2hTimes.back());
-    }
-
-    if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
-      umAfter = captureUMSnapshot(gpuCfg_.deviceId);
-      trackUnifiedMemory(umProfile, umBefore, umAfter, totalManagedBytes);
     }
 
     nvml_->readEnd(nvmlReadings);
@@ -506,10 +477,6 @@ public:
     result.stats.transferTimeMedianUs = result.transferTimeUs;
     result.stats.totalTimeMedianUs = totalStats.median;
 
-    if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
-      result.stats.unifiedMemory = umProfile;
-    }
-
     if (hasLaunchConfig) {
       calculateOccupancy(result.stats.occupancy, grid, block, sharedMemBytes, deviceProp_);
     }
@@ -534,27 +501,6 @@ public:
                    testName_.c_str());
     }
 
-    if (result.stats.unifiedMemory.has_value()) {
-      const auto& um = *result.stats.unifiedMemory;
-      std::printf("\n=== Unified Memory Profile ===\n");
-      std::printf("Page faults: %zu\n", um.pageFaults);
-      std::printf("H->D migrations: %zu\n", um.h2dMigrations);
-      std::printf("D->H migrations: %zu\n", um.d2hMigrations);
-      std::printf("Migration time: %.2f us (%.1f%% overhead)\n", um.migrationTimeUs,
-                  um.migrationOverheadPct(result.kernelTimeUs, cpuCfg_.cycles));
-
-      if (um.isThrashing()) {
-        std::fprintf(stderr, "Warning: UM thrashing detected - consider prefetching\n");
-      }
-
-      if (um.migrationOverheadPct(result.kernelTimeUs, cpuCfg_.cycles) > 20.0) {
-        std::printf("Hint: High migration overhead - consider:\n");
-        std::printf("   - cudaMemPrefetchAsync() for predictable access\n");
-        std::printf("   - cudaMemAdvise() for access hints\n");
-        std::printf("   - Explicit H2D/D2H transfers if pattern is regular\n");
-      }
-    }
-
     publishResult(result, nvml_telemetry::cellsOf(nvmlReadings));
 
     // After publishResult(): the hook stamps profileTool/profileDir onto the
@@ -573,6 +519,8 @@ public:
     if (beforeHook_) {
       beforeHook_(*owner_);
     }
+
+    stateUnifiedMemoryRequest(gpuCfg_);
 
     MultiGpuResult result;
     result.label = std::move(label);
@@ -870,15 +818,8 @@ private:
     }
     row.deviceCount = 1;
 
-    if (result.stats.unifiedMemory.has_value()) {
-      const auto& um = *result.stats.unifiedMemory;
-      row.umPageFaults = um.pageFaults;
-      row.umH2DMigrations = um.h2dMigrations;
-      row.umD2HMigrations = um.d2hMigrations;
-      row.umMigrationTimeUs = um.migrationTimeUs;
-      row.umThrashing = um.isThrashing();
-    }
-
+    // The um* cells stay empty: the harness collects no unified-memory
+    // counters (stateUnifiedMemoryRequest()).
     PerfRegistry::instance().set(row);
   }
 

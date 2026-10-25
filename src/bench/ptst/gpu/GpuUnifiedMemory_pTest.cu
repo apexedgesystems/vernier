@@ -1,42 +1,36 @@
 /**
  * @file GpuUnifiedMemory_pTest.cu
- * @brief Unified Memory profiling and migration pattern validation
+ * @brief Kernels on managed (Unified) memory, timed and their results checked
  *
- * This test suite validates Unified Memory (UM) profiling capabilities including
- * page fault tracking, migration detection, thrashing identification, and
- * overhead calculation.
+ * The data of these kernels lives in cudaMallocManaged() memory: the host
+ * writes and reads it through the same pointer the kernel uses, and no
+ * transfer is declared to the harness. Each test checks every element a kernel
+ * wrote, from the host.
  *
- * Features tested:
- *  - Page fault detection and counting
- *  - Host-to-device and device-to-host migration tracking
- *  - Thrashing detection (excessive back-and-forth migration)
- *  - Migration overhead calculation
- *  - UM vs explicit memory performance comparison
- *
- * Expected behavior:
- *  - Page faults are tracked when UM pages are accessed
- *  - Migration counts reflect actual page movement
- *  - Thrashing is detected when migration is excessive
- *  - Overhead calculation is accurate
+ * What this measures, and what it does not:
+ *  - Kernel time, as for any kernel: the median over the repeats of each
+ *    repeat's time per launch. A wait for pages to reach the GPU inside the
+ *    timed interval counts in that repeat's sample; averaging over the
+ *    launches and taking the median can dilute or hide a one-time wait, but
+ *    neither isolates it nor guarantees that it is left out.
+ *  - No unified-memory counters. The harness reads no page-fault or migration
+ *    record: GpuStats::unifiedMemory stays empty and the CSV's um* cells with
+ *    it. Given --capture-um, the tests still run and their rows are written,
+ *    but the run reports the request as unsupported and exits with status 4.
  *
  * Usage:
  *   @code{.sh}
- *   # Run all Unified Memory tests
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
  *       --gtest_filter="GpuUnifiedMemory.*"
  *   @endcode
  *
- * Performance expectations:
- *  - Runtime: ~12 seconds total
- *  - Pass rate: 100% with CUDA GPU
- *  - UM overhead typically 5-30% depending on access pattern
- *
  * @see PerfGpuCase
  * @see UnifiedMemoryProfile
- * @see GpuStats
  */
 
 #include <gtest/gtest.h>
+#include <cstdio>
+#include <memory>
 #include <vector>
 #include <cuda_runtime.h>
 
@@ -47,490 +41,206 @@ namespace ub = vernier::bench;
 
 namespace {
 
-/** @brief Simple kernel that reads UM data */
-__global__ void readUnifiedMemory(const float* data, float* sum, int n) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    atomicAdd(sum, data[idx]);
+constexpr int N = 256 * 1024;
+constexpr size_t BYTES = N * sizeof(float);
+const dim3 BLOCK(256);
+const dim3 GRID((N + 255) / 256);
+
+/** @brief out[i] = 2 * in[i] + 1: reads one buffer, writes another. */
+__global__ void scaleKernel(const float* in, float* out, int n) {
+  const int IDX = blockIdx.x * blockDim.x + threadIdx.x;
+  if (IDX < n) {
+    out[IDX] = 2.0f * in[IDX] + 1.0f;
   }
 }
 
-/** @brief Kernel that modifies UM data */
-__global__ void writeUnifiedMemory(float* data, float value, int n) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    data[idx] = value + idx;
+/** @brief data[i] = value + i, whatever data held before. */
+__global__ void writeIndexKernel(float* data, float value, int n) {
+  const int IDX = blockIdx.x * blockDim.x + threadIdx.x;
+  if (IDX < n) {
+    data[IDX] = value + static_cast<float>(IDX);
   }
 }
 
-/** @brief Kernel that reads and writes UM data */
-__global__ void readWriteUnifiedMemory(float* data, int n) {
-  int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < n) {
-    data[idx] = data[idx] * 2.0f + 1.0f;
-  }
+/** @brief Frees a CUDA allocation, managed or device, when its owner goes. */
+struct CudaFree {
+  void operator()(float* p) const noexcept { cudaFree(p); }
+};
+
+/** @brief N floats of CUDA memory, freed however the test ends. */
+using CudaFloats = std::unique_ptr<float[], CudaFree>;
+
+/** @brief N floats of managed memory, owned from the start; empty if the allocation fails. */
+CudaFloats managedFloats() {
+  float* p = nullptr;
+  return CudaFloats(cudaMallocManaged(&p, BYTES) == cudaSuccess ? p : nullptr);
 }
 
-/** @brief Trigger host access to UM pages */
-void hostAccessUM(float* data, int n) {
-  float sum = 0;
-  for (int i = 0; i < n; i += 1024) {
-    sum += data[i];
+/** @brief N floats of device memory, owned from the start; empty if the allocation fails. */
+CudaFloats deviceFloats() {
+  float* p = nullptr;
+  return CudaFloats(cudaMalloc(&p, BYTES) == cudaSuccess ? p : nullptr);
+}
+
+/** @brief The value scaleKernel writes for in[i] = i. */
+float scaledIndex(int i) { return 2.0f * static_cast<float>(i) + 1.0f; }
+
+/**
+ * @brief The first index at which @p data differs from @p expected(i), or -1.
+ *        Every value compared is an integer below 2^24, exact in a float.
+ */
+template <typename Expected> int firstMismatch(const float* data, Expected expected) {
+  for (int i = 0; i < N; ++i) {
+    if (data[i] != expected(i)) {
+      return i;
+    }
   }
-  volatile float sink = sum;
-  (void)sink;
+  return -1;
 }
 
 } // anonymous namespace
 
 /**
- * @brief Page fault detection and tracking
+ * @brief A kernel reads managed memory the host wrote and writes managed
+ *        memory the host reads
  *
- * Validates that the framework correctly detects and counts page faults
- * when unified memory is accessed by the GPU.
- *
- * @test PageFaultDetection
+ * @test KernelOnManagedMemory
  *
  * Validates:
- *  - Page faults are detected on first GPU access
- *  - Page fault count is non-zero
- *  - UnifiedMemoryProfile is populated
- *
- * Expected performance:
- *  - Page faults > 0 for first-time access
+ *  - The kernel is timed with no transfer declared
+ *  - Every element it wrote is right when the host reads it
+ *  - The harness reports no unified-memory counters
  */
-PERF_GPU_TEST(GpuUnifiedMemory, PageFaultDetection) {
-  UB_PERF_GPU_GUARD(perf);
+PERF_GPU_TEST(GpuUnifiedMemory, KernelOnManagedMemory) {
+  PERF_GPU_GUARD(perf);
 
-  const int N = 32 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
-
-  // Allocate unified memory
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-
-  // Initialize on host (creates host pages)
+  const CudaFloats um_in = managedFloats();
+  const CudaFloats um_out = managedFloats();
+  ASSERT_TRUE(um_in && um_out) << "cudaMallocManaged failed";
   for (int i = 0; i < N; ++i) {
-    um_data[i] = static_cast<float>(i);
+    um_in[i] = static_cast<float>(i);
   }
 
-  float* d_sum;
-  cudaMalloc(&d_sum, sizeof(float));
-  cudaMemset(d_sum, 0, sizeof(float));
+  const auto LAUNCH = [&](cudaStream_t s) {
+    scaleKernel<<<GRID, BLOCK, 0, s>>>(um_in.get(), um_out.get(), N);
+  };
+  perf.cudaWarmup(LAUNCH);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(LAUNCH, "managed_scale").withLaunchConfig(GRID, BLOCK).measure();
 
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readUnifiedMemory<<<grid, block, 0, s>>>(um_data, d_sum, N); });
-
-  // First access will cause page faults (H->D migration)
-  auto result =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readUnifiedMemory<<<grid, block, 0, s>>>(um_data, d_sum, N); },
-              "page_fault_test")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  // Check for UM profiling data - skip if not available
-  if (!result.stats.unifiedMemory.has_value()) {
-    cudaFree(um_data);
-    cudaFree(d_sum);
-    GTEST_SKIP() << "Unified Memory profiling not available (requires CUDA 11.8+, privileged mode, "
-                    "or specific GPU driver)";
-  }
-
-  const auto& um = result.stats.unifiedMemory.value();
-
-  // Page faults should be detected
-  // Note: warmup may have already migrated pages, so this is informational
-  if (um.pageFaults > 0) {
-    EXPECT_GT(um.pageFaults, 0u) << "Page faults should be detected on UM access";
-  }
-
-  cudaFree(um_data);
-  cudaFree(d_sum);
+  // The host may read managed memory once the device has finished with it.
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(firstMismatch(um_out.get(), scaledIndex), -1) << "first wrong element";
+  EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
+      << "the harness reported unified-memory counters it does not collect";
 }
 
 /**
- * @brief Host-to-device migration tracking
+ * @brief The host and the kernel take turns on one managed buffer
  *
- * Validates that H->D page migrations are correctly detected and counted
- * when GPU accesses pages that are resident on the host.
- *
- * @test MigrationPatterns
+ * @test HostAndKernelTakeTurns
  *
  * Validates:
- *  - H2D migrations tracked
- *  - D2H migrations tracked
- *  - Migration counts are reasonable
+ *  - A kernel pass after the host wrote the buffer, and one after the host
+ *    read it, are each timed
+ *  - The host reads what each pass wrote
  *
- * Expected performance:
- *  - H2D migrations > 0 when GPU accesses host pages
+ * A wait for the buffer's pages after a host access falls inside the next
+ * pass's timed launches; the pass median can dilute or hide it but does not
+ * isolate it. The pass medians are printed, not compared: what a host access
+ * costs the next launch can differ from one GPU to another, and where the GPU
+ * shares the host's memory.
  */
-PERF_GPU_TEST(GpuUnifiedMemory, MigrationPatterns) {
-  UB_PERF_GPU_GUARD(perf);
+PERF_GPU_TEST(GpuUnifiedMemory, HostAndKernelTakeTurns) {
+  PERF_GPU_GUARD(perf);
 
-  const int N = 128 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
+  const CudaFloats um_buf = managedFloats();
+  ASSERT_TRUE(um_buf) << "cudaMallocManaged failed";
+  float* data = um_buf.get();
+  perf.cudaWarmup([&](cudaStream_t s) { writeIndexKernel<<<GRID, BLOCK, 0, s>>>(data, 0.0f, N); });
 
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-
-  // Initialize on host
   for (int i = 0; i < N; ++i) {
-    um_data[i] = 1.0f;
+    data[i] = -1.0f;
   }
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 2.0f, N); });
-
-  // GPU write will cause H->D migration
-  auto gpuWrite =
+  const ub::PerfGpuResult AFTER_WRITE =
       perf.cudaKernel(
-              [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 2.0f, N); },
-              "h2d_migration")
-          .withLaunchConfig(grid, block)
+              [&](cudaStream_t s) { writeIndexKernel<<<GRID, BLOCK, 0, s>>>(data, 2.0f, N); },
+              "after_host_write")
+          .withLaunchConfig(GRID, BLOCK)
           .measure();
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(firstMismatch(data, [](int i) { return 2.0f + static_cast<float>(i); }), -1)
+      << "first wrong element after the first pass";
 
-  if (!gpuWrite.stats.unifiedMemory.has_value()) {
-    cudaFree(um_data);
-    GTEST_SKIP() << "Unified Memory profiling not available (requires CUDA 11.8+, privileged mode, "
-                    "or specific GPU driver)";
-  }
-
-  const auto& umWrite = gpuWrite.stats.unifiedMemory.value();
-
-  // Should see H->D migrations
-  if (umWrite.h2dMigrations > 0) {
-    EXPECT_GT(umWrite.h2dMigrations, 0u) << "H2D migrations should be detected";
-  }
-
-  // Now access from host (will cause D->H migration)
-  cudaDeviceSynchronize();
-  hostAccessUM(um_data, N);
-
-  // GPU access again (will cause H->D migration again)
-  auto gpuRewrite =
+  const ub::PerfGpuResult AFTER_READ =
       perf.cudaKernel(
-              [&](cudaStream_t s) { writeUnifiedMemory<<<grid, block, 0, s>>>(um_data, 3.0f, N); },
-              "d2h_then_h2d")
-          .withLaunchConfig(grid, block)
+              [&](cudaStream_t s) { writeIndexKernel<<<GRID, BLOCK, 0, s>>>(data, 3.0f, N); },
+              "after_host_read")
+          .withLaunchConfig(GRID, BLOCK)
           .measure();
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  EXPECT_EQ(firstMismatch(data, [](int i) { return 3.0f + static_cast<float>(i); }), -1)
+      << "first wrong element after the second pass";
 
-  if (!gpuRewrite.stats.unifiedMemory.has_value()) {
-    cudaFree(um_data);
-    GTEST_SKIP() << "Unified Memory profiling not available";
-  }
-
-  const auto& umRewrite = gpuRewrite.stats.unifiedMemory.value();
-
-  // Should see more migrations due to back-and-forth access
-  const size_t totalMigrations = umRewrite.h2dMigrations + umRewrite.d2hMigrations;
-  if (totalMigrations > 0) {
-    EXPECT_GT(totalMigrations, 0u) << "Total migrations should be > 0 for alternating access";
-  }
-
-  cudaFree(um_data);
+  std::printf("[GpuUnifiedMemory.HostAndKernelTakeTurns] kernel medians: after a host write "
+              "%.3f us, after a host read %.3f us\n",
+              AFTER_WRITE.kernelTimeUs, AFTER_READ.kernelTimeUs);
 }
 
 /**
- * @brief Thrashing detection
+ * @brief The same kernel on managed memory and on device memory
  *
- * Validates that excessive back-and-forth migration (thrashing) is
- * correctly detected using the isThrashing() metric.
- *
- * @test ThrashingDetection
+ * @test ManagedAgainstDeviceMemory
  *
  * Validates:
- *  - Thrashing detection logic
- *  - Thrashing events counted
- *  - isThrashing() returns correct value
+ *  - Both versions are timed with the same launch shape
+ *  - Both write the right result
  *
- * Expected performance:
- *  - Thrashing detected when migrations >> page faults
+ * The ratio of the two medians is printed, not required: it is this
+ * machine's, and can differ on another GPU or driver, and where the GPU
+ * shares the host's memory.
  */
-PERF_GPU_TEST(GpuUnifiedMemory, ThrashingDetection) {
-  UB_PERF_GPU_GUARD(perf);
+PERF_GPU_TEST(GpuUnifiedMemory, ManagedAgainstDeviceMemory) {
+  PERF_GPU_GUARD(perf);
 
-  const int N = 64 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
-
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-
-  // Initialize
+  std::vector<float> h_in(N);
   for (int i = 0; i < N; ++i) {
-    um_data[i] = 1.0f;
+    h_in[i] = static_cast<float>(i);
   }
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  // Intentionally cause thrashing by alternating GPU and host access
-  for (int iter = 0; iter < 5; ++iter) {
-    // GPU access
-    writeUnifiedMemory<<<grid, block>>>(um_data, static_cast<float>(iter), N);
-    cudaDeviceSynchronize();
-
-    // Host access
-    hostAccessUM(um_data, N);
-  }
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); });
-
-  // Measure with potential thrashing pattern
-  auto result =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); },
-              "thrashing_test")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  if (!result.stats.unifiedMemory.has_value()) {
-    cudaFree(um_data);
-    GTEST_SKIP() << "Unified Memory profiling not available (requires CUDA 11.8+, privileged mode, "
-                    "or specific GPU driver)";
-  }
-
-  const auto& um = result.stats.unifiedMemory.value();
-
-  // Check if thrashing detection works
-  if (um.pageFaults > 0) {
-    const double migrationRatio =
-        static_cast<double>(um.h2dMigrations + um.d2hMigrations) / um.pageFaults;
-
-    // If many migrations relative to page faults, should detect thrashing
-    if (migrationRatio > 2.0) {
-      EXPECT_TRUE(um.isThrashing()) << "Should detect thrashing when migrations >> page faults";
-    }
-  }
-
-  cudaFree(um_data);
-}
-
-/**
- * @brief Migration overhead calculation
- *
- * Validates that migration overhead is correctly calculated as a
- * percentage of kernel execution time.
- *
- * @test MigrationOverhead
- *
- * Validates:
- *  - migrationOverheadPct() calculation
- *  - Overhead is reasonable (typically 5-30%)
- *  - Overhead increases with migration frequency
- *
- * Expected performance:
- *  - Overhead 5-30% for typical access patterns
- */
-PERF_GPU_TEST(GpuUnifiedMemory, MigrationOverhead) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 256 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
-
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-
-  // Initialize on host
+  const CudaFloats um_in = managedFloats();
+  const CudaFloats um_out = managedFloats();
+  const CudaFloats d_in = deviceFloats();
+  const CudaFloats d_out = deviceFloats();
+  ASSERT_TRUE(um_in && um_out && d_in && d_out) << "a CUDA allocation failed";
   for (int i = 0; i < N; ++i) {
-    um_data[i] = static_cast<float>(i);
+    um_in[i] = h_in[i];
   }
+  ASSERT_EQ(cudaMemcpy(d_in.get(), h_in.data(), BYTES, cudaMemcpyHostToDevice), cudaSuccess);
 
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
+  const auto MANAGED = [&](cudaStream_t s) {
+    scaleKernel<<<GRID, BLOCK, 0, s>>>(um_in.get(), um_out.get(), N);
+  };
+  const auto DEVICE = [&](cudaStream_t s) {
+    scaleKernel<<<GRID, BLOCK, 0, s>>>(d_in.get(), d_out.get(), N);
+  };
+  perf.cudaWarmup(MANAGED);
+  perf.cudaWarmup(DEVICE);
+  const ub::PerfGpuResult ON_MANAGED =
+      perf.cudaKernel(MANAGED, "managed_memory").withLaunchConfig(GRID, BLOCK).measure();
+  const ub::PerfGpuResult ON_DEVICE =
+      perf.cudaKernel(DEVICE, "device_memory").withLaunchConfig(GRID, BLOCK).measure();
 
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); });
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  std::vector<float> h_out(N);
+  ASSERT_EQ(cudaMemcpy(h_out.data(), d_out.get(), BYTES, cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(firstMismatch(um_out.get(), scaledIndex), -1)
+      << "first wrong element on managed memory";
+  EXPECT_EQ(firstMismatch(h_out.data(), scaledIndex), -1) << "first wrong element on device memory";
 
-  // Measure with potential migrations
-  auto result =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); },
-              "migration_overhead")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  if (!result.stats.unifiedMemory.has_value()) {
-    cudaFree(um_data);
-    GTEST_SKIP() << "Unified Memory profiling not available (requires CUDA 11.8+, privileged mode, "
-                    "or specific GPU driver)";
-  }
-
-  const auto& um = result.stats.unifiedMemory.value();
-
-  // Calculate overhead - FIXED: use result.kernelTimeUs instead of result.stats.cpuStats.median
-  const double overhead = um.migrationOverheadPct(result.kernelTimeUs, perf.cycles());
-
-  // Overhead should be non-negative
-  EXPECT_GE(overhead, 0.0) << "Migration overhead should be non-negative";
-
-  // Overhead should be reasonable (< 100% for this workload)
-  EXPECT_LT(overhead, 100.0) << "Migration overhead should be < 100% for compute-bound kernel";
-
-  // If migrations occurred, overhead should be positive
-  if (um.h2dMigrations + um.d2hMigrations > 0 && um.migrationTimeUs > 0.0) {
-    EXPECT_GT(overhead, 0.0) << "Should have measurable overhead when migrations occur";
-  }
-
-  cudaFree(um_data);
-}
-
-/**
- * @brief UM vs explicit memory performance comparison
- *
- * Compares unified memory performance against explicit memory management
- * to validate overhead measurement and identify use cases where UM is appropriate.
- *
- * @test CompareStrategies
- *
- * Validates:
- *  - UM overhead measurement vs explicit memory
- *  - Performance difference is measurable
- *  - Both strategies produce correct results
- *
- * Expected performance:
- *  - Explicit memory typically faster
- *  - UM overhead typically 10-40% depending on access pattern
- */
-PERF_GPU_TEST(GpuUnifiedMemory, CompareStrategies) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 256 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
-
-  // Unified memory
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-  for (int i = 0; i < N; ++i) {
-    um_data[i] = 1.0f;
-  }
-
-  // Explicit memory
-  std::vector<float> h_data(N, 1.0f);
-  float* d_data;
-  cudaMalloc(&d_data, SIZE);
-  cudaMemcpy(d_data, h_data.data(), SIZE, cudaMemcpyHostToDevice);
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  // Warmup both
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); });
-
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(d_data, N); });
-
-  // Measure unified memory
-  auto umResult =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); },
-              "unified_memory")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  // Measure explicit memory
-  auto explicitResult =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(d_data, N); },
-              "explicit_memory")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  // Both should complete successfully
-  EXPECT_GT(umResult.callsPerSecond, 0.0);
-  EXPECT_GT(explicitResult.callsPerSecond, 0.0);
-
-  // Compare performance - FIXED: use kernelTimeUs instead of stats.cpuStats.median
-  const double umTime = umResult.kernelTimeUs;
-  const double explicitTime = explicitResult.kernelTimeUs;
-
-  // Calculate relative overhead
-  const double relativeOverhead = ((umTime - explicitTime) / explicitTime) * 100.0;
-
-  // UM typically has some overhead, but should not be extreme
-  if (relativeOverhead > 0) {
-    EXPECT_LT(relativeOverhead, 100.0) << "UM overhead should be < 100% for this workload";
-  }
-
-  // Check UM profiling data
-  if (umResult.stats.unifiedMemory.has_value()) {
-    const auto& um = umResult.stats.unifiedMemory.value();
-
-    // Should have profiling data for UM but not explicit
-    EXPECT_TRUE(umResult.stats.unifiedMemory.has_value())
-        << "UM result should have unified memory profile";
-  }
-
-  cudaFree(um_data);
-  cudaFree(d_data);
-}
-
-/**
- * @brief Access pattern impact on UM performance
- *
- * Validates that different access patterns have measurable performance
- * differences with unified memory.
- *
- * @test AccessPatterns
- *
- * Validates:
- *  - Sequential access performance
- *  - Random access performance
- *  - Access pattern affects page faults
- *
- * Expected performance:
- *  - Sequential access faster than random
- */
-PERF_GPU_TEST(GpuUnifiedMemory, AccessPatterns) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 256 * 1024; // Reduced for speed
-  const size_t SIZE = N * sizeof(float);
-
-  // Allocate UM
-  float* um_data;
-  cudaMallocManaged(&um_data, SIZE);
-
-  // Initialize on host
-  for (int i = 0; i < N; ++i) {
-    um_data[i] = 1.0f;
-  }
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  // Sequential access
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); });
-
-  auto sequential =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { readWriteUnifiedMemory<<<grid, block, 0, s>>>(um_data, N); },
-              "sequential_access")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  // Both should complete successfully
-  EXPECT_GT(sequential.callsPerSecond, 0.0);
-
-  // Check UM profiling data
-  if (sequential.stats.unifiedMemory.has_value()) {
-    const auto& um = sequential.stats.unifiedMemory.value();
-
-    // UM profiling should capture some metrics
-    // Note: actual values may vary by CUDA version and GPU
-    EXPECT_GE(um.pageFaults, 0u) << "Page fault count should be non-negative";
-  }
-
-  cudaFree(um_data);
+  std::printf("[GpuUnifiedMemory.ManagedAgainstDeviceMemory] kernel medians: managed %.3f us, "
+              "device %.3f us, managed/device %.2f\n",
+              ON_MANAGED.kernelTimeUs, ON_DEVICE.kernelTimeUs,
+              ON_MANAGED.kernelTimeUs / ON_DEVICE.kernelTimeUs);
 }
 
 // Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary

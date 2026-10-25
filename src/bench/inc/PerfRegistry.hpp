@@ -121,12 +121,13 @@ struct PerfRow {
   std::optional<double> multiGpuEfficiency; ///< Speedup / N_gpus (ideal=1.0)
   std::optional<double> p2pBandwidthGBs;    ///< Peer-to-peer bandwidth
 
-  // Unified Memory fields
-  std::optional<size_t> umPageFaults;      ///< Total UM page faults
+  // Unified Memory counters. The GPU harness collects none and leaves these
+  // empty in every row it publishes.
+  std::optional<size_t> umPageFaults;      ///< Page faults
   std::optional<size_t> umH2DMigrations;   ///< Host->Device migrations
   std::optional<size_t> umD2HMigrations;   ///< Device->Host migrations
-  std::optional<double> umMigrationTimeUs; ///< Time spent migrating
-  std::optional<bool> umThrashing;         ///< Thrashing detected?
+  std::optional<double> umMigrationTimeUs; ///< Time spent migrating (us)
+  std::optional<bool> umThrashing;         ///< Thrashing reported
 
   // Stability assessment
   bool stable{true};        ///< CV% below adaptive threshold

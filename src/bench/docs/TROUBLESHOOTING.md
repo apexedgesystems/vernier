@@ -387,9 +387,12 @@ request before the next run: `--profile-check` with the same `--profile`
 options prints the same verdict. `--profile cupti` records no failure of its
 own, even where CUPTI is unavailable, and neither does a run without
 `--profile`: either exits 4 only when another failure is recorded, as when a
-profiler the benchmark constructs itself reports one, and the tests passed;
-when tests fail, their status stands. A benchmark with its own `main()`
-returns this status from `ProfilerRegistry::finishRun()`, called after
+profiler the benchmark constructs itself reports one, or when a GPU benchmark
+is given `--capture-um`, which asks for counters the harness does not collect
+([GPU guide](GPU_GUIDE.md#unified-memory-counters)), and the tests passed;
+when tests fail, their status stands. The report then reads
+`[profile] a profile failed` and lists what failed. A benchmark with its own
+`main()` returns this status from `ProfilerRegistry::finishRun()`, called after
 `RUN_ALL_TESTS()` as in
 [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
 
@@ -749,10 +752,14 @@ cudaFree(d_data);
 cudaDeviceReset();  // Nuclear option
 ```
 
-**4. Use Unified Memory** (trades speed for capacity):
+**4. Use Unified Memory** (trades speed for capacity): allocate the test's
+buffers with `cudaMallocManaged()` in place of `cudaMalloc()`.
+`--gpu-memory unified` changes no allocation by itself: it records the
+strategy for a benchmark that reads it and allocates accordingly (see the
+[GPU guide](GPU_GUIDE.md#unified-memory)).
 
-```bash
-./test --gpu-memory unified
+```cpp
+cudaMallocManaged(&d_data, N * sizeof(float));  // in place of cudaMalloc()
 ```
 
 ---

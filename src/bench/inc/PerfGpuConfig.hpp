@@ -2,7 +2,7 @@
 #define VERNIER_PERFGPUCONFIG_HPP
 /**
  * @file PerfGpuConfig.hpp
- * @brief GPU-specific configuration extensions with Unified Memory profiling support.
+ * @brief GPU-specific configuration extensions.
  */
 
 #include <string>
@@ -34,8 +34,13 @@ struct PerfGpuConfig {
   bool captureClockSpeeds = true;
   bool captureMemoryBandwidth = true;
 
-  // Unified Memory profiling (opt-in)
-  bool captureUnifiedMemory = false; ///< Track UM page faults and migrations
+  /// An explicit request for unified-memory counters: --capture-um sets it,
+  /// and a caller that sets it makes the same request. Choosing a memory
+  /// strategy (memStrategy, --gpu-memory) does not set it. The harness
+  /// collects no such counters: a measurement made with this set reports the
+  /// request as unsupported, the um* CSV cells stay empty, and a run whose
+  /// tests pass exits with status 4 (ProfilerRegistry::finishRun()).
+  bool captureUnifiedMemory = false;
 
   // ---- Device selection ----
   int deviceId = 0;
@@ -47,7 +52,15 @@ struct PerfGpuConfig {
   double minSpeedupVsCpu = 1.0;
   double maxTransferOverhead = 50.0;
 
-  // Parse GPU-specific flags from PerfConfig
+  /**
+   * @brief GPU settings derived from @p base: the warmup count, and the
+   *        Unified memory strategy when the profile args contain "unified".
+   *
+   * The strategy is recorded in memStrategy only. It does not ask for
+   * unified-memory counters (captureUnifiedMemory stays false), and the
+   * harness does not allocate a test's memory: the test makes its own
+   * allocation.
+   */
   static PerfGpuConfig fromPerfConfig(const PerfConfig& base) {
     PerfGpuConfig gpu;
 
@@ -57,10 +70,8 @@ struct PerfGpuConfig {
       gpu.gpuWarmup = 15;
     }
 
-    // Detect unified memory request from profile args
     if (base.profileArgs.find("unified") != std::string::npos) {
       gpu.memStrategy = MemoryStrategy::Unified;
-      gpu.captureUnifiedMemory = true;
     }
 
     return gpu;
@@ -96,10 +107,10 @@ inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
       cfg.deviceId = std::max(0, std::atoi(NEED_ARG("--gpu-device", i)));
       ++i;
     } else if (a == "--gpu-memory") {
+      // A memory strategy only: no request for unified-memory counters.
       std::string_view strategy = NEED_ARG("--gpu-memory", i);
       if (strategy == "unified") {
         cfg.memStrategy = PerfGpuConfig::MemoryStrategy::Unified;
-        cfg.captureUnifiedMemory = true; // Auto-enable UM tracking
       } else if (strategy == "pinned") {
         cfg.memStrategy = PerfGpuConfig::MemoryStrategy::Pinned;
       } else if (strategy == "explicit") {
@@ -112,7 +123,7 @@ inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
       cfg.minSpeedupVsCpu = std::atof(NEED_ARG("--min-speedup", i));
       ++i;
     } else if (a == "--capture-um") {
-      // Enable Unified Memory profiling (page faults, migrations)
+      // Asks for unified-memory counters (see captureUnifiedMemory)
       cfg.captureUnifiedMemory = true;
     } else {
       argv[w++] = argv[i];

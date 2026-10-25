@@ -2,7 +2,7 @@
 #define VERNIER_PERFGPUSTATS_HPP
 /**
  * @file PerfGpuStats.hpp
- * @brief GPU-specific performance metrics including multi-GPU scaling and Unified Memory profiling.
+ * @brief GPU-specific performance metrics including multi-GPU scaling.
  */
 
 #include <string>
@@ -182,21 +182,25 @@ struct P2PTransferProfile {
 /* ----------------------------- Unified Memory ----------------------------- */
 
 /**
- * @brief Unified Memory profiling metrics.
+ * @brief Unified Memory counters: page faults and page migrations.
  *
- * Tracks page faults and migration patterns for managed memory.
+ * The GPU harness collects none of these. It reads no page-fault or migration
+ * record, so it never fills GpuStats::unifiedMemory, whether or not
+ * PerfGpuConfig::captureUnifiedMemory asks for the counters, and a row's um*
+ * CSV cells stay empty. The member functions are arithmetic over the counts a
+ * caller sets, not observations.
  */
 struct UnifiedMemoryProfile {
-  size_t pageFaults = 0;        ///< Total page faults
+  size_t pageFaults = 0;        ///< Page faults
   size_t h2dMigrations = 0;     ///< Host->Device page migrations
   size_t d2hMigrations = 0;     ///< Device->Host page migrations
-  double migrationTimeUs = 0.0; ///< Estimated time spent migrating pages
+  double migrationTimeUs = 0.0; ///< Time spent migrating pages (us)
   size_t thrashingEvents = 0;   ///< Rapid back-and-forth migrations (H<->D<->H)
 
   /**
-   * @brief Detect thrashing (excessive back-and-forth migration).
-   * @param threshold Ratio of total migrations to unique pages (default: 2.0)
-   * @return True if thrashing detected
+   * @brief Whether the migrations exceed @p threshold times the page faults.
+   * @param threshold Ratio of total migrations to page faults (default: 2.0)
+   * @return True above the ratio; false without page faults
    */
   [[nodiscard]] bool isThrashing(double threshold = 2.0) const {
     const size_t TOTAL_MIGRATIONS = h2dMigrations + d2hMigrations;
@@ -242,7 +246,8 @@ struct GpuStats {
   std::optional<MultiGpuMetrics> multiGpu{};
   std::optional<P2PTransferProfile> p2pProfile{};
 
-  // Unified Memory profiling
+  /// Unified Memory counters: empty in every result the harness returns, as
+  /// it collects none (see UnifiedMemoryProfile).
   std::optional<UnifiedMemoryProfile> unifiedMemory{};
 
   [[nodiscard]] double memoryBandwidthUtilization(double peakBandwidthGBs) const {

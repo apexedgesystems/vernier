@@ -175,8 +175,8 @@ memBandwidthGBs        -                                       -
 ```
 
 The header row names the rest: the device and its compute capability, and
-the multi-GPU and unified-memory columns, which a single-GPU test without
-unified memory leaves empty except `deviceCount`, 1.
+the multi-GPU and unified-memory columns, which a single-GPU test leaves
+empty except `deviceCount`, 1.
 
 ## Where Each Column Comes From
 
