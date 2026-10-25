@@ -921,37 +921,14 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   images set `CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`, so an online cargo
   build or test in an image older than three months keeps the baked crates
   that a later offline build or test in the same container needs.
-- **`withDeviceId()` measures on the device it names** --
-  `CudaKernelBuilder::withDeviceId()` put the id in the result and the CSV
-  row while the launches, copies and timing ran on the case's device
-  (`--gpu-device`). The measurement now runs on the named device and the
-  row's device, GPU model and telemetry are that device's; an id that names
-  no device fails the measurement (`std::invalid_argument`) before anything
-  is timed.
-- **A GPU measurement that throws closes its CUPTI window** -- when a kernel
-  callback (or a CUDA call) threw inside `cudaKernel(...).measure()`, the
-  in-process CUPTI collector kept recording, and the case's next measurement
-  counted the failed window's kernel launches in its CUPTI cells. The window
-  closes when the measurement throws, so the next one counts only its own.
-- **The contention and scaling samples no longer race, and the GPU speedup
-  sample no longer requires a 2x speedup** -- in `BenchmarkCPU_PTEST`,
-  `Contention.MutexContention` and `ThreadScaling.EfficiencyValidation`
-  wrote a variable every worker shared without synchronization, and the
-  scaling sample divided its speedup by two whatever `--threads` said; they
-  now share nothing unsynchronized, check exact results and divide by the
-  workers started. In `BenchmarkGPU_PTEST` the speedup sample failed unless
-  the round trip, transfers included, ran twice as fast as the CPU loop; it
-  now reports the ratio it measures. The CPU profiler samples for perf,
-  gperf, bpftrace and callgrind measured without the profiler they name;
-  they now attach it, or skip with the reason the run reports, and the GPU
-  profiler samples no longer print capture claims. **Migration:**
-  `GpuBasics.SpeedupCalculation` is now `GpuSpeedup.SpeedupCalculation`, and
-  `GpuMultiDevice.ScalingEfficiency`, `GpuProfilers.ArtifactGeneration`,
-  `GpuSharedMemory.BankConflicts` and `GpuSharedMemory.ConflictFree` are
-  removed; re-record a baseline that has them.
-- **`--target-time` sizes a window from the operation's own time** -- a
-  calibration sample stretched by another process on the same core no longer
-  cuts the window to a fraction of the requested time.
+- GPU measurements honor `withDeviceId()` and close CUPTI windows on failure.
+  ([#65](https://github.com/apexedgesystems/vernier/pull/65))
+- Correct performance-sample results, worker normalization and profiler use;
+  GPU ratios have no required speedup. Re-record baselines containing renamed
+  or retired GPU samples; case names are in
+  [#65](https://github.com/apexedgesystems/vernier/pull/65).
+- Improve `--target-time` calibration when brief scheduling interruptions
+  stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 
 ## v1.0.3 - 2026-06-28
 
