@@ -807,14 +807,28 @@ private:
 
   /**
    * @brief --target-time auto-sizing: estimate one call's cost, then set
-   * this instance's cycle count so a repeat spans the requested wall time.
+   * this instance's cycle count so a repeat targets the requested wall time.
    *
    * The clock resolves microseconds, so a single call of a sub-microsecond
-   * operation reads as zero or one. The estimate instead times a batch of
-   * calls, doubling the batch until the sample spans CALIBRATION_SAMPLE_US,
-   * and divides: the quantization error is then a fraction of a percent. An
-   * operation slower than that is sampled once. Calibration finishes before
-   * the measured phase starts, so none of it is inside a timed window.
+   * operation reads as zero or one. The estimate instead times batches of
+   * calls, doubling the batch until a sample spans CALIBRATION_SAMPLE_US, and
+   * divides. Calibration finishes before the measured phase starts, so none
+   * of it is inside a timed window.
+   *
+   * The estimate is best effort. A sample's wall time also counts time the
+   * thread did not run, so the estimate is the least per-call time among the
+   * samples long enough to resolve it (CALIBRATION_RESOLVED_US), and a sample
+   * that spans the sample span ends the doubling only after a resolved one.
+   * This reduces isolated scheduling interference. A first call stretched
+   * past the requested time, or consecutive stretched samples, can still size
+   * the repeats short: 300 us of work with a 50 ms interruption on the first
+   * call against a 40 ms target selects one cycle, and the repeats then take
+   * about 300 us.
+   *
+   * A single call ends the calibration at once only when it spans the
+   * requested time, so a slow operation is called once; an operation between
+   * the sample span and the requested time costs three calibration calls
+   * instead of one.
    *
    * cfg_ is a per-case copy, so the division in measured(), the CSV row, and
    * the loops all follow automatically; raw measured() users keep explicit
@@ -826,26 +840,45 @@ private:
     }
     calibrated_ = true;
 
-    // 1 ms sample: 1000 clock ticks, so quantization is at most 0.1%.
+    // 1 ms sample: 1000 clock ticks.
     constexpr double CALIBRATION_SAMPLE_US = 1000.0;
+    // A quarter of the sample: timestamp quantization is then at most 0.4%
+    // of the per-call time, apart from scheduling and workload variation.
+    constexpr double CALIBRATION_RESOLVED_US = CALIBRATION_SAMPLE_US / 4.0;
     // Bounds the doubling when the operation costs next to nothing.
     constexpr long long CALIBRATION_MAX_BATCH = 1LL << 26;
 
     long long batch = 1;
     double elapsedUs = 0.0;
+    double previousUs = 0.0;
+    bool resolved = false;
+    double leastPerCallUs = 0.0;
     for (;;) {
       const double T0 = nowUs();
       for (long long i = 0; i < batch; ++i) {
         op();
       }
       elapsedUs = nowUs() - T0;
-      if (elapsedUs >= CALIBRATION_SAMPLE_US || batch >= CALIBRATION_MAX_BATCH) {
+      if (elapsedUs >= CALIBRATION_RESOLVED_US) {
+        const double PER_CALL_US = elapsedUs / static_cast<double>(batch);
+        if (!resolved || PER_CALL_US < leastPerCallUs) {
+          leastPerCallUs = PER_CALL_US;
+        }
+        resolved = true;
+      }
+      // A single call that spans the requested time sets a one-cycle window.
+      const bool SPANS_THE_TARGET =
+          batch == 1 && elapsedUs >= static_cast<double>(cfg_.targetTimeUs);
+      const bool GREW_INTO_IT = previousUs >= CALIBRATION_RESOLVED_US;
+      if (SPANS_THE_TARGET || (elapsedUs >= CALIBRATION_SAMPLE_US && GREW_INTO_IT) ||
+          batch >= CALIBRATION_MAX_BATCH) {
         break;
       }
+      previousUs = elapsedUs;
       batch *= 2;
     }
 
-    const double EST = elapsedUs / static_cast<double>(batch);
+    const double EST = resolved ? leastPerCallUs : elapsedUs / static_cast<double>(batch);
     cfg_.cycles = calibratedCycles(cfg_.targetTimeUs, EST);
     std::fprintf(stderr,
                  "[target-time] %.3f ms -> cycles=%d (calibrated %.4f us/call, batch of %lld)\n",

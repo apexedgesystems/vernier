@@ -1,55 +1,57 @@
 /**
  * @file Profilers_pTest.cpp
- * @brief Profiler integration smoke tests
+ * @brief Profiler integration samples: a backend attached by the profiler guard
  *
- * This test suite provides smoke test coverage for profiler integration.
- * Tests validate that profiler hooks execute without error and that
- * basic profiler functionality works when enabled.
+ * HookAttachment shows that UB_PERF_GUARD attaches the profiler hooks whether
+ * or not --profile names a profiler. PerfIntegration, GperfIntegration,
+ * BpftraceIntegration and CallgrindIntegration run only under their own
+ * --profile and build their case with the same guard, which attaches that
+ * backend to the measurement. When the backend's readiness check refuses the
+ * request, the guard attaches a no-op instead: the registry decides once per
+ * run, prints why and records it (ProfilerRegistry::failures()), these four
+ * cases skip with that reason, and the run exits with status 4 when its tests
+ * pass.
  *
- * Features tested:
- *  - Profiler hook attachment
- *  - Profiler execution without crash (perf, gperf, bpftrace, RAPL, callgrind)
- *  - Artifact directory creation
- *  - Graceful handling when profilers unavailable
- *
- * Expected behavior:
- *  - Tests skip if profiler not enabled (via --profile flag)
- *  - Tests pass when profiler available
- *  - No crashes or errors during profiling
+ * The CSV row of a profiled case names the backend and its capture folder
+ * (profileTool, profileDir); a case measured under a refused request's no-op
+ * names neither. There perf
+ * writes stat.txt, gperftools cpu.prof and bpftrace a report per script, and
+ * valgrind writes callgrind's profile when the process exits. What a backend
+ * wrote is read after the run, from that folder. RAPLIntegration builds a
+ * PerfCase without the hooks, so --profile attaches no profiler to it.
  *
  * Usage:
  *   @code{.sh}
- *   # Run without profiler (tests will skip)
+ *   # Without --profile only HookAttachment measures; the other cases skip
  *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
  *       --gtest_filter="Profilers.*"
  *
- *   # Run with perf profiler
+ *   # One backend, its capture folders under ./profiles
  *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
- *       --gtest_filter="Profilers.PerfIntegration" --profile perf
+ *       --gtest_filter="Profilers.GperfIntegration" --profile gperf --artifact-root profiles
  *
- *   # Run with gperf profiler
- *   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
- *       --gtest_filter="Profilers.GperfIntegration" --profile gperf
+ *   # callgrind records a process only when valgrind runs it
+ *   valgrind --tool=callgrind --instr-atstart=no \
+ *       --callgrind-out-file=profiles/Profilers.CallgrindIntegration.callgrind/callgrind.out \
+ *       ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST \
+ *       --gtest_filter="Profilers.CallgrindIntegration" --profile callgrind \
+ *       --artifact-root profiles
  *   @endcode
  *
- * Performance expectations:
- *  - Runtime: ~5 seconds total (when profilers enabled)
- *  - Pass rate: 100% (or skip if profiler unavailable)
- *
- * @note UB_PERF_GUARD attaches the profiler hooks itself, and HookAttachment
- *       uses it. The *Integration tests construct a PerfCase without the
- *       hooks, so --profile attaches no profiler to them.
+ * perf needs access to this process's counters and bpftrace needs root or
+ * BENCH_SUDO; `--profile-check --profile <name>` says what this machine allows.
  *
  * @see makePerfCaseWithProfiler
  * @see attachProfilerHooks
- * @see PerfConfig::profileTool
  */
 
 #include <gtest/gtest.h>
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "helpers/TestHelpers.hpp"
 
 namespace ub = vernier::bench;
@@ -60,6 +62,22 @@ namespace {
 
 /** @brief Get current configuration */
 inline const ub::PerfConfig& config() { return ub::detail::getPerfConfig(); }
+
+/**
+ * @brief Why the run's request for @p tool cannot collect, or "" when it can.
+ *
+ * The guard's profiler comes from the registry's one decision for the request;
+ * a refusal is recorded for the whole request (no case named) and the guard
+ * attaches a no-op. Reading the record asks nothing again.
+ */
+std::string refusal(const std::string& tool) {
+  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
+    if (failure.backend == tool && failure.test.empty() && !failure.result.collectionReady()) {
+      return failure.result.report.message;
+    }
+  }
+  return "";
+}
 
 } // anonymous namespace
 
@@ -102,28 +120,22 @@ PERF_TEST(Profilers, HookAttachment) {
 }
 
 /**
- * @brief Perf profiler integration smoke test
+ * @brief perf attached by the guard
  *
- * Validates that perf profiler integration works when enabled.
- * Test skips if perf profiler not enabled via --profile perf.
+ * Under --profile perf, perf stat counts this process during the measured
+ * repeats and writes its report, stat.txt, into the case's capture folder.
  *
  * @test PerfIntegration
- *
- * Validates:
- *  - Perf profiler executes without crash
- *  - Test completes successfully
- *  - Measurements are valid
- *
- * Expected performance:
- *  - Pass when --profile perf provided
- *  - Skip otherwise
  */
 PERF_TEST(Profilers, PerfIntegration) {
   if (config().profileTool != "perf") {
     GTEST_SKIP() << "Test requires --profile perf";
   }
 
-  ub::PerfCase perf{"Profilers.PerfIntegration", config()};
+  UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("perf"); !WHY.empty()) {
+    GTEST_SKIP() << "perf cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -146,28 +158,22 @@ PERF_TEST(Profilers, PerfIntegration) {
 }
 
 /**
- * @brief Gperf profiler integration smoke test
+ * @brief gperftools attached by the guard
  *
- * Validates that gperf profiler integration works when enabled.
- * Test skips if gperf profiler not enabled via --profile gperf.
+ * Under --profile gperf, ProfilerStart() before the measured repeats and
+ * ProfilerStop() after them write cpu.prof into the case's capture folder.
  *
  * @test GperfIntegration
- *
- * Validates:
- *  - Gperf profiler executes without crash
- *  - Test completes successfully
- *  - Measurements are valid
- *
- * Expected performance:
- *  - Pass when --profile gperf provided
- *  - Skip otherwise
  */
 PERF_TEST(Profilers, GperfIntegration) {
   if (config().profileTool != "gperf") {
     GTEST_SKIP() << "Test requires --profile gperf";
   }
 
-  ub::PerfCase perf{"Profilers.GperfIntegration", config()};
+  UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("gperf"); !WHY.empty()) {
+    GTEST_SKIP() << "gperf cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -190,28 +196,23 @@ PERF_TEST(Profilers, GperfIntegration) {
 }
 
 /**
- * @brief Bpftrace profiler integration smoke test
+ * @brief bpftrace attached by the guard
  *
- * Validates that bpftrace profiler integration works when enabled.
- * Test skips if bpftrace profiler not enabled via --profile bpftrace.
+ * Under --profile bpftrace, one tracer per selected script traces this
+ * process during the measured repeats and writes its report into the case's
+ * capture folder.
  *
  * @test BpftraceIntegration
- *
- * Validates:
- *  - Bpftrace profiler executes without crash
- *  - Test completes successfully
- *  - Measurements are valid
- *
- * Expected performance:
- *  - Pass when --profile bpftrace provided
- *  - Skip otherwise
  */
 PERF_TEST(Profilers, BpftraceIntegration) {
   if (config().profileTool != "bpftrace") {
     GTEST_SKIP() << "Test requires --profile bpftrace";
   }
 
-  ub::PerfCase perf{"Profilers.BpftraceIntegration", config()};
+  UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("bpftrace"); !WHY.empty()) {
+    GTEST_SKIP() << "bpftrace cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);
@@ -277,30 +278,25 @@ PERF_TEST(Profilers, RAPLIntegration) {
 }
 
 /**
- * @brief Callgrind profiler integration smoke test
+ * @brief callgrind attached by the guard
  *
- * Validates that callgrind (Valgrind) profiler integration works when enabled.
- * Test skips if callgrind profiler not enabled via --profile callgrind.
+ * Under --profile callgrind, in a process valgrind's callgrind runs from a wrap
+ * started with --instr-atstart=no, the backend switches instrumentation on
+ * for the measured repeats and off after them; valgrind writes the profile
+ * when the process exits. Execution is 20-50x slower under valgrind; the
+ * thresholds below are relaxed accordingly.
  *
  * @test CallgrindIntegration
- *
- * Validates:
- *  - Callgrind profiler executes without crash
- *  - Test completes successfully under valgrind simulation
- *  - Measurements are valid despite instrumentation overhead
- *
- * Expected performance:
- *  - Pass when --profile callgrind provided
- *  - Skip otherwise
- *  - Note: When running under valgrind, execution is 20-50x slower;
- *    thresholds are relaxed accordingly
  */
 PERF_TEST(Profilers, CallgrindIntegration) {
   if (config().profileTool != "callgrind") {
     GTEST_SKIP() << "Test requires --profile callgrind";
   }
 
-  ub::PerfCase perf{"Profilers.CallgrindIntegration", config()};
+  UB_PERF_GUARD(perf);
+  if (const std::string WHY = refusal("callgrind"); !WHY.empty()) {
+    GTEST_SKIP() << "callgrind cannot collect here: " << WHY;
+  }
 
   const std::size_t DATA_SIZE = 4096;
   auto data = test::makeTestData(DATA_SIZE);

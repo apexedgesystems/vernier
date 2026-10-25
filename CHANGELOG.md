@@ -921,6 +921,14 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   images set `CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`, so an online cargo
   build or test in an image older than three months keeps the baked crates
   that a later offline build or test in the same container needs.
+- GPU measurements honor `withDeviceId()` and close CUPTI windows on failure.
+  ([#65](https://github.com/apexedgesystems/vernier/pull/65))
+- Correct performance-sample results, worker normalization and profiler use;
+  GPU ratios have no required speedup. Re-record baselines containing renamed
+  or retired GPU samples; case names are in
+  [#65](https://github.com/apexedgesystems/vernier/pull/65).
+- Improve `--target-time` calibration when brief scheduling interruptions
+  stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 
 ## v1.0.3 - 2026-06-28
 
