@@ -871,11 +871,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   up its NVML device by the CUDA device ordinal, which names another GPU where
   NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
   hides them; it looks the device up by the CUDA device's UUID.
-- **Unified-memory cells stay empty instead of holding made-up counts** --
-  the GPU harness collects no unified-memory counters, so `--capture-um`
-  fails a run whose tests pass with status 4. **Action needed:** discard
-  `um*` values in earlier CSVs; the renamed sample tests and the changed
-  config inference are in [#66](https://github.com/apexedgesystems/vernier/pull/66).
+- GPU benchmarks leave unavailable unified-memory CSV counters empty and report
+  explicit `--capture-um` requests as unsupported (status 4). Discard `um*`
+  values in earlier CSVs.
+  ([#66](https://github.com/apexedgesystems/vernier/pull/66))
 - **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
   path it could not open (in a missing directory, a directory, an empty path)
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,

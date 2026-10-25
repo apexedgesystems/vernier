@@ -943,23 +943,32 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU Memory Strategy Selection
 
-Control memory management strategy via command-line:
+`--gpu-memory` records a memory strategy in the GPU configuration
+(`PerfGpuConfig::memStrategy`). The harness does not allocate a test's memory,
+so the flag changes no allocation by itself: a benchmark that offers the
+strategies reads the configured one (`perf.gpuConfig().memStrategy`) and
+allocates accordingly. Nor does the flag request unified-memory counters
+(see the GPU guide's
+[Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters)); its
+[Unified Memory](GPU_GUIDE.md#unified-memory) section shows a test that
+allocates managed memory itself. The commands record the strategy such a
+benchmark reads:
 
 ```bash
-# Explicit malloc/memcpy (default)
+# Record the explicit strategy (the default): device memory and copies
 ./test --gpu-memory explicit --csv results.csv
 
-# Unified memory (automatic migration)
+# Record the unified strategy: managed memory, which CUDA migrates on access
 ./test --gpu-memory unified --csv results.csv
 
-# Pinned host memory (faster transfers)
+# Record the pinned strategy: page-locked host memory
 ./test --gpu-memory pinned --csv results.csv
 
-# Mapped memory (zero-copy)
+# Record the mapped strategy: zero-copy host memory
 ./test --gpu-memory mapped --csv results.csv
 ```
 
-**Strategy comparison:**
+**What each strategy names**, for a benchmark that allocates by it:
 
 | Strategy   | Transfer Speed         | Use When                      |
 | ---------- | ---------------------- | ----------------------------- |

@@ -752,10 +752,14 @@ cudaFree(d_data);
 cudaDeviceReset();  // Nuclear option
 ```
 
-**4. Use Unified Memory** (trades speed for capacity):
+**4. Use Unified Memory** (trades speed for capacity): allocate the test's
+buffers with `cudaMallocManaged()` in place of `cudaMalloc()`.
+`--gpu-memory unified` changes no allocation by itself: it records the
+strategy for a benchmark that reads it and allocates accordingly (see the
+[GPU guide](GPU_GUIDE.md#unified-memory)).
 
-```bash
-./test --gpu-memory unified
+```cpp
+cudaMallocManaged(&d_data, N * sizeof(float));  // in place of cudaMalloc()
 ```
 
 ---
