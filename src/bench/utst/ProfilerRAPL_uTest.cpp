@@ -100,6 +100,17 @@ constexpr std::uint32_t MSR_PKG_ENERGY = 0x611;
 /// (bits 12:8, so one count is 2^-14 J) and time unit 10.
 constexpr std::uint64_t POWER_UNIT = 0x000A0E03;
 
+/// MSR 0x606 at the defaults of the Silvermont and Airmont Atoms: power unit
+/// 5 and energy-status unit 5, which these CPUs read as 2^5 uJ a count, and
+/// time unit 0.
+constexpr std::uint64_t ATOM_POWER_UNIT = 0x00000505;
+
+/** @brief The cpuinfo fields the check reads, for an Intel CPU of family 6 and @p model. */
+std::string intelCpuinfo(int model) {
+  return "processor\t: 0\nvendor_id\t: GenuineIntel\ncpu family\t: 6\nmodel\t\t: " +
+         std::to_string(model) + "\n\n";
+}
+
 /// A device file long enough for both registers.
 constexpr std::size_t DEVICE_SIZE = MSR_PKG_ENERGY + 8;
 
@@ -220,6 +231,58 @@ TEST_F(RaplCheckTest, OtherVendorIsUnsupported) {
   EXPECT_EQ(RESULT.report.message,
             "unsupported: rapl reads Intel's RAPL energy registers, and this CPU's vendor is "
             "AuthenticAMD");
+}
+
+/**
+ * @test A Silvermont Atom (family 6, model 0x37) is unsupported although both
+ * registers read: its MSR 0x606 gives the energy unit as 2^ESU uJ, 32 uJ a
+ * count at its ESU of 5, which decoded as 2^-ESU J would make every reading
+ * 976.5625 times too large. There is no plan to measure in that unit.
+ */
+TEST_F(RaplCheckTest, MicrojouleEnergyUnitIsUnsupported) {
+  ASSERT_TRUE(writeDevice(dir_.path() + "/msr",
+                          {{MSR_POWER_UNIT, ATOM_POWER_UNIT}, {MSR_PKG_ENERGY, 1000}},
+                          DEVICE_SIZE));
+
+  const ReadinessResult RESULT = checkRaplRequestFrom(raplRequest(), sources(intelCpuinfo(55)));
+
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED) << RESULT.report.message;
+  EXPECT_EQ(RESULT.report.message,
+            "unsupported: rapl decodes MSR 0x606's energy unit as 2^-ESU J, and this CPU, family "
+            "6 model 55 (0x37), is one of the Silvermont and Airmont Atoms, which encode it as "
+            "2^ESU uJ");
+  EXPECT_EQ(RESULT.report.hint, "") << "no remedy changes how this CPU encodes the unit";
+  EXPECT_FALSE(RESULT.collectionReady());
+  EXPECT_EQ(RESULT.plan, nullptr) << RESULT.report.message;
+}
+
+/**
+ * @test The refusal covers the six models that encode the unit in
+ * microjoules, each named; the Atoms from Goldmont on and the Core CPUs
+ * encode it as 2^-ESU J and are ready with that unit.
+ */
+TEST_F(RaplCheckTest, OnlyTheMicrojouleModelsAreRefused) {
+  writeReadableDevice();
+  for (const int MODEL : {0x37, 0x4A, 0x4C, 0x4D, 0x5A, 0x5D}) {
+    const ReadinessResult RESULT =
+        checkRaplRequestFrom(raplRequest(), sources(intelCpuinfo(MODEL)));
+    EXPECT_EQ(RESULT.cause, ReadinessCause::UNSUPPORTED)
+        << "model " << MODEL << ": " << RESULT.report.message;
+    EXPECT_NE(RESULT.report.message.find("family 6 model " + std::to_string(MODEL) + " (0x"),
+              std::string::npos)
+        << RESULT.report.message;
+    EXPECT_EQ(RESULT.plan, nullptr) << "model " << MODEL;
+  }
+  // Goldmont, Goldmont Plus, Tremont, Gracemont and Meteor Lake.
+  for (const int MODEL : {0x5C, 0x7A, 0x96, 0xBE, 0xAA}) {
+    const ReadinessResult RESULT =
+        checkRaplRequestFrom(raplRequest(), sources(intelCpuinfo(MODEL)));
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY)
+        << "model " << MODEL << ": " << RESULT.report.message;
+    const auto PLAN = std::dynamic_pointer_cast<const RaplPlan>(RESULT.plan);
+    ASSERT_NE(PLAN, nullptr) << "model " << MODEL;
+    EXPECT_EQ(PLAN->energyUnitJoules, 1.0 / 16384.0) << "model " << MODEL;
+  }
 }
 
 /** @test No device: missing, with the driver and the container's device as the remedy. */
@@ -778,10 +841,10 @@ TEST_F(RaplCaptureTest, StartIsTheWindowsOwn) {
 }
 
 /**
- * @test The report states its scope, the counter's wrap and the per-call
- * definition, and its numbers follow them: energy is the delta in units,
- * power the energy over the duration, energy per call the power times the
- * median call time.
+ * @test The report states its scope, the counter's wrap with the bound a
+ * window's delta needs, and the per-call definition, and its numbers follow
+ * them: energy is the delta in units, power the energy over the duration,
+ * energy per call the power times the median call time.
  */
 TEST_F(RaplCaptureTest, ReportFollowsItsDefinitions) {
   RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
@@ -796,7 +859,9 @@ TEST_F(RaplCaptureTest, ReportFollowsItsDefinitions) {
   EXPECT_NE(REPORT.find("\nScope: package 0, read through " + device() + " (MSR 0x611): "),
             std::string::npos)
       << REPORT;
-  EXPECT_NE(REPORT.find("\nCounter: 32 bits, wrapping after 262144.000 J at this unit; "),
+  EXPECT_NE(REPORT.find("\nCounter: 32 bits, wrapping after 262144.000 J at this unit; a "
+                        "window's delta is its energy only when the window uses less than "
+                        "that\n"),
             std::string::npos)
       << REPORT;
   EXPECT_NE(REPORT.find("\nEnergy per operation: the window's average package power x its "

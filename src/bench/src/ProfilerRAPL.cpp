@@ -194,6 +194,30 @@ CpuDescription describeCpu(const std::string& cpuinfo) {
   return cpu;
 }
 
+/**
+ * @brief Whether an Intel CPU of family 6 and @p model encodes MSR 0x606's
+ * energy-status unit as 2^ESU microjoules a count rather than 2^-ESU joules:
+ * the Silvermont and Airmont Atoms. The Intel 64 and IA-32 Architectures
+ * Software Developer's Manual, volume 4 (order number 335592), gives that
+ * encoding in table 2-8 (06_37H, 06_4AH, 06_5AH, 06_5DH, and 06_4CH by
+ * section 2.4.2) and table 2-10 (06_4DH); Linux's intel_rapl driver gives
+ * 0x37, 0x4A, 0x4C and 0x5A an Atom energy unit of their own. Later Atoms
+ * (Goldmont on) use the 2^-ESU joules encoding.
+ */
+bool encodesMicrojoules(int model) {
+  switch (model) {
+  case 0x37:
+  case 0x4A:
+  case 0x4C:
+  case 0x4D:
+  case 0x5A:
+  case 0x5D:
+    return true;
+  default:
+    return false;
+  }
+}
+
 /** @brief Whether the CPU and the msr device described by @p sources let rapl collect. */
 ReadinessResult decideCollection(const RaplSources& sources) {
 #ifndef __linux__
@@ -219,6 +243,18 @@ ReadinessResult decideCollection(const RaplSources& sources) {
         ReadinessCause::UNSUPPORTED,
         "rapl reads Intel's RAPL energy registers, and this CPU's vendor is " + CPU.vendor, "");
   }
+  if (CPU.family == 6 && encodesMicrojoules(CPU.modelNumber)) {
+    // Refused before the device is read: no access makes the unit right.
+    char model[48];
+    std::snprintf(model, sizeof(model), "family 6 model %d (0x%X)", CPU.modelNumber,
+                  static_cast<unsigned>(CPU.modelNumber));
+    return readinessResult(ReadinessCause::UNSUPPORTED,
+                           "rapl decodes MSR 0x606's energy unit as 2^-ESU J, and this CPU, " +
+                               std::string(model) +
+                               ", is one of the Silvermont and Airmont Atoms, which encode it as "
+                               "2^ESU uJ",
+                           "");
+  }
   const MsrRead UNIT = readMsr(sources.device, MSR_RAPL_POWER_UNIT);
   if (!UNIT.value) {
     return refusalOf(UNIT);
@@ -228,7 +264,8 @@ ReadinessResult decideCollection(const RaplSources& sources) {
     return refusalOf(ENERGY);
   }
 
-  // The energy-status unit is bits 12:8 of MSR 0x606: one count is 2^-unit J.
+  // The energy-status unit is bits 12:8 of MSR 0x606: one count is 2^-unit J
+  // on every CPU admitted above.
   const int ESU = static_cast<int>((*UNIT.value >> 8) & 0x1F);
   auto plan = std::make_shared<RaplPlan>();
   plan->device = sources.device;
@@ -298,10 +335,10 @@ ReadinessResult checkRaplRequest(const ReadinessRequest& request, const Readines
 /* ----------------------------- RAPLProfiler ----------------------------- */
 
 RAPLProfiler::RAPLProfiler(const PerfConfig& cfg, std::string testName)
-    : cfg_(cfg), testName_(std::move(testName)) {
+    : testName_(std::move(testName)) {
   // Reported as the registry reports its own decisions. An empty folder is
   // not capture evidence: a request that cannot collect creates none.
-  const ReadinessResult DECISION = decideNow(cfg_);
+  const ReadinessResult DECISION = decideNow(cfg);
   if (!ProfilerRegistry::instance().reportDecision("rapl", DECISION)) {
     return;
   }
@@ -310,15 +347,15 @@ RAPLProfiler::RAPLProfiler(const PerfConfig& cfg, std::string testName)
     return;
   }
   artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "rapl");
+      profiler_env::resolveArtifactDir(cfg.profileTool, cfg.artifactRoot, testName_, "rapl");
 }
 
 RAPLProfiler::RAPLProfiler(const PerfConfig& cfg, std::string testName,
                            std::shared_ptr<const RaplPlan> plan)
-    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+    : testName_(std::move(testName)), plan_(std::move(plan)) {
   if (plan_) {
     artifactDir_ =
-        profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "rapl");
+        profiler_env::resolveArtifactDir(cfg.profileTool, cfg.artifactRoot, testName_, "rapl");
   }
 }
 
@@ -376,8 +413,10 @@ void RAPLProfiler::afterMeasure(const Stats& s) {
   }
   const Reading END{static_cast<uint32_t>(*READ.value & 0xFFFFFFFFULL), END_US};
 
-  // Unsigned 32-bit subtraction is right across one wrap of the counter;
-  // two wraps in one window cannot be told from none.
+  // Unsigned 32-bit subtraction gives the counter's advance modulo 2^32: the
+  // advance itself, across a wrap or not, only when it is less than 2^32
+  // counts, that is, when the window used less than 2^32 times the unit, as
+  // the report states. Equal readings are then a window without an advance.
   const uint32_t DELTA = END.counter - START.counter;
   RAPLMeasurement measurement;
   measurement.energyJoules = static_cast<double>(DELTA) * plan_->energyUnitJoules;
@@ -416,8 +455,8 @@ bool RAPLProfiler::writeWindow(int window, const Reading& start, const Reading& 
             " (MSR 0x611): every core, cache and the integrated graphics of the package, "
             "whatever runs on them; nothing outside the package\n";
     std::snprintf(line, sizeof(line),
-                  "Counter: 32 bits, wrapping after %.3f J at this unit; a window is taken to "
-                  "wrap it at most once\n",
+                  "Counter: 32 bits, wrapping after %.3f J at this unit; a window's delta is its "
+                  "energy only when the window uses less than that\n",
                   4294967296.0 * plan_->energyUnitJoules);
     text += line;
     text += "Energy per operation: the window's average package power x its median time per "

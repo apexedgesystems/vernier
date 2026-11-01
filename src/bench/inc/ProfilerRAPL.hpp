@@ -12,7 +12,9 @@
  * naming the file follows. The counter covers the whole package (its cores,
  * caches, integrated graphics and the rest of it), not the case's thread
  * alone, and nothing off the package: no DRAM counter is read. It is 32 bits
- * wide and is taken to wrap at most once in a window.
+ * wide: a window's delta is its energy only when the counter advances by less
+ * than 2^32 counts over the window, that is, when the window uses less than
+ * 2^32 times the unit.
  *
  * A failed read at either end of a window fails the run with the read's
  * cause, and a report that cannot be written fails it at the completion
@@ -20,13 +22,14 @@
  * window over which the counter did not advance is reported as such.
  *
  * One decision for the doctor rows and the run: rapl takes no mode words and
- * has no analysis; the CPU must be Intel's (vendor_id in /proc/cpuinfo); and
- * this process must open /dev/cpu/0/msr and read the power-unit register
- * (MSR 0x606) and the package counter. A refusal names its cause:
- * unsupported (not Linux, not Intel, a register the CPU does not implement),
- * missing (no msr device), denied (the device or the driver refused this
- * process) or unusable (any other failure), and fails the run (exit status 4
- * once the tests pass).
+ * has no analysis; the CPU must be Intel's (vendor_id in /proc/cpuinfo) and
+ * not one of the Silvermont and Airmont Atoms, which encode the energy unit
+ * otherwise; and this process must open /dev/cpu/0/msr and read the
+ * power-unit register (MSR 0x606) and the package counter. A refusal names
+ * its cause: unsupported (not Linux, not Intel, one of those Atoms, a
+ * register the CPU does not implement), missing (no msr device), denied (the
+ * device or the driver refused this process) or unusable (any other
+ * failure), and fails the run (exit status 4 once the tests pass).
  *
  * Access is set up beforehand and never raised by Vernier: run as root, or
  * give the process CAP_SYS_RAWIO, which the msr driver checks, and read
@@ -128,7 +131,6 @@ private:
                                  double medianUs);
   void printSummary(int window, const RAPLMeasurement& measurement, uint32_t delta) const;
 
-  PerfConfig cfg_{};
   std::string testName_;
   std::string artifactDir_;
   std::shared_ptr<const RaplPlan> plan_;
@@ -158,13 +160,15 @@ ReadinessResult raplAccessRefusal(const std::string& step, int err);
  * doctor rows, the doctor's selected row and the run all ask this one.
  *
  * In order: a mode word is a configuration error (rapl takes none); a system
- * other than Linux, or a CPU whose vendor_id is not GenuineIntel, is
- * unsupported; then /dev/cpu/0/msr is opened and MSR 0x606 and MSR 0x611 are
- * read, each failure refused by raplAccessRefusal() (a read of fewer than 8
- * bytes is unusable). With both registers read the request is ready and the
- * plan is a RaplPlan. --profile-analyze is an analysis-stage error on a
- * request that can collect: the capture still runs, and the run fails at its
- * end.
+ * other than Linux, a CPU whose vendor_id is not GenuineIntel, or one of
+ * family 6 whose model encodes the energy unit as 2^ESU microjoules, not the
+ * 2^-ESU joules the plan decodes (0x37, 0x4A, 0x4C, 0x4D, 0x5A and 0x5D: the
+ * Silvermont and Airmont Atoms), is unsupported; then /dev/cpu/0/msr is
+ * opened and MSR 0x606 and MSR 0x611 are read, each failure refused by
+ * raplAccessRefusal() (a read of fewer than 8 bytes is unusable). With both
+ * registers read the request is ready and the plan is a RaplPlan.
+ * --profile-analyze is an analysis-stage error on a request that can
+ * collect: the capture still runs, and the run fails at its end.
  */
 ReadinessResult checkRaplRequest(const ReadinessRequest& request, const ReadinessContext& ctx);
 
