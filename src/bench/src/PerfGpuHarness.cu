@@ -276,6 +276,22 @@ bool stateUnifiedMemoryRequest(const PerfGpuConfig& cfg, const CuptiCollector& c
 }
 
 /**
+ * @brief The five um* cells from a window's counters; all empty when it has
+ *        none. umThrashing is 1 when CUPTI recorded thrashing in the window, not
+ *        UnifiedMemoryProfile::isThrashing()'s ratio.
+ */
+void fillUnifiedMemoryCells(PerfRow& row, const std::optional<UnifiedMemoryProfile>& um) {
+  if (!um.has_value()) {
+    return;
+  }
+  row.umPageFaults = um->pageFaults;
+  row.umH2DMigrations = um->h2dMigrations;
+  row.umD2HMigrations = um->d2hMigrations;
+  row.umMigrationTimeUs = um->migrationTimeUs;
+  row.umThrashing = um->thrashingEvents > 0;
+}
+
+/**
  * @brief After a window that recorded the unified-memory counters: a window
  *        whose records are not complete fails the request for @p test, naming
  *        the problem, and its row's um* cells stay empty.
@@ -901,8 +917,9 @@ private:
     }
     row.deviceCount = 1;
 
-    // The um* cells stay empty: the row does not carry the unified-memory
-    // counters of result.stats.unifiedMemory.
+    // The um* cells, from the window's unified-memory counters when it has
+    // them.
+    fillUnifiedMemoryCells(row, result.stats.unifiedMemory);
     PerfRegistry::instance().set(row);
   }
 
@@ -925,6 +942,8 @@ private:
     if (firstDev.stats.occupancy.blockSize > 0) {
       row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
     }
+    // The um* cells, from the window over all the devices' launches.
+    fillUnifiedMemoryCells(row, result.aggregatedStats.unifiedMemory);
 
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;

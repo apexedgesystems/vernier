@@ -18,9 +18,11 @@
 
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -1358,8 +1360,8 @@ constexpr std::size_t upTo2MiB(std::size_t bytes) {
  *       zero (the old byte-count formula gave 64 faults for these copies) and
  *       nothing is recorded as failed; where it cannot, the result has none and
  *       the measurement records the request's failure. Its CSV row keeps the
- *       header's columns, the five um* cells empty, and the timing and byte cells
- *       of the measurement. Parsing the flag records nothing
+ *       header's columns, the five um* cells zero or empty accordingly, and the
+ *       timing and byte cells of the measurement. Parsing the flag records nothing
  */
 TEST_F(PerfGpuHarnessTest, ExplicitCopiesAreNoMigrations) {
   const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
@@ -1378,7 +1380,8 @@ TEST_F(PerfGpuHarnessTest, ExplicitCopiesAreNoMigrations) {
                  .measure();
   }
 
-  if (result.stats.unifiedMemory.has_value()) {
+  const bool RECORDED = result.stats.unifiedMemory.has_value();
+  if (RECORDED) {
     EXPECT_EQ(unifiedMemoryFailures(), 0U) << "a request CUPTI met recorded a failure";
     const ub::UnifiedMemoryProfile& UM = *result.stats.unifiedMemory;
     EXPECT_EQ(UM.pageFaults, 0U);
@@ -1392,8 +1395,20 @@ TEST_F(PerfGpuHarnessTest, ExplicitCopiesAreNoMigrations) {
   }
   const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
   ASSERT_EQ(ROWS.size(), 1U);
+  const std::map<std::string, std::string> UM_CELLS_EXPECTED =
+      RECORDED ? std::map<std::string, std::string>{{"umPageFaults", "0"},
+                                                    {"umH2DMigrations", "0"},
+                                                    {"umD2HMigrations", "0"},
+                                                    {"umMigrationTimeUs", "0.000000"},
+                                                    {"umThrashing", "0"}}
+               : std::map<std::string, std::string>{{"umPageFaults", ""},
+                                                    {"umH2DMigrations", ""},
+                                                    {"umD2HMigrations", ""},
+                                                    {"umMigrationTimeUs", ""},
+                                                    {"umThrashing", ""}};
   for (const std::string& column : UM_COLUMNS) {
-    EXPECT_EQ(ROWS[0].at(column), "") << column << " holds a value the row does not carry";
+    EXPECT_EQ(ROWS[0].at(column), UM_CELLS_EXPECTED.at(column))
+        << column << (RECORDED ? ": not the observed zero" : ": a value nothing recorded");
   }
   EXPECT_EQ(ROWS[0].at("h2dBytes"), std::to_string(SaxpyFixtureData::bytes()));
   EXPECT_EQ(ROWS[0].at("d2hBytes"), std::to_string(SaxpyFixtureData::bytes()));
@@ -1406,9 +1421,11 @@ TEST_F(PerfGpuHarnessTest, ExplicitCopiesAreNoMigrations) {
  *       seen faulting and migrating it: at least one GPU fault group, at least
  *       one host-to-device migration of at least the buffer's bytes and at most
  *       those rounded up to unified memory's 2 MiB blocks, nothing back to the
- *       host while the kernel only reads, a time for the transfers, and no
- *       failure recorded. Skipped, with CUPTI's or the collector's words, on a
- *       device where a collector asked for the counters is refused them
+ *       host while the kernel only reads, a time for the transfers, no
+ *       thrashing, and no failure recorded. Through the real CSV writer the
+ *       row's five um* cells are those counts. Skipped, with CUPTI's or the
+ *       collector's words, on a device where a collector asked for the
+ *       counters is refused them
  */
 TEST_F(PerfGpuHarnessTest, ManagedBufferCountersAreObserved) {
   const YieldEnvCleared CLEARED;
@@ -1450,6 +1467,113 @@ TEST_F(PerfGpuHarnessTest, ManagedBufferCountersAreObserved) {
   EXPECT_EQ(UM.d2hMigrations, 0U) << "pages went back to the host while the kernel only read";
   EXPECT_EQ(UM.d2hBytes, 0U);
   EXPECT_GT(UM.migrationTimeUs, 0.0) << "migrations recorded without a time";
+  EXPECT_EQ(UM.thrashingEvents, 0U) << "thrashing recorded for a kernel that only read";
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U);
+  EXPECT_EQ(ROWS[0].at("umPageFaults"), std::to_string(UM.pageFaults));
+  EXPECT_EQ(ROWS[0].at("umH2DMigrations"), std::to_string(UM.h2dMigrations));
+  EXPECT_EQ(ROWS[0].at("umD2HMigrations"), "0");
+  EXPECT_EQ(ROWS[0].at("umMigrationTimeUs"), std::to_string(UM.migrationTimeUs));
+  EXPECT_EQ(ROWS[0].at("umThrashing"), "0");
+}
+
+namespace {
+
+/** @brief The GPU's global timer, in nanoseconds. */
+__device__ unsigned long long globalTimerNs() {
+  unsigned long long now = 0;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+  return now;
+}
+
+/**
+ * @brief Adds one to one int per page until @p durationNs have passed on the
+ *        GPU's timer: the kernel side of a host and a kernel writing the same
+ *        managed pages at once, for as long as asked however fast the
+ *        additions go.
+ */
+__global__ void contendKernel(int* pages, int stride, unsigned long long durationNs) {
+  const unsigned long long START = globalTimerNs();
+  while (globalTimerNs() - START < durationNs) {
+    atomicAdd(&pages[threadIdx.x * stride], 1);
+  }
+}
+
+} // namespace
+
+/**
+ * @test Thrashing that CUPTI records sets the row's umThrashing cell: a kernel
+ *       and the host writing the same 32 managed pages at once for 20 ms, in
+ *       one measured launch, give at least one thrashing record and the cell 1
+ *       (CUPTI's report, not UnifiedMemoryProfile::isThrashing()'s ratio of
+ *       migrations to faults). Skipped where a collector
+ *       asked for the counters is refused them, or where the host cannot write
+ *       managed memory while a kernel runs
+ */
+TEST_F(PerfGpuHarnessTest, CuptiThrashingSetsTheThrashingCell) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  int concurrent = 0;
+  if (cudaDeviceGetAttribute(&concurrent, cudaDevAttrConcurrentManagedAccess, 0) != cudaSuccess ||
+      concurrent != 1) {
+    GTEST_SKIP() << "the host cannot write managed memory while a kernel runs on this device";
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  constexpr int PAGES = 32;
+  constexpr int PAGE = 4096;
+  constexpr int STRIDE = PAGE / static_cast<int>(sizeof(int));
+  struct ManagedPages {
+    int* data = nullptr;
+    ManagedPages() {
+      if (cudaMallocManaged(&data, PAGES * PAGE) != cudaSuccess) {
+        data = nullptr;
+      }
+    }
+    ~ManagedPages() { cudaFree(data); }
+    ManagedPages(const ManagedPages&) = delete;
+    ManagedPages& operator=(const ManagedPages&) = delete;
+  } owned;
+  ASSERT_NE(owned.data, nullptr) << "cudaMallocManaged failed";
+  std::memset(owned.data, 0, PAGES * PAGE);
+  int* pages = owned.data;
+  ub::PerfConfig oneLaunch = cfg_;
+  oneLaunch.cycles = 1;
+  oneLaunch.repeats = 1;
+  ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryThrash") + ".Race", oneLaunch};
+
+  ub::PerfGpuResult result;
+  {
+    vernier::bench::test::StderrCapture capture; // a one-sample measurement's notes
+    result = perf.cudaKernel(
+                     [pages](cudaStream_t s) {
+                       // A race of a set length: one that ends with a set
+                       // number of additions can be over before the host has
+                       // written enough for CUPTI to record thrashing.
+                       contendKernel<<<1, PAGES, 0, s>>>(pages, STRIDE, 20'000'000ULL);
+                       // The host writes the same pages until the kernel ends
+                       // (bounded at 5 s).
+                       volatile int* host = pages;
+                       const auto START = std::chrono::steady_clock::now();
+                       while (cudaStreamQuery(s) == cudaErrorNotReady &&
+                              std::chrono::steady_clock::now() - START < std::chrono::seconds(5)) {
+                         for (int p = 0; p < PAGES; ++p) {
+                           host[p * STRIDE + 1] = host[p * STRIDE + 1] + 1;
+                         }
+                       }
+                     },
+                     "host_and_kernel")
+                 .measure();
+  }
+  ASSERT_TRUE(result.stats.unifiedMemory.has_value())
+      << "this device's CUPTI records the counters, and the measurement carries none";
+  EXPECT_GE(result.stats.unifiedMemory->thrashingEvents, 1U)
+      << "a host and a kernel writing the same pages at once recorded no thrashing";
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U);
+  EXPECT_EQ(ROWS[0].at("umThrashing"), "1");
 }
 
 /**
@@ -1494,10 +1618,10 @@ TEST_F(PerfGpuHarnessDeathTest, AnUnmetUnifiedMemoryRequestFailsTheRun) {
 /**
  * @test Without anything standing the collector down, the request follows the
  *       device: where nothing refuses the counters (a probe window says), the
- *       run passes, nothing is reported or recorded, and every result carries
- *       them; where CUPTI refuses them, the run fails as an unmet request does,
- *       the report naming the device and CUPTI's answer, the one the probe
- *       window got
+ *       run passes, nothing is reported or recorded, and every result and row
+ *       carries them; where CUPTI refuses them, the run fails as an unmet
+ *       request does, the report naming the device and CUPTI's answer, the one
+ *       the probe window got
  */
 TEST_F(PerfGpuHarnessDeathTest, TheRequestFollowsTheDevice) {
   const YieldEnvCleared CLEARED;
@@ -1506,11 +1630,11 @@ TEST_F(PerfGpuHarnessDeathTest, TheRequestFollowsTheDevice) {
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   if (RECORDS) {
-    const auto MET = [](const char* results) {
+    const auto MET = [](const char* measured) {
       return ::testing::AllOf(
-          ::testing::ContainsRegex(
-              "umLines=0 umReports=0 umRows=0 umFailures=0 umRunEndLines=0 runEnd=none"),
-          ::testing::ContainsRegex(std::string("umResults=") + results + " umDevice=0"));
+          ::testing::ContainsRegex(std::string("umLines=0 umReports=0 umRows=") + measured +
+                                   " umFailures=0 umRunEndLines=0 runEnd=none"),
+          ::testing::ContainsRegex(std::string("umResults=") + measured + " umDevice=0"));
     };
     EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 0),
                 ::testing::ExitedWithCode(0), MET("2"));

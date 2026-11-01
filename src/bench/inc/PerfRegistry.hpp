@@ -121,13 +121,14 @@ struct PerfRow {
   std::optional<double> multiGpuEfficiency; ///< Speedup / N_gpus (ideal=1.0)
   std::optional<double> p2pBandwidthGBs;    ///< Peer-to-peer bandwidth
 
-  // Unified Memory counters. The GPU harness collects none and leaves these
-  // empty in every row it publishes.
+  // Unified Memory counters of the measurement's window
+  // (GpuStats::unifiedMemory): filled when PerfGpuConfig::captureUnifiedMemory
+  // asks for them and CUPTI records them, empty otherwise.
   std::optional<size_t> umPageFaults;      ///< Page faults
   std::optional<size_t> umH2DMigrations;   ///< Host->Device migrations
   std::optional<size_t> umD2HMigrations;   ///< Device->Host migrations
   std::optional<double> umMigrationTimeUs; ///< Time spent migrating (us)
-  std::optional<bool> umThrashing;         ///< Thrashing reported
+  std::optional<bool> umThrashing;         ///< CUPTI recorded thrashing in the window
 
   // Stability assessment
   bool stable{true};        ///< CV% below adaptive threshold
