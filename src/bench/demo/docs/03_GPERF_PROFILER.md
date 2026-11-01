@@ -8,7 +8,10 @@ from the development tree at project version 1.0.3, whose CLI reported
 `bench 1.0.3`. The doctor's `gperf` row in Needs comes from this rig on
 2026-10-03 (UTC), a later tree at the same version; the skip and the row
 quoted under If It Does Not Match, from a Debug build of that tree without
-gperftools on an x86-64 laptop.
+gperftools on an x86-64 laptop. The sampling-rate flag example under If It
+Does Not Match was recaptured on this rig on 2026-10-17 (UTC); the
+inherited-variable result beside it retains this rig's earlier capture, of
+2026-09-24 (UTC).
 
 ## Overview
 
