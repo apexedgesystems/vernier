@@ -53,7 +53,8 @@ which is in package 0.
   attribution to one process.
 - **Resolution:** the counter is 32 bits wide; at this laptop's unit it wraps
   after 262,144 J, which takes more than half an hour even at the package's
-  short-term limit (115 W here). A window is taken to wrap it at most once.
+  short-term limit (115 W here). A window's delta is its energy only when the
+  window uses less than those 262,144 J (2^32 counts).
 - **Overhead:** two register reads per measured window, before the first
   repeat and after the last, outside the timed calls.
 - **Not for:** where the energy goes inside a function (use a profiler for

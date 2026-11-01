@@ -1035,7 +1035,8 @@ inside still needs the access above
 ([Docker setup](DOCKER_SETUP.md#rapl-energy-profiling)).
 
 **`unsupported`: no RAPL here.** The CPU is not Intel's (an ARM board, an AMD
-CPU), or it does not implement the register read (the notice says which).
+CPU), is one of the Silvermont and Airmont Atoms, whose energy unit rapl does
+not decode, or does not implement the register read (the notice says which).
 RAPL cannot measure on such a machine.
 
 **A counter that did not advance** over a window is not a failure: its
