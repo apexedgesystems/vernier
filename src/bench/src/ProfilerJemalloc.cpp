@@ -79,6 +79,11 @@ constexpr const char* OPTIONS_REMEDY =
     "Set MALLOC_CONF=prof:true,prof_final:true,prof_accum:true,prof_prefix:./jeprof, as bench "
     "run --profile jemalloc does.";
 
+/// The remedy of an empty dump prefix.
+constexpr const char* PREFIX_REMEDY =
+    "Give prof_prefix a path, as bench run --profile jemalloc does: "
+    "MALLOC_CONF=prof:true,prof_final:true,prof_accum:true,prof_prefix:./jeprof.";
+
 /// The probe as reports name it.
 std::string probeText() {
   return std::string{ENV_PROGRAM} + " LD_PRELOAD=" + JEMALLOC_PRELOAD +
@@ -416,6 +421,15 @@ ReadinessResult runtimeVerdict(const ReadinessRequest& request, const ReadinessC
                                "interval or growth dumps",
                            OPTIONS_REMEDY);
   }
+  if (facts.prefix.empty()) {
+    // jemalloc writes no automatic dump without a prefix: its exit dump is
+    // registered only for a prefix that is not empty.
+    return readinessResult(ReadinessCause::CONFIGURATION,
+                           "jemalloc profiles this process (" + WHICH +
+                               ") but writes no dump: its prof_prefix is empty, which turns its "
+                               "automatic dumps off",
+                           PREFIX_REMEDY);
+  }
   plan.prefix = facts.prefix;
   plan.finalDump = facts.optProfFinal;
   const bool BY_RUNNER = request.launch == LaunchContext::RUNNER_WRAPPED &&
@@ -580,23 +594,22 @@ ReadinessResult checkJemallocRequestWithFacts(const ReadinessRequest& request,
 
 /* ----------------------------- JemallocProfiler ----------------------------- */
 
-JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName)
-    : cfg_(cfg), testName_(std::move(testName)) {
+JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName) {
   // Decided first and reported as the registry reports its own decisions; a
   // request that cannot collect creates nothing.
-  const ReadinessResult DECISION = decideNow(cfg_);
+  const ReadinessResult DECISION = decideNow(cfg);
   if (ProfilerRegistry::instance().reportDecision("jemalloc", DECISION)) {
     plan_ = readyPlan(DECISION);
-    artifactDir_ = profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_,
-                                                    "jemalloc");
+    artifactDir_ =
+        profiler_env::resolveArtifactDir(cfg.profileTool, cfg.artifactRoot, testName, "jemalloc");
   }
 }
 
 JemallocProfiler::JemallocProfiler(const PerfConfig& cfg, std::string testName,
                                    std::shared_ptr<const JemallocPlan> plan)
-    : cfg_(cfg), testName_(std::move(testName)), plan_(std::move(plan)) {
+    : plan_(std::move(plan)) {
   artifactDir_ =
-      profiler_env::resolveArtifactDir(cfg_.profileTool, cfg_.artifactRoot, testName_, "jemalloc");
+      profiler_env::resolveArtifactDir(cfg.profileTool, cfg.artifactRoot, testName, "jemalloc");
 }
 
 void JemallocProfiler::beforeMeasure() {

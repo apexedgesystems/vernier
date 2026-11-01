@@ -307,7 +307,9 @@ TEST(JemallocRun, ProfilingNotTakenIsUnusable) {
 
 /**
  * @test Profiling built in but not turned on, or turned on with no dump, is a
- * configuration error.
+ * configuration error: no dump at exit and no interval or growth dumps, or
+ * an empty prof_prefix, which turns jemalloc's automatic dumps off (the exit
+ * dump, and interval dumps too).
  */
 TEST(JemallocRun, OptionsThatWriteNothingAreConfigurationErrors) {
   JemallocRuntimeFacts off = profiling();
@@ -325,6 +327,28 @@ TEST(JemallocRun, OptionsThatWriteNothingAreConfigurationErrors) {
   EXPECT_THAT(SILENT.report.message,
               HasSubstr("but writes no dump: MALLOC_CONF has no prof_final:true, and no interval "
                         "or growth dumps"));
+
+  for (const bool INTERVAL : {false, true}) {
+    JemallocRuntimeFacts unnamed = profiling();
+    unnamed.prefix.clear();
+    if (INTERVAL) {
+      unnamed.optProfFinal = false;
+      unnamed.lgProfInterval = 30;
+    }
+    const ReadinessResult UNNAMED = runtimeDecision(unnamed);
+    EXPECT_EQ(UNNAMED.cause, ReadinessCause::CONFIGURATION) << INTERVAL;
+    EXPECT_FALSE(UNNAMED.collectionReady()) << INTERVAL;
+    EXPECT_EQ(UNNAMED.report.message,
+              "configuration: jemalloc profiles this process "
+              "(/usr/lib/x86_64-linux-gnu/libjemalloc.so.2 "
+              "(5.3.0-0-g54eaed1d8b56b1aa528be3bdd1877e59c56fa90c)) but writes no dump: its "
+              "prof_prefix is empty, which turns its automatic dumps off")
+        << INTERVAL;
+    EXPECT_EQ(UNNAMED.report.hint, std::string{"Give prof_prefix a path, as bench run --profile "
+                                               "jemalloc does: MALLOC_CONF="} +
+                                       RUN_OPTIONS + ",prof_prefix:./jeprof.")
+        << INTERVAL;
+  }
 }
 
 /** @test Each limit of a run that still collects is a caveat, and only that one is named. */

@@ -330,7 +330,6 @@ vernier_add_gtest(
   cpu/utst/16_JemallocProfiler_uTest.cpp
   LINK
   bench
-  demo_helpers
   LABELS
   demo
   jemalloc

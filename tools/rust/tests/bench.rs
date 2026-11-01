@@ -4513,8 +4513,8 @@ fn run_jemalloc_refusals_start_nothing() {
 
 /// @test bench run preloads jemalloc with its profiling options into the wrap
 /// folder, takes the benchmark's own exit dump and names any other process's,
-/// prints what was sampled and the jeprof command, and says jeprof is missing
-/// only when it is.
+/// prints that dump with its size, no count of samples, and the jeprof
+/// command, and says jeprof is missing only when it is.
 #[test]
 fn run_jemalloc_takes_the_benchmarks_own_dump() {
     let rig = jemalloc_rig(true);
@@ -4534,12 +4534,12 @@ fn run_jemalloc_takes_the_benchmarks_own_dump() {
         "{log}"
     );
     let dump = format!("bench-out/fake_bench.jemalloc/jeprof.{pid}.0.f.heap");
+    let size = std::fs::metadata(rig.dir.path().join(&dump))
+        .expect("the benchmark's dump")
+        .len();
     assert!(
-        stdout.contains(&format!("[bench] jemalloc wrote {dump} (",))
-            && stdout.contains(
-                " bytes) when the benchmark exited: 2287 allocations sampled over the run, 1 of \
-             them in use at exit"
-            ),
+        stdout.lines().any(|l| l
+            == format!("[bench] jemalloc wrote {dump} ({size} bytes) when the benchmark exited")),
         "{stdout}"
     );
     let other: u32 = pid.parse::<u32>().expect("a process id") + 2;
@@ -4572,7 +4572,8 @@ fn run_jemalloc_takes_the_benchmarks_own_dump() {
 /// @test The completion check fails, after the benchmark exited 0, for no
 /// dump of the benchmark (also when the folder holds a previous run's dump,
 /// removed before the run, or another process's), an empty one and one of
-/// another program; a run that sampled nothing passes.
+/// another program; a run that sampled nothing passes, with the line any run
+/// prints.
 #[test]
 fn run_jemalloc_completion_failures() {
     let rig = jemalloc_rig(true);
@@ -4613,7 +4614,9 @@ fn run_jemalloc_completion_failures() {
     let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "zero");
     assert_eq!(code, 0, "{err}");
     assert!(
-        stdout.contains("when the benchmark exited: no allocation was sampled over the run"),
+        stdout.lines().any(|l| l
+            .starts_with("[bench] jemalloc wrote bench-out/fake_bench.jemalloc/jeprof.")
+            && l.ends_with(" bytes) when the benchmark exited")),
         "{stdout}"
     );
 }
@@ -4657,9 +4660,10 @@ fn run_jemalloc_real_library_profiles_a_real_program() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
     assert!(
-        stdout.contains("[bench] jemalloc wrote bench-out/true.jemalloc/jeprof.")
-            && stdout.contains(".0.f.heap (")
-            && stdout.contains("when the benchmark exited: "),
+        stdout.lines().any(|l| l
+            .starts_with("[bench] jemalloc wrote bench-out/true.jemalloc/jeprof.")
+            && l.contains(".0.f.heap (")
+            && l.ends_with(" bytes) when the benchmark exited")),
         "{stdout}"
     );
 }

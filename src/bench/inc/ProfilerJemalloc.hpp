@@ -87,7 +87,7 @@ struct JemallocRuntimeFacts {
   bool optProfAccum = false; ///< "opt.prof_accum": dumps hold the bytes allocated over the run.
   bool optProfGdump = false; ///< "opt.prof_gdump": a dump each time the heap's peak grows.
   long lgProfInterval = -1;  ///< "opt.lg_prof_interval": -1, no interval dumps.
-  std::string prefix;        ///< "opt.prof_prefix": the dumps' path prefix.
+  std::string prefix;        ///< "opt.prof_prefix": the dumps' path prefix; "" writes none.
 };
 
 /** @brief This process's facts: mallctl looked up at run time, /proc/self/maps. */
@@ -149,8 +149,6 @@ public:
   void afterMeasure(const Stats& s) override;
 
 private:
-  PerfConfig cfg_;
-  std::string testName_;
   std::string artifactDir_;
   std::shared_ptr<const JemallocPlan> plan_;
 };
@@ -181,8 +179,9 @@ jemallocWrapEnvironment(const std::string& dir);
  * through mallctl, starting no process: not jemalloc, or jemalloc built
  * without profiling, is MISSING; profiling off although MALLOC_CONF asks for
  * it is UNUSABLE (jemalloc did not take MALLOC_CONF); profiling off, or no
- * dump configured, is a configuration error; sampling off at start, no dump
- * at exit beside interval
+ * dump configured (no dump at exit and no interval or growth dumps, or an
+ * empty prof_prefix, which turns every automatic dump off), is a
+ * configuration error; sampling off at start, no dump at exit beside interval
  * or growth dumps, or bytes allocated not accumulated, is a caveat. jeprof is
  * named beside a READY verdict and never changes one. --profile-analyze is an
  * analysis-stage error: jemalloc has no automatic analysis. On success the

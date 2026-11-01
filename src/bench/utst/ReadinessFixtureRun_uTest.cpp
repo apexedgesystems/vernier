@@ -907,3 +907,43 @@ TEST_F(ReadinessFixtureRun, JemallocProfilingRunLeavesItsOwnDump) {
     EXPECT_EQ(namesEndingWith(FOLDER, ".f.heap").size(), OTHER.status == 0 ? 1U : 0U) << OTHER.what;
   }
 }
+
+/**
+ * @test Where a jemalloc with profiling can be preloaded (the test checks so
+ * itself): bench run's options with an empty prof_prefix, which turns
+ * jemalloc's automatic dumps off, fail the run with status 4 before any
+ * folder is created, and no dump is written anywhere; the same options with
+ * a prefix leave the run's final dump. The prefix is jemalloc's own answer,
+ * read in the run.
+ */
+TEST_F(ReadinessFixtureRun, JemallocEmptyPrefixFailsBeforeAnyFolder) {
+  if (SANITIZED) {
+    GTEST_SKIP() << "the fixture is built with a sanitizer jemalloc does not profile under (the "
+                    "address or thread sanitizer's allocator, or clang's undefined-behaviour "
+                    "sanitizer linked in)";
+  }
+  if (const std::string WHY = noProfilingJemalloc(dir_.makeDirectory("check")); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:"};
+  const RunResult EMPTY = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(EMPTY.status, 4) << "run exit status with an empty prefix";
+  EXPECT_THAT(EMPTY.err,
+              HasSubstr("[FAIL] Profiler 'jemalloc': configuration: jemalloc profiles this "
+                        "process ("))
+      << "notice";
+  EXPECT_THAT(EMPTY.err, HasSubstr(") but writes no dump: its prof_prefix is empty, which turns "
+                                   "its automatic dumps off\n   Give prof_prefix a path"))
+      << "notice";
+  EXPECT_THAT(namesEndingWith(work_, ".jemalloc"), IsEmpty()) << "folders of a refused request";
+  EXPECT_THAT(namesEndingWith(work_, ".heap"), IsEmpty()) << "dumps of a refused request";
+
+  const std::string DUMPS = dir_.makeDirectory("dumps");
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS + "/jeprof"};
+  const RunResult NAMED = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(NAMED.status, 0) << "run exit status with a prefix";
+  EXPECT_THAT(NAMED.err, Not(HasSubstr("Profiler 'jemalloc'"))) << "a notice for a ready request";
+  EXPECT_EQ(namesEndingWith(DUMPS, ".f.heap").size(), 1U) << "final dumps with a prefix";
+}

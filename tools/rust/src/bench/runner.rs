@@ -469,36 +469,22 @@ fn jemalloc_dump_owner(dump: &Path) -> Option<(u32, String)> {
     Some((pid, parts.next()?.to_string()))
 }
 
-/// What a jemalloc heap profile's totals line says,
-/// `t*: <in use>: <bytes> [<sampled>: <bytes>]`: the samples still in use
-/// when the dump was written and those taken over the whole run (with
-/// `prof_accum`), each with the bytes of the sampled objects.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct DumpTotals {
-    in_use: u64,
-    in_use_bytes: u64,
-    sampled: u64,
-    sampled_bytes: u64,
-}
-
-/// The totals line of a heap profile's text, if it has one.
-fn dump_totals(text: &str) -> Option<DumpTotals> {
-    let line = text.lines().find_map(|l| l.trim().strip_prefix("t*:"))?;
-    let numbers: Vec<u64> = line
+/// True when a heap profile's text has its totals line,
+/// `t*: <a>: <b> [<c>: <d>]`, four integers. Only its presence is checked:
+/// jemalloc writes these totals in an encoding of its own for `jeprof`
+/// (with its default `prof_unbias` they are neither the samples taken nor
+/// their bytes), and `jeprof` estimates the bytes from each stack's record,
+/// not from this line.
+fn has_totals_line(text: &str) -> bool {
+    let Some(line) = text.lines().find_map(|l| l.trim().strip_prefix("t*:")) else {
+        return false;
+    };
+    let numbers: Result<Vec<u64>, _> = line
         .split(|c: char| !c.is_ascii_digit())
         .filter(|n| !n.is_empty())
-        .map(str::parse)
-        .collect::<Result<_, _>>()
-        .ok()?;
-    match numbers[..] {
-        [in_use, in_use_bytes, sampled, sampled_bytes] => Some(DumpTotals {
-            in_use,
-            in_use_bytes,
-            sampled,
-            sampled_bytes,
-        }),
-        _ => None,
-    }
+        .map(str::parse::<u64>)
+        .collect();
+    numbers.is_ok_and(|n| n.len() == 4)
 }
 
 /// True when the `MAPPED_LIBRARIES:` section of a heap profile's text maps
@@ -513,10 +499,11 @@ fn dump_maps(text: &str, binary: &Path) -> bool {
 /// The dump jemalloc writes when the benchmark exits,
 /// `jeprof.<pid>.<n>.f.heap` for the process `bench run` started (@p pid),
 /// checked after that exit: present, not empty, a heap profile (`heap_v2/`)
-/// and mapping @p binary (the benchmark, as a memory map names it). Every
-/// other dump in the folder, of a process the benchmark started under the same
-/// preload for one, is named and never taken for the benchmark's. Prints the
-/// dump with its sampled totals, zero being a valid run's, and returns it.
+/// mapping @p binary (the benchmark, as a memory map names it), with its
+/// totals line (all zero for a run that sampled nothing, which is a valid
+/// run's). Every other dump in the folder, of a process the benchmark started
+/// under the same preload for one, is named and never taken for the
+/// benchmark's. Prints the dump and its size, and returns it.
 fn require_jemalloc_dump(
     dir: &Path,
     request: &str,
@@ -579,23 +566,16 @@ fn require_jemalloc_dump(
             binary.display()
         ));
     }
-    let Some(totals) = dump_totals(&text) else {
+    if !has_totals_line(&text) {
         return fail(format!(
             "{} has no totals line (t*:); it is not a whole heap profile",
             dump.display()
         ));
-    };
-    let sampled = match totals.sampled {
-        0 => "no allocation was sampled over the run".to_string(),
-        1 => "1 allocation sampled over the run".to_string(),
-        n => format!("{n} allocations sampled over the run"),
-    };
+    }
     println!(
-        "[bench] jemalloc wrote {} ({} bytes) when the benchmark exited: {sampled}, {} of \
-         them in use at exit",
+        "[bench] jemalloc wrote {} ({} bytes) when the benchmark exited",
         dump.display(),
-        bytes.len(),
-        totals.in_use
+        bytes.len()
     );
     Ok(dump)
 }
@@ -2182,43 +2162,36 @@ mod tests {
         assert_eq!(jemalloc_dump_owner(Path::new("jeprof.41.heap")), None);
     }
 
-    /// @test A heap profile's totals line gives its samples in use and over
-    /// the run, with their bytes; a text without one gives none.
+    /// @test A heap profile has its totals line when its `t*:` line holds
+    /// four integers, zeros included; a text without one, or with a part of
+    /// one, has none.
     #[test]
-    fn dump_totals_read_the_totals_line() {
-        let text = "heap_v2/524288\n  t*: 1: 82338 [2287: 14782155]\n  t0: 1: 82338 [2287: \
-                    14782155]\n";
-        assert_eq!(
-            dump_totals(text),
-            Some(DumpTotals {
-                in_use: 1,
-                in_use_bytes: 82338,
-                sampled: 2287,
-                sampled_bytes: 14782155
-            })
-        );
-        assert_eq!(
-            dump_totals("heap_v2/524288\n  t*: 0: 0 [0: 0]\n")
-                .unwrap()
-                .sampled,
-            0
-        );
-        assert_eq!(dump_totals("heap_v2/524288\n"), None);
-        assert_eq!(dump_totals("  t*: 1: 2\n"), None);
+    fn totals_line_holds_four_integers() {
+        assert!(has_totals_line(
+            "heap_v2/524288\n  t*: 1: 82338 [2287: 14782155]\n  t0: 1: 82338 [2287: 14782155]\n"
+        ));
+        assert!(has_totals_line("heap_v2/524288\n  t*: 0: 0 [0: 0]\n"));
+        assert!(!has_totals_line("heap_v2/524288\n"));
+        assert!(!has_totals_line("  t*: 1: 2\n"));
+        assert!(!has_totals_line(
+            "  t*: 1: 82338 [99999999999999999999: 1]\n"
+        ));
     }
 
-    /// A heap profile of process @p binary with @p sampled samples over the
-    /// run, as jemalloc 5.3.0 writes one (header, totals, a stack, the map).
-    fn heap_profile(binary: &Path, sampled: u64) -> String {
+    /// A heap profile of process @p binary as jemalloc 5.3.0 writes one
+    /// (header, totals, a stack, the map), with @p count where its totals
+    /// and stack record hold the run's encoded count: 0 for a run that
+    /// sampled nothing.
+    fn heap_profile(binary: &Path, count: u64) -> String {
         format!(
-            "heap_v2/524288\n  t*: 1: 82338 [{sampled}: {}]\n  t0: 1: 82338 [{sampled}: {}]\n\
-             @ 0x7f0000001000 0x55d0c1a01000\n  t*: 1: 82338 [{sampled}: {}]\n\n\
+            "heap_v2/524288\n  t*: 1: 82338 [{count}: {}]\n  t0: 1: 82338 [{count}: {}]\n\
+             @ 0x7f0000001000 0x55d0c1a01000\n  t*: 1: 82338 [{count}: {}]\n\n\
              MAPPED_LIBRARIES:\n\
              55d0c1a00000-55d0c1a2f000 r-xp 00000000 fd:01 1048601 {}\n\
              7f0000000000-7f00000a0000 r-xp 00000000 fd:01 900001 /usr/lib/libjemalloc.so.2\n",
-            sampled * 6000,
-            sampled * 6000,
-            sampled * 6000,
+            count * 6000,
+            count * 6000,
+            count * 6000,
             binary.display()
         )
     }

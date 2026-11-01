@@ -66,6 +66,8 @@ set(BENCH_ABI_SOVERSION 2)
 # Library
 # ------------------------------------------------------------------------------
 
+# The jemalloc backend looks jemalloc's mallctl up at run time (dlsym), which
+# C libraries before glibc 2.34 keep in libdl: a private dependency.
 vernier_add_library(
   NAME
   ${LIB_NAME}
@@ -75,6 +77,8 @@ vernier_add_library(
   "${INC_DIR}"
   SRC
   ${CPP_SOURCES}
+  DEPS_PRIVATE
+  ${CMAKE_DL_LIBS}
   REQUIRES
   POSIX
   ABI_VERSION
@@ -93,13 +97,6 @@ target_link_libraries(
   ${LIB_NAME}
   INTERFACE $<BUILD_INTERFACE:GTest::gtest>
             $<INSTALL_INTERFACE:$<TARGET_NAME_IF_EXISTS:GTest::gtest>>
-)
-
-# The jemalloc backend looks jemalloc's mallctl up at run time (dlsym), which
-# C libraries before glibc 2.34 keep in libdl.
-target_link_libraries(
-  ${LIB_NAME}
-  PRIVATE ${CMAKE_DL_LIBS}
 )
 
 # gperftools (optional): the CPU profiler links whenever it is installed.
