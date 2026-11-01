@@ -14,15 +14,19 @@
  *    launches and taking the median can dilute or hide a one-time wait, but
  *    neither isolates it nor guarantees that it is left out.
  *  - Unified-memory counters only under --capture-um: where CUPTI records
- *    them, each measurement's GpuStats::unifiedMemory holds CUPTI's counters
- *    over its window; where it cannot, the tests still run and their rows are
- *    written, but the run reports the request as failed and exits with
- *    status 4.
+ *    them, each measurement's GpuStats::unifiedMemory, and its row's um*
+ *    cells, hold CUPTI's counters over its window, and CountersFollowTheBuffer
+ *    checks them against what it does to a managed buffer. Where CUPTI cannot
+ *    record them, the tests still run and their rows are written, but the run
+ *    reports the request as failed and exits with status 4, and
+ *    CountersFollowTheBuffer is skipped with that reason.
  *
  * Usage:
  *   @code{.sh}
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
  *       --gtest_filter="GpuUnifiedMemory.*"
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuUnifiedMemory.*" --capture-um
  *   @endcode
  *
  * @see PerfGpuCase
@@ -32,11 +36,13 @@
 #include <gtest/gtest.h>
 #include <cstdio>
 #include <memory>
+#include <string>
 #include <vector>
 #include <cuda_runtime.h>
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 
 namespace ub = vernier::bench;
 
@@ -81,6 +87,22 @@ CudaFloats managedFloats() {
 CudaFloats deviceFloats() {
   float* p = nullptr;
   return CudaFloats(cudaMalloc(&p, BYTES) == cudaSuccess ? p : nullptr);
+}
+
+/**
+ * @brief Why the run reported its request for unified-memory counters as
+ *        unsupported here (CUPTI cannot record them, or the collector stood
+ *        down); empty if it did not. A window that lost its records is a
+ *        failure of the test, not a reason to skip it.
+ */
+std::string unifiedMemoryRefusal() {
+  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
+    if (failure.backend == "capture-um" && failure.test.empty() &&
+        failure.result.cause == ub::ReadinessCause::UNSUPPORTED) {
+      return failure.result.report.message;
+    }
+  }
+  return {};
 }
 
 /** @brief The value scaleKernel writes for in[i] = i. */
@@ -132,7 +154,7 @@ PERF_GPU_TEST(GpuUnifiedMemory, KernelOnManagedMemory) {
   // The host may read managed memory once the device has finished with it.
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   EXPECT_EQ(firstMismatch(um_out.get(), scaledIndex), -1) << "first wrong element";
-  if (!perf.gpuConfig().captureUnifiedMemory) {
+  if (!perf.gpuConfig().captureUnifiedMemory) { // CountersFollowTheBuffer checks them when asked
     EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
         << "unified-memory counters in a run that did not ask for them";
   }
@@ -188,6 +210,100 @@ PERF_GPU_TEST(GpuUnifiedMemory, HostAndKernelTakeTurns) {
   std::printf("[GpuUnifiedMemory.HostAndKernelTakeTurns] kernel medians: after a host write "
               "%.3f us, after a host read %.3f us\n",
               AFTER_WRITE.kernelTimeUs, AFTER_READ.kernelTimeUs);
+}
+
+/**
+ * @brief Under --capture-um, the unified-memory counters follow what the test
+ *        does to a managed buffer
+ *
+ * @test CountersFollowTheBuffer
+ *
+ * Measured on a case of its own with one launch per measurement, so that each
+ * measured window holds exactly one step:
+ *  - a host write, then a kernel read: the buffer moves to the device
+ *  - a kernel write, then the host's read of it: the buffer moves back
+ *
+ * Validates, under --capture-um:
+ *  - The first step migrates at least the buffer's bytes to the device and
+ *    nothing back; the second migrates at least the buffer's bytes back and
+ *    nothing to the device
+ *  - Every element the kernel and the host read is right
+ *
+ * Skipped without --capture-um, and, with that reason, where the run reported
+ * the request as unsupported (CUPTI cannot record the counters there; the run
+ * then exits with status 4). Its two measurements are not bracketed by a
+ * --profile profiler.
+ */
+PERF_GPU_TEST(GpuUnifiedMemory, CountersFollowTheBuffer) {
+  PERF_GPU_GUARD(perf);
+  if (!perf.gpuConfig().captureUnifiedMemory) {
+    GTEST_SKIP() << "the unified-memory counters are collected only under --capture-um";
+  }
+  const CudaFloats um_buf = managedFloats();
+  const CudaFloats d_out = deviceFloats();
+  ASSERT_TRUE(um_buf && d_out) << "a CUDA allocation failed";
+  float* data = um_buf.get();
+  float* out = d_out.get();
+
+  // One launch per measurement: each measured window holds one step.
+  ub::PerfConfig oneLaunch = perf.cpuConfig();
+  oneLaunch.cycles = 1;
+  oneLaunch.repeats = 1;
+  ub::PerfGpuCase steps{perf.testName(), oneLaunch};
+
+  // Step 1: the host writes the buffer (its pages are then the host's), then
+  // a kernel reads it.
+  for (int i = 0; i < N; ++i) {
+    data[i] = static_cast<float>(i);
+  }
+  const ub::PerfGpuResult TO_DEVICE =
+      steps
+          .cudaKernel([&](cudaStream_t s) { scaleKernel<<<GRID, BLOCK, 0, s>>>(data, out, N); },
+                      "host_write_kernel_read")
+          .withLaunchConfig(GRID, BLOCK)
+          .measure();
+
+  // Step 2: a kernel writes the buffer, then the host reads it, in one window.
+  int hostReadWrong = -2; // -2 until the host has read it
+  const ub::PerfGpuResult TO_HOST =
+      steps
+          .cudaKernel(
+              [&](cudaStream_t s) {
+                writeIndexKernel<<<GRID, BLOCK, 0, s>>>(data, 4.0f, N);
+                if (cudaStreamSynchronize(s) == cudaSuccess) {
+                  hostReadWrong =
+                      firstMismatch(data, [](int i) { return 4.0f + static_cast<float>(i); });
+                }
+              },
+              "kernel_write_host_read")
+          .withLaunchConfig(GRID, BLOCK)
+          .measure();
+
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  std::vector<float> h_out(N);
+  ASSERT_EQ(cudaMemcpy(h_out.data(), out, BYTES, cudaMemcpyDeviceToHost), cudaSuccess);
+  EXPECT_EQ(firstMismatch(h_out.data(), scaledIndex), -1) << "first wrong element the kernel read";
+  EXPECT_EQ(hostReadWrong, -1) << "first wrong element the host read (-2: it never read)";
+
+  if (!TO_DEVICE.stats.unifiedMemory.has_value() || !TO_HOST.stats.unifiedMemory.has_value()) {
+    const std::string WHY = unifiedMemoryRefusal();
+    ASSERT_FALSE(WHY.empty()) << "no unified-memory counters, and the request was not unsupported";
+    GTEST_SKIP() << WHY;
+  }
+  const ub::UnifiedMemoryProfile& IN = *TO_DEVICE.stats.unifiedMemory;
+  const ub::UnifiedMemoryProfile& BACK = *TO_HOST.stats.unifiedMemory;
+  std::printf("[GpuUnifiedMemory.CountersFollowTheBuffer] host write, kernel read: %zu "
+              "migrations, %zu bytes to the device, %zu back, %zu page faults; kernel write, "
+              "host read: %zu migrations, %zu bytes to the host, %zu to the device, %zu page "
+              "faults\n",
+              IN.h2dMigrations, IN.h2dBytes, IN.d2hMigrations, IN.pageFaults, BACK.d2hMigrations,
+              BACK.d2hBytes, BACK.h2dMigrations, BACK.pageFaults);
+  EXPECT_GE(IN.h2dMigrations, 1U) << "the kernel read the host's pages without a migration";
+  EXPECT_GE(IN.h2dBytes, BYTES) << "less than the buffer reached the device";
+  EXPECT_EQ(IN.d2hMigrations, 0U) << "pages went back to the host while the kernel only read";
+  EXPECT_GE(BACK.d2hMigrations, 1U) << "the host read the kernel's pages without a migration";
+  EXPECT_GE(BACK.d2hBytes, BYTES) << "less than the buffer came back to the host";
+  EXPECT_EQ(BACK.h2dMigrations, 0U) << "pages went to the device the kernel already held";
 }
 
 /**
