@@ -37,7 +37,9 @@
  * its file is analyzed. A profiler stops only the captures it started: when
  * its measured window ends (afterMeasure()), at once when the window ends by
  * an exception (abortMeasure(), unanalyzed), and before it starts again if a
- * window ended through neither.
+ * window ended through neither. afterMeasure() ends both captures before it
+ * reads, checks or analyzes either, so none of that work is in a capture,
+ * and a failure of it leaves no capture on.
  *
  * Notes:
  *  - Requires gperftools headers/libraries to be available at build/link time.
@@ -185,7 +187,10 @@ struct GperfProfileSummary {
  * trailer 0, 1, 0. The list of mapped objects after the trailer is not read.
  *
  * A valid profile's period lies in 250 to 1000000 microseconds, the periods
- * of 4000 Hz to 1 Hz. The profile is this process's own, so its slot size and
+ * of 4000 Hz to 1 Hz, and its records count no more samples in all than
+ * GperfProfileSummary::samples holds: a profile whose total would pass that
+ * is refused at the record that passes it, never read as a total that
+ * wrapped around. The profile is this process's own, so its slot size and
  * byte order are this build's. Needs no gperftools.
  */
 GperfProfileSummary readGperfProfile(const std::string& path);
@@ -236,8 +241,10 @@ private:
   /// when it is not a complete profile, which is then not analyzed.
   bool checkCapture() const;
   void runPprofAnalysis() const;
-  /// Stop the captures this profiler started, without analysis.
-  void stopCapture() noexcept;
+  /// Stop the captures this profiler started, without analysis; with
+  /// @p finish, as a window that ends normally, first flush the CPU profile
+  /// and write the heap profile's final dump.
+  void stopCapture(bool finish = false) noexcept;
   /// Record this case's failure, for the run's exit status.
   void fail(ReadinessCause cause, const std::string& detail, const std::string& remedy,
             ReadinessStage stage) const;

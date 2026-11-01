@@ -6,7 +6,10 @@
  * The capture is gperftools' own, in this test process, so these tests need a
  * build with gperftools and skip without it. A fake analyzer
  * (fixtures/readiness/fake_pprof.sh) stands in for google-pprof where an
- * analysis is asked for, and logs each of its runs.
+ * analysis is asked for, and logs each of its runs. In a build with heap
+ * profiling this program replaces the global allocation functions, through
+ * which the tests of both captures at once watch the profile reader (Both
+ * Captures, below).
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -29,12 +32,14 @@
 #endif
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <new>
 #include <optional>
 #include <regex>
 #include <stdexcept>
@@ -219,6 +224,14 @@ protected:
     out->analyze = analyze;
     out->analyzer = pprof_;
     out->analysisReady = analyze;
+    return out;
+  }
+
+  /** @brief A checked plan for both captures, without analysis. */
+  std::shared_ptr<const GperfPlan> bothPlan() const {
+    auto out = std::make_shared<GperfPlan>(*plan(false));
+    out->modes.cpu = true;
+    out->modes.heap = true;
     return out;
   }
 
@@ -613,6 +626,251 @@ TEST_F(GperfLifecycleTest, HeapCaptureIsTheCasesOwn) {
   EXPECT_EQ(FAILED[0], "Gperf.HeapSecond: unusable: a gperftools heap profile already "
                        "runs in this process, so this case's could not start; its heap is not "
                        "profiled");
+}
+
+/* ------------------------------ Both Captures ------------------------------ */
+
+// A capture of both kinds ends both before its profile is read, so the
+// reader's work is in neither, and a failure of it leaves neither on. The
+// tests below watch the reader through this program's allocation functions:
+// on the thread that arms the watch, each allocation of at least
+// READER_BUFFER_BYTES is counted, with whether a capture ran when it was
+// made, and one can be made to fail. While a capture completes, only the
+// reader allocates that much: the tests put a profile of PROFILE_BYTES in
+// place of the capture, and the reader takes the whole file in. The functions
+// are replaced only in a build with heap profiling, the one build that
+// captures both; tcmalloc's malloc and free serve them there, and its heap
+// profiler records what they allocate as it records any allocation.
+
+namespace {
+
+/// The smallest allocation the watch counts. While a capture completes, only
+/// the reader's buffer for the profile below is this large.
+constexpr std::size_t READER_BUFFER_BYTES = std::size_t{1} << 20;
+
+/// The size of the profile the tests put in place of a capture.
+constexpr std::size_t PROFILE_BYTES = 4 * READER_BUFFER_BYTES;
+
+/** @brief What the allocation functions watch, on the thread that armed them. */
+struct ReaderWatch {
+  bool armed = false;     ///< Count this thread's allocations of READER_BUFFER_BYTES or more.
+  bool failOnce = false;  ///< Fail the next one with std::bad_alloc.
+  int seen = 0;           ///< The allocations counted.
+  int whileCapturing = 0; ///< Of those, the ones made while a CPU or heap capture ran.
+};
+
+thread_local ReaderWatch readerWatch;
+
+/** @brief Arms the watch on this thread while it lives; its counts stay readable after. */
+class WatchTheReader {
+public:
+  explicit WatchTheReader(bool failOnce) { readerWatch = ReaderWatch{true, failOnce, 0, 0}; }
+  ~WatchTheReader() {
+    readerWatch.armed = false;
+    readerWatch.failOnce = false;
+  }
+  WatchTheReader(const WatchTheReader&) = delete;
+  WatchTheReader& operator=(const WatchTheReader&) = delete;
+};
+
+/**
+ * @brief Write at @p path a complete profile of PROFILE_BYTES: a header at
+ * gperftools' default period, one record whose stack fills the file, and the
+ * trailer.
+ */
+void writeLargeProfile(const std::string& path) {
+  constexpr std::size_t SLOTS = PROFILE_BYTES / sizeof(std::uintptr_t);
+  std::vector<std::uintptr_t> slots = {0, 3, 0, 10000, 0, 1, SLOTS - 10};
+  slots.resize(SLOTS - 3, 0x1000);
+  slots.insert(slots.end(), {0, 1, 0});
+  std::ofstream(path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(slots.data()),
+             static_cast<std::streamsize>(slots.size() * sizeof(std::uintptr_t)));
+}
+
+/** @brief True when the case folder @p dir holds a heap dump that is not empty. */
+bool heapDumped(const std::string& dir) {
+  const std::vector<std::string> DUMPS = heapDumpsIn(dir);
+  return std::any_of(DUMPS.begin(), DUMPS.end(),
+                     [](const std::string& dump) { return fileSize(dump) > 0; });
+}
+
+} // namespace
+
+#if UB_HAS_GPERF_HEAP
+
+namespace {
+
+/** @brief True while gperftools runs a CPU profile in this process; allocates nothing. */
+bool cpuProfileRuns() noexcept {
+#if UB_HAS_GPERF_CPU
+  ProfilerState state{};
+  ProfilerGetCurrentState(&state);
+  return state.enabled != 0;
+#else
+  return false;
+#endif
+}
+
+/** @brief Count an allocation of @p size for an armed watch, and fail it if asked to. */
+void watchAllocation(std::size_t size) {
+  ReaderWatch& watch = readerWatch;
+  if (!watch.armed || size < READER_BUFFER_BYTES) {
+    return;
+  }
+  ++watch.seen;
+  if (cpuProfileRuns() || heapProfileRuns()) {
+    ++watch.whileCapturing;
+  }
+  if (watch.failOnce) {
+    watch.failOnce = false;
+    throw std::bad_alloc();
+  }
+}
+
+} // namespace
+
+void* operator new(std::size_t size) {
+  watchAllocation(size);
+  for (;;) {
+    if (void* block = std::malloc(size == 0 ? 1 : size)) {
+      return block;
+    }
+    const std::new_handler HANDLER = std::get_new_handler();
+    if (HANDLER == nullptr) {
+      throw std::bad_alloc();
+    }
+    HANDLER();
+  }
+}
+
+void* operator new[](std::size_t size) { return ::operator new(size); }
+
+void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+void* operator new[](std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
+}
+
+// Every delete is out of line: inlined into a caller, free() would meet a
+// pointer the compiler knows came from operator new, and it warns about the
+// pair.
+[[gnu::noinline]] void operator delete(void* block) noexcept { std::free(block); }
+
+[[gnu::noinline]] void operator delete[](void* block) noexcept { std::free(block); }
+
+[[gnu::noinline]] void operator delete(void* block, std::size_t /*size*/) noexcept {
+  std::free(block);
+}
+
+[[gnu::noinline]] void operator delete[](void* block, std::size_t /*size*/) noexcept {
+  std::free(block);
+}
+
+[[gnu::noinline]] void operator delete(void* block, const std::nothrow_t& /*tag*/) noexcept {
+  std::free(block);
+}
+
+[[gnu::noinline]] void operator delete[](void* block, const std::nothrow_t& /*tag*/) noexcept {
+  std::free(block);
+}
+
+#endif
+
+/**
+ * @test In a build with heap profiling, a capture of both kinds: both have
+ * ended by the time the reader takes the profile in, so neither records its
+ * buffer; the heap profile's final dump is written, and nothing fails.
+ */
+TEST_F(GperfLifecycleTest, CombinedCaptureEndsBeforeItsProfileIsRead) {
+  if (UB_HAS_GPERF_HEAP == 0) {
+    GTEST_SKIP() << "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  }
+  StderrCapture quiet;
+  const std::string STAGED = dir_.path() + "/staged.prof";
+  writeLargeProfile(STAGED);
+  {
+    GperfProfiler profiler(config(false), "Gperf.Both", bothPlan());
+    profiler.beforeMeasure();
+    ASSERT_EQ(runningCpuProfile(), cpuProf("Gperf.Both"));
+    ASSERT_TRUE(heapProfileRuns());
+    work();
+    // gperftools writes on into the file it opened; the name now holds the
+    // large profile.
+    std::error_code ec;
+    std::filesystem::rename(STAGED, cpuProf("Gperf.Both"), ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const WatchTheReader WATCH(/*failOnce=*/false);
+    profiler.afterMeasure(Stats{});
+  }
+  EXPECT_GT(readerWatch.seen, 0) << "the reader's buffer was not seen, so nothing was watched";
+  EXPECT_EQ(readerWatch.whileCapturing, 0) << "the profile was read while a capture ran";
+  EXPECT_EQ(runningCpuProfile(), "");
+  EXPECT_FALSE(heapProfileRuns());
+  EXPECT_TRUE(heapDumped(dir_.path() + "/Gperf.Both.gperf")) << "no final heap dump";
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+}
+
+/**
+ * @test In a build with heap profiling, a capture of both kinds whose reader
+ * fails: the exception reaches the caller as it was thrown, and while the
+ * profiler is kept neither capture is on. The heap profile's final dump is
+ * written, the raw profile is kept, nothing else is recorded as failed, and
+ * another case's captures of both kinds start and end.
+ */
+TEST_F(GperfLifecycleTest, CombinedCaptureWhoseReadFailsLeavesNoCaptureOn) {
+  if (UB_HAS_GPERF_HEAP == 0) {
+    GTEST_SKIP() << "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  }
+  StderrCapture quiet;
+  const std::string STAGED = dir_.path() + "/staged.prof";
+  writeLargeProfile(STAGED);
+  GperfProfiler profiler(config(false), "Gperf.BothFails", bothPlan());
+  profiler.beforeMeasure();
+  ASSERT_TRUE(heapProfileRuns());
+  work();
+  std::error_code ec;
+  std::filesystem::rename(STAGED, cpuProf("Gperf.BothFails"), ec);
+  ASSERT_FALSE(ec) << ec.message();
+  {
+    const WatchTheReader WATCH(/*failOnce=*/true);
+    EXPECT_THROW(profiler.afterMeasure(Stats{}), std::bad_alloc);
+  }
+  EXPECT_EQ(readerWatch.seen, 1) << "the failure was not the reader's";
+  EXPECT_EQ(readerWatch.whileCapturing, 0) << "the profile was read while a capture ran";
+  EXPECT_EQ(runningCpuProfile(), "") << "the CPU capture is on while its profiler is kept";
+  EXPECT_FALSE(heapProfileRuns()) << "the heap capture is on while its profiler is kept";
+  EXPECT_TRUE(heapDumped(dir_.path() + "/Gperf.BothFails.gperf")) << "no final heap dump";
+  EXPECT_EQ(fileSize(cpuProf("Gperf.BothFails")), static_cast<long long>(PROFILE_BYTES))
+      << "the raw profile was not kept";
+  {
+    const std::vector<std::string> FAILED = failures();
+    EXPECT_TRUE(FAILED.empty()) << FAILED.front();
+  }
+  {
+    GperfProfiler next(config(false), "Gperf.BothNext", bothPlan());
+    next.beforeMeasure();
+    EXPECT_EQ(runningCpuProfile(), cpuProf("Gperf.BothNext"));
+    work();
+    next.afterMeasure(Stats{});
+  }
+  EXPECT_TRUE(heapDumped(dir_.path() + "/Gperf.BothNext.gperf"))
+      << "another case's heap capture did not start";
+  EXPECT_EQ(runningCpuProfile(), "");
+  EXPECT_FALSE(heapProfileRuns());
+  const std::vector<std::string> FAILED = failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front();
 }
 
 /* ------------------------------ Sampling Rate ------------------------------ */

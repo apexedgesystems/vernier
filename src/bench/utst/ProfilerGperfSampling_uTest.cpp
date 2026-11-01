@@ -25,6 +25,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <fstream>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
@@ -485,6 +486,34 @@ TEST_F(GperfProfileReader, RecordsGperftoolsNeverWrites) {
   expectProblem(header(1000) + std::vector<Slot>{0, 1, 0x10} + TRAILER,
                 "the record at byte " + byteOf(5) +
                     " counts no samples and is not the trailer (0, 1, 0)");
+}
+
+/**
+ * @test The samples a profile's records count add up to at most what the
+ * summary holds: none, an ordinary total and the largest are read; one past
+ * the largest is refused at the record that passes it, not read as a total
+ * that wrapped around.
+ */
+TEST_F(GperfProfileReader, SampleTotalBounds) {
+  using Total = decltype(GperfProfileSummary::samples);
+  constexpr Total LARGEST = std::numeric_limits<Total>::max();
+  if (std::numeric_limits<Slot>::max() < LARGEST) {
+    GTEST_SKIP() << "a slot of " << SLOT_BYTES << " bytes cannot count the largest total";
+  }
+  const std::vector<Slot> SHORT_OF_IT = {static_cast<Slot>(LARGEST - 1), 1, 0x1000};
+  const std::vector<std::pair<std::vector<Slot>, Total>> READ = {
+      {header(1000) + TRAILER, 0},
+      {header(1000) + std::vector<Slot>{5, 1, 0x1000} + std::vector<Slot>{3, 1, 0x2000} + TRAILER,
+       8},
+      {header(1000) + SHORT_OF_IT + std::vector<Slot>{1, 1, 0x2000} + TRAILER, LARGEST}};
+  for (const auto& [SLOTS, SAMPLES] : READ) {
+    const GperfProfileSummary S = readGperfProfile(write("cpu.prof", SLOTS));
+    EXPECT_TRUE(S.valid) << S.problem;
+    EXPECT_EQ(S.samples, SAMPLES);
+  }
+  expectProblem(header(1000) + SHORT_OF_IT + std::vector<Slot>{2, 1, 0x2000} + TRAILER,
+                "the record at byte " + byteOf(8) + " takes the profile's total of samples past " +
+                    std::to_string(LARGEST));
 }
 
 /** @test A file that is not there cannot be read. */

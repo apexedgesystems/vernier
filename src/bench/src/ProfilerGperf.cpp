@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -372,6 +373,7 @@ GperfProfileSummary readGperfProfile(const std::string& path) {
     return value;
   };
   const auto BYTE = [](std::size_t index) { return std::to_string(index * SLOT_BYTES); };
+  constexpr auto MOST_SAMPLES = std::numeric_limits<decltype(summary.samples)>::max();
 
   // The header: 0, n (at least 3), the version 0, the period, padding to n.
   if (SLOTS < 5) {
@@ -427,6 +429,14 @@ GperfProfileSummary readGperfProfile(const std::string& path) {
     }
     if (DEPTH == 0) {
       summary.problem = "the record at byte " + BYTE(at) + " holds no program counters";
+      return summary;
+    }
+    // A total past what the summary holds is a corrupt profile, refused at
+    // the record that passes it: never a total that wrapped around.
+    if (COUNT > MOST_SAMPLES - summary.samples) {
+      summary.problem = "the record at byte " + BYTE(at) +
+                        " takes the profile's total of samples past " +
+                        std::to_string(MOST_SAMPLES);
       return summary;
     }
     summary.samples += COUNT;
@@ -612,12 +622,16 @@ void GperfProfiler::beforeMeasure() {
 }
 
 void GperfProfiler::afterMeasure(const Stats& /*s*/) {
-#if UB_HAS_GPERF_CPU
-  if (cpuActive_) {
-    ProfilerFlush();
-    ProfilerStop();
-    cpuActive_ = false;
+  // Both captures end before anything reads, checks or analyzes them: that
+  // work is then in neither, and a failure of it, an exception included,
+  // leaves neither on.
+  [[maybe_unused]] const bool CPU_STARTED = cpuActive_;
+  [[maybe_unused]] const bool HEAP_STARTED = heapActive_;
+  stopCapture(/*finish=*/true);
 
+  bool analyze = false;
+#if UB_HAS_GPERF_CPU
+  if (CPU_STARTED) {
     // The capture is this run's file, whether or not an analysis follows;
     // only a file that holds a complete profile is analyzed.
     const long long SIZE = fileSize(cpuPath_);
@@ -626,19 +640,13 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
            cpuPath_ + (SIZE < 0 ? " was not written" : " is empty") +
                ": gperftools stopped the CPU profile and left no capture there",
            "", ReadinessStage::COMPLETION);
-    } else if (checkCapture() && cfg_.profileAnalyze) {
-      // Auto-analyze: run the analyzer the check found and print top functions
-      runPprofAnalysis();
+    } else {
+      analyze = checkCapture() && cfg_.profileAnalyze;
     }
   }
 #endif
 #if UB_HAS_GPERF_HEAP
-  if (heapActive_) {
-    // Emit a final snapshot (optional), then stop.
-    HeapProfilerDump("final");
-    HeapProfilerStop();
-    heapActive_ = false;
-
+  if (HEAP_STARTED) {
     bool written = false;
     for (const std::string& DUMP : heapDumps(artifactDir_, heapPrefix_)) {
       written = written || fileSize(DUMP) > 0;
@@ -651,6 +659,10 @@ void GperfProfiler::afterMeasure(const Stats& /*s*/) {
     }
   }
 #endif
+  if (analyze) {
+    // Auto-analyze: run the analyzer the check found and print top functions
+    runPprofAnalysis();
+  }
 }
 
 void GperfProfiler::abortMeasure() noexcept { stopCapture(); }
@@ -704,14 +716,20 @@ void GperfProfiler::fail(ReadinessCause cause, const std::string& detail, const 
                                              readinessResult(cause, detail, remedy, stage));
 }
 
-void GperfProfiler::stopCapture() noexcept {
+void GperfProfiler::stopCapture([[maybe_unused]] bool finish) noexcept {
 #if UB_HAS_GPERF_CPU
   if (cpuActive_) {
+    if (finish) {
+      ProfilerFlush();
+    }
     ProfilerStop();
   }
 #endif
 #if UB_HAS_GPERF_HEAP
   if (heapActive_) {
+    if (finish) {
+      HeapProfilerDump("final"); // the final snapshot, then the stop
+    }
     HeapProfilerStop();
   }
 #endif
@@ -720,8 +738,9 @@ void GperfProfiler::stopCapture() noexcept {
 }
 
 void GperfProfiler::runPprofAnalysis() const {
-// Only ever called from the UB_HAS_GPERF_CPU branch of afterMeasure();
-// the body must compile out with it because cpuPath_ exists only there.
+// Only ever called when afterMeasure()'s UB_HAS_GPERF_CPU branch found a
+// complete profile; the body must compile out with it because cpuPath_
+// exists only there.
 #if UB_HAS_GPERF_CPU && defined(__linux__)
   if (!plan_ || !plan_->analysisReady) {
     // Reported when the profiler was created: the analysis cannot run.
