@@ -342,10 +342,12 @@ std::vector<DirectBackend> directBackends() {
           {"perf", makePerfProfiler},
           {"gperf", makeGperfProfiler},
           {"bpftrace", makeBpftraceProfiler},
+          {"offcpu", makeOffCpuProfiler},
           {"jemalloc", makeJemallocProfiler},
           constructed<PerfStatProfiler>("perf"),
           constructed<GperfProfiler>("gperf"),
           constructed<BpftraceProfiler>("bpftrace"),
+          constructed<OffCpuProfiler>("offcpu"),
           constructed<JemallocProfiler>("jemalloc")};
 }
 
