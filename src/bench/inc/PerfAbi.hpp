@@ -68,7 +68,8 @@ namespace bench {
 /// the PerfRegistry both sides publish rows through: added (also at the end),
 /// removed, reordered or retyped; and for every change to Profiler's virtual
 /// functions, which no compared size shows. 3: Profiler::abortMeasure().
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 3;
+/// 4: UnifiedMemoryProfile::h2dBytes and d2hBytes, in GpuStats.
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 4;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;

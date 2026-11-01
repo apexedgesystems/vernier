@@ -23,6 +23,7 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 
 #include <gtest/gtest.h>
@@ -40,6 +41,7 @@ using vernier::bench::checkBenchAbi;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
 using vernier::bench::Stats;
+using vernier::bench::UnifiedMemoryProfile;
 using vernier::bench::detail::AbiField;
 using vernier::bench::detail::abiMismatchMessage;
 
@@ -88,8 +90,10 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 
 // The tables and bindings below describe this version and no other. Version 3
 // changed Profiler's virtual functions and no member (AbiProfilerInterface.cmake
-// holds that change); the layout is version 2's.
-static_assert(BENCH_ABI_VERSION == 3,
+// holds that change). Version 4 appended two members to UnifiedMemoryProfile,
+// which GpuStats carries in the results libbench_cuda hands back (pinned
+// below); PerfConfig, Stats and PerfGpuConfig keep version 2's layout.
+static_assert(BENCH_ABI_VERSION == 4,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 
@@ -163,6 +167,7 @@ TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   EXPECT_EQ(sizeof(PerfConfig), 240U);
   EXPECT_EQ(sizeof(Stats), 80U);
   EXPECT_EQ(sizeof(PerfGpuConfig), 40U);
+  EXPECT_EQ(sizeof(UnifiedMemoryProfile), 56U);
 }
 
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */
@@ -244,6 +249,37 @@ TEST(PerfGpuConfigLayoutTest, MembersStayInOrder) {
       VERNIER_PINNED_MEMBER(PerfGpuConfig, useHighPriorityStream, bool),
       VERNIER_PINNED_MEMBER(PerfGpuConfig, minSpeedupVsCpu, double),
       VERNIER_PINNED_MEMBER(PerfGpuConfig, maxTransferOverhead, double),
+  };
+  expectContiguousFromZero(PINNED);
+}
+
+/* ----------------------------- UnifiedMemoryProfile Layout Tests ----------------------------- */
+
+/** @test UnifiedMemoryProfile has exactly the members of this ABI version, in this order */
+TEST(UnifiedMemoryProfileLayoutTest, HasExactlyTheMembersOfThisAbiVersion) {
+  const UnifiedMemoryProfile UM;
+  const auto& [pageFaults, h2dMigrations, d2hMigrations, migrationTimeUs, thrashingEvents, h2dBytes,
+               d2hBytes] = UM;
+  EXPECT_EQ(static_cast<const void*>(&pageFaults), &UM.pageFaults);
+  EXPECT_EQ(static_cast<const void*>(&h2dMigrations), &UM.h2dMigrations);
+  EXPECT_EQ(static_cast<const void*>(&d2hMigrations), &UM.d2hMigrations);
+  EXPECT_EQ(static_cast<const void*>(&migrationTimeUs), &UM.migrationTimeUs);
+  EXPECT_EQ(static_cast<const void*>(&thrashingEvents), &UM.thrashingEvents);
+  EXPECT_EQ(static_cast<const void*>(&h2dBytes), &UM.h2dBytes);
+  EXPECT_EQ(static_cast<const void*>(&d2hBytes), &UM.d2hBytes);
+}
+
+/** @test UnifiedMemoryProfile members keep their order and types; version 4's byte counts are
+ * appended */
+TEST(UnifiedMemoryProfileLayoutTest, MembersStayInOrder) {
+  const Member PINNED[] = {
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, pageFaults, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, h2dMigrations, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, d2hMigrations, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, migrationTimeUs, double),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, thrashingEvents, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, h2dBytes, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, d2hBytes, size_t),
   };
   expectContiguousFromZero(PINNED);
 }
