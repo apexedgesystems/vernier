@@ -1,123 +1,67 @@
 /**
  * @file 13_OffCpuProfiler_Demo.cpp
- * @brief Demo 13: Off-CPU profiling -- see where threads block, then unblock them.
+ * @brief Demo 13: where threads sleep, and for how long, which a CPU sampler
+ *        cannot see
  *
- * On-CPU profilers (gperf, perf, callgrind) only see threads while they
- * are running. Off-CPU profiling shows where they *stop* running -- the
- * blocked side of the thread life cycle.
+ * Threads join the shared example's words and add the joined length to one
+ * total, two ways (13_OffCpuProfiler_Totals.hpp), one CSV row each:
+ *  1. CoarseLock: one lock, held for the whole call, so the joins take turns
+ *     and a thread that finds the lock taken sleeps until it is free
+ *  2. NoSharing: each thread adds to a total of its own and hands it over
+ *     once, when the thread ends
+ * contentionRun() starts --threads threads that make the call at the same
+ * time. With --profile offcpu, each case's capture holds the stacks at which
+ * its threads went to sleep and, for each thread, how long it was off the CPU
+ * after going to sleep.
  *
- * Two variants in the spirit of the existing demo pattern:
- *
- *   Slow: MutexCounter -- two threads contend for a mutex around an int
- *   Fast: AtomicCounter -- same workload using std::atomic, no blocking
- *
- * Story: a profiler shows mutex contention as `pthread_mutex_lock` /
- * `futex_wait` time. The off-CPU profile pins the source line; the fix
- * (atomic counter) eliminates the blocked time entirely.
- *
- * Requires sudo + tracefs access to actually collect stacks. The backend
- * gracefully degrades and prints the hint when neither is available;
- * benchmarks still run, just without off-CPU collection.
- *
- * Usage:
+ * Usage (a core for each thread, and one for the thread that starts them):
  *   @code{.sh}
- *   sudo ./BenchDemo_13_OffCpuProfiler --profile offcpu --quick \
- *       --gtest_filter='OffCpu.MutexCounter'
- *   cat OffCpu.MutexCounter.offcpu/offcpu.txt
- *
- *   sudo ./BenchDemo_13_OffCpuProfiler --profile offcpu --quick \
- *       --gtest_filter='OffCpu.AtomicCounter'
- *   cat OffCpu.AtomicCounter.offcpu/offcpu.txt
+ *   BENCH_SUDO=1 taskset -c 0-3 ./BenchDemo_13_OffCpuProfiler --profile offcpu \
+ *       --threads 3 --cycles 1000 --repeats 5
+ *   cat OffCpu.CoarseLock.offcpu/offcpu.txt OffCpu.NoSharing.offcpu/offcpu.txt
  *   @endcode
+ *
+ * That both versions reach the same total is checked apart from the demo, by
+ * utst/13_OffCpuProfiler_uTest.cpp.
  *
  * @see docs/16_OFFCPU_PROFILER.md for the walkthrough.
  */
 
 #include <gtest/gtest.h>
 
-#include <atomic>
-#include <chrono>
-#include <mutex>
-#include <thread>
-#include <vector>
-
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/demo/cpu/13_OffCpuProfiler_Totals.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-namespace ub = vernier::bench;
+namespace demo = vernier::bench::demo;
 
-static constexpr int LOOPS_PER_THREAD = 5000;
+using vernier::bench::demo::offcpu_demo::addToThreadTotal;
+using vernier::bench::demo::offcpu_demo::addUnderCoarseLock;
+using vernier::bench::demo::offcpu_demo::PART_COUNT;
+using vernier::bench::demo::offcpu_demo::PART_SEED;
+using vernier::bench::demo::offcpu_demo::SharedTotal;
 
-/**
- * @test Slow: two threads contend for a mutex around a counter increment.
- *
- * Off-CPU profile attributes most blocked time to pthread_mutex_lock /
- * futex_wait paths in the std::lock_guard at this source line.
- */
-PERF_THROUGHPUT(OffCpu, MutexCounter) {
-  UB_PERF_GUARD(perf);
+/* ----------------------------- Tests ----------------------------- */
 
-  std::mutex m;
-  volatile long sharedCounter = 0;
+/** @test Threads add joined lengths to one total, holding its lock for the whole call. */
+PERF_CONTENTION(OffCpu, CoarseLock) {
+  PERF_GUARD(perf);
 
-  auto worker = [&] {
-    for (int i = 0; i < LOOPS_PER_THREAD; ++i) {
-      std::lock_guard<std::mutex> g(m);
-      sharedCounter += 1;
-    }
-  };
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  SharedTotal total;
 
-  perf.warmup([&] {
-    std::thread t1(worker), t2(worker);
-    t1.join();
-    t2.join();
-  });
-
-  auto result = perf.throughputLoop(
-      [&] {
-        std::thread t1(worker), t2(worker);
-        t1.join();
-        t2.join();
-      },
-      "mutex_counter");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sharedCounter;
+  perf.warmup([&] { addUnderCoarseLock(total, PARTS); });
+  perf.contentionRun([&] { addUnderCoarseLock(total, PARTS); }, "coarse_lock");
 }
 
-/**
- * @test Fast: same workload, std::atomic counter eliminates the blocking.
- *
- * Off-CPU profile should show no lock-related stacks for this case --
- * the threads now spin productively on the cache line instead of going
- * off-CPU into the kernel scheduler.
- */
-PERF_THROUGHPUT(OffCpu, AtomicCounter) {
-  UB_PERF_GUARD(perf);
+/** @test Threads add joined lengths to totals of their own, sharing nothing while they run. */
+PERF_CONTENTION(OffCpu, NoSharing) {
+  PERF_GUARD(perf);
 
-  std::atomic<long> sharedCounter{0};
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
 
-  auto worker = [&] {
-    for (int i = 0; i < LOOPS_PER_THREAD; ++i) {
-      sharedCounter.fetch_add(1, std::memory_order_relaxed);
-    }
-  };
-
-  perf.warmup([&] {
-    std::thread t1(worker), t2(worker);
-    t1.join();
-    t2.join();
-  });
-
-  auto result = perf.throughputLoop(
-      [&] {
-        std::thread t1(worker), t2(worker);
-        t1.join();
-        t2.join();
-      },
-      "atomic_counter");
-
-  EXPECT_GT(result.callsPerSecond, 1.0);
-  (void)sharedCounter;
+  perf.warmup([&] { addToThreadTotal(PARTS); });
+  perf.contentionRun([&] { addToThreadTotal(PARTS); }, "no_sharing");
 }
 
 PERF_MAIN()
