@@ -114,6 +114,8 @@ probes are attached and that the tracer sees the benchmark's threads under the
 ids the backend knows. It does not confine the script's own probes to the
 measured repeats: they record from their attach until the tracer stops, which
 includes the waits before and after the measured repeats.
+A script's totals therefore include Vernier's own setup and shutdown activity,
+its wakeups among them, and are the capture's, not the workload's alone.
 
 The capture is reported as failed, with a `[bpftrace]` line, when a tracer ends
 before its arm or its stop line, prints neither within its bound, prints either

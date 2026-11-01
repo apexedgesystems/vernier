@@ -147,6 +147,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reference. The test `SharedMemoryOpt.SharedConflictFree` is renamed
   `SharedMemoryOpt.SharedPadded`, so that row of CSVs captured before this
   release does not join with newer ones.
+- Demo 13 compares coarse locking with per-thread totals using the shared join
+  example, with a Pi walkthrough. Re-record earlier demo 13 CSVs after the
+  test-name change. ([#60](https://github.com/apexedgesystems/vernier/pull/60))
 - **`vernier::monitor`: a disabled monitor produces nothing, and the summary
   follows the console sink** -- `start()` on a monitor whose configuration has
   `enabled = false` (or that `VERNIER_MONITOR_DISABLE=1` disabled) returns
@@ -256,7 +259,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   analysis that fails (which keeps the capture) and a bpftrace or offcpu
   capture that does not complete are reported, and the run exits with status
   4 if its tests passed, also for a profiler built by its backend's own
-  constructor or factory, offcpu's aside
+  constructor or factory
   ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
   **Action needed:** a CI job that passed without its requested profile now
   fails; a benchmark with its own `main()` returns
@@ -921,6 +924,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   images set `CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never`, so an online cargo
   build or test in an image older than three months keeps the baked crates
   that a later offline build or test in the same container needs.
+- Off-CPU profiling counts sleeping-thread waits through the full test and
+  reports incomplete captures as failures. Old capture totals are not
+  comparable; see the
+  [capture requirements](src/bench/demo/docs/16_OFFCPU_PROFILER.md#what-is-off-cpu-profiling)
+  for setup details. ([#60](https://github.com/apexedgesystems/vernier/pull/60))
 
 ## v1.0.3 - 2026-06-28
 

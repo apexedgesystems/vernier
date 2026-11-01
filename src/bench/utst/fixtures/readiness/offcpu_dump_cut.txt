@@ -1,0 +1,44 @@
+
+
+@armed: 2
+@offcpu_blocks[
+        0x7f9ddaef6c
+        clock_nanosleep@@GLIBC_2.17+60
+        nanosleep+32
+        main+2188
+        __libc_start_call_main+124
+        __libc_start_main@GLIBC_2.17+156
+        _start+48
+, proto2]: 1
+@offcpu_blocks[
+        0x7f9ddaef6c
+        __syscall_cancel+16
+        wait4+36
+        (anonymous namespace)::waitForVforkChild()+36
+        main+1588
+        __libc_start_call_main+124
+        __libc_start_main@GLIBC_2.17+156
+        _start+48
+, proto2]: 1
+@offcpu_blocks[
+        __libc_vfork+32
+        main+1592
+        __libc_start_call_main+124
+        __libc_start_main@GLIBC_2.17+156
+        _start+48
+, proto2]: 1
+@offcpu_blocks[
+        0x7f9ddaef6c
+        __GI___futex_abstimed_wait_cancelable64+72
+        __pthread_clockjoin_ex+420
+        std::thread::join()+36
+        main+1888
+        __libc_start_call_main+124
+        __libc_start_main@GLIBC_2.17+156
+        _start+48
+, proto2]: 1
+@offcpu_blocks[
+        __libc_vfork+32
+        main+1600
+        __libc_start_call_main+124
+        __libc_start_main@GLIBC_2.17+156
