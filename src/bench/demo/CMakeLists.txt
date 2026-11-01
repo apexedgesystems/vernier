@@ -277,7 +277,6 @@ vernier_add_gtest(
   cpu/utst/12_MemcheckProfiler_uTest.cpp
   LINK
   bench
-  demo_helpers
   demo_example_join
   LABELS
   demo
@@ -302,7 +301,6 @@ vernier_add_gtest(
   cpu/utst/14_HelgrindProfiler_uTest.cpp
   LINK
   bench
-  demo_helpers
   LABELS
   demo
   helgrind
@@ -388,7 +386,6 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp
     LINK
     bench
-    demo_helpers
     CUDA::cudart
     LABELS
     demo
@@ -545,7 +542,6 @@ vernier_add_gtest(
   helpers/utst/SkipUnlessUnderComputeSanitizer_uTest.cpp
   LINK
   bench
-  demo_helpers
   LABELS
   demo
 )

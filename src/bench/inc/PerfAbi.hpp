@@ -70,7 +70,8 @@ namespace bench {
 /// the size its headers give, through a constructor libbench runs): added
 /// (also at the end), removed, reordered or retyped; and for every change to
 /// Profiler's virtual functions, which no compared size shows.
-/// 3: Profiler::abortMeasure(). 4: JemallocProfiler's members.
+/// 3: Profiler::abortMeasure(). 4: JemallocProfiler's members;
+/// OffCpuProfiler's outcome member.
 inline constexpr std::uint32_t BENCH_ABI_VERSION = 4;
 
 /// Exit status of a process ended by a failed check.

@@ -24,6 +24,7 @@
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/ProfilerJemalloc.hpp"
 
 #include <gtest/gtest.h>
 
@@ -37,6 +38,7 @@
 using vernier::bench::BENCH_ABI_MISMATCH_EXIT_CODE;
 using vernier::bench::BENCH_ABI_VERSION;
 using vernier::bench::checkBenchAbi;
+using vernier::bench::JemallocProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
 using vernier::bench::Stats;
@@ -88,8 +90,9 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 
 // The tables and bindings below describe this version and no other. Version 3
 // changed Profiler's virtual functions (AbiProfilerInterface.cmake holds that
-// change) and version 4 JemallocProfiler's members, neither a member of these
-// structs; their layout is version 2's.
+// change) and version 4 the members of JemallocProfiler and OffCpuProfiler,
+// none a member of these structs, whose layout is version 2's.
+// JemallocProfiler's size is pinned with theirs.
 static_assert(BENCH_ABI_VERSION == 4,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
@@ -164,6 +167,11 @@ TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   EXPECT_EQ(sizeof(PerfConfig), 240U);
   EXPECT_EQ(sizeof(Stats), 80U);
   EXPECT_EQ(sizeof(PerfGpuConfig), 40U);
+  // A benchmark can construct a JemallocProfiler itself: it sizes the object
+  // from its own header and libbench's constructor builds it there, so its
+  // members are part of this version's layout. A change that moves the size
+  // fails here: raise BENCH_ABI_VERSION, then pin the new size.
+  EXPECT_EQ(sizeof(JemallocProfiler), 56U);
 }
 
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */
