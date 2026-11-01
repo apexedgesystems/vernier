@@ -1190,13 +1190,13 @@ ChildObservation oneChild(std::function<bool(int)> listed, std::function<Process
 
 /**
  * @test A child the list names throughout whose state cannot be read from
- * the start counts, at once, as "state unreadable": a failed read is not a
+ * the start counts as "state unreadable", classified on its first
+ * observation (one list, one read of its state): a failed read is not a
  * child gone.
  */
 TEST(ZombieCount, StateUnreadableFromTheStartCounts) {
   auto lists = std::make_shared<int>(0);
   auto reads = std::make_shared<int>(0);
-  const auto START = std::chrono::steady_clock::now();
   const std::vector<CountedChild> COUNTED = zombieChildren(
       oneChild([](int) { return true; },
                [](int) { return ProcessState{ProcessState::Read::UNREADABLE, '\0', EACCES}; }, 0,
@@ -1204,7 +1204,8 @@ TEST(ZombieCount, StateUnreadableFromTheStartCounts) {
   ASSERT_EQ(COUNTED.size(), 1U) << "an unreadable state was taken for a child gone";
   EXPECT_EQ(COUNTED.front().pid, COUNTED_CHILD);
   EXPECT_NE(COUNTED.front().why.find("state unreadable"), std::string::npos) << COUNTED.front().why;
-  EXPECT_LT(std::chrono::steady_clock::now() - START, VANISH_WAIT);
+  EXPECT_EQ(*lists, 1) << "an unreadable state was given the grace";
+  EXPECT_EQ(*reads, 1) << "an unreadable state was given the grace";
 }
 
 /**
@@ -1271,18 +1272,18 @@ TEST(ZombieCount, ChildStillReleasingAfterTheGraceCounts) {
 }
 
 /**
- * @test A zombie that the look finds this process's counts at once, without
- * the grace.
+ * @test A zombie that the look finds this process's counts, classified on
+ * its first observation (one list, one read of its state), without the
+ * grace.
  */
 TEST(ZombieCount, ZombieThisProcessMayWaitForCountsAtOnce) {
   auto lists = std::make_shared<int>(0);
   auto reads = std::make_shared<int>(0);
-  const auto START = std::chrono::steady_clock::now();
   const std::vector<CountedChild> COUNTED = zombieChildren(
       oneChild([](int) { return true; }, [](int) { return stateLetter('Z'); }, 0, lists, reads));
   ASSERT_EQ(COUNTED.size(), 1U);
-  EXPECT_LT(std::chrono::steady_clock::now() - START, VANISH_WAIT);
   EXPECT_EQ(*lists, 1) << "a zombie of this process's was given the grace";
+  EXPECT_EQ(*reads, 1) << "a zombie of this process's was given the grace";
 }
 
 /**
