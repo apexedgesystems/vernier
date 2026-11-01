@@ -231,6 +231,11 @@ jobs:
       - name: Run C++ tests
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 
+      # A second tree with tcmalloc linked, as make verify's C++ lane builds
+      # it: the tests that depend on heap profiling run only there.
+      - name: Run heap-profiling tests
+        run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make test-heap
+
   # ----------------------------------------------------------------------------
   # Rust tests -- cargo test on the lean build tier (release parity)
   # ----------------------------------------------------------------------------

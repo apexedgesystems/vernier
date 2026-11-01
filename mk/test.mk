@@ -30,6 +30,14 @@ TEST_LOG ?= ctest.log
 PY_TOOLS_DIR := tools/py
 PY_LIB_DIR   := $(BUILD_DIR)/lib/python
 
+# Heap-profiling lane: the debug preset with tcmalloc linked, in a tree of its
+# own. It is the one configuration where gperf captures the CPU and the heap at
+# once and where heaptrack's doctor row names tcmalloc; the default tree runs
+# everything else.
+HEAP_BUILD_DIR   ?= build/native-linux-debug-heap
+HEAP_TEST_FILTER ?= GperfLifecycleTest.*:GperfProfileReader.*
+HEAP_RUN_FILTER  ?= ReadinessFixtureRun.HeaptrackUnwrappedFails
+
 # ------------------------------------------------------------------------------
 # CTest Command Presets
 # ------------------------------------------------------------------------------
@@ -89,6 +97,20 @@ testp: debug
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_TIMING_SERIAL)) 2>&1 | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_footer,parallel + timing,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
+# Heap-profiling tests: gperf's lifecycle and reader cases, the captures of
+# both kinds at once included, and the heaptrack fixture run, built with
+# tcmalloc (VERNIER_LINK_TCMALLOC=ON). Builds only what they need.
+test-heap:
+	$(call log,test,Configuring the heap-profiling tree ($(HEAP_BUILD_DIR)))
+	@cmake --preset $(HOST_DEBUG_PRESET) -B "$(HEAP_BUILD_DIR)" $(CMAKE_VERBOSE_FLAG) \
+	  -DVERNIER_LINK_TCMALLOC=ON -DVERNIER_BUILD_GPU=OFF -DVERNIER_BUILD_TOOLS=OFF
+	$(call log,test,Building TestBench and the readiness fixture run with tcmalloc)
+	@cmake --build "$(HEAP_BUILD_DIR)" -j$(NUM_JOBS) --target TestBench TestBenchReadinessRun \
+	  ReadinessFixtureTarget ReadinessCustomMainTarget
+	$(call log,test,Running the heap-profiling tests)
+	@cd "$(HEAP_BUILD_DIR)" && $(call with_lib_path,bin/tests/TestBench --gtest_filter='$(HEAP_TEST_FILTER)')
+	@cd "$(HEAP_BUILD_DIR)" && $(call with_lib_path,bin/tests/TestBenchReadinessRun --gtest_filter='$(HEAP_RUN_FILTER)')
+
 # Python tools unit tests (runs from source, no build dependency)
 # Note: Run 'cd tools/py && poetry install' first if deps are missing
 test-py:
@@ -107,6 +129,6 @@ test-rust:
 # Phony Declarations
 # ------------------------------------------------------------------------------
 
-.PHONY: test testp test-py test-rust
+.PHONY: test testp test-heap test-py test-rust
 
 endif  # TEST_MK_GUARD
