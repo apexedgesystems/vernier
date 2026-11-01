@@ -329,12 +329,27 @@ TEST_F(ReadinessFixtureRun, MassifUnwrappedFails) {
 
 /**
  * @test heaptrack records /bin/true for the doctor; the run is not under
- * heaptrack, so it collects nothing and fails, printing the wrap command.
+ * heaptrack, so it collects nothing and fails, printing the wrap command. In
+ * a build with heap profiling the fixture loads tcmalloc, whose operator new
+ * heaptrack's malloc hooks never see, so the doctor's row is a caveat that
+ * says so instead.
  */
 TEST_F(ReadinessFixtureRun, HeaptrackUnwrappedFails) {
   dir_.install("fake_heaptrack.sh", "heaptrack");
   const std::string DOCTOR = doctorJson({"--profile", "heaptrack"});
-  EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status (heaptrack records)";
+  if (HEAP_BUILT) {
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "warn") << "doctor status (tcmalloc is loaded)";
+    EXPECT_EQ(selectedField(DOCTOR, "message"),
+              "heaptrack records /bin/true, but libtcmalloc is loaded in this process: C++ "
+              "allocations will be missing from its trace")
+        << "doctor message";
+    EXPECT_EQ(selectedField(DOCTOR, "hint"),
+              "Use a build without tcmalloc (-DVERNIER_LINK_TCMALLOC=OFF, the default) and do "
+              "not preload it.")
+        << "doctor hint";
+  } else {
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status (heaptrack records)";
+  }
   const RunResult RUN = run(quick({"--profile", "heaptrack"}));
   EXPECT_EQ(RUN.status, 4) << "run exit status";
   EXPECT_THAT(RUN.err,
