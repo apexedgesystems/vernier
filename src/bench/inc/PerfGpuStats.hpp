@@ -264,8 +264,12 @@ struct GpuStats {
   std::optional<MultiGpuMetrics> multiGpu{};
   std::optional<P2PTransferProfile> p2pProfile{};
 
-  /// Unified Memory counters: empty in every result the harness returns, as
-  /// it collects none (see UnifiedMemoryProfile).
+  /// Unified Memory counters over the measurement's window (see
+  /// UnifiedMemoryProfile): set when PerfGpuConfig::captureUnifiedMemory asks
+  /// for them and CUPTI records them completely; empty otherwise. The window
+  /// spans a kernel measurement's declared copies and timed launches, or a
+  /// multi-GPU measurement's device launches, not the warmup or the host code
+  /// around them.
   std::optional<UnifiedMemoryProfile> unifiedMemory{};
 
   [[nodiscard]] double memoryBandwidthUtilization(double peakBandwidthGBs) const {

@@ -184,10 +184,11 @@ double sharedSuiteBaselineUs(const std::string& testName) {
 // ============================================================================
 // A GPU cell a run cannot measure is left empty, and the run says why. What
 // holds for the whole run (this build has no CUPTI, a provider refused, the
-// run asked for unified-memory counters the harness does not collect, which
-// also fails the run) is said once per process, at the first measurement it
+// run asked for unified-memory counters CUPTI cannot record here, which also
+// fails the run) is said once per process, at the first measurement it
 // empties cells of; what went wrong in one measured window is said for that
-// window, naming the test.
+// window, naming the test (for requested unified-memory counters, that also
+// fails the run).
 // ============================================================================
 
 namespace {
@@ -207,34 +208,91 @@ void stateOnce(const std::string& line) {
   }
 }
 
-/// Why a request for unified-memory counters cannot be met.
-constexpr const char* UM_NOT_COLLECTED =
-    "the GPU harness collects no unified-memory counters: umPageFaults, umH2DMigrations, "
-    "umD2HMigrations, umMigrationTimeUs and umThrashing stay empty";
+/// The CSV columns filled from the unified-memory counters.
+constexpr const char* UM_CELLS = "umPageFaults, umH2DMigrations, umD2HMigrations, "
+                                 "umMigrationTimeUs and umThrashing";
 
-/// How a run with that request can pass.
+/// How a run whose request for unified-memory counters cannot be met can pass.
 constexpr const char* UM_REMEDY = "Run without --capture-um (or leave "
                                   "PerfGpuConfig::captureUnifiedMemory false); the timing and "
                                   "the CSV do not change.";
 
+/// How a run whose window lost unified-memory records can pass.
+constexpr const char* UM_WINDOW_REMEDY = "Run the test again, or without --capture-um.";
+
+/** @brief CUDA device @p deviceId's name, for a message; its number when CUDA cannot say. */
+std::string deviceName(int deviceId) {
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, deviceId) == cudaSuccess) {
+    return prop.name;
+  }
+  static_cast<void>(cudaGetLastError()); // the failed query leaves no error behind
+  return "CUDA device " + std::to_string(deviceId);
+}
+
+/** @brief The current CUDA device's number; the configured one when CUDA cannot say. */
+int currentDevice(const PerfGpuConfig& cfg) {
+  int device = 0;
+  if (cudaGetDevice(&device) == cudaSuccess) {
+    return device;
+  }
+  static_cast<void>(cudaGetLastError());
+  return cfg.deviceId;
+}
+
 /**
  * @brief Answers a request for unified-memory counters
- *        (PerfGpuConfig::captureUnifiedMemory) at a measurement: the request
- *        fails, as a profile that cannot collect does.
+ *        (PerfGpuConfig::captureUnifiedMemory) at a measurement whose window
+ *        has started: a window that does not record them fails the request,
+ *        as a profile that cannot collect does.
+ * @param deviceId The device the measurement runs on, which the report names.
+ * @return Whether the window records the counters.
  *
- * The harness reads no page-fault or migration record, so
- * GpuStats::unifiedMemory and a row's um* cells stay empty whether or not the
- * counters were asked for. The profiler registry records the failure and
- * reports it the first time (ProfilerRegistry::reportFailure()); the
- * measurement goes on, and ProfilerRegistry::finishRun() gives a run whose
- * tests pass exit status 4.
+ * The window records them unless the collector is unavailable (its reason:
+ * it stood down for an Nsight session or VERNIER_DISABLE_CUPTI, this build has
+ * no CUPTI, CUPTI refused it) or CUPTI refused the counters
+ * (CuptiCollector::unifiedMemoryRefusal(): a platform without them). The
+ * profiler registry records the failure and reports it the first time
+ * (ProfilerRegistry::reportFailure()); the measurement goes on with the um*
+ * cells empty, and ProfilerRegistry::finishRun() gives a run whose tests pass
+ * exit status 4.
  */
-void stateUnifiedMemoryRequest(const PerfGpuConfig& cfg) {
-  if (cfg.captureUnifiedMemory) {
-    ProfilerRegistry::instance().reportFailure(
-        "capture-um", "",
-        readinessResult(ReadinessCause::UNSUPPORTED, UM_NOT_COLLECTED, UM_REMEDY));
+bool stateUnifiedMemoryRequest(const PerfGpuConfig& cfg, const CuptiCollector& cupti,
+                               int deviceId) {
+  if (!cfg.captureUnifiedMemory) {
+    return false;
   }
+  const std::string& WHY =
+      cupti.isAvailable() ? cupti.unifiedMemoryRefusal() : cupti.unavailableReason();
+  if (WHY.empty()) {
+    return true;
+  }
+  ProfilerRegistry::instance().reportFailure(
+      "capture-um", "",
+      readinessResult(ReadinessCause::UNSUPPORTED,
+                      deviceName(deviceId) + ": " + WHY + ": " + UM_CELLS + " stay empty",
+                      UM_REMEDY));
+  return false;
+}
+
+/**
+ * @brief After a window that recorded the unified-memory counters: a window
+ *        whose records are not complete fails the request for @p test, naming
+ *        the problem, and its row's um* cells stay empty.
+ */
+void stateIncompleteUnifiedMemory(const CuptiCollector& cupti, const std::string& test) {
+  if (cupti.unifiedMemory().has_value()) {
+    return;
+  }
+  // The window's problem; should the collector name none, that it returned no counters.
+  const std::string PROBLEM = cupti.windowProblem().empty()
+                                  ? std::string("the collector returned no unified-memory counters")
+                                  : cupti.windowProblem();
+  ProfilerRegistry::instance().reportFailure(
+      "capture-um", test,
+      readinessResult(ReadinessCause::UNUSABLE,
+                      PROBLEM + " in the measured window: " + UM_CELLS + " stay empty",
+                      UM_WINDOW_REMEDY, ReadinessStage::COMPLETION));
 }
 
 } // namespace
@@ -347,6 +405,7 @@ public:
     // stated once per process.
     const bool cuptiEnabled = !cuptiYields_;
     if (cuptiEnabled) {
+      cupti_.collectUnifiedMemory(gpuCfg_.captureUnifiedMemory);
       cupti_.start();
       if (!cupti_.isAvailable()) {
         stateOnce("[gpu] " + cupti_.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.");
@@ -357,8 +416,10 @@ public:
                            "CUPTI CSV columns will be empty.\n");
     }
 
-    // No unified-memory counters are collected; a request for them fails.
-    stateUnifiedMemoryRequest(gpuCfg_);
+    // Unified-memory counters, when asked for: a window that does not record
+    // them fails the request.
+    const bool UM_RECORDED = gpuCfg_.captureUnifiedMemory &&
+                             stateUnifiedMemoryRequest(gpuCfg_, cupti_, currentDevice(gpuCfg_));
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
       // A test that declares no transfer has no leg to time: an event pair
@@ -429,6 +490,9 @@ public:
         std::fprintf(stderr, "[gpu] %s in %s's measured window, so its %s stay empty.\n",
                      cupti_.windowProblem().c_str(), testName_.c_str(), CUPTI_CELLS);
       }
+      if (UM_RECORDED) {
+        stateIncompleteUnifiedMemory(cupti_, testName_);
+      }
     }
 
     auto kernelVals = kernelTimes;
@@ -460,6 +524,7 @@ public:
     result.stats.powerThermal = powerThermal;
     if (cuptiEnabled) {
       result.stats.cupti = cupti_.stats();
+      result.stats.unifiedMemory = cupti_.unifiedMemory();
     }
 
     size_t totalH2D = 0, totalD2H = 0;
@@ -520,8 +585,6 @@ public:
       beforeHook_(*owner_);
     }
 
-    stateUnifiedMemoryRequest(gpuCfg_);
-
     MultiGpuResult result;
     result.label = std::move(label);
     result.perDevice.reserve(deviceCount);
@@ -534,6 +597,18 @@ public:
       result.aggregatedStats.p2pProfile =
           measureP2PBandwidth(p2pSrcDevice, p2pDstDevice, p2pTestBytes);
     }
+
+    // Unified-memory counters, when asked for: the collector's window over
+    // the devices' launches (the counters are the process's, so it counts
+    // every device's records), opened only under the request, and the request
+    // answered as a kernel measurement answers it.
+    const bool UM_WINDOW = gpuCfg_.captureUnifiedMemory && !cuptiYields_;
+    if (UM_WINDOW) {
+      cupti_.collectUnifiedMemory(true);
+      cupti_.start();
+    }
+    const bool UM_RECORDED = gpuCfg_.captureUnifiedMemory &&
+                             stateUnifiedMemoryRequest(gpuCfg_, cupti_, gpuCfg_.deviceId);
 
     std::vector<std::thread> threads;
     std::vector<PerfGpuResult> deviceResults(deviceCount);
@@ -596,6 +671,14 @@ public:
 
     for (auto& t : threads) {
       t.join();
+    }
+
+    if (UM_WINDOW) {
+      cupti_.stop();
+      if (UM_RECORDED) {
+        stateIncompleteUnifiedMemory(cupti_, testName_);
+      }
+      result.aggregatedStats.unifiedMemory = cupti_.unifiedMemory();
     }
 
     result.perDevice = std::move(deviceResults);
@@ -818,8 +901,8 @@ private:
     }
     row.deviceCount = 1;
 
-    // The um* cells stay empty: the harness collects no unified-memory
-    // counters (stateUnifiedMemoryRequest()).
+    // The um* cells stay empty: the row does not carry the unified-memory
+    // counters of result.stats.unifiedMemory.
     PerfRegistry::instance().set(row);
   }
 

@@ -36,10 +36,13 @@ struct PerfGpuConfig {
 
   /// An explicit request for unified-memory counters: --capture-um sets it,
   /// and a caller that sets it makes the same request. Choosing a memory
-  /// strategy (memStrategy, --gpu-memory) does not set it. The harness
-  /// collects no such counters: a measurement made with this set reports the
-  /// request as unsupported, the um* CSV cells stay empty, and a run whose
-  /// tests pass exits with status 4 (ProfilerRegistry::finishRun()).
+  /// strategy (memStrategy, --gpu-memory) does not set it. Each measurement
+  /// made with this set records CUPTI's unified-memory counters over its
+  /// window (GpuStats::unifiedMemory). Where it cannot (CUPTI refuses them on
+  /// a platform without them, or stood down, or this build has none), or a
+  /// window's records are incomplete, the measurement reports the request as
+  /// failed, its counters stay empty, and a run whose tests pass exits with
+  /// status 4 (ProfilerRegistry::finishRun()).
   bool captureUnifiedMemory = false;
 
   // ---- Device selection ----

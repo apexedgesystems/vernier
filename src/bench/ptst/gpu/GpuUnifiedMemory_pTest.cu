@@ -13,10 +13,11 @@
  *    timed interval counts in that repeat's sample; averaging over the
  *    launches and taking the median can dilute or hide a one-time wait, but
  *    neither isolates it nor guarantees that it is left out.
- *  - No unified-memory counters. The harness reads no page-fault or migration
- *    record: GpuStats::unifiedMemory stays empty and the CSV's um* cells with
- *    it. Given --capture-um, the tests still run and their rows are written,
- *    but the run reports the request as unsupported and exits with status 4.
+ *  - Unified-memory counters only under --capture-um: where CUPTI records
+ *    them, each measurement's GpuStats::unifiedMemory holds CUPTI's counters
+ *    over its window; where it cannot, the tests still run and their rows are
+ *    written, but the run reports the request as failed and exits with
+ *    status 4.
  *
  * Usage:
  *   @code{.sh}
@@ -109,7 +110,7 @@ template <typename Expected> int firstMismatch(const float* data, Expected expec
  * Validates:
  *  - The kernel is timed with no transfer declared
  *  - Every element it wrote is right when the host reads it
- *  - The harness reports no unified-memory counters
+ *  - Without --capture-um, the result carries no unified-memory counters
  */
 PERF_GPU_TEST(GpuUnifiedMemory, KernelOnManagedMemory) {
   PERF_GPU_GUARD(perf);
@@ -131,8 +132,10 @@ PERF_GPU_TEST(GpuUnifiedMemory, KernelOnManagedMemory) {
   // The host may read managed memory once the device has finished with it.
   ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
   EXPECT_EQ(firstMismatch(um_out.get(), scaledIndex), -1) << "first wrong element";
-  EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
-      << "the harness reported unified-memory counters it does not collect";
+  if (!perf.gpuConfig().captureUnifiedMemory) {
+    EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
+        << "unified-memory counters in a run that did not ask for them";
+  }
 }
 
 /**
