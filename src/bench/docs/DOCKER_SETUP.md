@@ -389,8 +389,14 @@ docker run --rm --privileged -v "$PWD/results:/results" mybench-prof:latest bash
 **Requirements:**
 
 - An Intel CPU, with the `msr` module loaded on the host (`sudo modprobe msr`)
-- `--privileged` with the `/dev/cpu` mount, or `CAP_SYS_RAWIO` with the MSR
-  device the backend reads, `/dev/cpu/0/msr`
+- The device in the container: `--privileged`, which gives the container the
+  host's devices (the example below also mounts `/dev/cpu`), or
+  `--device=/dev/cpu/0/msr`
+- A process inside that may read it: root, or a process with CAP_SYS_RAWIO
+  (which the msr driver checks) that also has read permission on the device
+  (`0600 root` unless the host changes it). An image whose user is not root,
+  such as the development image's, is refused (`denied`) even when the device
+  is there.
 
 ```bash
 docker run --rm --privileged \
@@ -401,10 +407,10 @@ docker run --rm --privileged \
 
 **Alternative (more secure):** a mount alone is not enough without
 `--privileged`, because the container may not open the device; pass it with
-`--device` instead:
+`--device` instead, and keep the capability the driver checks:
 
 ```bash
-# Only SYS_RAWIO capability and CPU 0's MSR device
+# Only SYS_RAWIO capability and CPU 0's MSR device, run as root inside
 docker run --rm \
   --cap-add=SYS_RAWIO \
   --device=/dev/cpu/0/msr \

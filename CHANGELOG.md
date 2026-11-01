@@ -9,6 +9,9 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Demo 08 compares the shared join implementations on Intel RAPL** -- its
+  test names are now JoinV0/JoinV1, so earlier demo CSVs do not match them.
+  ([#67](https://github.com/apexedgesystems/vernier/pull/67))
 - **Demo 09 traces writes and lock hand-offs on the shared join example** --
   its [walkthrough](src/bench/demo/docs/09_BPFTRACE_PROFILER.md) is rewritten
   from a run on the documented Raspberry Pi 4 rig.
@@ -321,6 +324,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **RAPL checks register access and reports failed captures, retaining energy
+  in per-case reports** -- its performance sample attaches the profiler. Drop
+  RAPL mode words and --profile-analyze.
+  ([#67](https://github.com/apexedgesystems/vernier/pull/67))
 - **`bench run` runs the tool and mode a request names** -- `--profile nsys`
   is wrapped as `nsight` is, and a wrapped profile's `--profile-args` mode
   reaches its tool, also from a request given after `--`; a word the profile
@@ -915,7 +922,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 3).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 4).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable

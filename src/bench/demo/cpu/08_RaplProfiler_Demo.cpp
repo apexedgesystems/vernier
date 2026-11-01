@@ -1,106 +1,76 @@
 /**
  * @file 08_RaplProfiler_Demo.cpp
- * @brief Demo 08: Intel RAPL energy measurement
+ * @brief Demo 08: Intel RAPL -- the energy a call costs
  *
- * Demonstrates using RAPL (Running Average Power Limit) to measure
- * energy consumption. Shows that optimized code not only runs faster
- * but also consumes less total energy.
+ * Measures the two versions of the shared join example, one measurement per
+ * test, so each can be measured under --profile rapl on its own. RAPL reads
+ * the package's energy counter, a model-specific register, before and after
+ * the measured repeats, and the case's report gives the energy per call as
+ * the window's average package power times the median time per call. The
+ * counter covers the whole package (every core, the caches and the rest of
+ * the package), not the case's thread alone.
  *
- * Slow: Naive dot product with dependency chain preventing vectorization
- * Fast: std::inner_product (compiler can auto-vectorize)
+ * Reading the counter needs an Intel CPU, the msr driver's /dev/cpu/0/msr and
+ * a process that may read it: root, or CAP_SYS_RAWIO together with read
+ * access to the device.
  *
  * Usage:
  *   @code{.sh}
- *   # Run with RAPL profiling
- *   ./BenchDemo_08_RaplProfiler --profile rapl --csv energy.csv
+ *   # Measure, about two seconds a case
+ *   ./BenchDemo_08_RaplProfiler --target-time 100ms --repeats 20 --csv run.csv
  *
- *   # Compare energy per operation
- *   bench summary energy.csv
+ *   # Measure the energy too, with access to the counter: each case's report
+ *   # is energy.txt in its folder, RaplProfiler.JoinV0.rapl and RaplProfiler.JoinV1.rapl
+ *   bench run ./BenchDemo_08_RaplProfiler --profile rapl --target-time 100ms --repeats 20 \
+ *     --csv run.csv
  *   @endcode
  *
- * @note Requires Intel CPU (Haswell+) with MSR module loaded.
- *       May require root/sudo for MSR access.
- *
- * @see docs/08_RAPL_PROFILER.md for step-by-step walkthrough
+ * @see docs/08_RAPL_PROFILER.md for the step-by-step walkthrough
  */
 
 #include <gtest/gtest.h>
-#include <cstdint>
-#include <vector>
+
+#include <cstddef>
 
 #include "src/bench/inc/Perf.hpp"
-#include "helpers/DemoWorkloads.hpp"
+#include "src/bench/demo/examples/join/inc/Join.hpp"
 
-namespace ub = vernier::bench;
 namespace demo = vernier::bench::demo;
 
 /* ----------------------------- Constants ----------------------------- */
 
-static constexpr std::size_t VECTOR_SIZE = 100000;
+/// Parts per join, the same input as demo 01.
+static constexpr std::size_t PART_COUNT = 1000;
+
+/// Fixed seed: every run joins the same words.
+static constexpr unsigned PART_SEED = 42;
+
+static constexpr char SEPARATOR = ',';
 
 /* ----------------------------- Tests ----------------------------- */
 
-/**
- * @test Slow: Naive dot product with data dependency.
- *
- * The dependency chain `if (sum > 1e18)` prevents the compiler from
- * auto-vectorizing the loop. Each iteration depends on the previous
- * sum, serializing the computation.
- *
- * Under RAPL profiling, this test consumes more Joules per operation
- * because the CPU spends more time (and draws power) on each element.
- */
-PERF_THROUGHPUT(RaplProfiler, NaiveDotProduct) {
-  UB_PERF_GUARD(perf);
+/** @test Throughput of the one-liner: out = out + part + separator. */
+PERF_THROUGHPUT(RaplProfiler, JoinV0) {
+  PERF_GUARD(perf);
 
-  auto a = demo::makeRandomDoubles(VECTOR_SIZE, 42);
-  auto b = demo::makeRandomDoubles(VECTOR_SIZE, 99);
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV0(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
-  perf.warmup([&] {
-    volatile double result = demo::naiveDotProduct(a.data(), b.data(), a.size());
-    (void)result;
-  });
-
-  volatile double sink = 0.0;
-  auto result = perf.throughputLoop(
-      [&] { sink = sink + demo::naiveDotProduct(a.data(), b.data(), a.size()); },
-      "naive_dot_product");
-
-  EXPECT_GT(result.callsPerSecond, 10.0);
-
-  (void)sink;
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV0(PARTS, SEPARATOR).size(); }, "join_v0");
 }
 
-/**
- * @test Fast: std::inner_product (vectorizable).
- *
- * std::inner_product with doubles and 0.0 init allows the compiler
- * to auto-vectorize using SIMD instructions (SSE/AVX). Multiple
- * multiply-adds execute per cycle.
- *
- * Under RAPL profiling, this test consumes fewer total Joules because
- * the faster execution means less total power draw over time.
- * The energy-per-operation metric directly shows the efficiency gain.
- */
-PERF_THROUGHPUT(RaplProfiler, VectorizedDotProduct) {
-  UB_PERF_GUARD(perf);
+/** @test Throughput of the reserving version: measure once, append in place. */
+PERF_THROUGHPUT(RaplProfiler, JoinV1) {
+  PERF_GUARD(perf);
 
-  auto a = demo::makeRandomDoubles(VECTOR_SIZE, 42);
-  auto b = demo::makeRandomDoubles(VECTOR_SIZE, 99);
+  const auto PARTS = demo::makeParts(PART_COUNT, PART_SEED);
+  ASSERT_EQ(demo::joinV1(PARTS, SEPARATOR).size(), demo::joinedSize(PARTS));
 
-  perf.warmup([&] {
-    volatile double result = demo::fastDotProduct(a.data(), b.data(), a.size());
-    (void)result;
-  });
-
-  volatile double sink = 0.0;
-  auto result =
-      perf.throughputLoop([&] { sink = sink + demo::fastDotProduct(a.data(), b.data(), a.size()); },
-                          "vectorized_dot_product");
-
-  EXPECT_GT(result.callsPerSecond, 10.0);
-
-  (void)sink;
+  volatile std::size_t sink = 0;
+  perf.warmup([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); });
+  perf.throughputLoop([&] { sink = demo::joinV1(PARTS, SEPARATOR).size(); }, "join_v1");
 }
 
 PERF_MAIN()

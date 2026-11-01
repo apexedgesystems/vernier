@@ -96,8 +96,9 @@ claimed to have been tested with this backend. And a HIP workload to profile.
 ## The Example
 
 There is no example for this walkthrough. Vernier's GPU demos
-(`BenchDemo_Gpu_*`) are CUDA, and the shared workloads in
-[helpers/DemoWorkloads.hpp](../helpers/DemoWorkloads.hpp) are CPU code.
+(`BenchDemo_Gpu_*`) and the GPU versions of the shared
+[SAXPY example](../examples/saxpy/inc/Saxpy.hpp) are CUDA, and the other
+shared examples are CPU code.
 Profiling an AMD GPU through Vernier means pointing rocprof at a performance
 test of your own, built for HIP.
 

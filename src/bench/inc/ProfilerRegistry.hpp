@@ -267,8 +267,8 @@ public:
    *   [OK]   perf       perf available, perf_event_paranoid=1
    *   [WARN] callgrind  valgrind available; running in Docker (PID namespace)
    *                     Run via 'bench run', which wraps valgrind directly (no attach needed).
-   *   [FAIL] rapl       RAPL not available (Intel CPU + MSR access required)
-   *                     sudo modprobe msr; grant CAP_SYS_RAWIO or run as root.
+   *   [FAIL] rapl       denied: cannot open /dev/cpu/0/msr: Permission denied
+   *                     RAPL needs access set up beforehand, and Vernier does not raise ...
    * Each row checks the backend's default mode; a footer says what that
    * does and does not cover.
    *
