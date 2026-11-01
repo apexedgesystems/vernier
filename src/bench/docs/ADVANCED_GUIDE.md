@@ -860,6 +860,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --gpu-warmup N      # GPU warmup iterations (default: 10)
 --gpu-memory MODE   # Memory strategy: explicit|unified|pinned|mapped
 --min-speedup F     # Minimum expected speedup vs CPU
+--capture-um        # Unified-memory counters from CUPTI (where it records them)
 ```
 
 **Example combinations:**
@@ -1077,17 +1078,19 @@ linked at build time; no `--profile` flag required. See
 
 #### Unified Memory Columns
 
-| Column              | Type   | Description                       | Present When |
-| ------------------- | ------ | --------------------------------- | ------------ |
-| `umPageFaults`      | int64  | Unified-memory page faults        | Never        |
-| `umH2DMigrations`   | int64  | Host->device page migrations      | Never        |
-| `umD2HMigrations`   | int64  | Device->host page migrations      | Never        |
-| `umMigrationTimeUs` | double | Time spent migrating pages (us)   | Never        |
-| `umThrashing`       | bool   | Back-and-forth migration reported | Never        |
+| Column              | Type   | Description                                | Present When   |
+| ------------------- | ------ | ------------------------------------------ | -------------- |
+| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults | `--capture-um` |
+| `umH2DMigrations`   | int64  | Host->device transfers of managed memory   | `--capture-um` |
+| `umD2HMigrations`   | int64  | Device->host transfers of managed memory   | `--capture-um` |
+| `umMigrationTimeUs` | double | The transfers' durations, summed (us)      | `--capture-um` |
+| `umThrashing`       | bool   | CUPTI recorded thrashing in the window     | `--capture-um` |
 
-The GPU harness collects no unified-memory counters: these cells are empty in
-every row it writes, with or without `--capture-um`, which fails a run whose
-tests pass with status 4. See
+Under `--capture-um` each row carries CUPTI's unified-memory counters over its
+measurement's window, zeros when nothing migrated, on a GPU whose CUPTI records
+them. Where CUPTI cannot (the Jetson AGX Thor, an Nsight session,
+`VERNIER_DISABLE_CUPTI=1`), the cells stay empty and a run whose tests pass
+exits with status 4. See
 [GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration

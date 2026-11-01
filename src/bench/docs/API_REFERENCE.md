@@ -76,8 +76,8 @@ PERF_MAIN()                              // Main function with CSV export
 
 `PERF_MAIN()` and `PERF_GPU_MAIN()` return the tests' status, or 4
 (`BENCH_PROFILE_FAILED_EXIT_CODE`) when the tests passed and the requested
-`--profile` failed (or, in a GPU benchmark, `--capture-um` asked for the
-unified-memory counters the harness does not collect), after a report of each
+`--profile` failed (or, in a GPU benchmark, `--capture-um` asked for
+unified-memory counters that CUPTI could not record), after a report of each
 failure. A benchmark with its own
 `main()` gets the same status from `ProfilerRegistry::finishRun()`; the
 [advanced guide](ADVANCED_GUIDE.md#perf_main-macro) shows the call.
@@ -507,7 +507,7 @@ struct GpuStats {
   double totalTimeMedianUs{};
   std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
   std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
-  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Never filled (no UM counters)
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only under --capture-um
 };
 ```
 
@@ -781,18 +781,20 @@ time; no `--profile` flag required.
 
 ### Unified Memory Columns
 
-| Column              | Type   | Description                       |
-| ------------------- | ------ | --------------------------------- |
-| `umPageFaults`      | int64  | Unified-memory page faults        |
-| `umH2DMigrations`   | int64  | Host-to-device page migrations    |
-| `umD2HMigrations`   | int64  | Device-to-host page migrations    |
-| `umMigrationTimeUs` | double | Time spent migrating pages (us)   |
-| `umThrashing`       | bool   | Back-and-forth migration reported |
+| Column              | Type   | Description                                     |
+| ------------------- | ------ | ----------------------------------------------- |
+| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults      |
+| `umH2DMigrations`   | int64  | Host-to-device transfers of managed memory      |
+| `umD2HMigrations`   | int64  | Device-to-host transfers of managed memory      |
+| `umMigrationTimeUs` | double | The transfers' durations, summed (us)           |
+| `umThrashing`       | bool   | CUPTI recorded thrashing in the measured window |
 
-The GPU harness collects no unified-memory counters, so these cells are empty in
-every row it writes, with or without `--capture-um`; a run given `--capture-um`
-reports the request as unsupported and exits with status 4 when its tests pass.
-See the GPU guide's
+These cells are filled only under `--capture-um` (or
+`PerfGpuConfig::captureUnifiedMemory`), from CUPTI's unified-memory counters
+over each measurement's window, on a GPU whose CUPTI records them; zeros mean
+nothing migrated. Without the request they are empty. Where CUPTI cannot
+record them, they stay empty, the run reports the request as unsupported, and
+a run whose tests pass exits with status 4. See the GPU guide's
 [Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters).
 
 ---
@@ -844,6 +846,7 @@ See the GPU guide's
 | `--gpu-warmup N`      | int    | 10       | GPU warmup iterations                              |
 | `--gpu-memory MODE`   | string | explicit | Memory strategy: explicit\|unified\|pinned\|mapped |
 | `--min-speedup FLOAT` | double | 1.0      | Minimum expected GPU speedup                       |
+| `--capture-um`        | bool   | false    | Unified-memory counters, where CUPTI records them  |
 
 ### GoogleTest Integration
 

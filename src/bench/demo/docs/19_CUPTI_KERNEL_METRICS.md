@@ -174,9 +174,9 @@ speedupVsCpu           -                                       -
 memBandwidthGBs        -                                       -
 ```
 
-The header row names the rest: the device and its compute capability, and
-the multi-GPU and unified-memory columns, which a single-GPU test leaves
-empty except `deviceCount`, 1.
+The header row names the rest: the device and its compute capability, the
+multi-GPU columns, which a single-GPU test leaves empty except `deviceCount`,
+1, and the unified-memory columns, empty in a run without `--capture-um`.
 
 ## Where Each Column Comes From
 
