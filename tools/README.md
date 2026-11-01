@@ -294,11 +294,15 @@ preload (quoting the loader) and a folder holding `,`, which `MALLOC_CONF`
 cannot carry; whether the library profiles is the benchmark's to decide, and
 a run whose jemalloc cannot exits with status 4. After the benchmark exits 0,
 only the dump named after its own process, `jeprof.<pid>.<n>.f.heap`, counts:
-it must be a heap profile that maps the benchmark. The run prints
-`[bench] jemalloc wrote <dump> (<n> bytes) when the benchmark exited: <N> allocations sampled over the run, <M> of them in use at exit`
-(zero sampled is a valid run) and the `jeprof --text --alloc_space` command
-that reads it, and names any other process's dump in the folder as not this
-run's. Otherwise it fails with
+it must be a heap profile that maps the benchmark, with its totals line
+(`t*:`). The run prints
+`[bench] jemalloc wrote <dump> (<n> bytes) when the benchmark exited` (a run
+that sampled nothing is a valid run) and the `jeprof --text --alloc_space`
+command that reads it, and names any other process's dump in the folder as
+not this run's. It prints no number from the totals line: jemalloc writes it
+in an encoding of its own for `jeprof`, not as counts of the samples taken,
+and `jeprof` estimates the bytes from each stack's own record. Otherwise it
+fails with
 `completion: jemalloc wrote no exit dump of the benchmark ...`, or says what
 is wrong with the dump. Without `jeprof` on `PATH` it says that only reading
 the dump needs it.

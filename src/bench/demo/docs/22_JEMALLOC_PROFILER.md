@@ -215,9 +215,12 @@ will write its dump, when the process exits; it never says a dump was
 written, because jemalloc writes it after everything else in the process has
 ended. The last two lines are `bench run`'s, after the exit: it found the dump
 named after the benchmark's own process (35135), checked that it is a heap
-profile of the benchmark, and printed what it holds, 2,394 sampled
-allocations, and the command that reads it. The dump is the only file the run
-writes:
+profile of the benchmark, and printed its name and size and the command that
+reads it. The two counts after `exited:` are copied from the dump's totals
+line, which jemalloc writes in an encoding of its own for `jeprof`: they are
+not the number of samples taken, and `bench run` in this release prints the
+line without them. `jeprof` estimates the bytes from each stack's own record,
+in step 3. The dump is the only file the run writes:
 
 ```
 jemalloc-v0/BenchDemo_16_JemallocProfiler.jemalloc/jeprof.35135.0.f.heap
@@ -266,8 +269,8 @@ Total: 1203.5 MB
 ```
 
 Read the cumulative column. `joinV0` holds 1,202.9 MB of the 1,203.5 MB
-sampled in the process: all of it but one sample of the start-up's memory
-(`_dl_init`), and 11.8 MB per call over the 102 calls. Below it, the two
+sampled in the process: all of it but the start-up's 0.5 MB (`_dl_init`), and
+11.8 MB per call over the 102 calls. Below it, the two
 allocations per part show as the two ways the standard library grows a
 string: 787.8 MB (65.5%) under `append`, where `+ sep` needs a bigger buffer,
 and 415.1 MB (34.5%) under `__str_concat`, the new string `out + part`
@@ -346,14 +349,14 @@ Total: 0.5 MB
      0.0   0.0% 100.0%      0.5 100.0% std::__to_chars_bfloat16_t@@GLIBCXX_3.4.31
 ```
 
-The run took one sample, the start-up's, and none of `joinV1`'s: its 102
+The report holds the start-up's 0.5 MB and nothing under `joinV1`: its 102
 calls allocate about 7.5 KB each, under 1 MB in all, where jemalloc samples
 once per 512 KiB on average, so no sample, or one or two, is the ordinary
 outcome (one, about 0.5 MB, in one of the check's runs on this rig). From
 1,202.9 MB under `joinV0` to nothing under `joinV1`: the reading changed the
 way the timing did, and for the reason the report named. (The last row names
-the start-up sample's frame after the nearest symbol the C++ library exports;
-it is that library's own start-up allocation, the same in every run.)
+the start-up allocation's frame after the nearest symbol the C++ library
+exports; it is that library's own start-up allocation, the same in every run.)
 
 ## What Sampling Costs
 
@@ -377,14 +380,14 @@ LD_LIBRARY_PATH=$JEMALLOC_PROF/lib LD_PRELOAD=libjemalloc.so.2 \
 | `joinV1`, 7.5 KB per call        | 22.3          | 22.6         | 1.01 (0.99 to 1.08) |
 
 The ratios in brackets are the five pairs' range. The cost follows the bytes
-allocated: `joinV0` takes about 23 samples per call, which comes to about
-26 us per sample on this core, while `joinV1` takes one sample every 70 calls
-or so and runs within its own spread. Sampling is cheap for code that
-allocates at a modest rate and costly for code that allocates megabytes per
-millisecond; measure it on your own workload before leaving it on for a long
-run. This is the profiling cost alone, both columns on the same jemalloc; the
-C library's allocator of step 1 is another allocator and is not part of the
-comparison.
+allocated: at one sample per 512 KiB on average, `joinV0`'s 11.8 MB per call
+is sampled many times in every call, while `joinV1`'s 7.5 KB per call adds up
+to 512 KiB only every 70 calls or so, and `joinV1` runs within its own spread.
+Sampling is cheap for code that allocates at a modest rate and costly for code
+that allocates megabytes per millisecond; measure it on your own workload
+before leaving it on for a long run. This is the profiling cost alone, both
+columns on the same jemalloc; the C library's allocator of step 1 is another
+allocator and is not part of the comparison.
 
 ## What Should Reproduce
 

@@ -101,33 +101,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
-- **Demo 16 (jemalloc) measures the shared `join` example** --
-  `BenchDemo_16_JemallocProfiler` measured strings grown by appending against
-  a reused buffer, about 7% apart, and its only check was that it ran. It
-  measures `joinV0` and `joinV1`, one version per test (`Jemalloc.JoinV0`,
-  `Jemalloc.JoinV1`), and `TestDemoJemalloc`, registered with `ctest` under
-  the `demo` and `jemalloc` labels, runs each as
-  `bench run --profile jemalloc` wraps it: the run must leave one exit dump,
-  the demo's, and `jeprof --alloc_space` must put at least 90% of JoinV0's
-  sampled bytes, and at least 400 MB for its 102 calls, under `joinV0`,
-  while JoinV1's run puts under `joinV1` less than 2% of that. It skips,
-  saying why, in a sanitizer build and where no jemalloc that profiles,
-  `jeprof` or binutils is found. Its walkthrough,
-  `src/bench/demo/docs/22_JEMALLOC_PROFILER.md`, is rewritten from a Release
-  run on the documented Raspberry Pi 4 rig with a jemalloc 5.3.0 built with
-  profiling, which a new step of the rig document's one-time setup builds
-  from the release archive, checked against Debian's checksum, into a folder
-  of the user's own (the rig's `libjemalloc2` rejects `prof:true`): it
-  profiles each version through `bench run --profile jemalloc`, reads the
-  dumps with `jeprof --alloc_space` (all of JoinV0's 1,203.5 sampled MB but
-  one start-up sample under `joinV0`, nothing under `joinV1`), and times one
-  jemalloc build with profiling off and on (1.73 times as long for `joinV0`,
-  1.01 for `joinV1`). That run's CSV is committed at
-  `src/bench/demo/reference/pi4/22_jemalloc_profiler.csv`. The unmeasured
-  "~5-10%" overhead the profiler tables gave jemalloc is removed; the
-  advanced guide's table gives the measured range and how it was taken.
-  The demo's test names change, so CSVs captured from it before this release
-  do not join with newer ones.
+- **Demo 16 and walkthrough 22 show allocation attribution with the shared
+  join example** -- including profiling-enabled jemalloc setup on the
+  Raspberry Pi 4. Cases are now `Jemalloc.JoinV0` and `Jemalloc.JoinV1`;
+  recapture older CSV references to compare the renamed cases.
+  ([#69](https://github.com/apexedgesystems/vernier/pull/69))
 - **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
   `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
   `filter` example, with a Raspberry Pi walkthrough
@@ -323,38 +301,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `--profile-analyze` runs the first of `google-pprof` and `pprof` on `PATH`,
   whose absence or failure fails the run and keeps the capture.
   **Action needed:** give gperf's `--profile-args` its modes alone.
-- **jemalloc's doctor row and run ask jemalloc itself** -- the doctor
-  preloads the library the loader resolves into one program with the options
-  `bench run` sets, and is OK only when jemalloc writes its heap dump at that
-  program's exit. A jemalloc built without profiling (Debian's and Ubuntu's
-  arm64 `libjemalloc2`, which reject `prof:true`) and one the loader cannot
-  preload are failures naming the library, not warnings, and `jeprof`
-  is named beside an OK row without deciding it. A run asks its own
-  allocator through `mallctl` and starts no process: not jemalloc, built
-  without profiling, profiling off, or no dump configured fails the run with
-  exit status 4 and creates no folder; sampling off at start, no dump at
-  exit, or bytes not accumulated (`prof_accum`) is a warning. Its message
-  says where jemalloc will write the dump when the process exits, never that
-  one was written. jemalloc takes no `--profile-args` word,
-  `--profile-analyze` fails the run and keeps the capture, and a program built
-  with the address or thread sanitizer, or with clang's undefined-behaviour
-  sanitizer (whose runtime keeps a preloaded jemalloc from taking
-  `MALLOC_CONF`), is refused.
-  **Action needed:** a profile job whose jemalloc cannot profile now fails;
-  put a jemalloc built with profiling first on `LD_LIBRARY_PATH`.
-- **`bench run --profile jemalloc` checks the benchmark's own exit dump** --
-  it preloads jemalloc with `prof:true,prof_final:true,prof_accum:true`, so
-  the dump holds the bytes allocated over the whole run, which
-  `jeprof --text --alloc_space` reads. A library the loader cannot preload,
-  any `--profile-args` word and an output folder holding `,` (which
-  `MALLOC_CONF` cannot carry) are refused before anything starts; nothing
-  runs unprofiled in their place. After the exit only the dump named after
-  the benchmark's process, `jeprof.<pid>.<n>.f.heap`, counts: it must hold a
-  heap profile of the benchmark, and a dump of any other process in the
-  folder is named and never taken for it. The run prints how many
-  allocations were sampled and the `jeprof` command, saying when `jeprof` is
-  missing that only reading the dump needs it. `bench validate` names its
-  row `jeprof (reads jemalloc's dumps)`.
+- **jemalloc profiling now checks allocator support and validates the
+  benchmark's own exit heap dump** -- metadata helpers run without the
+  profiler environment. Use a jemalloc built with profiling; `jeprof` is
+  needed only to read dumps.
+  ([#69](https://github.com/apexedgesystems/vernier/pull/69))
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
   cells only from readings NVML reported, `occupancy` (an estimate from the
@@ -496,12 +447,6 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   test. A libbench built where valgrind's `helgrind.h` is installed asks
   helgrind to leave them unchecked, so a race-free test reports nothing; one
   built without the header, or with `NVALGRIND`, still reports them.
-- **A profiler's wrap stays out of the run's `git describe`** -- the
-  `git describe` behind the CSV's `gitHash` column starts without a shell
-  and without `LD_PRELOAD`, `MALLOC_CONF` or the other variables that put a
-  profiler into a process, and is ended after 10 s (the hash is then
-  `unknown`), so a run under `bench run --profile jemalloc` leaves no heap
-  dump of git beside its own.
 - **bpftrace waits for its tracers to attach and traces threaded tests to their
   end** -- a run waits before its measured repeats, the doctor before it passes
   a script, and `wakeup_latency.bt` counts wakeups completed on another CPU.

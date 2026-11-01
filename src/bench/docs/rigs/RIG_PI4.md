@@ -65,15 +65,24 @@ system-wide, and the system's package stays as it is:
 
 ```bash
 export JEMALLOC_PROF=<a folder of yours>/jemalloc-5.3.0-prof
-curl -LO https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2
-echo "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa  jemalloc-5.3.0.tar.bz2" |
-  sha256sum -c
-tar -xjf jemalloc-5.3.0.tar.bz2
-cd jemalloc-5.3.0
-./configure --prefix="$JEMALLOC_PROF" --enable-prof
-make -j4
-make install_bin install_include install_lib
+(
+  set -euo pipefail
+  curl -fLO https://github.com/jemalloc/jemalloc/releases/download/5.3.0/jemalloc-5.3.0.tar.bz2
+  echo "2db82d1e7119df3e71b7640219b6dfe84789bc0537983c3b7ac4f7189aecfeaa  jemalloc-5.3.0.tar.bz2" |
+    sha256sum -c
+  tar -xjf jemalloc-5.3.0.tar.bz2
+  cd jemalloc-5.3.0
+  ./configure --prefix="$JEMALLOC_PROF" --enable-prof
+  make -j4
+  make install_bin install_include install_lib
+)
 ```
+
+The steps after the `export` run in a subshell that stops at the first one
+that fails: a download that fails, or an archive whose checksum does not
+match, is not extracted, configured or built. Your shell keeps
+`JEMALLOC_PROF` for the steps below, and stays in the folder you ran the
+block from.
 
 The checksum is the one Debian's source package (`jemalloc_5.3.0-3.dsc`)
 records for that release archive. `--enable-prof` is upstream's switch for

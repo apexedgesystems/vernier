@@ -13,7 +13,7 @@
  * profiling on, with a dump of the whole process written when it exits
  * (prof_final) holding the bytes allocated over the run (prof_accum):
  *
- *   bench run ./MyTest --profile jemalloc --gtest_filter='Foo.Bar'
+ *   bench run ./MyTest --profile jemalloc -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
  *   LD_PRELOAD=libjemalloc.so.2 \
