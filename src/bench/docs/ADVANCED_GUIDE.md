@@ -860,6 +860,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --gpu-warmup N      # GPU warmup iterations (default: 10)
 --gpu-memory MODE   # Memory strategy: explicit|unified|pinned|mapped
 --min-speedup F     # Minimum expected speedup vs CPU
+--capture-um        # Unified-memory counters from CUPTI (where it records them)
 ```
 
 **Example combinations:**
@@ -943,23 +944,32 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU Memory Strategy Selection
 
-Control memory management strategy via command-line:
+`--gpu-memory` records a memory strategy in the GPU configuration
+(`PerfGpuConfig::memStrategy`). The harness does not allocate a test's memory,
+so the flag changes no allocation by itself: a benchmark that offers the
+strategies reads the configured one (`perf.gpuConfig().memStrategy`) and
+allocates accordingly. Nor does the flag request unified-memory counters
+(see the GPU guide's
+[Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters)); its
+[Unified Memory](GPU_GUIDE.md#unified-memory) section shows a test that
+allocates managed memory itself. The commands record the strategy such a
+benchmark reads:
 
 ```bash
-# Explicit malloc/memcpy (default)
+# Record the explicit strategy (the default): device memory and copies
 ./test --gpu-memory explicit --csv results.csv
 
-# Unified memory (automatic migration)
+# Record the unified strategy: managed memory, which CUDA migrates on access
 ./test --gpu-memory unified --csv results.csv
 
-# Pinned host memory (faster transfers)
+# Record the pinned strategy: page-locked host memory
 ./test --gpu-memory pinned --csv results.csv
 
-# Mapped memory (zero-copy)
+# Record the mapped strategy: zero-copy host memory
 ./test --gpu-memory mapped --csv results.csv
 ```
 
-**Strategy comparison:**
+**What each strategy names**, for a benchmark that allocates by it:
 
 | Strategy   | Transfer Speed         | Use When                      |
 | ---------- | ---------------------- | ----------------------------- |
@@ -1068,13 +1078,20 @@ linked at build time; no `--profile` flag required. See
 
 #### Unified Memory Columns
 
-| Column              | Type   | Description               | Present When   |
-| ------------------- | ------ | ------------------------- | -------------- |
-| `umPageFaults`      | int64  | GPU page faults           | Unified memory |
-| `umH2DMigrations`   | int64  | Host->device migrations   | Unified memory |
-| `umD2HMigrations`   | int64  | Device->host migrations   | Unified memory |
-| `umMigrationTimeUs` | double | Total migration overhead  | Unified memory |
-| `umThrashing`       | bool   | Memory thrashing detected | Unified memory |
+| Column              | Type   | Description                                | Present When   |
+| ------------------- | ------ | ------------------------------------------ | -------------- |
+| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults | `--capture-um` |
+| `umH2DMigrations`   | int64  | Host->device transfers of managed memory   | `--capture-um` |
+| `umD2HMigrations`   | int64  | Device->host transfers of managed memory   | `--capture-um` |
+| `umMigrationTimeUs` | double | The transfers' durations, summed (us)      | `--capture-um` |
+| `umThrashing`       | bool   | CUPTI recorded thrashing in the window     | `--capture-um` |
+
+Under `--capture-um` each row carries CUPTI's unified-memory counters over its
+measurement's window, zeros when nothing migrated, on a GPU whose CUPTI records
+them. Where CUPTI cannot (the Jetson AGX Thor, an Nsight session,
+`VERNIER_DISABLE_CUPTI=1`), the cells stay empty and a run whose tests pass
+exits with status 4. See
+[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration
 

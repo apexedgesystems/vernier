@@ -874,6 +874,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   up its NVML device by the CUDA device ordinal, which names another GPU where
   NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
   hides them; it looks the device up by the CUDA device's UUID.
+- GPU benchmarks given `--capture-um` fill the `um*` CSV cells from CUPTI's
+  unified-memory counters on GPUs whose CUPTI records them, and fail with
+  status 4 where it cannot, such as on the Jetson AGX Thor. Discard `um*`
+  values in earlier CSVs.
+  ([#66](https://github.com/apexedgesystems/vernier/pull/66))
 - **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
   path it could not open (in a missing directory, a directory, an empty path)
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,
@@ -915,7 +920,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 3).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 4).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable

@@ -13,13 +13,16 @@
  * outcome. Tests that set the variables deciding CUPTI's yield restore them.
  */
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include <atomic>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -27,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -34,6 +38,8 @@
 #include "src/bench/inc/CuptiCollector.hpp"
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
@@ -103,7 +109,10 @@ private:
 
 /* ----------------------------- Fixture ----------------------------- */
 
-/** @brief Skips when no CUDA device is present; keeps the registry slot clean. */
+/**
+ * @brief Skips when no CUDA device is present; keeps the registry slot clean,
+ *        and clears the profile failures a test records (ProfilerRegistry).
+ */
 class PerfGpuHarnessTest : public ::testing::Test {
 protected:
   ub::PerfConfig cfg_{};
@@ -120,9 +129,13 @@ protected:
     cfg_.warmup = 1;
     cfg_.msgBytes = 64; // recommendedCVThreshold(cfg) is 0.10 here, not the 0.05 default
     (void)ub::PerfRegistry::instance().take();
+    ub::ProfilerRegistry::instance().resetFailures();
   }
 
-  void TearDown() override { (void)ub::PerfRegistry::instance().take(); }
+  void TearDown() override {
+    (void)ub::PerfRegistry::instance().take();
+    ub::ProfilerRegistry::instance().resetFailures();
+  }
 
   /** @brief The row the harness published for the measurement just taken. */
   static ub::PerfRow lastRow() {
@@ -486,7 +499,8 @@ std::vector<std::string> splitCells(const std::string& line) {
 
 /**
  * @brief Write every waiting row through the CSV listener, as GoogleTest does
- *        at a test's end, and read the file back: one column -> cell map per row.
+ *        at a test's end, and read the file back: one column -> cell map per
+ *        row. A row whose cell count is not the header's fails the test.
  */
 std::vector<std::map<std::string, std::string>> writeRowsAndRead() {
   static std::atomic<int> files{0};
@@ -503,6 +517,7 @@ std::vector<std::map<std::string, std::string>> writeRowsAndRead() {
   std::vector<std::map<std::string, std::string>> rows;
   while (std::getline(in, line)) {
     const std::vector<std::string> CELLS = splitCells(line);
+    EXPECT_EQ(CELLS.size(), NAMES.size()) << "a row without the header's columns: " << line;
     std::map<std::string, std::string> row;
     for (std::size_t i = 0; i < NAMES.size() && i < CELLS.size(); ++i) {
       row[NAMES[i]] = CELLS[i];
@@ -1113,6 +1128,575 @@ TEST_F(PerfGpuHarnessTest, NvmlFindsTheCudaDeviceByItsUuid) {
     GTEST_SKIP() << REASON;
   }
   EXPECT_TRUE(SESSION.ready()) << UUID << ": " << REASON;
+}
+
+/* ----------------------------- Unified Memory Cells ----------------------------- */
+
+namespace {
+
+/// The CSV columns of the unified-memory counters.
+const std::vector<std::string> UM_COLUMNS = {"umPageFaults", "umH2DMigrations", "umD2HMigrations",
+                                             "umMigrationTimeUs", "umThrashing"};
+
+/** @brief What parseGpuFlags() makes of @p flags, as a GPU benchmark's main() parses them. */
+ub::PerfGpuConfig parsedGpuFlags(const std::vector<std::string>& flags) {
+  std::vector<std::string> args{"bench"};
+  args.insert(args.end(), flags.begin(), flags.end());
+  std::vector<char*> argv;
+  argv.reserve(args.size());
+  for (std::string& arg : args) {
+    argv.push_back(arg.data());
+  }
+  int argc = static_cast<int>(argv.size());
+  ub::PerfGpuConfig parsed;
+  ub::parseGpuFlags(parsed, &argc, argv.data());
+  return parsed;
+}
+
+/** @brief A GPU config whose caller asks for unified-memory counters in code. */
+ub::PerfGpuConfig programmaticCapture() {
+  ub::PerfGpuConfig cfg;
+  cfg.captureUnifiedMemory = true;
+  return cfg;
+}
+
+/**
+ * @brief Makes @p cfg the process's GPU config, the one a GPU case reads when
+ *        it is built, for a scope; the config it found is restored when the
+ *        scope ends.
+ */
+class ScopedGpuConfig {
+public:
+  explicit ScopedGpuConfig(const ub::PerfGpuConfig& cfg)
+      : saved_(ub::detail::gpuConfigSingleton()) {
+    ub::detail::gpuConfigSingleton() = cfg;
+  }
+
+  ~ScopedGpuConfig() { ub::detail::gpuConfigSingleton() = saved_; }
+
+  ScopedGpuConfig(const ScopedGpuConfig&) = delete;
+  ScopedGpuConfig& operator=(const ScopedGpuConfig&) = delete;
+
+private:
+  ub::PerfGpuConfig saved_;
+};
+
+/** @brief True when @p row carries any unified-memory field. */
+bool hasUnifiedMemoryField(const ub::PerfRow& row) {
+  return row.umPageFaults.has_value() || row.umH2DMigrations.has_value() ||
+         row.umD2HMigrations.has_value() || row.umMigrationTimeUs.has_value() ||
+         row.umThrashing.has_value();
+}
+
+/** @brief The recorded failures of the unified-memory request: unsupported, for the whole run. */
+std::size_t unifiedMemoryFailures() {
+  std::size_t count = 0;
+  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
+    count += failure.backend == "capture-um" && failure.test.empty() &&
+                     failure.result.cause == ub::ReadinessCause::UNSUPPORTED
+                 ? 1
+                 : 0;
+  }
+  return count;
+}
+
+/**
+ * @brief Why this device records no unified-memory counters, in the
+ *        collector's words (it is unavailable, or CUPTI refused the counters),
+ *        from one window of a collector asked for them; empty when nothing
+ *        refused them. A collector that records none without a reason is not
+ *        a device that cannot: the tests that ask then expect the counters.
+ */
+std::string unifiedMemoryRefusedHere() {
+  ub::CuptiCollector probe(false);
+  probe.collectUnifiedMemory(true);
+  probe.start();
+  probe.stop();
+  return probe.isAvailable() ? probe.unifiedMemoryRefusal() : probe.unavailableReason();
+}
+
+/** @brief The name CUDA gives device 0, the device these tests measure on. */
+std::string deviceZeroName() {
+  cudaDeviceProp prop{};
+  return cudaGetDeviceProperties(&prop, 0) == cudaSuccess ? std::string(prop.name) : std::string();
+}
+
+/**
+ * @brief The lines of @p text that name all five um* columns, and of those,
+ *        the ones that start with @p prefix.
+ */
+std::pair<std::size_t, std::size_t> linesNamingTheCells(const std::string& text,
+                                                        const std::string& prefix) {
+  std::size_t naming = 0;
+  std::size_t prefixed = 0;
+  std::size_t from = 0;
+  while (from < text.size()) {
+    std::size_t end = text.find('\n', from);
+    if (end == std::string::npos) {
+      end = text.size();
+    }
+    const std::string LINE = text.substr(from, end - from);
+    bool namesEveryCell = true;
+    for (const std::string& column : UM_COLUMNS) {
+      namesEveryCell = namesEveryCell && namesColumn(LINE, column);
+    }
+    if (namesEveryCell) {
+      ++naming;
+      prefixed += LINE.rfind(prefix, 0) == 0 ? 1 : 0;
+    }
+    from = end + 1;
+  }
+  return {naming, prefixed};
+}
+
+/** @brief The first line of @p text that starts with @p prefix, or "none". */
+std::string firstLineStarting(const std::string& text, const std::string& prefix) {
+  for (std::size_t at = text.find(prefix); at != std::string::npos;
+       at = text.find(prefix, at + 1)) {
+    if (at == 0 || text[at - 1] == '\n') {
+      return text.substr(at, text.find('\n', at) - at);
+    }
+  }
+  return "none";
+}
+
+/// The registry's report of a request the run cannot meet.
+constexpr const char* UM_REPORT = "[FAIL] Profiler 'capture-um': unsupported: ";
+
+/**
+ * @brief Runs a GPU benchmark's measurements and end in this process, under
+ *        GPU config @p gpu, then exits with the run's status.
+ *
+ * Measures the kernel through the multi-GPU path on one device, or as two
+ * kernel measurements (one with declared copies), and ends the run as a GPU
+ * benchmark's main() does, with ProfilerRegistry::finishRun() after tests of
+ * status @p testStatus. Writes to stderr how many lines named all five um*
+ * cells while measuring and how many of those were the registry's report of
+ * the request, how many rows carried a unified-memory field, how many failures
+ * the request recorded, how many lines of the run's end named the request, and
+ * the run's end's first line; then, on a line of its own, how many results
+ * carried unified-memory counters and whether the request's report names the
+ * device; and on a third, the report's first line ("none" without one).
+ */
+[[noreturn]] void endUnifiedMemoryRun(const ub::PerfConfig& cfg, const ub::PerfGpuConfig& gpu,
+                                      bool multiGpu, int testStatus) {
+  ub::ProfilerRegistry::instance().resetFailures();
+  const ScopedGpuConfig GPU(gpu);
+  std::size_t umRows = 0;
+  std::size_t umResults = 0;
+  std::string measured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryOutcome") + ".Kernel", cfg};
+    perf.cudaWarmup(data.launch());
+    if (multiGpu) {
+      const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+      ub::MultiGpuKernelBuilder multi =
+          perf.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }, "saxpy");
+      umResults += multi.measure().aggregatedStats.unifiedMemory.has_value() ? 1 : 0;
+    } else {
+      const ub::PerfGpuResult COPIES =
+          perf.cudaKernel(data.launch(), "copies")
+              .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+              .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+              .measure();
+      const ub::PerfGpuResult KERNEL = perf.cudaKernel(data.launch(), "kernel").measure();
+      umResults += (COPIES.stats.unifiedMemory.has_value() ? 1 : 0) +
+                   (KERNEL.stats.unifiedMemory.has_value() ? 1 : 0);
+    }
+    for (const ub::PerfRow& row : ub::PerfRegistry::instance().takeAll()) {
+      umRows += hasUnifiedMemoryField(row) ? 1 : 0;
+    }
+    measured = capture.text();
+  }
+  const std::size_t FAILURES = unifiedMemoryFailures();
+  int status = 0;
+  std::string ended;
+  {
+    vernier::bench::test::StderrCapture capture;
+    status = ub::ProfilerRegistry::instance().finishRun(cfg, testStatus, 1);
+    ended = capture.text();
+  }
+  const auto [umLines, umReports] = linesNamingTheCells(measured, UM_REPORT);
+  const std::string REPORT = firstLineStarting(measured, UM_REPORT);
+  const std::string DEVICE = deviceZeroName();
+  std::fprintf(stderr,
+               "umLines=%zu umReports=%zu umRows=%zu umFailures=%zu umRunEndLines=%zu "
+               "runEnd=%s\n",
+               umLines, umReports, umRows, FAILURES,
+               linesNamingTheCells(ended, "[profile]   capture-um: unsupported: ").second,
+               firstLineStarting(ended, "[profile] ").c_str());
+  std::fprintf(stderr, "umResults=%zu umDevice=%d\n", umResults,
+               !DEVICE.empty() && REPORT.find(UM_REPORT + DEVICE + ": ") == 0 ? 1 : 0);
+  std::fprintf(stderr, "umReport=%s\n", REPORT.c_str());
+  std::exit(status);
+}
+
+/** @brief N floats of managed memory, freed with their owner; null when the allocation failed. */
+struct ManagedFloats {
+  float* data = nullptr;
+  explicit ManagedFloats(std::size_t n) {
+    if (cudaMallocManaged(&data, n * sizeof(float)) != cudaSuccess) {
+      data = nullptr;
+    }
+  }
+  ~ManagedFloats() { cudaFree(data); }
+  ManagedFloats(const ManagedFloats&) = delete;
+  ManagedFloats& operator=(const ManagedFloats&) = delete;
+};
+
+/** @brief @p bytes rounded up to the 2 MiB blocks unified memory migrates in at most. */
+constexpr std::size_t upTo2MiB(std::size_t bytes) {
+  constexpr std::size_t BLOCK2M = 2U << 20U;
+  return (bytes + BLOCK2M - 1) / BLOCK2M * BLOCK2M;
+}
+
+} // namespace
+
+/**
+ * @test A --capture-um measurement with declared copies of device memory
+ *       records no migration: where CUPTI records the counters they are all
+ *       zero (the old byte-count formula gave 64 faults for these copies) and
+ *       nothing is recorded as failed; where it cannot, the result has none and
+ *       the measurement records the request's failure. Its CSV row keeps the
+ *       header's columns, the five um* cells zero or empty accordingly, and the
+ *       timing and byte cells of the measurement. Parsing the flag records nothing
+ */
+TEST_F(PerfGpuHarnessTest, ExplicitCopiesAreNoMigrations) {
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  EXPECT_EQ(unifiedMemoryFailures(), 0U) << "parsing --capture-um recorded a failure";
+  SaxpyFixtureData data;
+  ub::PerfGpuCase perf{uniqueSuite("GpuCaptureUm") + ".Transfers", cfg_};
+  ASSERT_TRUE(perf.gpuConfig().captureUnifiedMemory) << "--capture-um did not reach the case";
+  perf.cudaWarmup(data.launch());
+
+  ub::PerfGpuResult result;
+  {
+    vernier::bench::test::StderrCapture capture; // a refusal's report, checked elsewhere
+    result = perf.cudaKernel(data.launch(), "saxpy")
+                 .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+                 .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+                 .measure();
+  }
+
+  const bool RECORDED = result.stats.unifiedMemory.has_value();
+  if (RECORDED) {
+    EXPECT_EQ(unifiedMemoryFailures(), 0U) << "a request CUPTI met recorded a failure";
+    const ub::UnifiedMemoryProfile& UM = *result.stats.unifiedMemory;
+    EXPECT_EQ(UM.pageFaults, 0U);
+    EXPECT_EQ(UM.h2dMigrations, 0U);
+    EXPECT_EQ(UM.d2hMigrations, 0U);
+    EXPECT_EQ(UM.h2dBytes + UM.d2hBytes, 0U);
+    EXPECT_DOUBLE_EQ(UM.migrationTimeUs, 0.0);
+    EXPECT_EQ(UM.thrashingEvents, 0U);
+  } else {
+    EXPECT_EQ(unifiedMemoryFailures(), 1U) << "a request CUPTI did not meet was not recorded";
+  }
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U);
+  const std::map<std::string, std::string> UM_CELLS_EXPECTED =
+      RECORDED ? std::map<std::string, std::string>{{"umPageFaults", "0"},
+                                                    {"umH2DMigrations", "0"},
+                                                    {"umD2HMigrations", "0"},
+                                                    {"umMigrationTimeUs", "0.000000"},
+                                                    {"umThrashing", "0"}}
+               : std::map<std::string, std::string>{{"umPageFaults", ""},
+                                                    {"umH2DMigrations", ""},
+                                                    {"umD2HMigrations", ""},
+                                                    {"umMigrationTimeUs", ""},
+                                                    {"umThrashing", ""}};
+  for (const std::string& column : UM_COLUMNS) {
+    EXPECT_EQ(ROWS[0].at(column), UM_CELLS_EXPECTED.at(column))
+        << column << (RECORDED ? ": not the observed zero" : ": a value nothing recorded");
+  }
+  EXPECT_EQ(ROWS[0].at("h2dBytes"), std::to_string(SaxpyFixtureData::bytes()));
+  EXPECT_EQ(ROWS[0].at("d2hBytes"), std::to_string(SaxpyFixtureData::bytes()));
+  EXPECT_EQ(ROWS[0].at("kernelTimeUs"), std::to_string(result.kernelTimeUs));
+  EXPECT_EQ(ROWS[0].at("transferTimeUs"), std::to_string(result.transferTimeUs));
+}
+
+/**
+ * @test Under --capture-um, a kernel reading a managed buffer the host wrote is
+ *       seen faulting and migrating it: at least one GPU fault group, at least
+ *       one host-to-device migration of at least the buffer's bytes and at most
+ *       those rounded up to unified memory's 2 MiB blocks, nothing back to the
+ *       host while the kernel only reads, a time for the transfers, no
+ *       thrashing, and no failure recorded. Through the real CSV writer the
+ *       row's five um* cells are those counts. Skipped, with CUPTI's or the
+ *       collector's words, on a device where a collector asked for the
+ *       counters is refused them
+ */
+TEST_F(PerfGpuHarnessTest, ManagedBufferCountersAreObserved) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  const ManagedFloats MANAGED(ELEMENTS);
+  ASSERT_NE(MANAGED.data, nullptr) << "cudaMallocManaged failed";
+  for (int i = 0; i < ELEMENTS; ++i) {
+    MANAGED.data[i] = 1.0F; // the host's write leaves every page on the host
+  }
+  SaxpyFixtureData data;
+  float* x = MANAGED.data;
+  float* y = data.deviceY();
+  ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryObserved") + ".Read", cfg_};
+
+  ub::PerfGpuResult result;
+  {
+    vernier::bench::test::StderrCapture capture; // a refusal's report, if any
+    result = perf.cudaKernel(
+                     [x, y](cudaStream_t s) {
+                       saxpyKernel<<<(ELEMENTS + BLOCK - 1) / BLOCK, BLOCK, 0, s>>>(2.0F, x, y,
+                                                                                    ELEMENTS);
+                     },
+                     "managed_read")
+                 .measure();
+  }
+  ASSERT_TRUE(result.stats.unifiedMemory.has_value())
+      << "this device's CUPTI records the counters, and the measurement carries none";
+  EXPECT_EQ(unifiedMemoryFailures(), 0U);
+  const ub::UnifiedMemoryProfile& UM = *result.stats.unifiedMemory;
+  const std::size_t BYTES = SaxpyFixtureData::bytes();
+  EXPECT_GE(UM.pageFaults, 1U) << "the first launch touched pages that were on the host";
+  EXPECT_GE(UM.h2dMigrations, 1U);
+  EXPECT_GE(UM.h2dBytes, BYTES) << "less than the buffer reached the device";
+  EXPECT_LE(UM.h2dBytes, upTo2MiB(BYTES)) << "more moved than the buffer's blocks hold";
+  EXPECT_EQ(UM.d2hMigrations, 0U) << "pages went back to the host while the kernel only read";
+  EXPECT_EQ(UM.d2hBytes, 0U);
+  EXPECT_GT(UM.migrationTimeUs, 0.0) << "migrations recorded without a time";
+  EXPECT_EQ(UM.thrashingEvents, 0U) << "thrashing recorded for a kernel that only read";
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U);
+  EXPECT_EQ(ROWS[0].at("umPageFaults"), std::to_string(UM.pageFaults));
+  EXPECT_EQ(ROWS[0].at("umH2DMigrations"), std::to_string(UM.h2dMigrations));
+  EXPECT_EQ(ROWS[0].at("umD2HMigrations"), "0");
+  EXPECT_EQ(ROWS[0].at("umMigrationTimeUs"), std::to_string(UM.migrationTimeUs));
+  EXPECT_EQ(ROWS[0].at("umThrashing"), "0");
+}
+
+namespace {
+
+/** @brief The GPU's global timer, in nanoseconds. */
+__device__ unsigned long long globalTimerNs() {
+  unsigned long long now = 0;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+  return now;
+}
+
+/**
+ * @brief Adds one to one int per page until @p durationNs have passed on the
+ *        GPU's timer: the kernel side of a host and a kernel writing the same
+ *        managed pages at once, for as long as asked however fast the
+ *        additions go.
+ */
+__global__ void contendKernel(int* pages, int stride, unsigned long long durationNs) {
+  const unsigned long long START = globalTimerNs();
+  while (globalTimerNs() - START < durationNs) {
+    atomicAdd(&pages[threadIdx.x * stride], 1);
+  }
+}
+
+} // namespace
+
+/**
+ * @test Thrashing that CUPTI records sets the row's umThrashing cell: a kernel
+ *       and the host writing the same 32 managed pages at once for 20 ms, in
+ *       one measured launch, give at least one thrashing record and the cell 1
+ *       (CUPTI's report, not UnifiedMemoryProfile::isThrashing()'s ratio of
+ *       migrations to faults). Skipped where a collector
+ *       asked for the counters is refused them, or where the host cannot write
+ *       managed memory while a kernel runs
+ */
+TEST_F(PerfGpuHarnessTest, CuptiThrashingSetsTheThrashingCell) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  int concurrent = 0;
+  if (cudaDeviceGetAttribute(&concurrent, cudaDevAttrConcurrentManagedAccess, 0) != cudaSuccess ||
+      concurrent != 1) {
+    GTEST_SKIP() << "the host cannot write managed memory while a kernel runs on this device";
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  constexpr int PAGES = 32;
+  constexpr int PAGE = 4096;
+  constexpr int STRIDE = PAGE / static_cast<int>(sizeof(int));
+  struct ManagedPages {
+    int* data = nullptr;
+    ManagedPages() {
+      if (cudaMallocManaged(&data, PAGES * PAGE) != cudaSuccess) {
+        data = nullptr;
+      }
+    }
+    ~ManagedPages() { cudaFree(data); }
+    ManagedPages(const ManagedPages&) = delete;
+    ManagedPages& operator=(const ManagedPages&) = delete;
+  } owned;
+  ASSERT_NE(owned.data, nullptr) << "cudaMallocManaged failed";
+  std::memset(owned.data, 0, PAGES * PAGE);
+  int* pages = owned.data;
+  ub::PerfConfig oneLaunch = cfg_;
+  oneLaunch.cycles = 1;
+  oneLaunch.repeats = 1;
+  ub::PerfGpuCase perf{uniqueSuite("GpuUnifiedMemoryThrash") + ".Race", oneLaunch};
+
+  ub::PerfGpuResult result;
+  {
+    vernier::bench::test::StderrCapture capture; // a one-sample measurement's notes
+    result = perf.cudaKernel(
+                     [pages](cudaStream_t s) {
+                       // A race of a set length: one that ends with a set
+                       // number of additions can be over before the host has
+                       // written enough for CUPTI to record thrashing.
+                       contendKernel<<<1, PAGES, 0, s>>>(pages, STRIDE, 20'000'000ULL);
+                       // The host writes the same pages until the kernel ends
+                       // (bounded at 5 s).
+                       volatile int* host = pages;
+                       const auto START = std::chrono::steady_clock::now();
+                       while (cudaStreamQuery(s) == cudaErrorNotReady &&
+                              std::chrono::steady_clock::now() - START < std::chrono::seconds(5)) {
+                         for (int p = 0; p < PAGES; ++p) {
+                           host[p * STRIDE + 1] = host[p * STRIDE + 1] + 1;
+                         }
+                       }
+                     },
+                     "host_and_kernel")
+                 .measure();
+  }
+  ASSERT_TRUE(result.stats.unifiedMemory.has_value())
+      << "this device's CUPTI records the counters, and the measurement carries none";
+  EXPECT_GE(result.stats.unifiedMemory->thrashingEvents, 1U)
+      << "a host and a kernel writing the same pages at once recorded no thrashing";
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U);
+  EXPECT_EQ(ROWS[0].at("umThrashing"), "1");
+}
+
+/**
+ * @test An explicit request for unified-memory counters that the run cannot
+ *       meet (here because VERNIER_DISABLE_CUPTI stands the collector down; on
+ *       a platform without the counters, because CUPTI refuses them), by
+ *       --capture-um or by a caller setting PerfGpuConfig::captureUnifiedMemory,
+ *       fails the run: the registry reports it once per process, naming the
+ *       device and the reason, for kernel and multi-GPU measurements alike, with
+ *       no other line naming the five cells; no result or row carries the
+ *       counters; and the run's end names the request and gives a run whose
+ *       tests passed status 4
+ */
+TEST_F(PerfGpuHarnessDeathTest, AnUnmetUnifiedMemoryRequestFailsTheRun) {
+  ASSERT_TRUE(parsedGpuFlags({"--capture-um"}).captureUnifiedMemory) << "--capture-um not read";
+  // The reason, as a probe window under the same variable gets it.
+  const std::string WHY = [] {
+    const vernier::bench::test::ScopedEnv OFF("VERNIER_DISABLE_CUPTI", "1");
+    return unifiedMemoryRefusedHere();
+  }();
+  ASSERT_FALSE(WHY.empty()) << "a collector under VERNIER_DISABLE_CUPTI=1 gave no reason";
+  const auto FAILED = ::testing::AllOf(
+      ::testing::ContainsRegex("umLines=1 umReports=1 umRows=0 umFailures=1 umRunEndLines=1 "
+                               "runEnd=\\[profile\\] a profile failed; the run exits with "
+                               "status 4:"),
+      ::testing::ContainsRegex("umResults=0 umDevice=1"),
+      ::testing::HasSubstr("umReport=" + std::string(UM_REPORT) + deviceZeroName() + ": " + WHY +
+                           ": "));
+  // A fresh process for each run, so each run's once-per-process state is its own.
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const auto UNMET = [this](const ub::PerfGpuConfig& gpu, bool multiGpu) {
+    const vernier::bench::test::ScopedEnv OFF("VERNIER_DISABLE_CUPTI", "1");
+    endUnifiedMemoryRun(cfg_, gpu, multiGpu, 0);
+  };
+  EXPECT_EXIT(UNMET(parsedGpuFlags({"--capture-um"}), false), ::testing::ExitedWithCode(4), FAILED);
+  EXPECT_EXIT(UNMET(programmaticCapture(), false), ::testing::ExitedWithCode(4), FAILED);
+  EXPECT_EXIT(UNMET(parsedGpuFlags({"--capture-um"}), true), ::testing::ExitedWithCode(4), FAILED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test Without anything standing the collector down, the request follows the
+ *       device: where nothing refuses the counters (a probe window says), the
+ *       run passes, nothing is reported or recorded, and every result and row
+ *       carries them; where CUPTI refuses them, the run fails as an unmet
+ *       request does, the report naming the device and CUPTI's answer, the one
+ *       the probe window got
+ */
+TEST_F(PerfGpuHarnessDeathTest, TheRequestFollowsTheDevice) {
+  const YieldEnvCleared CLEARED;
+  const std::string WHY = unifiedMemoryRefusedHere();
+  const bool RECORDS = WHY.empty();
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  if (RECORDS) {
+    const auto MET = [](const char* measured) {
+      return ::testing::AllOf(
+          ::testing::ContainsRegex(std::string("umLines=0 umReports=0 umRows=") + measured +
+                                   " umFailures=0 umRunEndLines=0 runEnd=none"),
+          ::testing::ContainsRegex(std::string("umResults=") + measured + " umDevice=0"));
+    };
+    EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 0),
+                ::testing::ExitedWithCode(0), MET("2"));
+    EXPECT_EXIT(endUnifiedMemoryRun(cfg_, programmaticCapture(), false, 0),
+                ::testing::ExitedWithCode(0), MET("2"));
+    EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), true, 0),
+                ::testing::ExitedWithCode(0), MET("1"));
+  } else {
+    const auto REFUSED = ::testing::AllOf(
+        ::testing::ContainsRegex("umLines=1 umReports=1 umRows=0 umFailures=1 umRunEndLines=1 "
+                                 "runEnd=\\[profile\\] a profile failed; the run exits with "
+                                 "status 4:"),
+        ::testing::ContainsRegex("umResults=0 umDevice=1"),
+        ::testing::HasSubstr("umReport=" + std::string(UM_REPORT) + deviceZeroName() + ": " + WHY +
+                             ": "));
+    EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 0),
+                ::testing::ExitedWithCode(4), REFUSED);
+    EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), true, 0),
+                ::testing::ExitedWithCode(4), REFUSED);
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test A run whose tests failed keeps their status when it also asked for
+ *       unified-memory counters it cannot get; its end still reports the request
+ */
+TEST_F(PerfGpuHarnessDeathTest, AFailedTestKeepsItsStatusOverTheRequest) {
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(
+      {
+        const vernier::bench::test::ScopedEnv OFF("VERNIER_DISABLE_CUPTI", "1");
+        endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--capture-um"}), false, 1);
+      },
+      ::testing::ExitedWithCode(1),
+      "umLines=1 umReports=1 umRows=0 umFailures=1 umRunEndLines=1 "
+      "runEnd=\\[profile\\] a profile failed; the run exits with the tests' status 1:");
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+/**
+ * @test Choosing the managed-memory strategy (--gpu-memory unified) asks for
+ *       no unified-memory counters: like a run without GPU flags, it reports
+ *       nothing, records nothing, no row carries a unified-memory field, and
+ *       the run passes
+ */
+TEST_F(PerfGpuHarnessDeathTest, ChoosingManagedMemoryAloneFailsNothing) {
+  ASSERT_EQ(parsedGpuFlags({"--gpu-memory", "unified"}).memStrategy,
+            ub::PerfGpuConfig::MemoryStrategy::Unified)
+      << "--gpu-memory unified not read";
+  const std::string PASSED =
+      "umLines=0 umReports=0 umRows=0 umFailures=0 umRunEndLines=0 runEnd=none";
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), false, 0),
+              ::testing::ExitedWithCode(0), PASSED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({"--gpu-memory", "unified"}), true, 0),
+              ::testing::ExitedWithCode(0), PASSED);
+  EXPECT_EXIT(endUnifiedMemoryRun(cfg_, parsedGpuFlags({}), false, 0), ::testing::ExitedWithCode(0),
+              PASSED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 
 /* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
