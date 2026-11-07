@@ -42,7 +42,7 @@
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
-#include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/ptst/gpu/UnifiedMemoryRefusal.hpp"
 
 namespace ub = vernier::bench;
 
@@ -87,22 +87,6 @@ CudaFloats managedFloats() {
 CudaFloats deviceFloats() {
   float* p = nullptr;
   return CudaFloats(cudaMalloc(&p, BYTES) == cudaSuccess ? p : nullptr);
-}
-
-/**
- * @brief Why the run reported its request for unified-memory counters as
- *        unsupported here (CUPTI cannot record them, or the collector stood
- *        down); empty if it did not. A window that lost its records is a
- *        failure of the test, not a reason to skip it.
- */
-std::string unifiedMemoryRefusal() {
-  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
-    if (failure.backend == "capture-um" && failure.test.empty() &&
-        failure.result.cause == ub::ReadinessCause::UNSUPPORTED) {
-      return failure.result.report.message;
-    }
-  }
-  return {};
 }
 
 /** @brief The value scaleKernel writes for in[i] = i. */
@@ -286,7 +270,7 @@ PERF_GPU_TEST(GpuUnifiedMemory, CountersFollowTheBuffer) {
   EXPECT_EQ(hostReadWrong, -1) << "first wrong element the host read (-2: it never read)";
 
   if (!TO_DEVICE.stats.unifiedMemory.has_value() || !TO_HOST.stats.unifiedMemory.has_value()) {
-    const std::string WHY = unifiedMemoryRefusal();
+    const std::string WHY = ub::test::unifiedMemoryRefusal();
     ASSERT_FALSE(WHY.empty()) << "no unified-memory counters, and the request was not unsupported";
     GTEST_SKIP() << WHY;
   }

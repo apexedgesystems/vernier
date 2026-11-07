@@ -49,7 +49,7 @@
 
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
-#include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/ptst/gpu/UnifiedMemoryRefusal.hpp"
 
 namespace ub = vernier::bench;
 
@@ -231,22 +231,6 @@ Expected expectedOf(Strategy strategy) {
     return {"host", "host", 0};
   }
   return {"", "", 0};
-}
-
-/**
- * @brief Why the run reported its request for unified-memory counters as
- *        unsupported (CUPTI cannot record them, or the collector stood down);
- *        empty if it did not, the request then honoured. GpuUnifiedMemory
- *        reads the run's report the same way.
- */
-std::string unifiedMemoryRefusal() {
-  for (const ub::ProfileFailure& failure : ub::ProfilerRegistry::instance().failures()) {
-    if (failure.backend == "capture-um" && failure.test.empty() &&
-        failure.result.cause == ub::ReadinessCause::UNSUPPORTED) {
-      return failure.result.report.message;
-    }
-  }
-  return {};
 }
 
 } // anonymous namespace
@@ -618,7 +602,7 @@ PERF_GPU_TEST(GpuMemoryStrategies, SelectedStrategy) {
   if (!perf.gpuConfig().captureUnifiedMemory) {
     EXPECT_FALSE(RESULT.stats.unifiedMemory.has_value())
         << "unified-memory counters in a run that did not ask for them";
-  } else if (STRATEGY == Strategy::Unified && unifiedMemoryRefusal().empty()) {
+  } else if (STRATEGY == Strategy::Unified && ub::test::unifiedMemoryRefusal().empty()) {
     ASSERT_TRUE(RESULT.stats.unifiedMemory.has_value())
         << "no unified-memory counters, and the request was not unsupported";
     EXPECT_GE(RESULT.stats.unifiedMemory->h2dBytes, SELECTED_BYTES)
