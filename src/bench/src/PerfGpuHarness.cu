@@ -751,6 +751,10 @@ public:
       cupti_.collectUnifiedMemory(true);
       cupti_.start();
     }
+    // Stating the request, sizing the results or starting the first worker
+    // can throw before the window's stop below; the window then stops here,
+    // so this case's next window counts only its own records.
+    const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
     const bool UM_RECORDED = gpuCfg_.captureUnifiedMemory &&
                              stateUnifiedMemoryRequest(gpuCfg_, cupti_, gpuCfg_.deviceId);
 

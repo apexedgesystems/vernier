@@ -6,8 +6,9 @@
  * PerfGpuCase API and check the result and the row the harness leaves in
  * PerfRegistry, and one opens the harness's private NVML helper for the device
  * as the harness does. The setup-failure tests count the streams and events
- * the harness makes, and fail one setup step, through CudaHandleRecorder.
- * Without a device every test skips.
+ * the harness makes, and fail one setup step, through CudaHandleRecorder; one
+ * test fails a multi-GPU measurement's first worker start through the
+ * pthread_create this file defines. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -20,6 +21,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -32,9 +34,13 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
+#include <dlfcn.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include "src/bench/inc/CuptiCollector.hpp"
@@ -2166,6 +2172,164 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
         << "the case's next window counted the failed window's launches";
+  }
+}
+
+/* ----------------------------- Worker Start Failure ----------------------------- */
+
+namespace {
+
+/**
+ * @brief The thread start a test makes fail: the first std::thread start of
+ *        the arming thread while it is armed (FirstThreadStartFails). The
+ *        program's pthread_create, defined below, reads it.
+ */
+struct ThreadStartFailure {
+  std::atomic<std::thread::id> armedBy{}; ///< The arming thread; no thread while disarmed
+  std::atomic<bool> fired{false};         ///< A start failed since the arming
+};
+
+/** @brief The process's one; never destroyed, since threads start until the process exits. */
+ThreadStartFailure& threadStartFailure() {
+  static ThreadStartFailure* const FAILURE = new ThreadStartFailure;
+  return *FAILURE;
+}
+
+/** @brief True when @p code is in libstdc++, where std::thread's constructor starts its thread. */
+bool inLibstdcxx(const void* code) {
+  Dl_info origin{};
+  return dladdr(code, &origin) != 0 && origin.dli_fname != nullptr &&
+         std::strstr(origin.dli_fname, "libstdc++") != nullptr;
+}
+
+/**
+ * @brief True for the one start to fail: called from @p caller in libstdc++
+ *        (a std::thread) on the arming thread, the first since the arming.
+ *        Other starts pass on, CUPTI's among them: it starts its threads from
+ *        its own library.
+ */
+bool failsThisStart(const void* caller) {
+  ThreadStartFailure& failure = threadStartFailure();
+  return failure.armedBy.load() == std::this_thread::get_id() && inLibstdcxx(caller) &&
+         !failure.fired.exchange(true);
+}
+
+/**
+ * @brief For its scope, the first std::thread the constructing thread starts
+ *        fails as in a process that can make no more threads: pthread_create
+ *        returns EAGAIN, so std::thread throws std::system_error. Every other
+ *        start passes on. Disarmed when the scope ends, fired or not.
+ */
+class FirstThreadStartFails {
+public:
+  FirstThreadStartFails() {
+    threadStartFailure().fired.store(false);
+    threadStartFailure().armedBy.store(std::this_thread::get_id());
+  }
+
+  ~FirstThreadStartFails() { threadStartFailure().armedBy.store(std::thread::id()); }
+
+  FirstThreadStartFails(const FirstThreadStartFails&) = delete;
+  FirstThreadStartFails& operator=(const FirstThreadStartFails&) = delete;
+
+  /** @brief True once a start failed since the arming. */
+  [[nodiscard]] bool fired() const { return threadStartFailure().fired.load(); }
+};
+
+} // namespace
+
+// The program's pthread_create. libstdc++, CUPTI and the CUDA libraries import
+// pthread_create, and the dynamic linker binds an import to the program's own
+// definition before any library's, so the threads they start are started
+// here; each start is passed on to the C library's, except the one an armed
+// FirstThreadStartFails fails. The harness has no hook for this.
+extern "C" __attribute__((visibility("default"))) int
+pthread_create(pthread_t* thread, const pthread_attr_t* attributes, void* (*start)(void*),
+               void* argument) noexcept {
+  static const auto REAL = [] {
+    void* next = dlsym(RTLD_NEXT, "pthread_create");
+    if (next == nullptr) {
+      std::fprintf(stderr, "PerfGpuHarness_uTest: no pthread_create after the test program's\n");
+      std::abort();
+    }
+    return reinterpret_cast<decltype(&::pthread_create)>(next);
+  }();
+  if (failsThisStart(__builtin_return_address(0))) {
+    return EAGAIN;
+  }
+  return REAL(thread, attributes, start, argument);
+}
+
+/**
+ * @test Under --capture-um, a multi-GPU measurement whose first worker cannot
+ *       be started (its std::thread's start fails with EAGAIN): the exception
+ *       reaches the caller, no row is published, and the unified-memory window
+ *       is closed by then, so the host's use of managed memory after the
+ *       failure is in no window: the same case's next measurement, of a kernel
+ *       on device memory, counts no fault and no migration, in its result and
+ *       in its row. Skipped, with CUPTI's or the collector's words, on a device
+ *       where a collector asked for the counters is refused them
+ */
+TEST_F(PerfGpuHarnessTest, MultiGpuWorkerThatCannotStartLeavesTheNextWindowClean) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  // 1 MiB of managed memory a kernel writes, so its pages are on the device
+  // when the host touches them after the failed attempt.
+  constexpr int MANAGED_FLOATS = 1 << 18;
+  constexpr int PAGE_FLOATS = 4096 / static_cast<int>(sizeof(float));
+  const ManagedFloats MANAGED(MANAGED_FLOATS);
+  ASSERT_NE(MANAGED.data, nullptr) << "cudaMallocManaged failed";
+  fillKernel<<<(MANAGED_FLOATS + BLOCK - 1) / BLOCK, BLOCK>>>(MANAGED.data, MANAGED_FLOATS,
+                                                              FILL_BASE);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  // Both attempts launch a kernel on device memory, which migrates nothing.
+  FillOnDevice fill(currentDevice());
+  const ub::PerfGpuCase::KernelFn LAUNCH = fill.launch();
+  const auto ON_DEVICE = [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); };
+  ub::PerfGpuCase perf{uniqueSuite("GpuWorkerStartFails") + ".MultiGpu", cfg_};
+
+  {
+    const FirstThreadStartFails FAIL_FIRST_START;
+    try {
+      static_cast<void>(perf.cudaKernelMultiGpu(1, ON_DEVICE, "fill").measure());
+      ADD_FAILURE() << "the worker's failed start did not reach the caller";
+    } catch (const std::system_error& e) {
+      EXPECT_EQ(e.code().value(), EAGAIN) << e.what();
+    }
+    EXPECT_TRUE(FAIL_FIRST_START.fired())
+        << "no std::thread start of this thread reached the test program's pthread_create";
+  }
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+
+  // The host reads and writes every page: faults on the host and migrations
+  // to it, which a window still open would count.
+  volatile float* host = MANAGED.data;
+  for (int i = 0; i < MANAGED_FLOATS; i += PAGE_FLOATS) {
+    host[i] = host[i] + 1.0F;
+  }
+
+  const ub::MultiGpuResult RETRY = perf.cudaKernelMultiGpu(1, ON_DEVICE, "fill").measure();
+  EXPECT_EQ(fill.firstWrong(), -1) << "the retry did not fill the buffer";
+  EXPECT_TRUE(ub::ProfilerRegistry::instance().failures().empty())
+      << "the retry recorded a profile failure";
+  ASSERT_TRUE(RETRY.aggregatedStats.unifiedMemory.has_value())
+      << "this device's CUPTI records the counters, and the retry carries none";
+  const ub::UnifiedMemoryProfile& UM = *RETRY.aggregatedStats.unifiedMemory;
+  EXPECT_EQ(UM.pageFaults, 0U) << "the retry counted the host's faults after the failure";
+  EXPECT_EQ(UM.h2dMigrations, 0U);
+  EXPECT_EQ(UM.d2hMigrations, 0U) << "the retry counted the host's migrations after the failure";
+  EXPECT_EQ(UM.h2dBytes + UM.d2hBytes, 0U);
+  EXPECT_DOUBLE_EQ(UM.migrationTimeUs, 0.0);
+  EXPECT_EQ(UM.thrashingEvents, 0U);
+  const std::vector<std::map<std::string, std::string>> ROWS = writeRowsAndRead();
+  ASSERT_EQ(ROWS.size(), 1U) << "the retry did not publish its row";
+  for (const std::string& column : UM_COLUMNS) {
+    EXPECT_EQ(ROWS[0].at(column), column == "umMigrationTimeUs" ? "0.000000" : "0") << column;
   }
 }
 
