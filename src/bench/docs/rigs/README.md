@@ -39,9 +39,11 @@ output.
 | Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs                                                |
 | NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs, and CPU walkthroughs that need a GPU timeline |
 
-Three walkthroughs fall outside the two rigs, and each says so at its top:
-RAPL needs an Intel CPU; jemalloc needs a jemalloc built with profiling,
-which neither rig's distribution provides; rocprof needs an AMD GPU.
+Two walkthroughs fall outside the two rigs, and each says so at its top:
+RAPL needs an Intel CPU, and rocprof an AMD GPU. The jemalloc walkthrough
+runs on the Raspberry Pi 4 with a jemalloc built with profiling, which
+neither rig's distribution provides: the rig document's one-time setup
+builds one.
 
 ## 3. What Reproduces and What Does Not
 
