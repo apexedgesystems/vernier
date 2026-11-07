@@ -1,51 +1,40 @@
 /**
  * @file GpuProfilers_pTest.cu
- * @brief GPU profiler integration validation
+ * @brief GPU profiler samples: kernels measured with the profiler the guard
+ *        attaches
  *
- * This test suite validates that GPU profilers (Nsight Systems/Compute)
- * integrate correctly with the framework and capture metrics properly.
- *
- * Features tested:
- *  - Nsight Systems integration
- *  - Profiler artifact generation
- *  - GPU-specific profiling hooks
- *
- * Expected behavior:
- *  - Profilers should activate when enabled
- *  - Artifacts should be generated in correct locations
- *  - Tests gracefully skip if profilers unavailable
+ * UB_PERF_GPU_GUARD attaches the profiler a --profile request names to every
+ * measurement of the case; the cases attach nothing else. Under --profile
+ * nsight the Nsight backend only marks each measurement with an NVTX range:
+ * nsys records the process it started and writes its report when the process
+ * exits, so whether a capture succeeded is decided then, by nsys and by the
+ * run's outcome, never by a case. A request nsys cannot serve (--profile
+ * nsight in a process nsys did not start) fails the run, which reports why and
+ * exits with status 4 when its tests pass; bench run --profile nsight starts
+ * the process under nsys and checks the report after it exits.
  *
  * Usage:
  *   @code{.sh}
- *   # Run all GPU profiler tests
+ *   # The samples, no profiler
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
  *       --gtest_filter="GpuProfilers.*"
  *
- *   # With Nsight Systems profiling
- *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
- *       --gtest_filter="GpuProfilers.NsightIntegration" \
- *       --profile nsight --artifact-root profiler_artifacts
+ *   # Under Nsight Systems
+ *   bench run ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --profile nsight -- --gtest_filter="GpuProfilers.*"
  *   @endcode
- *
- * Performance expectations:
- *  - Runtime: ~15 seconds total
- *  - Pass rate: 100% when profilers available, graceful skip otherwise
  *
  * @see ProfilerNsight
  */
 
 #include <gtest/gtest.h>
 #include <cuda_runtime.h>
-#include <cstdio>
-#include <string>
-#include <filesystem>
 
 #include "../../inc/PerfGpu.hpp"
 #include "../helpers/TestHelpers.hpp"
 
 namespace ub = vernier::bench;
 namespace test = vernier::bench::test;
-namespace fs = std::filesystem;
 
 namespace {
 
@@ -62,28 +51,15 @@ __global__ void simpleKernel(const float* a, const float* b, float* c, int n) {
 } // anonymous namespace
 
 /**
- * @brief Nsight Systems profiler integration test
+ * @brief A kernel measured with the guard's profiler
  *
- * Validates that Nsight Systems profiler correctly captures GPU activity
- * when enabled via --profile nsight flag.
+ * Under --profile nsight in a process nsys started, the guard's Nsight
+ * backend marks the measurement with an NVTX range in nsys's timeline.
  *
  * @test NsightIntegration
- *
- * Validates:
- *  - Profiler activates when requested
- *  - Kernel launches are captured
- *  - Profiler artifacts are generated
- *  - No crashes or errors occur
- *
- * Expected performance:
- *  - Profiling adds ~5-10% overhead
- *  - Artifacts generated in correct directory
  */
 PERF_GPU_TEST(GpuProfilers, NsightIntegration) {
   UB_PERF_GPU_GUARD(perf);
-
-  // Attach GPU profiler hooks
-  ub::attachGpuProfilerHooks(perf, perf.cpuConfig());
 
   const int N = 1024 * 1024;
   const size_t SIZE = N * sizeof(float);
@@ -104,7 +80,6 @@ PERF_GPU_TEST(GpuProfilers, NsightIntegration) {
 
   perf.cudaWarmup([&](cudaStream_t s) { simpleKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); });
 
-  // Run with profiling
   auto result =
       perf.cudaKernel(
               [&](cudaStream_t s) { simpleKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); },
@@ -115,43 +90,30 @@ PERF_GPU_TEST(GpuProfilers, NsightIntegration) {
   // Validation
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
 
-  // Check if profiling was enabled
-  const auto& cfg = perf.cpuConfig();
-  if (cfg.profileTool == "nsight") {
-    std::printf("\n[OK] Nsight profiling enabled\n");
-
-    // Check for artifacts if artifact root specified
-    if (!cfg.artifactRoot.empty()) {
-      fs::path artifactDir(cfg.artifactRoot);
-      if (fs::exists(artifactDir)) {
-        std::printf("[OK] Artifact directory exists: %s\n", cfg.artifactRoot.c_str());
-      }
-    }
-  } else {
-    std::printf("\n[Note] Nsight profiling not enabled (use --profile nsight)\n");
-  }
-
   cudaFree(d_a);
   cudaFree(d_b);
   cudaFree(d_c);
 }
 
 /**
- * @brief GPU profiler overhead measurement
+ * @brief One window measured with the guard's hooks
  *
- * Measures the overhead introduced by GPU profilers to ensure
- * it's within acceptable bounds.
+ * The guard attaches its hooks to every measurement of the case, so the
+ * process has no unprofiled window to compare with. A profiler's cost on the
+ * measured window shows between two runs that differ only in --profile, with
+ * everything else given explicitly and the in-process CUPTI collector off in
+ * both:
+ *   export VERNIER_DISABLE_CUPTI=1
+ *   bench run BenchmarkGPU_PTEST --taskset 2 --cycles 1000 --repeats 10 --csv base.csv \
+ *       -- --gtest_filter=GpuProfilers.ProfilerOverhead --gpu-device 0 --warmup 1 --gpu-warmup 10
+ *   bench run BenchmarkGPU_PTEST --taskset 2 --cycles 1000 --repeats 10 --csv nsight.csv \
+ *       --profile nsight \
+ *       -- --gtest_filter=GpuProfilers.ProfilerOverhead --gpu-device 0 --warmup 1 --gpu-warmup 10
+ *   bench compare base.csv nsight.csv
+ * The difference leaves out nsys's start-up, its report export and the
+ * command's own time, and no threshold applies to it.
  *
  * @test ProfilerOverhead
- *
- * Validates:
- *  - Profiling overhead is measurable
- *  - Overhead is within expected range (<20%)
- *  - Measurements remain stable with profiling
- *
- * Expected performance:
- *  - Profiling adds 5-20% overhead
- *  - Still produces stable measurements
  */
 PERF_GPU_TEST(GpuProfilers, ProfilerOverhead) {
   UB_PERF_GPU_GUARD(perf);
@@ -173,17 +135,6 @@ PERF_GPU_TEST(GpuProfilers, ProfilerOverhead) {
 
   perf.cudaWarmup([&](cudaStream_t s) { simpleKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); });
 
-  // Measure without profiling hooks
-  auto resultNoProfile =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { simpleKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); },
-              "no_profile")
-          .withLaunchConfig(grid, block)
-          .measure();
-
-  // Attach profiler hooks
-  ub::attachGpuProfilerHooks(perf, perf.cpuConfig());
-
   // Measure with profiling hooks (even if no profiler active)
   auto resultWithHooks =
       perf.cudaKernel(
@@ -196,103 +147,11 @@ PERF_GPU_TEST(GpuProfilers, ProfilerOverhead) {
   // measuring extremely fast operations where variance is naturally higher
   const double GENEROUS_CV_THRESHOLD = 0.30; // 30% for tiny micro-benchmarks
 
-  EXPECT_LT(resultNoProfile.stats.cpuStats.cv, GENEROUS_CV_THRESHOLD)
-      << "High jitter in baseline measurement: CV% " << (resultNoProfile.stats.cpuStats.cv * 100.0)
-      << "%";
-
   EXPECT_LT(resultWithHooks.stats.cpuStats.cv, GENEROUS_CV_THRESHOLD)
       << "High jitter with profiler hooks: CV% " << (resultWithHooks.stats.cpuStats.cv * 100.0)
       << "%";
 
-  // Calculate overhead
-  double overhead = ((resultWithHooks.kernelTimeUs - resultNoProfile.kernelTimeUs) /
-                     resultNoProfile.kernelTimeUs) *
-                    100.0;
-
-  std::printf("\nProfiler hook overhead: %.2f%%\n", overhead);
-
-  const auto& cfg = perf.cpuConfig();
-  if (cfg.profileTool.empty()) {
-    // Without active profiler, overhead should be minimal (<5%)
-    EXPECT_LT(std::abs(overhead), 5.0) << "Hook overhead without active profiler should be minimal";
-  } else {
-    // With active profiler, overhead up to 20% is acceptable
-    std::printf("Active profiler: %s\n", cfg.profileTool.c_str());
-    EXPECT_LT(std::abs(overhead), 20.0) << "Profiler overhead should be reasonable (<20%)";
-  }
-
   cudaFree(d_a);
   cudaFree(d_b);
   cudaFree(d_c);
-}
-
-/**
- * @brief Profiler artifact directory creation test
- *
- * Validates that profiler artifacts are correctly placed in the
- * specified artifact root directory.
- *
- * @test ArtifactGeneration
- *
- * Validates:
- *  - Artifact directory is created
- *  - Artifacts use correct naming convention
- *  - Test-specific subdirectories work correctly
- *
- * Expected performance:
- *  - Quick test (~2 seconds)
- *  - No performance overhead from artifact generation
- */
-PERF_GPU_TEST(GpuProfilers, ArtifactGeneration) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const auto& cfg = perf.cpuConfig();
-
-  // Only meaningful if artifact root specified
-  if (cfg.artifactRoot.empty()) {
-    GTEST_SKIP() << "Artifact root not specified (use --artifact-root)";
-  }
-
-  ub::attachGpuProfilerHooks(perf, cfg);
-
-  const int N = 128 * 1024;
-  const size_t SIZE = N * sizeof(float);
-
-  float* d_data;
-  cudaMalloc(&d_data, SIZE);
-  cudaMemset(d_data, 1, SIZE);
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  // Run a simple kernel
-  auto result =
-      perf.cudaKernel(
-              [&](cudaStream_t s) { simpleKernel<<<1, 1, 0, s>>>(d_data, d_data, d_data, 1); },
-              "artifact_test")
-          .withLaunchConfig(dim3(1), dim3(1))
-          .measure();
-
-  // Check artifact directory
-  fs::path artifactDir(cfg.artifactRoot);
-  EXPECT_TRUE(fs::exists(artifactDir)) << "Artifact directory should exist: " << cfg.artifactRoot;
-
-  std::printf("\n[OK] Artifact root exists: %s\n", cfg.artifactRoot.c_str());
-
-  // List contents (if any)
-  if (fs::exists(artifactDir)) {
-    int fileCount = 0;
-    for (const auto& entry : fs::directory_iterator(artifactDir)) {
-      fileCount++;
-      if (fileCount <= 5) { // Show first 5 files
-        std::printf("  - %s\n", entry.path().filename().c_str());
-      }
-    }
-    if (fileCount > 5) {
-      std::printf("  ... and %d more files\n", fileCount - 5);
-    }
-    std::printf("Total artifacts: %d\n", fileCount);
-  }
-
-  cudaFree(d_data);
 }

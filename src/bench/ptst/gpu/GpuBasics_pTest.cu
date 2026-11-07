@@ -2,43 +2,44 @@
  * @file GpuBasics_pTest.cu
  * @brief Basic GPU functionality validation tests
  *
- * This test suite validates fundamental GPU benchmarking capabilities including
- * kernel timing, memory transfers, speedup calculation, and basic GPU metrics.
+ * This file validates fundamental GPU benchmarking capabilities: kernel timing,
+ * memory transfers and basic GPU metrics (suite GpuBasics), and the speedup of
+ * a GPU round trip over a CPU baseline (suite GpuSpeedup).
  *
  * Features tested:
  *  - Simple kernel execution and timing
  *  - Host-to-device and device-to-host transfers
- *  - CPU baseline comparison
- *  - Speedup calculation
+ *  - CPU baseline comparison and speedup calculation (GpuSpeedup)
  *  - Basic occupancy tracking
  *
  * Expected behavior:
  *  - GPU kernels execute correctly
  *  - Transfers complete successfully
- *  - GPU shows speedup over CPU
+ *  - The speedup is reported as measured: with its transfers, a small
+ *    memory-bound kernel's round trip can be slower than the CPU loop
  *  - Metrics are reasonable
  *
  * Usage:
  *   @code{.sh}
  *   # Run all GPU basics tests
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
- *       --gtest_filter="GpuBasics.*"
+ *       --gtest_filter="GpuBasics.*:GpuSpeedup.*"
  *
  *   # With specific GPU device
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
- *       --gtest_filter="GpuBasics.*" --gpu-device 0
+ *       --gtest_filter="GpuBasics.*:GpuSpeedup.*" --gpu-device 0
  *   @endcode
  *
  * Performance expectations:
  *  - Runtime: ~10 seconds total
  *  - Pass rate: 100% with CUDA GPU available
- *  - GPU speedup: >2x over CPU
  *
  * @see PerfGpuCase
  * @see CudaKernelBuilder
  */
 
 #include <gtest/gtest.h>
+#include <cstdio>
 #include <vector>
 #include <cmath>
 
@@ -136,82 +137,6 @@ PERF_GPU_TEST(GpuBasics, SimpleKernelExecution) {
   // Validate results
   for (int i = 0; i < 100; ++i) {
     EXPECT_FLOAT_EQ(h_c[i], 3.0f) << "Result incorrect at index " << i;
-  }
-
-  // Cleanup
-  cudaFree(d_a);
-  cudaFree(d_b);
-  cudaFree(d_c);
-}
-
-/**
- * @brief GPU speedup over CPU baseline
- *
- * Validates that GPU shows measurable speedup over CPU for parallel workloads.
- *
- * @test SpeedupCalculation
- *
- * Validates:
- *  - CPU baseline measured correctly
- *  - GPU faster than CPU
- *  - Speedup calculated correctly
- *
- * Expected performance:
- *  - GPU speedup >2x over CPU
- */
-PERF_GPU_TEST(GpuBasics, SpeedupCalculation) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int N = 128 * 1024; // Reduced for speed (was 512K)
-  const size_t SIZE = N * sizeof(float);
-
-  // Allocate host memory
-  std::vector<float> h_a(N, 1.0f);
-  std::vector<float> h_b(N, 2.0f);
-  std::vector<float> h_c_cpu(N, 0.0f);
-  std::vector<float> h_c_gpu(N, 0.0f);
-
-  // CPU baseline
-  auto cpuResult = perf.cpuBaseline(
-      [&] { vectorAddCPU(h_a.data(), h_b.data(), h_c_cpu.data(), N); }, "cpu_vector_add");
-
-  // Allocate device memory
-  float *d_a, *d_b, *d_c;
-  cudaMalloc(&d_a, SIZE);
-  cudaMalloc(&d_b, SIZE);
-  cudaMalloc(&d_c, SIZE);
-
-  // Launch configuration
-  const int threadsPerBlock = 256;
-  const int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
-  dim3 grid(blocksPerGrid);
-  dim3 block(threadsPerBlock);
-
-  // Warmup
-  perf.cudaWarmup(
-      [&](cudaStream_t s) { vectorAddKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); });
-
-  // Measure GPU
-  auto gpuResult = perf.cudaKernel([&](cudaStream_t s) {
-                         vectorAddKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N);
-                       })
-                       .withHostToDevice(h_a.data(), d_a, SIZE)
-                       .withHostToDevice(h_b.data(), d_b, SIZE)
-                       .withDeviceToHost(d_c, h_c_gpu.data(), SIZE)
-                       .withLaunchConfig(grid, block)
-                       .measure();
-
-  // Validate speedup
-  EXPECT_GT(gpuResult.speedupVsCpu, 2.0)
-      << "GPU speedup too low: " << gpuResult.speedupVsCpu << "x";
-
-  // Validate speedup calculation is consistent
-  const double expectedSpeedup = cpuResult.stats.median / gpuResult.totalTimeUs;
-  EXPECT_NEAR(gpuResult.speedupVsCpu, expectedSpeedup, 0.1) << "Speedup calculation inconsistent";
-
-  // Validate results match
-  for (int i = 0; i < 100; ++i) {
-    EXPECT_FLOAT_EQ(h_c_cpu[i], h_c_gpu[i]) << "CPU and GPU results differ at index " << i;
   }
 
   // Cleanup
@@ -351,6 +276,89 @@ PERF_GPU_TEST(GpuBasics, TransferOverhead) {
 
   // For simple compute kernels, overhead should be reasonable
   EXPECT_LT(overhead, 100.0) << "Transfer overhead too high: " << overhead << "%";
+
+  // Cleanup
+  cudaFree(d_a);
+  cudaFree(d_b);
+  cudaFree(d_c);
+}
+
+/**
+ * @brief GPU round trip against a CPU baseline
+ *
+ * Compares a CPU vector add with the GPU round trip of the same add: both
+ * inputs copied to the device, the kernel, and the result copied back. For a
+ * memory-bound kernel this small the copies dominate the round trip, so the
+ * GPU can be slower than the CPU; the case prints the ratio it measures, with
+ * the kernel and transfer times, and requires neither side to win. It is a
+ * suite of its own because the harness compares a GPU case that measures no
+ * baseline with its suite's baseline, and GpuBasics' cases measure other
+ * workloads.
+ *
+ * @test SpeedupCalculation
+ *
+ * Validates:
+ *  - CPU baseline measured correctly
+ *  - The speedup is this case's CPU median over its GPU round trip
+ *  - CPU and GPU results agree
+ */
+PERF_GPU_TEST(GpuSpeedup, SpeedupCalculation) {
+  UB_PERF_GPU_GUARD(perf);
+
+  const int N = 128 * 1024;
+  const size_t SIZE = N * sizeof(float);
+
+  // Allocate host memory
+  std::vector<float> h_a(N, 1.0f);
+  std::vector<float> h_b(N, 2.0f);
+  std::vector<float> h_c_cpu(N, 0.0f);
+  std::vector<float> h_c_gpu(N, 0.0f);
+
+  // CPU baseline
+  auto cpuResult = perf.cpuBaseline(
+      [&] { vectorAddCPU(h_a.data(), h_b.data(), h_c_cpu.data(), N); }, "cpu_vector_add");
+
+  // Allocate device memory
+  float *d_a, *d_b, *d_c;
+  cudaMalloc(&d_a, SIZE);
+  cudaMalloc(&d_b, SIZE);
+  cudaMalloc(&d_c, SIZE);
+
+  // Launch configuration
+  const int threadsPerBlock = 256;
+  const int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+  dim3 grid(blocksPerGrid);
+  dim3 block(threadsPerBlock);
+
+  // Warmup
+  perf.cudaWarmup(
+      [&](cudaStream_t s) { vectorAddKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N); });
+
+  // Measure GPU
+  auto gpuResult = perf.cudaKernel([&](cudaStream_t s) {
+                         vectorAddKernel<<<grid, block, 0, s>>>(d_a, d_b, d_c, N);
+                       })
+                       .withHostToDevice(h_a.data(), d_a, SIZE)
+                       .withHostToDevice(h_b.data(), d_b, SIZE)
+                       .withDeviceToHost(d_c, h_c_gpu.data(), SIZE)
+                       .withLaunchConfig(grid, block)
+                       .measure();
+
+  std::printf("[GpuSpeedup.SpeedupCalculation] CPU %.3f us; GPU round trip %.3f us "
+              "(kernel %.3f us, transfers %.3f us); speedup %.4fx\n",
+              cpuResult.stats.median, gpuResult.totalTimeUs, gpuResult.kernelTimeUs,
+              gpuResult.transferTimeUs, gpuResult.speedupVsCpu);
+
+  // The harness divides this case's CPU median by the round trip's median, the
+  // same quotient of the same doubles, so the check is exact: a missing or
+  // foreign baseline gives another number (0 without one)
+  EXPECT_DOUBLE_EQ(gpuResult.speedupVsCpu, cpuResult.stats.median / gpuResult.totalTimeUs)
+      << "The speedup is not this case's CPU median over its GPU round trip";
+
+  // Validate results match
+  for (int i = 0; i < 100; ++i) {
+    EXPECT_FLOAT_EQ(h_c_cpu[i], h_c_gpu[i]) << "CPU and GPU results differ at index " << i;
+  }
 
   // Cleanup
   cudaFree(d_a);
