@@ -340,6 +340,9 @@ public:
   /** @brief Hands the stream on: from here the caller destroys it. */
   [[nodiscard]] cudaStream_t release() noexcept { return std::exchange(stream_, nullptr); }
 
+  /** @brief The stream, still owned here. */
+  [[nodiscard]] cudaStream_t get() const noexcept { return stream_; }
+
 private:
   cudaStream_t stream_ = nullptr;
 };
@@ -365,8 +368,36 @@ public:
   /** @brief Hands the event on: from here the caller destroys it. */
   [[nodiscard]] cudaEvent_t release() noexcept { return std::exchange(event_, nullptr); }
 
+  /** @brief The event, still owned here. */
+  [[nodiscard]] cudaEvent_t get() const noexcept { return event_; }
+
 private:
   cudaEvent_t event_ = nullptr;
+};
+
+/**
+ * @brief Allocates device memory on the current device and owns it: when the
+ *        scope ends, by exception included, the memory is freed with that
+ *        device still current.
+ */
+class OwnedDeviceMemory {
+public:
+  explicit OwnedDeviceMemory(size_t bytes) { CUDA_CHECK(cudaMalloc(&memory_, bytes)); }
+
+  ~OwnedDeviceMemory() {
+    if (memory_ != nullptr) {
+      cudaFree(memory_);
+    }
+  }
+
+  OwnedDeviceMemory(const OwnedDeviceMemory&) = delete;
+  OwnedDeviceMemory& operator=(const OwnedDeviceMemory&) = delete;
+
+  /** @brief The memory, still owned here. */
+  [[nodiscard]] void* get() const noexcept { return memory_; }
+
+private:
+  void* memory_ = nullptr;
 };
 
 /** @brief Throws std::invalid_argument unless @p deviceId is a CUDA device of this process. */
@@ -977,37 +1008,28 @@ private:
       return profile;
     }
 
-    void *srcPtr, *dstPtr;
-    cudaSetDevice(srcDev);
-    CUDA_CHECK(cudaMalloc(&srcPtr, bytes));
-    cudaSetDevice(dstDev);
-    CUDA_CHECK(cudaMalloc(&dstPtr, bytes));
+    // One copy on a stream of the source device, timed by events of that
+    // same device: CUDA refuses to record an event on another device's stream
+    // and to time two events of different devices. Each buffer is allocated
+    // and freed with its own device current, and every handle is released,
+    // in reverse order, by return or by exception; the device current here
+    // is current again after.
+    const ScopedDevice ON_DESTINATION(dstDev);
+    const OwnedDeviceMemory dst(bytes);
+    const ScopedDevice ON_SOURCE(srcDev);
+    const OwnedDeviceMemory src(bytes);
+    const OwnedStream stream(/*highPriority=*/false);
+    const OwnedEvent start;
+    const OwnedEvent stop;
 
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-
-    cudaStream_t stream;
-    cudaSetDevice(srcDev);
-    CUDA_CHECK(cudaStreamCreate(&stream));
-
-    CUDA_CHECK(cudaEventRecord(start, stream));
-    CUDA_CHECK(cudaMemcpyPeerAsync(dstPtr, dstDev, srcPtr, srcDev, bytes, stream));
-    CUDA_CHECK(cudaEventRecord(stop, stream));
-    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventRecord(start.get(), stream.get()));
+    CUDA_CHECK(cudaMemcpyPeerAsync(dst.get(), dstDev, src.get(), srcDev, bytes, stream.get()));
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream.get()));
+    CUDA_CHECK(cudaEventSynchronize(stop.get()));
 
     float ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start.get(), stop.get()));
     profile.timeUs = ms * 1000.0;
-
-    cudaStreamDestroy(stream);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    cudaSetDevice(srcDev);
-    cudaFree(srcPtr);
-    cudaSetDevice(dstDev);
-    cudaFree(dstPtr);
-
     return profile;
   }
 

@@ -106,6 +106,20 @@ public:
 
   inline MultiGpuKernelBuilder& withLaunchConfig(dim3 grid, dim3 block, size_t sharedMemBytes = 0);
   inline MultiGpuKernelBuilder& withP2PAccess();
+
+  /**
+   * @brief Time one copy of @p bytes from device @p srcDevice to device
+   *        @p dstDevice when measure() runs, before the devices' kernels.
+   *
+   * The copy is a single cudaMemcpyPeerAsync, with no warmup and no repeats,
+   * between two buffers the harness allocates, one on each device, on a stream
+   * of the source device timed by events of that device. The buffers, stream
+   * and events are released after the copy, also when a CUDA call fails, and
+   * the device current before the copy is current after it. The result is
+   * aggregatedStats.p2pProfile. When the source device cannot access the
+   * destination's memory (cudaDeviceCanAccessPeer()), nothing is copied:
+   * accessEnabled is false and timeUs stays 0.
+   */
   inline MultiGpuKernelBuilder& measureP2PBandwidth(int srcDevice, int dstDevice, size_t bytes);
 
   MultiGpuResult measure();
