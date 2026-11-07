@@ -9,7 +9,8 @@
  * analysis is asked for, and logs each of its runs. In a build with heap
  * profiling this program replaces the global allocation functions, through
  * which the tests of both captures at once watch the profile reader (Both
- * Captures, below).
+ * Captures, below); with the thread or the address sanitizer it replaces
+ * none, and those tests skip, naming it.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -44,6 +45,7 @@
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -640,7 +642,12 @@ TEST_F(GperfLifecycleTest, HeapCaptureIsTheCasesOwn) {
 // place of the capture, and the reader takes the whole file in. The functions
 // are replaced only in a build with heap profiling, the one build that
 // captures both; tcmalloc's malloc and free serve them there, and its heap
-// profiler records what they allocate as it records any allocation.
+// profiler records what they allocate as it records any allocation. A build
+// with the thread or the address sanitizer replaces none, and the tests skip,
+// naming it (GPERF_READER_WATCH_SANITIZER, from this directory's
+// CMakeLists.txt): the thread sanitizer's runtime defines these functions
+// itself, and clang's cannot link beside a replacement; the address
+// sanitizer's serves malloc and free itself, in place of tcmalloc.
 
 namespace {
 
@@ -650,6 +657,16 @@ constexpr std::size_t READER_BUFFER_BYTES = std::size_t{1} << 20;
 
 /// The size of the profile the tests put in place of a capture.
 constexpr std::size_t PROFILE_BYTES = 4 * READER_BUFFER_BYTES;
+
+/// The sanitizer this build is configured with (-DSANITIZER) when it is the
+/// address or the thread sanitizer, "asan" or "tsan"; empty otherwise. Such a
+/// build does not replace the allocation functions, so it cannot watch the
+/// reader.
+#ifdef GPERF_READER_WATCH_SANITIZER
+constexpr std::string_view WATCH_SANITIZER = GPERF_READER_WATCH_SANITIZER;
+#else
+constexpr std::string_view WATCH_SANITIZER = "";
+#endif
 
 /** @brief What the allocation functions watch, on the thread that armed them. */
 struct ReaderWatch {
@@ -695,9 +712,33 @@ bool heapDumped(const std::string& dir) {
                      [](const std::string& dump) { return fileSize(dump) > 0; });
 }
 
+/**
+ * @brief Why the tests of both captures cannot run in this build: it has no
+ * heap profiling, or it has the thread or the address sanitizer and so does
+ * not watch the reader; empty when they can.
+ */
+std::string bothCapturesUntestable() {
+  if (UB_HAS_GPERF_HEAP == 0) {
+    return "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  }
+  if (WATCH_SANITIZER.empty()) {
+    return "";
+  }
+  const std::string WHY =
+      "this program is built with a sanitizer (SANITIZER=" + std::string(WATCH_SANITIZER) +
+      "), so it does not replace the allocation functions these tests watch the profile "
+      "reader through";
+  if (WATCH_SANITIZER == "tsan") {
+    return WHY + ": the thread sanitizer's runtime defines them itself, and clang's cannot "
+                 "link beside a replacement";
+  }
+  return WHY + ": the address sanitizer's runtime serves malloc and free itself, in place of "
+               "tcmalloc";
+}
+
 } // namespace
 
-#if UB_HAS_GPERF_HEAP
+#if UB_HAS_GPERF_HEAP && !defined(GPERF_READER_WATCH_SANITIZER)
 
 namespace {
 
@@ -788,13 +829,14 @@ void* operator new[](std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
 #endif
 
 /**
- * @test In a build with heap profiling, a capture of both kinds: both have
- * ended by the time the reader takes the profile in, so neither records its
- * buffer; the heap profile's final dump is written, and nothing fails.
+ * @test In a build with heap profiling and neither the thread nor the address
+ * sanitizer, a capture of both kinds: both have ended by the time the reader
+ * takes the profile in, so neither records its buffer; the heap profile's
+ * final dump is written, and nothing fails.
  */
 TEST_F(GperfLifecycleTest, CombinedCaptureEndsBeforeItsProfileIsRead) {
-  if (UB_HAS_GPERF_HEAP == 0) {
-    GTEST_SKIP() << "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  if (const std::string WHY = bothCapturesUntestable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
   }
   StderrCapture quiet;
   const std::string STAGED = dir_.path() + "/staged.prof";
@@ -823,15 +865,16 @@ TEST_F(GperfLifecycleTest, CombinedCaptureEndsBeforeItsProfileIsRead) {
 }
 
 /**
- * @test In a build with heap profiling, a capture of both kinds whose reader
- * fails: the exception reaches the caller as it was thrown, and while the
- * profiler is kept neither capture is on. The heap profile's final dump is
- * written, the raw profile is kept, nothing else is recorded as failed, and
- * another case's captures of both kinds start and end.
+ * @test In a build with heap profiling and neither the thread nor the address
+ * sanitizer, a capture of both kinds whose reader fails: the exception
+ * reaches the caller as it was thrown, and while the profiler is kept neither
+ * capture is on. The heap profile's final dump is written, the raw profile is
+ * kept, nothing else is recorded as failed, and another case's captures of
+ * both kinds start and end.
  */
 TEST_F(GperfLifecycleTest, CombinedCaptureWhoseReadFailsLeavesNoCaptureOn) {
-  if (UB_HAS_GPERF_HEAP == 0) {
-    GTEST_SKIP() << "heap profiling is not compiled in (VERNIER_LINK_TCMALLOC=OFF)";
+  if (const std::string WHY = bothCapturesUntestable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
   }
   StderrCapture quiet;
   const std::string STAGED = dir_.path() + "/staged.prof";
