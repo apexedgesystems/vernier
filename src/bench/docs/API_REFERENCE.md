@@ -295,7 +295,7 @@ CPU:
 - `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
 - `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
 - `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
-- `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
+- `jemalloc` - jemalloc's sampling heap profiler (a jemalloc built with profiling, preloaded)
 
 GPU:
 

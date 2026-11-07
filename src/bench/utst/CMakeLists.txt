@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (21 files)
+# Sources (22 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -29,6 +29,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerJemalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/BpfScripts_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ValgrindReaderAssertion_uTest.cpp"
