@@ -1,22 +1,26 @@
 /**
  * @file GpuMultiDevice_pTest.cu
- * @brief Multi-GPU execution and P2P transfer validation
+ * @brief Multi-GPU execution, P2P transfers and device selection
  *
- * This test suite validates multi-GPU functionality including load distribution,
- * peer-to-peer transfers, scaling efficiency, and device selection.
+ * This test suite validates multi-GPU functionality including load distribution
+ * and peer-to-peer transfers, and shows device selection with --gpu-device.
  *
  * Features tested:
  *  - Multi-GPU kernel execution with cudaKernelMultiGpu()
  *  - Load balancing across multiple GPUs
  *  - P2P transfer bandwidth measurement
- *  - Scaling efficiency calculation
- *  - Device selection with withDeviceId()
+ *  - Device selection with --gpu-device
  *
  * Expected behavior:
  *  - Kernels execute on all specified devices
  *  - Load is distributed evenly
  *  - P2P transfers work when supported
- *  - Scaling efficiency is reasonable (>0.7 for 2 GPUs)
+ *  - The suite measures no CPU baseline, so it reports no speedup or scaling
+ *    efficiency
+ *
+ * Every case but DeviceSelection needs two or more GPUs and skips with fewer.
+ * A skip validates nothing, and none of this project's rigs
+ * (src/bench/docs/rigs/) has two GPUs, so those cases are not validated there.
  *
  * Usage:
  *   @code{.sh}
@@ -24,14 +28,13 @@
  *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
  *       --gtest_filter="GpuMultiDevice.*"
  *
- *   # Requires 2+ GPUs
- *   # Tests will skip if insufficient GPUs available
+ *   # Device selection on another device
+ *   ./build/native-linux-release/bin/ptests/BenchmarkGPU_PTEST \
+ *       --gtest_filter="GpuMultiDevice.DeviceSelection" --gpu-device 1
  *   @endcode
  *
  * Performance expectations:
  *  - Runtime: ~15 seconds total (if 2+ GPUs available)
- *  - Pass rate: 100% with 2+ CUDA GPUs
- *  - Scaling efficiency: >70% for 2 GPUs
  *
  * @see PerfGpuCase
  * @see MultiGpuKernelBuilder
@@ -39,6 +42,8 @@
  */
 
 #include <gtest/gtest.h>
+#include <chrono>
+#include <cstdio>
 #include <vector>
 #include <cuda_runtime.h>
 
@@ -77,7 +82,10 @@ bool isP2PSupported(int dev1, int dev2) {
  * @brief Basic multi-GPU kernel execution
  *
  * Validates that kernels can execute across multiple GPUs simultaneously
- * with proper load distribution and synchronization.
+ * with proper load distribution and synchronization. The suite measures no
+ * CPU baseline, so the harness reports no speedup or scaling efficiency for
+ * it (both stay 0); the case prints each device's kernel time and the load
+ * imbalance instead.
  *
  * @test BasicMultiGpu
  *
@@ -85,7 +93,6 @@ bool isP2PSupported(int dev1, int dev2) {
  *  - cudaKernelMultiGpu() API executes on all devices
  *  - Per-device results are collected
  *  - Load balancing metrics are computed
- *  - Aggregated statistics are correct
  *
  * Expected performance:
  *  - All devices execute successfully
@@ -155,10 +162,13 @@ PERF_GPU_TEST(GpuMultiDevice, BasicMultiGpu) {
 
   EXPECT_LT(mgpu.loadImbalance, 1.2) << "Load should be reasonably balanced (< 20% imbalance)";
 
-  EXPECT_GT(mgpu.scalingEfficiency, 0.5)
-      << "Scaling efficiency should be reasonable for this simple workload";
-
-  EXPECT_GT(result.totalSpeedupVsCpu, 1.0) << "Multi-GPU should be faster than CPU";
+  for (const auto& devResult : result.perDevice) {
+    std::printf("[GpuMultiDevice.BasicMultiGpu] device %d: %.3f us per launch\n",
+                devResult.deviceId, devResult.kernelTimeUs);
+  }
+  std::printf("[GpuMultiDevice.BasicMultiGpu] load imbalance %.3f (slowest device over fastest); "
+              "no CPU baseline, so no speedup or scaling efficiency\n",
+              mgpu.loadImbalance);
 
   // Verify per-device execution
   for (size_t i = 0; i < result.perDevice.size(); ++i) {
@@ -317,14 +327,17 @@ PERF_GPU_TEST(GpuMultiDevice, P2PTransfers) {
 /**
  * @brief P2P vs host-mediated transfer comparison
  *
- * Compares P2P transfer performance against host-mediated transfers
- * to validate P2P advantage.
+ * Moves the same number of bytes from a buffer on device 0 to a buffer on
+ * device 1 twice: through pageable host memory (a copy to the host, then a
+ * copy on to device 1, timed on the host clock from before the first copy
+ * until device 1 has finished, CUDA API time included) and peer to peer (the
+ * harness's copy, timed with events on a stream of device 0).
  *
  * @test P2PVsHost
  *
  * Validates:
- *  - P2P is faster than host-mediated transfers
- *  - Bandwidth difference is measurable
+ *  - Every CUDA call succeeds
+ *  - P2P is faster than the host-mediated path
  *
  * Expected performance:
  *  - P2P bandwidth > 2x host-mediated (for NVLink)
@@ -344,33 +357,30 @@ PERF_GPU_TEST(GpuMultiDevice, P2PVsHost) {
   const size_t SIZE = 32 * 1024 * 1024; // 32 MB
 
   std::vector<float> h_data(SIZE / sizeof(float));
-  float *d_src, *d_dst;
+  float* d_src = nullptr;
+  float* d_dst = nullptr;
 
-  cudaSetDevice(0);
-  cudaMalloc(&d_src, SIZE);
-  cudaMemcpy(d_src, h_data.data(), SIZE, cudaMemcpyHostToDevice);
+  ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_src, SIZE), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_src, h_data.data(), SIZE, cudaMemcpyHostToDevice), cudaSuccess);
 
-  cudaSetDevice(1);
-  cudaMalloc(&d_dst, SIZE);
+  ASSERT_EQ(cudaSetDevice(1), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_dst, SIZE), cudaSuccess);
 
-  // Measure host-mediated transfer
-  cudaSetDevice(0);
-  cudaEvent_t start, stop;
-  cudaEventCreate(&start);
-  cudaEventCreate(&stop);
+  // Host-mediated: device 0 to the host, then the host to device 1. A pageable
+  // copy to the device can return before it lands, so device 1 is synchronized
+  // before the clock stops.
+  ASSERT_EQ(cudaSetDevice(0), cudaSuccess);
+  const auto HOST_START = std::chrono::steady_clock::now();
+  ASSERT_EQ(cudaMemcpy(h_data.data(), d_src, SIZE, cudaMemcpyDeviceToHost), cudaSuccess);
+  ASSERT_EQ(cudaSetDevice(1), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_dst, h_data.data(), SIZE, cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+  const double hostMediatedS =
+      std::chrono::duration<double>(std::chrono::steady_clock::now() - HOST_START).count();
+  const double hostBandwidth = (SIZE / hostMediatedS) / 1e9;
 
-  cudaEventRecord(start);
-  cudaMemcpy(h_data.data(), d_src, SIZE, cudaMemcpyDeviceToHost);
-  cudaSetDevice(1);
-  cudaMemcpy(d_dst, h_data.data(), SIZE, cudaMemcpyHostToDevice);
-  cudaEventRecord(stop);
-  cudaEventSynchronize(stop);
-
-  float hostMediatedMs = 0;
-  cudaEventElapsedTime(&hostMediatedMs, start, stop);
-  const double hostBandwidth = (SIZE / (hostMediatedMs / 1000.0)) / 1e9;
-
-  // Measure P2P transfer
+  // Peer to peer: the harness's event-timed copy of SIZE bytes
   auto dummyKernel = [](int, cudaStream_t) {};
   auto result = perf.cudaKernelMultiGpu(2, dummyKernel, "p2p_comparison")
                     .withP2PAccess()
@@ -380,147 +390,89 @@ PERF_GPU_TEST(GpuMultiDevice, P2PVsHost) {
   ASSERT_TRUE(result.aggregatedStats.p2pProfile.has_value());
   const double p2pBandwidth = result.aggregatedStats.p2pProfile.value().bandwidthGBs();
 
+  std::printf("[GpuMultiDevice.P2PVsHost] %zu bytes from device 0 to device 1: host-mediated "
+              "%.2f GB/s (host clock), peer to peer %.2f GB/s (events)\n",
+              SIZE, hostBandwidth, p2pBandwidth);
+
   EXPECT_GT(p2pBandwidth, hostBandwidth) << "P2P should be faster than host-mediated transfer";
 
   // Cleanup
-  cudaSetDevice(0);
-  cudaFree(d_src);
-  cudaSetDevice(1);
-  cudaFree(d_dst);
-  cudaEventDestroy(start);
-  cudaEventDestroy(stop);
+  EXPECT_EQ(cudaSetDevice(0), cudaSuccess);
+  EXPECT_EQ(cudaFree(d_src), cudaSuccess);
+  EXPECT_EQ(cudaSetDevice(1), cudaSuccess);
+  EXPECT_EQ(cudaFree(d_dst), cudaSuccess);
 }
 
 /**
- * @brief Multi-GPU scaling efficiency
+ * @brief Device selection with --gpu-device
  *
- * Validates that multi-GPU execution provides good scaling efficiency
- * and that metrics accurately reflect performance gains.
- *
- * @test ScalingEfficiency
- *
- * Validates:
- *  - Multi-GPU speedup calculation
- *  - Scaling efficiency metric
- *  - Scaling quality assessment
- *
- * Expected performance:
- *  - Scaling efficiency > 0.7 for 2 GPUs
- */
-PERF_GPU_TEST(GpuMultiDevice, ScalingEfficiency) {
-  UB_PERF_GPU_GUARD(perf);
-
-  const int deviceCount = getDeviceCount();
-  if (deviceCount < 2) {
-    GTEST_SKIP() << "Test requires 2+ GPUs, found " << deviceCount;
-  }
-
-  const int N = 2 * 1024 * 1024;
-  const size_t SIZE = N * sizeof(float);
-
-  std::vector<float> h_a(N, 1.0f);
-  std::vector<float> h_b(N, 2.0f);
-  std::vector<float*> d_a(deviceCount);
-  std::vector<float*> d_b(deviceCount);
-  std::vector<float*> d_c(deviceCount);
-
-  for (int dev = 0; dev < deviceCount; ++dev) {
-    cudaSetDevice(dev);
-    cudaMalloc(&d_a[dev], SIZE);
-    cudaMalloc(&d_b[dev], SIZE);
-    cudaMalloc(&d_c[dev], SIZE);
-    cudaMemcpy(d_a[dev], h_a.data(), SIZE, cudaMemcpyHostToDevice);
-    cudaMemcpy(d_b[dev], h_b.data(), SIZE, cudaMemcpyHostToDevice);
-  }
-
-  dim3 block(256);
-  dim3 grid((N + block.x - 1) / block.x);
-
-  auto result = perf.cudaKernelMultiGpu(
-                        deviceCount,
-                        [&](int deviceId, cudaStream_t stream) {
-                          cudaSetDevice(deviceId);
-                          multiGpuVectorAdd<<<grid, block, 0, stream>>>(
-                              d_a[deviceId], d_b[deviceId], d_c[deviceId], N);
-                        },
-                        "scaling_test")
-                    .withLaunchConfig(grid, block)
-                    .measure();
-
-  ASSERT_TRUE(result.aggregatedStats.multiGpu.has_value());
-  const auto& mgpu = result.aggregatedStats.multiGpu.value();
-
-  EXPECT_GT(mgpu.scalingEfficiency, 0.5) << "Should have reasonable scaling efficiency";
-
-  const double quality = mgpu.scalingQuality();
-  EXPECT_GT(quality, 0.4) << "Scaling quality should be reasonable";
-
-  EXPECT_GT(result.totalSpeedupVsCpu, static_cast<double>(deviceCount))
-      << "Multi-GPU should provide speedup over single CPU";
-
-  // Cleanup
-  for (int dev = 0; dev < deviceCount; ++dev) {
-    cudaSetDevice(dev);
-    cudaFree(d_a[dev]);
-    cudaFree(d_b[dev]);
-    cudaFree(d_c[dev]);
-  }
-}
-
-/**
- * @brief Device selection with withDeviceId()
- *
- * Validates that specific devices can be targeted using the
- * withDeviceId() API.
+ * A GPU case measures on the device --gpu-device chooses (device 0 by
+ * default), which it reads back as perf.gpuConfig().deviceId. The case checks
+ * that this device is current, launches c = a + b into the case's stream and
+ * compares c element by element. This project's rigs have one GPU each and
+ * run it on device 0; another --gpu-device is not verified on them.
  *
  * @test DeviceSelection
  *
  * Validates:
- *  - withDeviceId() selects correct device
- *  - Result contains correct device ID
- *  - Kernel executes on specified device
+ *  - The configured device is the current device
+ *  - Every CUDA call and the launch succeed
+ *  - The output is correct element by element
  *
  * Expected performance:
- *  - Execution on correct device
+ *  - Execution on the configured device
  */
 PERF_GPU_TEST(GpuMultiDevice, DeviceSelection) {
   UB_PERF_GPU_GUARD(perf);
 
-  const int deviceCount = getDeviceCount();
-  if (deviceCount < 2) {
-    GTEST_SKIP() << "Test requires 2+ GPUs, found " << deviceCount;
-  }
+  const int DEVICE = perf.gpuConfig().deviceId;
+  int current = -1;
+  ASSERT_EQ(cudaGetDevice(&current), cudaSuccess);
+  ASSERT_EQ(current, DEVICE) << "The case's device is not the current device";
 
-  const int TARGET_DEVICE = 1;
   const int N = 1024 * 1024;
   const size_t SIZE = N * sizeof(float);
 
   std::vector<float> h_a(N, 1.0f);
-  float* d_a;
+  std::vector<float> h_b(N, 2.0f);
+  std::vector<float> h_c(N, 0.0f);
+  float* d_a = nullptr;
+  float* d_b = nullptr;
+  float* d_c = nullptr;
 
-  cudaSetDevice(TARGET_DEVICE);
-  cudaMalloc(&d_a, SIZE);
-  cudaMemcpy(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice);
+  ASSERT_EQ(cudaMalloc(&d_a, SIZE), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_b, SIZE), cudaSuccess);
+  ASSERT_EQ(cudaMalloc(&d_c, SIZE), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice), cudaSuccess);
+  ASSERT_EQ(cudaMemcpy(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice), cudaSuccess);
+  // An element the kernel never writes reads 0, whatever the allocation held
+  ASSERT_EQ(cudaMemset(d_c, 0, SIZE), cudaSuccess);
 
   dim3 block(256);
   dim3 grid((N + block.x - 1) / block.x);
 
-  // Execute on specific device
   auto result = perf.cudaKernel(
                         [&](cudaStream_t stream) {
-                          multiGpuVectorAdd<<<grid, block, 0, stream>>>(d_a, d_a, d_a, N);
+                          multiGpuVectorAdd<<<grid, block, 0, stream>>>(d_a, d_b, d_c, N);
                         },
                         "device_selection")
-                    .withDeviceId(TARGET_DEVICE)
                     .withLaunchConfig(grid, block)
                     .measure();
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess) << "The kernel launch failed";
 
-  EXPECT_EQ(result.deviceId, TARGET_DEVICE) << "Kernel should execute on specified device";
+  ASSERT_EQ(cudaMemcpy(h_c.data(), d_c, SIZE, cudaMemcpyDeviceToHost), cudaSuccess);
+  int firstWrong = -1;
+  for (int i = 0; i < N && firstWrong < 0; ++i) {
+    if (h_c[i] != 3.0f) {
+      firstWrong = i;
+    }
+  }
+  EXPECT_EQ(firstWrong, -1) << "c[" << firstWrong << "] = " << h_c[firstWrong] << ", expected 3";
 
-  EXPECT_GT(result.callsPerSecond, 0.0) << "Execution should complete successfully";
+  std::printf("[GpuMultiDevice.DeviceSelection] device %d (%s): %.3f us per launch\n", DEVICE,
+              result.stats.deviceInfo.name.c_str(), result.kernelTimeUs);
 
-  cudaSetDevice(TARGET_DEVICE);
-  cudaFree(d_a);
+  EXPECT_EQ(cudaFree(d_a), cudaSuccess);
+  EXPECT_EQ(cudaFree(d_b), cudaSuccess);
+  EXPECT_EQ(cudaFree(d_c), cudaSuccess);
 }
-
-// Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary

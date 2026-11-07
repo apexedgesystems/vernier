@@ -63,6 +63,19 @@ public:
   inline CudaKernelBuilder& withHostToDevice(const void* src, void* dst, size_t bytes);
   inline CudaKernelBuilder& withDeviceToHost(const void* src, void* dst, size_t bytes);
   inline CudaKernelBuilder& withLaunchConfig(dim3 grid, dim3 block, size_t sharedMemBytes = 0);
+
+  /**
+   * @brief Measure on CUDA device @p deviceId instead of the case's device
+   *        (--gpu-device); -1, the default, keeps the case's device.
+   *
+   * The named device is current while measure() runs and the caller's device
+   * is current again when it returns or throws. The kernel callable gets that
+   * device's stream, and the transfers, timing, telemetry and the row's device
+   * columns are that device's; the launch's buffers must be on, or reachable
+   * from, that device. cudaWarmup() and stream() stay on the case's device. An
+   * id that names no device makes measure() throw std::invalid_argument before
+   * anything is timed.
+   */
   inline CudaKernelBuilder& withDeviceId(int deviceId);
 
   PerfGpuResult measure();
