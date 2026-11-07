@@ -879,6 +879,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   status 4 where it cannot, such as on the Jetson AGX Thor. Discard `um*`
   values in earlier CSVs.
   ([#66](https://github.com/apexedgesystems/vernier/pull/66))
+- A GPU sample, `GpuMemoryStrategies.SelectedStrategy`, allocates by
+  `--gpu-memory`: the test reads the selected strategy and allocates its own
+  buffers; the harness allocates nothing. A value other than `explicit`,
+  `unified`, `pinned` or `mapped` stops the run with status 2.
+  ([#66](https://github.com/apexedgesystems/vernier/pull/66))
 - **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
   path it could not open (in a missing directory, a directory, an empty path)
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,

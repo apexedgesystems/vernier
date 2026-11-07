@@ -19,7 +19,8 @@ int main(int argc, char** argv) {
   auto& cfg = vernier::bench::detail::perfConfigSingleton();
   vernier::bench::parsePerfFlags(cfg, &argc, argv);
 
-  // Parse GPU-specific flags (--gpu-memory, --gpu-device, etc.)
+  // Parse GPU-specific flags (--gpu-device, --gpu-memory, ...) into the GPU
+  // configuration each case copies (PerfGpuCase::gpuConfig())
   vernier::bench::PerfGpuConfig gpuCfg;
   vernier::bench::parseGpuFlags(gpuCfg, &argc, argv);
 

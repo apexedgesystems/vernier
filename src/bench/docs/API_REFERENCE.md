@@ -840,13 +840,13 @@ a run whose tests pass exits with status 4. See the GPU guide's
 
 ### GPU-Specific Flags
 
-| Flag                  | Type   | Default  | Description                                        |
-| --------------------- | ------ | -------- | -------------------------------------------------- |
-| `--gpu-device N`      | int    | 0        | CUDA device ID                                     |
-| `--gpu-warmup N`      | int    | 10       | GPU warmup iterations                              |
-| `--gpu-memory MODE`   | string | explicit | Memory strategy: explicit\|unified\|pinned\|mapped |
-| `--min-speedup FLOAT` | double | 1.0      | Minimum expected GPU speedup                       |
-| `--capture-um`        | bool   | false    | Unified-memory counters, where CUPTI records them  |
+| Flag                  | Type   | Default  | Description                                                                                                                                            |
+| --------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--gpu-device N`      | int    | 0        | CUDA device ID                                                                                                                                         |
+| `--gpu-warmup N`      | int    | 10       | GPU warmup iterations                                                                                                                                  |
+| `--gpu-memory MODE`   | string | explicit | Memory strategy for the tests that read it (`gpuConfig().memStrategy`): explicit\|unified\|pinned\|mapped; any other value stops the run with status 2 |
+| `--min-speedup FLOAT` | double | 1.0      | Minimum expected GPU speedup                                                                                                                           |
+| `--capture-um`        | bool   | false    | Unified-memory counters, where CUPTI records them                                                                                                      |
 
 ### GoogleTest Integration
 
@@ -868,7 +868,7 @@ a run whose tests pass exits with status 4. See the GPU guide's
 # Multi-threaded test with profiling
 ./MyComponent_PTEST --threads 8 --profile perf --gtest_filter="*Contention"
 
-# GPU test with specific device
+# GPU test on device 1; the tests that read the memory strategy allocate managed memory
 ./MyGpuTest_PTEST --gpu-device 1 --gpu-memory unified --csv gpu_results.csv
 
 # Production CI run

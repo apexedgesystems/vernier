@@ -832,9 +832,12 @@ repeats run, CUPTI records every migration and fault; on that GPU the
 sample's kernel medians with and without the request agreed within their
 run-to-run spread, but compare timings from runs made the same way.
 
-`--gpu-memory unified` only records the memory strategy in the GPU
-configuration: it asks for no counters, and the harness does not change how
-a test allocates its memory.
+`--gpu-memory unified` asks for no counters. It selects managed memory for
+the tests that allocate by the selected strategy, such as
+`GpuMemoryStrategies.SelectedStrategy`, whose row under
+`--gpu-memory unified --capture-um` counts its input's move to the GPU; the
+harness changes no test's allocation
+([GPU Memory Strategy Selection](ADVANCED_GUIDE.md#gpu-memory-strategy-selection)).
 
 **When Unified Memory is good:**
 

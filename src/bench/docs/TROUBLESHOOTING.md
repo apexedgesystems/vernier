@@ -756,9 +756,9 @@ cudaDeviceReset();  // Nuclear option
 
 **4. Use Unified Memory** (trades speed for capacity): allocate the test's
 buffers with `cudaMallocManaged()` in place of `cudaMalloc()`.
-`--gpu-memory unified` changes no allocation by itself: it records the
-strategy for a benchmark that reads it and allocates accordingly (see the
-[GPU guide](GPU_GUIDE.md#unified-memory)).
+`--gpu-memory unified` changes the allocation only of a test that reads the
+selected strategy, such as `GpuMemoryStrategies.SelectedStrategy` (see
+[GPU Memory Strategy Selection](ADVANCED_GUIDE.md#gpu-memory-strategy-selection)).
 
 ```cpp
 cudaMallocManaged(&d_data, N * sizeof(float));  // in place of cudaMalloc()
