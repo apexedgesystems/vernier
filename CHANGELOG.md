@@ -942,6 +942,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and events on every exit; `withP2PAccess()` keeps the caller's device
   current and leaves no error behind, and the `p2pBandwidthGBs` cell stays
   empty when no copy was timed.
+  ([#71](https://github.com/apexedgesystems/vernier/pull/71))
 
 ## v1.0.3 - 2026-06-28
 
