@@ -136,14 +136,18 @@ target_include_directories(TestBenchNvmlAbsent BEFORE PRIVATE "${PROJECT_SOURCE_
 target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (3 files)
+# GPU Unit Tests (4 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
-# skip without one). TestBenchNsight: the Nsight backend, and the backends the
-# registry builds for the GPU names once libbench_cuda's registrations replace
-# libbench's; they live in libbench_cuda but make no CUDA call, so they need
-# the toolkit and no device. Both exist only where libbench_cuda does.
+# skip without one). Its CudaHandleRecorder.cpp defines, in the program, the
+# CUDA runtime calls that make and destroy streams and events and read a
+# device's properties: libbench_cuda's calls reach them before libcudart's,
+# so a test can count the handles the harness makes and fail a setup step.
+# TestBenchNsight: the Nsight backend, and the backends the registry builds
+# for the GPU names once libbench_cuda's registrations replace libbench's;
+# they live in libbench_cuda but make no CUDA call, so they need the toolkit
+# and no device. Both exist only where libbench_cuda does.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
@@ -152,9 +156,11 @@ if (TARGET bench_cuda)
     TestBenchGpu
     SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfGpuHarness_uTest.cu"
+    "${CMAKE_CURRENT_SOURCE_DIR}/CudaHandleRecorder.cpp"
     LINK
     bench
     bench_cuda
+    ${CMAKE_DL_LIBS}
     LABELS
     benchmarking
     gpu

@@ -5,7 +5,9 @@
  * These need a CUDA device: they run a small kernel through the public
  * PerfGpuCase API and check the result and the row the harness leaves in
  * PerfRegistry, and one opens the harness's private NVML helper for the device
- * as the harness does. Without a device every test skips.
+ * as the harness does. The setup-failure tests count the streams and events
+ * the harness makes, and fail one setup step, through CudaHandleRecorder.
+ * Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -35,6 +37,7 @@
 #include "src/bench/inc/Perf.hpp"
 #include "src/bench/inc/PerfGpu.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
+#include "src/bench/utst/CudaHandleRecorder.hpp"
 #include "src/bench/utst/ScopedEnv.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -1222,4 +1225,545 @@ TEST_F(PerfGpuHarnessTest, MultiGpuOccupancyCellOnlyWithALaunchConfiguration) {
   ASSERT_EQ(WITH.perDevice.size(), 1U);
   ASSERT_TRUE(ROW.occupancy.has_value());
   EXPECT_DOUBLE_EQ(*ROW.occupancy, WITH.perDevice[0].stats.occupancy.achievedOccupancy);
+}
+
+/* ----------------------------- Device Selection ----------------------------- */
+
+namespace {
+
+/// What fillKernel writes at index i: FILL_BASE + i, exact in float for ELEMENTS elements.
+constexpr float FILL_BASE = 1.0F;
+
+/** @brief out[i] = base + i over n floats. */
+__global__ void fillKernel(float* out, int n, float base) {
+  const int IDX = blockIdx.x * blockDim.x + threadIdx.x;
+  if (IDX < n) {
+    out[IDX] = base + static_cast<float>(IDX);
+  }
+}
+
+/** @brief The current CUDA device, or -1 when the runtime does not say. */
+int currentDevice() {
+  int device = -1;
+  return (cudaGetDevice(&device) == cudaSuccess) ? device : -1;
+}
+
+/**
+ * @brief A zeroed buffer of ELEMENTS floats on one device, the launch that
+ *        fills it and records the device current when it ran, and the check.
+ */
+class FillOnDevice {
+public:
+  explicit FillOnDevice(int device) : device_(device) {
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    cudaMalloc(&buffer_, bytes());
+    cudaMemset(buffer_, 0, bytes());
+    cudaSetDevice(CALLER);
+  }
+
+  ~FillOnDevice() {
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    cudaFree(buffer_);
+    cudaSetDevice(CALLER);
+  }
+
+  FillOnDevice(const FillOnDevice&) = delete;
+  FillOnDevice& operator=(const FillOnDevice&) = delete;
+
+  /** @brief The measured launch: records the current device, then fills the buffer. */
+  [[nodiscard]] ub::PerfGpuCase::KernelFn launch() {
+    return [this](cudaStream_t s) {
+      seenDevice_ = currentDevice();
+      fillKernel<<<(ELEMENTS + BLOCK - 1) / BLOCK, BLOCK, 0, s>>>(buffer_, ELEMENTS, FILL_BASE);
+    };
+  }
+
+  /** @brief The device that was current when the launch last ran; -2 before it ran. */
+  [[nodiscard]] int seenDevice() const { return seenDevice_; }
+
+  /**
+   * @brief Index of the first element that is not FILL_BASE + its index: -1
+   *        when every element is, -2 when the buffer cannot be read back.
+   */
+  [[nodiscard]] int firstWrong() const {
+    std::vector<float> host(ELEMENTS, 0.0F);
+    const int CALLER = currentDevice();
+    cudaSetDevice(device_);
+    const cudaError_t COPIED = cudaMemcpy(host.data(), buffer_, bytes(), cudaMemcpyDeviceToHost);
+    cudaSetDevice(CALLER);
+    if (COPIED != cudaSuccess) {
+      return -2;
+    }
+    for (int i = 0; i < ELEMENTS; ++i) {
+      if (host[i] != FILL_BASE + static_cast<float>(i)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+private:
+  [[nodiscard]] static std::size_t bytes() { return ELEMENTS * sizeof(float); }
+
+  int device_;
+  float* buffer_ = nullptr;
+  int seenDevice_ = -2;
+};
+
+/// What a failing callback throws, so the test can tell it from the harness's own errors.
+constexpr const char* CALLBACK_FAILED = "callback failed";
+
+/**
+ * @brief A measured launch that runs @p launch and throws CALLBACK_FAILED on
+ *        its third call, inside the measured window, after kernels are queued.
+ */
+ub::PerfGpuCase::KernelFn throwingOnThirdCall(ub::PerfGpuCase::KernelFn launch, int& calls) {
+  return [launch = std::move(launch), &calls](cudaStream_t s) {
+    launch(s);
+    if (++calls == 3) {
+      throw std::runtime_error(CALLBACK_FAILED);
+    }
+  };
+}
+
+} // namespace
+
+/**
+ * @test withDeviceId() naming the case's own device measures there: the
+ *       launch runs with that device current and fills its buffer, and the
+ *       result and the row carry its id and GPU model
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnTheCaseDeviceMeasuresThere) {
+  ub::PerfGpuCase perf{uniqueSuite("GpuDeviceOwn") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, OWN), cudaSuccess);
+  FillOnDevice fill(OWN);
+
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OWN).measure();
+  const ub::PerfRow ROW = lastRow();
+
+  EXPECT_EQ(fill.seenDevice(), OWN);
+  EXPECT_EQ(fill.firstWrong(), -1) << "the launch did not fill the buffer";
+  EXPECT_EQ(currentDevice(), OWN);
+  EXPECT_EQ(RESULT.deviceId, OWN);
+  EXPECT_EQ(RESULT.stats.deviceInfo.name, prop.name);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OWN);
+  ASSERT_TRUE(ROW.gpuModel.has_value());
+  EXPECT_EQ(*ROW.gpuModel, prop.name);
+}
+
+/**
+ * @test withDeviceId() naming no device (the device count, or an id below -1)
+ *       throws std::invalid_argument naming the id before the measurement
+ *       starts: neither hook fires, no row is published and the current device
+ *       is unchanged
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdNamingNoDeviceThrowsBeforeMeasuring) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  SaxpyFixtureData data;
+  for (const int ID : {count, -2}) {
+    ub::PerfGpuCase perf{uniqueSuite("GpuDeviceNone") + ".Kernel", cfg_};
+    HookLog log;
+    installLoggingHooks(perf, log);
+    const int BEFORE = currentDevice();
+    try {
+      static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").withDeviceId(ID).measure());
+      ADD_FAILURE() << "withDeviceId(" << ID << ") measured";
+    } catch (const std::invalid_argument& e) {
+      const std::string WHAT = e.what();
+      EXPECT_NE(WHAT.find("withDeviceId(" + std::to_string(ID) + ")"), std::string::npos) << WHAT;
+      EXPECT_NE(WHAT.find("sees " + std::to_string(count)), std::string::npos) << WHAT;
+    }
+    EXPECT_EQ(log.calls, "") << "withDeviceId(" << ID << ") opened a profiler window";
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "withDeviceId(" << ID << ") published a row";
+    EXPECT_EQ(currentDevice(), BEFORE) << "withDeviceId(" << ID << ") changed the current device";
+  }
+}
+
+/**
+ * @test withDeviceId() naming another device measures there: the launch runs
+ *       with that device current and fills that device's buffer, the result
+ *       and the row carry its id and GPU model, and afterwards the caller's
+ *       device is current again and the case's own stream still works
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceMeasuresThere) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuDeviceOther") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int OTHER = (OWN + 1) % count;
+  cudaDeviceProp prop{};
+  ASSERT_EQ(cudaGetDeviceProperties(&prop, OTHER), cudaSuccess);
+  FillOnDevice fill(OTHER);
+
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+  const ub::PerfRow ROW = lastRow();
+
+  EXPECT_EQ(fill.seenDevice(), OTHER);
+  EXPECT_EQ(fill.firstWrong(), -1) << "the launch did not fill the other device's buffer";
+  EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+  EXPECT_EQ(RESULT.deviceId, OTHER);
+  EXPECT_EQ(RESULT.stats.deviceInfo.name, prop.name);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OTHER);
+  ASSERT_TRUE(ROW.gpuModel.has_value());
+  EXPECT_EQ(*ROW.gpuModel, prop.name);
+
+  // The case's own stream still serves its own device
+  SaxpyFixtureData data;
+  EXPECT_NO_THROW(perf.cudaWarmup(data.launch()));
+}
+
+/**
+ * @test A kernel callback that throws in the measured window: the exception
+ *       reaches the caller, no row is published, and the window is closed, so
+ *       the case's next measurement and a new case's count only their own
+ *       launches and compute the right result
+ */
+TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  FillOnDevice fill(currentDevice());
+  {
+    ub::PerfGpuCase perf{uniqueSuite("GpuThrowDefault") + ".Kernel", cfg_};
+    int calls = 0;
+    try {
+      static_cast<void>(
+          perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill").measure());
+      ADD_FAILURE() << "the callback's exception did not reach the caller";
+    } catch (const std::runtime_error& e) {
+      EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+    }
+    EXPECT_EQ(calls, 3);
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "the failed measurement published a row";
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+
+    const ub::PerfGpuResult NEXT = perf.cudaKernel(fill.launch(), "fill").measure();
+    static_cast<void>(lastRow());
+    EXPECT_EQ(fill.firstWrong(), -1);
+    if (COUNTS) {
+      EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+          << "the case's next window counted the failed window's launches";
+    }
+  }
+
+  ub::PerfGpuCase fresh{uniqueSuite("GpuThrowDefault") + ".Fresh", cfg_};
+  const ub::PerfGpuResult FRESH = fresh.cudaKernel(fill.launch(), "fill").measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(fill.firstWrong(), -1);
+  if (COUNTS) {
+    EXPECT_EQ(FRESH.stats.cupti.kernelLaunches, LAUNCHES);
+  }
+}
+
+/**
+ * @test A callback that throws after withDeviceId() made the case's device
+ *       current: the exception reaches the caller, no row is published, the
+ *       caller's device is current again, and the case's next measurement on
+ *       that device is clean and correct. With one GPU the named device is the
+ *       caller's, so this covers the failure path's cleanup and a restoration
+ *       to the same device, not a return from another device
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackThrows) {
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  ub::PerfGpuCase perf{uniqueSuite("GpuThrowOwn") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int CALLER = currentDevice();
+  FillOnDevice fill(OWN);
+
+  int calls = 0;
+  try {
+    static_cast<void>(perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill")
+                          .withDeviceId(OWN)
+                          .measure());
+    ADD_FAILURE() << "the callback's exception did not reach the caller";
+  } catch (const std::runtime_error& e) {
+    EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+  }
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(fill.seenDevice(), OWN);
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+  EXPECT_EQ(currentDevice(), CALLER) << "the caller's device is not current again";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+
+  const ub::PerfGpuResult NEXT = perf.cudaKernel(fill.launch(), "fill").withDeviceId(OWN).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(NEXT.deviceId, OWN);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OWN);
+  EXPECT_EQ(currentDevice(), CALLER);
+  if (COUNTS) {
+    EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+        << "the case's next window counted the failed window's launches";
+  }
+}
+
+/**
+ * @test With two or more devices, a callback that throws after withDeviceId()
+ *       made another device current: the caller's device is current again, no
+ *       row is published, and the case's next measurement on that device is
+ *       clean and correct
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThrows) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  const YieldEnvCleared CLEARED;
+  const bool COUNTS = ub::CuptiCollector(false).isAvailable();
+  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  ub::PerfGpuCase perf{uniqueSuite("GpuThrowOther") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  const int OTHER = (OWN + 1) % count;
+  FillOnDevice fill(OTHER);
+  ASSERT_EQ(currentDevice(), OWN);
+
+  int calls = 0;
+  try {
+    static_cast<void>(perf.cudaKernel(throwingOnThirdCall(fill.launch(), calls), "fill")
+                          .withDeviceId(OTHER)
+                          .measure());
+    ADD_FAILURE() << "the callback's exception did not reach the caller";
+  } catch (const std::runtime_error& e) {
+    EXPECT_STREQ(e.what(), CALLBACK_FAILED);
+  }
+  EXPECT_EQ(calls, 3);
+  EXPECT_EQ(fill.seenDevice(), OTHER);
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+  EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+
+  const ub::PerfGpuResult NEXT =
+      perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(NEXT.deviceId, OTHER);
+  ASSERT_TRUE(ROW.deviceId.has_value());
+  EXPECT_EQ(*ROW.deviceId, OTHER);
+  EXPECT_EQ(currentDevice(), OWN);
+  if (COUNTS) {
+    EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
+        << "the case's next window counted the failed window's launches";
+  }
+}
+
+/* ----------------------------- Setup Failures ----------------------------- */
+
+namespace {
+
+namespace bt = vernier::bench::test;
+
+/** @brief A step of a device's setup that a test makes fail. */
+struct SetupStep {
+  bt::CudaSetupFailure failure; ///< What CudaHandleRecorder makes fail
+  const char* name;             ///< The step, for the test's messages
+  int eventsBefore;             ///< Events the setup made before this step failed
+};
+
+/// Every step after the stream: each event, then the properties, read after both.
+constexpr SetupStep SETUP_STEPS[] = {
+    {bt::CudaSetupFailure::FirstEvent, "the first event", 0},
+    {bt::CudaSetupFailure::SecondEvent, "the second event", 1},
+    {bt::CudaSetupFailure::Properties, "the device properties", 2},
+};
+
+} // namespace
+
+/**
+ * @test A case whose device setup fails after it made its stream (at the first
+ *       event, the second event, or the properties read after both): the
+ *       exception reaches the caller, every stream and event the setup made is
+ *       destroyed, the current device is unchanged, and a new case on the same
+ *       device measures there and, when it ends, destroys all it made
+ */
+TEST_F(PerfGpuHarnessTest, CaseSetupThatFailsLeavesNoHandleAndANewCaseMeasures) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  for (const SetupStep& STEP : SETUP_STEPS) {
+    SCOPED_TRACE(STEP.name);
+    const int CALLER = currentDevice();
+
+    bt::startCudaHandleRecording(STEP.failure);
+    try {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuSetupFails") + ".Kernel", cfg_};
+      ADD_FAILURE() << "the case was made although " << STEP.name << " failed";
+    } catch (const std::runtime_error& e) {
+      EXPECT_EQ(std::string(e.what()), INJECTED);
+    }
+    const bt::CudaHandleCounts FAILED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(FAILED.streamsMade, 1) << "the recorder saw no stream made: the setup's calls "
+                                        "did not reach it";
+    EXPECT_EQ(FAILED.eventsMade, STEP.eventsBefore);
+    EXPECT_EQ(FAILED.streamsLeft, 0) << "the failed setup left its stream";
+    EXPECT_EQ(FAILED.eventsLeft, 0) << "the failed setup left its events";
+    EXPECT_EQ(currentDevice(), CALLER);
+
+    // A new case on the same device is made, measures there, and ends with
+    // nothing it made left behind.
+    bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+    {
+      ub::PerfGpuCase perf{uniqueSuite("GpuSetupRetry") + ".Kernel", cfg_};
+      FillOnDevice fill(perf.gpuConfig().deviceId);
+      static_cast<void>(perf.cudaKernel(fill.launch(), "fill").measure());
+      static_cast<void>(lastRow());
+      EXPECT_EQ(fill.seenDevice(), perf.gpuConfig().deviceId);
+      EXPECT_EQ(fill.firstWrong(), -1) << "the new case's launch did not fill the buffer";
+    }
+    const bt::CudaHandleCounts RETRIED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(RETRIED.streamsMade, 1);
+    EXPECT_EQ(RETRIED.eventsMade, 2);
+    EXPECT_EQ(RETRIED.streamsLeft, 0) << "the new case left its stream";
+    EXPECT_EQ(RETRIED.eventsLeft, 0) << "the new case left its events";
+  }
+}
+
+/**
+ * @test With two or more devices, withDeviceId() naming another device whose
+ *       setup fails after it made its stream: the exception reaches the caller
+ *       before any hook or row, every stream and event that setup made is
+ *       destroyed, the caller's device is current again, and the retry makes
+ *       that device's resources anew (nothing half-made was kept), measures
+ *       there, and those resources end with the case
+ */
+TEST_F(PerfGpuHarnessTest, WithDeviceIdSetupThatFailsLeavesNoHandleAndTheRetryMeasures) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  if (count < 2) {
+    GTEST_SKIP() << "needs two CUDA devices, this machine has " << count;
+  }
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  for (const SetupStep& STEP : SETUP_STEPS) {
+    SCOPED_TRACE(STEP.name);
+    {
+      ub::PerfGpuCase perf{uniqueSuite("GpuSetupOther") + ".Kernel", cfg_};
+      const int OWN = perf.gpuConfig().deviceId;
+      const int OTHER = (OWN + 1) % count;
+      FillOnDevice fill(OTHER);
+      HookLog log;
+      installLoggingHooks(perf, log);
+      ASSERT_EQ(currentDevice(), OWN);
+
+      bt::startCudaHandleRecording(STEP.failure);
+      try {
+        static_cast<void>(perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure());
+        ADD_FAILURE() << "measured although " << STEP.name << " failed";
+      } catch (const std::runtime_error& e) {
+        EXPECT_EQ(std::string(e.what()), INJECTED);
+      }
+      const bt::CudaHandleCounts FAILED = bt::stopCudaHandleRecording();
+      EXPECT_EQ(FAILED.streamsMade, 1) << "the recorder saw no stream made: the setup's calls "
+                                          "did not reach it";
+      EXPECT_EQ(FAILED.eventsMade, STEP.eventsBefore);
+      EXPECT_EQ(FAILED.streamsLeft, 0) << "the failed setup left its stream";
+      EXPECT_EQ(FAILED.eventsLeft, 0) << "the failed setup left its events";
+      EXPECT_EQ(currentDevice(), OWN) << "the caller's device is not current again";
+      EXPECT_EQ(log.calls, "") << "the failed setup opened a profiler window";
+      EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+          << "the failed setup published a row";
+
+      bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+      const ub::PerfGpuResult RESULT =
+          perf.cudaKernel(fill.launch(), "fill").withDeviceId(OTHER).measure();
+      static_cast<void>(lastRow());
+      const bt::CudaHandleCounts KEPT = bt::cudaHandleCounts();
+      EXPECT_EQ(KEPT.streamsMade, 1) << "the retry did not make the device's resources anew";
+      EXPECT_EQ(KEPT.eventsMade, 2);
+      EXPECT_EQ(fill.seenDevice(), OTHER);
+      EXPECT_EQ(fill.firstWrong(), -1) << "the retry did not fill the other device's buffer";
+      EXPECT_EQ(RESULT.deviceId, OTHER);
+      EXPECT_EQ(currentDevice(), OWN);
+    }
+    const bt::CudaHandleCounts ENDED = bt::stopCudaHandleRecording();
+    EXPECT_EQ(ENDED.streamsLeft, 0) << "the other device's stream outlived the case";
+    EXPECT_EQ(ENDED.eventsLeft, 0) << "the other device's events outlived the case";
+  }
+}
+
+namespace {
+
+/** @brief The GPU config's stream priority rule set for a scope, the old one back after. */
+class StreamPriorityRule {
+public:
+  explicit StreamPriorityRule(bool highPriority)
+      : saved_(ub::detail::getGlobalGpuConfig().useHighPriorityStream) {
+    ub::detail::gpuConfigSingleton().useHighPriorityStream = highPriority;
+  }
+
+  ~StreamPriorityRule() { ub::detail::gpuConfigSingleton().useHighPriorityStream = saved_; }
+
+  StreamPriorityRule(const StreamPriorityRule&) = delete;
+  StreamPriorityRule& operator=(const StreamPriorityRule&) = delete;
+
+private:
+  bool saved_;
+};
+
+} // namespace
+
+/**
+ * @test The recorder forwards each of its six calls to the symbol the
+ *       harness's call is linked to. Once the harness has run all six (a case
+ *       with a high-priority stream and one with a plain one, each made and
+ *       ended while recording), each call's definition is exported under a
+ *       symbol, its forward looked that same symbol up, this process resolves
+ *       it to the recorder, and the definition the forward found is that
+ *       symbol in another file. Its lines name the toolkit the run exercised
+ */
+TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  for (const bool HIGH_PRIORITY : {true, false}) {
+    SCOPED_TRACE(HIGH_PRIORITY ? "a high-priority stream" : "a plain stream");
+    const StreamPriorityRule RULE(HIGH_PRIORITY);
+    bt::startCudaHandleRecording(bt::CudaSetupFailure::None);
+    {
+      const ub::PerfGpuCase PERF{uniqueSuite("GpuRecorderForward") + ".Case", cfg_};
+    }
+    const bt::CudaHandleCounts MADE = bt::stopCudaHandleRecording();
+    EXPECT_EQ(MADE.streamsMade, 1);
+    EXPECT_EQ(MADE.eventsMade, 2);
+    EXPECT_EQ(MADE.streamsLeft, 0);
+    EXPECT_EQ(MADE.eventsLeft, 0);
+  }
+
+  const std::vector<bt::CudaForwardedCall> CALLS = bt::cudaHandleRecorderForwarding();
+  ASSERT_EQ(CALLS.size(), 6U);
+  for (const bt::CudaForwardedCall& CALL : CALLS) {
+    SCOPED_TRACE(CALL.api);
+    std::printf("[recorder] CUDART_VERSION %d: %s is %s, forwarded to %s in %s\n", CUDART_VERSION,
+                CALL.api.c_str(), CALL.definedAs.c_str(), CALL.forwardedTo.c_str(),
+                CALL.forwardFile.c_str());
+    EXPECT_TRUE(CALL.forwarded) << "the call never ran";
+    EXPECT_EQ(CALL.symbol, CALL.definedAs)
+        << "the forward looks up another symbol than the one the recorder defines";
+    EXPECT_TRUE(CALL.resolvedHere) << "this process resolves " << CALL.symbol << " elsewhere";
+    EXPECT_EQ(CALL.forwardedTo, CALL.symbol) << "the forward found another symbol";
+    EXPECT_FALSE(CALL.forwardFile.empty());
+    EXPECT_NE(CALL.forwardFile, CALL.definedIn)
+        << "the forward found the recorder's own definition";
+  }
 }

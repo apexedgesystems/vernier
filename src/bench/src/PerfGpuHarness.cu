@@ -23,6 +23,7 @@
 #include <string>
 #include <cstdio>
 #include <thread>
+#include <utility>
 
 namespace vernier {
 namespace bench {
@@ -256,6 +257,132 @@ void stateOnce(const std::string& line) {
 } // namespace
 
 // ============================================================================
+// Device selection
+// ============================================================================
+
+namespace {
+
+/**
+ * @brief Makes a device current for a scope and the caller's device current
+ *        again when the scope ends, by return or by exception; a negative id
+ *        changes nothing.
+ */
+class ScopedDevice {
+public:
+  explicit ScopedDevice(int deviceId) {
+    if (deviceId < 0) {
+      return;
+    }
+    CUDA_CHECK(cudaGetDevice(&caller_));
+    CUDA_CHECK(cudaSetDevice(deviceId));
+    active_ = true;
+  }
+
+  ~ScopedDevice() {
+    if (active_) {
+      // A destructor cannot throw; a failure here surfaces at the next CUDA call.
+      cudaSetDevice(caller_);
+    }
+  }
+
+  ScopedDevice(const ScopedDevice&) = delete;
+  ScopedDevice& operator=(const ScopedDevice&) = delete;
+
+private:
+  int caller_ = -1;
+  bool active_ = false;
+};
+
+/**
+ * @brief Stops a CUPTI collector's window when the scope ends, by return or by
+ *        exception; stopping a stopped or unavailable collector does nothing.
+ */
+class CuptiWindowCloser {
+public:
+  explicit CuptiWindowCloser(CuptiCollector& collector) : collector_(collector) {}
+
+  ~CuptiWindowCloser() { collector_.stop(); }
+
+  CuptiWindowCloser(const CuptiWindowCloser&) = delete;
+  CuptiWindowCloser& operator=(const CuptiWindowCloser&) = delete;
+
+private:
+  CuptiCollector& collector_;
+};
+
+/**
+ * @brief Makes a stream on the current device and owns it until release()
+ *        hands it on: if the scope ends first, by exception included, the
+ *        stream is destroyed with that device still current.
+ */
+class OwnedStream {
+public:
+  /** @param highPriority Make it at the device's greatest stream priority. */
+  explicit OwnedStream(bool highPriority) {
+    if (highPriority) {
+      int leastPriority, greatestPriority;
+      CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
+      CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamNonBlocking, greatestPriority));
+    } else {
+      CUDA_CHECK(cudaStreamCreate(&stream_));
+    }
+  }
+
+  ~OwnedStream() {
+    if (stream_ != nullptr) {
+      cudaStreamDestroy(stream_);
+    }
+  }
+
+  OwnedStream(const OwnedStream&) = delete;
+  OwnedStream& operator=(const OwnedStream&) = delete;
+
+  /** @brief Hands the stream on: from here the caller destroys it. */
+  [[nodiscard]] cudaStream_t release() noexcept { return std::exchange(stream_, nullptr); }
+
+private:
+  cudaStream_t stream_ = nullptr;
+};
+
+/**
+ * @brief Makes an event on the current device and owns it until release()
+ *        hands it on: if the scope ends first, by exception included, the
+ *        event is destroyed with that device still current.
+ */
+class OwnedEvent {
+public:
+  OwnedEvent() { CUDA_CHECK(cudaEventCreate(&event_)); }
+
+  ~OwnedEvent() {
+    if (event_ != nullptr) {
+      cudaEventDestroy(event_);
+    }
+  }
+
+  OwnedEvent(const OwnedEvent&) = delete;
+  OwnedEvent& operator=(const OwnedEvent&) = delete;
+
+  /** @brief Hands the event on: from here the caller destroys it. */
+  [[nodiscard]] cudaEvent_t release() noexcept { return std::exchange(event_, nullptr); }
+
+private:
+  cudaEvent_t event_ = nullptr;
+};
+
+/** @brief Throws std::invalid_argument unless @p deviceId is a CUDA device of this process. */
+void requireDevice(int deviceId) {
+  int count = 0;
+  CUDA_CHECK(cudaGetDeviceCount(&count));
+  if (deviceId < 0 || deviceId >= count) {
+    throw std::invalid_argument("withDeviceId(" + std::to_string(deviceId) +
+                                ") names no CUDA device: this process sees " +
+                                std::to_string(count) + ", ids 0 to " + std::to_string(count - 1));
+  }
+}
+
+} // namespace
+
+// ============================================================================
 // PerfGpuCaseImpl - PIMPL
 // ============================================================================
 
@@ -266,27 +393,13 @@ public:
         gpuCfg_(detail::getGlobalGpuConfig()) {
 
     CUDA_CHECK(cudaSetDevice(gpuCfg_.deviceId));
-
-    if (gpuCfg_.useHighPriorityStream) {
-      int leastPriority, greatestPriority;
-      CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
-      CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamNonBlocking, greatestPriority));
-    } else {
-      CUDA_CHECK(cudaStreamCreate(&stream_));
-    }
-
-    CUDA_CHECK(cudaEventCreate(&eventStart_));
-    CUDA_CHECK(cudaEventCreate(&eventStop_));
-
-    queryDeviceInfo();
-
-    nvml_.emplace(gpuCfg_.captureClockSpeeds, nvml_telemetry::uuidText(deviceProp_.uuid.bytes));
+    own_ = std::make_unique<DeviceResources>(gpuCfg_.deviceId, gpuCfg_.useHighPriorityStream,
+                                             gpuCfg_.captureClockSpeeds);
   }
 
   ~PerfGpuCaseImpl() {
-    cudaEventDestroy(eventStart_);
-    cudaEventDestroy(eventStop_);
-    cudaStreamDestroy(stream_);
+    others_.clear();
+    own_.reset();
   }
 
   PerfGpuCaseImpl(const PerfGpuCaseImpl&) = delete;
@@ -325,13 +438,13 @@ public:
   }
 
   void cudaWarmup(std::function<void(cudaStream_t)> kernel) {
-    kernel(stream_);
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    kernel(own_->stream);
+    CUDA_CHECK(cudaStreamSynchronize(own_->stream));
 
     for (int i = 0; i < gpuCfg_.gpuWarmup; ++i) {
-      kernel(stream_);
+      kernel(own_->stream);
     }
-    CUDA_CHECK(cudaStreamSynchronize(stream_));
+    CUDA_CHECK(cudaStreamSynchronize(own_->stream));
   }
 
   PerfGpuResult measureKernel(std::function<void(cudaStream_t)> kernel,
@@ -339,6 +452,17 @@ public:
                               const std::vector<CudaKernelBuilder::Transfer>& d2h, dim3 grid,
                               dim3 block, size_t sharedMemBytes, bool hasLaunchConfig, int deviceId,
                               std::string label) {
+    // A device named with withDeviceId() is checked, made current and given
+    // its resources before anything below runs, and the caller's device is
+    // current again when the measurement returns or throws. -1, none named,
+    // measures on the case's device and switches nothing. CUPTI's activity
+    // collection is process-wide, so its cells count launches on any device.
+    if (deviceId != -1) {
+      requireDevice(deviceId);
+    }
+    const ScopedDevice CURRENT(deviceId);
+    DeviceResources& dev = (deviceId == -1) ? *own_ : resourcesFor(deviceId);
+
     // The profiler window opens here, before anything is timed, and closes
     // after the row is published (below), so every hook pair brackets one
     // measurement.
@@ -354,7 +478,7 @@ public:
 
     // NVML readings at the window's start and end; each one checked.
     nvml_telemetry::WindowReadings nvmlReadings;
-    nvml_->readStart(nvmlReadings);
+    dev.nvml->readStart(nvmlReadings);
 
     // Start in-process kernel metrics. Off when this case yielded to an
     // nsys/ncu session or to the explicit override (cuptiYields_, decided
@@ -372,6 +496,10 @@ public:
                            "(external Nsight session or VERNIER_DISABLE_CUPTI); "
                            "CUPTI CSV columns will be empty.\n");
     }
+    // A callback or a CUDA call that throws leaves before the window's stop
+    // below; the window then stops here, so this case's next window counts
+    // only its own launches.
+    const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
 
     UnifiedMemoryProfile umProfile{};
     UMSnapshot umBefore, umAfter;
@@ -381,7 +509,7 @@ public:
       for (const auto& xfer : h2d) {
         totalManagedBytes += xfer.bytes;
       }
-      umBefore = captureUMSnapshot(gpuCfg_.deviceId);
+      umBefore = captureUMSnapshot(dev.deviceId);
     }
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
@@ -390,37 +518,37 @@ public:
       // transfer time.
       float h2dMs = 0.0f;
       if (!h2d.empty()) {
-        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        CUDA_CHECK(cudaEventRecord(dev.eventStart, dev.stream));
         for (const auto& xfer : h2d) {
           CUDA_CHECK(
-              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, stream_));
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyHostToDevice, dev.stream));
         }
-        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-        CUDA_CHECK(cudaEventSynchronize(eventStop_));
-        CUDA_CHECK(cudaEventElapsedTime(&h2dMs, eventStart_, eventStop_));
+        CUDA_CHECK(cudaEventRecord(dev.eventStop, dev.stream));
+        CUDA_CHECK(cudaEventSynchronize(dev.eventStop));
+        CUDA_CHECK(cudaEventElapsedTime(&h2dMs, dev.eventStart, dev.eventStop));
       }
       h2dTimes.push_back(h2dMs * 1000.0);
 
-      CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+      CUDA_CHECK(cudaEventRecord(dev.eventStart, dev.stream));
       for (int c = 0; c < cpuCfg_.cycles; ++c) {
-        kernel(stream_);
+        kernel(dev.stream);
       }
-      CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-      CUDA_CHECK(cudaEventSynchronize(eventStop_));
+      CUDA_CHECK(cudaEventRecord(dev.eventStop, dev.stream));
+      CUDA_CHECK(cudaEventSynchronize(dev.eventStop));
       float kernelMs = 0.0f;
-      CUDA_CHECK(cudaEventElapsedTime(&kernelMs, eventStart_, eventStop_));
+      CUDA_CHECK(cudaEventElapsedTime(&kernelMs, dev.eventStart, dev.eventStop));
       kernelTimes.push_back(kernelMs * 1000.0 / cpuCfg_.cycles);
 
       float d2hMs = 0.0f;
       if (!d2h.empty()) {
-        CUDA_CHECK(cudaEventRecord(eventStart_, stream_));
+        CUDA_CHECK(cudaEventRecord(dev.eventStart, dev.stream));
         for (const auto& xfer : d2h) {
           CUDA_CHECK(
-              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, stream_));
+              cudaMemcpyAsync(xfer.dst, xfer.src, xfer.bytes, cudaMemcpyDeviceToHost, dev.stream));
         }
-        CUDA_CHECK(cudaEventRecord(eventStop_, stream_));
-        CUDA_CHECK(cudaEventSynchronize(eventStop_));
-        CUDA_CHECK(cudaEventElapsedTime(&d2hMs, eventStart_, eventStop_));
+        CUDA_CHECK(cudaEventRecord(dev.eventStop, dev.stream));
+        CUDA_CHECK(cudaEventSynchronize(dev.eventStop));
+        CUDA_CHECK(cudaEventElapsedTime(&d2hMs, dev.eventStart, dev.eventStop));
       }
       d2hTimes.push_back(d2hMs * 1000.0);
 
@@ -432,11 +560,11 @@ public:
     }
 
     if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
-      umAfter = captureUMSnapshot(gpuCfg_.deviceId);
+      umAfter = captureUMSnapshot(dev.deviceId);
       trackUnifiedMemory(umProfile, umBefore, umAfter, totalManagedBytes);
     }
 
-    nvml_->readEnd(nvmlReadings);
+    dev.nvml->readEnd(nvmlReadings);
     ClockSpeedProfile clocks{};
     PowerThermalProfile powerThermal{};
     nvml_telemetry::fillProfiles(nvmlReadings, clocks, powerThermal);
@@ -444,8 +572,8 @@ public:
     // cell, for a session that samples nothing, or the readings NVML did not
     // report and the cells they leave empty.
     const std::string NVML_STATEMENT =
-        nvml_->ready() ? nvml_telemetry::missingReadingsStatement(nvmlReadings)
-                       : nvml_telemetry::absenceStatement(nvml_->unavailableReason());
+        dev.nvml->ready() ? nvml_telemetry::missingReadingsStatement(nvmlReadings)
+                          : nvml_telemetry::absenceStatement(dev.nvml->unavailableReason());
     if (!NVML_STATEMENT.empty()) {
       stateOnce(NVML_STATEMENT);
     }
@@ -484,7 +612,7 @@ public:
     }
 
     result.stats.cpuStats = totalStats;
-    result.stats.deviceInfo = deviceInfo_;
+    result.stats.deviceInfo = dev.info;
     result.stats.clocks = clocks;
     result.stats.powerThermal = powerThermal;
     if (cuptiEnabled) {
@@ -511,7 +639,7 @@ public:
     }
 
     if (hasLaunchConfig) {
-      calculateOccupancy(result.stats.occupancy, grid, block, sharedMemBytes, deviceProp_);
+      calculateOccupancy(result.stats.occupancy, grid, block, sharedMemBytes, dev.prop);
     }
 
     const double CV_THRESHOLD = recommendedCVThreshold(cpuCfg_);
@@ -715,7 +843,7 @@ public:
   const PerfConfig& cpuConfig() const noexcept { return cpuCfg_; }
   const PerfGpuConfig& gpuConfig() const noexcept { return gpuCfg_; }
   const std::string& testName() const noexcept { return testName_; }
-  cudaStream_t stream() const noexcept { return stream_; }
+  cudaStream_t stream() const noexcept { return own_->stream; }
 
 private:
   /**
@@ -727,30 +855,97 @@ private:
     return (cpuBaselineMedianUs_ > 0.0) ? cpuBaselineMedianUs_ : sharedSuiteBaselineUs(testName_);
   }
 
-  void queryDeviceInfo() {
-    CUDA_CHECK(cudaGetDeviceProperties(&deviceProp_, gpuCfg_.deviceId));
+  /**
+   * @brief What a measurement uses from the device it runs on: a stream with
+   *        the case's priority rule, the event pair that times it, the
+   *        device's properties and info, and NVML opened for it by its UUID.
+   *        Made while the device is current; released with it current.
+   */
+  struct DeviceResources {
+    DeviceResources(int id, bool highPriorityStream, bool captureClockSpeeds) : deviceId(id) {
+      // Each handle is owned from the moment it is made. A later step that
+      // throws (an event, the properties, NVML) leaves before this object
+      // exists, so its destructor never runs; the owners then destroy what
+      // was made, on this device, still current. Once every step succeeded,
+      // the handles pass to this object.
+      OwnedStream madeStream(highPriorityStream);
+      OwnedEvent madeStart;
+      OwnedEvent madeStop;
 
-    deviceInfo_.name = deviceProp_.name;
-    deviceInfo_.computeCapability[0] = deviceProp_.major;
-    deviceInfo_.computeCapability[1] = deviceProp_.minor;
-    deviceInfo_.totalMemoryMB = deviceProp_.totalGlobalMem / (1024 * 1024);
-    deviceInfo_.smCount = deviceProp_.multiProcessorCount;
-    deviceInfo_.maxThreadsPerSM = deviceProp_.maxThreadsPerMultiProcessor;
+      queryDeviceInfo();
+
+      nvml.emplace(captureClockSpeeds, nvml_telemetry::uuidText(prop.uuid.bytes));
+
+      stream = madeStream.release();
+      eventStart = madeStart.release();
+      eventStop = madeStop.release();
+    }
+
+    ~DeviceResources() {
+      int caller = -1;
+      const bool SWITCH = cudaGetDevice(&caller) == cudaSuccess && caller != deviceId;
+      if (SWITCH) {
+        cudaSetDevice(deviceId);
+      }
+      cudaEventDestroy(eventStart);
+      cudaEventDestroy(eventStop);
+      cudaStreamDestroy(stream);
+      if (SWITCH) {
+        cudaSetDevice(caller);
+      }
+    }
+
+    DeviceResources(const DeviceResources&) = delete;
+    DeviceResources& operator=(const DeviceResources&) = delete;
+
+    void queryDeviceInfo() {
+      CUDA_CHECK(cudaGetDeviceProperties(&prop, deviceId));
+
+      info.name = prop.name;
+      info.computeCapability[0] = prop.major;
+      info.computeCapability[1] = prop.minor;
+      info.totalMemoryMB = prop.totalGlobalMem / (1024 * 1024);
+      info.smCount = prop.multiProcessorCount;
+      info.maxThreadsPerSM = prop.maxThreadsPerMultiProcessor;
 
 #if CUDART_VERSION >= 13000
-    int clockKHz = 0, memClockKHz = 0;
-    cudaDeviceGetAttribute(&clockKHz, cudaDevAttrClockRate, gpuCfg_.deviceId);
-    cudaDeviceGetAttribute(&memClockKHz, cudaDevAttrMemoryClockRate, gpuCfg_.deviceId);
-    deviceInfo_.clockRateMHz = clockKHz / 1000;
-    deviceInfo_.memoryClockRateMHz = memClockKHz / 1000;
-    int busWidth = 0;
-    cudaDeviceGetAttribute(&busWidth, cudaDevAttrGlobalMemoryBusWidth, gpuCfg_.deviceId);
-    deviceInfo_.memoryBusWidthBits = busWidth;
+      int clockKHz = 0, memClockKHz = 0;
+      cudaDeviceGetAttribute(&clockKHz, cudaDevAttrClockRate, deviceId);
+      cudaDeviceGetAttribute(&memClockKHz, cudaDevAttrMemoryClockRate, deviceId);
+      info.clockRateMHz = clockKHz / 1000;
+      info.memoryClockRateMHz = memClockKHz / 1000;
+      int busWidth = 0;
+      cudaDeviceGetAttribute(&busWidth, cudaDevAttrGlobalMemoryBusWidth, deviceId);
+      info.memoryBusWidthBits = busWidth;
 #else
-    deviceInfo_.clockRateMHz = deviceProp_.clockRate / 1000;
-    deviceInfo_.memoryClockRateMHz = deviceProp_.memoryClockRate / 1000;
-    deviceInfo_.memoryBusWidthBits = deviceProp_.memoryBusWidth;
+      info.clockRateMHz = prop.clockRate / 1000;
+      info.memoryClockRateMHz = prop.memoryClockRate / 1000;
+      info.memoryBusWidthBits = prop.memoryBusWidth;
 #endif
+    }
+
+    const int deviceId;
+    cudaStream_t stream = nullptr;
+    cudaEvent_t eventStart = nullptr;
+    cudaEvent_t eventStop = nullptr;
+    cudaDeviceProp prop{};
+    GpuDeviceInfo info{};
+    // NVML opened for this device, found by its UUID (or the reason it
+    // samples nothing); set once the device's properties are read.
+    std::optional<nvml_telemetry::Session> nvml;
+  };
+
+  /** @brief @p deviceId's resources, made at its first measurement; it must be current. */
+  DeviceResources& resourcesFor(int deviceId) {
+    if (deviceId == own_->deviceId) {
+      return *own_;
+    }
+    std::unique_ptr<DeviceResources>& slot = others_[deviceId];
+    if (!slot) {
+      slot = std::make_unique<DeviceResources>(deviceId, gpuCfg_.useHighPriorityStream,
+                                               gpuCfg_.captureClockSpeeds);
+    }
+    return *slot;
   }
 
   void enablePeerToPeer(int deviceCount) {
@@ -916,12 +1111,12 @@ private:
   PerfConfig cpuCfg_;
   PerfGpuConfig gpuCfg_;
 
-  cudaStream_t stream_ = nullptr;
-  cudaEvent_t eventStart_ = nullptr;
-  cudaEvent_t eventStop_ = nullptr;
+  // The case's device (--gpu-device), made by the constructor: every
+  // measurement that names no other device, cudaWarmup() and stream() use it.
+  std::unique_ptr<DeviceResources> own_;
+  // The devices withDeviceId() named, each made at its first measurement.
+  std::map<int, std::unique_ptr<DeviceResources>> others_;
 
-  cudaDeviceProp deviceProp_{};
-  GpuDeviceInfo deviceInfo_{};
   double cpuBaselineMedianUs_ = 0.0;
 
   PerfGpuCase::BeforeHook beforeHook_{};
@@ -929,11 +1124,6 @@ private:
   /// The case this implementation belongs to, for the hook signatures
   /// (non-owning; set by the PerfGpuCase constructor).
   const PerfGpuCase* owner_ = nullptr;
-
-  // NVML opened for this case's device, found by its UUID (or the reason it
-  // samples nothing); set at the end of the constructor, once the device's
-  // properties are read.
-  std::optional<nvml_telemetry::Session> nvml_;
 
   // Whether this case's CUPTI collection stands down (profiler_env::
   // cuptiMustYield(): an nsys/ncu session, or the explicit override). Decided
