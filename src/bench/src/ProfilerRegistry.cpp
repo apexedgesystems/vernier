@@ -5,6 +5,7 @@
 
 #include "src/bench/inc/ProfilerRegistry.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdio>
@@ -120,6 +121,9 @@ std::string describeRequest(const ReadinessRequest& request) {
   if (!request.profileArgs.empty()) {
     text += " --profile-args '" + request.profileArgs + "'";
   }
+  if (request.profileFrequency != 0) {
+    text += " --profile-frequency " + std::to_string(request.profileFrequency);
+  }
   if (!request.bpfScripts.empty()) {
     text += " --bpf ";
     for (std::size_t i = 0; i < request.bpfScripts.size(); ++i) {
@@ -130,6 +134,16 @@ std::string describeRequest(const ReadinessRequest& request) {
     text += " --profile-analyze";
   }
   return text;
+}
+
+/**
+ * @brief True when a backend registered with @p contextKeys takes a sampling
+ * rate: a rate is applied through SAMPLING_RATE_VARIABLE as the process
+ * starts, so only a backend whose check reads that variable can honour it.
+ */
+bool takesSamplingRate(const std::vector<std::string>& contextKeys) {
+  return std::find(contextKeys.begin(), contextKeys.end(), SAMPLING_RATE_VARIABLE) !=
+         contextKeys.end();
 }
 
 /** @brief One doctor row. */
@@ -223,6 +237,16 @@ std::string ProfilerRegistry::canonicalName(const std::string& name) {
 ReadinessResult ProfilerRegistry::decide(const std::string& name, const Entry& entry,
                                          const ReadinessRequest& request,
                                          const ReadinessContext& ctx) const {
+  if (request.profileFrequency != 0 && !takesSamplingRate(entry.contextKeys)) {
+    // Refused before the backend's check, which knows nothing of rates.
+    ReadinessResult refused =
+        readinessResult(ReadinessCause::CONFIGURATION,
+                        "--profile-frequency " + std::to_string(request.profileFrequency) +
+                            " sets gperftools' CPU sampling rate; '" + name + "' does not take it",
+                        "Drop --profile-frequency, or profile with --profile gperf.");
+    refused.context = std::make_shared<const ReadinessContext>(ctx);
+    return refused;
+  }
   ReadinessResult result;
   try {
     if (entry.readiness) {
