@@ -74,6 +74,7 @@ struct Record {
   int allocationsMade = 0;                 ///< Allocations made since the start
   int releasedOffDevice = 0;               ///< Of all made since, released off their device
   int refusedCalls = 0;                    ///< Records and elapsed-time reads the emulation refused
+  int peerAccessEnables = 0;               ///< Enables between the emulated peers it answered
   std::map<cudaStream_t, Made> streams;    ///< Made since the start, not yet passed to a destroy
   std::map<cudaEvent_t, Made> events;      ///< Made since the start, not yet passed to a destroy
   std::map<const void*, Made> allocations; ///< Made since the start, not yet passed to cudaFree
@@ -96,7 +97,8 @@ CudaHandleCounts countsOf(const Record& r) {
                           r.allocationsMade,
                           static_cast<int>(r.allocations.size()),
                           r.releasedOffDevice,
-                          r.refusedCalls};
+                          r.refusedCalls,
+                          r.peerAccessEnables};
 }
 
 #if defined(__ELF__)
@@ -162,6 +164,7 @@ void startCudaHandleRecording(CudaSetupFailure failure, CudaDevices devices) {
   r.allocationsMade = 0;
   r.releasedOffDevice = 0;
   r.refusedCalls = 0;
+  r.peerAccessEnables = 0;
   r.streams.clear();
   r.events.clear();
   r.allocations.clear();
@@ -224,6 +227,7 @@ std::vector<CudaForwardedCall> cudaHandleRecorderForwarding() {
       VERNIER_RECORDER_INTERCEPTED(cudaMemcpyPeerAsync),
       VERNIER_RECORDER_INTERCEPTED(cudaEventRecord),
       VERNIER_RECORDER_INTERCEPTED(cudaEventElapsedTime),
+      VERNIER_RECORDER_INTERCEPTED(cudaGetLastError),
   };
 #undef VERNIER_RECORDER_INTERCEPTED
   std::vector<Forward> looked;
@@ -311,6 +315,14 @@ struct ThreadDevice {
 
 thread_local ThreadDevice threadDevice;
 
+/** @brief An error the emulation answered in the runtime's place, not yet read. */
+struct AnsweredError {
+  unsigned generation = 0;         ///< The recording it was answered in
+  cudaError_t error = cudaSuccess; ///< The answer
+};
+
+thread_local AnsweredError answeredError;
+
 /** @brief @p device as the runtime knows it: the emulated device runs on device 0. */
 int runtimeDevice(int device) { return (device == EMULATED_DEVICE) ? RUNTIME_DEVICE : device; }
 
@@ -345,6 +357,24 @@ RecordingView view() {
 cudaError_t runtimeGetDevice(int* device) {
   static const auto REAL = VERNIER_RECORDER_FORWARD(cudaGetDevice);
   return REAL(device);
+}
+
+/** @brief libcudart's cudaGetLastError, for the definition below and the emulation's answers. */
+cudaError_t runtimeGetLastError() {
+  static const auto REAL = VERNIER_RECORDER_FORWARD(cudaGetLastError);
+  return REAL();
+}
+
+/**
+ * @brief Returns @p error, answered in the runtime's place, and leaves it as
+ *        the calling thread's last error, as the runtime leaves its own: an
+ *        older error in the runtime's slot gives way to it, and one the
+ *        runtime records after it is the newer.
+ */
+cudaError_t answer(const RecordingView& m, cudaError_t error) {
+  static_cast<void>(runtimeGetLastError());
+  answeredError = AnsweredError{m.generation, error};
+  return error;
 }
 
 /** @brief The device current in the calling thread, as @p m shows it; -1 when unknown. */
@@ -588,10 +618,14 @@ cudaDeviceEnablePeerAccess(int peerDevice, unsigned int flags) {
   if (flags != 0 || !emulatedPeers(DEVICE, peerDevice)) {
     return REAL(runtimeDevice(peerDevice), flags);
   }
-  vt::Record& r = vt::record();
-  const std::lock_guard<std::mutex> LOCK(r.mutex);
-  return r.peerAccess.insert({DEVICE, peerDevice}).second ? cudaSuccess
-                                                          : cudaErrorPeerAccessAlreadyEnabled;
+  bool first = false;
+  {
+    vt::Record& r = vt::record();
+    const std::lock_guard<std::mutex> LOCK(r.mutex);
+    ++r.peerAccessEnables;
+    first = r.peerAccess.insert({DEVICE, peerDevice}).second;
+  }
+  return first ? cudaSuccess : answer(VIEW, cudaErrorPeerAccessAlreadyEnabled);
 }
 
 extern "C" __attribute__((visibility("default"))) cudaError_t cudaMalloc(void** devPtr,
@@ -666,7 +700,7 @@ extern "C" __attribute__((visibility("default"))) cudaError_t cudaEventRecord(cu
       ++r.refusedCalls;
     }
   }
-  const cudaError_t RESULT = refused ? REFUSED : REAL(event, stream);
+  const cudaError_t RESULT = refused ? answer(VIEW, REFUSED) : REAL(event, stream);
   trace(VIEW, line + outcome(RESULT));
   return RESULT;
 }
@@ -691,7 +725,7 @@ cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end) {
     }
   }
   const cudaError_t RESULT = INJECTED  ? vt::injectedCudaError()
-                             : refused ? REFUSED
+                             : refused ? answer(VIEW, REFUSED)
                                        : REAL(ms, start, end);
   trace(VIEW, line + outcome(RESULT));
   if (VIEW.traced && RESULT == cudaSuccess && ms != nullptr) {
@@ -702,6 +736,17 @@ cudaEventElapsedTime(float* ms, cudaEvent_t start, cudaEvent_t end) {
     }
   }
   return RESULT;
+}
+
+extern "C" __attribute__((visibility("default"))) cudaError_t cudaGetLastError() {
+  const RecordingView VIEW = view();
+  const cudaError_t RUNTIME = runtimeGetLastError();
+  if (!VIEW.emulating || answeredError.generation != VIEW.generation ||
+      answeredError.error == cudaSuccess) {
+    return RUNTIME;
+  }
+  const cudaError_t ANSWERED = std::exchange(answeredError.error, cudaSuccess);
+  return (RUNTIME != cudaSuccess) ? RUNTIME : ANSWERED;
 }
 
 #endif // __ELF__

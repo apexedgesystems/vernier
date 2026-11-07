@@ -1975,6 +1975,73 @@ TEST_F(PerfGpuHarnessTest, P2PTimingBetweenTwoPeerDevicesTimesTheCopy) {
   }
 }
 
+/**
+ * @test withP2PAccess() leaves the caller's device current and no error.
+ *       Under the emulated second device, with device 0 the caller's, two
+ *       two-device measurements each enable peer access both ways, the second
+ *       finding it enabled already: the caller's device is current after
+ *       each, and cudaGetLastError() has nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, WithP2PAccessRestoresTheDeviceAndLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PAccess") + ".Enable", cfg_};
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  ASSERT_EQ(currentDevice(), 0);
+  for (const char* pass : {"access enabled", "access enabled already"}) {
+    SCOPED_TRACE(pass);
+    EXPECT_NO_THROW(
+        static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel).withP2PAccess().measure()));
+    static_cast<void>(lastRow());
+    EXPECT_EQ(currentDevice(), 0) << "the caller's device is not current again";
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+  }
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(COUNTS.peerAccessEnables, 4) << "the harness's enables did not reach the emulation";
+}
+
+/**
+ * @test Without a peer there is nothing to time and no error to leave: a copy
+ *       to a device id that names no device, and peer access asked for over
+ *       one device more than this machine has, each leave the caller's device
+ *       current and nothing for cudaGetLastError(); the copy reports no access
+ *       and no time, and allocates nothing
+ */
+TEST_F(PerfGpuHarnessTest, P2PWithoutAPeerLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PNoPeer") + ".Copy", cfg_};
+  const int CALLER = currentDevice();
+  {
+    SCOPED_TRACE("a copy to device " + std::to_string(count));
+    static_cast<void>(cudaGetLastError());
+    ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::Real);
+    const ub::MultiGpuResult RESULT =
+        perf.cudaKernelMultiGpu(1, noKernel).measureP2PBandwidth(0, count, P2P_BYTES).measure();
+    static_cast<void>(lastRow());
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+    EXPECT_EQ(currentDevice(), CALLER);
+    const bt::CudaHandleCounts COUNTS = recording.stop();
+    EXPECT_EQ(COUNTS.allocationsMade, 0);
+    ASSERT_TRUE(RESULT.aggregatedStats.p2pProfile.has_value());
+    EXPECT_FALSE(RESULT.aggregatedStats.p2pProfile->accessEnabled);
+    EXPECT_EQ(RESULT.aggregatedStats.p2pProfile->timeUs, 0.0);
+  }
+  {
+    SCOPED_TRACE("peer access over " + std::to_string(count + 1) + " devices");
+    static_cast<void>(cudaGetLastError());
+    static_cast<void>(perf.cudaKernelMultiGpu(count + 1, noKernel).withP2PAccess().measure());
+    static_cast<void>(lastRow());
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+    EXPECT_EQ(currentDevice(), CALLER);
+  }
+}
+
 /* ----------------------------- Recorder Forwarding ----------------------------- */
 
 namespace {
@@ -1999,15 +2066,15 @@ private:
 } // namespace
 
 /**
- * @test The recorder forwards each of its fifteen calls to the symbol the
- *       harness's call is linked to. Once the harness has run all fifteen (a
+ * @test The recorder forwards each of its sixteen calls to the symbol the
+ *       harness's call is linked to. Once the harness has run all sixteen (a
  *       case with a high-priority stream and one with a plain one, each made
  *       and ended while recording, and a case timing a peer copy with peer
- *       access asked for, twice, under the emulated second device), each
- *       call's definition is exported under a symbol, its forward looked that
- *       same symbol up, this process resolves it to the recorder, and the
- *       definition the forward found is that symbol in another file. Its lines
- *       name the toolkit the run exercised
+ *       access asked for, twice, the second finding access enabled, under the
+ *       emulated second device), each call's definition is exported under a
+ *       symbol, its forward looked that same symbol up, this process resolves
+ *       it to the recorder, and the definition the forward found is that
+ *       symbol in another file. Its lines name the toolkit the run exercised
  */
 TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
   if (!bt::cudaHandleRecorderAvailable()) {
@@ -2042,7 +2109,7 @@ TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
   }
 
   const std::vector<bt::CudaForwardedCall> CALLS = bt::cudaHandleRecorderForwarding();
-  ASSERT_EQ(CALLS.size(), 15U);
+  ASSERT_EQ(CALLS.size(), 16U);
   for (const bt::CudaForwardedCall& CALL : CALLS) {
     SCOPED_TRACE(CALL.api);
     std::printf("[recorder] CUDART_VERSION %d: %s is %s, forwarded to %s in %s\n", CUDART_VERSION,

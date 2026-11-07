@@ -411,6 +411,21 @@ void requireDevice(int deviceId) {
   }
 }
 
+/**
+ * @brief Whether device @p device can access device @p peer's memory. A query
+ *        that fails, as it does for an id that names no device, answers no:
+ *        its error is read here, so the caller's next cudaGetLastError() does
+ *        not report it.
+ */
+bool canAccessPeer(int device, int peer) {
+  int canAccess = 0;
+  if (cudaDeviceCanAccessPeer(&canAccess, device, peer) != cudaSuccess) {
+    static_cast<void>(cudaGetLastError());
+    return false;
+  }
+  return canAccess != 0;
+}
+
 } // namespace
 
 // ============================================================================
@@ -980,17 +995,25 @@ private:
   }
 
   void enablePeerToPeer(int deviceCount) {
+    // Access is enabled from the device that will read, made current only
+    // for a pair that can have it, and the caller's device is current again
+    // after; nothing here throws. Access an earlier call enabled stands, so
+    // that answer is read here rather than left for the caller.
+    int caller = -1;
+    const bool KNOWN_CALLER = cudaGetDevice(&caller) == cudaSuccess;
     for (int i = 0; i < deviceCount; ++i) {
-      cudaSetDevice(i);
       for (int j = 0; j < deviceCount; ++j) {
-        if (i != j) {
-          int canAccess = 0;
-          cudaDeviceCanAccessPeer(&canAccess, i, j);
-          if (canAccess) {
-            cudaDeviceEnablePeerAccess(j, 0);
-          }
+        if (i == j || !canAccessPeer(i, j)) {
+          continue;
+        }
+        if (cudaSetDevice(i) == cudaSuccess &&
+            cudaDeviceEnablePeerAccess(j, 0) == cudaErrorPeerAccessAlreadyEnabled) {
+          static_cast<void>(cudaGetLastError());
         }
       }
+    }
+    if (KNOWN_CALLER) {
+      cudaSetDevice(caller);
     }
   }
 
@@ -1000,10 +1023,7 @@ private:
     profile.dstDevice = dstDev;
     profile.bytes = bytes;
 
-    int canAccess = 0;
-    cudaDeviceCanAccessPeer(&canAccess, srcDev, dstDev);
-    profile.accessEnabled = (canAccess != 0);
-
+    profile.accessEnabled = canAccessPeer(srcDev, dstDev);
     if (!profile.accessEnabled) {
       return profile;
     }

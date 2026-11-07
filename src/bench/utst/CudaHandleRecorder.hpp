@@ -28,7 +28,9 @@
  * is not recorded on a stream of the other device and two events of
  * different devices are not timed against each other: the call returns
  * cudaErrorInvalidResourceHandle, as the runtime answers for two contexts of
- * one device, without reaching it. The rules are the CUDA programming
+ * one device, without reaching it. Such an answer, and "access already
+ * enabled", is the thread's last error, as the runtime's own errors are,
+ * until cudaGetLastError() reads it. The rules are the CUDA programming
  * guide's; that a driver applies them between two GPUs, and anything about a
  * copy between two GPUs, is outside what this shows.
  *
@@ -82,6 +84,7 @@ struct CudaHandleCounts {
   int releasedOffDevice = 0; ///< Streams, events and allocations made while recording and
                              ///< released with another device current
   int refusedCalls = 0;      ///< Records and elapsed-time reads an emulated-peer recording refused
+  int peerAccessEnables = 0; ///< Peer-access enables between devices 0 and 1 it answered
 };
 
 /** @brief One of the recorder's runtime calls, as this process forwards it. */
