@@ -2027,6 +2027,32 @@ TEST_F(PerfGpuHarnessTest, WithP2PAccessThatCannotEnableAPairLeavesNoError) {
 }
 
 /**
+ * @test withP2PAccess() that cannot make a peer current leaves no error
+ *       either. Under the emulated second device, with device 0 the caller's,
+ *       the first switch to device 1 fails with cudaErrorDevicesUnavailable,
+ *       as it does for a device another process holds in exclusive-process
+ *       mode: the measurement goes on, device 0's enable is still made and
+ *       device 1's is skipped, the caller's device is current again, and
+ *       cudaGetLastError() has nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, WithP2PAccessThatCannotSwitchToAPeerLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PAccess") + ".Unavailable", cfg_};
+  ScopedRecording recording(bt::CudaSetupFailure::PeerSwitch, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  ASSERT_EQ(currentDevice(), 0);
+  EXPECT_NO_THROW(
+      static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel).withP2PAccess().measure()));
+  static_cast<void>(lastRow());
+  EXPECT_EQ(currentDevice(), 0) << "the caller's device is not current again";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(COUNTS.peerAccessEnables, 1) << "device 0's enable was not made, or device 1's was too";
+}
+
+/**
  * @test Without a peer there is nothing to time and no error to leave: a copy
  *       to a device id that names no device, and peer access asked for over
  *       one device more than this machine has, each leave the caller's device

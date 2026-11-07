@@ -997,10 +997,13 @@ private:
   void enablePeerToPeer(int deviceCount) {
     // Access is enabled from the device that will read, made current only
     // for a pair that can have it, and the caller's device is current again
-    // after; nothing here throws. An enable that does not succeed leaves its
-    // pair as it was (access an earlier call enabled stands; a pair the
-    // runtime refuses stays without it) and the other pairs are still
-    // enabled; its answer is read here rather than left for the caller.
+    // after; nothing here throws. The switch to that device can fail even so
+    // (a device another process holds in exclusive-process mode cannot be
+    // made current), and its pair is then skipped. An enable that does not
+    // succeed leaves its pair as it was (access an earlier call enabled
+    // stands; a pair the runtime refuses stays without it). Either way the
+    // other pairs are still tried, and the failed switch's or enable's
+    // answer is read here rather than left for the caller.
     int caller = -1;
     const bool KNOWN_CALLER = cudaGetDevice(&caller) == cudaSuccess;
     for (int i = 0; i < deviceCount; ++i) {
@@ -1008,7 +1011,11 @@ private:
         if (i == j || !canAccessPeer(i, j)) {
           continue;
         }
-        if (cudaSetDevice(i) == cudaSuccess && cudaDeviceEnablePeerAccess(j, 0) != cudaSuccess) {
+        if (cudaSetDevice(i) != cudaSuccess) {
+          static_cast<void>(cudaGetLastError());
+          continue;
+        }
+        if (cudaDeviceEnablePeerAccess(j, 0) != cudaSuccess) {
           static_cast<void>(cudaGetLastError());
         }
       }

@@ -69,6 +69,7 @@ struct Record {
   int mallocs = 0;                         ///< cudaMalloc calls since the start
   int peerCopies = 0;                      ///< cudaMemcpyPeerAsync calls since the start
   int elapsedReads = 0;                    ///< cudaEventElapsedTime calls since the start
+  int peerSwitches = 0;                    ///< The traced thread's switches to device 1
   int streamsMade = 0;                     ///< Streams made since the start
   int eventsMade = 0;                      ///< Events made since the start
   int allocationsMade = 0;                 ///< Allocations made since the start
@@ -159,6 +160,7 @@ void startCudaHandleRecording(CudaSetupFailure failure, CudaDevices devices) {
   r.mallocs = 0;
   r.peerCopies = 0;
   r.elapsedReads = 0;
+  r.peerSwitches = 0;
   r.streamsMade = 0;
   r.eventsMade = 0;
   r.allocationsMade = 0;
@@ -310,6 +312,11 @@ constexpr cudaError_t REFUSED = cudaErrorInvalidResourceHandle;
 /// What a failed enable between the emulated peers answers: the runtime's
 /// answer when the resources peer access needs are exhausted.
 constexpr cudaError_t ENABLE_FAILED = cudaErrorTooManyPeers;
+
+/// What a failed switch to the emulated device answers: the runtime's answer
+/// for a device it cannot make current, such as one another process holds in
+/// exclusive-process mode.
+constexpr cudaError_t SWITCH_FAILED = cudaErrorDevicesUnavailable;
 
 /** @brief The device a thread made current in one emulated-peer recording. */
 struct ThreadDevice {
@@ -589,6 +596,10 @@ extern "C" __attribute__((visibility("default"))) cudaError_t cudaSetDevice(int 
   const RecordingView VIEW = view();
   if (!VIEW.emulating) {
     return REAL(device);
+  }
+  if (VIEW.traced && device == EMULATED_DEVICE &&
+      failsHere(&vt::Record::peerSwitches, vt::CudaSetupFailure::PeerSwitch)) {
+    return answer(VIEW, SWITCH_FAILED);
   }
   const cudaError_t RESULT = REAL(runtimeDevice(device));
   if (RESULT == cudaSuccess) {

@@ -28,12 +28,14 @@
  * is not recorded on a stream of the other device and two events of
  * different devices are not timed against each other: the call returns
  * cudaErrorInvalidResourceHandle, as the runtime answers for two contexts of
- * one device, without reaching it. Such an answer, "access already enabled"
- * and a failed enable (CudaSetupFailure::PeerAccess, after which the pair
- * stays without access) are the thread's last error, as the runtime's own
- * errors are, until cudaGetLastError() reads it. The rules are the CUDA
- * programming guide's; that a driver applies them between two GPUs, and
- * anything about a copy between two GPUs, is outside what this shows.
+ * one device, without reaching it. Such an answer, "access already enabled", a
+ * failed enable (CudaSetupFailure::PeerAccess, after which the pair stays
+ * without access) and a failed switch to device 1
+ * (CudaSetupFailure::PeerSwitch, after which the thread's device is unchanged)
+ * are the thread's last error, as the runtime's own errors are, until
+ * cudaGetLastError() reads it. The rules are the CUDA programming guide's;
+ * that a driver applies them between two GPUs, and anything about a copy
+ * between two GPUs, is outside what this shows.
  *
  * Test support for PerfGpuHarness_uTest.cu; not part of the benchmark library.
  * It needs ELF symbol binding: elsewhere available() is false.
@@ -62,6 +64,7 @@ enum class CudaSetupFailure {
   PeerCopy,         ///< The first cudaMemcpyPeerAsync of the recording
   ElapsedTime,      ///< The first cudaEventElapsedTime of the recording
   PeerAccess,       ///< The first enable between the emulated peers (cudaErrorTooManyPeers)
+  PeerSwitch,       ///< The traced thread's first switch to device 1 (cudaErrorDevicesUnavailable)
 };
 
 /** @brief The devices a recording shows the process. */
@@ -115,7 +118,8 @@ std::string cudaHandleRecorderUnavailableReason();
 /**
  * @brief Starts a recording: forgets the last one's counts and trace, shows
  *        the process @p devices, and makes @p failure fail once, with
- *        injectedCudaError(). The calling thread's handle calls are traced.
+ *        injectedCudaError() or the error its enumerator names. The calling
+ *        thread's handle calls are traced.
  */
 void startCudaHandleRecording(CudaSetupFailure failure, CudaDevices devices = CudaDevices::Real);
 
