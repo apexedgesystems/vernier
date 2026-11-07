@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (21 files)
+# Sources (22 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -28,6 +28,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfSampling_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGpuChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/BpfScripts_uTest.cpp"
@@ -314,6 +315,17 @@ if (TARGET TestBench)
   endif ()
   if (VERNIER_LINK_TCMALLOC)
     target_link_libraries(TestBench PRIVATE ${GPERF_TCMALLOC_LIB})
+  endif ()
+  # With heap profiling, ProfilerGperfLifecycle_uTest.cpp replaces the global
+  # allocation functions, through which its tests of both captures at once
+  # watch the profile reader. A build with the thread or the address
+  # sanitizer replaces none: the thread sanitizer's runtime defines those
+  # functions itself, and clang's cannot link beside a replacement; the
+  # address sanitizer's serves malloc and free itself, in place of tcmalloc.
+  # The file learns which of them the build has here, and the two tests skip,
+  # naming it.
+  if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
+    target_compile_definitions(TestBench PRIVATE GPERF_READER_WATCH_SANITIZER="${SANITIZER}")
   endif ()
 endif ()
 

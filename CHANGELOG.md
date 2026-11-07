@@ -351,6 +351,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   **Action needed:** under a `valgrind --tool=callgrind` wrap typed by hand,
   drop `--profile-analyze`, which fails such a run, and run
   `callgrind_annotate` on the profile after the process exits.
+- **`--profile-frequency` sets gperf's sampling rate** -- Gperf CPU sampling
+  requests now take effect and each completed profile's period is verified.
+  Use rates from 1 to 4000 Hz; `PerfConfig::profileFrequency` now defaults to
+  0 (no explicit request), and direct runs must set `CPUPROFILE_FREQUENCY`
+  before startup
+  ([API reference](src/bench/docs/API_REFERENCE.md#profilergperf)).
+  ([#68](https://github.com/apexedgesystems/vernier/pull/68))
 - **`bench validate` reports facts, and a binary's own rows when given
   one** -- it lists each profiling tool's path and version instead of judging
   readiness from a tool's presence, or, given a binary, that binary's

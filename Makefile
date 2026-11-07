@@ -127,6 +127,7 @@ help:
 	@printf '%s\n' "Testing:"
 	@printf '  %-28s %s\n' "make test" "Run all tests (serial)"
 	@printf '  %-28s %s\n' "make testp" "Run tests (parallel + timing serial)"
+	@printf '  %-28s %s\n' "make test-heap" "Run heap-profiling tests (tcmalloc tree)"
 	@printf '  %-28s %s\n' "make test-py" "Run Python tools tests"
 	@printf '  %-28s %s\n' "make test-rust" "Run Rust tools tests"
 	@printf '\n'

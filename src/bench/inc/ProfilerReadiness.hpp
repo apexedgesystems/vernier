@@ -172,6 +172,7 @@ struct ReadinessRequest {
   bool analyze = false;                ///< --profile-analyze promised an analysis.
   ReadinessScope scope = ReadinessScope::DEFAULT_INVENTORY;
   LaunchContext launch = LaunchContext::IN_PROCESS;
+  int profileFrequency = 0; ///< --profile-frequency, Hz; 0: no rate asked for.
 
   /**
    * @brief Every field of the request as one key, each length-prefixed.

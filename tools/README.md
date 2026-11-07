@@ -212,6 +212,7 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--taskset CPUS`           | Pin to specific CPU cores                            | --           |
 | `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
 | `--profile-args ARGS`      | The profile's mode (see below); may start with `-`   | --           |
+| `--profile-frequency HZ`   | gperf's CPU sampling rate, 1 to 4000 (see below)     | --           |
 | `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
 | `--profile-analyze`        | The profile's analysis (callgrind: see below)        | --           |
 | `--analyze`                | Run summary after execution                          | --           |
@@ -241,12 +242,23 @@ kernels. In-process backends
 reads `--profile-args` itself, and the C++ harness manages its own per-test
 artifact subdirs.
 
+With `--profile gperf`, `--profile-frequency HZ` starts the binary with
+`CPUPROFILE_FREQUENCY=HZ`, the variable gperftools reads its sampling rate
+from only as the process starts, and passes the binary
+`--profile-frequency HZ`, which checks that each profile it writes records
+that rate's period; the `Running:` line shows the variable. Nothing else is
+added: no wrap, no folder. The rate is refused before anything starts
+when it is not a whole number from 1 to 4000, or when no profiler, or another
+one, is requested. Without the flag `bench run` sets nothing, and a
+`CPUPROFILE_FREQUENCY` it inherited reaches the binary as it is.
+
 Arguments after `--` reach the binary as they are, except the request's own
-fields: `--profile`, `--profile-args` and `--profile-output-dir` (or the
-binary's `--artifact-root`) given there are the request `bench run` routes, as
-if given to it, and reach the binary once. A field given twice with
-different values, to `bench run` and after `--`, is refused before anything
-starts.
+fields: `--profile`, `--profile-args`, `--profile-frequency` and
+`--profile-output-dir` (or the binary's `--artifact-root`) given there are the
+request `bench run` routes, as if given to it, and reach the binary once. A
+field given twice with different values, to `bench run` and after `--`, is
+refused before anything starts, and so is `--profile-frequency=HZ` after
+`--`, which the binary does not read.
 
 **A wrapped run's output.** Before it starts the benchmark, `bench run`
 creates the wrap's folder (a folder it cannot create stops the run before
@@ -331,9 +343,10 @@ and prints one `[require]` line per backend: on stderr when `--json` is also
 given, so that stdout stays one document, and on stdout otherwise. A binary
 whose doctor prints no valid document is an error (exit 1).
 
-`--profile`, `--profile-args`, `--profile-analyze` and the arguments after
-`--` make the request `bench run` would make of them, and are passed to the
-binary as `bench run` passes them; the doctor adds a row for that request.
+`--profile`, `--profile-args`, `--profile-frequency`, `--profile-analyze` and
+the arguments after `--` make the request `bench run` would make of them, and
+are passed to the binary as `bench run` passes them, with the
+`CPUPROFILE_FREQUENCY` it would set; the doctor adds a row for that request.
 `--require` judges the requested backend by that row and every other backend
 by its default mode's row, so a requirement on `massif` with
 `--profile-args pages` is met only when that mode is ready. The row must

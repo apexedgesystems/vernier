@@ -9,6 +9,7 @@
 
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
+#include "src/bench/utst/SamplingRateTable.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
@@ -62,6 +63,19 @@ std::size_t countLines(const std::string& text) {
   std::exit(0);
 }
 
+/** @brief Parse @p args (the program name first), then exit 0 (for death tests). */
+[[noreturn]] void parseThenExit(const std::vector<std::string>& args) {
+  std::vector<std::string> storage = args;
+  std::vector<char*> argv;
+  for (std::string& arg : storage) {
+    argv.push_back(arg.data());
+  }
+  int argc = static_cast<int>(argv.size());
+  PerfConfig cfg;
+  parsePerfFlags(cfg, &argc, argv.data());
+  std::exit(0);
+}
+
 } // namespace
 
 /* ----------------------------- Default Values Tests ----------------------------- */
@@ -83,6 +97,8 @@ TEST(PerfConfigTest, DefaultValues) {
   EXPECT_TRUE(CFG.profileArgs.empty());
   EXPECT_TRUE(CFG.bpfScripts.empty());
   EXPECT_TRUE(CFG.artifactRoot.empty());
+  EXPECT_EQ(CFG.profileFrequency, 0)
+      << "no sampling rate is asked for until a flag or code sets one";
   EXPECT_EQ(CFG.profileTestTimeoutSecs, -1)
       << "the timeout is 'not given' until a flag or --profile sets it";
   EXPECT_FALSE(CFG.quickMode);
@@ -431,6 +447,94 @@ TEST(PerfConfigTest, InvalidTimeoutExits) {
         << "'" << VALUE << "'";
   }
   GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/* ----------------------------- Profile Frequency ----------------------------- */
+
+using vernier::bench::test::samplingRateRows;
+using vernier::bench::test::tableText;
+
+/** @test Every rate the shared table accepts is kept as its value; the flag is consumed. */
+TEST(PerfConfigFrequencyTest, AcceptsTheSharedTablesRates) {
+  const auto ROWS = samplingRateRows("rate");
+  ASSERT_GE(ROWS.size(), 20U) << "the shared table was not read";
+  for (const auto& row : ROWS) {
+    ASSERT_EQ(row.size(), 5U);
+    if (row[2] != "ok") {
+      continue;
+    }
+    PerfConfig cfg;
+    ArgvBuilder args{"prog", "--profile", "gperf", "--profile-frequency", row[1].c_str()};
+    parsePerfFlags(cfg, args.argc(), args.argv());
+    EXPECT_EQ(cfg.profileFrequency, std::stoi(row[3])) << "'" << row[1] << "'";
+    EXPECT_EQ(*args.argc(), 1) << "'" << row[1] << "' was not consumed";
+  }
+}
+
+/**
+ * @test Every rate the shared table refuses (a sign, a space, a unit, a
+ * fraction, 0, above 4000, too long, empty) exits 2 naming the flag, the
+ * value and the range, so gperftools never turns it into another rate.
+ */
+TEST(PerfConfigFrequencyTest, RefusesTheSharedTablesRates) {
+  const auto ROWS = samplingRateRows("rate");
+  ASSERT_GE(ROWS.size(), 20U) << "the shared table was not read";
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  for (const auto& row : ROWS) {
+    if (row[2] != "refused") {
+      continue;
+    }
+    const std::string INPUT = tableText(row[1]);
+    EXPECT_EXIT(parseThenExit({"prog", "--profile", "gperf", "--profile-frequency", INPUT}),
+                ::testing::ExitedWithCode(2),
+                "--profile-frequency: '.*' is not a whole number of Hz from 1 to 4000 "
+                "\\(gperftools samples at most 4000 times a second\\)")
+        << "'" << INPUT << "'";
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/**
+ * @test A rate with no profiler to take it exits 2 before the doctor runs:
+ * without --profile, and with each name the shared table says selects none
+ * (cupti).
+ */
+TEST(PerfConfigFrequencyTest, RateWithoutAProfilerExits) {
+  const auto NONE = samplingRateRows("noprofiler");
+  ASSERT_EQ(NONE.size(), 1U) << "the shared table was not read";
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  const char* const MESSAGE = "--profile-frequency 250 cannot apply: no profiler is selected";
+  EXPECT_EXIT(parseThenExit({"prog", "--profile-frequency", "250"}), ::testing::ExitedWithCode(2),
+              MESSAGE);
+  EXPECT_EXIT(parseThenExit({"prog", "--profile-frequency", "250", "--profile-check"}),
+              ::testing::ExitedWithCode(2), MESSAGE);
+  EXPECT_EXIT(parseThenExit({"prog", "--profile-check-json", "--profile-frequency", "250"}),
+              ::testing::ExitedWithCode(2), MESSAGE);
+  for (const auto& row : NONE) {
+    EXPECT_EXIT(parseThenExit({"prog", "--profile", row[1], "--profile-frequency", "250"}),
+                ::testing::ExitedWithCode(2), MESSAGE)
+        << row[1];
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
+}
+
+/** @test Without the flag no rate is asked for, profiler or not. */
+TEST(PerfConfigFrequencyTest, NoFlagAsksForNoRate) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog", "--profile", "gperf", "--cycles", "10"};
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  EXPECT_EQ(cfg.profileFrequency, 0);
+}
+
+/** @test Given twice, the last value wins, as it does for every flag of the benchmark. */
+TEST(PerfConfigFrequencyTest, LastValueWins) {
+  PerfConfig cfg;
+  ArgvBuilder args{"prog",  "--profile-frequency", "250", "--profile",
+                   "gperf", "--profile-frequency", "1000"};
+  parsePerfFlags(cfg, args.argc(), args.argv());
+  EXPECT_EQ(cfg.profileFrequency, 1000);
 }
 
 /* ----------------------------- Multiple Flags Tests ----------------------------- */
