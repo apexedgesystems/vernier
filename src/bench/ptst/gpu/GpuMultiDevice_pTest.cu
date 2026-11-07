@@ -263,7 +263,10 @@ PERF_GPU_TEST(GpuMultiDevice, LoadBalancing) {
  * @brief P2P transfer bandwidth measurement
  *
  * Validates peer-to-peer transfer functionality and measures bandwidth
- * between GPU devices.
+ * between GPU devices: with peer access enabled, the harness copies
+ * TRANSFER_SIZE bytes once from a buffer of its own on device 0 to one on
+ * device 1, on a stream of device 0, and times the copy with events of that
+ * device (no warmup, no repeats).
  *
  * @test P2PTransfers
  *
@@ -273,7 +276,7 @@ PERF_GPU_TEST(GpuMultiDevice, LoadBalancing) {
  *  - P2P metrics collection
  *
  * Expected performance:
- *  - P2P bandwidth > 20 GB/s (NVLink) or > 10 GB/s (PCIe)
+ *  - P2P bandwidth > 5 GB/s
  */
 PERF_GPU_TEST(GpuMultiDevice, P2PTransfers) {
   UB_PERF_GPU_GUARD(perf);
@@ -288,12 +291,6 @@ PERF_GPU_TEST(GpuMultiDevice, P2PTransfers) {
   }
 
   const size_t TRANSFER_SIZE = 64 * 1024 * 1024; // 64 MB
-
-  float *d_src, *d_dst;
-  cudaSetDevice(0);
-  cudaMalloc(&d_src, TRANSFER_SIZE);
-  cudaSetDevice(1);
-  cudaMalloc(&d_dst, TRANSFER_SIZE);
 
   // Dummy kernel for framework compatibility
   auto dummyKernel = [](int, cudaStream_t) {};
@@ -316,12 +313,6 @@ PERF_GPU_TEST(GpuMultiDevice, P2PTransfers) {
 
   const double bandwidth = p2p.bandwidthGBs();
   EXPECT_GT(bandwidth, 5.0) << "P2P bandwidth should be > 5 GB/s (minimum for PCIe)";
-
-  // Cleanup
-  cudaSetDevice(0);
-  cudaFree(d_src);
-  cudaSetDevice(1);
-  cudaFree(d_dst);
 }
 
 /**
