@@ -939,6 +939,14 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   comparable; see the
   [capture requirements](src/bench/demo/docs/16_OFFCPU_PROFILER.md#what-is-off-cpu-profiling)
   for setup details. ([#60](https://github.com/apexedgesystems/vernier/pull/60))
+- GPU measurements honor `withDeviceId()` and close CUPTI windows on failure.
+  ([#65](https://github.com/apexedgesystems/vernier/pull/65))
+- Correct performance-sample results, worker normalization and profiler use;
+  GPU ratios have no required speedup. Re-record baselines containing renamed
+  or retired GPU samples; case names are in
+  [#65](https://github.com/apexedgesystems/vernier/pull/65).
+- Improve `--target-time` calibration when brief scheduling interruptions
+  stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 
 ## v1.0.3 - 2026-06-28
 

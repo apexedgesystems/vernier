@@ -361,5 +361,3 @@ PERF_GPU_TEST(GpuUnifiedMemory, ManagedAgainstDeviceMemory) {
               ON_MANAGED.kernelTimeUs, ON_DEVICE.kernelTimeUs,
               ON_MANAGED.kernelTimeUs / ON_DEVICE.kernelTimeUs);
 }
-
-// Note: PERF_MAIN() is defined in MatMul_pTest.cu for this test binary
