@@ -2042,6 +2042,24 @@ TEST_F(PerfGpuHarnessTest, P2PWithoutAPeerLeavesNoError) {
   }
 }
 
+/**
+ * @test A measurement that asked for a peer copy and had no peer to copy to
+ *       publishes no bandwidth: its row's p2pBandwidthGBs cell is empty, not a
+ *       0 a reader would take for a measured rate
+ */
+TEST_F(PerfGpuHarnessTest, P2PCellIsEmptyWithoutAPeerCopy) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PNoCell") + ".Copy", cfg_};
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1, noKernel).measureP2PBandwidth(0, count, P2P_BYTES).measure();
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(RESULT.aggregatedStats.p2pProfile.has_value());
+  EXPECT_FALSE(RESULT.aggregatedStats.p2pProfile->accessEnabled);
+  EXPECT_FALSE(ROW.p2pBandwidthGBs.has_value())
+      << "the cell holds " << ROW.p2pBandwidthGBs.value_or(-1.0);
+}
+
 /* ----------------------------- Recorder Forwarding ----------------------------- */
 
 namespace {

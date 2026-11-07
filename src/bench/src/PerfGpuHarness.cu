@@ -1142,7 +1142,10 @@ private:
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;
     row.multiGpuEfficiency = result.aggregatedStats.multiGpu->scalingEfficiency;
-    if (result.aggregatedStats.p2pProfile.has_value()) {
+    // A rate needs a timed copy: without a peer to copy to, the cell stays
+    // empty rather than a 0 a reader would take for a measurement.
+    if (result.aggregatedStats.p2pProfile.has_value() &&
+        result.aggregatedStats.p2pProfile->timeUs > 0.0) {
       row.p2pBandwidthGBs = result.aggregatedStats.p2pProfile->bandwidthGBs();
     }
 
