@@ -551,10 +551,18 @@ without it fails with the command that would start it.
 | `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
 | `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
 | `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)                                       | ~5-10%   |
+| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                | jemalloc built with `--enable-prof`, preloaded                         | 1.0-1.7x |
 | `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
 | `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
 | `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
+
+jemalloc's overhead is measured in the
+[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs):
+on the Raspberry Pi 4 rig, a Release build of the `join` example timed under
+one jemalloc build with profiling off and with `bench run`'s options on,
+1.01x for `joinV1`, which allocates 7.5 KB per call, and 1.73x for `joinV0`,
+which allocates 11.8 MB per call. It grows with the bytes allocated per
+second.
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
@@ -567,13 +575,19 @@ Microsecond-scale operations cannot hold tight CV bars in tiny
 measurement windows -- and the right `--cycles` differs per test size.
 `--target-time 100ms` sizes the window instead of the iteration count:
 the harness times a batch of calls before the measured phase (doubled
-until the sample spans about 1 ms) and picks cycles so each repeat
-spans the requested wall time (per test, so a parameterized sweep gets
-a per-size cycle count automatically). Applies where the harness owns
+until the sample spans about 1 ms) and picks cycles so a repeat targets
+the requested wall time (per test, so a parameterized sweep gets a
+per-size cycle count automatically). Applies where the harness owns
 the loop (`throughputLoop`, `contentionRun`); bodies driven by raw
 `measured()` keep explicit `--cycles`.
 The floor is one cycle: a call that already outlasts the target runs
 once per repeat.
+The sizing is best effort. Taking the least per-call time among the
+calibration samples reduces isolated scheduling interference, but a
+first call stretched past the target, or consecutive stretched samples,
+can still make the repeats shorter than the target. An operation slower
+than about 1 ms but shorter than the target is called three times to
+calibrate.
 
 Run `bench doctor <ptest-binary>` (or `<ptest-binary> --profile-check`) to
 see each backend's status on the current host. For CI, the same data is

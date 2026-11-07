@@ -240,7 +240,7 @@ request).
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)   |
 | `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)   |
 | `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
+| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded) |
 | `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)              |
 | `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)   |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
@@ -295,7 +295,8 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 - valgrind (`callgrind` / `massif` / `memcheck` backends)
 - bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
 - heaptrack (`heaptrack` backend -- low-overhead heap profiler)
-- jemalloc with `prof` enabled (`jemalloc` backend; LD_PRELOAD)
+- a jemalloc built with profiling (`--enable-prof`), for the `jemalloc` backend,
+  which preloads it; `jeprof` reads its dumps
 - ROCm + rocprof (AMD GPU profiling via the `rocprof` backend)
 - Rust toolchain (for `bench` CLI tool)
 - Python 3.10+ with Poetry (for the `bench-plot` CLI tool)

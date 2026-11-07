@@ -545,22 +545,25 @@ bpftrace disarmed 128610 128610
 [64, 128)              1 |@@@@@@@                                             |
 ```
 
-`wakeup_latency.bt` records each wakeup a thread of the process asks for, at
-the `sched:sched_waking` tracepoint, which runs in the thread that asks, and
-times it until the woken thread starts to run (`sched:sched_switch`). Each
-test made 1,800 calls: 3 threads, 200 calls each, 3 repeats. Under the lock
-they made 1,214 wakeups, about two for every three calls: a thread that finds
-the lock held goes to sleep, and the thread that holds it wakes it when it
-lets go. Sharing nothing, the same 1,800 calls made 13: the threads never wait
-for each other while they run. The two tests ran on the same four cores, each
-under a tracer of its own running the same script.
+`wakeup_latency.bt` records each wakeup a thread of the process asks for, and
+each wakeup of its main thread, at the `sched:sched_waking` tracepoint, which
+runs in the thread that asks, and times it until the woken thread starts to
+run (`sched:sched_switch`). Each test made 1,800 calls: 3 threads, 200 calls
+each, 3 repeats. Under the lock the capture holds 1,214 wakeups, about two for
+every three calls: a thread that finds the lock held goes to sleep, and the
+thread that holds it wakes it when it lets go. Sharing nothing, the capture of
+the same 1,800 calls holds 13: the threads never wait for each other while
+they run. These totals include Vernier's setup and shutdown wakeups; the small
+count in the no-sharing capture is not evidence of lock contention. The two
+tests ran on the same four cores, each under a tracer of its own running the
+same script.
 
-What the latency is: 1,204 of the lock's 1,214 wakeups took 4 to 8 us from the
-request to the woken thread running. That spans the wakeup's trip to the CPU
-the woken thread runs on and the switch to it there. It is not how long the
-thread waited for the lock, which started when the thread went to sleep, well
-before another thread asked for it to be woken. Tracing cost little here: the
-lock's calls took 21.6 us traced against 20.7 untraced in step 1.
+What the latency is: 1,204 of the 1,214 wakeups in the lock's capture took 4 to
+8 us from the request to the woken thread running. That spans the wakeup's trip
+to the CPU the woken thread runs on and the switch to it there. It is not how
+long the thread waited for the lock, which started when the thread went to
+sleep, well before another thread asked for it to be woken. Tracing cost little
+here: the lock's calls took 21.6 us traced against 20.7 untraced in step 1.
 
 ## Step 6: A Script of Your Own
 

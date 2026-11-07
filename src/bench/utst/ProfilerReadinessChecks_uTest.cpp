@@ -35,6 +35,7 @@
 #include <regex>
 #include <sstream>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <tuple>
 #include <utility>
@@ -63,6 +64,7 @@ using vernier::bench::ReadinessContext;
 using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
+using vernier::bench::ReadinessStage;
 using vernier::bench::StatusLoss;
 using vernier::bench::test::ChildReaping;
 using vernier::bench::test::FakeToolDir;
@@ -154,6 +156,43 @@ std::vector<InlineCall> inlineCalls(const FakeToolDir& dir, const std::string& p
     }
   }
   return calls;
+}
+
+/** @brief The calls among @p calls whose program @p keep accepts, in order. */
+std::vector<InlineCall> callsWhere(const std::vector<InlineCall>& calls,
+                                   bool (*keep)(const std::string& program)) {
+  std::vector<InlineCall> kept;
+  for (const InlineCall& CALL : calls) {
+    if (keep(CALL.program)) {
+      kept.push_back(CALL);
+    }
+  }
+  return kept;
+}
+
+/** @brief The readiness probes among @p calls: their program carries the attach line. */
+std::vector<InlineCall> probeCalls(const std::vector<InlineCall>& calls) {
+  return callsWhere(calls, [](const std::string& program) {
+    return program.find(ATTACH_LINE_PROGRAM) != std::string::npos;
+  });
+}
+
+/**
+ * @brief The offcpu check's copies among @p calls: the launch's script with
+ * the self-exit and without the attach line, which the check's probe carries.
+ */
+std::vector<InlineCall> checkCopies(const std::vector<InlineCall>& calls) {
+  return callsWhere(calls, [](const std::string& program) {
+    return program.find("interval:s:") != std::string::npos &&
+           program.find(ATTACH_LINE_PROGRAM) == std::string::npos;
+  });
+}
+
+/** @brief The run launches among @p calls: their program has no interval probe. */
+std::vector<InlineCall> runLaunches(const std::vector<InlineCall>& calls) {
+  return callsWhere(calls, [](const std::string& program) {
+    return program.find("interval:") == std::string::npos;
+  });
 }
 
 /** @brief True when process @p pid has exited: a zombie not yet reaped, or gone. */
@@ -2487,6 +2526,28 @@ TEST_F(BpfCheckTest, BpftraceProbeCopyUnwritable) {
 
 /* ----------------------------- offcpu ----------------------------- */
 
+namespace {
+
+/** @brief A file of the readiness fixtures: the dumps are real bpftrace output from the rig. */
+std::string offCpuFixture(const std::string& name) {
+  return std::string{VERNIER_READINESS_FIXTURE_DIR} + "/" + name;
+}
+
+/** @brief @p text as a regular expression that matches it literally. */
+std::string literal(const std::string& text) {
+  static const std::regex SPECIAL(R"([.^$|()\[\]{}*+?\\])");
+  return std::regex_replace(text, SPECIAL, R"(\$&)");
+}
+
+/** @brief What the check says of its arm witness, the arm thread's id left open. */
+std::string witnessed() {
+  return literal(", and a copy with unbuffered output armed on this process's arm thread (pid " +
+                 std::to_string(::getpid()) + ", thread ") +
+         "[0-9]+\\)";
+}
+
+} // namespace
+
 /**
  * @test offcpu runs as the current user by default: the launch's script with
  * a self-exit added, on this process; no tracer outlives the check.
@@ -2495,19 +2556,32 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
   installSudoAndKill();
   const ReadinessResult R = check("offcpu", ctx({{"PERF_BPF_SUDO", "1"}}));
   EXPECT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  EXPECT_EQ(R.report.message, "the off-CPU script, with a 5 s self-exit added, stayed running for "
-                              "the 1500 ms start grace as the current user and stopped on SIGINT "
-                              "(probe with " +
-                                  bpftrace_ + "); not checked: the run's capture");
+  EXPECT_TRUE(std::regex_match(
+      R.report.message,
+      std::regex(literal("the off-CPU script, with a 5 s self-exit added, stayed running for the "
+                         "1500 ms start grace as the current user and stopped on SIGINT (probe "
+                         "with " +
+                         bpftrace_ + ")") +
+                 witnessed() + literal("; not checked: the run's capture"))))
+      << R.report.message;
   EXPECT_TRUE(dir_.logLines("sudo").empty()) << "PERF_BPF_SUDO does not apply to offcpu";
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
-  ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
-  EXPECT_EQ(CALLS.front().options, "-B none ");
-  EXPECT_NE(CALLS.front().program.find("\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }"),
+  ASSERT_EQ(CALLS.size(), 2U) << "the probe and the check's copy\n" << dir_.log();
+  const std::vector<InlineCall> PROBES = probeCalls(CALLS);
+  ASSERT_EQ(PROBES.size(), 1U) << dir_.log();
+  EXPECT_EQ(PROBES.front().options, "-B none ");
+  EXPECT_NE(PROBES.front().program.find("\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }"),
             std::string::npos)
-      << CALLS.front().program;
-  EXPECT_EQ(CALLS.front().target, ::getpid());
-  EXPECT_TRUE(gone(CALLS.front().pid)) << "the probe tracer outlived the check";
+      << PROBES.front().program;
+  EXPECT_EQ(PROBES.front().target, ::getpid());
+  EXPECT_TRUE(gone(PROBES.front().pid)) << "the probe tracer outlived the check";
+  const std::vector<InlineCall> WITNESS = checkCopies(CALLS);
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_EQ(WITNESS.front().options, "-B none ");
+  EXPECT_NE(WITNESS.front().program.find("\ninterval:s:5 { exit(); }"), std::string::npos)
+      << WITNESS.front().program;
+  EXPECT_EQ(WITNESS.front().target, ::getpid());
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
   const auto PLAN = std::dynamic_pointer_cast<const OffCpuPlan>(R.plan);
   ASSERT_NE(PLAN, nullptr);
   EXPECT_EQ(PLAN->route.bpftrace, bpftrace_);
@@ -2516,20 +2590,25 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserAttaches) {
 /**
  * @test offcpu with BENCH_SUDO goes through sudo. sudo refusing the probe, a
  * command the run never runs, is unverified and names both commands; the
- * request stays runnable.
+ * request stays runnable, and the check does not try its second copy, which
+ * the grant would refuse alike.
  */
 TEST_F(BpfCheckTest, OffCpuSudoRoute) {
   installSudoAndKill();
   const ReadinessResult OK = check("offcpu", ctx({{"BENCH_SUDO", "yes"}}));
   EXPECT_EQ(OK.report.status, EnvReport::Status::Ok) << OK.report.message;
-  EXPECT_EQ(OK.report.message,
-            "the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start "
-            "grace through sudo -n (BENCH_SUDO=yes) and stopped on SIGINT through sudo -n kill "
-            "(probe with " +
-                bpftrace_ + "); not checked: the grant for the run's own command (" + bpftrace_ +
-                " -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and "
-                "the run's capture");
-  EXPECT_EQ(inlineCalls(dir_, "sudo -n -- " + bpftrace_).size(), 1U) << dir_.log();
+  EXPECT_TRUE(std::regex_match(
+      OK.report.message,
+      std::regex(literal("the off-CPU script, with a 5 s self-exit added, stayed running for the "
+                         "1500 ms start grace through sudo -n (BENCH_SUDO=yes) and stopped on "
+                         "SIGINT through sudo -n kill (probe with " +
+                         bpftrace_ + ")") +
+                 witnessed() +
+                 literal("; not checked: the grant for the run's own command (" + bpftrace_ +
+                         " -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL "
+                         "through sudo, and the run's capture"))))
+      << OK.report.message;
+  EXPECT_EQ(probeCalls(inlineCalls(dir_, "sudo -n -- " + bpftrace_)).size(), 1U) << dir_.log();
   const ReadinessResult REFUSED =
       check("offcpu", ctx({{"BENCH_SUDO", "yes"}, {"FAKE_SUDO_DENY", "-e"}}));
   EXPECT_EQ(REFUSED.cause, ReadinessCause::UNVERIFIED);
@@ -2539,7 +2618,12 @@ TEST_F(BpfCheckTest, OffCpuSudoRoute) {
                 " -B none -e <the off-CPU script with an attach line and a 5 s self-exit> " +
                 std::to_string(::getpid()) + ": sudo: a password is required; the run executes " +
                 bpftrace_ +
-                " -e <the off-CPU script> <benchmark pid> instead, which only the run can try");
+                " -B none -e <the off-CPU script> <benchmark pid> instead, which only the run can "
+                "try");
+  EXPECT_EQ(checkCopies(inlineCalls(dir_, "sudo -n -- " + bpftrace_)).size(), 1U)
+      << "the check's copy runs for the first check only, not after the grant refused the "
+         "probe\n"
+      << dir_.log();
 }
 
 /**
@@ -2631,7 +2715,7 @@ TEST_F(BpfCheckTest, OffCpuSlowAttachIsStoppedOnceAttached) {
   ASSERT_TRUE(W.returned) << "the check did not return within 30 s";
   EXPECT_EQ(W.result.report.status, EnvReport::Status::Ok) << W.result.report.message;
   EXPECT_GE(W.elapsed, std::chrono::milliseconds(2500)) << "stopped before its attach line";
-  const std::vector<InlineCall> CALLS = inlineCalls(dir_, "bpftrace");
+  const std::vector<InlineCall> CALLS = probeCalls(inlineCalls(dir_, "bpftrace"));
   ASSERT_EQ(CALLS.size(), 1U) << dir_.log();
   EXPECT_TRUE(gone(CALLS.front().pid) || exited(CALLS.front().pid))
       << "the probe tracer outlived the check";
@@ -2639,27 +2723,53 @@ TEST_F(BpfCheckTest, OffCpuSlowAttachIsStoppedOnceAttached) {
 }
 
 /**
- * @test The probe is the launch's own script with the self-exit appended,
- * through the same route and on the same process; the run's has no interval.
+ * @test The probe is the launch's own script, bound to no thread, with the
+ * attach line and the self-exit appended; the check's copy is that script
+ * bound to its own arm thread, with the self-exit; the run's binds its arm
+ * thread and the thread that runs it, and has no interval. All three run
+ * through the same route, on the same process, with unbuffered output.
  */
 TEST_F(BpfCheckTest, OffCpuProbeIsTheRunsScriptWithASelfExit) {
   installSudoAndKill();
   const std::map<std::string, std::string> POLICY{{"BENCH_SUDO", "1"}};
   const ReadinessResult R = check("offcpu", ctx(POLICY));
   ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
-  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Same", POLICY);
+  std::map<std::string, std::string> run = POLICY;
+  run["FAKE_BPFTRACE_OUTPUT"] = offCpuFixture("offcpu_dump.txt");
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Same", run);
   EXPECT_NE(ERR.find("[offcpu] stacks written to " + captures() + "/OffCpu.Same.offcpu/offcpu.txt"),
             std::string::npos)
       << ERR;
   const std::vector<InlineCall> CALLS = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
-  ASSERT_EQ(CALLS.size(), 2U) << dir_.log();
-  EXPECT_EQ(CALLS[0].program,
-            CALLS[1].program + "\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }");
-  EXPECT_EQ(CALLS[1].program.find("interval"), std::string::npos) << CALLS[1].program;
-  EXPECT_EQ(CALLS[0].options, "-B none ");
-  EXPECT_EQ(CALLS[1].options, "");
-  EXPECT_EQ(CALLS[0].target, ::getpid());
-  EXPECT_EQ(CALLS[1].target, ::getpid());
+  ASSERT_EQ(CALLS.size(), 3U) << "the probe, the check's copy and the run\n" << dir_.log();
+  const InlineCall& PROBE = CALLS[0];
+  const InlineCall& WITNESS = CALLS[1];
+  const InlineCall& RUN = CALLS[2];
+  // One script, bound to other threads: what differs once the ids are set
+  // aside is the additions.
+  const auto UNBOUND = [](const std::string& program) {
+    const std::string ARM = std::regex_replace(
+        program, std::regex("tid == [0-9]+ && comm == \"vernier-arm\""), "<arm>");
+    return std::regex_replace(ARM, std::regex("tid == [0-9]+ && comm == \"vernier-stop\""),
+                              "<stop>");
+  };
+  EXPECT_EQ(UNBOUND(PROBE.program),
+            UNBOUND(RUN.program) + "\n" + ATTACH_LINE_PROGRAM + "\ninterval:s:5 { exit(); }");
+  EXPECT_EQ(UNBOUND(WITNESS.program), UNBOUND(RUN.program) + "\ninterval:s:5 { exit(); }");
+  EXPECT_EQ(RUN.program.find("interval"), std::string::npos) << RUN.program;
+  EXPECT_EQ(boundThread(PROBE.program, "vernier-arm"), 0) << PROBE.program;
+  EXPECT_EQ(boundThread(PROBE.program, "vernier-stop"), 0) << PROBE.program;
+  EXPECT_GT(boundThread(WITNESS.program, "vernier-arm"), 0) << WITNESS.program;
+  EXPECT_EQ(boundThread(WITNESS.program, "vernier-stop"), 0) << WITNESS.program;
+  EXPECT_GT(boundThread(RUN.program, "vernier-arm"), 0) << RUN.program;
+  EXPECT_NE(boundThread(RUN.program, "vernier-arm"), ::getpid()) << RUN.program;
+  EXPECT_EQ(boundThread(RUN.program, "vernier-stop"),
+            vernier::bench::bpftrace_tool::currentThreadId())
+      << RUN.program;
+  for (const InlineCall* CALL : {&PROBE, &WITNESS, &RUN}) {
+    EXPECT_EQ(CALL->options, "-B none ");
+    EXPECT_EQ(CALL->target, ::getpid());
+  }
 }
 
 /**
@@ -2674,7 +2784,9 @@ TEST_F(BpfCheckTest, OffCpuRunAllowedProbeRefused) {
   const ReadinessResult R = check("offcpu", ctx(POLICY));
   ASSERT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
   ASSERT_TRUE(R.collectionReady());
-  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Allowed", POLICY);
+  std::map<std::string, std::string> run = POLICY;
+  run["FAKE_BPFTRACE_OUTPUT"] = offCpuFixture("offcpu_dump.txt");
+  const std::string ERR = runPlanned("offcpu", R, "OffCpu.Allowed", run);
   EXPECT_NE(ERR.find("[offcpu] stacks written to "), std::string::npos) << ERR;
   EXPECT_EQ(ERR.find("could not"), std::string::npos) << ERR;
 }
@@ -2697,9 +2809,9 @@ TEST_F(BpfCheckTest, OffCpuProbeAllowedRunRefused) {
             std::string::npos)
       << R.report.message;
   const std::string ERR = runPlanned("offcpu", R, "OffCpu.Refused", POLICY);
-  EXPECT_NE(ERR.find("[offcpu] the tracer exited during its start grace: denied: sudo -n "
+  EXPECT_NE(ERR.find("[offcpu] the tracer ended before it armed the capture: denied: sudo -n "
                      "refused " +
-                     bpftrace_ + " -e <the off-CPU script> " + SELF +
+                     bpftrace_ + " -B none -e <the off-CPU script> " + SELF +
                      ": sudo: a password is required"),
             std::string::npos)
       << ERR;
@@ -2733,9 +2845,11 @@ TEST_F(BpfCheckTest, OffCpuStacksWrittenOnlyWhenTheTracerExitsCleanly) {
             std::string::npos)
       << NOT_HANDLED;
   EXPECT_EQ(NOT_HANDLED.find("stacks written"), std::string::npos) << NOT_HANDLED;
-  const std::string CLEAN = runPlanned("offcpu", R, "OffCpu.CleanStop");
+  const std::string CLEAN =
+      runPlanned("offcpu", R, "OffCpu.CleanStop",
+                 {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
   EXPECT_NE(CLEAN.find("[offcpu] stacks written to " + captures() +
-                       "/OffCpu.CleanStop.offcpu/offcpu.txt\n"),
+                       "/OffCpu.CleanStop.offcpu/offcpu.txt (27 sleeping switch-outs)\n"),
             std::string::npos)
       << CLEAN;
   EXPECT_EQ(CLEAN.find("the tracer"), std::string::npos) << CLEAN;
@@ -2789,7 +2903,8 @@ TEST_F(BpfCheckTest, OffCpuStacksClaimedOnlyOnAnObservedCleanExit) {
         << err;
     EXPECT_EQ(err.find("stacks written"), std::string::npos) << err;
   }
-  const std::string READ = runPlanned("offcpu", R, "OffCpu.Observed");
+  const std::string READ = runPlanned("offcpu", R, "OffCpu.Observed",
+                                      {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
   EXPECT_NE(READ.find("[offcpu] stacks written to "), std::string::npos) << READ;
   for (const InlineCall& CALL : inlineCalls(dir_, "bpftrace")) {
     EXPECT_TRUE(exited(CALL.pid)) << "tracer " << CALL.pid << " outlived the run";
@@ -2815,8 +2930,8 @@ TEST_F(BpfCheckTest, OffCpuCaptureWithoutStacksFailsTheRun) {
   const std::string NO_WAIT = "this process sets SA_NOCLDWAIT for SIGCHLD, so the system "
                               "discards its children's exit statuses";
   const auto UNOBSERVED = [](const std::string& why) {
-    return "unusable: the off-CPU script: the tracer's end could not be observed: " + why +
-           "; nothing shows that it printed its maps, so its output may be incomplete";
+    return "completion: unusable: the off-CPU script: the tracer's end could not be observed: " +
+           why + "; nothing shows that it printed its maps, so its output may be incomplete";
   };
   struct Case {
     std::string test;
@@ -2836,7 +2951,8 @@ TEST_F(BpfCheckTest, OffCpuCaptureWithoutStacksFailsTheRun) {
   vernier::bench::PerfConfig cfg;
   cfg.profileTool = "offcpu";
   for (const Case& C : CASES) {
-    std::map<std::string, std::string> env;
+    std::map<std::string, std::string> env{
+        {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}};
     if (!C.mode.empty()) {
       env["FAKE_BPFTRACE_MODE"] = C.mode;
     }
@@ -2975,6 +3091,1170 @@ TEST_F(BpfCheckTest, OffCpuCurrentUserDenied) {
             0U)
       << R.report.message;
   EXPECT_EQ(R.report.hint.rfind("Set BENCH_SUDO=1 with a scoped sudoers grant", 0), 0U);
+}
+
+/**
+ * @test The run's exit probe matches only the thread whose id is the
+ * benchmark's pid, its main thread: sched_process_exit fires for every
+ * exiting thread, so a worker's exit must not end the trace. The fake
+ * cannot evaluate a predicate; this reads the program the run launched.
+ */
+TEST_F(BpfCheckTest, OffCpuExitProbeMatchesTheMainThreadOnly) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  (void)runPlanned("offcpu", R, "OffCpu.ExitProbe");
+  const std::vector<InlineCall> CALLS = runLaunches(inlineCalls(dir_, "bpftrace"));
+  ASSERT_EQ(CALLS.size(), 1U) << "the run\n" << dir_.log();
+  const InlineCall& RUN = CALLS.back();
+  EXPECT_EQ(RUN.target, ::getpid());
+  const std::regex EXIT_PROBE("tracepoint:sched:sched_process_exit /([^/]*)/");
+  std::vector<std::string> predicates;
+  for (std::sregex_iterator it(RUN.program.begin(), RUN.program.end(), EXIT_PROBE), end; it != end;
+       ++it) {
+    predicates.push_back((*it)[1].str());
+  }
+  ASSERT_EQ(predicates.size(), 1U) << RUN.program;
+  EXPECT_EQ(predicates.front(), "tid == $1") << RUN.program;
+}
+
+/**
+ * @test The switch-out probe counts a thread only when it goes to sleep,
+ * prev_state 1 (S) or 2 (D): a task preempted in user space reports 0, one
+ * preempted in the kernel 256 and an exiting one 16, and none of them waits
+ * for anything. The fake cannot evaluate a predicate; this reads the program
+ * the run launched, whose only test of the state must be that one.
+ */
+TEST_F(BpfCheckTest, OffCpuCountsSleepingSwitchOutsOnly) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  (void)runPlanned("offcpu", R, "OffCpu.SleepsOnly");
+  const std::vector<InlineCall> CALLS = runLaunches(inlineCalls(dir_, "bpftrace"));
+  ASSERT_EQ(CALLS.size(), 1U) << "the run\n" << dir_.log();
+  const std::string& PROGRAM = CALLS.back().program;
+  std::size_t uses = 0;
+  for (std::size_t at = PROGRAM.find("prev_state"); at != std::string::npos;
+       at = PROGRAM.find("prev_state", at + 1)) {
+    ++uses;
+  }
+  EXPECT_EQ(uses, 2U) << PROGRAM;
+  EXPECT_NE(PROGRAM.find("(args->prev_state == 1 || args->prev_state == 2)"), std::string::npos)
+      << PROGRAM;
+}
+
+namespace {
+
+/** @brief The calling thread's id, from /proc/thread-self ("<pid>/task/<tid>"). */
+long ownThreadId() {
+  const std::string LINK = std::filesystem::read_symlink("/proc/thread-self").string();
+  return std::stol(LINK.substr(LINK.rfind('/') + 1));
+}
+
+/** @brief True in the host's PID namespace, as the shared capture window reads it. */
+bool hostPidNamespace() { return vernier::bench::bpftrace_tool::foreignPidNamespace().empty(); }
+
+/** @brief The sentence offcpu adds to a report in a PID namespace other than the host's. */
+std::string foreignNamespaceSentence() {
+  return "this process runs in PID namespace " +
+         vernier::bench::bpftrace_tool::foreignPidNamespace() +
+         ", not the host's, and offcpu traces only from the host's PID view";
+}
+
+/** @brief One acknowledgement line's numbers, or an empty vector when @p output has none. */
+std::vector<long> ackNumbers(const std::string& output, const std::string& prefix) {
+  std::istringstream lines(output);
+  std::string line;
+  while (std::getline(lines, line)) {
+    if (line.rfind(prefix, 0) == 0) {
+      std::istringstream fields(line.substr(prefix.size()));
+      std::vector<long> numbers;
+      long n = 0;
+      while (fields >> n) {
+        numbers.push_back(n);
+      }
+      return numbers;
+    }
+  }
+  return {};
+}
+
+/**
+ * @brief Captures through the armed window: one capture at a time, with its
+ * report, its outcome and the output it left, from a ready decision whose
+ * waits a test may shorten.
+ */
+class OffCpuCaptureTest : public BpfCheckTest {
+protected:
+  struct Captured {
+    std::string err;
+    std::optional<ReadinessResult> outcome;
+    std::string dir;
+    std::string outputPath;
+    std::string output;
+    std::chrono::milliseconds startTook{0}; ///< How long beforeMeasure() took.
+    std::chrono::milliseconds stopTook{0};  ///< How long afterMeasure() took.
+  };
+
+  /** @brief A ready decision in this fixture's context, with @p policy added. */
+  ReadinessResult decided(const std::map<std::string, std::string>& policy = {}) {
+    const ReadinessResult R = check("offcpu", ctx(policy));
+    EXPECT_TRUE(R.collectionReady()) << R.report.message;
+    return R;
+  }
+
+  /**
+   * @brief @p decision with a plan that waits @p armMs to arm and @p disarmMs
+   * to disarm; a decision without a plan as it is, so that its capture starts
+   * nothing and the test's own checks fail.
+   */
+  static ReadinessResult withWaits(const ReadinessResult& decision, int armMs, int disarmMs) {
+    const auto DECIDED = std::dynamic_pointer_cast<const OffCpuPlan>(decision.plan);
+    if (!DECIDED) {
+      return decision;
+    }
+    auto plan = std::make_shared<OffCpuPlan>(*DECIDED);
+    plan->armWaitMs = armMs;
+    plan->disarmWaitMs = disarmMs;
+    ReadinessResult changed = decision;
+    changed.plan = plan;
+    return changed;
+  }
+
+  /**
+   * @brief @p decision with a plan whose stops run in @p context (a sudo
+   * policy of their own); a decision without a plan as it is.
+   */
+  static ReadinessResult withStopContext(const ReadinessResult& decision,
+                                         const ReadinessContext& context) {
+    const auto DECIDED = std::dynamic_pointer_cast<const OffCpuPlan>(decision.plan);
+    if (!DECIDED) {
+      return decision;
+    }
+    auto plan = std::make_shared<OffCpuPlan>(*DECIDED);
+    plan->context = std::make_shared<const ReadinessContext>(context);
+    ReadinessResult changed = decision;
+    changed.plan = plan;
+    return changed;
+  }
+
+  /**
+   * @brief One capture of @p testName from @p decision's plan, with @p env
+   * in the environment the tracer inherits.
+   */
+  Captured capture(const ReadinessResult& decision, const std::string& testName,
+                   const std::map<std::string, std::string>& env = {}) const {
+    vernier::bench::PerfConfig cfg;
+    cfg.profileTool = "offcpu";
+    cfg.artifactRoot = captures();
+    std::vector<std::unique_ptr<ScopedEnv>> scoped;
+    scoped.push_back(std::make_unique<ScopedEnv>("FAKE_LOG", dir_.logPath()));
+    for (const auto& [KEY, VALUE] : env) {
+      scoped.push_back(std::make_unique<ScopedEnv>(KEY.c_str(), VALUE));
+    }
+    Captured out;
+    out.dir = captures() + "/" + testName + ".offcpu";
+    out.outputPath = out.dir + "/offcpu.txt";
+    StderrCapture err;
+    {
+      OffCpuProfiler profiler(cfg, testName,
+                              std::dynamic_pointer_cast<const OffCpuPlan>(decision.plan));
+      const auto STARTED = std::chrono::steady_clock::now();
+      profiler.beforeMeasure();
+      const auto MEASURED = std::chrono::steady_clock::now();
+      profiler.afterMeasure(vernier::bench::Stats{});
+      out.startTook = std::chrono::duration_cast<std::chrono::milliseconds>(MEASURED - STARTED);
+      out.stopTook = std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - MEASURED);
+      out.outcome = profiler.captureOutcome();
+    }
+    out.err = err.text();
+    out.output = fileText(out.outputPath);
+    return out;
+  }
+
+  /** @brief The pid of the last tracer a run launched, from the fake's log (-1 if none). */
+  pid_t lastRunTracer() const {
+    const std::vector<InlineCall> RUNS = runLaunches(inlineCalls(dir_, "bpftrace"));
+    return RUNS.empty() ? -1 : RUNS.back().pid;
+  }
+};
+
+} // namespace
+
+/**
+ * @test Every way a capture fails is the run's failure, recorded once for its
+ * case: at the collection stage while nothing is captured (the tracer is
+ * refused or ends before its arm, never arms, arms for other ids, or prints a
+ * stop line first), at the completion stage once it armed (a stop line before
+ * the stop, none, or one for other ids; one without its count; an end before
+ * the stop, or one not seen to be status 0; an output gone or a dump cut
+ * short), whose message then starts "completion: ". finishRun() ends a run
+ * whose tests passed with status 4 after each; a capture with sleeps, or with
+ * none, records nothing and ends it with status 0.
+ */
+TEST_F(OffCpuCaptureTest, EveryFailureFailsTheRunAtItsStage) {
+  struct Case {
+    std::string test;
+    std::map<std::string, std::string> env;
+    std::optional<ReadinessStage> stage; ///< The failure's stage; none for a capture.
+    int armMs = 5000;
+    int disarmMs = 3000;
+    ChildReaping::Policy reaping = ChildReaping::Policy::DEFAULT;
+  };
+  const std::string DUMP = offCpuFixture("offcpu_dump.txt");
+  const auto WITH = [&DUMP](std::map<std::string, std::string> env) {
+    env.emplace("FAKE_BPFTRACE_OUTPUT", DUMP);
+    return env;
+  };
+  const ReadinessStage COLLECTED = ReadinessStage::COLLECTION;
+  const ReadinessStage COMPLETED = ReadinessStage::COMPLETION;
+  const std::vector<Case> CASES{
+      {"OffCpu.Fails.Written", WITH({}), std::nullopt},
+      {"OffCpu.Fails.Zero",
+       {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump_zero.txt")}},
+       std::nullopt},
+      {"OffCpu.Fails.Refused", WITH({{"FAKE_BPFTRACE_MODE", "eperm"}}), COLLECTED},
+      {"OffCpu.Fails.EndBeforeArm", WITH({{"FAKE_WINDOW", "end-before-arm"}}), COLLECTED},
+      {"OffCpu.Fails.NoArm", WITH({{"FAKE_WINDOW", "no-arm"}}), COLLECTED, 300},
+      {"OffCpu.Fails.WrongArm", WITH({{"FAKE_WINDOW", "wrong-arm"}}), COLLECTED},
+      {"OffCpu.Fails.WrongPid", WITH({{"FAKE_WINDOW", "wrong-pid"}}), COLLECTED},
+      {"OffCpu.Fails.StopFirst", WITH({{"FAKE_WINDOW", "disarm-first-only"}}), COLLECTED},
+      {"OffCpu.Fails.EarlyStop", WITH({{"FAKE_WINDOW", "early-disarm"}}), COMPLETED},
+      {"OffCpu.Fails.NoStop", WITH({{"FAKE_WINDOW", "no-disarm"}}), COMPLETED, 5000, 300},
+      {"OffCpu.Fails.WrongStop", WITH({{"FAKE_WINDOW", "wrong-disarm"}}), COMPLETED},
+      {"OffCpu.Fails.NoCount", WITH({{"FAKE_OFFCPU_RECORDED", "none"}}), COMPLETED},
+      {"OffCpu.Fails.EndBeforeStop", WITH({{"FAKE_WINDOW", "end-after-arm"}}), COMPLETED},
+      {"OffCpu.Fails.Died", WITH({{"FAKE_WINDOW", "die-after-arm"}}), COMPLETED},
+      {"OffCpu.Fails.Unobserved", WITH({}), COMPLETED, 5000, 3000, ChildReaping::Policy::IGNORED},
+      {"OffCpu.Fails.Gone", WITH({{"FAKE_WINDOW", "remove-output"}}), COMPLETED},
+      {"OffCpu.Fails.Cut",
+       {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump_cut.txt")},
+        {"FAKE_OFFCPU_RECORDED", "27"}},
+       COMPLETED},
+  };
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "offcpu";
+  const ReadinessResult DECIDED = decided();
+  for (const Case& C : CASES) {
+    SCOPED_TRACE(C.test);
+    registry.resetFailures();
+    Captured captured;
+    {
+      const ChildReaping REAPING(C.reaping);
+      ASSERT_TRUE(REAPING.ok());
+      captured = capture(withWaits(DECIDED, C.armMs, C.disarmMs), C.test, C.env);
+    }
+    std::vector<ProfileFailure> failed;
+    int status = -1;
+    {
+      const StderrCapture QUIET;
+      failed = registry.failures();
+      status = registry.finishRun(cfg, 0, 1);
+    }
+    registry.resetFailures();
+    ASSERT_TRUE(captured.outcome.has_value()) << captured.err;
+    if (!C.stage) {
+      EXPECT_EQ(captured.outcome->report.status, EnvReport::Status::Ok) << captured.err;
+      EXPECT_TRUE(failed.empty()) << failed.front().result.report.message;
+      EXPECT_EQ(status, 0);
+      continue;
+    }
+    EXPECT_EQ(captured.outcome->report.status, EnvReport::Status::Error) << captured.err;
+    ASSERT_EQ(failed.size(), 1U) << captured.err;
+    EXPECT_EQ(failed[0].backend, "offcpu");
+    EXPECT_EQ(failed[0].test, C.test);
+    EXPECT_EQ(failed[0].result.stage, *C.stage) << failed[0].result.report.message;
+    EXPECT_EQ(failed[0].result.report.message, captured.outcome->report.message);
+    EXPECT_EQ(failed[0].result.report.message.rfind("completion: ", 0) == 0,
+              *C.stage == ReadinessStage::COMPLETION)
+        << failed[0].result.report.message;
+    EXPECT_EQ(status, 4);
+    EXPECT_EQ(captured.err.find("stacks written"), std::string::npos) << captured.err;
+  }
+}
+
+/**
+ * @test A capture the tracer armed and disarmed for this process, whose dump
+ * holds its switch-outs, is written: the acknowledgements carry this
+ * process's pid, the arm thread's id (not the main thread's) and the
+ * stopping thread's id with the tracer's count. The dump is real bpftrace
+ * 0.23.2 output from the rig.
+ */
+TEST_F(OffCpuCaptureTest, WithSleepsIsWritten) {
+  const Captured C = capture(decided(), "OffCpu.Sleeps",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Ok) << C.err;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::READY);
+  EXPECT_EQ(C.outcome->report.message,
+            "stacks written to " + C.outputPath + " (27 sleeping switch-outs)");
+  EXPECT_NE(C.err.find("[offcpu] stacks written to " + C.outputPath + " (27 sleeping switch-outs)"),
+            std::string::npos)
+      << C.err;
+  const std::vector<long> ARMED = ackNumbers(C.output, "offcpu armed ");
+  ASSERT_EQ(ARMED.size(), 2U) << C.output;
+  EXPECT_EQ(ARMED[0], ::getpid());
+  EXPECT_NE(ARMED[1], ::getpid()) << "the arm thread is not the main thread";
+  const std::vector<long> DISARMED = ackNumbers(C.output, "offcpu disarmed ");
+  ASSERT_EQ(DISARMED.size(), 3U) << C.output;
+  EXPECT_EQ(DISARMED[0], ::getpid());
+  EXPECT_EQ(DISARMED[1], ownThreadId()) << "the thread that stops the capture disarms it";
+  EXPECT_EQ(DISARMED[2], 27);
+  EXPECT_TRUE(gone(lastRunTracer())) << "the tracer outlived its capture";
+}
+
+/**
+ * @test A capture the tracer armed and disarmed in which no thread slept is
+ * a verified zero: its own line, never "stacks written", and Ok. The dump
+ * is the rig's for such a window.
+ */
+TEST_F(OffCpuCaptureTest, WithNoSleepIsAVerifiedZero) {
+  const Captured C = capture(decided(), "OffCpu.Zero",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump_zero.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Ok) << C.err;
+  EXPECT_EQ(C.outcome->report.message,
+            "no thread of this process went to sleep while the capture was armed; the tracer's "
+            "output is in " +
+                C.outputPath);
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  const std::vector<long> DISARMED = ackNumbers(C.output, "offcpu disarmed ");
+  ASSERT_FALSE(DISARMED.empty()) << C.output;
+  EXPECT_EQ(DISARMED.back(), 0) << C.output;
+}
+
+/**
+ * @test A dump cut inside an @offcpu_blocks entry is incomplete, the output
+ * kept: the rig's dump cut short, the tracer having counted its 27.
+ */
+TEST_F(OffCpuCaptureTest, DumpCutShortIsIncomplete) {
+  const Captured C = capture(decided(), "OffCpu.Cut",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump_cut.txt")},
+                              {"FAKE_OFFCPU_RECORDED", "27"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: the tracer's output " + C.outputPath +
+                                           " is incomplete: an @offcpu_blocks entry of its dump "
+                                           "is cut short");
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_FALSE(C.output.empty()) << "the output is kept";
+}
+
+/**
+ * @test A dump that ends before the @recorded line of a tracer that counted
+ * switch-outs is incomplete; so is one with that line and no entry.
+ */
+TEST_F(OffCpuCaptureTest, DumpWithoutWhatTheTracerRecordedIsIncomplete) {
+  const Captured ENDLESS = capture(decided(), "OffCpu.Endless",
+                                   {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump_zero.txt")},
+                                    {"FAKE_OFFCPU_RECORDED", "5"}});
+  ASSERT_TRUE(ENDLESS.outcome.has_value()) << ENDLESS.err;
+  EXPECT_EQ(ENDLESS.outcome->report.message,
+            "completion: unusable: the tracer's output " + ENDLESS.outputPath +
+                " is incomplete: the tracer recorded 5 sleeping switch-outs, and its dump ends "
+                "before the @recorded line that counts them");
+  const std::string EMPTY =
+      dir_.writeFile("dump_without_entries.txt", "\n\n@armed: 2\n@recorded: 5\n\n");
+  const Captured NONE = capture(decided(), "OffCpu.None",
+                                {{"FAKE_BPFTRACE_OUTPUT", EMPTY}, {"FAKE_OFFCPU_RECORDED", "5"}});
+  ASSERT_TRUE(NONE.outcome.has_value()) << NONE.err;
+  EXPECT_EQ(NONE.outcome->report.message,
+            "completion: unusable: the tracer's output " + NONE.outputPath +
+                " is incomplete: the tracer recorded 5 sleeping switch-outs, and its dump holds "
+                "no @offcpu_blocks entry");
+  EXPECT_EQ(ENDLESS.err.find("no thread of this process"), std::string::npos) << ENDLESS.err;
+  EXPECT_EQ(NONE.err.find("no thread of this process"), std::string::npos) << NONE.err;
+}
+
+/** @test An output that cannot be read after the stop is reported with the path and the error. */
+TEST_F(OffCpuCaptureTest, UnreadableOutputIsInvalid) {
+  const Captured C = capture(decided(), "OffCpu.Gone",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")},
+                              {"FAKE_WINDOW", "remove-output"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: the tracer's output " + C.outputPath +
+                                           " could not be read: No such file or directory");
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+}
+
+/**
+ * @test A tracer that ends by itself after it armed, before the stop (a trace
+ * that ended at a worker's exit), misses the end of the measured region.
+ */
+TEST_F(OffCpuCaptureTest, TracerEndingBeforeTheStopIsIncomplete) {
+  const Captured C = capture(decided(), "OffCpu.Early",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")},
+                              {"FAKE_WINDOW", "end-after-arm"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: the tracer ended by itself before "
+                                       "the stop (exit status 0); it misses the "
+                                       "end of the measured region; the capture in " +
+                                           C.dir + " is incomplete");
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_NE(C.output.find("offcpu armed "), std::string::npos) << "the output is kept";
+}
+
+/**
+ * @test A tracer that does not exit 0 once stopped (bpftrace exits 0 after it
+ * printed its maps) leaves the capture incomplete, whatever its output holds:
+ * the shared judgment of a tracer's end says how it ended, once, and its
+ * verdict is the capture's.
+ */
+TEST_F(OffCpuCaptureTest, TracerEndingBadlyOnTheStopIsIncomplete) {
+  const Captured C = capture(decided(), "OffCpu.Bad",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")},
+                              {"FAKE_BPFTRACE_MODE", "silent-status"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  const std::string ENDED = "the off-CPU script: the tracer exited with status 3 after SIGINT, "
+                            "with nothing on its stderr; its output may be incomplete";
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: " + ENDED);
+  EXPECT_EQ(C.outcome->report.hint,
+            "bpftrace exits with status 0 once it has printed its maps; its error output is in " +
+                C.dir + "/offcpu.err.txt.");
+  EXPECT_NE(C.err.find("[offcpu] " + ENDED + "\n"), std::string::npos) << C.err;
+  EXPECT_EQ(C.err.find("[offcpu] unusable"), std::string::npos)
+      << "the failure is printed once, by the shared judgment\n"
+      << C.err;
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_NE(C.output.find("offcpu disarmed "), std::string::npos) << "the output is kept";
+}
+
+/**
+ * @test A tracer that ends before it arms is an attach failure, classified
+ * from its messages as the check classifies them: here a missing tracepoint.
+ */
+TEST_F(OffCpuCaptureTest, TracerEndingBeforeTheArmIsAnAttachFailure) {
+  const Captured C = capture(decided(), "OffCpu.NoAttach", {{"FAKE_BPFTRACE_MODE", "unsupported"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNSUPPORTED);
+  EXPECT_EQ(C.outcome->report.message,
+            "unsupported: the off-CPU script: stdin:1:1-36: ERROR: tracepoint not found: "
+            "syscalls:sys_enter_write");
+  EXPECT_NE(C.err.find("[offcpu] the tracer ended before it armed the capture: unsupported: "),
+            std::string::npos)
+      << C.err;
+}
+
+/**
+ * @test An arm acknowledged for another thread (the main thread instead of
+ * the arm thread) is no capture: the tracer does not see this process's
+ * threads as the process does. In a PID namespace other than the host's
+ * the report names it; the test reads which before the capture.
+ */
+TEST_F(OffCpuCaptureTest, ArmAckForAnotherThreadIsTheWrongTarget) {
+  const bool INITIAL = hostPidNamespace();
+  const Captured C = capture(
+      decided(), "OffCpu.Wrong",
+      {{"FAKE_WINDOW", "wrong-arm"}, {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->cause, INITIAL ? ReadinessCause::UNUSABLE : ReadinessCause::UNSUPPORTED);
+  const std::string PID = std::to_string(::getpid());
+  EXPECT_NE(C.outcome->report.message.find("no capture: the tracer armed for pid " + PID +
+                                           " thread " + PID +
+                                           ", not for this process's arm "
+                                           "thread (pid " +
+                                           PID + " thread "),
+            std::string::npos)
+      << C.outcome->report.message;
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_TRUE(gone(lastRunTracer())) << "the unarmed tracer was not stopped";
+}
+
+/**
+ * @test A tracer that never acknowledges its arm is no capture, reported
+ * after the plan's wait, and stopped; in a PID namespace other than the
+ * host's the report says so and names it.
+ */
+TEST_F(OffCpuCaptureTest, TracerThatNeverArmsIsNoCapture) {
+  const bool INITIAL = hostPidNamespace();
+  const Captured C =
+      capture(withWaits(decided(), 300, 3000), "OffCpu.Unarmed", {{"FAKE_WINDOW", "no-arm"}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  const std::string DETAIL =
+      "no capture: the tracer did not acknowledge its arm probe within 300 ms; its output is in " +
+      C.dir;
+  if (INITIAL) {
+    EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+    EXPECT_EQ(C.outcome->report.message, "unusable: " + DETAIL);
+  } else {
+    EXPECT_EQ(C.outcome->cause, ReadinessCause::UNSUPPORTED);
+    EXPECT_EQ(C.outcome->report.message,
+              "unsupported: " + DETAIL + "; " + foreignNamespaceSentence());
+    EXPECT_EQ(C.outcome->report.hint,
+              "Run the benchmark on the host, or in a container started with --pid=host.");
+  }
+  EXPECT_TRUE(gone(lastRunTracer())) << "the unarmed tracer was not stopped";
+}
+
+/**
+ * @test A stop the tracer does not acknowledge, in time or among the lines
+ * it prints at the stop, leaves the capture's validity unestablished: an
+ * Error, never "stacks written", the output kept.
+ */
+TEST_F(OffCpuCaptureTest, UnacknowledgedStopCannotBeVerified) {
+  const Captured C = capture(
+      withWaits(decided(), 5000, 300), "OffCpu.Undisarmed",
+      {{"FAKE_WINDOW", "no-disarm"}, {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message,
+            "completion: unusable: capture validity could not be established: the tracer did not "
+            "acknowledge "
+            "the stop within 300 ms, nor in the lines it printed at the stop; its output is in " +
+                C.dir);
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_FALSE(C.output.empty()) << "the output is kept";
+}
+
+/**
+ * @test A tracer that attaches late, here 2 s after its launch, later than
+ * the 1.5 s start grace the check probes with, is waited for: the start
+ * returns only once the tracer armed, so the measured region starts inside
+ * the window, and the capture is written.
+ */
+TEST_F(OffCpuCaptureTest, DelayedAttachIsWaitedFor) {
+  const Captured C = capture(decided(), "OffCpu.Late",
+                             {{"FAKE_BPFTRACE_MODE", "slow-attach"},
+                              {"FAKE_ATTACH_S", "2"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::READY) << C.err;
+  EXPECT_EQ(C.outcome->report.message,
+            "stacks written to " + C.outputPath + " (27 sleeping switch-outs)");
+  EXPECT_GE(C.startTook, std::chrono::milliseconds(2000))
+      << "the start returned before the tracer armed";
+  const std::vector<long> ARMED = ackNumbers(C.output, "offcpu armed ");
+  ASSERT_FALSE(ARMED.empty()) << C.output;
+  EXPECT_EQ(ARMED.front(), ::getpid()) << C.output;
+}
+
+/**
+ * @test An arm acknowledged for the arm thread's id under another pid is no
+ * capture: the thread id alone does not identify this process.
+ */
+TEST_F(OffCpuCaptureTest, ArmAckForAnotherProcessIsTheWrongTarget) {
+  const bool INITIAL = hostPidNamespace();
+  const Captured C = capture(
+      decided(), "OffCpu.Foreign",
+      {{"FAKE_WINDOW", "wrong-pid"}, {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->cause, INITIAL ? ReadinessCause::UNUSABLE : ReadinessCause::UNSUPPORTED);
+  std::smatch ids;
+  ASSERT_TRUE(std::regex_search(
+      C.outcome->report.message, ids,
+      std::regex("no capture: the tracer armed for pid " + std::to_string(::getpid() + 1) +
+                 " thread ([0-9]+), not for this process's arm thread \\(pid " +
+                 std::to_string(::getpid()) + " thread ([0-9]+)\\)")))
+      << C.outcome->report.message;
+  EXPECT_EQ(ids[1].str(), ids[2].str()) << "the acknowledged thread is the arm thread";
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_TRUE(gone(lastRunTracer())) << "the unarmed tracer was not stopped";
+}
+
+/**
+ * @test A stop acknowledged for another thread of this process, here the arm
+ * thread, leaves the capture's validity unestablished, the output kept.
+ */
+TEST_F(OffCpuCaptureTest, DisarmAckForAnotherThreadCannotBeVerified) {
+  const Captured C = capture(decided(), "OffCpu.OtherStop",
+                             {{"FAKE_WINDOW", "wrong-disarm"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::vector<long> ARMED = ackNumbers(C.output, "offcpu armed ");
+  ASSERT_EQ(ARMED.size(), 2U) << C.output;
+  const std::string PID = std::to_string(::getpid());
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: capture validity could not be "
+                                       "established: the tracer acknowledged the "
+                                       "stop for pid " +
+                                           PID + " thread " + std::to_string(ownThreadId() + 1) +
+                                           ", not for this process's stopping thread (pid " + PID +
+                                           " thread " + std::to_string(ownThreadId()) +
+                                           "); its output is in " + C.dir);
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+}
+
+/** @test A stop acknowledged for the stopping thread's id under another pid cannot count. */
+TEST_F(OffCpuCaptureTest, DisarmAckForAnotherProcessCannotBeVerified) {
+  const Captured C = capture(decided(), "OffCpu.ForeignStop",
+                             {{"FAKE_WINDOW", "wrong-disarm-pid"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::string SELF = std::to_string(ownThreadId());
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: capture validity could not be "
+                                       "established: the tracer acknowledged the "
+                                       "stop for pid " +
+                                           std::to_string(::getpid() + 1) + " thread " + SELF +
+                                           ", not for this process's stopping thread (pid " +
+                                           std::to_string(::getpid()) + " thread " + SELF +
+                                           "); its output is in " + C.dir);
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+}
+
+/**
+ * @test A stop line ahead of the arm line, even one naming this process and
+ * the stopping thread, is out of order: no capture, and no wait to the arm's
+ * bound.
+ */
+TEST_F(OffCpuCaptureTest, DisarmLineBeforeTheArmIsOutOfOrder) {
+  const Captured C = capture(decided(), "OffCpu.EarlyStop",
+                             {{"FAKE_WINDOW", "disarm-first-only"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::string PID = std::to_string(::getpid());
+  const std::string SELF = std::to_string(ownThreadId());
+  const std::size_t EARLY = C.output.find("offcpu disarmed " + PID + " " + SELF + " ");
+  ASSERT_NE(EARLY, std::string::npos) << C.output;
+  EXPECT_LT(EARLY, C.output.find("offcpu armed ")) << C.output;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message,
+            "unusable: no capture: the tracer acknowledged a stop before its arm, for pid " + PID +
+                " thread " + SELF + "; its output is in " + C.dir);
+  EXPECT_LT(C.startTook.count(), 4000) << "the out-of-order tracer was waited for to the bound";
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_TRUE(gone(lastRunTracer())) << "the tracer outlived the failed capture";
+}
+
+/**
+ * @test A stop line already in the output when the stop is asked for came
+ * too early, even with the right ids: the window did not cover the measured
+ * repeats. The capture fails without waiting for another line, and the
+ * tracer is stopped.
+ */
+TEST_F(OffCpuCaptureTest, StopLineDuringTheMeasuredRepeatsIsOutOfOrder) {
+  const Captured C = capture(decided(), "OffCpu.StopTooEarly",
+                             {{"FAKE_WINDOW", "early-disarm"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: capture validity could not be "
+                                       "established: the tracer acknowledged a stop "
+                                       "before the measured repeats finished, for pid " +
+                                           std::to_string(::getpid()) + " thread " +
+                                           std::to_string(ownThreadId()) + "; its output is in " +
+                                           C.dir);
+  EXPECT_EQ(C.outcome->report.hint, "The thread that runs the measured repeats may carry the name "
+                                    "vernier-stop, which the capture reserves; give it another.");
+  EXPECT_LT(C.stopTook.count(), 3000) << "the stop waited for a line it already had";
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_TRUE(gone(lastRunTracer())) << "the tracer outlived the failed capture";
+}
+
+/**
+ * @test Measured repeats that end on another thread than the one they started
+ * on cannot close the window, whose stop is bound to that thread: a failed
+ * capture, and no tracer left.
+ */
+TEST_F(OffCpuCaptureTest, CaptureEndingOnAnotherThreadFails) {
+  const ReadinessResult R = decided();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "offcpu";
+  cfg.artifactRoot = captures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  StderrCapture err;
+  OffCpuProfiler profiler(cfg, "OffCpu.OtherThread",
+                          std::dynamic_pointer_cast<const OffCpuPlan>(R.plan));
+  profiler.beforeMeasure();
+  long other = -1;
+  std::thread([&] {
+    other = ownThreadId();
+    profiler.afterMeasure(vernier::bench::Stats{});
+  }).join();
+  ASSERT_TRUE(profiler.captureOutcome().has_value()) << err.text();
+  EXPECT_EQ(profiler.captureOutcome()->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(profiler.captureOutcome()->report.message,
+            "completion: unusable: capture validity could not be established: the measured repeats "
+            "ended on "
+            "thread " +
+                std::to_string(other) + ", not on thread " + std::to_string(ownThreadId()) +
+                ", where they started and which the script's stop names; its output is in " +
+                captures() + "/OffCpu.OtherThread.offcpu");
+  EXPECT_TRUE(gone(lastRunTracer())) << "the tracer outlived the failed capture";
+}
+
+/**
+ * @test A thread of the benchmark that carries the arm's name while the
+ * capture starts does not arm it: the script binds the arm to the thread the
+ * capture started, whose id the arm line names.
+ */
+TEST_F(OffCpuCaptureTest, BenchmarkThreadWithTheArmsNameIsNotTheArm) {
+  const ReadinessResult R = decided();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "offcpu";
+  cfg.artifactRoot = captures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  const ScopedEnv OUTPUT("FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt"));
+  StderrCapture err;
+  std::promise<long> named;
+  std::promise<void> release;
+  std::thread holder([&named, done = release.get_future()] {
+    const vernier::bench::bpftrace_tool::ThreadNameScope NAMED(
+        vernier::bench::bpftrace_tool::ARM_THREAD);
+    named.set_value(vernier::bench::bpftrace_tool::currentThreadId());
+    done.wait();
+  });
+  const long HOLDER = named.get_future().get();
+  std::optional<ReadinessResult> outcome;
+  {
+    OffCpuProfiler profiler(cfg, "OffCpu.ArmNameTaken",
+                            std::dynamic_pointer_cast<const OffCpuPlan>(R.plan));
+    profiler.beforeMeasure();
+    release.set_value();
+    holder.join();
+    profiler.afterMeasure(vernier::bench::Stats{});
+    outcome = profiler.captureOutcome();
+  }
+  const std::string OUTPUT_TEXT = fileText(captures() + "/OffCpu.ArmNameTaken.offcpu/offcpu.txt");
+  ASSERT_TRUE(outcome.has_value()) << err.text();
+  EXPECT_EQ(outcome->cause, ReadinessCause::READY) << outcome->report.message;
+  const std::vector<long> ARMED = ackNumbers(OUTPUT_TEXT, "offcpu armed ");
+  ASSERT_EQ(ARMED.size(), 2U) << OUTPUT_TEXT;
+  EXPECT_NE(ARMED[1], HOLDER) << "the benchmark's thread with the arm's name armed the capture";
+}
+
+/**
+ * @test A thread of the benchmark that takes the stop's name during the
+ * measured repeats does not close the window: the stop is bound to the thread
+ * that runs them.
+ */
+TEST_F(OffCpuCaptureTest, BenchmarkThreadWithTheStopsNameIsNotTheStop) {
+  const ReadinessResult R = decided();
+  vernier::bench::PerfConfig cfg;
+  cfg.profileTool = "offcpu";
+  cfg.artifactRoot = captures();
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  const ScopedEnv OUTPUT("FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt"));
+  StderrCapture err;
+  OffCpuProfiler profiler(cfg, "OffCpu.StopNameTaken",
+                          std::dynamic_pointer_cast<const OffCpuPlan>(R.plan));
+  profiler.beforeMeasure();
+  std::thread([] {
+    const vernier::bench::bpftrace_tool::ThreadNameScope NAMED(
+        vernier::bench::bpftrace_tool::STOP_THREAD);
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+  }).join();
+  profiler.afterMeasure(vernier::bench::Stats{});
+  ASSERT_TRUE(profiler.captureOutcome().has_value()) << err.text();
+  EXPECT_EQ(profiler.captureOutcome()->cause, ReadinessCause::READY)
+      << profiler.captureOutcome()->report.message;
+}
+
+/**
+ * @test A stop whose end this process could not observe (it ignores
+ * SIGCHLD) is no clean end, whatever the tracer printed: the shared judgment
+ * of a tracer's end says why it could not be observed, once, its verdict is
+ * the capture's, and no stacks are claimed.
+ */
+TEST_F(OffCpuCaptureTest, StopWhoseEndCouldNotBeObservedIsIncomplete) {
+  Captured C;
+  {
+    const ChildReaping REAPING(ChildReaping::Policy::IGNORED);
+    ASSERT_TRUE(REAPING.ok());
+    C = capture(decided(), "OffCpu.Unobserved",
+                {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  }
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::string ENDED =
+      "the off-CPU script: the tracer's end could not be observed: this process ignores SIGCHLD, "
+      "so the system discards its children's exit statuses; nothing shows that it printed its "
+      "maps, so its output may be incomplete";
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: " + ENDED);
+  EXPECT_EQ(C.outcome->report.hint,
+            "Leave SIGCHLD at its default action, without SA_NOCLDWAIT, and wait only for this "
+            "program's own children while the profiler runs, so the tracer's end can be read; its "
+            "output and error output are kept in " +
+                C.outputPath + " and " + C.dir + "/offcpu.err.txt.");
+  EXPECT_NE(C.err.find("[offcpu] " + ENDED + "\n"), std::string::npos) << C.err;
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_NE(C.output.find("offcpu disarmed "), std::string::npos) << "the output is kept";
+}
+
+/**
+ * @test A tracer that ends before it arms and says nothing on its stderr is a
+ * failed start that names how it ended: its exit status where this process
+ * reads it, and why that could not be observed where the system discards it.
+ */
+TEST_F(OffCpuCaptureTest, TracerEndingUnobservedBeforeItsArmIsAFailedStart) {
+  using Policy = ChildReaping::Policy;
+  const std::vector<std::pair<Policy, std::string>> CASES{
+      {Policy::DEFAULT, "it ended with exit status 0 and printed nothing on stderr"},
+      {Policy::IGNORED, "its end could not be observed (this process ignores SIGCHLD, so the "
+                        "system discards its children's exit statuses), and it printed nothing "
+                        "on stderr"},
+      {Policy::NO_CHILD_WAIT, "its end could not be observed (this process sets SA_NOCLDWAIT for "
+                              "SIGCHLD, so the system discards its children's exit statuses), "
+                              "and it printed nothing on stderr"}};
+  int run = 0;
+  for (const auto& [POLICY, ENDED] : CASES) {
+    Captured C;
+    {
+      const ChildReaping REAPING(POLICY);
+      ASSERT_TRUE(REAPING.ok());
+      C = capture(decided(), "OffCpu.GoneBeforeArm" + std::to_string(run++),
+                  {{"FAKE_WINDOW", "end-before-arm"}});
+    }
+    ASSERT_TRUE(C.outcome.has_value()) << C.err;
+    const std::string FAILURE = "unusable: the off-CPU script did not stay attached: " + ENDED;
+    EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE) << C.outcome->report.message;
+    EXPECT_EQ(C.outcome->report.message, FAILURE);
+    EXPECT_NE(
+        C.err.find("[offcpu] the tracer ended before it armed the capture: " + FAILURE + "\n"),
+        std::string::npos)
+        << C.err;
+  }
+}
+
+/**
+ * @test A stop line without the script's count of the switch-outs it
+ * recorded is not the script's acknowledgement: the capture's validity
+ * cannot be established, and no stacks are claimed.
+ */
+TEST_F(OffCpuCaptureTest, StopLineWithoutItsCountCannotBeVerified) {
+  const Captured C = capture(decided(), "OffCpu.NoCount",
+                             {{"FAKE_OFFCPU_RECORDED", "none"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::string PID = std::to_string(::getpid());
+  EXPECT_NE(C.output.find("offcpu disarmed " + PID + " " + std::to_string(ownThreadId()) + " none"),
+            std::string::npos)
+      << C.output;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::UNUSABLE);
+  EXPECT_EQ(C.outcome->report.message,
+            "completion: unusable: capture validity could not be established: the tracer's stop "
+            "line carries "
+            "no count of the switch-outs it recorded; its output is in " +
+                C.dir);
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+}
+
+/**
+ * @test Each capture reads only its own output: acknowledgements and a dump
+ * left in the file by an earlier run are gone, and the capture is judged by
+ * its own.
+ */
+TEST_F(OffCpuCaptureTest, AnEarlierOutputIsNotRead) {
+  const std::string PID = std::to_string(::getpid());
+  dir_.makeDirectory("captures/OffCpu.Stale.offcpu");
+  (void)dir_.writeFile("captures/OffCpu.Stale.offcpu/offcpu.txt",
+                       "Attaching 2 probes...\noffcpu armed " + PID + " 1\noffcpu disarmed " + PID +
+                           " " + std::to_string(ownThreadId()) +
+                           " 99\n\n\n@armed: 2\n@recorded: 99\n");
+  const Captured C = capture(decided(), "OffCpu.Stale",
+                             {{"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.message,
+            "stacks written to " + C.outputPath + " (27 sleeping switch-outs)");
+  EXPECT_EQ(C.output.find("offcpu armed " + PID + " 1\n"), std::string::npos) << C.output;
+  EXPECT_EQ(C.output.find(" 99\n"), std::string::npos) << C.output;
+}
+
+/**
+ * @test An output with the tracer's acknowledgements and no map dump is
+ * incomplete, even with a count of 0: the markers alone are neither data nor
+ * a verified zero.
+ */
+TEST_F(OffCpuCaptureTest, MarkerOnlyOutputIsIncomplete) {
+  const std::string NO_MAPS = dir_.writeFile("no_maps.txt", "");
+  const Captured C = capture(decided(), "OffCpu.Markers", {{"FAKE_BPFTRACE_OUTPUT", NO_MAPS}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  const std::vector<long> DISARMED = ackNumbers(C.output, "offcpu disarmed ");
+  ASSERT_FALSE(DISARMED.empty()) << C.output;
+  EXPECT_EQ(DISARMED.back(), 0) << C.output;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->report.message,
+            "completion: unusable: the tracer's output " + C.outputPath +
+                " is incomplete: it holds no map dump (no @armed: 2 line after the "
+                "acknowledgements)");
+  EXPECT_EQ(C.err.find("no thread of this process"), std::string::npos) << C.err;
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+}
+
+/**
+ * @test A stop acknowledgement that arrives only among the lines the tracer
+ * prints at the stop, before its maps, completes the capture: bpftrace
+ * prints the lines it still had queued before its maps. The wait for it
+ * ended first, so the stop took at least its bound.
+ */
+TEST_F(OffCpuCaptureTest, DisarmPrintedAtTheStopCompletesTheCapture) {
+  const Captured C = capture(
+      decided(), "OffCpu.Drained",
+      {{"FAKE_WINDOW", "late-disarm"}, {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->cause, ReadinessCause::READY) << C.err;
+  EXPECT_EQ(C.outcome->report.message,
+            "stacks written to " + C.outputPath + " (27 sleeping switch-outs)");
+  EXPECT_GE(C.stopTook, std::chrono::milliseconds(3000)) << "the stop's wait saw the line";
+  const std::size_t DISARM = C.output.find("offcpu disarmed ");
+  ASSERT_NE(DISARM, std::string::npos) << C.output;
+  EXPECT_LT(DISARM, C.output.find("@armed: 2")) << C.output;
+  const std::vector<long> DISARMED = ackNumbers(C.output, "offcpu disarmed ");
+  ASSERT_EQ(DISARMED.size(), 3U) << C.output;
+  EXPECT_EQ(DISARMED[0], ::getpid());
+  EXPECT_EQ(DISARMED[1], ownThreadId());
+}
+
+/**
+ * @test A tracer killed after it armed, before the stop, is a failed
+ * capture: the shared judgment says how it ended, and the output it left is
+ * kept.
+ */
+TEST_F(OffCpuCaptureTest, TracerKilledBeforeTheStopIsIncomplete) {
+  const Captured C = capture(decided(), "OffCpu.Died",
+                             {{"FAKE_WINDOW", "die-after-arm"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Error);
+  EXPECT_EQ(C.outcome->report.message, "completion: unusable: the off-CPU script: the tracer ended "
+                                       "on signal 9 before the stop, with "
+                                       "nothing on its stderr; its output may be incomplete");
+  EXPECT_EQ(C.err.find("stacks written"), std::string::npos) << C.err;
+  EXPECT_NE(C.output.find("offcpu armed "), std::string::npos) << "the output is kept";
+}
+
+/**
+ * @test Stops that fail are recorded, never "stacks written": a tracer
+ * killed after sudo refused SIGTERM (it ignored SIGINT), and one that every
+ * stop signal failed to reach, which is still running.
+ */
+TEST_F(OffCpuCaptureTest, StopFailuresAreRecorded) {
+  installSudoAndKill();
+  const std::map<std::string, std::string> KILLED{{"BENCH_SUDO", "1"},
+                                                  {"FAKE_SUDO_DENY", "kill -15"},
+                                                  {"FAKE_BPFTRACE_MODE", "ignore-int-run"}};
+  const Captured K = capture(decided(KILLED), "OffCpu.Killed", KILLED);
+  ASSERT_TRUE(K.outcome.has_value()) << K.err;
+  EXPECT_EQ(K.outcome->cause, ReadinessCause::DENIED);
+  const pid_t KILLED_TRACER = lastRunTracer();
+  EXPECT_EQ(K.outcome->report.message,
+            "completion: denied: the tracer was killed before it printed its maps: " + sudo_ +
+                " -n -- " + kill_ + " -15 " + std::to_string(KILLED_TRACER) +
+                " failed: sudo: a password is required; the capture in " + K.dir +
+                " is incomplete");
+  EXPECT_EQ(K.outcome->report.hint.rfind("The grant must allow " + bpftrace_, 0), 0U)
+      << K.outcome->report.hint;
+  EXPECT_EQ(K.err.find("stacks written"), std::string::npos) << K.err;
+  EXPECT_NE(K.output.find("offcpu disarmed "), std::string::npos) << "the output is kept";
+
+  const ReadinessResult READY = decided({{"BENCH_SUDO", "1"}});
+  const Captured S =
+      capture(withStopContext(READY, ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "kill -"}})),
+              "OffCpu.Stuck", {{"BENCH_SUDO", "1"}});
+  const pid_t STUCK = lastRunTracer();
+  ASSERT_TRUE(S.outcome.has_value()) << S.err;
+  EXPECT_EQ(S.outcome->cause, ReadinessCause::DENIED);
+  EXPECT_EQ(S.outcome->report.message.rfind(
+                "completion: denied: the tracer could not be stopped and still "
+                "runs: " +
+                    sudo_ + " -n -- " + kill_ + " -2 " + std::to_string(STUCK) + " failed: ",
+                0),
+            0U)
+      << S.outcome->report.message;
+  EXPECT_EQ(S.err.find("stacks written"), std::string::npos) << S.err;
+  EXPECT_NE(S.output.find("offcpu disarmed "), std::string::npos) << "the output is kept";
+  endIfLeft(STUCK);
+}
+
+/**
+ * @test A tracer that ignores SIGINT and ends on SIGTERM, printing its maps
+ * and exiting 0 as bpftrace 0.23.2 does, is judged by its dump; the stop's
+ * line says what happened.
+ */
+TEST_F(OffCpuCaptureTest, TracerStoppedOnSigtermIsJudgedByItsDump) {
+  const Captured C = capture(decided(), "OffCpu.Term",
+                             {{"FAKE_BPFTRACE_MODE", "ignore-int-run"},
+                              {"FAKE_TERM", "maps"},
+                              {"FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt")}});
+  ASSERT_TRUE(C.outcome.has_value()) << C.err;
+  EXPECT_EQ(C.outcome->report.status, EnvReport::Status::Ok) << C.err;
+  EXPECT_NE(C.err.find("[offcpu] the off-CPU script: the tracer did not stop on SIGINT, and "
+                       "stopped on SIGTERM with status 0"),
+            std::string::npos)
+      << C.err;
+  EXPECT_NE(C.err.find("[offcpu] stacks written to "), std::string::npos) << C.err;
+}
+
+/**
+ * @test The capture gives the thread that starts and stops it its own name
+ * back: the tracer sees it as vernier-wait and vernier-stop only while the
+ * capture waits.
+ */
+TEST_F(OffCpuCaptureTest, CallingThreadKeepsItsName) {
+  {
+    std::ofstream name("/proc/thread-self/comm");
+    name << "offcpu-caller";
+  }
+  ASSERT_EQ(fileText("/proc/thread-self/comm"), "offcpu-caller\n");
+  (void)capture(decided(), "OffCpu.Name");
+  EXPECT_EQ(fileText("/proc/thread-self/comm"), "offcpu-caller\n");
+  EXPECT_NE(dir_.log().find("bpftrace -B none -e "), std::string::npos) << dir_.log();
+}
+
+/**
+ * @test The script arms only on a sleeping switch-out of this process by the
+ * arm thread the capture started, by its id and name, disarms on one by the
+ * thread that started the capture, by its id under the name vernier-stop,
+ * forgetting every start, records only while armed and no thread carrying
+ * one of the three reserved names, and prints both lines with the ids. The
+ * fake cannot evaluate a predicate; this reads the program the run launched.
+ */
+TEST_F(OffCpuCaptureTest, ArmsOnAWorkerThreadAndDisarmsAtTheStop) {
+  const Captured C = capture(decided(), "OffCpu.Script");
+  const std::vector<InlineCall> RUNS = runLaunches(inlineCalls(dir_, "bpftrace"));
+  ASSERT_EQ(RUNS.size(), 1U) << "the run\n" << dir_.log();
+  const std::string& P = RUNS.back().program;
+  const auto AT = [&P](const std::string& text) { return P.find(text); };
+  const std::vector<long> ARMED = ackNumbers(C.output, "offcpu armed ");
+  ASSERT_EQ(ARMED.size(), 2U) << C.output;
+  EXPECT_NE(ARMED[1], ::getpid()) << "the arm thread is not the main thread";
+  ASSERT_NE(AT("if (pid == $1 && (args->prev_state == 1 || args->prev_state == 2)) {"),
+            std::string::npos)
+      << P;
+  EXPECT_NE(AT("if (tid == " + std::to_string(ARMED[1]) +
+               " && comm == \"vernier-arm\") {\n      if (@armed == 0) {\n        @armed = "
+               "1;\n        printf(\"offcpu armed %d %d\\n\", pid, tid);"),
+            std::string::npos)
+      << P;
+  EXPECT_NE(AT("} else if (tid == " + std::to_string(ownThreadId()) +
+               " && comm == \"vernier-stop\") {\n      if (@armed == 1) {\n        @armed = "
+               "2;\n        clear(@start);\n        printf(\"offcpu disarmed %d %d %d\\n\", "
+               "pid, tid, @recorded);"),
+            std::string::npos)
+      << P;
+  EXPECT_NE(AT("} else if (@armed == 1 && comm != \"vernier-arm\" && comm != \"vernier-wait\" "
+               "&&\n               comm != \"vernier-stop\") {\n      @start[args->prev_pid] = "
+               "nsecs;\n      @offcpu_blocks[ustack, comm] = count();\n      @recorded++;"),
+            std::string::npos)
+      << P;
+  EXPECT_NE(AT("if (@armed == 1 && @start[args->next_pid]) {\n    @offcpu_ns[args->next_pid] = "
+               "sum(nsecs - @start[args->next_pid]);\n    delete(@start[args->next_pid]);"),
+            std::string::npos)
+      << P;
+  std::size_t starts = 0;
+  for (std::size_t at = P.find("@start"); at != std::string::npos; at = P.find("@start", at + 1)) {
+    ++starts;
+  }
+  EXPECT_EQ(starts, 5U) << "no start is read or written outside the armed window\n" << P;
+}
+
+/**
+ * @test The check sees this process through the script itself: a copy with
+ * unbuffered output arms on a thread of this process, not its main thread,
+ * and the ready message gives both ids; the copy does not outlive the check.
+ */
+TEST_F(OffCpuCaptureTest, CheckSeesThisProcessThroughTheArmProbe) {
+  const ReadinessResult R = check("offcpu", ctx());
+  ASSERT_EQ(R.report.status, EnvReport::Status::Ok) << R.report.message;
+  std::smatch ids;
+  ASSERT_TRUE(std::regex_search(R.report.message, ids,
+                                std::regex("armed on this process's arm thread \\(pid ([0-9]+), "
+                                           "thread ([0-9]+)\\)")))
+      << R.report.message;
+  EXPECT_EQ(std::stol(ids[1].str()), ::getpid());
+  EXPECT_NE(std::stol(ids[2].str()), ::getpid()) << "the arm thread is not the main thread";
+  const std::vector<InlineCall> WITNESS = checkCopies(inlineCalls(dir_, "bpftrace"));
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_NE(WITNESS.front().program.find("printf(\"offcpu armed %d %d\\n\", pid, tid);"),
+            std::string::npos)
+      << WITNESS.front().program;
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
+}
+
+/**
+ * @test Without the arm acknowledgement the check refuses the request,
+ * whatever the attach probe showed; in a PID namespace other than the
+ * host's it names the namespace. The test reads which before checking.
+ * The fake's copy ignores its own self-exit, so the check's bound, and not
+ * the fake's clock, ends the wait.
+ */
+TEST_F(OffCpuCaptureTest, CheckWithoutAnArmAckIsRefused) {
+  const bool INITIAL = hostPidNamespace();
+  const ReadinessResult R =
+      check("offcpu", ctx({{"FAKE_WINDOW", "no-arm"}, {"FAKE_BPFTRACE_MODE", "ignore-exit"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  const std::string DETAIL = "the off-CPU script ran as the current user but did not acknowledge "
+                             "its arm probe within 4000 ms";
+  if (INITIAL) {
+    EXPECT_EQ(R.cause, ReadinessCause::UNUSABLE);
+    EXPECT_EQ(R.report.message, "unusable: " + DETAIL);
+    EXPECT_EQ(R.report.hint, "bpftrace did not see this process's arm thread go to sleep; run the "
+                             "off-CPU script by hand with " +
+                                 bpftrace_ + " to see why.");
+  } else {
+    EXPECT_EQ(R.cause, ReadinessCause::UNSUPPORTED);
+    EXPECT_EQ(R.report.message, "unsupported: " + DETAIL + "; " + foreignNamespaceSentence());
+    EXPECT_EQ(R.report.hint,
+              "Run the benchmark on the host, or in a container started with --pid=host.");
+  }
+  const std::vector<InlineCall> WITNESS = checkCopies(inlineCalls(dir_, "bpftrace"));
+  ASSERT_EQ(WITNESS.size(), 1U) << dir_.log();
+  EXPECT_TRUE(gone(WITNESS.front().pid)) << "the check's copy outlived the check";
+}
+
+/** @test An arm acknowledged for another thread refuses the request too, naming both. */
+TEST_F(OffCpuCaptureTest, CheckAckForAnotherThreadIsRefused) {
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_WINDOW", "wrong-arm"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  const std::string PID = std::to_string(::getpid());
+  EXPECT_NE(R.report.message.find("the off-CPU script armed for pid " + PID + " thread " + PID +
+                                  ", not for this process's arm thread (pid " + PID + " thread "),
+            std::string::npos)
+      << R.report.message;
+}
+
+/**
+ * @test An arm acknowledged for the arm thread's id under another pid is
+ * refused as well: the thread id alone does not identify this process.
+ */
+TEST_F(OffCpuCaptureTest, CheckAckForAnotherProcessIsRefused) {
+  const ReadinessResult R = check("offcpu", ctx({{"FAKE_WINDOW", "wrong-pid"}}));
+  EXPECT_EQ(R.report.status, EnvReport::Status::Error);
+  EXPECT_FALSE(R.collectionReady());
+  std::smatch ids;
+  ASSERT_TRUE(std::regex_search(
+      R.report.message, ids,
+      std::regex("the off-CPU script armed for pid " + std::to_string(::getpid() + 1) +
+                 " thread ([0-9]+), not for this process's arm thread \\(pid " +
+                 std::to_string(::getpid()) + " thread ([0-9]+)\\)")))
+      << R.report.message;
+  EXPECT_EQ(ids[1].str(), ids[2].str()) << "the acknowledged thread is the arm thread";
+}
+
+/**
+ * @test A grant that allows the probe's command but refuses the copy's (the
+ * pattern matches only the copy, whose self-exit follows the script's last
+ * probe) leaves the request unverified, as a refusal of the probe does,
+ * naming the refused command: the run's own command decides.
+ */
+TEST_F(OffCpuCaptureTest, CheckCopyRefusedByTheGrantIsUnverified) {
+  installSudoAndKill();
+  const ReadinessResult R =
+      check("offcpu", ctx({{"BENCH_SUDO", "1"}, {"FAKE_SUDO_DENY", "exit();\n}\ninterval:s:5"}}));
+  EXPECT_EQ(R.cause, ReadinessCause::UNVERIFIED) << R.report.message;
+  EXPECT_TRUE(R.collectionReady());
+  EXPECT_EQ(R.report.message,
+            "unverified: sudo -n refused the probe command " + bpftrace_ +
+                " -B none -e <the off-CPU script with a 5 s self-exit> " +
+                std::to_string(::getpid()) + ": sudo: a password is required; the run executes " +
+                bpftrace_ +
+                " -B none -e <the off-CPU script> <benchmark pid> instead, which only the run can "
+                "try");
+  const std::vector<InlineCall> THROUGH_SUDO = inlineCalls(dir_, "sudo -n -- " + bpftrace_);
+  EXPECT_EQ(probeCalls(THROUGH_SUDO).size(), 1U) << dir_.log();
+  EXPECT_EQ(checkCopies(THROUGH_SUDO).size(), 1U) << dir_.log();
+  EXPECT_TRUE(checkCopies(inlineCalls(dir_, "bpftrace")).empty()) << "sudo ran the refused copy";
 }
 
 /* ----------------------------- perf ----------------------------- */
