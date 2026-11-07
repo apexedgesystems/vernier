@@ -28,11 +28,12 @@
  * is not recorded on a stream of the other device and two events of
  * different devices are not timed against each other: the call returns
  * cudaErrorInvalidResourceHandle, as the runtime answers for two contexts of
- * one device, without reaching it. Such an answer, and "access already
- * enabled", is the thread's last error, as the runtime's own errors are,
- * until cudaGetLastError() reads it. The rules are the CUDA programming
- * guide's; that a driver applies them between two GPUs, and anything about a
- * copy between two GPUs, is outside what this shows.
+ * one device, without reaching it. Such an answer, "access already enabled"
+ * and a failed enable (CudaSetupFailure::PeerAccess, after which the pair
+ * stays without access) are the thread's last error, as the runtime's own
+ * errors are, until cudaGetLastError() reads it. The rules are the CUDA
+ * programming guide's; that a driver applies them between two GPUs, and
+ * anything about a copy between two GPUs, is outside what this shows.
  *
  * Test support for PerfGpuHarness_uTest.cu; not part of the benchmark library.
  * It needs ELF symbol binding: elsewhere available() is false.
@@ -60,6 +61,7 @@ enum class CudaSetupFailure {
   FirstStream,      ///< The first stream the recording sees made
   PeerCopy,         ///< The first cudaMemcpyPeerAsync of the recording
   ElapsedTime,      ///< The first cudaEventElapsedTime of the recording
+  PeerAccess,       ///< The first enable between the emulated peers (cudaErrorTooManyPeers)
 };
 
 /** @brief The devices a recording shows the process. */

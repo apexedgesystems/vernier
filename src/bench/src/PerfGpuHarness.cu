@@ -997,8 +997,10 @@ private:
   void enablePeerToPeer(int deviceCount) {
     // Access is enabled from the device that will read, made current only
     // for a pair that can have it, and the caller's device is current again
-    // after; nothing here throws. Access an earlier call enabled stands, so
-    // that answer is read here rather than left for the caller.
+    // after; nothing here throws. An enable that does not succeed leaves its
+    // pair as it was (access an earlier call enabled stands; a pair the
+    // runtime refuses stays without it) and the other pairs are still
+    // enabled; its answer is read here rather than left for the caller.
     int caller = -1;
     const bool KNOWN_CALLER = cudaGetDevice(&caller) == cudaSuccess;
     for (int i = 0; i < deviceCount; ++i) {
@@ -1006,8 +1008,7 @@ private:
         if (i == j || !canAccessPeer(i, j)) {
           continue;
         }
-        if (cudaSetDevice(i) == cudaSuccess &&
-            cudaDeviceEnablePeerAccess(j, 0) == cudaErrorPeerAccessAlreadyEnabled) {
+        if (cudaSetDevice(i) == cudaSuccess && cudaDeviceEnablePeerAccess(j, 0) != cudaSuccess) {
           static_cast<void>(cudaGetLastError());
         }
       }

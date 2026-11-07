@@ -307,6 +307,10 @@ constexpr int RUNTIME_DEVICE = 0;
 /// different devices: the runtime's answer for two contexts of one device.
 constexpr cudaError_t REFUSED = cudaErrorInvalidResourceHandle;
 
+/// What a failed enable between the emulated peers answers: the runtime's
+/// answer when the resources peer access needs are exhausted.
+constexpr cudaError_t ENABLE_FAILED = cudaErrorTooManyPeers;
+
 /** @brief The device a thread made current in one emulated-peer recording. */
 struct ThreadDevice {
   unsigned generation = 0; ///< The recording it was made current in
@@ -618,12 +622,17 @@ cudaDeviceEnablePeerAccess(int peerDevice, unsigned int flags) {
   if (flags != 0 || !emulatedPeers(DEVICE, peerDevice)) {
     return REAL(runtimeDevice(peerDevice), flags);
   }
+  bool fails = false;
   bool first = false;
   {
     vt::Record& r = vt::record();
     const std::lock_guard<std::mutex> LOCK(r.mutex);
-    ++r.peerAccessEnables;
-    first = r.peerAccess.insert({DEVICE, peerDevice}).second;
+    const int CALL = ++r.peerAccessEnables;
+    fails = r.failure == vt::CudaSetupFailure::PeerAccess && CALL == 1;
+    first = !fails && r.peerAccess.insert({DEVICE, peerDevice}).second;
+  }
+  if (fails) {
+    return answer(VIEW, ENABLE_FAILED);
   }
   return first ? cudaSuccess : answer(VIEW, cudaErrorPeerAccessAlreadyEnabled);
 }

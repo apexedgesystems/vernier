@@ -112,10 +112,11 @@ public:
    *        kernel.
    *
    * A pair cudaDeviceCanAccessPeer() reports as unable is skipped, as is one
-   * it cannot answer for (an id that names no device), and access an earlier
-   * measurement enabled stays enabled; neither answer is left for the
-   * caller's next cudaGetLastError(). The caller's current device is current
-   * again afterwards.
+   * it cannot answer for (an id that names no device); access an earlier
+   * measurement enabled stays enabled, and a pair whose enable fails stays
+   * without access while the other pairs are still enabled. None of these
+   * answers is left for the caller's next cudaGetLastError(), and nothing
+   * throws. The caller's current device is current again afterwards.
    */
   inline MultiGpuKernelBuilder& withP2PAccess();
 
