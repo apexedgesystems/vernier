@@ -163,8 +163,11 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
   procedure locks changed between the bands. Walkthroughs report every run and
   keep their reference selection rule; they do not retry a run until it is
   fast, and do not warm the GPU up to hide the slow band.
-- **jemalloc.** The distribution's jemalloc is built without profiling;
-  the doctor reports it, and the jemalloc walkthrough does not use this rig.
+- **jemalloc.** The distribution's jemalloc (Ubuntu's `libjemalloc2`
+  5.3.0 for arm64) is built without profiling: it rejects `prof:true`, and
+  the doctor fails `jemalloc`, naming the library. The jemalloc walkthrough
+  runs on the [Raspberry Pi 4](RIG_PI4.md) with a jemalloc built with
+  profiling.
 - **Energy.** RAPL is Intel-only and is not available here.
 
 ## 6. Verify Your Rig
@@ -173,22 +176,22 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
 BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkGPU_PTEST
 ```
 
-Expected on this rig, captured 2026-10-03 (UTC) from the development tree at
+Expected on this rig, captured 2026-10-24 (UTC) from the development tree at
 project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
 it left out:
 
 ```
 === Profiler Backend Doctor (default mode of each backend) ===
 
-  [FAIL] bpftrace   unsupported: script 'write_latency': /tmp/vernier_probe_Ms4tml/probe0.bt:1-14: ERROR: tracepoint not found: syscalls:sys_enter_write
-             The kernel lacks a probe the script uses, or tracefs is not mounted (mount -t tracefs tracefs /sys/kernel/tracing); select a script whose probes exist here.
+  [FAIL] bpftrace   unsupported: script 'write_latency': /tmp/vernier_probe_L4p6fq/probe0.bt:1-18: ERROR: tracepoint not found: syscalls:sys_enter_write
+             The kernel lacks a probe the script uses (bpftrace's message names it), or tracefs is not mounted: mount -t tracefs tracefs /sys/kernel/tracing.
   [OK]   callgrind  valgrind starts callgrind (probe: /usr/bin/valgrind --tool=callgrind --callgrind-out-file=/dev/null /bin/true)
   [WARN] compute-sanitizer unverified: /usr/local/cuda/bin/compute-sanitizer runs here (Version 2025.3.1.0 (build 36400806) (public-release)); whether its memcheck checks the benchmark's kernels is not checked before the run
   [OK]   gperf      gperftools profiles cpu (built: cpu); analyzer /usr/bin/google-pprof
   [OK]   heaptrack  heaptrack records /bin/true (probe: /usr/bin/heaptrack -o <private directory>/probe /bin/true, which wrote probe.zst)
   [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
-  [WARN] jemalloc   libjemalloc present but built without profiling (prof:true rejected)
-             Debian/Ubuntu ship jemalloc without --enable-prof, so no heap profile can be written. Build jemalloc from source with --enable-prof, or use the heaptrack backend.
+  [FAIL] jemalloc   missing: /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 is built without profiling: preloaded with bench run's options, it rejects them ("<jemalloc>: Invalid conf pair: prof:true")
+             Use a jemalloc built with profiling (configure --enable-prof; Debian's and Ubuntu's libjemalloc2 have it on amd64 and i386, not on arm64), with its library folder first on LD_LIBRARY_PATH when it is not the system's; or profile the heap with --profile heaptrack.
   [OK]   massif     valgrind starts massif (probe: /usr/bin/valgrind --tool=massif --massif-out-file=/dev/null /bin/true)
   [OK]   memcheck   valgrind starts memcheck (probe: /usr/bin/valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=/dev/null /bin/true)
   [WARN] ncu        unverified: /usr/local/cuda/bin/ncu runs here (Version 2025.3.1.0 (build 36398880) (public-release)); whether it captures the benchmark's GPU work is not checked before the run; the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params), and this process is not root
@@ -200,7 +203,7 @@ it left out:
   [FAIL] rocprof    missing: rocprof not found on PATH
              Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
 
-  15 backend(s), 3 fail.
+  15 backend(s), 4 fail.
 
   Each row checks one backend's default mode for this user and environment.
   A run checks its own --profile request when its profiler is created, and
@@ -209,12 +212,14 @@ it left out:
   --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
 
-Three backends fail here. The `bpftrace` row runs the backend's default
+Four backends fail here. The `bpftrace` row runs the backend's default
 script, `write_latency`, whose `syscalls` tracepoints this rig's kernel does
-not have. `rapl` is Intel-only and `rocprof` is AMD's. The GPU rows are
-`unverified`: the doctor runs each tool's `--version`, and cannot see before
-a run whether the tool captures the benchmark's GPU work; `ncu`'s row also
-names the driver's setting that keeps the counters for root (see
+not have. `jemalloc` fails because the distribution's jemalloc is built
+without profiling (see [Rig-Specific Behavior](#5-rig-specific-behavior)).
+`rapl` is Intel-only and `rocprof` is AMD's. The GPU rows are `unverified`:
+the doctor runs each tool's `--version`, and cannot see before a run whether
+the tool captures the benchmark's GPU work; `ncu`'s row also names the
+driver's setting that keeps the counters for root (see
 [walkthrough 11](../../demo/docs/11_NSIGHT_PROFILER.md#if-it-does-not-match)).
 Without `BENCH_SUDO=1`, `bpftrace` and `offcpu` fail as `denied:`, quoting
 bpftrace: `ERROR: bpftrace currently only supports running as the root

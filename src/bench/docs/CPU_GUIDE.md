@@ -656,9 +656,12 @@ Three heap profilers ship with the harness; pick by your overhead budget.
 Massif and heaptrack record a process only when they start it:
 `bench run <binary> --profile massif` (or `heaptrack`) starts the binary under
 the tool, or start it yourself as below. A run started without the tool fails
-with exit status 4 and prints that command. jemalloc profiles through the
-allocator preloaded below, and its backend prints that command when the
-allocator is not loaded.
+with exit status 4 and prints that command. jemalloc samples allocations
+inside the allocator, so it needs a jemalloc built with profiling, preloaded:
+`bench run <binary> --profile jemalloc` preloads it with the options below and
+checks the dump it writes when the process exits, and a run without it fails
+with exit status 4 and prints the command. The
+[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md) shows a run.
 
 ```bash
 # Full timeline, lab use (~20x overhead)
@@ -670,11 +673,13 @@ ms_print run.massif | head -40
 heaptrack -o run.heaptrack ./MyComponent_PTEST --profile heaptrack
 heaptrack_print run.heaptrack.zst | head -40
 
-# Lowest-overhead allocator profiler (~5-10%)
-LD_PRELOAD=$(ldconfig -p | awk '/libjemalloc.so / {print $4; exit}') \
-MALLOC_CONF=prof:true,prof_prefix:jeprof \
+# Sampled allocations, inside the allocator: a jemalloc built with profiling
+# (configure --enable-prof), its folder first on LD_LIBRARY_PATH unless it is
+# the system's
+LD_PRELOAD=libjemalloc.so.2 \
+MALLOC_CONF=prof:true,prof_final:true,prof_accum:true,prof_prefix:./jeprof \
     ./MyComponent_PTEST --profile jemalloc
-jeprof --text ./MyComponent_PTEST jeprof.*.heap | head -20
+jeprof --text --alloc_space ./MyComponent_PTEST jeprof.*.f.heap | head -20
 ```
 
 ### Memory Correctness with Memcheck
