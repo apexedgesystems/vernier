@@ -1699,6 +1699,26 @@ TEST_F(PerfGpuHarnessDeathTest, ChoosingManagedMemoryAloneFailsNothing) {
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 
+/**
+ * @test Each --gpu-memory value, parsed as a GPU benchmark's main() parses it,
+ *       reaches a case built under it: the case's gpuConfig() holds that
+ *       strategy, where a test that allocates by it reads it, and no request
+ *       for unified-memory counters comes with it
+ */
+TEST_F(PerfGpuHarnessTest, TheSelectedStrategyReachesTheCase) {
+  using Strategy = ub::PerfGpuConfig::MemoryStrategy;
+  const std::pair<const char*, Strategy> VALUES[] = {{"explicit", Strategy::Explicit},
+                                                     {"unified", Strategy::Unified},
+                                                     {"pinned", Strategy::Pinned},
+                                                     {"mapped", Strategy::Mapped}};
+  for (const auto& [VALUE, STRATEGY] : VALUES) {
+    const ScopedGpuConfig GPU(parsedGpuFlags({"--gpu-memory", VALUE}));
+    const ub::PerfGpuCase perf{uniqueSuite("GpuSelectedStrategy") + ".Case", cfg_};
+    EXPECT_EQ(perf.gpuConfig().memStrategy, STRATEGY) << VALUE;
+    EXPECT_FALSE(perf.gpuConfig().captureUnifiedMemory) << VALUE;
+  }
+}
+
 /* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
 
 namespace {

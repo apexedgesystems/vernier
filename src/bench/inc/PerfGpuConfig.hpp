@@ -27,6 +27,12 @@ struct PerfGpuConfig {
     Pinned,   ///< Pinned host memory
     Mapped    ///< Zero-copy mapped memory
   };
+  /// The memory strategy for the tests that allocate by one: --gpu-memory sets
+  /// it (Explicit without the flag). Such a test reads it
+  /// (PerfGpuCase::gpuConfig()) and makes its own allocation, as
+  /// GpuMemoryStrategies.SelectedStrategy does. The harness reads it nowhere:
+  /// it allocates no test's memory, and the choice asks for no unified-memory
+  /// counters (captureUnifiedMemory).
   MemoryStrategy memStrategy = MemoryStrategy::Explicit;
 
   // ---- Profiling options ----
@@ -86,9 +92,11 @@ struct PerfGpuConfig {
 /**
  * @brief Parse GPU-specific flags (extends parsePerfFlags).
  *
- * NOTE: This function should be called after parsePerfFlags() in main().
- * GPU tests typically use fromPerfConfig() to derive GPU settings from the
- * base PerfConfig, so this function is only needed for standalone GPU binaries.
+ * Call it after parsePerfFlags(), as PERF_GPU_MAIN() does; the macro then
+ * makes the result the process's GPU configuration, which each GPU case
+ * copies when it is built (PerfGpuCase::gpuConfig()). A missing value, or a
+ * --gpu-memory value other than explicit, unified, pinned or mapped, is a
+ * usage error: the parser names it on stderr and exits with status 2.
  */
 inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
   const auto NEED_ARG = [&](const char* name, int i) -> const char* {
@@ -110,7 +118,8 @@ inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
       cfg.deviceId = std::max(0, std::atoi(NEED_ARG("--gpu-device", i)));
       ++i;
     } else if (a == "--gpu-memory") {
-      // A memory strategy only: no request for unified-memory counters.
+      // A memory strategy only: no request for unified-memory counters. Any
+      // other value is refused, so a mistyped strategy cannot run another.
       std::string_view strategy = NEED_ARG("--gpu-memory", i);
       if (strategy == "unified") {
         cfg.memStrategy = PerfGpuConfig::MemoryStrategy::Unified;
@@ -120,6 +129,12 @@ inline void parseGpuFlags(PerfGpuConfig& cfg, int* argc, char** argv) {
         cfg.memStrategy = PerfGpuConfig::MemoryStrategy::Explicit;
       } else if (strategy == "mapped") {
         cfg.memStrategy = PerfGpuConfig::MemoryStrategy::Mapped;
+      } else {
+        std::fprintf(stderr,
+                     "--gpu-memory: '%.*s' is not a memory strategy (explicit, unified, pinned "
+                     "or mapped)\n",
+                     static_cast<int>(strategy.size()), strategy.data());
+        std::exit(2);
       }
       ++i;
     } else if (a == "--min-speedup") {

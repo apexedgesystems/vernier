@@ -17,6 +17,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
 #include <vector>
 
 using vernier::bench::parseGpuFlags;
@@ -59,6 +60,14 @@ std::size_t countLines(const std::string& text) {
   PerfConfig cfg;
   ArgvBuilder args{"prog", "--profile", "perf", "--profile-test-timeout", value};
   parsePerfFlags(cfg, args.argc(), args.argv());
+  std::exit(0);
+}
+
+/** @brief Parse `--gpu-memory <value>` as a GPU binary does, then exit 0 (for death tests). */
+[[noreturn]] void parseGpuMemoryThenExit(const char* value) {
+  PerfGpuConfig cfg;
+  ArgvBuilder args{"prog", "--gpu-memory", value};
+  parseGpuFlags(cfg, args.argc(), args.argv());
   std::exit(0);
 }
 
@@ -590,6 +599,44 @@ TEST(PerfGpuConfigTest, ManagedMemoryStrategyAsksForNoCounters) {
   EXPECT_EQ(cfg.memStrategy, PerfGpuConfig::MemoryStrategy::Unified);
   EXPECT_FALSE(cfg.captureUnifiedMemory);
   EXPECT_EQ(*args.argc(), 1);
+}
+
+/**
+ * @test Each of the four --gpu-memory values selects its strategy over the one
+ * the config held, is consumed, and asks for no unified-memory counters.
+ */
+TEST(PerfGpuConfigTest, EachMemoryValueSelectsItsStrategy) {
+  using Strategy = PerfGpuConfig::MemoryStrategy;
+  const std::pair<const char*, Strategy> VALUES[] = {{"explicit", Strategy::Explicit},
+                                                     {"unified", Strategy::Unified},
+                                                     {"pinned", Strategy::Pinned},
+                                                     {"mapped", Strategy::Mapped}};
+  for (const auto& [VALUE, STRATEGY] : VALUES) {
+    PerfGpuConfig cfg;
+    cfg.memStrategy = STRATEGY == Strategy::Mapped ? Strategy::Explicit : Strategy::Mapped;
+    ArgvBuilder args{"prog", "--gpu-memory", VALUE};
+    parseGpuFlags(cfg, args.argc(), args.argv());
+
+    EXPECT_EQ(cfg.memStrategy, STRATEGY) << VALUE;
+    EXPECT_EQ(*args.argc(), 1) << VALUE;
+    EXPECT_FALSE(cfg.captureUnifiedMemory) << VALUE;
+  }
+}
+
+/**
+ * @test Any other --gpu-memory value (a misspelling, another case, a name the
+ * flag does not take, an empty one) exits 2 naming the value and the four.
+ */
+TEST(PerfGpuConfigTest, AnUnknownMemoryValueExits) {
+  const std::string SAVED = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  for (const char* VALUE : {"pinnned", "Unified", "managed", ""}) {
+    EXPECT_EXIT(parseGpuMemoryThenExit(VALUE), ::testing::ExitedWithCode(2),
+                std::string("--gpu-memory: '") + VALUE +
+                    "' is not a memory strategy \\(explicit, unified, pinned or mapped\\)")
+        << "'" << VALUE << "'";
+  }
+  GTEST_FLAG_SET(death_test_style, SAVED);
 }
 
 /** @test --capture-um asks for unified-memory counters and leaves the memory strategy as it was */
