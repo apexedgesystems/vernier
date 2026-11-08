@@ -8,7 +8,12 @@
  * as the harness does. The setup-failure tests count the streams and events
  * the harness makes, and fail one setup step, through CudaHandleRecorder; one
  * test fails a multi-GPU measurement's first worker start through the
- * pthread_create this file defines. Without a device every test skips.
+ * pthread_create this file defines. Built with the address or the thread
+ * sanitizer, whose runtime intercepts pthread_create itself, the program gets
+ * WORKER_START_SANITIZER, naming that sanitizer, from the build's SANITIZER
+ * setting: a definition here would start every thread past the runtime, so
+ * the file then defines none and that test skips, naming the sanitizer.
+ * Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -2177,6 +2182,8 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
 
 /* ----------------------------- Worker Start Failure ----------------------------- */
 
+#ifndef WORKER_START_SANITIZER
+
 namespace {
 
 /**
@@ -2260,6 +2267,8 @@ pthread_create(pthread_t* thread, const pthread_attr_t* attributes, void* (*star
   return REAL(thread, attributes, start, argument);
 }
 
+#endif // WORKER_START_SANITIZER
+
 /**
  * @test Under --capture-um, a multi-GPU measurement whose first worker cannot
  *       be started (its std::thread's start fails with EAGAIN): the exception
@@ -2268,9 +2277,18 @@ pthread_create(pthread_t* thread, const pthread_attr_t* attributes, void* (*star
  *       failure is in no window: the same case's next measurement, of a kernel
  *       on device memory, counts no fault and no migration, in its result and
  *       in its row. Skipped, with CUPTI's or the collector's words, on a device
- *       where a collector asked for the counters is refused them
+ *       where a collector asked for the counters is refused them, and, naming
+ *       the sanitizer, in an address- or thread-sanitizer build
  */
 TEST_F(PerfGpuHarnessTest, MultiGpuWorkerThatCannotStartLeavesTheNextWindowClean) {
+#ifdef WORKER_START_SANITIZER
+  GTEST_SKIP() << "this binary is built with the "
+               << (std::string(WORKER_START_SANITIZER) == "asan" ? "address" : "thread")
+               << " sanitizer (SANITIZER=" << WORKER_START_SANITIZER
+               << "), whose runtime intercepts pthread_create itself; a pthread_create "
+                  "defined in the program would start every thread past it, so this build "
+                  "defines none and fails no worker's start";
+#else
   const YieldEnvCleared CLEARED;
   const std::string REFUSED = unifiedMemoryRefusedHere();
   if (!REFUSED.empty()) {
@@ -2331,6 +2349,7 @@ TEST_F(PerfGpuHarnessTest, MultiGpuWorkerThatCannotStartLeavesTheNextWindowClean
   for (const std::string& column : UM_COLUMNS) {
     EXPECT_EQ(ROWS[0].at(column), column == "umMigrationTimeUs" ? "0.000000" : "0") << column;
   }
+#endif
 }
 
 /* ----------------------------- Setup Failures ----------------------------- */
