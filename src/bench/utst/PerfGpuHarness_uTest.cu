@@ -5,9 +5,10 @@
  * These need a CUDA device: they run a small kernel through the public
  * PerfGpuCase API and check the result and the row the harness leaves in
  * PerfRegistry, and one opens the harness's private NVML helper for the device
- * as the harness does. The setup-failure tests count the streams and events
- * the harness makes, and fail one setup step, through CudaHandleRecorder.
- * Without a device every test skips.
+ * as the harness does. The setup-failure and P2P timing tests count the
+ * streams, events and device memory the harness makes, and fail one step,
+ * through CudaHandleRecorder, which for the P2P timing tests also lets the one
+ * GPU stand in for two. Without a device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -29,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <unistd.h>
@@ -1702,6 +1704,414 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdSetupThatFailsLeavesNoHandleAndTheRetryMe
   }
 }
 
+/* ----------------------------- P2P Timing ----------------------------- */
+
+namespace {
+
+/// The bytes each timed peer copy here moves.
+constexpr std::size_t P2P_BYTES = std::size_t{16} << 20;
+
+/// Both directions between devices 0 and 1, as (source, destination).
+constexpr std::pair<int, int> DIRECTIONS[] = {{0, 1}, {1, 0}};
+
+/** @brief A multi-GPU kernel that launches nothing: the peer copy is what is measured. */
+void noKernel(int /*deviceId*/, cudaStream_t /*stream*/) {}
+
+/**
+ * @brief A recording for a scope: started on construction and stopped when the
+ *        scope ends, by a failed assertion included, unless stop() came first.
+ */
+class ScopedRecording {
+public:
+  ScopedRecording(bt::CudaSetupFailure failure, bt::CudaDevices devices) {
+    bt::startCudaHandleRecording(failure, devices);
+  }
+
+  ~ScopedRecording() {
+    if (running_) {
+      static_cast<void>(bt::stopCudaHandleRecording());
+    }
+  }
+
+  ScopedRecording(const ScopedRecording&) = delete;
+  ScopedRecording& operator=(const ScopedRecording&) = delete;
+
+  /** @brief Ends the recording and returns its counts. */
+  bt::CudaHandleCounts stop() {
+    running_ = false;
+    return bt::stopCudaHandleRecording();
+  }
+
+private:
+  bool running_ = true;
+};
+
+/**
+ * @brief Makes @p device current for a scope, as a caller would; the device
+ *        current before is current again after.
+ */
+class CallerDevice {
+public:
+  explicit CallerDevice(int device) : saved_(currentDevice()) { cudaSetDevice(device); }
+
+  ~CallerDevice() { cudaSetDevice(saved_); }
+
+  CallerDevice(const CallerDevice&) = delete;
+  CallerDevice& operator=(const CallerDevice&) = delete;
+
+private:
+  int saved_;
+};
+
+/**
+ * @brief The handle calls of a peer copy of P2P_BYTES from @p src to @p dst
+ *        timed on its source device, as CudaHandleRecorder traces them: the
+ *        destination's buffer, then the source's buffer, stream and two
+ *        events; the start record, the copy and the stop record on that
+ *        stream and the read of their time; then every release in reverse
+ *        order, each with its own device current.
+ */
+std::vector<std::string> timedPeerCopy(int src, int dst) {
+  const std::string SRC = std::to_string(src);
+  const std::string DST = std::to_string(dst);
+  const std::string ON_STREAM = " S1@" + SRC;
+  return {
+      "cudaMalloc A1@" + DST,
+      "cudaMalloc A2@" + SRC,
+      "cudaStreamCreate S1@" + SRC,
+      "cudaEventCreate E1@" + SRC,
+      "cudaEventCreate E2@" + SRC,
+      "cudaEventRecord E1@" + SRC + ON_STREAM,
+      "cudaMemcpyPeerAsync A1@" + DST + " " + DST + " A2@" + SRC + " " + SRC + " " +
+          std::to_string(P2P_BYTES) + ON_STREAM,
+      "cudaEventRecord E2@" + SRC + ON_STREAM,
+      "cudaEventElapsedTime E1@" + SRC + " E2@" + SRC,
+      "cudaEventDestroy E2@" + SRC + " with " + SRC + " current",
+      "cudaEventDestroy E1@" + SRC + " with " + SRC + " current",
+      "cudaStreamDestroy S1@" + SRC + " with " + SRC + " current",
+      "cudaFree A2@" + SRC + " with " + SRC + " current",
+      "cudaFree A1@" + DST + " with " + DST + " current",
+  };
+}
+
+/**
+ * @brief Times a peer copy of P2P_BYTES from @p src to @p dst, peer access
+ *        asked for, in a two-device measurement of @p perf (made before), with
+ *        device 1 the caller's and @p devices recorded, and checks how it was
+ *        timed: the calls of timedPeerCopy(), nothing refused, left or released
+ *        off its device, the caller's device current again, and the profile's
+ *        time the elapsed time read, its bandwidth in the metrics and the row.
+ */
+void expectTimedPeerCopy(ub::PerfGpuCase& perf, bt::CudaDevices devices, int src, int dst) {
+  SCOPED_TRACE("from device " + std::to_string(src) + " to device " + std::to_string(dst));
+  ScopedRecording recording(bt::CudaSetupFailure::None, devices);
+  const CallerDevice CALLER(1);
+  ASSERT_EQ(currentDevice(), 1);
+
+  std::optional<ub::MultiGpuResult> result;
+  try {
+    result = perf.cudaKernelMultiGpu(2, noKernel)
+                 .withP2PAccess()
+                 .measureP2PBandwidth(src, dst, P2P_BYTES)
+                 .measure();
+  } catch (const std::runtime_error& e) {
+    ADD_FAILURE() << "the timed peer copy threw: " << e.what();
+  }
+  EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again";
+  const std::vector<std::string> TRACE = bt::cudaHandleTrace();
+  const std::vector<float> ELAPSED = bt::cudaElapsedTimes();
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+
+  // The calls reached the recorder: a record, copy or read bound elsewhere
+  // leaves this trace short, never a pass on the runtime's own devices.
+  EXPECT_EQ(TRACE, timedPeerCopy(src, dst));
+  EXPECT_EQ(COUNTS.refusedCalls, 0);
+  EXPECT_EQ(COUNTS.allocationsMade, 2);
+  EXPECT_EQ(COUNTS.streamsMade, 3) << "the copy's stream and one per device's kernels";
+  EXPECT_EQ(COUNTS.eventsMade, 6) << "the copy's two and two per device's kernels";
+  EXPECT_EQ(COUNTS.allocationsLeft, 0);
+  EXPECT_EQ(COUNTS.streamsLeft, 0);
+  EXPECT_EQ(COUNTS.eventsLeft, 0);
+  EXPECT_EQ(COUNTS.releasedOffDevice, 0);
+
+  ASSERT_TRUE(result.has_value());
+  const std::optional<ub::PerfRow> ROW = ub::PerfRegistry::instance().take();
+  ASSERT_TRUE(ROW.has_value()) << "the harness published no row";
+  ASSERT_TRUE(result->aggregatedStats.p2pProfile.has_value());
+  const ub::P2PTransferProfile& P2P = *result->aggregatedStats.p2pProfile;
+  EXPECT_EQ(P2P.srcDevice, src);
+  EXPECT_EQ(P2P.dstDevice, dst);
+  EXPECT_EQ(P2P.bytes, P2P_BYTES);
+  EXPECT_TRUE(P2P.accessEnabled);
+  ASSERT_EQ(ELAPSED.size(), 1U) << "the copy's time was not read once";
+  EXPECT_EQ(P2P.timeUs, ELAPSED[0] * 1000.0);
+  ASSERT_TRUE(result->aggregatedStats.multiGpu.has_value());
+  EXPECT_EQ(result->aggregatedStats.multiGpu->p2pBandwidthGBs, P2P.bandwidthGBs());
+  ASSERT_TRUE(ROW->p2pBandwidthGBs.has_value());
+  EXPECT_EQ(*ROW->p2pBandwidthGBs, P2P.bandwidthGBs());
+}
+
+/** @brief A step of a timed peer copy that a test makes fail, and what was made before it. */
+struct CopyStep {
+  bt::CudaSetupFailure failure; ///< What CudaHandleRecorder makes fail
+  const char* name;             ///< The step, for the test's messages
+  int allocationsBefore;        ///< Allocations made before this step failed
+  int streamsBefore;            ///< Streams made before it
+  int eventsBefore;             ///< Events made before it
+};
+
+/// Every step of a timed peer copy that acquires or uses something, in order.
+constexpr CopyStep COPY_STEPS[] = {
+    {bt::CudaSetupFailure::FirstAllocation, "the first allocation", 0, 0, 0},
+    {bt::CudaSetupFailure::SecondAllocation, "the second allocation", 1, 0, 0},
+    {bt::CudaSetupFailure::FirstStream, "the stream", 2, 0, 0},
+    {bt::CudaSetupFailure::FirstEvent, "the first event", 2, 1, 0},
+    {bt::CudaSetupFailure::SecondEvent, "the second event", 2, 1, 1},
+    {bt::CudaSetupFailure::PeerCopy, "the peer copy", 2, 1, 2},
+    {bt::CudaSetupFailure::ElapsedTime, "the elapsed-time read", 2, 1, 2},
+};
+
+} // namespace
+
+/**
+ * @test A peer copy is timed with events of its stream's device. Under an
+ *       emulated second device that, as CUDA does between two devices,
+ *       refuses an event recorded on another device's stream, a copy from
+ *       device 0 to 1 and one from 1 to 0, peer access asked for and device 1
+ *       the caller's, each make the destination's buffer on the destination,
+ *       the source's buffer, stream and both events on the source, record,
+ *       copy, record and read the time on that stream, and release everything
+ *       with its own device current; the profile's time is the time read,
+ *       nothing is refused or left, and the caller's device is current again
+ */
+TEST_F(PerfGpuHarnessTest, P2PTimingRecordsOnTheCopyStreamsDevice) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PTiming") + ".Copy", cfg_};
+  for (const auto& [SRC, DST] : DIRECTIONS) {
+    expectTimedPeerCopy(perf, bt::CudaDevices::EmulatedPeer, SRC, DST);
+  }
+}
+
+/**
+ * @test A timed peer copy whose CUDA call fails at any step, from the first
+ *       allocation to the elapsed-time read, in either direction under the
+ *       emulated second device: the injected error reaches the caller, every
+ *       buffer, stream and event made before it is released with its own
+ *       device current, no row is published, the caller's device is current
+ *       again, and the same case then times the copy as the test above checks
+ */
+TEST_F(PerfGpuHarnessTest, P2PTimingThatFailsLeavesNothingAndRestoresTheDevice) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PFails") + ".Copy", cfg_};
+  for (const auto& [SRC, DST] : DIRECTIONS) {
+    for (const CopyStep& STEP : COPY_STEPS) {
+      SCOPED_TRACE(std::string(STEP.name) + ", from device " + std::to_string(SRC) + " to device " +
+                   std::to_string(DST));
+      {
+        ScopedRecording recording(STEP.failure, bt::CudaDevices::EmulatedPeer);
+        const CallerDevice CALLER(1);
+        try {
+          static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel)
+                                .measureP2PBandwidth(SRC, DST, P2P_BYTES)
+                                .measure());
+          ADD_FAILURE() << "measured although " << STEP.name << " failed";
+        } catch (const std::runtime_error& e) {
+          EXPECT_EQ(std::string(e.what()), INJECTED);
+        }
+        EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again";
+        EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+            << "the failed measurement published a row";
+        const bt::CudaHandleCounts FAILED = recording.stop();
+        EXPECT_EQ(FAILED.allocationsMade, STEP.allocationsBefore);
+        EXPECT_EQ(FAILED.streamsMade, STEP.streamsBefore);
+        EXPECT_EQ(FAILED.eventsMade, STEP.eventsBefore);
+        EXPECT_EQ(FAILED.allocationsLeft, 0) << "the failed copy left its buffers";
+        EXPECT_EQ(FAILED.streamsLeft, 0) << "the failed copy left its stream";
+        EXPECT_EQ(FAILED.eventsLeft, 0) << "the failed copy left its events";
+        EXPECT_EQ(FAILED.releasedOffDevice, 0);
+        EXPECT_EQ(FAILED.refusedCalls, 0);
+      }
+
+      // The same case then times the copy as a case that never failed does.
+      expectTimedPeerCopy(perf, bt::CudaDevices::EmulatedPeer, SRC, DST);
+    }
+  }
+}
+
+/**
+ * @test With two CUDA devices that are each other's peers, a peer copy from
+ *       device 0 to 1 and one from 1 to 0, peer access asked for, are timed
+ *       as under the emulated device, on the real devices, whose driver
+ *       refuses an event recorded on another device's stream: the stop event,
+ *       recorded after the copy on its stream, completed and was read, so the
+ *       copy completed. Bandwidth is not checked. Elsewhere it skips, and no
+ *       physical peer copy is run
+ */
+TEST_F(PerfGpuHarnessTest, P2PTimingBetweenTwoPeerDevicesTimesTheCopy) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  int forward = 0;
+  int backward = 0;
+  if (count >= 2) {
+    ASSERT_EQ(cudaDeviceCanAccessPeer(&forward, 0, 1), cudaSuccess);
+    ASSERT_EQ(cudaDeviceCanAccessPeer(&backward, 1, 0), cudaSuccess);
+  }
+  if (forward == 0 || backward == 0) {
+    GTEST_SKIP() << "needs two CUDA devices that are each other's peers; this machine has " << count
+                 << (count >= 2 ? ", and devices 0 and 1 are not peers both ways" : "")
+                 << ", so no physical peer copy is run here";
+  }
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PPeers") + ".Copy", cfg_};
+  for (const auto& [SRC, DST] : DIRECTIONS) {
+    expectTimedPeerCopy(perf, bt::CudaDevices::Real, SRC, DST);
+  }
+}
+
+/**
+ * @test withP2PAccess() leaves the caller's device current and no error.
+ *       Under the emulated second device, with device 0 the caller's, two
+ *       two-device measurements each enable peer access both ways, the second
+ *       finding it enabled already: the caller's device is current after
+ *       each, and cudaGetLastError() has nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, WithP2PAccessRestoresTheDeviceAndLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PAccess") + ".Enable", cfg_};
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  ASSERT_EQ(currentDevice(), 0);
+  for (const char* pass : {"access enabled", "access enabled already"}) {
+    SCOPED_TRACE(pass);
+    EXPECT_NO_THROW(
+        static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel).withP2PAccess().measure()));
+    static_cast<void>(lastRow());
+    EXPECT_EQ(currentDevice(), 0) << "the caller's device is not current again";
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+  }
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(COUNTS.peerAccessEnables, 4) << "the harness's enables did not reach the emulation";
+}
+
+/**
+ * @test withP2PAccess() whose enable of a pair fails leaves no error either.
+ *       Under the emulated second device, with device 0 the caller's, the
+ *       first enable fails with cudaErrorTooManyPeers: the measurement goes
+ *       on, the other pair's enable is still made, the caller's device is
+ *       current again, and cudaGetLastError() has nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, WithP2PAccessThatCannotEnableAPairLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PAccess") + ".Refused", cfg_};
+  ScopedRecording recording(bt::CudaSetupFailure::PeerAccess, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  ASSERT_EQ(currentDevice(), 0);
+  EXPECT_NO_THROW(
+      static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel).withP2PAccess().measure()));
+  static_cast<void>(lastRow());
+  EXPECT_EQ(currentDevice(), 0) << "the caller's device is not current again";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(COUNTS.peerAccessEnables, 2) << "the enable after the failed one was not made";
+}
+
+/**
+ * @test withP2PAccess() that cannot make a peer current leaves no error
+ *       either. Under the emulated second device, with device 0 the caller's,
+ *       the first switch to device 1 fails with cudaErrorDevicesUnavailable,
+ *       as it does for a device another process holds in exclusive-process
+ *       mode: the measurement goes on, device 0's enable is still made and
+ *       device 1's is skipped, the caller's device is current again, and
+ *       cudaGetLastError() has nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, WithP2PAccessThatCannotSwitchToAPeerLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PAccess") + ".Unavailable", cfg_};
+  ScopedRecording recording(bt::CudaSetupFailure::PeerSwitch, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  ASSERT_EQ(currentDevice(), 0);
+  EXPECT_NO_THROW(
+      static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel).withP2PAccess().measure()));
+  static_cast<void>(lastRow());
+  EXPECT_EQ(currentDevice(), 0) << "the caller's device is not current again";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(COUNTS.peerAccessEnables, 1) << "device 0's enable was not made, or device 1's was too";
+}
+
+/**
+ * @test Without a peer there is nothing to time and no error to leave: a copy
+ *       to a device id that names no device, and peer access asked for over
+ *       one device more than this machine has, each leave the caller's device
+ *       current and nothing for cudaGetLastError(); the copy reports no access
+ *       and no time, and allocates nothing
+ */
+TEST_F(PerfGpuHarnessTest, P2PWithoutAPeerLeavesNoError) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PNoPeer") + ".Copy", cfg_};
+  const int CALLER = currentDevice();
+  {
+    SCOPED_TRACE("a copy to device " + std::to_string(count));
+    static_cast<void>(cudaGetLastError());
+    ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::Real);
+    const ub::MultiGpuResult RESULT =
+        perf.cudaKernelMultiGpu(1, noKernel).measureP2PBandwidth(0, count, P2P_BYTES).measure();
+    static_cast<void>(lastRow());
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+    EXPECT_EQ(currentDevice(), CALLER);
+    const bt::CudaHandleCounts COUNTS = recording.stop();
+    EXPECT_EQ(COUNTS.allocationsMade, 0);
+    ASSERT_TRUE(RESULT.aggregatedStats.p2pProfile.has_value());
+    EXPECT_FALSE(RESULT.aggregatedStats.p2pProfile->accessEnabled);
+    EXPECT_EQ(RESULT.aggregatedStats.p2pProfile->timeUs, 0.0);
+  }
+  {
+    SCOPED_TRACE("peer access over " + std::to_string(count + 1) + " devices");
+    static_cast<void>(cudaGetLastError());
+    static_cast<void>(perf.cudaKernelMultiGpu(count + 1, noKernel).withP2PAccess().measure());
+    static_cast<void>(lastRow());
+    EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+    EXPECT_EQ(currentDevice(), CALLER);
+  }
+}
+
+/**
+ * @test A measurement that asked for a peer copy and had no peer to copy to
+ *       publishes no bandwidth: its row's p2pBandwidthGBs cell is empty, not a
+ *       0 a reader would take for a measured rate
+ */
+TEST_F(PerfGpuHarnessTest, P2PCellIsEmptyWithoutAPeerCopy) {
+  int count = 0;
+  ASSERT_EQ(cudaGetDeviceCount(&count), cudaSuccess);
+  ub::PerfGpuCase perf{uniqueSuite("GpuP2PNoCell") + ".Copy", cfg_};
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1, noKernel).measureP2PBandwidth(0, count, P2P_BYTES).measure();
+  const ub::PerfRow ROW = lastRow();
+  ASSERT_TRUE(RESULT.aggregatedStats.p2pProfile.has_value());
+  EXPECT_FALSE(RESULT.aggregatedStats.p2pProfile->accessEnabled);
+  EXPECT_FALSE(ROW.p2pBandwidthGBs.has_value())
+      << "the cell holds " << ROW.p2pBandwidthGBs.value_or(-1.0);
+}
+
+/* ----------------------------- Recorder Forwarding ----------------------------- */
+
 namespace {
 
 /** @brief The GPU config's stream priority rule set for a scope, the old one back after. */
@@ -1724,10 +2134,12 @@ private:
 } // namespace
 
 /**
- * @test The recorder forwards each of its six calls to the symbol the
- *       harness's call is linked to. Once the harness has run all six (a case
- *       with a high-priority stream and one with a plain one, each made and
- *       ended while recording), each call's definition is exported under a
+ * @test The recorder forwards each of its sixteen calls to the symbol the
+ *       harness's call is linked to. Once the harness has run all sixteen (a
+ *       case with a high-priority stream and one with a plain one, each made
+ *       and ended while recording, and a case timing a peer copy with peer
+ *       access asked for, twice, the second finding access enabled, under the
+ *       emulated second device), each call's definition is exported under a
  *       symbol, its forward looked that same symbol up, this process resolves
  *       it to the recorder, and the definition the forward found is that
  *       symbol in another file. Its lines name the toolkit the run exercised
@@ -1749,9 +2161,23 @@ TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
     EXPECT_EQ(MADE.streamsLeft, 0);
     EXPECT_EQ(MADE.eventsLeft, 0);
   }
+  {
+    ub::PerfGpuCase perf{uniqueSuite("GpuRecorderForward") + ".PeerCopy", cfg_};
+    ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+    for (int pass = 0; pass < 2; ++pass) {
+      EXPECT_NO_THROW(static_cast<void>(perf.cudaKernelMultiGpu(2, noKernel)
+                                            .withP2PAccess()
+                                            .measureP2PBandwidth(0, 1, P2P_BYTES)
+                                            .measure()));
+      static_cast<void>(ub::PerfRegistry::instance().take());
+    }
+    const bt::CudaHandleCounts COPIED = recording.stop();
+    EXPECT_EQ(COPIED.allocationsMade, 4);
+    EXPECT_EQ(COPIED.refusedCalls, 0);
+  }
 
   const std::vector<bt::CudaForwardedCall> CALLS = bt::cudaHandleRecorderForwarding();
-  ASSERT_EQ(CALLS.size(), 6U);
+  ASSERT_EQ(CALLS.size(), 16U);
   for (const bt::CudaForwardedCall& CALL : CALLS) {
     SCOPED_TRACE(CALL.api);
     std::printf("[recorder] CUDART_VERSION %d: %s is %s, forwarded to %s in %s\n", CUDART_VERSION,

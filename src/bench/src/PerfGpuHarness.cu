@@ -340,6 +340,9 @@ public:
   /** @brief Hands the stream on: from here the caller destroys it. */
   [[nodiscard]] cudaStream_t release() noexcept { return std::exchange(stream_, nullptr); }
 
+  /** @brief The stream, still owned here. */
+  [[nodiscard]] cudaStream_t get() const noexcept { return stream_; }
+
 private:
   cudaStream_t stream_ = nullptr;
 };
@@ -365,8 +368,36 @@ public:
   /** @brief Hands the event on: from here the caller destroys it. */
   [[nodiscard]] cudaEvent_t release() noexcept { return std::exchange(event_, nullptr); }
 
+  /** @brief The event, still owned here. */
+  [[nodiscard]] cudaEvent_t get() const noexcept { return event_; }
+
 private:
   cudaEvent_t event_ = nullptr;
+};
+
+/**
+ * @brief Allocates device memory on the current device and owns it: when the
+ *        scope ends, by exception included, the memory is freed with that
+ *        device still current.
+ */
+class OwnedDeviceMemory {
+public:
+  explicit OwnedDeviceMemory(size_t bytes) { CUDA_CHECK(cudaMalloc(&memory_, bytes)); }
+
+  ~OwnedDeviceMemory() {
+    if (memory_ != nullptr) {
+      cudaFree(memory_);
+    }
+  }
+
+  OwnedDeviceMemory(const OwnedDeviceMemory&) = delete;
+  OwnedDeviceMemory& operator=(const OwnedDeviceMemory&) = delete;
+
+  /** @brief The memory, still owned here. */
+  [[nodiscard]] void* get() const noexcept { return memory_; }
+
+private:
+  void* memory_ = nullptr;
 };
 
 /** @brief Throws std::invalid_argument unless @p deviceId is a CUDA device of this process. */
@@ -378,6 +409,21 @@ void requireDevice(int deviceId) {
                                 ") names no CUDA device: this process sees " +
                                 std::to_string(count) + ", ids 0 to " + std::to_string(count - 1));
   }
+}
+
+/**
+ * @brief Whether device @p device can access device @p peer's memory. A query
+ *        that fails, as it does for an id that names no device, answers no:
+ *        its error is read here, so the caller's next cudaGetLastError() does
+ *        not report it.
+ */
+bool canAccessPeer(int device, int peer) {
+  int canAccess = 0;
+  if (cudaDeviceCanAccessPeer(&canAccess, device, peer) != cudaSuccess) {
+    static_cast<void>(cudaGetLastError());
+    return false;
+  }
+  return canAccess != 0;
 }
 
 } // namespace
@@ -949,17 +995,33 @@ private:
   }
 
   void enablePeerToPeer(int deviceCount) {
+    // Access is enabled from the device that will read, made current only
+    // for a pair that can have it, and the caller's device is current again
+    // after; nothing here throws. The switch to that device can fail even so
+    // (a device another process holds in exclusive-process mode cannot be
+    // made current), and its pair is then skipped. An enable that does not
+    // succeed leaves its pair as it was (access an earlier call enabled
+    // stands; a pair the runtime refuses stays without it). Either way the
+    // other pairs are still tried, and the failed switch's or enable's
+    // answer is read here rather than left for the caller.
+    int caller = -1;
+    const bool KNOWN_CALLER = cudaGetDevice(&caller) == cudaSuccess;
     for (int i = 0; i < deviceCount; ++i) {
-      cudaSetDevice(i);
       for (int j = 0; j < deviceCount; ++j) {
-        if (i != j) {
-          int canAccess = 0;
-          cudaDeviceCanAccessPeer(&canAccess, i, j);
-          if (canAccess) {
-            cudaDeviceEnablePeerAccess(j, 0);
-          }
+        if (i == j || !canAccessPeer(i, j)) {
+          continue;
+        }
+        if (cudaSetDevice(i) != cudaSuccess) {
+          static_cast<void>(cudaGetLastError());
+          continue;
+        }
+        if (cudaDeviceEnablePeerAccess(j, 0) != cudaSuccess) {
+          static_cast<void>(cudaGetLastError());
         }
       }
+    }
+    if (KNOWN_CALLER) {
+      cudaSetDevice(caller);
     }
   }
 
@@ -969,45 +1031,33 @@ private:
     profile.dstDevice = dstDev;
     profile.bytes = bytes;
 
-    int canAccess = 0;
-    cudaDeviceCanAccessPeer(&canAccess, srcDev, dstDev);
-    profile.accessEnabled = (canAccess != 0);
-
+    profile.accessEnabled = canAccessPeer(srcDev, dstDev);
     if (!profile.accessEnabled) {
       return profile;
     }
 
-    void *srcPtr, *dstPtr;
-    cudaSetDevice(srcDev);
-    CUDA_CHECK(cudaMalloc(&srcPtr, bytes));
-    cudaSetDevice(dstDev);
-    CUDA_CHECK(cudaMalloc(&dstPtr, bytes));
+    // One copy on a stream of the source device, timed by events of that
+    // same device: CUDA refuses to record an event on another device's stream
+    // and to time two events of different devices. Each buffer is allocated
+    // and freed with its own device current, and every handle is released,
+    // in reverse order, by return or by exception; the device current here
+    // is current again after.
+    const ScopedDevice ON_DESTINATION(dstDev);
+    const OwnedDeviceMemory dst(bytes);
+    const ScopedDevice ON_SOURCE(srcDev);
+    const OwnedDeviceMemory src(bytes);
+    const OwnedStream stream(/*highPriority=*/false);
+    const OwnedEvent start;
+    const OwnedEvent stop;
 
-    cudaEvent_t start, stop;
-    CUDA_CHECK(cudaEventCreate(&start));
-    CUDA_CHECK(cudaEventCreate(&stop));
-
-    cudaStream_t stream;
-    cudaSetDevice(srcDev);
-    CUDA_CHECK(cudaStreamCreate(&stream));
-
-    CUDA_CHECK(cudaEventRecord(start, stream));
-    CUDA_CHECK(cudaMemcpyPeerAsync(dstPtr, dstDev, srcPtr, srcDev, bytes, stream));
-    CUDA_CHECK(cudaEventRecord(stop, stream));
-    CUDA_CHECK(cudaEventSynchronize(stop));
+    CUDA_CHECK(cudaEventRecord(start.get(), stream.get()));
+    CUDA_CHECK(cudaMemcpyPeerAsync(dst.get(), dstDev, src.get(), srcDev, bytes, stream.get()));
+    CUDA_CHECK(cudaEventRecord(stop.get(), stream.get()));
+    CUDA_CHECK(cudaEventSynchronize(stop.get()));
 
     float ms = 0.0f;
-    CUDA_CHECK(cudaEventElapsedTime(&ms, start, stop));
+    CUDA_CHECK(cudaEventElapsedTime(&ms, start.get(), stop.get()));
     profile.timeUs = ms * 1000.0;
-
-    cudaStreamDestroy(stream);
-    cudaEventDestroy(start);
-    cudaEventDestroy(stop);
-    cudaSetDevice(srcDev);
-    cudaFree(srcPtr);
-    cudaSetDevice(dstDev);
-    cudaFree(dstPtr);
-
     return profile;
   }
 
@@ -1100,7 +1150,10 @@ private:
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;
     row.multiGpuEfficiency = result.aggregatedStats.multiGpu->scalingEfficiency;
-    if (result.aggregatedStats.p2pProfile.has_value()) {
+    // A rate needs a timed copy: without a peer to copy to, the cell stays
+    // empty rather than a 0 a reader would take for a measurement.
+    if (result.aggregatedStats.p2pProfile.has_value() &&
+        result.aggregatedStats.p2pProfile->timeUs > 0.0) {
       row.p2pBandwidthGBs = result.aggregatedStats.p2pProfile->bandwidthGBs();
     }
 

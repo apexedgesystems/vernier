@@ -947,6 +947,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   [#65](https://github.com/apexedgesystems/vernier/pull/65).
 - Improve `--target-time` calibration when brief scheduling interruptions
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
+- Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
+  ([#71](https://github.com/apexedgesystems/vernier/pull/71))
 
 ## v1.0.3 - 2026-06-28
 

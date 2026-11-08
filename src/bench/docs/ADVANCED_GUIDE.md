@@ -1078,7 +1078,7 @@ linked at build time; no `--profile` flag required. See
 | `deviceId`           | int    | Primary device ID         | Multi-GPU tests |
 | `deviceCount`        | int    | Number of GPUs used       | Multi-GPU tests |
 | `multiGpuEfficiency` | double | Parallel efficiency [0-1] | Multi-GPU tests |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | P2P enabled     |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | Peer copy timed |
 
 #### Unified Memory Columns
 

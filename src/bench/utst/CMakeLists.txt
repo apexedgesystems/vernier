@@ -142,9 +142,11 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
 # skip without one). Its CudaHandleRecorder.cpp defines, in the program, the
-# CUDA runtime calls that make and destroy streams and events and read a
-# device's properties: libbench_cuda's calls reach them before libcudart's,
-# so a test can count the handles the harness makes and fail a setup step.
+# CUDA runtime calls that choose, pair and describe devices, make and release
+# streams, events and device memory, record, copy and time on them, and read
+# the last error: libbench_cuda's calls reach them before libcudart's, so a
+# test can count what the harness makes, fail one step, and let the one GPU
+# stand in for two.
 # TestBenchNsight: the Nsight backend, and the backends the registry builds
 # for the GPU names once libbench_cuda's registrations replace libbench's;
 # they live in libbench_cuda but make no CUDA call, so they need the toolkit
