@@ -6,13 +6,15 @@
  * activity records from kernel-launch threads; we walk the records in
  * stop() to populate the aggregate metrics. Every CUPTI call's result is
  * checked: a refusal to register, or to switch kernel records on or off,
- * leaves the collector unavailable with the reason; a failed flush, dropped
- * records, records CUPTI could not read or no record at all leave the window
- * without stats, with the problem named.
+ * leaves the collector unavailable with the reason; a refusal of the
+ * unified-memory counters leaves the window without them, with the reason;
+ * a failed flush, dropped records, records CUPTI could not read or no record
+ * at all leave the window without stats, with the problem named.
  */
 
 #include "src/bench/inc/CuptiCollector.hpp"
 
+#include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
 
 #include <algorithm>
@@ -21,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -31,6 +34,9 @@
 #if defined(COMPAT_CUPTI_AVAILABLE) && COMPAT_CUPTI_AVAILABLE
 #define VERNIER_HAS_CUPTI 1
 #include <cupti.h>
+#if defined(__CUDACC__)
+#include <cuda_runtime.h>
+#endif
 #else
 #define VERNIER_HAS_CUPTI 0
 #endif
@@ -70,9 +76,39 @@ static_assert(readsThroughKernel9<CUpti_ActivityKernel11>(),
               "CUpti_ActivityKernel11 moves a field read through CUpti_ActivityKernel9");
 #endif
 
+// Unified-memory counter records are read through
+// CUpti_ActivityUnifiedMemoryCounter2, which every CUPTI this file builds with
+// declares. CUPTI 12.8 (API version 26) and later hand over
+// CUpti_ActivityUnifiedMemoryCounter3, which appends to Counter2's fields; the
+// assert holds that it keeps the ones read here where Counter2 has them.
+/** @brief True when @p Newer keeps the fields read here where Counter2 has them. */
+template <typename Newer> constexpr bool readsThroughCounter2() {
+  return offsetof(CUpti_ActivityUnifiedMemoryCounter2, kind) == offsetof(Newer, kind) &&
+         offsetof(CUpti_ActivityUnifiedMemoryCounter2, counterKind) ==
+             offsetof(Newer, counterKind) &&
+         offsetof(CUpti_ActivityUnifiedMemoryCounter2, value) == offsetof(Newer, value) &&
+         offsetof(CUpti_ActivityUnifiedMemoryCounter2, start) == offsetof(Newer, start) &&
+         offsetof(CUpti_ActivityUnifiedMemoryCounter2, end) == offsetof(Newer, end);
+}
+#if CUPTI_API_VERSION >= 26
+static_assert(readsThroughCounter2<CUpti_ActivityUnifiedMemoryCounter3>(),
+              "CUpti_ActivityUnifiedMemoryCounter3 moves a field read through "
+              "CUpti_ActivityUnifiedMemoryCounter2");
+#endif
+
 constexpr std::size_t BUFFER_SIZE = 32 * 1024; // bytes per CUPTI activity buffer
 constexpr std::size_t BUFFER_ALIGN = 8;        // CUPTI requires 8-byte aligned buffers
 constexpr std::size_t RECORD_RESERVE = 1024;   // pre-allocate to avoid reallocation under callback
+
+/// The unified-memory counters a window asks CUPTI for: the records of these
+/// kinds are the ones UnifiedMemoryProfile is built from.
+constexpr CUpti_ActivityUnifiedMemoryCounterKind UNIFIED_MEMORY_KINDS[] = {
+    CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD,
+    CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH,
+    CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+    CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT,
+    CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THRASHING,
+};
 
 struct KernelRecord {
   std::uint16_t registersPerThread{0};
@@ -81,16 +117,70 @@ struct KernelRecord {
   std::string name;
 };
 
+/**
+ * @brief What one window's unified-memory counter records add up to, kind by
+ *        kind, as UnifiedMemoryProfile documents them.
+ */
+struct UnifiedMemoryTally {
+  std::uint64_t gpuFaultGroups{0};  ///< GPU page-fault records' values: fault groups per page
+  std::uint64_t cpuFaults{0};       ///< CPU page-fault records: one fault each
+  std::uint64_t h2dMigrations{0};   ///< Host-to-device transfer records
+  std::uint64_t h2dBytes{0};        ///< Their values: bytes moved
+  std::uint64_t d2hMigrations{0};   ///< Device-to-host transfer records
+  std::uint64_t d2hBytes{0};        ///< Their values: bytes moved
+  std::uint64_t transferNs{0};      ///< The transfers' end minus start, summed
+  std::uint64_t thrashing{0};       ///< Thrashing records
+  std::uint64_t endsBeforeStart{0}; ///< Transfers whose end CUPTI put before their start
+
+  /** @brief Adds one record. A kind it does not count was configured elsewhere in the process. */
+  void add(const CUpti_ActivityUnifiedMemoryCounter2& record) {
+    switch (record.counterKind) {
+    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT:
+      gpuFaultGroups += record.value;
+      break;
+    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT:
+      // The value is the faulting instruction's address, not a count.
+      ++cpuFaults;
+      break;
+    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD:
+      ++h2dMigrations;
+      h2dBytes += record.value;
+      addTransferTime(record);
+      break;
+    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH:
+      ++d2hMigrations;
+      d2hBytes += record.value;
+      addTransferTime(record);
+      break;
+    case CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THRASHING:
+      ++thrashing;
+      break;
+    default:
+      break;
+    }
+  }
+
+  void addTransferTime(const CUpti_ActivityUnifiedMemoryCounter2& record) {
+    if (record.end < record.start) {
+      ++endsBeforeStart;
+      return;
+    }
+    transferNs += record.end - record.start;
+  }
+};
+
 // Aggregator state is global because CUPTI's buffer-completion callback is a
 // free function. Guarded by a mutex; expected contention is low (one drain
 // per measured window) and the mutex never appears in the hot path.
 struct Aggregator {
   std::mutex mtx;
   std::vector<KernelRecord> records;
+  UnifiedMemoryTally unifiedMemory;        ///< This window's unified-memory records
   std::size_t dropped{0};                  ///< Records CUPTI dropped in this window
   CUptiResult droppedCount{CUPTI_SUCCESS}; ///< The first failed count of them, if any
   CUptiResult walkError{CUPTI_SUCCESS};    ///< The first error that ended a buffer's walk early
   bool enabled{false};
+  bool countsUnifiedMemory{false}; ///< The window recording the counters reads their records
 
   /** @brief Adds one reading of CUPTI's dropped-record count (call with mtx held). */
   void noteDropped(CUptiResult counted, std::size_t n) {
@@ -109,6 +199,15 @@ struct Aggregator {
       walkError = ended;
     }
   }
+
+  /** @brief Empties the window's records and counts (call with mtx held). */
+  void clearWindow() {
+    records.clear();
+    unifiedMemory = {};
+    dropped = 0;
+    droppedCount = CUPTI_SUCCESS;
+    walkError = CUPTI_SUCCESS;
+  }
 };
 
 Aggregator& aggregator() {
@@ -123,6 +222,45 @@ std::string resultName(CUptiResult result) {
     return text;
   }
   return "CUPTI result " + std::to_string(static_cast<long long>(result));
+}
+
+/**
+ * @brief Has this process use unified memory once, before CUPTI first
+ *        records its counters here.
+ *
+ * In a process that never allocated managed memory, CUPTI switches
+ * CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER on at once and takes about 2 s to
+ * switch it off, every window; once the process has used unified memory, the
+ * two take about 20 and 12 ms (CUDA 13.1, driver 580). One 4 KiB managed
+ * allocation, freed at once, is that use. Built only where CUDA compiles this
+ * file: the CUPTI stand-in's tests have no device.
+ */
+void engageUnifiedMemoryOnce() {
+#if defined(__CUDACC__)
+  static const bool ENGAGED = [] {
+    void* page = nullptr;
+    if (cudaMallocManaged(&page, 4096) == cudaSuccess) {
+      cudaFree(page);
+    } else {
+      static_cast<void>(cudaGetLastError()); // no managed memory here: nothing to engage
+    }
+    return true;
+  }();
+  static_cast<void>(ENGAGED);
+#endif
+}
+
+/** @brief The counts a window's records give, in the fields UnifiedMemoryProfile documents. */
+UnifiedMemoryProfile profileOf(const UnifiedMemoryTally& tally) {
+  UnifiedMemoryProfile profile;
+  profile.pageFaults = tally.gpuFaultGroups + tally.cpuFaults;
+  profile.h2dMigrations = tally.h2dMigrations;
+  profile.d2hMigrations = tally.d2hMigrations;
+  profile.migrationTimeUs = static_cast<double>(tally.transferNs) / 1000.0;
+  profile.thrashingEvents = tally.thrashing;
+  profile.h2dBytes = tally.h2dBytes;
+  profile.d2hBytes = tally.d2hBytes;
+  return profile;
 }
 
 extern "C" void CUPTIAPI cuptiBufferRequested(uint8_t** buffer, size_t* size,
@@ -176,6 +314,9 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
       r.dynamicSmemBytes = k->dynamicSharedMemory;
       r.name = k->name ? k->name : "?";
       agg.records.push_back(std::move(r));
+    } else if (record->kind == CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER &&
+               agg.countsUnifiedMemory) {
+      agg.unifiedMemory.add(*reinterpret_cast<CUpti_ActivityUnifiedMemoryCounter2*>(record));
     }
   } while (status == CUPTI_SUCCESS);
 
@@ -196,8 +337,59 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
 
 /** @brief What the collector says about itself; kept here, off the class's layout. */
 struct CuptiCollector::Impl {
-  std::string unavailableReason; ///< Why the collector does not collect; empty while it can
-  std::string windowProblem;     ///< What kept the last window's records from being complete
+  std::string unavailableReason;    ///< Why the collector does not collect; empty while it can
+  std::string windowProblem;        ///< What kept the last window's records from being complete
+  bool unifiedMemoryAsked{false};   ///< collectUnifiedMemory(true)
+  bool unifiedMemoryRunning{false}; ///< This window switched the counters' kind on
+  std::string unifiedMemoryRefusal; ///< Why the last window that was to record them did not
+  std::string unifiedMemoryStuck; ///< CUPTI's answer when the kind stayed on; no window asks again
+  std::optional<UnifiedMemoryProfile> unifiedMemory; ///< The last window's counters
+
+#if VERNIER_HAS_CUPTI
+  /**
+   * @brief Asks CUPTI for this window's unified-memory counters: the five
+   *        kinds configured, then their activity kind switched on. A refusal
+   *        leaves the window without them and says why; kernel records go on.
+   */
+  void startUnifiedMemory() {
+    if (!unifiedMemoryStuck.empty()) {
+      unifiedMemoryRefusal = unifiedMemoryStuck;
+      return;
+    }
+    engageUnifiedMemoryOnce();
+    CUpti_ActivityUnifiedMemoryCounterConfig config[std::size(UNIFIED_MEMORY_KINDS)];
+    for (std::size_t i = 0; i < std::size(UNIFIED_MEMORY_KINDS); ++i) {
+      // The scope and device id are deprecated (CUDA 7.0): the counters are
+      // the process's, as the kernel records are.
+      config[i].scope = CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_SCOPE_PROCESS_SINGLE_DEVICE;
+      config[i].kind = UNIFIED_MEMORY_KINDS[i];
+      config[i].deviceId = 0;
+      config[i].enable = 1;
+    }
+    const CUptiResult CONFIGURED = cuptiActivityConfigureUnifiedMemoryCounter(
+        config, static_cast<uint32_t>(std::size(UNIFIED_MEMORY_KINDS)));
+    if (CONFIGURED != CUPTI_SUCCESS) {
+      unifiedMemoryRefusal =
+          "CUPTI refused to configure the unified-memory counters (" + resultName(CONFIGURED) + ")";
+      return;
+    }
+    {
+      std::lock_guard<std::mutex> guard(aggregator().mtx);
+      aggregator().countsUnifiedMemory = true;
+    }
+    const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER);
+    if (ENABLED != CUPTI_SUCCESS) {
+      {
+        std::lock_guard<std::mutex> guard(aggregator().mtx);
+        aggregator().countsUnifiedMemory = false;
+      }
+      unifiedMemoryRefusal =
+          "CUPTI refused to record unified-memory counter activity (" + resultName(ENABLED) + ")";
+      return;
+    }
+    unifiedMemoryRunning = true;
+  }
+#endif
 };
 
 CuptiCollector::CuptiCollector(bool forceDisabled) {
@@ -243,6 +435,16 @@ const std::string& CuptiCollector::unavailableReason() const noexcept {
   return impl_->unavailableReason;
 }
 
+void CuptiCollector::collectUnifiedMemory(bool on) noexcept { impl_->unifiedMemoryAsked = on; }
+
+const std::optional<UnifiedMemoryProfile>& CuptiCollector::unifiedMemory() const noexcept {
+  return impl_->unifiedMemory;
+}
+
+const std::string& CuptiCollector::unifiedMemoryRefusal() const noexcept {
+  return impl_->unifiedMemoryRefusal;
+}
+
 const std::string& CuptiCollector::windowProblem() const noexcept { return impl_->windowProblem; }
 
 void CuptiCollector::start() {
@@ -252,6 +454,8 @@ void CuptiCollector::start() {
   // collects nothing.
   stats_ = {};
   impl_->windowProblem.clear();
+  impl_->unifiedMemory.reset();
+  impl_->unifiedMemoryRefusal.clear();
   // A collector that stood down at construction, has no CUPTI, or was
   // refused by CUPTI is not available.
   if (!available_)
@@ -259,10 +463,8 @@ void CuptiCollector::start() {
 #if VERNIER_HAS_CUPTI
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
-    aggregator().records.clear();
-    aggregator().dropped = 0;
-    aggregator().droppedCount = CUPTI_SUCCESS;
-    aggregator().walkError = CUPTI_SUCCESS;
+    aggregator().clearWindow();
+    aggregator().countsUnifiedMemory = false;
     aggregator().enabled = true;
   }
   // KERNEL records only: with KERNEL on, CUPTI refuses CONCURRENT_KERNEL
@@ -278,6 +480,9 @@ void CuptiCollector::start() {
         "CUPTI refused to record kernel activity (" + resultName(ENABLED) + ")";
     return;
   }
+  if (impl_->unifiedMemoryAsked) {
+    impl_->startUnifiedMemory();
+  }
 #endif
   running_ = true;
 }
@@ -287,9 +492,15 @@ void CuptiCollector::stop() {
     return;
 
 #if VERNIER_HAS_CUPTI
-  // 1 = force: partly filled buffers are handed over too.
+  // 1 = force: partly filled buffers are handed over too. The flush comes
+  // before either kind is switched off: switched off first, the
+  // unified-memory kind loses the window's device-side records (the
+  // host-to-device transfers and the GPU page faults).
   const CUptiResult FLUSHED = cuptiActivityFlushAll(1);
   const CUptiResult DISABLED = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
+  const CUptiResult UNIFIED_MEMORY_DISABLED =
+      impl_->unifiedMemoryRunning ? cuptiActivityDisable(CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER)
+                                  : CUPTI_SUCCESS;
   // Records dropped while CUPTI had no buffer to hand over are counted in the
   // same global queue the completion callback reads, but reach no callback.
   std::size_t droppedUnbuffered = 0;
@@ -299,6 +510,7 @@ void CuptiCollector::stop() {
   // flush or the disable failed) finds the aggregator disabled and is freed
   // unread.
   std::vector<KernelRecord> snapshot;
+  UnifiedMemoryTally unifiedMemory;
   std::size_t dropped = 0;
   CUptiResult droppedCount = CUPTI_SUCCESS;
   CUptiResult walkError = CUPTI_SUCCESS;
@@ -306,8 +518,10 @@ void CuptiCollector::stop() {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().noteDropped(COUNTED, droppedUnbuffered);
     aggregator().enabled = false;
+    aggregator().countsUnifiedMemory = false;
     snapshot = std::move(aggregator().records);
     aggregator().records.clear();
+    unifiedMemory = aggregator().unifiedMemory;
     dropped = aggregator().dropped;
     droppedCount = aggregator().droppedCount;
     walkError = aggregator().walkError;
@@ -320,9 +534,16 @@ void CuptiCollector::stop() {
     impl_->unavailableReason =
         "CUPTI did not stop recording kernel activity (" + resultName(DISABLED) + ")";
   }
+  // Unified-memory records still on reach no later window (the aggregator
+  // reads them only in a window that switched their kind on itself), and no
+  // later window switches it on: this one's counts were flushed first.
+  if (UNIFIED_MEMORY_DISABLED != CUPTI_SUCCESS) {
+    impl_->unifiedMemoryStuck = "CUPTI did not stop recording unified-memory counter activity (" +
+                                resultName(UNIFIED_MEMORY_DISABLED) + ")";
+  }
 
   // A count or a median from part of a window is not published: the window
-  // reports no launch and names what went wrong.
+  // reports no launch and no counter, and names what went wrong.
   if (FLUSHED != CUPTI_SUCCESS) {
     impl_->windowProblem =
         "CUPTI failed to flush its activity buffers (" + resultName(FLUSHED) + ")";
@@ -335,9 +556,22 @@ void CuptiCollector::stop() {
   } else if (walkError != CUPTI_SUCCESS) {
     impl_->windowProblem =
         "CUPTI could not read all of its activity records (" + resultName(walkError) + ")";
-  } else if (snapshot.empty()) {
+  } else if (unifiedMemory.endsBeforeStart > 0) {
+    impl_->windowProblem = "CUPTI recorded " + std::to_string(unifiedMemory.endsBeforeStart) +
+                           (unifiedMemory.endsBeforeStart == 1
+                                ? " unified-memory transfer that ends before it starts"
+                                : " unified-memory transfers that end before they start");
+  }
+  // The counters need complete records, not a launch: a window that launched
+  // nothing has them all.
+  const bool COMPLETE = impl_->windowProblem.empty();
+  if (COMPLETE && snapshot.empty()) {
     impl_->windowProblem = "CUPTI recorded no kernel launch";
   }
+  if (COMPLETE && impl_->unifiedMemoryRunning) {
+    impl_->unifiedMemory = profileOf(unifiedMemory);
+  }
+  impl_->unifiedMemoryRunning = false;
 
   stats_ = {};
   if (impl_->windowProblem.empty() && !snapshot.empty()) {
@@ -381,14 +615,13 @@ void CuptiCollector::reset() {
 #if VERNIER_HAS_CUPTI
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
-    aggregator().records.clear();
-    aggregator().dropped = 0;
-    aggregator().droppedCount = CUPTI_SUCCESS;
-    aggregator().walkError = CUPTI_SUCCESS;
+    aggregator().clearWindow();
   }
 #endif
   stats_ = {};
   impl_->windowProblem.clear();
+  impl_->unifiedMemory.reset();
+  impl_->unifiedMemoryRefusal.clear();
 }
 
 } // namespace bench

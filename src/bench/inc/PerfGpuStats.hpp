@@ -2,7 +2,7 @@
 #define VERNIER_PERFGPUSTATS_HPP
 /**
  * @file PerfGpuStats.hpp
- * @brief GPU-specific performance metrics including multi-GPU scaling and Unified Memory profiling.
+ * @brief GPU-specific performance metrics including multi-GPU scaling.
  */
 
 #include <string>
@@ -182,21 +182,41 @@ struct P2PTransferProfile {
 /* ----------------------------- Unified Memory ----------------------------- */
 
 /**
- * @brief Unified Memory profiling metrics.
+ * @brief Unified Memory counters over one measured window: what CUPTI's
+ *        unified-memory counter records add up to
+ *        (CuptiCollector::unifiedMemory()).
  *
- * Tracks page faults and migration patterns for managed memory.
+ * Each record of the window adds to one field:
+ *  - a GPU page-fault record (CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT)
+ *    adds its value, the fault groups for one page, to pageFaults, and a CPU
+ *    page-fault record (..._CPU_PAGE_FAULT_COUNT) adds one (its value is the
+ *    faulting instruction's address);
+ *  - a host-to-device transfer (..._BYTES_TRANSFER_HTOD) adds one to
+ *    h2dMigrations and its bytes to h2dBytes, a device-to-host transfer
+ *    (..._BYTES_TRANSFER_DTOH) the same to d2hMigrations and d2hBytes, and
+ *    either adds its end minus start to migrationTimeUs; transfers that
+ *    overlap each count their own time, so the sum can exceed the time spent
+ *    migrating;
+ *  - a thrashing record (..._THRASHING) adds one to thrashingEvents.
+ * A window that migrated nothing has zero counts: observed, not missing.
+ * isThrashing() and migrationOverheadPct() are arithmetic over these counts,
+ * not CUPTI's report.
  */
 struct UnifiedMemoryProfile {
-  size_t pageFaults = 0;        ///< Total page faults
-  size_t h2dMigrations = 0;     ///< Host->Device page migrations
-  size_t d2hMigrations = 0;     ///< Device->Host page migrations
-  double migrationTimeUs = 0.0; ///< Estimated time spent migrating pages
-  size_t thrashingEvents = 0;   ///< Rapid back-and-forth migrations (H<->D<->H)
+  size_t pageFaults = 0;        ///< GPU page-fault groups plus CPU page faults
+  size_t h2dMigrations = 0;     ///< Host->Device transfers
+  size_t d2hMigrations = 0;     ///< Device->Host transfers
+  double migrationTimeUs = 0.0; ///< The transfers' times, summed (us)
+  size_t thrashingEvents = 0;   ///< Thrashing records
+  size_t h2dBytes = 0;          ///< Bytes moved Host->Device
+  size_t d2hBytes = 0;          ///< Bytes moved Device->Host
 
   /**
-   * @brief Detect thrashing (excessive back-and-forth migration).
-   * @param threshold Ratio of total migrations to unique pages (default: 2.0)
-   * @return True if thrashing detected
+   * @brief Whether the migrations exceed @p threshold times the page faults:
+   *        a ratio of these counts, not CUPTI's thrashing report
+   *        (thrashingEvents).
+   * @param threshold Ratio of total migrations to page faults (default: 2.0)
+   * @return True above the ratio; false without page faults
    */
   [[nodiscard]] bool isThrashing(double threshold = 2.0) const {
     const size_t TOTAL_MIGRATIONS = h2dMigrations + d2hMigrations;
@@ -206,10 +226,12 @@ struct UnifiedMemoryProfile {
   /**
    * @brief Calculate migration overhead as percentage of kernel time.
    *
-   * Divides total migration time by the number of cycles to get per-call overhead.
+   * Divides the total migration time by the number of launches it spans to get
+   * per-call overhead.
    *
    * @param kernelTimeUs Median kernel time per call (us)
-   * @param cycles Number of operations measured
+   * @param cycles Number of launches migrationTimeUs spans (for one harness
+   *        measurement, its cycles times its repeats)
    * @return Migration overhead percentage [0-100+]
    */
   [[nodiscard]] double migrationOverheadPct(double kernelTimeUs, int cycles) const {
@@ -242,7 +264,12 @@ struct GpuStats {
   std::optional<MultiGpuMetrics> multiGpu{};
   std::optional<P2PTransferProfile> p2pProfile{};
 
-  // Unified Memory profiling
+  /// Unified Memory counters over the measurement's window (see
+  /// UnifiedMemoryProfile): set when PerfGpuConfig::captureUnifiedMemory asks
+  /// for them and CUPTI records them completely; empty otherwise. The window
+  /// spans a kernel measurement's declared copies and timed launches, or a
+  /// multi-GPU measurement's device launches, not the warmup or the host code
+  /// around them.
   std::optional<UnifiedMemoryProfile> unifiedMemory{};
 
   [[nodiscard]] double memoryBandwidthUtilization(double peakBandwidthGBs) const {

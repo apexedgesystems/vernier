@@ -145,6 +145,10 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # CUDA runtime calls that make and destroy streams and events and read a
 # device's properties: libbench_cuda's calls reach them before libcudart's,
 # so a test can count the handles the harness makes and fail a setup step.
+# PerfGpuHarness_uTest.cu defines pthread_create the same way, to fail a
+# worker's start, except under the address or the thread sanitizer, whose
+# runtime intercepts pthread_create itself: WORKER_START_SANITIZER names the
+# build's sanitizer there, the program defines none and that test skips.
 # TestBenchNsight: the Nsight backend, and the backends the registry builds
 # for the GPU names once libbench_cuda's registrations replace libbench's;
 # they live in libbench_cuda but make no CUDA call, so they need the toolkit
@@ -167,6 +171,9 @@ if (TARGET bench_cuda)
     gpu
     TIMING_ALL
   )
+  if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
+    target_compile_definitions(TestBenchGpu PRIVATE WORKER_START_SANITIZER="${SANITIZER}")
+  endif ()
   vernier_add_gtest(
     TARGET
     TestBenchNsight

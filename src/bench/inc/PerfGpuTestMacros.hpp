@@ -70,7 +70,10 @@
  * @brief GPU-aware main() that parses both CPU and GPU flags.
  *
  * Use this instead of PERF_MAIN() in GPU test binaries. Calls parseGpuFlags()
- * to enable --gpu-memory, --gpu-device, and other GPU-specific CLI options.
+ * to read --gpu-device, --gpu-memory, --capture-um and the other GPU options
+ * into the process's GPU configuration, which each GPU case copies
+ * (PerfGpuCase::gpuConfig()); --gpu-memory selects a strategy for the tests
+ * that allocate by one.
  * Returns the run's status as PERF_MAIN() does (ProfilerRegistry::finishRun()).
  *
  * Usage in GPU test files:
