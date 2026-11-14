@@ -930,8 +930,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   `throughputLoop()` row, a GPU case's CPU baseline included, records 1 in
   `threads` whatever `--threads` says, while a `contentionRun()` row keeps the
   number of workers it started.
-- **A test name with a comma, a quote or a line break stays one CSV cell** --
-  the CSV writer quotes such a name and doubles each quote inside it, so
+- **A text cell with a comma, a quote or a line break stays one CSV cell** --
+  the CSV writer quotes such a cell (the test name, `minLevel`, a profile
+  folder, the run metadata or a GPU name) and doubles each quote inside it, so
   `bench summary`, `bench compare` and pandas read the row whole.
 - **Each completed measurement is its own CSV row** -- a test that measured
   more than once wrote only its last measurement; now every completed

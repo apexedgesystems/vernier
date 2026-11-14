@@ -14,6 +14,7 @@
 
 #include <cstddef>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -335,7 +336,7 @@ TEST(PerfCsvTest, RowHasStabilityFields) {
   EXPECT_NE(CONTENT.find(",0,0.1"), std::string::npos);
 }
 
-/* ----------------------------- Test Name Cell Tests ----------------------------- */
+/* ----------------------------- Text Cell Tests ----------------------------- */
 
 namespace {
 
@@ -382,6 +383,22 @@ std::vector<std::vector<std::string>> readCsvRecords(const std::string& text) {
     records.push_back(record);
   }
   return records;
+}
+
+/** @brief The cell of @p record under the header column @p name (a failure if none). */
+std::string cellByName(const std::vector<std::string>& header,
+                       const std::vector<std::string>& record, const std::string& name) {
+  const auto IT = std::find(header.begin(), header.end(), name);
+  if (IT == header.end()) {
+    ADD_FAILURE() << "no column " << name;
+    return {};
+  }
+  const auto INDEX = static_cast<std::size_t>(IT - header.begin());
+  if (INDEX >= record.size()) {
+    ADD_FAILURE() << "the record ends before column " << name;
+    return {};
+  }
+  return record[INDEX];
 }
 
 /** @brief A header and one row named @p testName: the file's text and its records. */
@@ -449,4 +466,47 @@ TEST(PerfCsvTest, PlainTestNameIsUnquoted) {
   EXPECT_EQ(CSV.text.find('"'), std::string::npos);
   ASSERT_EQ(CSV.records.size(), 2U);
   EXPECT_EQ(CSV.records[1][0], NAME);
+}
+
+/** @test Writes every text cell as one cell, whatever commas or quotes it holds */
+TEST(PerfCsvTest, EveryStringCellIsOneCell) {
+  // A comma in each text cell of the four groups and a quote in two of them.
+  // Values a run would not record (a comma in the platform) pin the writer.
+  PerfRow row = makeBasicRow(makeTestStats());
+  row.testName = "Sweep.Sizes/64,256";
+  row.minLevel = "WARN,\"X\"";
+  row.profileTool = "perf,record";
+  row.profileDir = "./art,1/Sweep.Sizes+2F64,256 \"q\".perf";
+  row.timestamp = "2026-11-14T12:00:00Z,0";
+  row.gitHash = "v1.0.4,rc-1-gabc1234";
+  row.hostname = "bench,host";
+  row.platform = "x86_64,linux";
+  row.gpuModel = "Test GPU, 16 GB";
+  row.computeCapability = "8.9,sm_89";
+
+  CsvCapture csv;
+  writeCsvHeader(csv.stream(), true, true, true);
+  writeCsvRow(csv.stream(), row, true, true, true);
+  const std::string TEXT = csv.content();
+  const std::vector<std::vector<std::string>> RECORDS = readCsvRecords(TEXT);
+
+  ASSERT_EQ(RECORDS.size(), 2U) << TEXT;
+  const std::vector<std::string>& HEADER = RECORDS[0];
+  const std::vector<std::string>& CELLS = RECORDS[1];
+  ASSERT_EQ(CELLS.size(), HEADER.size()) << TEXT;
+  EXPECT_EQ(cellByName(HEADER, CELLS, "test"), row.testName);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "minLevel"), row.minLevel);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "profileTool"), *row.profileTool);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "profileDir"), *row.profileDir);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "timestamp"), row.timestamp);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "gitHash"), row.gitHash);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "hostname"), row.hostname);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "platform"), row.platform);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "gpuModel"), *row.gpuModel);
+  EXPECT_EQ(cellByName(HEADER, CELLS, "computeCapability"), *row.computeCapability);
+  // The numbers between and after the text cells stay under their headers.
+  EXPECT_EQ(cellByName(HEADER, CELLS, "wallMedian"), "100");
+  EXPECT_EQ(cellByName(HEADER, CELLS, "kernelTimeUs"), "");
+  // The quotes inside a cell are doubled, as in the test name.
+  EXPECT_NE(TEXT.find(",\"WARN,\"\"X\"\"\","), std::string::npos) << TEXT;
 }

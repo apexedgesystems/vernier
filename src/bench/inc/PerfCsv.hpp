@@ -90,9 +90,11 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
  * Each enabled group is written whether or not the row has values for it
  * (missing values are empty cells), so every row of a file has the column
  * count of its header: a GPU row that carries no profile metadata, and a CPU
- * row inside a GPU binary's file, both stay under the header names. The test
- * name is written with detail::writeCsvCell(), so a name holding a comma, a
- * quote or a line break stays one cell.
+ * row inside a GPU binary's file, both stay under the header names. Every
+ * text cell (the test name, minLevel, the profile and metadata cells, the GPU
+ * model and compute capability) is written with detail::writeCsvCell(), so
+ * text holding a comma, a quote or a line break stays one cell; numbers and
+ * the 0/1 flags cannot hold a delimiter and are written as they are.
  *
  * @param csv             Output stream (opened in text mode).
  * @param row             The result row.
@@ -103,30 +105,39 @@ inline void writeCsvHeader(std::ofstream& csv, bool includeProfile = false,
  */
 inline void writeCsvRow(std::ofstream& csv, const PerfRow& row, bool includeProfile,
                         bool includeMetadata, bool includeGpu) {
+  // A text cell after the first, with the delimiter before it.
+  const auto TEXT_CELL = [&csv](const std::string& text) {
+    csv << ",";
+    detail::writeCsvCell(csv, text);
+  };
+
   detail::writeCsvCell(csv, row.testName);
   csv << "," << row.cycles << "," << row.repeats << "," << row.warmup << "," << row.threads << ","
-      << row.msgBytes << "," << (row.console ? "1" : "0") << "," << (row.nonBlocking ? "1" : "0")
-      << "," << row.minLevel << "," << row.stats.median << "," << row.stats.p10 << ","
-      << row.stats.p90 << "," << row.stats.p99 << "," << row.stats.p999 << "," << row.stats.min
-      << "," << row.stats.max << "," << row.stats.mean << "," << row.stats.stddev << ","
-      << row.stats.cv << "," << row.callsPerSecond << "," << (row.stable ? "1" : "0") << ","
-      << row.cvThreshold;
+      << row.msgBytes << "," << (row.console ? "1" : "0") << "," << (row.nonBlocking ? "1" : "0");
+  TEXT_CELL(row.minLevel);
+  csv << "," << row.stats.median << "," << row.stats.p10 << "," << row.stats.p90 << ","
+      << row.stats.p99 << "," << row.stats.p999 << "," << row.stats.min << "," << row.stats.max
+      << "," << row.stats.mean << "," << row.stats.stddev << "," << row.stats.cv << ","
+      << row.callsPerSecond << "," << (row.stable ? "1" : "0") << "," << row.cvThreshold;
 
   // Profile columns
   if (includeProfile) {
-    csv << "," << (row.profileTool ? *row.profileTool : "");
-    csv << "," << (row.profileDir ? *row.profileDir : "");
+    TEXT_CELL(row.profileTool.value_or(""));
+    TEXT_CELL(row.profileDir.value_or(""));
   }
 
   // Metadata columns
   if (includeMetadata) {
-    csv << "," << row.timestamp << "," << row.gitHash << "," << row.hostname << "," << row.platform;
+    TEXT_CELL(row.timestamp);
+    TEXT_CELL(row.gitHash);
+    TEXT_CELL(row.hostname);
+    TEXT_CELL(row.platform);
   }
 
   // GPU columns (base + multi-GPU + Unified Memory)
   if (includeGpu) {
-    csv << "," << (row.gpuModel ? *row.gpuModel : "");
-    csv << "," << (row.computeCapability ? *row.computeCapability : "");
+    TEXT_CELL(row.gpuModel.value_or(""));
+    TEXT_CELL(row.computeCapability.value_or(""));
     csv << "," << (row.kernelTimeUs ? std::to_string(*row.kernelTimeUs) : "");
     csv << "," << (row.transferTimeUs ? std::to_string(*row.transferTimeUs) : "");
     csv << "," << (row.h2dBytes ? std::to_string(*row.h2dBytes) : "");
