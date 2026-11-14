@@ -1045,9 +1045,25 @@ rocprof --stats -o run.csv \
     ./MyHipTest --profile rocprof --profile-args stats
 ```
 
-nsys also needs the application's CUDA toolkit to be no newer than the driver's
-CUDA (`nvidia-smi`): a binary built one minor version ahead runs but is not
-nsys-traceable. `ncu` and the in-process CUPTI columns are unaffected.
+Whether nsys can trace a benchmark depends on the toolkit it was built with,
+the CUDA driver it runs on and the nsys version together. One combination has
+been traced: nsys 2026.3.1 in the CUDA 13.1 dev image recorded every kernel
+launch of a quick-start run built with CUDA 13.1 (25,011: 25,000 measured, 11
+warmup) on a laptop with driver 580.178.04, which reports CUDA 13.0. Inside the
+image the benchmark ran on the image's own CUDA 13.1 user-mode driver (libcuda
+590.44.01, CUDA's forward-compatibility package), and `nvidia-smi` there
+reports CUDA 13.1. The in-process CUPTI columns were filled in the same setup;
+`ncu` was not run in it.
+
+NVIDIA documents what a newer toolkit can do on an older driver:
+[minor-version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/latest/minor-version-compatibility.html)
+runs a CUDA 13.x application on a driver of 580 or later, without the features
+that need a newer driver and without device code the driver would have to
+compile from PTX, and the
+[Nsight Systems installation guide](https://docs.nvidia.com/nsight-systems/InstallationGuide/index.html)
+gives its CUDA requirements and warns that under forward compatibility some
+profiling features may be unavailable. Other combinations, a CUDA 13.1 binary
+on a 13.0 user-mode driver among them, have not been tried.
 
 ### NVTX annotation API
 
