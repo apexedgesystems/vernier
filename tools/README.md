@@ -722,7 +722,10 @@ on, so `bench` waits for the command to end by itself. A signal ignored when
 control) stays ignored, for `bench` and the command. Each `nvidia-smi` call
 runs in a process group of its own, which no signal sent to `bench` reaches,
 so a lock or a reset is never stopped halfway; a signal received meanwhile
-is acted on once the call has finished.
+is acted on once the call has finished. `bench`'s messages hold up neither
+the reset nor its ending: each waits for stderr only while stderr has room,
+a second at the most, so a stderr that takes nothing more (a full pipe
+nobody reads, a terminal that hung up) loses them instead.
 
 Not covered: SIGKILL sent to `bench`, SIGQUIT (Ctrl-\, which also dumps
 core), a crash of `bench` and a power loss end it without the reset. Reset

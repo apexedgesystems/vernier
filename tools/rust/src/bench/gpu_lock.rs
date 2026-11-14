@@ -23,14 +23,21 @@
 //! Every nvidia-smi call is an owned run (`owned_run`): it runs in a process
 //! group of its own, which no terminal signal reaches, so a lock or a reset
 //! is never stopped halfway, and a call still running at its bound is ended.
-//! Messages go to stderr without failing: a terminal that hung up, or a pipe
-//! nobody reads, cannot stop a reset.
+//!
+//! Messages are written to stderr by a thread of their own (`say`): the
+//! thread that locks, waits and resets hands each one over and waits for it
+//! only while stderr has room, a second at the most. A stderr that takes
+//! nothing more (a full pipe nobody drains, a pipe whose reader is gone, a
+//! terminal that hung up) therefore holds up neither the reset nor the end
+//! by a signal; what it cannot take is lost.
 
+use std::collections::VecDeque;
 use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus};
 use std::sync::atomic::AtomicI32;
-use std::time::Duration;
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use super::{owned_run, Error};
 
@@ -43,6 +50,14 @@ const TOOL_BOUND: Duration = Duration::from_secs(30);
 /// How often the wrapper looks at its command and at the signals recorded:
 /// it runs beside the measured command, so it wakes rarely.
 const WAIT_POLL: Duration = Duration::from_millis(100);
+
+/// How long a message waits, at the most, to be written while stderr says
+/// it has room: one that says so and still does not take the message (a
+/// stalled file system) delays the wrapper by no more than this.
+const SAY_BOUND: Duration = Duration::from_secs(1);
+
+/// How often a message that waits looks again at whether stderr has room.
+const SAY_POLL: Duration = Duration::from_millis(10);
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -105,14 +120,136 @@ struct ResetOnUnwind<'a> {
     armed: bool,
 }
 
-/* ----------------------------- Helpers ----------------------------- */
-
-/// Write @p line to stderr. A write that fails, to a terminal that hung up
-/// or a pipe nobody reads, is let go: no message may stop a reset or the end
-/// by a signal.
-fn say(line: &str) {
-    let _ = writeln!(std::io::stderr(), "{line}");
+/// The messages handed to the writer thread and not yet taken by it, and
+/// how many it has been handed and has finished with (written, or let go
+/// when stderr refused them).
+struct Pending {
+    lines: VecDeque<String>,
+    handed: u64,
+    finished: u64,
 }
+
+/* ----------------------------- Messages ----------------------------- */
+
+/// The writer thread's messages, and the condition it and `say` wait on.
+static PENDING: Mutex<Pending> = Mutex::new(Pending {
+    lines: VecDeque::new(),
+    handed: 0,
+    finished: 0,
+});
+static PENDING_CHANGED: Condvar = Condvar::new();
+
+fn pending() -> MutexGuard<'static, Pending> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Hand @p line to the writer thread, and wait until it is written while
+/// stderr has room, `SAY_BOUND` at the most. A stderr without room (a full
+/// pipe nobody drains) holds up nothing: the message stays queued for when
+/// it has room, so no message can stop a reset or the end by a signal.
+fn say(line: &str) {
+    if !writer() {
+        return;
+    }
+    let mine = {
+        let mut pending = pending();
+        pending.lines.push_back(format!("{line}\n"));
+        pending.handed += 1;
+        pending.handed
+    };
+    PENDING_CHANGED.notify_all();
+    let until = Instant::now() + SAY_BOUND;
+    let mut pending = pending();
+    while pending.finished < mine {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() || stderr_is_full() {
+            return;
+        }
+        pending = PENDING_CHANGED
+            .wait_timeout(pending, left.min(SAY_POLL))
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+}
+
+/// Start the writer thread, once. False when stderr is not open or no
+/// thread could be started; messages are then let go.
+fn writer() -> bool {
+    static RUNNING: OnceLock<bool> = OnceLock::new();
+    *RUNNING.get_or_init(|| {
+        let Some(out) = stderr_copy() else {
+            return false;
+        };
+        std::thread::Builder::new()
+            .name("gpu-lock stderr".to_string())
+            .spawn(move || write_pending(out))
+            .is_ok()
+    })
+}
+
+/// The writer thread: write each message handed to it, in order, through
+/// @p out, waiting as long as a write takes. A write that fails lets its
+/// message go.
+fn write_pending(mut out: impl Write) {
+    loop {
+        let line = {
+            let mut pending = pending();
+            loop {
+                if let Some(line) = pending.lines.pop_front() {
+                    break line;
+                }
+                pending = PENDING_CHANGED
+                    .wait(pending)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        let _ = out.write_all(line.as_bytes());
+        pending().finished += 1;
+        PENDING_CHANGED.notify_all();
+    }
+}
+
+/// A second descriptor of stderr's open file, closed on exec: the writer
+/// thread writes through it as through stderr itself, with the file's flags
+/// as inherited (a blocking write stays blocking, for bench and the
+/// command), and without holding the lock of `std::io::stderr`. None when
+/// stderr is not open.
+#[cfg(unix)]
+fn stderr_copy() -> Option<std::fs::File> {
+    use std::os::fd::AsFd;
+    std::io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .ok()
+        .map(std::fs::File::from)
+}
+
+#[cfg(not(unix))]
+fn stderr_copy() -> Option<std::io::Stderr> {
+    Some(std::io::stderr())
+}
+
+/// Whether a write to stderr would wait for room: poll(2) reports nothing
+/// for it, neither room (POLLOUT) nor a hangup or an error, on which a write
+/// fails at once.
+#[cfg(unix)]
+fn stderr_is_full() -> bool {
+    let mut stderr = libc::pollfd {
+        fd: libc::STDERR_FILENO,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: poll only reads the descriptor and events of `stderr`, owned
+    // here, and writes its revents; with a timeout of 0 it returns at once.
+    unsafe { libc::poll(&mut stderr, 1, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn stderr_is_full() -> bool {
+    false
+}
+
+/* ----------------------------- Helpers ----------------------------- */
 
 /// @p bound as messages state it: "30 s", "0.2 s".
 fn seconds(bound: Duration) -> String {

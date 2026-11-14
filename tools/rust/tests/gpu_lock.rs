@@ -13,6 +13,8 @@
 //! test creates, never for a delay.
 
 use std::fs;
+use std::io::{ErrorKind, PipeReader, PipeWriter, Read, Write};
+use std::os::fd::{AsRawFd, RawFd};
 use std::os::unix::fs::{symlink, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -385,6 +387,44 @@ fn command_then_reset() -> Vec<String> {
 /// terminal, and for a SIGTERM, which it passes on.
 const NOT_PASSED_ON: &str = ": the clocks are reset once the command (process";
 const PASSED_ON: &str = "[bench] gpu-lock: SIGTERM: passed to the command (process";
+
+/// Make @p fd's reads or writes return instead of waiting (@p on), or wait
+/// again.
+fn set_nonblocking(fd: RawFd, on: bool) {
+    // SAFETY: fcntl reads and sets the status flags of `fd`, a pipe end this
+    // test owns; only O_NONBLOCK changes.
+    let set = unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        let flags = if on {
+            flags | libc::O_NONBLOCK
+        } else {
+            flags & !libc::O_NONBLOCK
+        };
+        flags >= 0 && libc::fcntl(fd, libc::F_SETFL, flags) == 0
+    };
+    assert!(set, "fcntl: {}", std::io::Error::last_os_error());
+}
+
+/// Read @p reader until no process holds its pipe's write end any more, and
+/// return what it held; past BOUND the test fails, naming @p what was to
+/// close it.
+fn read_to_eof(reader: &mut PipeReader, what: &str) -> Vec<u8> {
+    set_nonblocking(reader.as_raw_fd(), true);
+    let until = Instant::now() + BOUND;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => return bytes,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                assert!(Instant::now() < until, "waited {BOUND:?} for {what}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(e) => panic!("read the pipe: {e}"),
+        }
+    }
+}
 
 /* ----------------------------- Endings ----------------------------- */
 
@@ -799,6 +839,155 @@ fn a_signal_during_the_reset_is_not_lost() {
         1,
         "{}",
         rig.stderr()
+    );
+}
+
+/* ----------------------------- A full stderr ----------------------------- */
+
+/// A pipe filled to the brim whose read end stays open and is not read
+/// while bench runs: a stderr that takes nothing more.
+struct FullPipe {
+    reader: PipeReader,
+    filled: usize,
+}
+
+impl FullPipe {
+    /// The pipe, and its write end for bench's stderr, blocking again as a
+    /// terminal or a pipe a parent hands down is.
+    fn new() -> (Self, PipeWriter) {
+        let (reader, mut writer) = std::io::pipe().expect("a pipe");
+        set_nonblocking(writer.as_raw_fd(), true);
+        let chunk = [b'X'; 4096];
+        let mut filled = 0;
+        loop {
+            match writer.write(&chunk) {
+                Ok(n) => filled += n,
+                Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                Err(e) => panic!("fill the pipe: {e}"),
+            }
+        }
+        set_nonblocking(writer.as_raw_fd(), false);
+        (Self { reader, filled }, writer)
+    }
+
+    /// Once bench and every process it started have ended: whether the pipe
+    /// holds what filled it and nothing else, no message having got in.
+    fn holds_only_its_filling(mut self) -> bool {
+        let held = read_to_eof(&mut self.reader, "bench and its command to end");
+        held.len() == self.filled && held.iter().all(|&byte| byte == b'X')
+    }
+}
+
+/// A first line for a command's script: record the status flags of the
+/// command's stderr (octal, as /proc shows them) in stderr.flags.
+const RECORD_STDERR_FLAGS: &str =
+    "sed -n 's/^flags:[[:space:]]*//p' /proc/$$/fdinfo/2 > \"$RIG/stderr.flags\"\n";
+
+/// Whether the stderr the command in @p rig inherited is blocking, as the
+/// command recorded it (`RECORD_STDERR_FLAGS`).
+fn command_stderr_blocks(rig: &Rig) -> bool {
+    let flags = rig.read("stderr.flags");
+    let flags = u32::from_str_radix(flags.trim(), 8).expect("the command's stderr flags");
+    flags & libc::O_NONBLOCK as u32 == 0
+}
+
+/// For each of @p runs, whose command is `WAITING`: once the command has
+/// started, send bench SIGTERM; once the command has received it, passed on
+/// by bench, check that the clocks are still locked; then release the
+/// command and wait for bench to end. The runs go in step, so they take as
+/// long as one.
+fn sigterm_then_release(runs: &mut [(&Rig, &mut Run)]) -> Vec<ExitStatus> {
+    for (rig, _) in runs.iter() {
+        rig.pid("command.pid");
+    }
+    for (_, run) in runs.iter() {
+        run.signal_bench(libc::SIGTERM);
+    }
+    for (rig, _) in runs.iter() {
+        wait_for_signals(rig, &["TERM"]);
+        assert!(
+            !rig.events().iter().any(|e| e == RESET),
+            "reset while the command ran: {:?}",
+            rig.events()
+        );
+    }
+    for (rig, _) in runs.iter() {
+        rig.release();
+    }
+    runs.iter_mut().map(|(_, run)| run.end()).collect()
+}
+
+/// @test A stderr that takes nothing (a full pipe, its read end open and
+/// never read) holds up nothing: bench starts the command, passes a SIGTERM
+/// on, resets the clocks once the command ends and ends by SIGTERM, exactly
+/// as beside it with a stderr that takes its messages (the control), and
+/// none of its messages gets into the pipe. The command inherits stderr as
+/// it was handed to bench, blocking.
+#[test]
+fn a_full_stderr_holds_up_neither_the_reset_nor_the_end_by_the_signal() {
+    let (control, full) = (Rig::new(), Rig::new());
+    let (pipe, stderr) = FullPipe::new();
+    let script = format!("{RECORD_STDERR_FLAGS}{WAITING}");
+    let waiting = wrap(&["/bin/sh", "-c", &script]);
+    let mut control_run = Run::start(&control, &waiting, Parent::Default, None);
+    let mut full_run = Run::start(&full, &waiting, Parent::Default, Some(stderr.into()));
+    let ended = sigterm_then_release(&mut [(&control, &mut control_run), (&full, &mut full_run)]);
+    for (rig, status) in [(&control, ended[0]), (&full, ended[1])] {
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "{}", rig.stderr());
+        assert_eq!(rig.signals(), ["TERM"]);
+        assert_eq!(rig.events(), command_then_reset());
+        assert!(
+            command_stderr_blocks(rig),
+            "the command's stderr is non-blocking"
+        );
+    }
+    let said = control.stderr();
+    assert!(
+        said.contains("GPU 0: clocks locked to 1000 MHz")
+            && said.contains(PASSED_ON)
+            && said.contains("GPU 0: clocks reset to default"),
+        "{said}"
+    );
+    assert!(
+        pipe.holds_only_its_filling(),
+        "a message got into the full pipe"
+    );
+}
+
+/// @test A full stderr holds up nothing either where bench reports an error
+/// before it ends by the signal: with a reset nvidia-smi refuses and a
+/// SIGTERM, bench asks for the reset once the command has ended and ends by
+/// SIGTERM, as beside it with a stderr that takes the error (the control),
+/// which names the manual reset.
+#[test]
+fn a_full_stderr_holds_up_nothing_when_the_reset_is_refused() {
+    let (control, full) = (Rig::new(), Rig::new());
+    for rig in [&control, &full] {
+        rig.set("fail", "reset");
+    }
+    let (pipe, stderr) = FullPipe::new();
+    let waiting = wrap(&["/bin/sh", "-c", WAITING]);
+    let mut control_run = Run::start(&control, &waiting, Parent::Default, None);
+    let mut full_run = Run::start(&full, &waiting, Parent::Default, Some(stderr.into()));
+    let ended = sigterm_then_release(&mut [(&control, &mut control_run), (&full, &mut full_run)]);
+    for (rig, status) in [(&control, ended[0]), (&full, ended[1])] {
+        assert_eq!(status.signal(), Some(libc::SIGTERM), "{}", rig.stderr());
+        assert_eq!(
+            rig.events(),
+            [LOCK, "lock done", "command started", "command ended", RESET]
+        );
+    }
+    assert!(
+        control.stderr().contains(
+            "Error: the clocks of GPU 0 were not reset: Insufficient Permissions; reset them \
+             with `bench gpu-lock reset --device 0`, or as root with `nvidia-smi -i 0 -rgc`"
+        ),
+        "{}",
+        control.stderr()
+    );
+    assert!(
+        pipe.holds_only_its_filling(),
+        "a message got into the full pipe"
     );
 }
 
