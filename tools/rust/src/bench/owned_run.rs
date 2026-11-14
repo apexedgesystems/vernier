@@ -24,6 +24,11 @@
 //! - The signal handler only stores to lock-free atomics: the latest signal,
 //!   the first one (a compare-and-swap, so a later signal cannot replace it)
 //!   and a bit for each signal that arrived.
+//! - A stopped watch (`Watch::stop`) blocks SIGINT, SIGTERM and SIGHUP in its
+//!   thread before it puts their actions back, and `end_by` raises the first
+//!   signal while it is blocked and then unblocks it alone, so that no later
+//!   one can end the process before it; a thread started under
+//!   `with_watched_blocked` never takes one of them.
 //! - Only the read ends of the program's own pipes are made non-blocking.
 
 use std::io::{self, Read};
@@ -335,6 +340,10 @@ static FIRST: AtomicI32 = AtomicI32::new(0);
 /// between two looks is one, as the kernel keeps one pending instance of it.
 static ARRIVED: AtomicU32 = AtomicU32::new(0);
 
+/// The signals a `Watch` records.
+#[cfg(unix)]
+const WATCHED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
+
 #[cfg(unix)]
 extern "C" fn record(signal: libc::c_int) {
     // The first is settled before the arrival can be seen.
@@ -351,7 +360,8 @@ extern "C" fn record(signal: libc::c_int) {
 /// bench gpu-lock resets the clocks once its command, which stays in the
 /// terminal's group, has ended. A signal whose action is not the default
 /// (ignored, as under nohup, or handled) is left as it is. Dropping it
-/// restores each action it replaced.
+/// restores each action it replaced; stopping it (`stop`) does too, and
+/// keeps the first signal recorded ahead of any that follows.
 pub(crate) struct Watch {
     #[cfg(unix)]
     replaced: Vec<(libc::c_int, libc::sigaction)>,
@@ -391,15 +401,39 @@ impl Watch {
         (0..32).filter(|signal| bits & (1 << signal) != 0).collect()
     }
 
-    /// Stop recording, putting back each action the watch replaced, and
-    /// return the first signal it recorded. The first is read once the
-    /// actions are back: a signal that arrives before then is recorded, and
-    /// one that arrives after takes its own action, so none is lost.
-    pub(crate) fn stop(self) -> Option<i32> {
-        drop(self);
-        match FIRST.load(Ordering::SeqCst) {
-            0 => None,
-            signal => Some(signal),
+    /// Stop recording (`stop`); then, if a signal was recorded, call
+    /// @p before with it and end the process by it (`end_by`). A signal that
+    /// arrives once the actions are back, @p before running included, is
+    /// held blocked meanwhile, so none can end the process before the first.
+    /// With none recorded, returns once any signal held meanwhile has taken
+    /// its own action.
+    pub(crate) fn end_by_first(self, before: impl FnOnce(i32)) {
+        let stopped = self.stop();
+        if let Some(signal) = stopped.first() {
+            before(signal);
+            end_by(signal);
+        }
+    }
+
+    /// Stop recording: block SIGINT, SIGTERM and SIGHUP in this thread, put
+    /// back each action the watch replaced, then read the first signal
+    /// recorded. A signal that arrives before the block is recorded; one that
+    /// arrives after is held, blocked, and takes its own action once the
+    /// returned `Stopped` is dropped, so none is lost; or never, if `end_by`
+    /// ends the process by the first signal before, which then no later one
+    /// can preempt.
+    fn stop(mut self) -> Stopped {
+        #[cfg(unix)]
+        let blocked = Blocked::watched();
+        #[cfg(unix)]
+        restore_signals(&std::mem::take(&mut self.replaced));
+        Stopped {
+            first: match FIRST.load(Ordering::SeqCst) {
+                0 => None,
+                signal => Some(signal),
+            },
+            #[cfg(unix)]
+            _blocked: blocked,
         }
     }
 }
@@ -411,12 +445,73 @@ impl Drop for Watch {
     }
 }
 
+/// A stopped `Watch` (`Watch::stop`): the actions it replaced are back, and
+/// SIGINT, SIGTERM and SIGHUP stay blocked in the thread that stopped it
+/// until it is dropped.
+struct Stopped {
+    first: Option<i32>,
+    #[cfg(unix)]
+    _blocked: Blocked,
+}
+
+impl Stopped {
+    /// The first signal the watch recorded, if one was.
+    fn first(&self) -> Option<i32> {
+        self.first
+    }
+}
+
+/// While it lives, SIGINT, SIGTERM and SIGHUP are blocked in the thread
+/// that made it; dropping it puts that thread's signal mask back.
+#[cfg(unix)]
+struct Blocked {
+    before: libc::sigset_t,
+}
+
+#[cfg(unix)]
+impl Blocked {
+    fn watched() -> Self {
+        // SAFETY: zeroed sigset_t values are valid values of the type, and
+        // sigemptyset initialises `watched`; pthread_sigmask only reads
+        // `watched` and writes `before`, both owned here.
+        unsafe {
+            let mut watched: libc::sigset_t = std::mem::zeroed();
+            let mut before: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut watched);
+            for signal in WATCHED {
+                libc::sigaddset(&mut watched, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &watched, &mut before);
+            Self { before }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Blocked {
+    fn drop(&mut self) {
+        // SAFETY: pthread_sigmask only reads `before`, this thread's mask
+        // from before the block.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.before, std::ptr::null_mut()) };
+    }
+}
+
+/// Run @p start with SIGINT, SIGTERM and SIGHUP blocked in this thread, then
+/// put this thread's mask back. A thread @p start starts keeps them blocked
+/// for good, so it never takes one: they reach the thread that acts on them,
+/// where a `Stopped` can hold them.
+pub(crate) fn with_watched_blocked<T>(start: impl FnOnce() -> T) -> T {
+    #[cfg(unix)]
+    let _blocked = Blocked::watched();
+    start()
+}
+
 /// Record SIGINT, SIGTERM and SIGHUP (`record`) where their action is the
 /// default; returns each replaced action.
 #[cfg(unix)]
 fn record_signals() -> Vec<(libc::c_int, libc::sigaction)> {
     let mut replaced = Vec::new();
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+    for signal in WATCHED {
         // SAFETY: zeroed sigaction values are valid values of the type;
         // sigaction only reads `action` and writes `old`, both owned here;
         // the handler installed only stores to lock-free atomics.
@@ -449,16 +544,25 @@ fn restore_signals(replaced: &[(libc::c_int, libc::sigaction)]) {
 }
 
 /// End the bench command by @p signal, after the `Watch` that recorded it
-/// is dropped (its default action restored), so whoever sent it sees the
-/// command ended by it.
+/// is dropped or stopped (its default action restored), so whoever sent it
+/// sees the command ended by it. Under a `Stopped`, which blocks it, @p
+/// signal is raised and then unblocked alone: it ends the process as it is
+/// unblocked, and the other signals held there stay blocked, so none of them
+/// can end it first.
 pub(crate) fn end_by(signal: i32) -> ! {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     #[cfg(unix)]
-    // SAFETY: raise only sends @p signal to this process.
+    // SAFETY: raise only sends @p signal to this thread; a zeroed sigset_t is
+    // a valid value of the type, initialised by sigemptyset; pthread_sigmask
+    // only reads `only`, which holds @p signal alone, owned here.
     unsafe {
         libc::raise(signal);
+        let mut only: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut only);
+        libc::sigaddset(&mut only, signal);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
     }
     std::process::exit(128 + signal)
 }
@@ -948,7 +1052,7 @@ mod tests {
         let then = watch.arrivals();
         let latest = watch.flag().load(Ordering::SeqCst);
         let first = watch.first();
-        let stopped = watch.stop();
+        let stopped = watch.stop().first();
         let line = format!(
             "first {first:?}; arrived {arrived:?}; then {then:?}; latest {latest}; stopped \
              {stopped:?}; defaults back {}",
@@ -1014,5 +1118,201 @@ mod tests {
                 hup = libc::SIGHUP
             )
         );
+    }
+
+    /// The case `watch_stop_in_a_process_of_its_own` runs.
+    #[cfg(target_os = "linux")]
+    const STOP_CASE_VARIABLE: &str = "VERNIER_WATCH_STOP_CASE";
+
+    /// What this thread does with SIGINT, SIGTERM and SIGHUP: each one's
+    /// action, and those it blocks.
+    #[cfg(target_os = "linux")]
+    fn watched_signals_state() -> String {
+        let actions: Vec<&str> = WATCHED
+            .iter()
+            .map(|&signal| {
+                // SAFETY: a zeroed sigaction is a valid value of the type;
+                // with a null new action, sigaction only writes the current
+                // one into `now`, owned here.
+                let now = unsafe {
+                    let mut now: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(signal, std::ptr::null(), &mut now);
+                    now
+                };
+                match now.sa_sigaction {
+                    libc::SIG_DFL => "default",
+                    libc::SIG_IGN => "ignored",
+                    _ => "handled",
+                }
+            })
+            .collect();
+        // SAFETY: a zeroed sigset_t is a valid value of the type; with a null
+        // set, pthread_sigmask only writes this thread's mask into `mask`,
+        // owned here, which sigismember only reads.
+        let blocked: Vec<i32> = unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask);
+            WATCHED
+                .iter()
+                .copied()
+                .filter(|&signal| libc::sigismember(&mask, signal) == 1)
+                .collect()
+        };
+        format!("actions {actions:?}; blocked {blocked:?}")
+    }
+
+    /// Not a test of its own: the body of
+    /// `watch_stop_ends_by_the_first_signal_whatever_follows`, which runs this
+    /// test binary for it in a process of its own, once for each case;
+    /// without that test's variables it does nothing. raise() sends a signal
+    /// to this thread alone, so one this thread blocks waits here, whatever
+    /// the test harness's other threads do.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_stop_in_a_process_of_its_own() {
+        let Ok(case) = std::env::var(STOP_CASE_VARIABLE) else {
+            return;
+        };
+        let report =
+            PathBuf::from(std::env::var(WATCH_REPORT_VARIABLE).expect("the report's path"));
+        let raise = |signal: libc::c_int| {
+            // SAFETY: raise only sends @p signal to this thread.
+            unsafe { libc::raise(signal) };
+        };
+        let watch = Watch::start();
+        if case == "first" {
+            // SIGTERM recorded; then, where bench gpu-lock says what went
+            // wrong (`end_by_first`'s @p before), the actions being back and
+            // the first not raised again yet, a second signal whose default
+            // action would end the process by it at once.
+            raise(libc::SIGTERM);
+            watch.end_by_first(|first| {
+                let line = format!("first {first}; {}", watched_signals_state());
+                fs::write(&report, line).expect("write the report");
+                raise(libc::SIGINT);
+            });
+            return;
+        }
+        let stopped = watch.stop();
+        let line = format!("first {:?}; {}", stopped.first(), watched_signals_state());
+        fs::write(&report, &line).expect("write the report");
+        if case == "none" {
+            // None recorded: a signal arriving now is held, and takes its own
+            // action once the stopped watch is dropped.
+            raise(libc::SIGHUP);
+            drop(stopped);
+        } else {
+            // Nothing arrives: dropping the stopped watch puts the mask back.
+            drop(stopped);
+            fs::write(&report, format!("{line}; then {}", watched_signals_state()))
+                .expect("write the report");
+        }
+    }
+
+    /// @test Stopping a watch keeps the first signal it recorded ahead of
+    /// any that follows, through putting the actions back and ending by it,
+    /// and puts everything back when none was recorded. Each case runs in a
+    /// process of its own (this test binary, running
+    /// `watch_stop_in_a_process_of_its_own`), started with no signal blocked,
+    /// SIGTERM and SIGHUP at their default actions, and SIGINT at its default
+    /// or ignored:
+    /// - first: SIGTERM recorded; a SIGINT raised in `end_by_first`'s
+    ///   @p before (where bench gpu-lock says what went wrong), the actions
+    ///   being back and SIGINT's default action ending the process at once,
+    ///   waits blocked, and the process ends by SIGTERM;
+    /// - none: nothing recorded; a SIGHUP raised once the actions are back
+    ///   is not lost: the process ends by it once the stopped watch is
+    ///   dropped;
+    /// - clean: nothing raised, SIGINT ignored by the parent: while stopped
+    ///   the three are blocked, the actions are back and SIGINT is still
+    ///   ignored; once dropped, nothing is blocked.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_stop_ends_by_the_first_signal_whatever_follows() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        let dir = tempfile_dir("watch_stop");
+        let name = format!(
+            "{}::watch_stop_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let defaults = "actions [\"default\", \"default\", \"default\"]";
+        let int_ignored = "actions [\"ignored\", \"default\", \"default\"]";
+        let all = format!(
+            "blocked [{}, {}, {}]",
+            libc::SIGINT,
+            libc::SIGTERM,
+            libc::SIGHUP
+        );
+        let cases = [
+            (
+                "first",
+                libc::SIG_DFL,
+                Some(libc::SIGTERM),
+                format!("first {}; {defaults}; {all}", libc::SIGTERM),
+            ),
+            (
+                "none",
+                libc::SIG_DFL,
+                Some(libc::SIGHUP),
+                format!("first None; {defaults}; {all}"),
+            ),
+            (
+                "clean",
+                libc::SIG_IGN,
+                None,
+                format!("first None; {int_ignored}; {all}; then {int_ignored}; blocked []"),
+            ),
+        ];
+        let mut seen = Vec::new();
+        for (case, int_action, ended_by, expected) in cases {
+            let report = dir.join(format!("{case}.txt"));
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(STOP_CASE_VARIABLE, case)
+                .env(WATCH_REPORT_VARIABLE, &report);
+            // SAFETY: the closure runs in the child between fork and exec and
+            // calls only sigaction and pthread_sigmask, which are
+            // async-signal-safe; zeroed sigaction and sigset_t values are
+            // valid values of the types, given the default or the ignore
+            // handler, and initialised by sigemptyset.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut none: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut none);
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+                    for (signal, handler) in [
+                        (libc::SIGINT, int_action),
+                        (libc::SIGTERM, libc::SIG_DFL),
+                        (libc::SIGHUP, libc::SIG_DFL),
+                    ] {
+                        let mut action: libc::sigaction = std::mem::zeroed();
+                        action.sa_sigaction = handler;
+                        if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            let out = command.output().expect("run this test binary");
+            let line = fs::read_to_string(&report).unwrap_or_default();
+            let ended_as_expected = match ended_by {
+                Some(signal) => out.status.signal() == Some(signal),
+                None => out.status.success(),
+            };
+            if !ended_as_expected || line != expected {
+                seen.push(format!(
+                    "{case}: ended {:?}, expected by {ended_by:?}; reported {line:?}, expected \
+                     {expected:?}\n{}{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(seen.is_empty(), "{}", seen.join("\n"));
     }
 }

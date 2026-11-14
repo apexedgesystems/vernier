@@ -678,6 +678,52 @@ fn two_signals_end_bench_by_the_first() {
     assert_eq!(rig.events(), command_then_reset());
 }
 
+/// The signals blocked by bench's thread named @p name, from its status in
+/// /proc (bench is unreaped, so its process id is still its own).
+fn blocked_in_thread(run: &Run, name: &str) -> u64 {
+    let tasks = format!("/proc/{}/task", run.pid());
+    for task in fs::read_dir(&tasks).expect("bench's threads") {
+        let task = task.expect("a thread").path();
+        if fs::read_to_string(task.join("comm"))
+            .unwrap_or_default()
+            .trim()
+            != name
+        {
+            continue;
+        }
+        let status = fs::read_to_string(task.join("status")).expect("the thread's status");
+        let mask = status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigBlk:"))
+            .expect("SigBlk in the thread's status");
+        return u64::from_str_radix(mask.trim(), 16).expect("a signal mask");
+    }
+    panic!("bench has no thread named '{name}'");
+}
+
+/// @test The thread that writes bench's messages blocks SIGINT, SIGTERM and
+/// SIGHUP: a signal sent to bench reaches the thread that records it and
+/// ends bench by the first, never one where its default action would end
+/// bench by a later one.
+#[test]
+fn the_message_thread_never_takes_a_watched_signal() {
+    let rig = Rig::new();
+    let mut run = Run::start(
+        &rig,
+        &wrap(&["/bin/sh", "-c", WAITING]),
+        Parent::Default,
+        None,
+    );
+    rig.pid("command.pid");
+    let watched = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP]
+        .iter()
+        .fold(0u64, |mask, &signal| mask | 1 << (signal - 1));
+    let blocked = blocked_in_thread(&run, "gpu-lock stderr");
+    rig.release();
+    assert_eq!(run.end().code(), Some(0), "{}", rig.stderr());
+    assert_eq!(blocked & watched, watched, "blocked {blocked:#x}");
+}
+
 /// @test A second SIGTERM is passed on as the first was, and bench still
 /// waits: the clocks are reset once, after the command ends.
 #[test]

@@ -172,18 +172,22 @@ fn say(line: &str) {
     }
 }
 
-/// Start the writer thread, once. False when stderr is not open or no
-/// thread could be started; messages are then let go.
+/// Start the writer thread, once, with SIGINT, SIGTERM and SIGHUP blocked
+/// for good, so that they reach the thread that records and acts on them.
+/// False when stderr is not open or no thread could be started; messages
+/// are then let go.
 fn writer() -> bool {
     static RUNNING: OnceLock<bool> = OnceLock::new();
     *RUNNING.get_or_init(|| {
         let Some(out) = stderr_copy() else {
             return false;
         };
-        std::thread::Builder::new()
-            .name("gpu-lock stderr".to_string())
-            .spawn(move || write_pending(out))
-            .is_ok()
+        owned_run::with_watched_blocked(|| {
+            std::thread::Builder::new()
+                .name("gpu-lock stderr".to_string())
+                .spawn(move || write_pending(out))
+                .is_ok()
+        })
     })
 }
 
@@ -556,13 +560,15 @@ pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
     };
 
     // Recording stops only now, after the reset: a signal that arrived during
-    // it is recorded too, and the first one recorded is the one bench ends by.
-    if let Some(signal) = watch.stop() {
+    // it is recorded too, and the first one recorded is the one bench ends by,
+    // after saying what went wrong. A signal that arrives once the actions
+    // are back waits blocked in this thread meanwhile (the writer thread never
+    // takes one), so none can end bench before the first.
+    watch.end_by_first(|_| {
         if let Err(e) = &outcome {
             say(&format!("Error: {e}"));
         }
-        owned_run::end_by(signal);
-    }
+    });
     outcome
 }
 
