@@ -105,7 +105,7 @@ TEST(MonitorSummaryTest, CounterSum) {
   EXPECT_DOUBLE_EQ(IT->second.sum, 6.0);
 }
 
-/** @test Gauge records point-in-time values */
+/** @test Gauge records point-in-time values, its range starting at the first reading */
 TEST(MonitorSummaryTest, GaugeValues) {
   MonitorSummary summary;
 
@@ -114,19 +114,20 @@ TEST(MonitorSummaryTest, GaugeValues) {
   std::strncpy(s.scope, "depth", sizeof(s.scope));
   s.kind = SampleKind::GAUGE;
 
-  s.value = 10.0;
+  // All negative: a maximum that started at 0 would stay 0, above every reading.
+  s.value = -5.0;
   summary.record(s);
-  s.value = 50.0;
+  s.value = -3.0;
   summary.record(s);
-  s.value = 30.0;
+  s.value = -9.0;
   summary.record(s);
 
   const auto& ENTRIES = summary.entries();
   const auto IT = ENTRIES.find("g/3::depth");
   ASSERT_NE(IT, ENTRIES.end());
-  EXPECT_DOUBLE_EQ(IT->second.median(), 30.0);
-  EXPECT_DOUBLE_EQ(IT->second.maxVal, 50.0);
-  EXPECT_DOUBLE_EQ(IT->second.minVal, 10.0);
+  EXPECT_DOUBLE_EQ(IT->second.median(), -5.0);
+  EXPECT_DOUBLE_EQ(IT->second.maxVal, -3.0);
+  EXPECT_DOUBLE_EQ(IT->second.minVal, -9.0);
 }
 
 /** @test Multiple tags create separate entries */

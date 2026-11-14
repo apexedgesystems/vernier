@@ -40,12 +40,14 @@ struct ScopeStats {
    * @note NOT RT-safe: Heap allocation via vector push_back.
    */
   void record(double v, bool breach) {
+    // The first value sets both bounds, so a gauge whose readings are all
+    // negative keeps its own maximum.
+    if (count == 0 || v < minVal)
+      minVal = v;
+    if (count == 0 || v > maxVal)
+      maxVal = v;
     count++;
     sum += v;
-    if (v < minVal)
-      minVal = v;
-    if (v > maxVal)
-      maxVal = v;
     if (breach)
       breaches++;
     values.push_back(v);

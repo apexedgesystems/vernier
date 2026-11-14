@@ -969,6 +969,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   than a microsecond no longer records 0 us/call and a false `[UNSTABLE]`.
 - Recording while a monitor starts or restarts no longer races on its
   threshold table or reads one that `start()` freed.
+- A monitor gauge whose readings are all negative reports its real maximum in
+  the summary instead of 0.
 
 ## v1.0.3 - 2026-06-28
 
