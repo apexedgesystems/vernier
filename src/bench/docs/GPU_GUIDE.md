@@ -184,7 +184,8 @@ medians can add up to more than the round trip
   `.withLaunchConfig()` (see [Occupancy](#occupancy))
 - **smClockMHz** - The SM clock NVML reports at the end of the measured window
 - **throttling** - Whether the SM clock fell by more than 10% between NVML's
-  readings at the window's start and end
+  readings at the window's start and end; empty unless NVML reported both and
+  the maximum SM clock
 
 A value the run could not read stays an empty CSV cell, and the run says why on
 stderr: once per process for what holds for the whole run (no CUPTI in the
@@ -226,7 +227,11 @@ std::printf("Throughput: %.0f ops/sec\n", result.callsPerSecond);
 // GPU metrics (always present in GpuStats; 0 where the run could not read them)
 std::printf("Occupancy (estimate): %.1f%%\n", result.stats.occupancy.achievedOccupancy * 100);
 std::printf("SM Clock: %d MHz\n", result.stats.clocks.smClockMHzEnd);
-if (result.stats.clocks.isThrottling()) {
+// isThrottling() reads 0 for a reading NVML did not report: ask it only
+// when the start, end and maximum SM clocks are all there
+const auto& clocks = result.stats.clocks;
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0 &&
+    clocks.isThrottling()) {
   std::printf("Warning: the SM clock fell more than 10%% during the measurement\n");
 }
 std::printf("Copy rate: %.2f GB/s\n", result.stats.transfers.bandwidthGBs());
@@ -1170,9 +1175,13 @@ PERF_GPU_TEST(MyKernel, Validated) {
 
   // 3. No SM-clock drop. isThrottling() compares NVML's SM-clock readings
   //    at the window's start and end: a drop says the run's conditions
-  //    changed, not why (see Troubleshooting)
-  EXPECT_FALSE(result.stats.clocks.isThrottling())
-    << "SM clock fell more than 10% during the measurement - find out why";
+  //    changed, not why (see Troubleshooting). A reading NVML did not
+  //    report is 0, so the check needs the start, end and maximum clocks
+  const auto& clocks = result.stats.clocks;
+  if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+    EXPECT_FALSE(clocks.isThrottling())
+      << "SM clock fell more than 10% during the measurement - find out why";
+  }
 
   // 4. No copy-rate check: this test declares no copies, so bandwidthGBs()
   //    is 0. A test that declares copies can require a floor measured for
@@ -1198,7 +1207,7 @@ PERF_GPU_TEST(MyKernel, Validated) {
 | Result stability | `EXPECT_STABLE_CV_GPU`     | Auto-adaptive         | Detect jitter     |
 | Occupancy est.   | `EXPECT_GE(occupancy, X)`  | Tuned shape's value   | Launch shape kept |
 | Copy rate        | `EXPECT_GT(bandwidth, X)`  | Measured for the link | Declared copies   |
-| No SM-clock drop | `EXPECT_FALSE(throttling)` | Always                | Flag a clock drop |
+| No SM-clock drop | `EXPECT_FALSE(throttling)` | With all 3 readings   | Flag a clock drop |
 | Speedup          | `EXPECT_GT(speedup, X)`    | Problem-dependent     | GPU worthwhile    |
 | Copy time        | `EXPECT_LT(transferUs, X)` | Budget for the copies | Copies in budget  |
 
@@ -1272,7 +1281,10 @@ auto gpuResult = perf.cudaKernel(...).measure();  // Then GPU
 
 ```cpp
 EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
-EXPECT_FALSE(result.stats.clocks.isThrottling());
+const auto& clocks = result.stats.clocks;  // 0 where NVML gave no reading
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+  EXPECT_FALSE(clocks.isThrottling());
+}
 ```
 
 ### 7. Use Quick Mode During Development
@@ -1329,10 +1341,15 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    NVML's at the start and the end of the measured window. It reads no
    temperature and no reason for the change, so a drop is a signal to
    investigate, not a diagnosis of heat, and no drop does not show the clock
-   held between the two readings. Where NVML did not report them,
-   `isThrottling()` is false and the CSV cell is empty. Snapshots before and
-   after the run record the temperature, power, clocks and the clock-event
-   reasons `nvidia-smi` reports at each moment:
+   held between the two readings. The CSV cell is filled only when NVML
+   reported the SM clock at both ends and the maximum SM clock; otherwise it
+   stays empty and the run names the readings NVML did not report. The
+   public `isThrottling()` reads `result.stats.clocks`, where such a reading
+   is 0: it returns false when the start or the maximum is missing, and true
+   when only the end is (a fall to 0), so read it only when
+   `smClockMHzStart`, `smClockMHzEnd` and `boostClockMHz` are all above 0.
+   Snapshots before and after the run record the temperature, power, clocks
+   and the clock-event reasons `nvidia-smi` reports at each moment:
 
    ```bash
    # Snapshot before and after: what changed around the run
@@ -1343,7 +1360,9 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    ```
 
    ```cpp
-   if (result.stats.clocks.isThrottling()) {
+   const auto& clocks = result.stats.clocks;
+   if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0 &&
+       clocks.isThrottling()) {
      // The SM clock fell more than 10% over the window: compare the
      // snapshots and the row's temperature and power cells before trusting
      // the timing
