@@ -274,22 +274,42 @@ struct GpuStats {
 
 **What it is:** An estimate of the share of an SM's warp slots the launch
 shape lets the kernel fill, which the harness computes when a test declares
-`.withLaunchConfig()`. It counts the block size, the SM's thread and block
-limits and the dynamic shared memory the launch declares. It does not count
-the kernel's registers or static shared memory, so it overstates the
-occupancy of a kernel those limit, and it does not count the grid: one block
-and thousands of blocks of the same shape get the same figure, although one
-block runs on a single SM and thousands spread over all of them.
+`.withLaunchConfig()`: from the block size, the SM's thread and block limits
+and the dynamic shared memory the launch declares.
 
-**Formula:** `warps per block x blocks per SM those limits allow / max warps per SM`
+**Formula:** `min(1, warps per block x blocks per SM / max warps per SM)`,
+with warps per block the block's threads over 32 rounded up, max warps per SM
+the SM's thread limit over 32, and blocks per SM the smallest of the SM's
+thread limit over the block's threads, the SM's block limit, and the SM's
+shared memory over the declared dynamic shared memory, each rounded down (the
+last only when the launch declares some).
 
-**Interpretation:** the figure is the most the launch shape allows, not a
-measure of how busy the GPU was, so it grades neither the kernel nor the
-GPU's use. A low figure says the block size or the declared shared memory
-holds the warps an SM can take below its maximum; a high one says only that
-they do not. For the occupancy a kernel achieves, and whether occupancy is
-what limits it, measure with a kernel profiler
-([Profiling GPU Code](#profiling-gpu-code)).
+What it leaves out can make it overstate what the launch shape allows:
+
+- The kernel's registers and static shared memory.
+- Partial warps: a block whose size is not a multiple of 32 still takes
+  whole warps, but the thread limit is applied to its threads, so the
+  estimate can count more such blocks than fit; it then reads 1.0. On the
+  laptop's RTX 5000 Ada (1,536 threads, 48 warps per SM), blocks of 129, 200
+  and 300 threads read 1.0 where the CUDA runtime's calculation gives 0.94,
+  0.88 and 0.83 (45, 42 and 40 warps).
+- The shared memory the runtime reserves for each block, 1 KiB there: a
+  256-thread block declaring 33,792 bytes reads 0.5 (3 blocks) where the
+  runtime gives 0.33 (2 blocks).
+
+Nor does it count the grid: one block and thousands of blocks of the same
+shape get the same figure, although one block runs on a single SM and
+thousands spread over all of them.
+
+**Interpretation:** the figure estimates the most the launch shape allows; it
+is not a measure of how busy the GPU was, so it grades neither the kernel nor
+the GPU's use. A low figure says the block size or the declared shared memory
+holds the warps an SM can take below its maximum; a high one does not rule
+out a lower limit, for the reasons above. The CUDA runtime's
+`cudaOccupancyMaxActiveBlocksPerMultiprocessor()` counts those three (see
+[Understanding Occupancy](#understanding-occupancy)); for the occupancy a
+kernel achieves, and whether occupancy is what limits it, measure with a
+kernel profiler ([Profiling GPU Code](#profiling-gpu-code)).
 
 #### Transfer Overhead
 
@@ -567,9 +587,10 @@ kernel, so it does not say which size runs fastest; the times do.
 - **Thread block size** - Too small/large reduces occupancy
 
 The harness's estimate counts the block size and the dynamic shared memory a
-launch declares, not the kernel's registers or static shared memory (see
-[Occupancy](#occupancy)). The CSV's CUPTI columns give the registers per
-thread and the static and dynamic shared memory of the launches it measured
+launch declares; it leaves out the kernel's registers and static shared
+memory, among other things (see [Occupancy](#occupancy)). The CSV's CUPTI
+columns give the registers per thread and the static and dynamic shared
+memory of the launches it measured
 ([CUPTI in-process kernel metrics](#cupti-in-process-kernel-metrics)), and
 the CUDA runtime's `cudaOccupancyMaxActiveBlocksPerMultiprocessor()` gives
 how many blocks of a kernel an SM can hold at once for a block size and
