@@ -175,21 +175,30 @@ TEST(PerfStatsTest, NegativeValuesHandled) {
 
 /* ----------------------------- Large Dataset Tests ----------------------------- */
 
-/** @test Large dataset has finite values. */
+/** @test Large dataset gives the interpolated quantiles, mean and population stddev of 1..10000 */
 TEST(PerfStatsTest, LargeDatasetFiniteValues) {
+  constexpr int N = 10000;
   std::vector<double> values;
-  values.reserve(10000);
-  for (int i = 1; i <= 10000; ++i) {
+  values.reserve(N);
+  for (int i = 1; i <= N; ++i) {
     values.push_back(static_cast<double>(i));
   }
 
   const Stats S = summarize(values);
 
-  EXPECT_TRUE(std::isfinite(S.median));
-  EXPECT_TRUE(std::isfinite(S.mean));
-  EXPECT_TRUE(std::isfinite(S.stddev));
-  EXPECT_TRUE(std::isfinite(S.cv));
+  // Linear interpolation between closest ranks: the q quantile of 1..N is
+  // 1 + q (N - 1).
+  constexpr double TOLERANCE = 1e-9;
+  EXPECT_NEAR(S.median, 5000.5, TOLERANCE);
+  EXPECT_NEAR(S.p10, 1000.9, TOLERANCE);
+  EXPECT_NEAR(S.p90, 9000.1, TOLERANCE);
+  EXPECT_NEAR(S.p99, 9900.01, TOLERANCE);
+  EXPECT_NEAR(S.p999, 9990.001, TOLERANCE);
   EXPECT_DOUBLE_EQ(S.min, 1.0);
   EXPECT_DOUBLE_EQ(S.max, 10000.0);
   EXPECT_DOUBLE_EQ(S.mean, 5000.5);
+  // Population formula: the variance of 1..N is (N^2 - 1) / 12.
+  const double STDDEV = std::sqrt((static_cast<double>(N) * N - 1.0) / 12.0);
+  EXPECT_DOUBLE_EQ(S.stddev, STDDEV);
+  EXPECT_DOUBLE_EQ(S.cv, STDDEV / 5000.5);
 }
