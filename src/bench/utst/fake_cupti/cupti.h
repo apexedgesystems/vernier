@@ -122,6 +122,14 @@ struct Calls {
   std::vector<std::string> log;      ///< "enable 3", "configure", "flush", "disable 25", ...
 };
 
+/** @brief What one delivered kernel record holds of what the collector reads. */
+struct KernelRecordSpec {
+  uint16_t registersPerThread = 0;
+  int32_t staticSharedMemory = 0;
+  int32_t dynamicSharedMemory = 0;
+  const char* name = "fakeKernel"; ///< Must outlive the flush: the record points at it
+};
+
 /** @brief How the stand-in answers; every call succeeds and delivers nothing by default. */
 struct Behaviour {
   CUptiResult registerResult = CUPTI_SUCCESS;     ///< cuptiActivityRegisterCallbacks
@@ -132,9 +140,9 @@ struct Behaviour {
   CUptiResult configureResult = CUPTI_SUCCESS;    ///< cuptiActivityConfigureUnifiedMemoryCounter
   CUptiResult unifiedMemoryEnableResult = CUPTI_SUCCESS;  ///< ...Enable, the unified-memory kind
   CUptiResult unifiedMemoryDisableResult = CUPTI_SUCCESS; ///< ...Disable, the unified-memory kind
-  size_t recordsPerFlush = 0;                             ///< Kernel records one flush delivers
-  uint16_t registersPerThread = 0;                        ///< Every delivered record's registers
-  int32_t staticSharedMemory = 0;                         ///< Every delivered record's static bytes
+  /// Kernel records one flush delivers, in this order, each with its own
+  /// registers, shared memory and name.
+  std::vector<KernelRecordSpec> kernelRecords;
   /// Unified-memory records one flush delivers after the kernel records,
   /// whether or not their kind is on: the collector must read only its own.
   std::vector<CUpti_ActivityUnifiedMemoryCounter2> unifiedMemoryRecords;
@@ -265,7 +273,7 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
     fake_cupti::pendingDropped() += b.droppedPerFlush;
   }
   const fake_cupti::Callbacks& cb = fake_cupti::callbacks();
-  const bool BUFFER = b.recordsPerFlush > 0 || !b.unifiedMemoryRecords.empty() ||
+  const bool BUFFER = !b.kernelRecords.empty() || !b.unifiedMemoryRecords.empty() ||
                       (b.droppedPerFlush > 0 && b.dropsReachABuffer);
   if (BUFFER && cb.requested != nullptr && cb.completed != nullptr) {
     uint8_t* buffer = nullptr;
@@ -283,12 +291,13 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
       offsets.push_back(valid);
       valid += bytes;
     };
-    for (size_t i = 0; i < b.recordsPerFlush; ++i) {
+    for (const fake_cupti::KernelRecordSpec& spec : b.kernelRecords) {
       CUpti_ActivityKernel9 record{};
       record.kind = fake_cupti::kernelRecordKind();
-      record.registersPerThread = b.registersPerThread;
-      record.staticSharedMemory = b.staticSharedMemory;
-      record.name = "fakeKernel";
+      record.registersPerThread = spec.registersPerThread;
+      record.staticSharedMemory = spec.staticSharedMemory;
+      record.dynamicSharedMemory = spec.dynamicSharedMemory;
+      record.name = spec.name;
       PUT(&record, sizeof(record));
     }
     for (const CUpti_ActivityUnifiedMemoryCounter2& record : b.unifiedMemoryRecords) {

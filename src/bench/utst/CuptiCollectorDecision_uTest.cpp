@@ -152,9 +152,10 @@ constexpr std::int32_t STATIC_SMEM = 48; ///< Each record's static shared memory
 
 /** @brief Records a flush delivers: LAUNCHES kernels of REGISTERS and STATIC_SMEM each. */
 void deliverLaunches() {
-  fake_cupti::behaviour().recordsPerFlush = LAUNCHES;
-  fake_cupti::behaviour().registersPerThread = REGISTERS;
-  fake_cupti::behaviour().staticSharedMemory = STATIC_SMEM;
+  fake_cupti::KernelRecordSpec launch;
+  launch.registersPerThread = REGISTERS;
+  launch.staticSharedMemory = STATIC_SMEM;
+  fake_cupti::behaviour().kernelRecords.assign(LAUNCHES, launch);
 }
 
 /** @brief One start/stop window of @p collector. */
@@ -165,20 +166,34 @@ void window(CuptiCollector& collector) {
 
 } // namespace
 
-/** @test A window's records give its count and medians; nothing is reported missing. */
+/**
+ * @test A window's records give its count, their registers' median and
+ *       maximum, their static and dynamic shared memory's medians and the
+ *       first record's name; nothing is reported missing. The five records
+ *       differ in every field, and in each field the first, the last, the
+ *       smallest and the largest value differ from the median, so a statistic
+ *       taken from the wrong record or the wrong field does not pass
+ */
 TEST_F(CuptiCollectorDecision, CountsTheWindowsRecords) {
-  deliverLaunches();
+  // registers 32 16 255 16 8: median 16, maximum 255
+  // static    2048 0 4096 1024 48: median 1024
+  // dynamic   256 128 512 0 64: median 128
+  fake_cupti::behaviour().kernelRecords = {{32, 2048, 256, "firstKernel"},
+                                           {16, 0, 128, "secondKernel"},
+                                           {255, 4096, 512, "thirdKernel"},
+                                           {16, 1024, 0, "fourthKernel"},
+                                           {8, 48, 64, "fifthKernel"}};
   CuptiCollector collector;
   window(collector);
   EXPECT_TRUE(collector.isAvailable());
   EXPECT_TRUE(collector.unavailableReason().empty()) << collector.unavailableReason();
   EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
-  EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
-  EXPECT_EQ(collector.stats().registersMedian, REGISTERS);
-  EXPECT_EQ(collector.stats().registersMax, REGISTERS);
-  EXPECT_EQ(collector.stats().staticSmemBytes, static_cast<std::uint32_t>(STATIC_SMEM));
-  EXPECT_EQ(collector.stats().dynamicSmemBytes, 0U);
-  EXPECT_EQ(collector.stats().firstKernelName, "fakeKernel");
+  EXPECT_EQ(collector.stats().kernelLaunches, 5U);
+  EXPECT_EQ(collector.stats().registersMedian, 16U);
+  EXPECT_EQ(collector.stats().registersMax, 255U);
+  EXPECT_EQ(collector.stats().staticSmemBytes, 1024U);
+  EXPECT_EQ(collector.stats().dynamicSmemBytes, 128U);
+  EXPECT_EQ(collector.stats().firstKernelName, "firstKernel");
 }
 
 /**
