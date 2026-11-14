@@ -927,11 +927,15 @@ std::printf("Test run: %s on %s (%s) [%s]\n",
 ### Timing Utilities
 
 ```cpp
-// Get current time in microseconds
+// Get current time in whole microseconds
 double nowUs();
 ```
 
-High-precision wall-clock timing using `std::chrono::high_resolution_clock`.
+Monotonic time from `std::chrono::steady_clock`, cut to whole microseconds,
+so the difference of two readings is off by up to 1 us. The measured loops
+(`measured()`, `throughputLoop()`, `contentionRun()`) and the `--target-time`
+calibration do not use it: they time each repeat with `steady_clock` time
+points, at the clock's own resolution.
 
 ### Statistics
 

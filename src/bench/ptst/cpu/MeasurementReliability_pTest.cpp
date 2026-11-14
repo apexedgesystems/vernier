@@ -130,7 +130,7 @@ PERF_TEST(MeasurementReliability, IdenticalWorkloadConsistency) {
  * Validates:
  *  - Framework measures actual elapsed time
  *  - Timing is accurate within 30% of expected duration
- *  - nowUs() correctly measures wall-clock time
+ *  - The measured loop's clock correctly measures wall-clock time
  *
  * Expected performance:
  *  - 500us sleep measured as 350-750us (accounting for overhead)

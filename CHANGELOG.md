@@ -964,6 +964,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 - Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
+- Time each measured repeat at the clock's own resolution, so a call shorter
+  than a microsecond no longer records 0 us/call and a false `[UNSTABLE]`.
 
 ## v1.0.3 - 2026-06-28
 

@@ -96,7 +96,9 @@ cmake --build build
 
 ### What Gets Measured?
 
-The framework measures **wall-clock time** for each operation using high-precision timers:
+The framework measures **wall-clock time**: it times each repeat with
+`std::chrono::steady_clock`, at the clock's own resolution, and divides by
+the calls the repeat made:
 
 ```cpp
 auto result = perf.throughputLoop([&] {

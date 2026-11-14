@@ -63,12 +63,15 @@ inline void cpuRelax() noexcept {
 /* ---------------------------- Clock Utilities ---------------------------- */
 
 /**
- * @brief Current time in microseconds from a monotonic clock.
+ * @brief Current time in whole microseconds from a monotonic clock.
  *
  * Uses steady_clock to ensure measurements aren't affected by system
- * clock adjustments (NTP, daylight savings, etc.).
+ * clock adjustments (NTP, daylight savings, etc.). The reading is cut to
+ * whole microseconds, so the difference of two readings is off by up to
+ * 1 us; the measured loops time their repeats with steady_clock time points
+ * instead.
  *
- * @return Microseconds since epoch (arbitrary reference point)
+ * @return Whole microseconds since the clock's epoch (arbitrary reference point)
  * @note NOT RT-safe (system call).
  */
 inline double nowUs() {

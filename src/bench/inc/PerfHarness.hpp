@@ -560,10 +560,13 @@ public:
     try {
       perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
       for (int r = 0; r < cfg_.repeats; ++r) {
-        const double T0 = nowUs();
+        // Time points, not nowUs(), so the repeat keeps the clock's own
+        // resolution instead of two readings cut to whole microseconds.
+        const auto T0 = std::chrono::steady_clock::now();
         fn();
-        const double T1 = nowUs();
-        perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
+        const auto T1 = std::chrono::steady_clock::now();
+        perCall.push_back(std::chrono::duration<double, std::micro>(T1 - T0).count() /
+                          static_cast<double>(cfg_.cycles));
 
         // Progress reporting: print every ~2 seconds for long runs
         auto now = std::chrono::steady_clock::now();
@@ -737,7 +740,7 @@ public:
 
     for (int r = 0; r < cfg_.repeats; ++r) {
       StartGate gate(THREAD_COUNT);
-      const double T0 = nowUs();
+      const auto T0 = std::chrono::steady_clock::now();
 
       std::vector<std::thread> ts;
       ts.reserve(static_cast<std::size_t>(THREAD_COUNT));
@@ -754,9 +757,9 @@ public:
         th.join();
       }
 
-      const double T1 = nowUs();
+      const auto T1 = std::chrono::steady_clock::now();
       const double TOTAL_CALLS = static_cast<double>(THREAD_COUNT) * cfg_.cycles;
-      perCall.push_back((T1 - T0) / TOTAL_CALLS);
+      perCall.push_back(std::chrono::duration<double, std::micro>(T1 - T0).count() / TOTAL_CALLS);
 
       // Progress reporting
       auto now = std::chrono::steady_clock::now();
@@ -820,8 +823,9 @@ private:
    * @brief --target-time auto-sizing: estimate one call's cost, then set
    * this instance's cycle count so a repeat targets the requested wall time.
    *
-   * The clock resolves microseconds, so a single call of a sub-microsecond
-   * operation reads as zero or one. The estimate instead times batches of
+   * A single call of a sub-microsecond operation costs little more than the
+   * two clock reads around it, and a call of a few nanoseconds can be
+   * shorter than the clock's tick. The estimate instead times batches of
    * calls, doubling the batch until a sample spans CALIBRATION_SAMPLE_US, and
    * divides. Calibration finishes before the measured phase starts, so none
    * of it is inside a timed window.
@@ -851,10 +855,11 @@ private:
     }
     calibrated_ = true;
 
-    // 1 ms sample: 1000 clock ticks.
+    // 1 ms sample.
     constexpr double CALIBRATION_SAMPLE_US = 1000.0;
-    // A quarter of the sample: timestamp quantization is then at most 0.4%
-    // of the per-call time, apart from scheduling and workload variation.
+    // A quarter of the sample: the two clock reads and the clock's tick are
+    // then a negligible share of the sample, apart from scheduling and
+    // workload variation.
     constexpr double CALIBRATION_RESOLVED_US = CALIBRATION_SAMPLE_US / 4.0;
     // Bounds the doubling when the operation costs next to nothing.
     constexpr long long CALIBRATION_MAX_BATCH = 1LL << 26;
@@ -865,11 +870,12 @@ private:
     bool resolved = false;
     double leastPerCallUs = 0.0;
     for (;;) {
-      const double T0 = nowUs();
+      const auto T0 = std::chrono::steady_clock::now();
       for (long long i = 0; i < batch; ++i) {
         op();
       }
-      elapsedUs = nowUs() - T0;
+      elapsedUs =
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - T0).count();
       if (elapsedUs >= CALIBRATION_RESOLVED_US) {
         const double PER_CALL_US = elapsedUs / static_cast<double>(batch);
         if (!resolved || PER_CALL_US < leastPerCallUs) {
