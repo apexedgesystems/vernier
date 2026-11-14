@@ -14,6 +14,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <thread>
 
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
@@ -46,4 +47,54 @@ TEST(PerfCaseTimingTest, SubMicrosecondRepeatIsNotQuantized) {
   EXPECT_GE(RESULT.stats.min, 0.3) << "median " << RESULT.stats.median;
   EXPECT_NE(RESULT.stats.median, std::floor(RESULT.stats.median))
       << "the median is a whole number of microseconds";
+}
+
+/**
+ * @test Records a sleep's per-call time within 0.9 to 1.5 times the sleep
+ *
+ * The 2 ms sleep is the operation measured and the reference the harness is
+ * checked against; the case waits for its 11 sleeps (about 25 ms) and nothing
+ * else. A sleep lasts at least its duration, so the lower edge holds under any
+ * load, and a per-call value cut in half is under 0.75 times the sleep
+ * whenever the true median meets the upper edge.
+ */
+TEST(PerfCaseTimingTest, MeasuredPerCallTimeMatchesASleep) {
+  constexpr double SLEEP_US = 2000.0;
+  PerfConfig cfg;
+  cfg.cycles = 1;
+  cfg.repeats = 11;
+  PerfCase perf{"Timing.MeasuredSleep", cfg};
+
+  const PerfResult RESULT =
+      perf.measured([] { std::this_thread::sleep_for(std::chrono::milliseconds(2)); });
+
+  EXPECT_GE(RESULT.stats.median, 0.9 * SLEEP_US);
+  EXPECT_LE(RESULT.stats.median, 1.5 * SLEEP_US);
+}
+
+/**
+ * @test Divides a contention repeat by the calls of every worker it started
+ *
+ * Four workers each make 20 calls a repeat of a 2 ms sleep, so a repeat spans
+ * about 20 sleeps and holds 80 calls: a quarter of the sleep a call. The timed
+ * region also holds the workers' start and join, which 20 calls a repeat keep
+ * small beside the sleeps. The case waits for its 5 repeats (about 0.2 s) and
+ * nothing else. A divisor without the workers reads at least a whole sleep a
+ * call, above the band under any load.
+ */
+TEST(PerfCaseTimingTest, ContentionPerCallTimeCountsEveryWorker) {
+  constexpr int THREADS = 4;
+  constexpr double SLEEP_US = 2000.0;
+  PerfConfig cfg;
+  cfg.cycles = 20;
+  cfg.repeats = 5;
+  cfg.threads = THREADS;
+  PerfCase perf{"Timing.ContentionSleep", cfg};
+
+  const PerfResult RESULT =
+      perf.contentionRun([] { std::this_thread::sleep_for(std::chrono::milliseconds(2)); });
+
+  const double PER_CALL_US = SLEEP_US / THREADS;
+  EXPECT_GE(RESULT.stats.median, 0.9 * PER_CALL_US);
+  EXPECT_LE(RESULT.stats.median, 1.5 * PER_CALL_US);
 }
