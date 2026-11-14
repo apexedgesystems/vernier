@@ -1522,6 +1522,20 @@ fn report_line<'a>(report: &'a str, text: &str) -> Option<&'a str> {
         .map(|line| line.trim_start_matches('=').trim())
 }
 
+/// How racecheck begins each race it reports as an error. Its report holds
+/// these lines before its summary, so they are findings, not the tool's own
+/// error.
+const RACE_FINDING: &str = "Error: Race reported between";
+
+/// The tool's own error in @p report, without its `=========` prefix: the
+/// first line holding `Error:` that is not one of racecheck's findings.
+fn sanitizer_own_error(report: &str) -> Option<&str> {
+    report
+        .lines()
+        .map(|line| line.trim_start_matches('=').trim())
+        .find(|line| line.contains("Error:") && !line.starts_with(RACE_FINDING))
+}
+
 /// Decide a finished compute-sanitizer run from this run's report and the
 /// tool's exit status. The route passes `--error-exitcode 5`, and the tool
 /// then returns 5 whenever it reports errors, whatever the benchmark itself
@@ -1530,9 +1544,10 @@ fn report_line<'a>(report: &'a str, text: &str) -> Option<&'a str> {
 /// leave the status to the benchmark (a benchmark returning 5 itself is not a
 /// finding), unless the report says the benchmark did not end normally. A
 /// report without its summary is the tool's own failure when it holds the
-/// tool's `Error:` line (collection), and otherwise incomplete (completion);
-/// no report at all is a completion failure naming its path. Nothing is
-/// counted without a summary. `Ok` hands the status on as the benchmark's.
+/// tool's `Error:` line (collection; racecheck's findings, which also begin
+/// `Error:`, are not that line), and otherwise incomplete (completion); no
+/// report at all is a completion failure naming its path. Nothing is counted
+/// without a summary. `Ok` hands the status on as the benchmark's.
 fn check_sanitizer_run(report: &Path, status: ExitStatus, request: &str) -> Result<(), Error> {
     let how = describe_status(status);
     let Ok(text) = fs::read_to_string(report) else {
@@ -1573,7 +1588,7 @@ fn check_sanitizer_run(report: &Path, status: ExitStatus, request: &str) -> Resu
             status: how,
             benchmark_failed: report_line(&text, "Target application returned an error").is_some(),
         })),
-        None => Err(match report_line(&text, "Error:") {
+        None => Err(match sanitizer_own_error(&text) {
             Some(line) => profile_failure(
                 request,
                 "collection",
@@ -2426,6 +2441,105 @@ mod tests {
                 "{text:?}"
             );
         }
+    }
+
+    /// A report compute-sanitizer 2025.4.0 wrote, kept in
+    /// tests/fixtures/compute_sanitizer (its README says how).
+    fn recorded_sanitizer_report(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/compute_sanitizer")
+            .join(name)
+    }
+
+    /// @test The verdict reads the real tool's reports as the tool summarized
+    /// them: the unguarded memcheck run's 4 errors and the race's 2 fail the
+    /// run, with the status the tool ended with (the route's
+    /// --error-exitcode, 5), and each clean report, the same-value race
+    /// included, counts none and hands the benchmark's status 0 on.
+    #[test]
+    #[cfg(unix)]
+    fn sanitizer_verdict_reads_the_real_reports() {
+        use std::os::unix::process::ExitStatusExt;
+        for (file, errors, status) in [
+            ("memcheck_unguarded.txt", 4, 5),
+            ("memcheck_clean.txt", 0, 0),
+            ("racecheck_clean.txt", 0, 0),
+            ("synccheck_clean.txt", 0, 0),
+            ("initcheck_clean.txt", 0, 0),
+            ("racecheck_race.txt", 2, 5),
+            ("racecheck_same_value.txt", 0, 0),
+        ] {
+            let path = recorded_sanitizer_report(file);
+            let text = fs::read_to_string(&path).expect("the recorded report");
+            assert_eq!(sanitizer_error_count(&text), Some(errors), "{file}");
+            let verdict = check_sanitizer_run(
+                &path,
+                ExitStatus::from_raw(status << 8),
+                "compute-sanitizer",
+            );
+            match verdict {
+                Ok(()) => assert_eq!(errors, 0, "{file} passed"),
+                Err(Error::Sanitizer(SanitizerFailure::Findings { errors: found, .. })) => {
+                    assert_eq!(found, errors, "{file}")
+                }
+                Err(other) => panic!("{file}: {other}"),
+            }
+        }
+    }
+
+    /// @test A real racecheck report cut before its summary, as when the tool
+    /// is ended before it summarizes, is incomplete: its race findings begin
+    /// `Error:` but are not the tool's own error, and nothing is counted.
+    #[test]
+    #[cfg(unix)]
+    fn a_racecheck_report_cut_before_its_summary_is_incomplete() {
+        use std::os::unix::process::ExitStatusExt;
+        let whole = fs::read_to_string(recorded_sanitizer_report("racecheck_race.txt"))
+            .expect("the recorded report");
+        let cut: String = whole
+            .lines()
+            .take_while(|line| !line.contains("RACECHECK SUMMARY"))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert!(
+            cut.contains("Error: Race reported between"),
+            "the cut report keeps its findings"
+        );
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("sanitizer.log");
+        fs::write(&path, &cut).expect("write the cut report");
+        let err = check_sanitizer_run(&path, ExitStatus::from_raw(9), "compute-sanitizer")
+            .expect_err("a report without its summary passed");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "compute-sanitizer failed: completion: compute-sanitizer was ended by signal 9, \
+                 and its report {} holds no error summary: it is incomplete, and nothing in it \
+                 is counted",
+                path.display()
+            )
+        );
+    }
+
+    /// @test The tool's own error is its `Error:` line, the first that is not
+    /// one of racecheck's findings, without the tool's prefix.
+    #[test]
+    fn sanitizer_own_error_skips_race_findings() {
+        let head = "========= COMPUTE-SANITIZER\n";
+        let race =
+            "========= Error: Race reported between Write access at k(int *)+0x80 in k.cu:15\n";
+        let own =
+            "========= Error: Target application terminated before first instrumented API call\n";
+        assert_eq!(sanitizer_own_error(&format!("{head}{race}")), None);
+        assert_eq!(
+            sanitizer_own_error(&format!("{head}{race}{own}")),
+            Some("Error: Target application terminated before first instrumented API call")
+        );
+        assert_eq!(
+            sanitizer_own_error(&format!("{head}{own}")),
+            Some("Error: Target application terminated before first instrumented API call")
+        );
+        assert_eq!(sanitizer_own_error(head), None);
     }
 
     /// @test An output option's value doubles every '%' and nothing else.
