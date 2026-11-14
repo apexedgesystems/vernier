@@ -172,9 +172,10 @@ medians can add up to more than the round trip
 - **callsPerSecond** - Round trips per second (1e6 / totalTimeUs)
 - **speedupVsCpu** - The suite's CPU baseline time over totalTimeUs; empty in
   the CSV when the suite has no baseline
-- **memBandwidthGBs** - The copy rate: the declared copies' bytes over
-  `transferTimeUs`, the sum of the two copy medians; empty for a test that
-  declares no copies; the kernel's own memory traffic is not measured
+- **memBandwidthGBs** - The copy rate in GB/s: the declared copies' bytes over
+  `transferTimeUs`, the sum of the two copy medians (see
+  [Memory Bandwidth](#memory-bandwidth)); empty for a test that declares no
+  copies; the kernel's own memory traffic is not measured
 
 **Resource Utilization:**
 
@@ -300,14 +301,27 @@ laptop GPU reported
 `transferTimeUs` 2,082.048 against `totalTimeUs` 2,064.5, a ratio of 100.9%.
 `result.stats.transfers.transferOverheadPct(result.kernelTimeUs)` divides the
 copy medians by their sum with the launch median instead, so it stays within
-100% (99.6% for that run).
+100% (99.6% for that run); its three medians are taken separately too, so it
+is not the share of one round trip either.
 
 **Interpretation:**
 
-- With steady copy times the ratio is close to the copies' share of a round
-  trip; near 100%, the copies decide `totalTimeUs` and the kernel hardly shows
-  in it
-- A small ratio says the kernel, not the copies, takes most of the round trip
+- Only while the copy times hold steady from repeat to repeat is the ratio
+  close to the copies' share of a round trip (the median one). Then near 100%
+  says the copies decide `totalTimeUs` and the kernel hardly shows in it, and
+  a small ratio says the launch takes most of it.
+- When the copy times vary, the medians cannot tell which part takes most of
+  a round trip, and the ratio can point the wrong way. Three repeats with
+  host-to-device copies of 100, 1 and 1 us, device-to-host copies of 1, 100
+  and 1 us and launches of 50, 50 and 1 us give a `transferTimeUs` of 2 and a
+  `totalTimeUs` of 151, a ratio of 1.3%, although the copies take two thirds
+  of every round trip.
+- The result keeps no copy time per repeat, and steady round trips do not
+  show steady copies. An Nsight Systems timeline does: it records every copy
+  and launch, and `bench run --profile nsight` writes
+  `cuda_gpu_mem_time_sum.txt` with each copy direction's count, median,
+  minimum, maximum and spread
+  ([walkthrough 11](../demo/docs/11_NSIGHT_PROFILER.md)).
 
 **How to reduce:**
 
@@ -330,9 +344,11 @@ cudaMemcpy(d_data, h_data, 1000 * sizeof(float), cudaMemcpyHostToDevice);
 (`memBandwidthGBs`). The kernel's own reads and writes of device memory are
 not measured.
 
-**Formula:** `(h2dBytes + d2hBytes) / (h2dTimeUs + d2hTimeUs)`: the bytes
-the test declares for one repeat over the two copy medians, whose sum is
-`transferTimeUs`
+**Formula:** `(h2dBytes + d2hBytes) / (h2dTimeUs + d2hTimeUs) / 1000`: the
+bytes the test declares for one repeat over the two copy medians, whose sum is
+`transferTimeUs`, are bytes per microsecond, and 1,000 bytes per microsecond
+are 1 GB/s (10^9 bytes per second). For the quick-start run above, 12,582,912
+bytes over 2,082.048 us are 6,043.5 bytes per microsecond, 6.04 GB/s.
 
 **Interpretation:**
 
@@ -1163,23 +1179,23 @@ PERF_GPU_TEST(MyKernel, Validated) {
       << "GPU should be faster than CPU";
   }
 
-  // 6. Validate transfer overhead
-  double transferPct = (result.transferTimeUs / result.totalTimeUs) * 100;
-  EXPECT_LT(transferPct, 50.0)
-    << "Transfer overhead >50% - consider keeping data on GPU";
+  // 6. No transfer check either: with no copies declared, transferTimeUs
+  //    is 0. A test that declares copies can hold transferTimeUs to a
+  //    budget set for its workload; its ratio to totalTimeUs is not a share
+  //    of one round trip (see Transfer Overhead)
 }
 ```
 
 ### Common Validation Patterns
 
-| Check             | Macro                       | Typical Threshold     | Purpose            |
-| ----------------- | --------------------------- | --------------------- | ------------------ |
-| Result stability  | `EXPECT_STABLE_CV_GPU`      | Auto-adaptive         | Detect jitter      |
-| Occupancy         | `EXPECT_GT(occupancy, X)`   | >0.5 compute-bound    | Resource usage     |
-| Copy rate         | `EXPECT_GT(bandwidth, X)`   | Measured for the link | Declared copies    |
-| No SM-clock drop  | `EXPECT_FALSE(throttling)`  | Always                | Flag a clock drop  |
-| Speedup           | `EXPECT_GT(speedup, X)`     | Problem-dependent     | GPU worthwhile     |
-| Transfer overhead | `EXPECT_LT(transferPct, X)` | <50%                  | Not transfer-bound |
+| Check            | Macro                      | Typical Threshold     | Purpose           |
+| ---------------- | -------------------------- | --------------------- | ----------------- |
+| Result stability | `EXPECT_STABLE_CV_GPU`     | Auto-adaptive         | Detect jitter     |
+| Occupancy        | `EXPECT_GT(occupancy, X)`  | >0.5 compute-bound    | Resource usage    |
+| Copy rate        | `EXPECT_GT(bandwidth, X)`  | Measured for the link | Declared copies   |
+| No SM-clock drop | `EXPECT_FALSE(throttling)` | Always                | Flag a clock drop |
+| Speedup          | `EXPECT_GT(speedup, X)`    | Problem-dependent     | GPU worthwhile    |
+| Copy time        | `EXPECT_LT(transferUs, X)` | Budget for the copies | Copies in budget  |
 
 ---
 
@@ -1378,16 +1394,17 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
 **Causes:**
 
-1. **Transfer overhead dominant:**
+1. **The copies take most of each round trip:**
 
-   ```cpp
-   double transferPct = (transferTimeUs / totalTimeUs) * 100;
-   if (transferPct > 50%) {
-     // Keep data on GPU longer
-     // Or use Unified Memory
-     // Or overlap transfers with compute
-   }
-   ```
+   `speedupVsCpu` divides by `totalTimeUs`, which includes the declared
+   copies. A `transferTimeUs / totalTimeUs` near 100% shows that the copies
+   take most of each round trip only while the copy times hold steady; an
+   Nsight Systems timeline shows each copy's time
+   ([Transfer Overhead](#transfer-overhead)). If the copies dominate:
+
+   - Keep data on GPU longer
+   - Or use Unified Memory
+   - Or overlap transfers with compute
 
 2. **Not enough parallelism:**
 
@@ -1395,7 +1412,9 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    - Consider if workload is GPU-suitable
 
 3. **Memory-bound kernel:**
-   - Check bandwidth utilization
+   - Measure the kernel's memory throughput with a kernel profiler
+     ([Profiling GPU Code](#profiling-gpu-code)); `memBandwidthGBs` is the
+     host-device copy rate, not the kernel's memory traffic
    - Optimize memory access patterns
 
 ### CUDA Errors
