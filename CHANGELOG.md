@@ -934,6 +934,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   the CSV writer quotes such a cell (the test name, `minLevel`, a profile
   folder, the run metadata or a GPU name) and doubles each quote inside it, so
   `bench summary`, `bench compare` and pandas read the row whole.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - **Each completed measurement is its own CSV row** -- a test that measured
   more than once wrote only its last measurement; now every completed
   measurement writes its own row, a case measured more than once in a test
@@ -967,10 +968,13 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
 - Time each measured repeat at the clock's own resolution, so a call shorter
   than a microsecond no longer records 0 us/call and a false `[UNSTABLE]`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - Recording while a monitor starts or restarts no longer races on its
   threshold table or reads one that `start()` freed.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor gauge whose readings are all negative reports its real maximum in
   the summary instead of 0.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 
