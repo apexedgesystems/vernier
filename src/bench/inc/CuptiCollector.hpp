@@ -97,17 +97,24 @@ public:
 
   /**
    * @return true while the collector can collect: this build links CUPTI, the
-   *         decision did not stand it down, CUPTI accepted its callbacks, and
-   *         no start() or stop() has since failed to switch kernel records on
-   *         or off.
+   *         decision did not stand it down, CUPTI accepted its callbacks, no
+   *         start() has since failed to switch kernel records on, and
+   *         collection has not ended in this process. A stop() of any
+   *         collector of the process whose kernel records did not switch off,
+   *         or whose flush failed, ends it for all of them: CUPTI's buffers
+   *         and records are the process's, so what CUPTI still holds or
+   *         records would reach a later window.
    */
   [[nodiscard]] bool isAvailable() const noexcept { return available_; }
 
   /**
    * @return Why isAvailable() is false, as a phrase a message can quote (this
    *         build has no CUPTI; the collector stood down; CUPTI refused its
-   *         callbacks, or to record kernel activity, or to stop recording it,
-   *         with CUPTI's name for the result). Empty while it is available.
+   *         callbacks, or to record kernel activity; in a window of this
+   *         collector or of an earlier one in the process, CUPTI did not stop
+   *         recording kernel activity or failed to flush its activity
+   *         buffers; with CUPTI's name for the result). Empty while it is
+   *         available.
    */
   [[nodiscard]] const std::string& unavailableReason() const noexcept;
 
@@ -128,7 +135,8 @@ public:
    * records are switched on and, when asked (collectUnifiedMemory()), the
    * unified-memory counters are configured and their kind switched on. A no-op
    * otherwise when isAvailable() is false; a refusal from CUPTI of the kernel
-   * records makes it false, a refusal of the counters is
+   * records makes it false, as does collection having ended in this process
+   * since the collector was built; a refusal of the counters is
    * unifiedMemoryRefusal(). Idempotent.
    */
   void start();
@@ -166,8 +174,8 @@ public:
    *         phrase a message can quote: CUPTI refused to configure them
    *         (CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED where the platform has
    *         none), refused to record their kind, or did not stop recording
-   *         them after an earlier window, with CUPTI's name for the result.
-   *         Empty otherwise.
+   *         them after an earlier window of this process, with CUPTI's name
+   *         for the result. Empty otherwise.
    */
   [[nodiscard]] const std::string& unifiedMemoryRefusal() const noexcept;
 
@@ -179,10 +187,10 @@ public:
    *         unified-memory transfer that ends before it starts), or that the
    *         window had no kernel launch. stats() is empty for such a window,
    *         and so is unifiedMemory() unless the problem is only the missing
-   *         launch. A problem does not end collection (isAvailable() lists
-   *         what does). Empty when the window's records are complete and it
-   *         had a launch, or when the collector did not collect (see
-   *         unavailableReason()).
+   *         launch. A failed flush also ends collection (isAvailable()); the
+   *         other problems do not. Empty when the window's records are
+   *         complete and it had a launch, or when the collector did not
+   *         collect (see unavailableReason()).
    */
   [[nodiscard]] const std::string& windowProblem() const noexcept;
 

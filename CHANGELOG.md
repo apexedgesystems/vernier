@@ -967,6 +967,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - GPU measurements with the CUPTI collector on (the default) no longer run
   concurrent kernels one after another. The collector still records over the
   timed launches, so the time CUPTI adds to each launch stays in them.
+- After a failed CUPTI flush, or a CUPTI kind that does not switch off, later
+  GPU measurements of the same run leave the affected `cupti*` or `um*` cells
+  empty and say why, instead of counting records an earlier window left.
 
 ## v1.0.3 - 2026-06-28
 

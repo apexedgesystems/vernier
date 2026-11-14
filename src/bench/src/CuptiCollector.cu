@@ -5,11 +5,15 @@
  * Buffer-based model: register two callbacks; CUPTI fills our buffers with
  * activity records from kernel-launch threads; we walk the records in
  * stop() to populate the aggregate metrics. Every CUPTI call's result is
- * checked: a refusal to register, or to switch kernel records on or off,
- * leaves the collector unavailable with the reason; a refusal of the
- * unified-memory counters leaves the window without them, with the reason;
- * a failed flush, dropped records, records CUPTI could not read or no record
- * at all leave the window without stats, with the problem named.
+ * checked: a refusal to register, or to switch kernel records on, leaves the
+ * collector unavailable with the reason; a refusal of the unified-memory
+ * counters leaves the window without them, with the reason; a failed flush,
+ * dropped records, records CUPTI could not read or no record at all leave the
+ * window without stats, with the problem named. Kernel records that do not
+ * switch off, or a failed flush, end collection for every collector of the
+ * process, and unified-memory counters that do not switch off end the
+ * counters the same way: what CUPTI still holds or records would reach a
+ * later window.
  */
 
 #include "src/bench/inc/CuptiCollector.hpp"
@@ -171,7 +175,11 @@ struct UnifiedMemoryTally {
 
 // Aggregator state is global because CUPTI's buffer-completion callback is a
 // free function. Guarded by a mutex; expected contention is low (one drain
-// per measured window) and the mutex never appears in the hot path.
+// per measured window) and the mutex never appears in the hot path. It also
+// keeps what ends collection for the whole process: CUPTI's activity buffers
+// and records are the process's, and each GPU case builds a collector of its
+// own, so what one collector's failure leaves in CUPTI would reach the next
+// collector's window.
 struct Aggregator {
   std::mutex mtx;
   std::vector<KernelRecord> records;
@@ -181,6 +189,12 @@ struct Aggregator {
   CUptiResult walkError{CUPTI_SUCCESS};    ///< The first error that ended a buffer's walk early
   bool enabled{false};
   bool countsUnifiedMemory{false}; ///< The window recording the counters reads their records
+  /// Why no window of this process collects any more (a flush failed, or
+  /// kernel records did not switch off); empty while windows collect.
+  std::string collectionEnded;
+  /// Why no window of this process records the unified-memory counters any
+  /// more (their kind did not switch off); empty while windows can.
+  std::string unifiedMemoryStuck;
 
   /** @brief Adds one reading of CUPTI's dropped-record count (call with mtx held). */
   void noteDropped(CUptiResult counted, std::size_t n) {
@@ -213,6 +227,12 @@ struct Aggregator {
 Aggregator& aggregator() {
   static Aggregator g;
   return g;
+}
+
+/** @brief Why collection ended in this process; empty while it goes on. */
+std::string collectionEnded() {
+  std::lock_guard<std::mutex> guard(aggregator().mtx);
+  return aggregator().collectionEnded;
 }
 
 /** @brief CUPTI's name for @p result, or its number when CUPTI gives none. */
@@ -342,7 +362,6 @@ struct CuptiCollector::Impl {
   bool unifiedMemoryAsked{false};   ///< collectUnifiedMemory(true)
   bool unifiedMemoryRunning{false}; ///< This window switched the counters' kind on
   std::string unifiedMemoryRefusal; ///< Why the last window that was to record them did not
-  std::string unifiedMemoryStuck; ///< CUPTI's answer when the kind stayed on; no window asks again
   std::optional<UnifiedMemoryProfile> unifiedMemory; ///< The last window's counters
 
 #if VERNIER_HAS_CUPTI
@@ -350,11 +369,16 @@ struct CuptiCollector::Impl {
    * @brief Asks CUPTI for this window's unified-memory counters: the five
    *        kinds configured, then their activity kind switched on. A refusal
    *        leaves the window without them and says why; kernel records go on.
+   *        After a window of this process whose counters did not switch off,
+   *        no window asks again.
    */
   void startUnifiedMemory() {
-    if (!unifiedMemoryStuck.empty()) {
-      unifiedMemoryRefusal = unifiedMemoryStuck;
-      return;
+    {
+      std::lock_guard<std::mutex> guard(aggregator().mtx);
+      if (!aggregator().unifiedMemoryStuck.empty()) {
+        unifiedMemoryRefusal = aggregator().unifiedMemoryStuck;
+        return;
+      }
     }
     engageUnifiedMemoryOnce();
     CUpti_ActivityUnifiedMemoryCounterConfig config[std::size(UNIFIED_MEMORY_KINDS)];
@@ -411,6 +435,12 @@ CuptiCollector::CuptiCollector(bool forceDisabled) {
     return;
   }
 #if VERNIER_HAS_CUPTI
+  // An earlier collector of this process ended collection: what CUPTI still
+  // holds or records could reach this collector's windows.
+  impl_->unavailableReason = collectionEnded();
+  if (!impl_->unavailableReason.empty()) {
+    return;
+  }
   const CUptiResult REGISTERED =
       cuptiActivityRegisterCallbacks(cuptiBufferRequested, cuptiBufferCompleted);
   if (REGISTERED != CUPTI_SUCCESS) {
@@ -461,11 +491,22 @@ void CuptiCollector::start() {
   if (!available_)
     return;
 #if VERNIER_HAS_CUPTI
+  std::string ended;
   {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
-    aggregator().clearWindow();
-    aggregator().countsUnifiedMemory = false;
-    aggregator().enabled = true;
+    ended = aggregator().collectionEnded;
+    if (ended.empty()) {
+      aggregator().clearWindow();
+      aggregator().countsUnifiedMemory = false;
+      aggregator().enabled = true;
+    }
+  }
+  // Another collector of this process ended collection since this one was
+  // built.
+  if (!ended.empty()) {
+    available_ = false;
+    impl_->unavailableReason = ended;
+    return;
   }
   // CONCURRENT_KERNEL records only. KERNEL records would serialize every
   // kernel the GPU runs while they are on (cupti_activity.h), so kernels a
@@ -508,9 +549,9 @@ void CuptiCollector::stop() {
   std::size_t droppedUnbuffered = 0;
   const CUptiResult COUNTED = cuptiActivityGetNumDroppedRecords(nullptr, 0, &droppedUnbuffered);
 
-  // Aggregate under the mutex. A buffer CUPTI completes after this (when the
-  // flush or the disable failed) finds the aggregator disabled and is freed
-  // unread.
+  // Aggregate under the mutex. A buffer CUPTI completes after this finds the
+  // aggregator disabled and is freed unread; after a failed flush or disable
+  // no window of the process enables it again (below).
   std::vector<KernelRecord> snapshot;
   UnifiedMemoryTally unifiedMemory;
   std::size_t dropped = 0;
@@ -529,19 +570,35 @@ void CuptiCollector::stop() {
     walkError = aggregator().walkError;
   }
 
-  // Kernel records still on would arrive between windows and be read into
-  // the next one, so the collector collects no further window.
+  // Kernel records still on would arrive after this window, and a buffer a
+  // failed flush did not hand over may come later: either would be read into
+  // the next window of any collector of this process, so collection ends for
+  // the process, and every collector says why.
+  std::string ends;
   if (DISABLED != CUPTI_SUCCESS) {
+    ends = "CUPTI did not stop recording kernel activity (" + resultName(DISABLED) + ")";
+  } else if (FLUSHED != CUPTI_SUCCESS) {
+    ends = "CUPTI failed to flush its activity buffers (" + resultName(FLUSHED) + ")";
+  }
+  if (!ends.empty()) {
     available_ = false;
-    impl_->unavailableReason =
-        "CUPTI did not stop recording kernel activity (" + resultName(DISABLED) + ")";
+    impl_->unavailableReason = ends;
+    std::lock_guard<std::mutex> guard(aggregator().mtx);
+    if (aggregator().collectionEnded.empty()) {
+      aggregator().collectionEnded = ends;
+    }
   }
   // Unified-memory records still on reach no later window (the aggregator
   // reads them only in a window that switched their kind on itself), and no
-  // later window switches it on: this one's counts were flushed first.
+  // later window of the process switches it on: this one's counts were
+  // flushed first.
   if (UNIFIED_MEMORY_DISABLED != CUPTI_SUCCESS) {
-    impl_->unifiedMemoryStuck = "CUPTI did not stop recording unified-memory counter activity (" +
-                                resultName(UNIFIED_MEMORY_DISABLED) + ")";
+    std::lock_guard<std::mutex> guard(aggregator().mtx);
+    if (aggregator().unifiedMemoryStuck.empty()) {
+      aggregator().unifiedMemoryStuck =
+          "CUPTI did not stop recording unified-memory counter activity (" +
+          resultName(UNIFIED_MEMORY_DISABLED) + ")";
+    }
   }
 
   // A count or a median from part of a window is not published: the window

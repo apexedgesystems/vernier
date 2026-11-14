@@ -14,12 +14,14 @@
  * dropped records can also be left to
  * reach no buffer, as when CUPTI had none to hand over. A walk of a buffer's
  * records ends at the buffer's end, or with the error a test sets after the
- * records it lets through.
+ * records it lets through. A failed flush can keep the buffer it filled, which
+ * the next flush, or the test, then hands over late.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -150,6 +152,18 @@ struct Behaviour {
   bool dropsReachABuffer = true;                ///< false: dropped records come with no buffer
   CUptiResult nextRecordResult = CUPTI_SUCCESS; ///< A walk's error after readableRecords, if set
   size_t readableRecords = 0;                   ///< Records a walk hands over before that error
+  /// A failed flush keeps the buffer it filled instead of handing it over, as
+  /// CUPTI holding a buffer it could not deliver would; the next flush hands
+  /// it over first, or handOverHeldBuffer() does.
+  bool failedFlushHoldsItsBuffer = false;
+};
+
+/** @brief A buffer a failed flush kept, with where each of its records starts. */
+struct HeldBuffer {
+  uint8_t* buffer = nullptr;
+  size_t size = 0;
+  size_t valid = 0;
+  std::vector<size_t> offsets;
 };
 
 /** @brief The buffer callbacks the collector registered. */
@@ -197,7 +211,30 @@ inline CUpti_ActivityKind& kernelRecordKind() {
   return kind;
 }
 
-/** @brief No call counted, the default behaviour, no callbacks and nothing dropped. */
+/** @brief The buffer a failed flush kept (failedFlushHoldsItsBuffer), if any. */
+inline HeldBuffer& heldBuffer() {
+  static HeldBuffer held;
+  return held;
+}
+
+/**
+ * @brief Hands the buffer a failed flush kept to the registered completion
+ *        callback, as CUPTI delivering it late would; nothing when none is
+ *        held. The callback owns it from here.
+ * @return Whether a buffer was handed over.
+ */
+inline bool handOverHeldBuffer() {
+  HeldBuffer held = heldBuffer();
+  if (held.buffer == nullptr || callbacks().completed == nullptr) {
+    return false;
+  }
+  heldBuffer() = {};
+  recordOffsets() = held.offsets;
+  callbacks().completed(nullptr, 0, held.buffer, held.size, held.valid);
+  return true;
+}
+
+/** @brief No call counted, the default behaviour, no callbacks and nothing dropped or held. */
 inline void reset() {
   calls() = {};
   behaviour() = {};
@@ -205,6 +242,8 @@ inline void reset() {
   pendingDropped() = 0;
   recordOffsets().clear();
   kernelRecordKind() = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+  std::free(heldBuffer().buffer);
+  heldBuffer() = {};
 }
 
 /** @brief A unified-memory record of @p kind with @p value, from @p start to @p end ns. */
@@ -260,14 +299,17 @@ cuptiActivityConfigureUnifiedMemoryCounter(CUpti_ActivityUnifiedMemoryCounterCon
   return fake_cupti::behaviour().configureResult;
 }
 /**
- * @brief Delivers the behaviour's records in one buffer (the kernel records,
- *        then the unified-memory ones, each at its own size) and counts its
- *        dropped records, then answers with its flush result (a failed flush
- *        has still handed over what it delivered).
+ * @brief Hands over a buffer an earlier failed flush kept, then delivers the
+ *        behaviour's records in one buffer (the kernel records, then the
+ *        unified-memory ones, each at its own size) and counts its dropped
+ *        records, then answers with its flush result. A failed flush has still
+ *        handed over what it delivered, unless failedFlushHoldsItsBuffer keeps
+ *        that buffer back.
  */
 inline CUptiResult cuptiActivityFlushAll(uint32_t) {
   ++fake_cupti::calls().flushes;
   fake_cupti::calls().log.push_back("flush");
+  static_cast<void>(fake_cupti::handOverHeldBuffer());
   const fake_cupti::Behaviour& b = fake_cupti::behaviour();
   if (b.dropsReachABuffer) {
     fake_cupti::pendingDropped() += b.droppedPerFlush;
@@ -303,7 +345,11 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
     for (const CUpti_ActivityUnifiedMemoryCounter2& record : b.unifiedMemoryRecords) {
       PUT(&record, sizeof(record));
     }
-    cb.completed(nullptr, 0, buffer, size, valid);
+    if (b.flushResult != CUPTI_SUCCESS && b.failedFlushHoldsItsBuffer) {
+      fake_cupti::heldBuffer() = {buffer, size, valid, offsets};
+    } else {
+      cb.completed(nullptr, 0, buffer, size, valid);
+    }
   }
   if (!b.dropsReachABuffer) {
     fake_cupti::pendingDropped() += b.droppedPerFlush;

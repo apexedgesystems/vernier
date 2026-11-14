@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -43,6 +44,19 @@ const char* const TRUE_SPELLINGS[] = {"1", "true", "TRUE", "True", "yes", "YES",
 const char* const FALSE_SPELLINGS[] = {"0", "false", "FALSE", "no", "No", "off", "OFF", ""};
 const char* const INVALID_VALUES[] = {"2", "-1", "maybe", "disable", "truee", "y", " 1", "1 "};
 
+/**
+ * @brief Forgets what ended collection, or the unified-memory counters, in
+ *        this process. CuptiCollector.cu keeps it for the process (its
+ *        aggregator), so a test that ends collection would end it for every
+ *        later test; each test starts as a new process does.
+ */
+void forgetEndsOfCollection() {
+  vernier::bench::Aggregator& agg = vernier::bench::aggregator();
+  const std::lock_guard<std::mutex> GUARD(agg.mtx);
+  agg.collectionEnded.clear();
+  agg.unifiedMemoryStuck.clear();
+}
+
 } // namespace
 
 /** @brief No session, no override, and no registration counted yet. */
@@ -54,9 +68,13 @@ protected:
       scrub_[count_++].emplace(name, nullptr);
     }
     fake_cupti::reset();
+    forgetEndsOfCollection();
   }
 
-  void TearDown() override { fake_cupti::reset(); }
+  void TearDown() override {
+    fake_cupti::reset();
+    forgetEndsOfCollection();
+  }
 
   /** @brief Registrations made while building one collector for @p value, or -1 when it threw. */
   static int registrationsFor(const char* value, bool forceDisabled = false) {
@@ -256,7 +274,7 @@ TEST_F(CuptiCollectorDecision, ARefusedEnableIsStated) {
 
 /**
  * @test A failed flush leaves the window without stats, though it delivered
- *       records, and names the result; the collector stays available
+ *       records, names the result, and ends collection with it as the reason
  */
 TEST_F(CuptiCollectorDecision, AFailedFlushEmptiesTheWindow) {
   deliverLaunches();
@@ -267,7 +285,54 @@ TEST_F(CuptiCollectorDecision, AFailedFlushEmptiesTheWindow) {
   EXPECT_EQ(collector.stats().registersMedian, 0U);
   EXPECT_EQ(collector.windowProblem(),
             "CUPTI failed to flush its activity buffers (CUPTI_ERROR_UNKNOWN)");
-  EXPECT_TRUE(collector.isAvailable());
+  EXPECT_FALSE(collector.isAvailable());
+  EXPECT_EQ(collector.unavailableReason(),
+            "CUPTI failed to flush its activity buffers (CUPTI_ERROR_UNKNOWN)");
+}
+
+/**
+ * @test After a flush that failed and kept its buffer back, nothing of that
+ *       window reaches a later one: collection ends and says why, the
+ *       collector's next window collects nothing and asks CUPTI nothing, a
+ *       collector built after it (as the next GPU case builds one) is
+ *       unavailable for the same reason and registers nothing, and when CUPTI
+ *       hands the kept buffer over late its records are not read
+ */
+TEST_F(CuptiCollectorDecision, AFailedFlushLeavesNothingStale) {
+  const std::string FAILED = "CUPTI failed to flush its activity buffers (CUPTI_ERROR_UNKNOWN)";
+  deliverLaunches();
+  fake_cupti::behaviour().flushResult = CUPTI_ERROR_UNKNOWN;
+  fake_cupti::behaviour().failedFlushHoldsItsBuffer = true;
+  CuptiCollector collector;
+  window(collector);
+  EXPECT_EQ(collector.windowProblem(), FAILED);
+  EXPECT_EQ(collector.stats().kernelLaunches, 0U);
+  EXPECT_FALSE(collector.isAvailable());
+  EXPECT_EQ(collector.unavailableReason(), FAILED);
+
+  // Each later window would have launches of its own, after the kept buffer.
+  fake_cupti::behaviour().flushResult = CUPTI_SUCCESS;
+  const fake_cupti::Calls BEFORE = fake_cupti::calls();
+  window(collector);
+  EXPECT_EQ(collector.stats().kernelLaunches, 0U) << "the window after the failed flush counted";
+  EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
+  EXPECT_EQ(fake_cupti::calls().enables, BEFORE.enables);
+  EXPECT_EQ(fake_cupti::calls().flushes, BEFORE.flushes);
+
+  CuptiCollector next;
+  window(next);
+  EXPECT_FALSE(next.isAvailable());
+  EXPECT_EQ(next.unavailableReason(), FAILED);
+  EXPECT_EQ(next.stats().kernelLaunches, 0U) << "a collector built later counted";
+  EXPECT_EQ(fake_cupti::calls().registrations, BEFORE.registrations);
+  EXPECT_EQ(fake_cupti::calls().enables, BEFORE.enables);
+  EXPECT_EQ(fake_cupti::calls().flushes, BEFORE.flushes);
+
+  const std::size_t WALKS = fake_cupti::calls().walkEnds.size();
+  ASSERT_TRUE(fake_cupti::handOverHeldBuffer())
+      << "a later flush had already handed the kept buffer over";
+  EXPECT_EQ(fake_cupti::calls().walkEnds.size(), WALKS)
+      << "a buffer CUPTI handed over after collection ended was read";
 }
 
 /** @test Dropped records leave the window without stats and are counted in the problem. */
@@ -321,20 +386,31 @@ TEST_F(CuptiCollectorDecision, AWindowWithoutARecordSaysSo) {
 
 /**
  * @test A refused disable keeps the window's stats, which were flushed first,
- *       and ends collection: records still on would reach the next window
+ *       and ends collection, for the collector and for one built after it (as
+ *       the next GPU case builds one): records still on would reach their
+ *       windows
  */
 TEST_F(CuptiCollectorDecision, ARefusedDisableEndsCollection) {
+  const std::string STUCK = "CUPTI did not stop recording kernel activity (CUPTI_ERROR_UNKNOWN)";
   deliverLaunches();
   fake_cupti::behaviour().disableResult = CUPTI_ERROR_UNKNOWN;
   CuptiCollector collector;
   window(collector);
   EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
   EXPECT_FALSE(collector.isAvailable());
-  EXPECT_EQ(collector.unavailableReason(),
-            "CUPTI did not stop recording kernel activity (CUPTI_ERROR_UNKNOWN)");
+  EXPECT_EQ(collector.unavailableReason(), STUCK);
 
   window(collector);
   EXPECT_EQ(collector.stats().kernelLaunches, 0U) << "the next window must not repeat the last";
+  EXPECT_EQ(fake_cupti::calls().enables, 1);
+  EXPECT_EQ(fake_cupti::calls().flushes, 1);
+
+  CuptiCollector next;
+  window(next);
+  EXPECT_FALSE(next.isAvailable());
+  EXPECT_EQ(next.unavailableReason(), STUCK);
+  EXPECT_EQ(next.stats().kernelLaunches, 0U) << "a collector built later counted";
+  EXPECT_EQ(fake_cupti::calls().registrations, 1) << "a collector built later registered";
   EXPECT_EQ(fake_cupti::calls().enables, 1);
   EXPECT_EQ(fake_cupti::calls().flushes, 1);
 }
@@ -662,10 +738,13 @@ TEST_F(CuptiCollectorDecision, ARefusedKindIsStated) {
 
 /**
  * @test A kind CUPTI does not switch off keeps that window's counters, which
- *       were flushed first; no later window switches it on or reads its records,
- *       each says why, and kernel windows go on
+ *       were flushed first; no later window, of the collector or of one built
+ *       after it (as the next GPU case builds one), switches it on or reads
+ *       its records, each says why, and kernel windows go on
  */
 TEST_F(CuptiCollectorDecision, AKindThatStaysOnEndsTheCounters) {
+  const std::string STUCK =
+      "CUPTI did not stop recording unified-memory counter activity (CUPTI_ERROR_UNKNOWN)";
   deliverLaunches();
   deliverUnifiedMemory();
   fake_cupti::behaviour().unifiedMemoryDisableResult = CUPTI_ERROR_UNKNOWN;
@@ -678,10 +757,19 @@ TEST_F(CuptiCollectorDecision, AKindThatStaysOnEndsTheCounters) {
   EXPECT_EQ(fake_cupti::calls().configures, 1) << "a later window configured the counters again";
   EXPECT_FALSE(asking.collector.unifiedMemory().has_value())
       << "a later window read the records of a kind it did not switch on";
-  EXPECT_EQ(asking.collector.unifiedMemoryRefusal(),
-            "CUPTI did not stop recording unified-memory counter activity (CUPTI_ERROR_UNKNOWN)");
+  EXPECT_EQ(asking.collector.unifiedMemoryRefusal(), STUCK);
   EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
   EXPECT_TRUE(asking.collector.isAvailable());
+
+  AskingCollector next;
+  window(next.collector);
+  EXPECT_EQ(fake_cupti::calls().configures, 1)
+      << "a collector built later configured the counters again";
+  EXPECT_FALSE(next.collector.unifiedMemory().has_value())
+      << "a collector built later read the records of a kind it did not switch on";
+  EXPECT_EQ(next.collector.unifiedMemoryRefusal(), STUCK);
+  EXPECT_EQ(next.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_TRUE(next.collector.isAvailable());
 }
 
 /**
@@ -702,6 +790,7 @@ TEST_F(CuptiCollectorDecision, IncompleteRecordsLeaveNoCounters) {
   };
   for (const Case& c : CASES) {
     fake_cupti::reset();
+    forgetEndsOfCollection(); // the failed flush ends collection for the process
     deliverLaunches();
     deliverUnifiedMemory();
     c.set();
