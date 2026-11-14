@@ -74,6 +74,23 @@ __global__ void saxpyKernel(float a, const float* x, float* y, int n) {
   }
 }
 
+/** @brief The GPU's global timer, in nanoseconds. */
+__device__ unsigned long long globalTimerNs() {
+  unsigned long long now = 0;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+  return now;
+}
+
+/**
+ * @brief Busy-waits until @p durationNs have passed on the GPU's timer: a
+ *        kernel of a known length, however fast the GPU runs.
+ */
+__global__ void spinKernel(unsigned long long durationNs) {
+  const unsigned long long START = globalTimerNs();
+  while (globalTimerNs() - START < durationNs) {
+  }
+}
+
 /** @brief A distinct suite name per call, so process-wide state never leaks between tests. */
 std::string uniqueSuite(const char* stem) {
   static std::atomic<int> counter{0};
@@ -916,6 +933,101 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
   }
 }
 
+/* ----------------------------- CUPTI and Concurrent Kernels ----------------------------- */
+
+namespace {
+
+/// How long each of the fork/join launch's two kernels spins on the GPU.
+constexpr unsigned long long FORK_SPIN_NS = 200'000;
+
+/**
+ * @brief A launch that forks the stream it is given onto a second stream,
+ *        spins one kernel on each and joins back: it takes one spin when the
+ *        two kernels overlap and two when they run one after the other. Owns
+ *        the second stream and the two events.
+ */
+class ForkJoinLaunch {
+public:
+  ForkJoinLaunch() {
+    cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking);
+    cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&join_, cudaEventDisableTiming);
+  }
+
+  ~ForkJoinLaunch() {
+    cudaEventDestroy(join_);
+    cudaEventDestroy(fork_);
+    cudaStreamDestroy(side_);
+  }
+
+  ForkJoinLaunch(const ForkJoinLaunch&) = delete;
+  ForkJoinLaunch& operator=(const ForkJoinLaunch&) = delete;
+
+  /** @brief The measured launch. */
+  [[nodiscard]] ub::PerfGpuCase::KernelFn launch() const {
+    return [side = side_, fork = fork_, join = join_](cudaStream_t s) {
+      cudaEventRecord(fork, s);
+      cudaStreamWaitEvent(side, fork, 0);
+      spinKernel<<<1, 1, 0, s>>>(FORK_SPIN_NS);
+      spinKernel<<<1, 1, 0, side>>>(FORK_SPIN_NS);
+      cudaEventRecord(join, side);
+      cudaStreamWaitEvent(s, join, 0);
+    };
+  }
+
+private:
+  cudaStream_t side_ = nullptr;
+  cudaEvent_t fork_ = nullptr;
+  cudaEvent_t join_ = nullptr;
+};
+
+} // namespace
+
+/**
+ * @test Kernels a launch runs on two streams at once stay concurrent while the
+ *       collector records the timed launches: a fork/join of two 200 us spins
+ *       reads within 25% of the same launch measured first with the collector
+ *       stood down (VERNIER_DISABLE_CUPTI=1), where kernels run one after the
+ *       other would read twice. The collector's window covers the timed
+ *       launches: it records both kernels of each. The spins keep both
+ *       measurements GPU-bound, so the host time CUPTI adds to a launch does
+ *       not reach them
+ */
+TEST_F(PerfGpuHarnessTest, ConcurrentKernelsStayConcurrentWhileCuptiRecords) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 5;
+  const ForkJoinLaunch FORK_JOIN;
+  const std::string SUITE = uniqueSuite("GpuCuptiConcurrent");
+  const auto MEASURE = [&](const char* caseName) {
+    ub::PerfGpuCase perf{SUITE + "." + caseName, cfg};
+    perf.cudaWarmup(FORK_JOIN.launch());
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(FORK_JOIN.launch(), "fork_join").measure();
+    static_cast<void>(lastRow());
+    return RESULT;
+  };
+  ub::PerfGpuResult off;
+  {
+    const ScopedEnv OFF("VERNIER_DISABLE_CUPTI", "1");
+    off = MEASURE("CollectorOff");
+  }
+  const ub::PerfGpuResult ON = MEASURE("CollectorOn");
+
+  const std::size_t KERNELS = 2 * static_cast<std::size_t>(cfg.cycles) * cfg.repeats;
+  ASSERT_EQ(off.stats.cupti.kernelLaunches, 0U) << "the collector did not stand down";
+  ASSERT_EQ(ON.stats.cupti.kernelLaunches, KERNELS)
+      << "the collector's window did not record both kernels of every timed launch";
+  ASSERT_GE(off.kernelTimeUs, 0.9 * static_cast<double>(FORK_SPIN_NS) / 1000.0)
+      << "a launch took less than one spin";
+  EXPECT_LT(ON.kernelTimeUs, 1.25 * off.kernelTimeUs)
+      << "collector on " << ON.kernelTimeUs << " us a launch, off " << off.kernelTimeUs
+      << " us: the collector ran the two kernels one after the other";
+}
+
 /* ----------------------------- CUPTI Statements ----------------------------- */
 
 namespace {
@@ -1493,13 +1605,6 @@ TEST_F(PerfGpuHarnessTest, ManagedBufferCountersAreObserved) {
 }
 
 namespace {
-
-/** @brief The GPU's global timer, in nanoseconds. */
-__device__ unsigned long long globalTimerNs() {
-  unsigned long long now = 0;
-  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
-  return now;
-}
 
 /**
  * @brief Adds one to one int per page until @p durationNs have passed on the

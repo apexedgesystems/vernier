@@ -8,9 +8,10 @@
  * compiled and run on a machine without CUPTI. It counts every call that
  * registers with or drives CUPTI, logs them in order, so a test can show what
  * a decision did, and answers each call with the result a test sets. A flush
- * delivers the kernel records, the unified-memory counter records and the
- * dropped-record count a test sets, through the buffer callbacks the
- * collector registered, as CUPTI does; dropped records can also be left to
+ * delivers the kernel records (of the kernel kind last switched on), the
+ * unified-memory counter records and the dropped-record count a test sets,
+ * through the buffer callbacks the collector registered, as CUPTI does;
+ * dropped records can also be left to
  * reach no buffer, as when CUPTI had none to hand over. A walk of a buffer's
  * records ends at the buffer's end, or with the error a test sets after the
  * records it lets through.
@@ -179,6 +180,15 @@ inline std::vector<size_t>& recordOffsets() {
   return offsets;
 }
 
+/**
+ * @brief The kind a flush's kernel records carry: the kernel kind last
+ *        switched on, as CUPTI records the kind that is on.
+ */
+inline CUpti_ActivityKind& kernelRecordKind() {
+  static CUpti_ActivityKind kind = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+  return kind;
+}
+
 /** @brief No call counted, the default behaviour, no callbacks and nothing dropped. */
 inline void reset() {
   calls() = {};
@@ -186,6 +196,7 @@ inline void reset() {
   callbacks() = {};
   pendingDropped() = 0;
   recordOffsets().clear();
+  kernelRecordKind() = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
 }
 
 /** @brief A unified-memory record of @p kind with @p value, from @p start to @p end ns. */
@@ -217,6 +228,9 @@ inline CUptiResult cuptiActivityEnable(CUpti_ActivityKind kind) {
   ++fake_cupti::calls().enables;
   fake_cupti::calls().enabled.push_back(kind);
   fake_cupti::calls().log.push_back("enable " + std::to_string(static_cast<int>(kind)));
+  if (kind == CUPTI_ACTIVITY_KIND_KERNEL || kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
+    fake_cupti::kernelRecordKind() = kind;
+  }
   return kind == CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER
              ? fake_cupti::behaviour().unifiedMemoryEnableResult
              : fake_cupti::behaviour().enableResult;
@@ -271,7 +285,7 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
     };
     for (size_t i = 0; i < b.recordsPerFlush; ++i) {
       CUpti_ActivityKernel9 record{};
-      record.kind = CUPTI_ACTIVITY_KIND_KERNEL;
+      record.kind = fake_cupti::kernelRecordKind();
       record.registersPerThread = b.registersPerThread;
       record.staticSharedMemory = b.staticSharedMemory;
       record.name = "fakeKernel";

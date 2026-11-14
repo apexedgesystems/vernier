@@ -182,16 +182,18 @@ TEST_F(CuptiCollectorDecision, CountsTheWindowsRecords) {
 }
 
 /**
- * @test A window switches on KERNEL records alone, once, and switches them off:
- *       with KERNEL on, CUPTI refuses CONCURRENT_KERNEL
+ * @test A window switches on CONCURRENT_KERNEL records alone, once, and
+ *       switches them off: the KERNEL kind would serialize the kernels the
+ *       window's launches run, and the two kinds exclude each other
  */
 TEST_F(CuptiCollectorDecision, EnablesKernelRecordsOnly) {
   CuptiCollector collector;
   collector.start();
   EXPECT_EQ(fake_cupti::calls().enabled,
-            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
   collector.stop();
-  EXPECT_EQ(fake_cupti::calls().disables, 1);
+  EXPECT_EQ(fake_cupti::calls().disabled,
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
   EXPECT_EQ(fake_cupti::calls().flushes, 1);
   EXPECT_EQ(fake_cupti::calls().configures, 0) << "unified-memory counters configured unasked";
 }
@@ -518,7 +520,7 @@ TEST_F(CuptiCollectorDecision, ARequestConfiguresTheFiveCountersThenFlushesFirst
     EXPECT_EQ(CONFIG[i].scope, CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_SCOPE_PROCESS_SINGLE_DEVICE);
   }
   EXPECT_EQ(fake_cupti::calls().log,
-            (std::vector<std::string>{"enable 3", "configure", "enable 25", "flush", "disable 3",
+            (std::vector<std::string>{"enable 10", "configure", "enable 25", "flush", "disable 10",
                                       "disable 25"}));
   EXPECT_TRUE(asking.collector.unifiedMemoryRefusal().empty())
       << asking.collector.unifiedMemoryRefusal();
@@ -612,9 +614,9 @@ TEST_F(CuptiCollectorDecision, ARefusedConfigurationIsStated) {
             "CUPTI refused to configure the unified-memory counters "
             "(CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED)");
   EXPECT_EQ(fake_cupti::calls().enabled,
-            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
   EXPECT_EQ(fake_cupti::calls().disabled,
-            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
   EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
   EXPECT_TRUE(asking.collector.isAvailable());
   EXPECT_TRUE(asking.collector.windowProblem().empty()) << asking.collector.windowProblem();
@@ -638,7 +640,7 @@ TEST_F(CuptiCollectorDecision, ARefusedKindIsStated) {
   EXPECT_EQ(asking.collector.unifiedMemoryRefusal(),
             "CUPTI refused to record unified-memory counter activity (CUPTI_ERROR_NOT_READY)");
   EXPECT_EQ(fake_cupti::calls().disabled,
-            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
   EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
   EXPECT_TRUE(asking.collector.isAvailable());
 }
@@ -737,7 +739,7 @@ TEST_F(CuptiCollectorDecision, AWithdrawnRequestRecordsNoCounters) {
   EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
   EXPECT_EQ(fake_cupti::calls().configures, 0);
   EXPECT_EQ(fake_cupti::calls().enabled,
-            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
 }
 
 /** @test reset() clears the last window's counters. */

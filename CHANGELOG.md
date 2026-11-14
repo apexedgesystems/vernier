@@ -964,6 +964,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 - Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
+- GPU measurements with the CUPTI collector on (the default) no longer run
+  concurrent kernels one after another. The collector still records over the
+  timed launches, so the time CUPTI adds to each launch stays in them.
 
 ## v1.0.3 - 2026-06-28
 

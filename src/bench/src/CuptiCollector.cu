@@ -303,10 +303,10 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
     if (status != CUPTI_SUCCESS || !record)
       break;
 
-    // The collector enables KERNEL records; CONCURRENT_KERNEL records share
+    // The collector enables CONCURRENT_KERNEL records; KERNEL records share
     // their record type, so either kind is read.
-    if (record->kind == CUPTI_ACTIVITY_KIND_KERNEL ||
-        record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
+    if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL ||
+        record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
       auto* k = reinterpret_cast<CUpti_ActivityKernel9*>(record);
       KernelRecord r;
       r.registersPerThread = k->registersPerThread;
@@ -467,9 +467,11 @@ void CuptiCollector::start() {
     aggregator().countsUnifiedMemory = false;
     aggregator().enabled = true;
   }
-  // KERNEL records only: with KERNEL on, CUPTI refuses CONCURRENT_KERNEL
-  // (CUPTI_ERROR_NOT_COMPATIBLE).
-  const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_KERNEL);
+  // CONCURRENT_KERNEL records only. KERNEL records would serialize every
+  // kernel the GPU runs while they are on (cupti_activity.h), so kernels a
+  // launch runs on two streams at once would be timed one after the other;
+  // the two kinds exclude each other (CUPTI_ERROR_NOT_COMPATIBLE).
+  const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
   if (ENABLED != CUPTI_SUCCESS) {
     {
       std::lock_guard<std::mutex> guard(aggregator().mtx);
@@ -497,7 +499,7 @@ void CuptiCollector::stop() {
   // unified-memory kind loses the window's device-side records (the
   // host-to-device transfers and the GPU page faults).
   const CUptiResult FLUSHED = cuptiActivityFlushAll(1);
-  const CUptiResult DISABLED = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_KERNEL);
+  const CUptiResult DISABLED = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
   const CUptiResult UNIFIED_MEMORY_DISABLED =
       impl_->unifiedMemoryRunning ? cuptiActivityDisable(CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER)
                                   : CUPTI_SUCCESS;

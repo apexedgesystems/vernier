@@ -8,7 +8,11 @@
  * CUPTI's kernel activity records say about the launches in one measured
  * window: how many there were, the registers per thread each launch was
  * allocated, its static and dynamic shared memory, and the kernel's name. It
- * reads no time, launch shape or occupancy from the records. Asked to
+ * reads no time, launch shape or occupancy from the records. A window switches
+ * on CUPTI's CONCURRENT_KERNEL records, under which kernels on different
+ * streams still run at the same time (the KERNEL kind serializes them), but
+ * CUPTI's record keeping still adds time to every launch made while a window
+ * is open, most of it on the host. Asked to
  * (collectUnifiedMemory()), the same window also records CUPTI's
  * unified-memory counters: page faults on the GPU and on the host, migrations
  * each way with their bytes and times, and thrashing (UnifiedMemoryProfile
