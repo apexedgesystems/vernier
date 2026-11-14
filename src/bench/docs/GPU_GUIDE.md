@@ -1134,18 +1134,24 @@ void processFrame() {
 }
 ```
 
-Whether the macros emit ranges is settled when vernier is configured. With
-the CUDA toolkit found (a GPU build, the default) and CMake 3.25 or newer,
-which defines the toolkit's `CUDA::nvtx3` target, `vernier::bench` hands
-`COMPAT_NVTX_AVAILABLE=1` and that target, and with it the NVTX3 headers, to
-the code that links it, and the macros emit ranges. Without the target (CMake
-3.24, no toolkit, or `-DVERNIER_BUILD_GPU=OFF`) it hands on
+The macros emit ranges only where two conditions hold as the code that uses
+them compiles: `COMPAT_NVTX_AVAILABLE` is nonzero, and `<nvtx3/nvToolsExt.h>`
+can be included (`Nvtx.hpp`). Otherwise they compile to nothing, so the same
+code builds and runs without CUDA. For code that links `vernier::bench`,
+vernier's configuration sets the first. With the CUDA toolkit found (a GPU
+build, the default) and CMake 3.25 or newer, which defines the toolkit's
+`CUDA::nvtx3` target, `vernier::bench` hands `COMPAT_NVTX_AVAILABLE=1` and
+that target, which adds the toolkit's include directories, to the code that
+links it. CMake defines the target without checking that the header is there,
+so the header stays a condition of its own. Without the target (CMake 3.24,
+no toolkit, or `-DVERNIER_BUILD_GPU=OFF`) `vernier::bench` hands on
 `COMPAT_NVTX_AVAILABLE=0`, and the macros compile to nothing even where the
-headers are installed, so the same code builds and runs without CUDA. An
-installed vernier keeps the value of the build it came from, and the range
-`--profile nsight` puts around each test follows that value too. Code that
-includes `Nvtx.hpp` without vernier's targets, where `COMPAT_NVTX_AVAILABLE`
-is undefined, gets ranges whenever `<nvtx3/nvToolsExt.h>` can be included.
+header can be included. An installed vernier keeps the value of the build it
+came from, which says nothing about whether the code using it can include the
+header. The range `--profile nsight` puts around each test depends on both
+conditions in vernier's own build. Code that includes `Nvtx.hpp` without
+vernier's targets, where `COMPAT_NVTX_AVAILABLE` is undefined, gets ranges
+whenever the header can be included.
 
 ### CUPTI in-process kernel metrics
 
