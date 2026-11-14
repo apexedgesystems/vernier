@@ -995,26 +995,29 @@ PERF_GPU_TEST(MyKernel, WithProfiling) {
 | ------------------- | ----------------------------- | ---------------------------------------------------------------------- |
 | `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern*sum / api_sum / mem*\* |
 | `compute-sanitizer` | NVIDIA Compute Sanitizer      | GPU memcheck / racecheck / synccheck / initcheck                       |
-| `rocprof`           | AMD ROCm rocprof              | AMD MI / Radeon Instinct profiling (kernel time + Chrome-trace JSON)   |
+| `rocprof`           | AMD ROCm rocprof              | Legacy integration, not validated on AMD hardware (walkthrough 18)     |
 
-Each backend follows the wrap-externally pattern: the binary stays passive
-unless wrapping is detected, in which case the backend records the artifact
-path. When run unwrapped, the backend prints the precise invocation including
-the per-test artifact directory.
+Each of these tools records a process only when it starts it. Under the tool,
+the backend stays passive and reports the tool's output as the artifact; run
+without it, the benchmark runs its tests, fails with exit status 4 when they
+pass, and prints the command that would start it under the tool.
+`bench run --profile <name>` starts it that way (for every name here but
+`rocprof`).
 
 ```bash
-# Timeline profile (auto-stats reports drop next to the .nsys-rep).
-# VERNIER_DISABLE_CUPTI=1 frees the one CUPTI client slot for nsys -- without
-# it the binary's in-process CUPTI collector holds the slot and the trace is
-# empty (see "CUPTI in-process kernel metrics" below). Same for an external ncu.
-VERNIER_DISABLE_CUPTI=1 nsys profile -o run.nsys-rep -t cuda,nvtx \
+# Timeline profile, started by hand: nsys writes run.nsys-rep (bench run
+# --profile nsight also writes the nsys stats summaries beside it). The
+# in-process CUPTI collector stands down inside the session by itself (see
+# "CUPTI in-process kernel metrics" below).
+nsys profile -o run.nsys-rep -t cuda,nvtx \
     ./MyGpuTest --profile nsight --gtest_filter='*'
 
 # GPU memory error detection
 compute-sanitizer --tool=memcheck --log-file=run.sanitizer.log \
     ./MyGpuTest --profile compute-sanitizer --cycles 5
 
-# AMD GPU (HIP-built binary)
+# AMD GPU (HIP-built binary): the legacy rocprof integration, not validated
+# on AMD hardware
 rocprof --stats -o run.csv \
     ./MyHipTest --profile rocprof --profile-args stats
 ```
@@ -1025,10 +1028,11 @@ nsys-traceable. `ncu` and the in-process CUPTI columns are unaffected.
 
 ### NVTX annotation API
 
-`BENCH_NVTX_SCOPE("name")` pushes a labeled range that nsys / ncu pick up
-automatically. `NsightProfiler` also auto-emits a range named after the
-test, so even unannotated benchmarks show per-test grouping in the
-nsys timeline.
+`BENCH_NVTX_SCOPE("name")` pushes a labeled range that an Nsight tool records
+with the run. Under `--profile nsight` (the profile `bench run --profile nsight`
+passes the benchmark), the Nsight backend also marks each measured window with
+a range named after the test, so even an unannotated benchmark shows its tests
+on the nsys timeline. A run without an Nsight profile gets no such range.
 
 ```cpp
 #include "Nvtx.hpp"
@@ -1045,13 +1049,17 @@ void processFrame() {
 }
 ```
 
-Compiles to a no-op on CPU-only builds (no nvtx3 headers needed).
+The macros emit ranges when the CUDA toolkit's NVTX3 headers are there at
+compile time, and compile to nothing otherwise, so the same code builds
+without CUDA.
 
 ### CUPTI in-process kernel metrics
 
-CUPTI's Activity API populates per-launch register count, static + dynamic
-shared memory, and launch count into the GPU CSV section on every GPU run
--- no `--profile` flag required. New columns:
+CUPTI's Activity API fills per-launch register count, static + dynamic shared
+memory, and launch count into the GPU CSV section on every GPU run, with no
+`--profile` flag, except where the collector cannot or must not run: a build
+without CUPTI, `VERNIER_DISABLE_CUPTI=1`, or an nsys or ncu session (below).
+There the cells stay empty and the run says why. The columns:
 
 | Column                  | Meaning                                                   |
 | ----------------------- | --------------------------------------------------------- |
@@ -1070,8 +1078,10 @@ CUPTI's unified-memory counters over each measured window
 ([Unified-Memory Counters](#unified-memory-counters)).
 
 CUPTI allows a single client per process, so this in-process collector and an
-external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,
-set `VERNIER_DISABLE_CUPTI=1` so the in-process collector releases the slot.
+nsys or ncu session cannot both hold it. The collector stands down by itself
+when one of them started the process (`bench run` says so, and a session typed
+by hand is recognized from the variables each tool exports), and its cells stay
+empty. `VERNIER_DISABLE_CUPTI=1` turns it off in any run.
 
 ---
 

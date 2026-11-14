@@ -34,10 +34,10 @@ output.
 
 ## 2. The Rigs
 
-| Rig                                  | Document                           | Used by                                                         |
-| ------------------------------------ | ---------------------------------- | --------------------------------------------------------------- |
-| Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs                                                |
-| NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs, and CPU walkthroughs that need a GPU timeline |
+| Rig                                  | Document                           | Used by          |
+| ------------------------------------ | ---------------------------------- | ---------------- |
+| Raspberry Pi 4 Model B               | [RIG_PI4.md](RIG_PI4.md)           | CPU walkthroughs |
+| NVIDIA Jetson AGX Thor Developer Kit | [RIG_THOR_AGX.md](RIG_THOR_AGX.md) | GPU walkthroughs |
 
 Two walkthroughs fall outside the two rigs, and each says so at its top:
 RAPL needs an Intel CPU, and rocprof an AMD GPU. The jemalloc walkthrough

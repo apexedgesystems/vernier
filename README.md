@@ -91,7 +91,8 @@ side, so remove the directory when switching between them.
   metrics (register / smem / launch counts) without spawning ncu, and, under
   `--capture-um`, CUPTI's unified-memory migration and page-fault counters on
   GPUs whose CUPTI records them
-- NVTX timeline annotation API auto-injected into Nsight Systems runs
+- NVTX timeline annotations (`BENCH_NVTX_SCOPE`); under `--profile nsight`
+  each measured window is also a range named after its test
 - Companion `vernier::monitor` library for lightweight runtime
   instrumentation in production runs (lock-free queue, env-var-driven
   configuration, console + file sinks)
@@ -247,8 +248,10 @@ request).
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
 | `rocprof`           | GPU   | AMD ROCm rocprof                              |
 
-CUPTI kernel metrics populate the GPU CSV section automatically on every
-GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
+CUPTI kernel metrics fill the GPU CSV columns of every GPU benchmark without
+`--profile`, except where CUPTI is unavailable or an nsys or ncu session owns
+it; those cells then stay empty and the run says why. NVTX annotations are
+available via `BENCH_NVTX_SCOPE`.
 
 ```bash
 bench summary results.csv
