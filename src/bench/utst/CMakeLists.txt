@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (23 files)
+# Sources (22 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -26,7 +26,6 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfSampling_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
@@ -302,17 +301,28 @@ set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmak
 # ------------------------------------------------------------------------------
 # Fake tools (POSIX sh templates) that stand in for sudo, kill and the
 # profilers' own tools, so the readiness policy, its routing and its error
-# reports are tested without privileges or the real tools. The unit tests copy
-# them into a private directory and hand the checks a context whose PATH is it;
-# the command-line tests run a fixture benchmark with that PATH. The bpftrace
-# tests also read the bundled scripts, where the library looks them up.
+# reports are tested without privileges or the real tools. The unit and
+# component tests copy them into a private directory and hand the checks a
+# context whose PATH is it; the command-line tests run a fixture benchmark with
+# that PATH. The bpftrace tests also read the bundled scripts, where the
+# library looks them up. Both directories belong to bench_test_support, which
+# TestBench and TestBenchComponent (../dtst) link for the helpers here they
+# share (ReadinessFixtures.hpp, StderrCapture.hpp, ZombieChildren.hpp).
 # ------------------------------------------------------------------------------
 
+add_library(bench_test_support INTERFACE)
+target_compile_definitions(
+  bench_test_support
+  INTERFACE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+            VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
+)
+target_link_libraries(
+  bench_test_support
+  INTERFACE bench
+)
+
 if (TARGET TestBench)
-  target_compile_definitions(
-    TestBench PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
-                      VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
-  )
+  target_link_libraries(TestBench PRIVATE bench_test_support)
   # Tables both languages are tested against (the Rust tools read them in
   # place), e.g. the profile aliases and the profile-failed exit status.
   target_compile_definitions(

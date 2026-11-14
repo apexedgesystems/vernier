@@ -354,6 +354,7 @@ vernier/
       src/                    Profiler implementations + CUPTI collector
       bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
+      dtst/                   Component tests (backend and probe lifecycles)
       ptst/                   Performance tests (CPU + GPU)
       demo/                   16 CPU + 4 GPU walkthroughs with step-by-step docs
       docs/                   Library documentation

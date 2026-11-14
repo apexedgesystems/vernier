@@ -18,7 +18,8 @@ include_guard(GLOBAL)
 # beside the target; the options that describe registered tests are refused
 # with it. A source that defines main (PERF_MAIN) keeps it: an object's main
 # is linked before GoogleTest's. vernier_add_test_program builds a program with
-# no GoogleTest in it through this same path.
+# no GoogleTest in it through this same path, and vernier_add_devtest a
+# component test program, placed in bin/dtests.
 #
 # Arguments:
 #   TARGET          <n>              required
@@ -44,8 +45,9 @@ function (vernier_add_gtest)
   endif ()
 
   # _PLAIN_PROGRAM is vernier_add_test_program's: no GoogleTest is linked.
+  # _COMPONENT is vernier_add_devtest's: the program goes to bin/dtests.
   cmake_parse_arguments(
-    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM"
+    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
     "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
   )
@@ -102,8 +104,13 @@ function (vernier_add_gtest)
 
   target_link_libraries(${GT_TARGET} PRIVATE ${_gtest_libs} ${GT_LINK})
 
+  set(_out_dir "tests")
+  if (GT__COMPONENT)
+    set(_out_dir "dtests")
+  endif ()
   set_target_properties(
-    ${GT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests"
+    ${GT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_out_dir}"
   )
 
   # Coverage instrumentation (auto-detect from LINK or use COVERAGE_FOR override)
@@ -448,62 +455,14 @@ endfunction ()
 # ------------------------------------------------------------------------------
 # vernier_add_devtest(...)
 #
-# Add a development/integration test executable that is built but NOT registered
-# with CTest. These tests require manual execution (e.g., external data files,
-# special hardware).
-#
-# The executable is placed in bin/dtests/ and can be run manually with:
+# Add a component test program: GoogleTest cases that drive a whole component
+# through its real protocol, too slow for a unit test program. vernier_add_gtest
+# builds and registers it, with the same arguments and coverage policy, in
+# bin/dtests/, where it also runs by hand:
 #   ./build/bin/dtests/TestName --gtest_filter="*Pattern*"
 #
-# Arguments:
-#   TARGET          <n>              required
-#   SOURCES         <src...>         required
-#   CUDA            <cu...>          optional
-#   LINK            <libs...>        optional
-#   INC             <dir>            optional
+# Arguments: those of vernier_add_gtest.
 # ------------------------------------------------------------------------------
 function (vernier_add_devtest)
-  # Skip on bare-metal
-  if (CMAKE_SYSTEM_NAME STREQUAL "Generic")
-    return()
-  endif ()
-
-  cmake_parse_arguments(DT "" "TARGET;INC" "SOURCES;CUDA;LINK" ${ARGN})
-  vernier_require(DT_TARGET DT_SOURCES)
-
-  add_executable(${DT_TARGET})
-  target_sources(${DT_TARGET} PRIVATE ${DT_SOURCES})
-
-  if (DT_INC)
-    target_include_directories(${DT_TARGET} PRIVATE "${DT_INC}")
-  endif ()
-
-  # CUDA sources
-  if (DT_CUDA
-      AND CUDAToolkit_FOUND
-      AND CMAKE_CUDA_COMPILER
-  )
-    vernier_cuda_sources(${DT_TARGET} FILES ${DT_CUDA})
-  endif ()
-
-  # GTest linkage
-  if (NOT TARGET GTest::gtest_main)
-    find_package(GTest QUIET CONFIG)
-    if (NOT TARGET GTest::gtest_main)
-      find_package(GTest QUIET)
-    endif ()
-    if (NOT TARGET GTest::gtest_main)
-      message(FATAL_ERROR "vernier_add_devtest: GTest::gtest_main not found")
-    endif ()
-  endif ()
-
-  target_link_libraries(${DT_TARGET} PRIVATE GTest::gtest_main GTest::gmock ${DT_LINK})
-
-  set_target_properties(
-    ${DT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dtests"
-  )
-
-  # NOTE: No gtest_add_tests() - dev tests are not registered with CTest
-
-  message(STATUS "[Dev] target=${DT_TARGET} out=dtests/ (manual execution only)")
+  vernier_add_gtest(${ARGN} _COMPONENT)
 endfunction ()

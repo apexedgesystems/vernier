@@ -43,9 +43,9 @@ endfunction ()
 #   README_FILE = ${CMAKE_CURRENT_SOURCE_DIR}/README.md
 #
 # Test directory conventions:
-#   utst/ - Unit tests (run with make test)
-#   ptst/ - Performance tests (run with make test, longer duration)
-#   dtst/ - Development tests (manual execution only, external dependencies)
+#   utst/ - Unit tests (vernier_add_gtest: registered with CTest, run by make test)
+#   ptst/ - Performance tests (vernier_add_ptest: built, not registered, run by hand)
+#   dtst/ - Component tests (vernier_add_devtest: registered with CTest, run by make test)
 #   tst/  - General test bucket (legacy)
 #
 # All directories are optional. CMakeLists should check EXISTS before adding.
