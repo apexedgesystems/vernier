@@ -66,7 +66,11 @@ PERF_GPU_TEST(VectorAdd, Basic) {
   dim3 block(THREADS);
   dim3 grid(BLOCKS);
 
-  // Warmup: Critical for GPU (JIT compilation + cache priming)
+  // Warmup: Critical for GPU (JIT compilation + cache priming). The kernel
+  // reads both inputs, so they go to the device first; the copies declared
+  // below repeat this in every measured repeat.
+  cudaMemcpy(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice);
+  cudaMemcpy(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice);
   perf.cudaWarmup([&](cudaStream_t s) {
     vectorAdd<<<grid, block, 0, s>>>(d_a, d_b, d_c, N);
   });
@@ -78,17 +82,20 @@ PERF_GPU_TEST(VectorAdd, Basic) {
     .withHostToDevice(h_a.data(), d_a, SIZE)
     .withHostToDevice(h_b.data(), d_b, SIZE)
     .withDeviceToHost(d_c, h_c.data(), SIZE)
-    .withLaunchConfig(grid, block)  // Enables occupancy tracking
+    .withLaunchConfig(grid, block)  // Enables the occupancy estimate
     .measure();
 
-  // Results printed automatically
+  // The harness prints its own result line; these pick fields from `result`
   std::printf("Kernel time: %.3f ms\n", result.kernelTimeUs / 1000.0);
   std::printf("Transfer time: %.3f ms\n", result.transferTimeUs / 1000.0);
-  std::printf("Occupancy: %.1f%%\n",
+  std::printf("Occupancy (launch-shape estimate): %.1f%%\n",
               result.stats.occupancy.achievedOccupancy * 100);
 
-  // Validate
-  EXPECT_GT(result.callsPerSecond, 1000);
+  // Validate: the copy back holds a + b, and the repeats agreed. The 12 MiB
+  // of copies dominate this round trip, so a calls-per-second requirement
+  // is one you set for your own machine.
+  EXPECT_FLOAT_EQ(h_c[0], 3.0f);
+  EXPECT_FLOAT_EQ(h_c[N - 1], 3.0f);
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
 
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
@@ -118,8 +125,9 @@ cmake --build build
 # Quick mode during development
 ./build/VectorAdd_GPU_PTEST --quick
 
-# With Nsight Systems timeline profiling
-./build/VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+# With an Nsight Systems timeline: nsys records only a process it starts,
+# so bench run starts the benchmark under it
+bench run ./build/VectorAdd_GPU_PTEST --profile nsight -- --gtest_filter="*Basic"
 
 # With Nsight Compute kernel analysis (add --profile-args replay for
 # replay-mode metrics)
@@ -135,25 +143,39 @@ cmake --build build
 
 ### What Gets Measured?
 
-GPU benchmarks measure several key metrics automatically:
+Each repeat runs the declared host-to-device copies, `--cycles` launches of the
+kernel and the declared device-to-host copies, each timed with CUDA events on
+the case's stream. A result holds the medians over the repeats:
 
 **Timing:**
 
-- **kernelTimeUs** - Pure kernel execution (CUDA events)
-- **transferTimeUs** - H2D + D2H combined
-- **totalTimeUs** - Kernel + transfers + overhead
+- **kernelTimeUs** - One launch: the launches' event time over their count
+- **transferTimeUs** - The host-to-device copies plus the device-to-host copies
+- **totalTimeUs** - One round trip: the copies in, one launch and the copies
+  out, added up from their event times; host work between them is not in it
 
 **Performance:**
 
-- **callsPerSecond** - Throughput (1e6 / totalTimeUs)
-- **speedupVsCpu** - GPU vs CPU baseline comparison
-- **memBandwidthGBs** - Achieved memory bandwidth
+- **callsPerSecond** - Round trips per second (1e6 / totalTimeUs)
+- **speedupVsCpu** - The suite's CPU baseline time over totalTimeUs; empty in
+  the CSV when the suite has no baseline
+- **memBandwidthGBs** - The copy rate: bytes copied over the copies' time,
+  empty for a test that declares no copies; the kernel's own memory traffic is
+  not measured
 
 **Resource Utilization:**
 
-- **achievedOccupancy** - Fraction of GPU utilized [0-1]
-- **smClockMHz** - GPU frequency during test
-- **throttling** - Whether GPU thermally throttled
+- **achievedOccupancy** (the CSV's `occupancy`) - An estimate of the occupancy
+  the launch shape allows, not a measurement; empty without
+  `.withLaunchConfig()` (see [Occupancy](#occupancy))
+- **smClockMHz** - The SM clock NVML reports at the end of the measured window
+- **throttling** - Whether the SM clock fell by more than 10% between NVML's
+  readings at the window's start and end
+
+A value the run could not read stays an empty CSV cell, and the run says why on
+stderr: once per process for what holds for the whole run (no CUPTI in the
+build, NVML not reporting a reading), and for the test when one measured
+window lost it.
 
 ### PerfGpuResult Structure
 
@@ -162,7 +184,7 @@ struct PerfGpuResult {
   GpuStats stats;             // Comprehensive GPU metrics (see below)
   double kernelTimeUs;        // CUDA event kernel time
   double transferTimeUs;      // H2D + D2H transfer time
-  double totalTimeUs;         // Kernel + transfers
+  double totalTimeUs;         // One round trip: copies in, one launch, copies out
   double callsPerSecond;      // 1e6 / totalTimeUs
   double speedupVsCpu;        // Set by cpuBaseline() comparison
   std::string label;          // Kernel label from cudaKernel()
@@ -187,24 +209,26 @@ std::printf("Total: %.2f ms\n", result.totalTimeUs / 1000.0);
 // Throughput
 std::printf("Throughput: %.0f ops/sec\n", result.callsPerSecond);
 
-// GPU metrics (always populated in GpuStats)
-std::printf("Occupancy: %.1f%%\n", result.stats.occupancy.achievedOccupancy * 100);
+// GPU metrics (always present in GpuStats; 0 where the run could not read them)
+std::printf("Occupancy (estimate): %.1f%%\n", result.stats.occupancy.achievedOccupancy * 100);
 std::printf("SM Clock: %d MHz\n", result.stats.clocks.smClockMHzEnd);
 if (result.stats.clocks.isThrottling()) {
-  std::printf("Warning: GPU is thermally throttling!\n");
+  std::printf("Warning: the SM clock fell more than 10%% during the measurement\n");
 }
-std::printf("Bandwidth: %.2f GB/s\n", result.stats.transfers.bandwidthGBs());
+std::printf("Copy rate: %.2f GB/s\n", result.stats.transfers.bandwidthGBs());
 ```
 
 ### GpuStats Structure
 
 ```cpp
 struct GpuStats {
-  Stats cpuStats{};                                 // CPU timing stats
+  Stats cpuStats{};                                 // Per-repeat round-trip times
   GpuDeviceInfo deviceInfo{};                       // GPU model, compute capability
   MemoryTransferProfile transfers{};                // H2D/D2H bytes and timing
-  OccupancyMetrics occupancy{};                     // Warps, block size, achieved occupancy
-  ClockSpeedProfile clocks{};                       // SM/memory clocks, throttling detection
+  OccupancyMetrics occupancy{};                     // Launch shape and its occupancy estimate
+  ClockSpeedProfile clocks{};                       // NVML SM/memory clocks at start and end
+  PowerThermalProfile powerThermal{};               // NVML power and temperature at start and end
+  CuptiKernelStats cupti{};                         // CUPTI launch, register and shared-memory counts
   double kernelTimeMedianUs{};                      // Kernel execution time
   double transferTimeMedianUs{};                    // Transfer time
   double totalTimeMedianUs{};                       // Total time
@@ -216,7 +240,9 @@ struct GpuStats {
 
 **Field availability:**
 
-- **transfers, occupancy, clocks**: Always populated (values may be zero/default)
+- **transfers, occupancy, clocks, powerThermal, cupti**: Always present; a
+  value the run could not read is 0 here and an empty cell in the CSV (see
+  [What Gets Measured?](#what-gets-measured))
 - **multiGpu**: Only when using `cudaKernelMultiGpu()`
 - **p2pProfile**: Only when P2P transfers are measured
 - **unifiedMemory**: Only when the measurement asked for unified-memory
@@ -227,9 +253,15 @@ struct GpuStats {
 
 #### Occupancy
 
-**What it is:** Fraction of GPU compute resources actively used.
+**What it is:** An estimate of the share of an SM's warp slots the launch
+shape lets the kernel fill, which the harness computes when a test declares
+`.withLaunchConfig()`. It counts the block size, the SM's thread and block
+limits and the dynamic shared memory the launch declares, not the kernel's
+registers or static shared memory, so it overstates the occupancy of a kernel
+those limit. It is not a measurement: the occupancy a kernel achieves needs a
+kernel profiler.
 
-**Formula:** `Active warps / Max possible warps per SM`
+**Formula:** `warps per block x blocks per SM those limits allow / max warps per SM`
 
 **Interpretation:**
 
@@ -273,16 +305,20 @@ cudaMemcpy(d_data, h_data, 1000 * sizeof(float), cudaMemcpyHostToDevice);
 
 #### Memory Bandwidth
 
-**What it is:** Data transfer rate achieved by kernel.
+**What it is:** The rate of the host-device copies a test declares
+(`memBandwidthGBs`). The kernel's own reads and writes of device memory are
+not measured.
 
-**Formula:** `(bytes_read + bytes_written) / kernel_time`
+**Formula:** `(h2dBytes + d2hBytes) / (h2dTime + d2hTime)`
 
 **Interpretation:**
 
-- Compare to theoretical peak (e.g., A100 = 1555 GB/s, RTX 4090 = 1008 GB/s)
-- **>80% of peak** = Memory-bound, excellent utilization
-- **50-80% of peak** = Good bandwidth usage
-- **<50% of peak** = Compute-bound or inefficient access
+- Compare it with the link the copies cross: PCIe on a discrete GPU, the
+  memory a Jetson's CPU and GPU share. The GPU's device-memory peak is not the
+  comparison.
+- Pageable host memory copies more slowly than pinned memory
+  (`cudaMallocHost`)
+- A test that declares no copies has no copy rate: its cell is empty
 
 ---
 
