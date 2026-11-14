@@ -149,23 +149,32 @@ bench run ./build/VectorAdd_GPU_PTEST --profile nsight -- --gtest_filter="*Basic
 
 Each repeat runs the declared host-to-device copies, `--cycles` launches of the
 kernel and the declared device-to-host copies, each timed with CUDA events on
-the case's stream. A result holds the medians over the repeats:
+the case's stream. A result holds medians over the repeats, each taken on its
+own:
 
 **Timing:**
 
-- **kernelTimeUs** - One launch: the launches' event time over their count
-- **transferTimeUs** - The host-to-device copies plus the device-to-host copies
-- **totalTimeUs** - One round trip: the copies in, one launch and the copies
-  out, added up from their event times; host work between them is not in it
+- **kernelTimeUs** - One launch: the median, over the repeats, of the
+  launches' event time divided by their count
+- **transferTimeUs** - The median host-to-device time plus the median
+  device-to-host time
+- **totalTimeUs** - One round trip: the median, over the repeats, of the
+  host-to-device time plus one launch plus the device-to-host time; host work
+  between them is not in it
+
+Because each is a median of its own, `totalTimeUs` is not `kernelTimeUs` plus
+`transferTimeUs`, and when the copy times vary between repeats the copies'
+medians can add up to more than the round trip
+([Transfer Overhead](#transfer-overhead)).
 
 **Performance:**
 
 - **callsPerSecond** - Round trips per second (1e6 / totalTimeUs)
 - **speedupVsCpu** - The suite's CPU baseline time over totalTimeUs; empty in
   the CSV when the suite has no baseline
-- **memBandwidthGBs** - The copy rate: bytes copied over the copies' time,
-  empty for a test that declares no copies; the kernel's own memory traffic is
-  not measured
+- **memBandwidthGBs** - The copy rate: the declared copies' bytes over
+  `transferTimeUs`, the sum of the two copy medians; empty for a test that
+  declares no copies; the kernel's own memory traffic is not measured
 
 **Resource Utilization:**
 
@@ -281,16 +290,27 @@ kernel profiler.
 
 #### Transfer Overhead
 
-**What it is:** Percentage of time spent on memory transfers.
+**What it is:** How the copies compare with the round trip: `transferTimeUs`
+over `totalTimeUs`.
 
-**Formula:** `(transferTime / totalTime) * 100%`
+**Formula:** `(transferTimeUs / totalTimeUs) * 100%`
+
+The two are medians taken separately (see
+[What Gets Measured?](#what-gets-measured)): the two copy medians and the
+round-trip median can each come from a different repeat, so the ratio is not
+the share of any one round trip, and it can pass 100%. A quick-start run on a
+laptop GPU reported
+`transferTimeUs` 2,082.048 against `totalTimeUs` 2,064.5, a ratio of 100.9%.
+`result.stats.transfers.transferOverheadPct(result.kernelTimeUs)` divides the
+copy medians by their sum with the launch median instead, so it stays within
+100% (99.6% for that run).
 
 **Interpretation:**
 
-- **<10%** = Excellent, compute-bound kernel
-- **10-30%** = Good, transfers are minor cost
-- **30-50%** = Fair, consider reducing transfers
-- **>50%** = Poor, transfer-bound workload
+- With steady copy times the ratio is close to the copies' share of a round
+  trip; near 100%, the copies decide `totalTimeUs` and the kernel hardly shows
+  in it
+- A small ratio says the kernel, not the copies, takes most of the round trip
 
 **How to reduce:**
 
@@ -313,7 +333,9 @@ cudaMemcpy(d_data, h_data, 1000 * sizeof(float), cudaMemcpyHostToDevice);
 (`memBandwidthGBs`). The kernel's own reads and writes of device memory are
 not measured.
 
-**Formula:** `(h2dBytes + d2hBytes) / (h2dTime + d2hTime)`
+**Formula:** `(h2dBytes + d2hBytes) / (h2dTimeUs + d2hTimeUs)`: the bytes
+the test declares for one repeat over the two copy medians, whose sum is
+`transferTimeUs`
 
 **Interpretation:**
 
