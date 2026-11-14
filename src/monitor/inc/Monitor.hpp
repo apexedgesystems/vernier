@@ -39,6 +39,7 @@
 
 #include <cstring>
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <memory>
@@ -63,7 +64,10 @@ public:
       : cfg_{cfg}, queue_{roundUpPow2(cfg.queueCapacity)}, enabled_{cfg.enabled}, running_{false},
         totalSamples_{0}, startTimeNs_{0} {}
 
-  ~Monitor() { stop(); }
+  ~Monitor() {
+    stop();
+    freeThresholdTables();
+  }
 
   Monitor(const Monitor&) = delete;
   Monitor& operator=(const Monitor&) = delete;
@@ -89,22 +93,9 @@ public:
 
     startTimeNs_ = nowNs();
 
-    // Freeze thresholds into immutable snapshot for RT-safe hot-path reads
+    // Freeze thresholds into an immutable table for RT-safe hot-path reads
     if (!pendingThresholds_.empty()) {
-      auto table = std::make_unique<std::vector<ThresholdEntry>>();
-      table->reserve(pendingThresholds_.size());
-      for (const auto& [KEY, US] : pendingThresholds_) {
-        ThresholdEntry entry;
-        // key format: "scopeName/tagId"
-        const auto SEP = KEY.rfind('/');
-        if (SEP != std::string::npos) {
-          std::strncpy(entry.scope, KEY.substr(0, SEP).c_str(), sizeof(entry.scope) - 1);
-          entry.tagId = static_cast<std::uint16_t>(std::stoul(KEY.substr(SEP + 1)));
-        }
-        entry.thresholdUs = US;
-        table->push_back(entry);
-      }
-      frozenThresholds_ = std::move(table);
+      publishThresholds();
     }
 
     // Create sinks
@@ -253,7 +244,10 @@ public:
    *
    * If a scope duration exceeds this, it is flagged as THRESHOLD_BREACH.
    * MUST be called before start(). Thresholds are frozen into an immutable
-   * snapshot at start() time so the hot path is lock-free and allocation-free.
+   * table at start() time so the hot path is lock-free and allocation-free;
+   * a threshold set while the monitor is stopped applies from the next
+   * start(), which publishes a new table. A replaced table stays readable
+   * until the monitor is destroyed, since a producer may still be scanning it.
    *
    * @param scopeName Name of the scope.
    * @param tagId Numeric tag identifier.
@@ -298,19 +292,74 @@ private:
     return std::string(scopeName ? scopeName : "") + "/" + std::to_string(tagId);
   }
 
-  /// RT-safe: reads from immutable frozen snapshot. No lock, no allocation.
+  /// RT-safe: one acquire load, then a scan of an immutable table. No lock, no
+  /// allocation.
   [[nodiscard]] std::uint64_t getThreshold(const char* scopeName,
                                            std::uint16_t tagId) const noexcept {
-    if (!frozenThresholds_)
+    // Acquire pairs with publishThresholds()'s release: the entries are whole.
+    const ThresholdTable* const TABLE = frozenThresholds_.load(std::memory_order_acquire);
+    if (TABLE == nullptr)
       return 0;
-    // Linear scan of frozen (immutable) table. Typically < 10 entries.
-    const auto& TABLE = *frozenThresholds_;
-    for (const auto& ENTRY : TABLE) {
+    // Linear scan of the frozen (immutable) table. Typically < 10 entries.
+    for (const auto& ENTRY : TABLE->entries) {
       if (ENTRY.tagId == tagId && std::strncmp(ENTRY.scope, scopeName ? scopeName : "", 32) == 0) {
         return ENTRY.thresholdUs;
       }
     }
     return 0;
+  }
+
+  /**
+   * @brief Publish pendingThresholds_ as a new table unless the published
+   * table already holds them.
+   *
+   * Producers may record while start() runs, or across a stop() and the next
+   * start(), so a published table is never changed or freed while the
+   * monitor lives: the new table owns the one it replaces, and a restart with
+   * unchanged thresholds publishes nothing.
+   *
+   * @note NOT RT-safe: Heap allocation.
+   */
+  void publishThresholds() {
+    auto table = std::make_unique<ThresholdTable>();
+    table->entries.reserve(pendingThresholds_.size());
+    for (const auto& [KEY, US] : pendingThresholds_) {
+      ThresholdEntry entry;
+      // key format: "scopeName/tagId"
+      const auto SEP = KEY.rfind('/');
+      if (SEP != std::string::npos) {
+        std::strncpy(entry.scope, KEY.substr(0, SEP).c_str(), sizeof(entry.scope) - 1);
+        entry.tagId = static_cast<std::uint16_t>(std::stoul(KEY.substr(SEP + 1)));
+      }
+      entry.thresholdUs = US;
+      table->entries.push_back(entry);
+    }
+
+    // start() is the only writer, and the setup calls are not concurrent.
+    ThresholdTable* const PUBLISHED = frozenThresholds_.load(std::memory_order_relaxed);
+    const auto SAME_ENTRY = [](const ThresholdEntry& x, const ThresholdEntry& y) {
+      return x.tagId == y.tagId && x.thresholdUs == y.thresholdUs &&
+             std::strncmp(x.scope, y.scope, sizeof(x.scope)) == 0;
+    };
+    if (PUBLISHED != nullptr &&
+        std::equal(PUBLISHED->entries.begin(), PUBLISHED->entries.end(), table->entries.begin(),
+                   table->entries.end(), SAME_ENTRY)) {
+      return;
+    }
+    table->replaced.reset(PUBLISHED);
+    // Release: a producer that loads the pointer sees the whole table.
+    frozenThresholds_.store(table.release(), std::memory_order_release);
+  }
+
+  /// Free every published table, newest first, one at a time, so a long run
+  /// of restarts does not recurse once per table. Called when no producer can
+  /// use the monitor any more.
+  void freeThresholdTables() noexcept {
+    std::unique_ptr<ThresholdTable> table(
+        frozenThresholds_.exchange(nullptr, std::memory_order_relaxed));
+    while (table) {
+      table = std::move(table->replaced);
+    }
   }
 
   void drainLoop() {
@@ -348,6 +397,13 @@ private:
     std::uint64_t thresholdUs{0};
   };
 
+  /// A published threshold table and the table it replaced, kept for a
+  /// producer that may still be scanning it.
+  struct ThresholdTable {
+    std::vector<ThresholdEntry> entries;
+    std::unique_ptr<ThresholdTable> replaced;
+  };
+
   MonitorConfig cfg_;
   MonitorQueue queue_;
   std::atomic<bool> enabled_;
@@ -362,9 +418,10 @@ private:
   /// Setup-time thresholds (written before start(), never read on hot path).
   std::map<std::string, std::uint64_t> pendingThresholds_;
 
-  /// Frozen immutable snapshot created at start(). Read by hot path with
-  /// zero synchronization -- no mutex, no allocation, no heap.
-  std::unique_ptr<std::vector<ThresholdEntry>> frozenThresholds_;
+  /// The table the hot path reads, null until a start() with thresholds:
+  /// published with a release store, read with an acquire load (no mutex,
+  /// no allocation), never changed or freed while the monitor lives.
+  std::atomic<ThresholdTable*> frozenThresholds_{nullptr};
 };
 
 /* ----------------------------- ScopeGuard dtor ----------------------------- */

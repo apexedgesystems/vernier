@@ -967,6 +967,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
 - Time each measured repeat at the clock's own resolution, so a call shorter
   than a microsecond no longer records 0 us/call and a false `[UNSTABLE]`.
+- Recording while a monitor starts or restarts no longer races on its
+  threshold table or reads one that `start()` freed.
 
 ## v1.0.3 - 2026-06-28
 

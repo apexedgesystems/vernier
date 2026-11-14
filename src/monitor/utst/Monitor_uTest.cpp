@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -547,6 +548,113 @@ TEST(MonitorTest, DisableMidRunKeepsEarlierHistory) {
   EXPECT_EQ(countLines(TMP_PATH), 3u);
 
   std::filesystem::remove(TMP_PATH);
+}
+
+/** @test A threshold set before a restart flags after it; one set while stopped, from the next */
+TEST(MonitorTest, ThresholdSetBeforeARestartStillFlagsAfterIt) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_NONE;
+  Monitor mon(cfg);
+  const MonitorTag TAG("restart", 17);
+  mon.setThreshold("work", 17, 1000);
+  mon.start();
+  mon.stop();
+
+  mon.start(); // the same thresholds
+  mon.recordScope("work", TAG, 0, 2000000);
+  mon.recordScope("late", TAG, 0, 2000000);
+  mon.stop();
+
+  mon.setThreshold("late", 17, 1000);
+  mon.start(); // one threshold more
+  mon.recordScope("late", TAG, 0, 2000000);
+  mon.stop();
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto WORK = ENTRIES.find("restart/17::work");
+  ASSERT_NE(WORK, ENTRIES.end());
+  EXPECT_EQ(WORK->second.count, 1u);
+  EXPECT_EQ(WORK->second.breaches, 1u);
+  const auto LATE = ENTRIES.find("restart/17::late");
+  ASSERT_NE(LATE, ENTRIES.end());
+  EXPECT_EQ(LATE->second.count, 2u);
+  EXPECT_EQ(LATE->second.breaches, 1u) << "only the sample after its start() is a breach";
+}
+
+/**
+ * @test Keeps every threshold table a live producer may be reading across restarts
+ *
+ * A producer records 2 ms scopes on "work", the last of nine 1000 us thresholds,
+ * while the main thread starts and stops the monitor, changing that threshold
+ * before each start() so that each start() publishes a new table while the
+ * producer may still be scanning the one before. The producer records through
+ * each start() and pauses for each stop(), whose contract is that producers
+ * have finished. Built with ASan, a table freed under the producer is a
+ * heap-use-after-free; with TSan, a publication without ordering is a data race.
+ * In any build, each sample recorded after the first round, when a table is
+ * published, is a breach, and every sample is either summarized or dropped.
+ */
+TEST(MonitorTest, ThresholdTableSurvivesRestartWithLiveProducer) {
+  constexpr int ROUNDS = 100;
+  constexpr int PAUSE = 0;
+  constexpr int RECORD = 1;
+  constexpr int QUIT = 2;
+  MonitorConfig cfg;
+  cfg.sinks = SINK_NONE;
+  cfg.queueCapacity = 64;
+  Monitor mon(cfg);
+  for (int i = 0; i < 8; ++i) {
+    mon.setThreshold(("stage" + std::to_string(i)).c_str(), 16, 1000);
+  }
+  mon.setThreshold("work", 16, 1000);
+
+  // The main thread sets the phase; the producer acknowledges it once it acts
+  // on it, so a stop() never starts while a sample is being recorded.
+  std::atomic<int> phase{PAUSE};
+  std::atomic<int> acked{PAUSE};
+  std::atomic<int> round{0};
+  std::uint64_t calls = 0; // the producer's until it is joined
+  const MonitorTag FIRST("first", 16);
+  const MonitorTag LATER("later", 16);
+  std::thread producer([&] {
+    for (;;) {
+      const int NOW = phase.load(std::memory_order_acquire);
+      if (NOW == QUIT) {
+        break;
+      }
+      if (NOW == RECORD) {
+        const MonitorTag& tag = round.load(std::memory_order_relaxed) == 0 ? FIRST : LATER;
+        mon.recordScope("work", tag, 0, 2000000);
+        ++calls;
+      }
+      acked.store(NOW, std::memory_order_release);
+    }
+  });
+  const auto setPhase = [&](int next) {
+    phase.store(next, std::memory_order_release);
+    while (acked.load(std::memory_order_acquire) != next) {
+      std::this_thread::yield();
+    }
+  };
+
+  for (int r = 0; r < ROUNDS; ++r) {
+    round.store(r, std::memory_order_relaxed);
+    mon.setThreshold("work", 16, 1000 + static_cast<std::uint64_t>(r % 2));
+    setPhase(RECORD);
+    mon.start();
+    setPhase(PAUSE);
+    mon.stop();
+  }
+  phase.store(QUIT, std::memory_order_release);
+  producer.join();
+
+  const auto& ENTRIES = mon.summary().entries();
+  const auto EARLY = ENTRIES.find("first/16::work");
+  const auto LATE = ENTRIES.find("later/16::work");
+  ASSERT_NE(EARLY, ENTRIES.end());
+  ASSERT_NE(LATE, ENTRIES.end());
+  EXPECT_EQ(LATE->second.breaches, LATE->second.count) << "a sample found no threshold";
+  EXPECT_EQ(EARLY->second.count + LATE->second.count + mon.queue().droppedCount(), calls);
 }
 
 /** @test VERNIER_MONITOR_SCOPE macro compiles and works */
