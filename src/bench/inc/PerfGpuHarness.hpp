@@ -78,6 +78,17 @@ public:
    */
   inline CudaKernelBuilder& withDeviceId(int deviceId);
 
+  /**
+   * @brief Run the measurement, with its device current, and publish its row.
+   *
+   * Throws std::runtime_error naming the test when the CUDA runtime refused a
+   * launch of the measured repeats (a block larger than the device allows,
+   * more shared memory than it has): the error is read from
+   * cudaGetLastError(), which then reports nothing. Also throws, before the
+   * before hook, when an earlier CUDA call left an error waiting in
+   * cudaGetLastError(); that error stays there. Either way no row is
+   * published and the after hook does not run.
+   */
   PerfGpuResult measure();
 
 private:
@@ -136,6 +147,14 @@ public:
    */
   inline MultiGpuKernelBuilder& measureP2PBandwidth(int srcDevice, int dstDevice, size_t bytes);
 
+  /**
+   * @brief Measure every device in a thread of its own and publish the row.
+   *
+   * An error in a device's thread (a launch the runtime refused, a CUDA call
+   * that failed) ends that device's measurement. Once every thread has ended,
+   * the first such error, by device, is rethrown here, no row is published
+   * and the after hook does not run.
+   */
   MultiGpuResult measure();
 
 private:
@@ -191,6 +210,13 @@ public:
   MultiGpuKernelBuilder cudaKernelMultiGpu(int deviceCount, MultiGpuKernelFn kernel,
                                            std::string label = "multi_gpu_kernel");
 
+  /**
+   * @brief Run @p kernel on the case's stream once and wait, then
+   *        PerfGpuConfig::gpuWarmup times more and wait, with the case's
+   *        device current. Throws std::runtime_error naming the test when the
+   *        runtime refused a launch, or when an earlier CUDA call left an
+   *        error waiting in cudaGetLastError().
+   */
   void cudaWarmup(KernelFn kernel);
 
   /**

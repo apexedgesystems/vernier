@@ -15,6 +15,7 @@
 
 #include <cuda_runtime.h>
 #include <algorithm>
+#include <exception>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -41,6 +42,48 @@ namespace bench {
       throw std::runtime_error(cudaGetErrorString(err));                                           \
     }                                                                                              \
   } while (0)
+
+// ============================================================================
+// Refused launches
+// ============================================================================
+// The runtime reports a launch it refuses (a block larger than the device
+// allows, more shared memory than it has, a stream of another device) only
+// through cudaGetLastError(): nothing runs, and the event pair around the
+// launches times its own round trip. Each batch of launches is checked before
+// anything is published, and a measurement does not start while an earlier
+// call's error waits there, since the check could not tell the two apart.
+// ============================================================================
+
+namespace {
+
+/**
+ * @brief Throws std::runtime_error naming @p test and @p leg when the runtime
+ *        refused a launch of that leg. Reading the error clears it, so the
+ *        caller's next check does not report it again.
+ */
+void requireLaunchesAccepted(const std::string& test, const std::string& leg) {
+  const cudaError_t ERR = cudaGetLastError();
+  if (ERR != cudaSuccess) {
+    throw std::runtime_error(test + ": the CUDA runtime refused a launch in " + leg + ": " +
+                             cudaGetErrorName(ERR) + " (" + cudaGetErrorString(ERR) + ")");
+  }
+}
+
+/**
+ * @brief Throws std::runtime_error naming @p test when an earlier CUDA call
+ *        left an error waiting in cudaGetLastError(); the error stays there
+ *        for whoever made that call.
+ */
+void requireNoErrorWaiting(const std::string& test, const std::string& what) {
+  const cudaError_t ERR = cudaPeekAtLastError();
+  if (ERR != cudaSuccess) {
+    throw std::runtime_error(test + ": " + what + " did not start: an earlier CUDA call left " +
+                             cudaGetErrorName(ERR) + " (" + cudaGetErrorString(ERR) +
+                             ") waiting in cudaGetLastError()");
+  }
+}
+
+} // namespace
 
 // ============================================================================
 // Occupancy calculation helper
@@ -542,12 +585,18 @@ public:
   }
 
   void cudaWarmup(std::function<void(cudaStream_t)> kernel) {
+    // The case's device is current while the warmup launches onto its stream,
+    // and the caller's device again afterwards.
+    const ScopedDevice CURRENT(gpuCfg_.deviceId);
+    requireNoErrorWaiting(testName_, "cudaWarmup()");
     kernel(own_->stream);
+    requireLaunchesAccepted(testName_, "cudaWarmup()");
     CUDA_CHECK(cudaStreamSynchronize(own_->stream));
 
     for (int i = 0; i < gpuCfg_.gpuWarmup; ++i) {
       kernel(own_->stream);
     }
+    requireLaunchesAccepted(testName_, "cudaWarmup()");
     CUDA_CHECK(cudaStreamSynchronize(own_->stream));
   }
 
@@ -559,13 +608,16 @@ public:
     // A device named with withDeviceId() is checked, made current and given
     // its resources before anything below runs, and the caller's device is
     // current again when the measurement returns or throws. -1, none named,
-    // measures on the case's device and switches nothing. CUPTI's activity
-    // collection is process-wide, so its cells count launches on any device.
+    // measures on the case's device, made current the same way: a caller
+    // that made another device current would have its launches onto the
+    // case's stream refused. CUPTI's activity collection is process-wide, so
+    // its cells count launches on any device.
     if (deviceId != -1) {
       requireDevice(deviceId);
     }
-    const ScopedDevice CURRENT(deviceId);
+    const ScopedDevice CURRENT(deviceId == -1 ? gpuCfg_.deviceId : deviceId);
     DeviceResources& dev = (deviceId == -1) ? *own_ : resourcesFor(deviceId);
+    requireNoErrorWaiting(testName_, "the measurement");
 
     // The profiler window opens here, before anything is timed, and closes
     // after the row is published (below), so every hook pair brackets one
@@ -632,6 +684,7 @@ public:
       for (int c = 0; c < cpuCfg_.cycles; ++c) {
         kernel(dev.stream);
       }
+      requireLaunchesAccepted(testName_, "the measured launches");
       CUDA_CHECK(cudaEventRecord(dev.eventStop, dev.stream));
       CUDA_CHECK(cudaEventSynchronize(dev.eventStop));
       float kernelMs = 0.0f;
@@ -806,65 +859,86 @@ public:
 
     std::vector<std::thread> threads;
     std::vector<PerfGpuResult> deviceResults(deviceCount);
+    // What each worker threw: an exception leaving a thread's function ends
+    // the process, so each worker keeps its own, and every worker started is
+    // joined, also when a later one could not be started, before the first
+    // error is rethrown here.
+    std::vector<std::exception_ptr> workerErrors(deviceCount);
+    const auto JOIN_ALL = [&threads] {
+      for (auto& t : threads) {
+        t.join();
+      }
+    };
 
-    for (int dev = 0; dev < deviceCount; ++dev) {
-      threads.emplace_back([&, dev]() {
-        cudaSetDevice(dev);
+    try {
+      for (int dev = 0; dev < deviceCount; ++dev) {
+        threads.emplace_back([&, dev]() {
+          try {
+            cudaSetDevice(dev);
+            // The switch is not checked (an id past the device count is
+            // measured on device 0); its answer is read here, so the check
+            // after the launches reports theirs alone.
+            static_cast<void>(cudaGetLastError());
 
-        cudaStream_t devStream;
-        CUDA_CHECK(cudaStreamCreate(&devStream));
+            // Owned, so a worker that throws releases them on its device.
+            const OwnedStream devStream(/*highPriority=*/false);
+            const OwnedEvent startEvent;
+            const OwnedEvent stopEvent;
+            const std::string LEG = "device " + std::to_string(dev) + "'s measured launches";
 
-        cudaEvent_t startEvent, stopEvent;
-        CUDA_CHECK(cudaEventCreate(&startEvent));
-        CUDA_CHECK(cudaEventCreate(&stopEvent));
+            std::vector<double> kernelTimes;
+            kernelTimes.reserve(cpuCfg_.repeats);
 
-        std::vector<double> kernelTimes;
-        kernelTimes.reserve(cpuCfg_.repeats);
+            for (int r = 0; r < cpuCfg_.repeats; ++r) {
+              CUDA_CHECK(cudaEventRecord(startEvent.get(), devStream.get()));
+              for (int c = 0; c < cpuCfg_.cycles; ++c) {
+                kernel(dev, devStream.get());
+              }
+              requireLaunchesAccepted(testName_, LEG);
+              CUDA_CHECK(cudaEventRecord(stopEvent.get(), devStream.get()));
+              CUDA_CHECK(cudaEventSynchronize(stopEvent.get()));
 
-        for (int r = 0; r < cpuCfg_.repeats; ++r) {
-          CUDA_CHECK(cudaEventRecord(startEvent, devStream));
-          for (int c = 0; c < cpuCfg_.cycles; ++c) {
-            kernel(dev, devStream);
+              float ms = 0.0f;
+              CUDA_CHECK(cudaEventElapsedTime(&ms, startEvent.get(), stopEvent.get()));
+              kernelTimes.push_back(ms * 1000.0 / cpuCfg_.cycles);
+            }
+
+            auto vals = kernelTimes;
+            Stats stats = summarize(vals);
+
+            PerfGpuResult devResult;
+            devResult.deviceId = dev;
+            devResult.kernelTimeUs = stats.median;
+            devResult.totalTimeUs = stats.median;
+            devResult.callsPerSecond = (stats.median > 0.0) ? 1e6 / stats.median : 0.0;
+            devResult.stats.cpuStats = stats;
+
+            const double BASELINE_US = baselineUs();
+            if (BASELINE_US > 0.0 && stats.median > 0.0) {
+              devResult.speedupVsCpu = BASELINE_US / stats.median;
+            }
+
+            if (hasLaunchConfig) {
+              cudaDeviceProp prop;
+              cudaGetDeviceProperties(&prop, dev);
+              calculateOccupancy(devResult.stats.occupancy, grid, block, sharedMemBytes, prop);
+            }
+
+            deviceResults[dev] = devResult;
+          } catch (...) {
+            workerErrors[dev] = std::current_exception();
           }
-          CUDA_CHECK(cudaEventRecord(stopEvent, devStream));
-          CUDA_CHECK(cudaEventSynchronize(stopEvent));
-
-          float ms = 0.0f;
-          CUDA_CHECK(cudaEventElapsedTime(&ms, startEvent, stopEvent));
-          kernelTimes.push_back(ms * 1000.0 / cpuCfg_.cycles);
-        }
-
-        auto vals = kernelTimes;
-        Stats stats = summarize(vals);
-
-        PerfGpuResult devResult;
-        devResult.deviceId = dev;
-        devResult.kernelTimeUs = stats.median;
-        devResult.totalTimeUs = stats.median;
-        devResult.callsPerSecond = (stats.median > 0.0) ? 1e6 / stats.median : 0.0;
-        devResult.stats.cpuStats = stats;
-
-        const double BASELINE_US = baselineUs();
-        if (BASELINE_US > 0.0 && stats.median > 0.0) {
-          devResult.speedupVsCpu = BASELINE_US / stats.median;
-        }
-
-        if (hasLaunchConfig) {
-          cudaDeviceProp prop;
-          cudaGetDeviceProperties(&prop, dev);
-          calculateOccupancy(devResult.stats.occupancy, grid, block, sharedMemBytes, prop);
-        }
-
-        deviceResults[dev] = devResult;
-
-        cudaEventDestroy(startEvent);
-        cudaEventDestroy(stopEvent);
-        cudaStreamDestroy(devStream);
-      });
+        });
+      }
+    } catch (...) {
+      JOIN_ALL();
+      throw;
     }
-
-    for (auto& t : threads) {
-      t.join();
+    JOIN_ALL();
+    for (const std::exception_ptr& error : workerErrors) {
+      if (error) {
+        std::rethrow_exception(error);
+      }
     }
 
     if (UM_WINDOW) {

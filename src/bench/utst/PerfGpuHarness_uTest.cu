@@ -3084,3 +3084,175 @@ TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
         << "the forward found the recorder's own definition";
   }
 }
+
+/* ----------------------------- Refused Launches ----------------------------- */
+
+namespace {
+
+/** @brief A launch every device refuses: a block of 2048 threads, above the 1024 they allow. */
+void refusedLaunch(cudaStream_t s) { spinKernel<<<1, 2048, 0, s>>>(0); }
+
+/** @brief The runtime's answer to refusedLaunch(), from a launch of the test's own. */
+cudaError_t refusalError() {
+  refusedLaunch(nullptr);
+  return cudaGetLastError();
+}
+
+/** @brief The message of the std::runtime_error @p measure throws; empty when it throws none. */
+template <typename Measure> std::string runtimeErrorOf(Measure measure) {
+  try {
+    measure();
+  } catch (const std::runtime_error& e) {
+    return e.what();
+  }
+  return {};
+}
+
+} // namespace
+
+/**
+ * @test A launch the runtime refuses fails the measurement: measure() throws
+ *       naming the test and the runtime's error, no row is published, the
+ *       after hook does not run, and cudaGetLastError() has nothing left to
+ *       report; the same launch in cudaWarmup() throws the same way
+ */
+TEST_F(PerfGpuHarnessTest, ARefusedLaunchFailsTheMeasurement) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string NAME = uniqueSuite("GpuRefusedLaunch") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  const std::string MEASURED = runtimeErrorOf(
+      [&] { static_cast<void>(perf.cudaKernel(refusedLaunch, "refused").measure()); });
+  EXPECT_NE(MEASURED.find(NAME), std::string::npos) << "measure() threw: '" << MEASURED << "'";
+  EXPECT_NE(MEASURED.find(cudaGetErrorName(REFUSAL)), std::string::npos) << MEASURED;
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a refused launch";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "a refused launch published a row";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess) << "the refusal was left for the caller's next check";
+
+  const std::string WARMED = runtimeErrorOf([&] { perf.cudaWarmup(refusedLaunch); });
+  EXPECT_NE(WARMED.find(NAME), std::string::npos) << "cudaWarmup() threw: '" << WARMED << "'";
+  EXPECT_NE(WARMED.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WARMED;
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess) << "the warmup's refusal was left for the caller";
+}
+
+/**
+ * @test A launch the runtime refuses in a multi-GPU worker fails the
+ *       measurement once the worker has ended: measure() throws naming the
+ *       test, the device and the runtime's error, no row is published, the
+ *       after hook does not run, and the caller's cudaGetLastError() has
+ *       nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, ARefusedLaunchInAMultiGpuWorkerFailsTheMeasurement) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string NAME = uniqueSuite("GpuRefusedWorker") + ".MultiGpu";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  const std::string WHAT = runtimeErrorOf([&] {
+    static_cast<void>(
+        perf.cudaKernelMultiGpu(1, [](int, cudaStream_t s) { refusedLaunch(s); }).measure());
+  });
+  EXPECT_NE(WHAT.find(NAME), std::string::npos) << "measure() threw: '" << WHAT << "'";
+  EXPECT_NE(WHAT.find("device 0"), std::string::npos) << WHAT;
+  EXPECT_NE(WHAT.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WHAT;
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a refused launch";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "a refused launch published a row";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
+
+/**
+ * @test A measurement that starts while an earlier CUDA call's error waits in
+ *       cudaGetLastError() is refused with a message of its own, before its
+ *       profiler window opens: no hook runs, no row is published, and the
+ *       error stays for its owner to read. Once it is read, the case measures
+ */
+TEST_F(PerfGpuHarnessTest, AMeasurementWithAnErrorWaitingIsRefused) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuErrorWaiting") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  perf.cudaWarmup(data.launch());
+  HookLog log;
+  installLoggingHooks(perf, log);
+  const cudaError_t WAITING = refusalError();
+  refusedLaunch(nullptr); // left waiting this time
+  ASSERT_EQ(cudaPeekAtLastError(), WAITING);
+
+  const std::string WHAT =
+      runtimeErrorOf([&] { static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure()); });
+  EXPECT_NE(WHAT.find(NAME), std::string::npos) << "measure() threw: '" << WHAT << "'";
+  EXPECT_NE(WHAT.find("an earlier CUDA call left"), std::string::npos) << WHAT;
+  EXPECT_NE(WHAT.find(cudaGetErrorName(WAITING)), std::string::npos) << WHAT;
+  EXPECT_EQ(log.calls, "") << "the refused measurement opened a profiler window";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value());
+  EXPECT_EQ(cudaGetLastError(), WAITING) << "the earlier error was not left for its owner";
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+  static_cast<void>(lastRow());
+  EXPECT_EQ(log.calls, "ba");
+}
+
+/**
+ * @test A CUDA call that fails in a multi-GPU worker (its stream, which the
+ *       recorder fails) ends that worker's measurement: the error reaches the
+ *       caller once the worker has ended, instead of ending the process, the
+ *       worker leaves no stream or event, and no row is published
+ */
+TEST_F(PerfGpuHarnessTest, AFailingMultiGpuWorkerIsJoinedAndRethrown) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  ub::PerfGpuCase perf{uniqueSuite("GpuWorkerFails") + ".MultiGpu", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  ScopedRecording recording(bt::CudaSetupFailure::FirstStream, bt::CudaDevices::Real);
+
+  const std::string WHAT =
+      runtimeErrorOf([&] { static_cast<void>(perf.cudaKernelMultiGpu(1, noKernel).measure()); });
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(WHAT, INJECTED) << "the worker's failure did not reach the caller as it was";
+  EXPECT_EQ(COUNTS.streamsMade, 0);
+  EXPECT_EQ(COUNTS.eventsMade, 0) << "the worker went on past its failed stream";
+  EXPECT_EQ(COUNTS.streamsLeft, 0);
+  EXPECT_EQ(COUNTS.eventsLeft, 0);
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a failed measurement";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value());
+}
+
+/**
+ * @test cudaWarmup() and a measurement that names no device run with the
+ *       case's device current, whichever device the caller made current, and
+ *       the caller's is current again afterwards. With the case on device 0
+ *       and the recorder's emulated device 1 the caller's, the launch sees
+ *       device 0 both times and fills its buffer, and nothing is refused
+ */
+TEST_F(PerfGpuHarnessTest, TheCasesDeviceIsCurrentWhileItLaunches) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuCaseDevice") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  ASSERT_EQ(OWN, 0) << "the emulated device is device 1";
+  FillOnDevice fill(OWN);
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(1);
+  ASSERT_EQ(currentDevice(), 1);
+
+  perf.cudaWarmup(fill.launch());
+  EXPECT_EQ(fill.seenDevice(), OWN) << "the warmup ran with the caller's device current";
+  EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again after the warmup";
+
+  static_cast<void>(perf.cudaKernel(fill.launch(), "fill").measure());
+  static_cast<void>(lastRow());
+  EXPECT_EQ(fill.seenDevice(), OWN) << "the measurement ran with the caller's device current";
+  EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again";
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(recording.stop().refusedCalls, 0);
+}

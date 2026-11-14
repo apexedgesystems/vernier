@@ -970,6 +970,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - After a failed CUPTI flush, or a CUPTI kind that does not switch off, later
   GPU measurements of the same run leave the affected `cupti*` or `um*` cells
   empty and say why, instead of counting records an earlier window left.
+- A GPU measurement or warmup whose launch the CUDA runtime refuses throws,
+  naming the test and the error, instead of publishing a row timed from
+  nothing. Both run with the case's device current, and a multi-GPU worker's
+  CUDA error reaches the caller instead of ending the process.
 
 ## v1.0.3 - 2026-06-28
 

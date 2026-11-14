@@ -1326,6 +1326,18 @@ if (err != cudaSuccess) {
 CUDA_CHECK(cudaMalloc(&d_data, SIZE));
 ```
 
+**A launch the runtime refuses fails the measurement.** A launch with a
+block larger than the device allows, or more shared memory than it has, does
+not run, and the runtime reports it only through `cudaGetLastError()`. The
+harness reads it after each batch of launches: `measure()` and `cudaWarmup()`
+throw `std::runtime_error` naming the test and the error, and no row is
+published. A measurement also refuses to start while an earlier CUDA call's
+error is waiting in `cudaGetLastError()`, and names it; read that error where
+the call was made. A multi-GPU measurement rethrows the first device's error
+once every device's thread has ended. A measurement and `cudaWarmup()` make the
+case's device current while they launch, and the caller's device current
+again afterwards.
+
 ---
 
 ## See Also
