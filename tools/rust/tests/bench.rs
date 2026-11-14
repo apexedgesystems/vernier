@@ -3654,6 +3654,123 @@ fn config_validate_knows_target_time() {
     );
 }
 
+/// A project folder whose `.bench.yaml` names `bin_roots: ["out/*"]` and
+/// `bin_subdirs: ["bin/ptests"]`, with a stand-in `out/x/bin/ptests/Short_PTEST`
+/// that logs "found <args>", and a working folder `sub` below it holding a
+/// decoy `out/x/bin/ptests/Short_PTEST` (logs "decoy <args>"), which a root
+/// read relative to the working folder would find, and
+/// `alt/y/bin/ptests/Short_PTEST` (logs "env <args>").
+struct RootsRig {
+    dir: tempfile::TempDir,
+    log: PathBuf,
+}
+
+fn roots_rig() -> RootsRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("argv.log");
+    for (place, mark) in [
+        ("out/x/bin/ptests", "found"),
+        ("sub/out/x/bin/ptests", "decoy"),
+        ("sub/alt/y/bin/ptests", "env"),
+    ] {
+        let folder = dir.path().join(place);
+        std::fs::create_dir_all(&folder).expect("the folder");
+        write_executable(
+            &folder.join("Short_PTEST"),
+            &format!("#!/bin/sh\necho \"{mark} $*\" >> '{}'\n", log.display()),
+        );
+    }
+    std::fs::write(
+        dir.path().join(".bench.yaml"),
+        "bin_roots: [\"out/*\"]\nbin_subdirs: [\"bin/ptests\"]\n",
+    )
+    .expect("write .bench.yaml");
+    RootsRig { dir, log }
+}
+
+/// `bench <args>` run from the rig's `sub` folder, with the lookup's two
+/// environment variables unset unless @p env sets them; returns the exit
+/// status, stderr and the stand-ins' log.
+fn run_in_sub(rig: &RootsRig, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut command = Command::new(bin());
+    command
+        .args(args)
+        .current_dir(rig.dir.path().join("sub"))
+        .env_remove("VERNIER_BENCH_BIN_ROOTS")
+        .env_remove("VERNIER_BENCH_BIN_SUBDIRS");
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let out = output_of(&mut command);
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test A short name is looked for under .bench.yaml's bin_roots, in its
+/// bin_subdirs, a relative root being relative to the file's folder: run
+/// from a folder below the file, bench run starts the binary under the
+/// file's root, not the decoy under the working folder.
+#[test]
+fn run_finds_a_short_name_under_the_configured_roots() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(&rig, &["run", "Short"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "found \n");
+}
+
+/// @test VERNIER_BENCH_BIN_ROOTS takes precedence over the file's
+/// bin_roots, read relative to the working folder, while the file's
+/// bin_subdirs still apply.
+#[test]
+fn run_environment_roots_take_precedence_over_the_files() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(
+        &rig,
+        &["run", "Short"],
+        &[("VERNIER_BENCH_BIN_ROOTS", "alt/*")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "env \n");
+}
+
+/// @test profile-all looks a short name up as bench run does.
+#[test]
+fn profile_all_finds_a_short_name_as_run_does() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(
+        &rig,
+        &["profile-all", "Short", "--profilers", "perf", "--out", "o"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "found --profile perf --profile-output-dir o/perf\n");
+}
+
+/// @test A short name found nowhere is an error naming the roots and the
+/// subfolders searched, and where each came from.
+#[test]
+fn run_names_where_it_looked_for_a_short_name() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(&rig, &["run", "Missing"], &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(log, "", "something was started");
+    let project = std::fs::canonicalize(rig.dir.path()).expect("the project folder");
+    let file = project.join(".bench.yaml");
+    assert!(
+        err.contains(&format!(
+            "no binary matching 'Missing' under {}/out/* (bin_roots of {}), in bin/ptests \
+             (bin_subdirs of {})",
+            project.display(),
+            file.display(),
+            file.display()
+        )),
+        "{err}"
+    );
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status

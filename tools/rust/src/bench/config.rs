@@ -21,8 +21,8 @@
 //!   target_time: 100ms                   # bench run's --target-time
 //!   profile_output_dir: bench-out
 //!   gtest_filter: "-*Large*:*PayloadScaling*"
-//!   bin_roots: ["build/*"]               # for resolve_binary
-//!   bin_subdirs: ["bin/ptests", "bin/tests"]
+//!   bin_roots: ["build/*"]               # workflow::BinSearch; relative
+//!   bin_subdirs: ["bin/ptests", "bin/tests"]  # to this file's folder
 //!
 //! Anything not listed here is parsed as a top-level string-keyed map and
 //! preserved in `Config::extras` so a project can layer custom fields
@@ -87,7 +87,9 @@ profile_output_dir: bench-out
 # gtest_filter: \"-*Large*:*PayloadScaling*\"
 
 # Where the binary lookup walks when you pass `bench run Foo` (short name).
-# Override only when the build layout differs from CMake's default.
+# Override only when the build layout differs from CMake's default. A
+# relative root is relative to this file's folder; VERNIER_BENCH_BIN_ROOTS
+# and VERNIER_BENCH_BIN_SUBDIRS take precedence.
 # bin_roots:
 #   - build/*
 # bin_subdirs:

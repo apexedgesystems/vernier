@@ -187,9 +187,10 @@ on stderr, nothing on stdout).
 
 Run a benchmark binary with optional CPU pinning and profiling. The binary
 argument can be a full path OR a short name -- the latter auto-resolves
-under `build/*/bin/{ptests,tests,examples}` (override with
-`VERNIER_BENCH_BIN_ROOTS` / `VERNIER_BENCH_BIN_SUBDIRS` for non-CMake
-layouts). A name that is a file in the working directory is that file, as
+under `build/*/bin/{ptests,tests,examples}` (for non-CMake layouts, set
+`.bench.yaml`'s `bin_roots` / `bin_subdirs`, or `VERNIER_BENCH_BIN_ROOTS` /
+`VERNIER_BENCH_BIN_SUBDIRS`, which take precedence; see `init`). A name that
+is a file in the working directory is that file, as
 `bench doctor` reads it: it starts as `./<name>`, never as a program of that
 name on PATH, and must be executable.
 
@@ -543,6 +544,17 @@ or typed, takes precedence over `GTEST_FILTER` in the environment, which
 GoogleTest reads only when no `--gtest_filter` is given: to filter with
 `GTEST_FILTER`, remove the key. In a filter, everything after the first `-`
 excludes: `-*Large*:*PayloadScaling*` runs every test but those two kinds.
+
+`bin_roots` and `bin_subdirs` say where `run` and `profile-all` look for a
+binary given by a short name: under each root (an entry ending in `/*`
+stands for every folder in it), in each subfolder. A relative `bin_roots`
+entry is relative to the folder of the `.bench.yaml` that names it, wherever
+the command runs from below it. `VERNIER_BENCH_BIN_ROOTS` and
+`VERNIER_BENCH_BIN_SUBDIRS` (colon-separated, relative to the working
+directory) take precedence over the keys, each over its own; without either,
+the lookup is `build/*` and `bin/ptests`, `bin/tests`, `bin/examples`. A name
+found nowhere is an error naming the roots and subfolders searched and where
+each came from.
 
 ```bash
 bench init                              # writes .bench.yaml in CWD

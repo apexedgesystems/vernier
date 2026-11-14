@@ -114,9 +114,11 @@ enum Command {
     /// Execute a benchmark binary with optional CPU pinning and profiling
     Run {
         /// Benchmark binary: a full path, or a short name that auto-resolves
-        /// under build/*/bin/{ptests,tests,examples}. The resolver tries the
-        /// name as given, then with `_PTEST` / `_pTest` suffixes, then with
-        /// a `BenchDemo_` prefix.
+        /// under build/*/bin/{ptests,tests,examples}, or where .bench.yaml's
+        /// bin_roots and bin_subdirs (or VERNIER_BENCH_BIN_ROOTS and
+        /// VERNIER_BENCH_BIN_SUBDIRS) say. The resolver tries the name as
+        /// given, then with `_PTEST` / `_pTest` suffixes, then with a
+        /// `BenchDemo_` prefix.
         binary: String,
 
         /// CSV output path (passed to binary as --csv)
@@ -251,7 +253,8 @@ enum Command {
 
     /// Run a benchmark binary under each profiler in sequence
     ProfileAll {
-        /// Benchmark binary (full path or short name; auto-resolves under build/*/bin/)
+        /// Benchmark binary (full path or short name, resolved as bench run
+        /// resolves it)
         binary: String,
 
         /// Profilers to run, comma-separated; defaults to gperf,perf,callgrind
@@ -410,6 +413,18 @@ fn main() -> ExitCode {
     }
 }
 
+/// The project's `.bench.yaml`, the first found from the working directory
+/// up, and the defaults it holds (none without one).
+fn project_defaults() -> Result<(Option<PathBuf>, bench::config::Config), Error> {
+    let cwd = std::env::current_dir().map_err(Error::Io)?;
+    let file = bench::config::find(&cwd);
+    let config = file
+        .as_deref()
+        .and_then(|path| bench::config::load(path).ok())
+        .unwrap_or_default();
+    Ok((file, config))
+}
+
 fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
@@ -490,15 +505,13 @@ fn run(args: Args) -> Result<(), Error> {
             analyze,
             extra_args,
         } => {
-            // Accept either a full path or a short name; resolve_binary walks
-            // VERNIER_BENCH_BIN_ROOTS (default build/*) for a match.
-            let resolved = bench::workflow::resolve_binary(&binary)?;
             // Pull defaults from .bench.yaml if one exists; unset CLI flags
             // win from the file. CLI takes precedence when both are set.
-            let cwd = std::env::current_dir().map_err(Error::Io)?;
-            let file_cfg = bench::config::find(&cwd)
-                .and_then(|p| bench::config::load(&p).ok())
-                .unwrap_or_default();
+            let (file, file_cfg) = project_defaults()?;
+            // Accept either a full path or a short name, looked for where
+            // the environment, else the file, else the default says.
+            let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
+            let resolved = bench::workflow::resolve_binary(&binary, &search)?;
             let cfg = bench::runner::RunConfig {
                 binary: resolved,
                 csv: csv.clone(),
@@ -645,7 +658,11 @@ fn run(args: Args) -> Result<(), Error> {
             repeats,
             quick,
         } => {
-            let resolved = bench::workflow::resolve_binary(&binary)?;
+            // .bench.yaml fills in any unset flags, and says where a short
+            // name is looked for, as for bench run.
+            let (file, file_cfg) = project_defaults()?;
+            let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
+            let resolved = bench::workflow::resolve_binary(&binary, &search)?;
             let parsed_profilers = profilers
                 .map(|s| {
                     s.split(',')
@@ -653,11 +670,6 @@ fn run(args: Args) -> Result<(), Error> {
                         .filter(|p| !p.is_empty())
                         .collect::<Vec<_>>()
                 })
-                .unwrap_or_default();
-            // .bench.yaml fills in any unset flags.
-            let cwd = std::env::current_dir().map_err(Error::Io)?;
-            let file_cfg = bench::config::find(&cwd)
-                .and_then(|p| bench::config::load(&p).ok())
                 .unwrap_or_default();
             bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
                 binary: resolved,

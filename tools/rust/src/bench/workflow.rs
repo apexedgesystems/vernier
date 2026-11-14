@@ -13,8 +13,8 @@
 //!   resolve-binary      shared helper for the Run subcommand
 //!
 //! `resolve-binary` is the small helper that lets `bench run SLIP` find
-//! `build/native-linux-debug/bin/ptests/SLIP_PTEST` automatically. It also
-//! powers the doctor and profile-all entry points.
+//! `build/native-linux-debug/bin/ptests/SLIP_PTEST` automatically, where
+//! `BinSearch` says to look. It also powers the profile-all entry point.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -38,15 +38,107 @@ fn candidate_names(name: &str) -> Vec<String> {
     ]
 }
 
-/// Search conventional ptest/test/example directories for a binary that
-/// matches `name`. The default search roots are `build/*` (every subdir of
-/// `build/` -- CMake default convention); override by setting the env var
-/// `VERNIER_BENCH_BIN_ROOTS` to a colon-separated list of roots and
-/// `VERNIER_BENCH_BIN_SUBDIRS` to a colon-separated list of subdirs.
+/// The roots a short binary name is looked for under by default: every
+/// folder in `build/`, CMake's convention.
+const DEFAULT_BIN_ROOTS: [&str; 1] = ["build/*"];
+
+/// The subfolders of each root a short binary name is looked for in by
+/// default.
+const DEFAULT_BIN_SUBDIRS: [&str; 3] = ["bin/ptests", "bin/tests", "bin/examples"];
+
+/// Where a short binary name is looked for: under each root (an entry
+/// ending in `/*` stands for every folder in it), in each subfolder. Each
+/// list comes from its environment variable when that is set
+/// (`VERNIER_BENCH_BIN_ROOTS`, `VERNIER_BENCH_BIN_SUBDIRS`, colon-separated,
+/// a relative root relative to the working directory), else from
+/// `.bench.yaml` when it names one (`bin_roots`, `bin_subdirs`, a relative
+/// root relative to the folder of the file that names it), else the
+/// default (`build/*`; `bin/ptests`, `bin/tests`, `bin/examples`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BinSearch {
+    /// The root entries, as searched.
+    pub roots: Vec<String>,
+    /// The subfolders tried under each root.
+    pub subdirs: Vec<String>,
+    /// Where the roots and where the subfolders come from, for messages.
+    pub roots_from: String,
+    pub subdirs_from: String,
+}
+
+impl BinSearch {
+    /// The search for a project whose `.bench.yaml` is @p file, parsed as
+    /// @p config (`None` and the default config without one), under this
+    /// process's environment.
+    pub fn new(config: &super::config::Config, file: Option<&Path>) -> Self {
+        Self::from_sources(
+            std::env::var("VERNIER_BENCH_BIN_ROOTS").ok(),
+            std::env::var("VERNIER_BENCH_BIN_SUBDIRS").ok(),
+            config,
+            file,
+        )
+    }
+
+    /// The search from the two environment variables' values (@p env_roots,
+    /// @p env_subdirs; `None` when unset), then @p config read from @p file,
+    /// then the default.
+    fn from_sources(
+        env_roots: Option<String>,
+        env_subdirs: Option<String>,
+        config: &super::config::Config,
+        file: Option<&Path>,
+    ) -> Self {
+        let split = |value: String| value.split(':').map(str::to_string).collect::<Vec<_>>();
+        let named = |key: &str| match file {
+            Some(file) => format!("{key} of {}", file.display()),
+            None => key.to_string(),
+        };
+        let base = file.and_then(Path::parent);
+        let (roots, roots_from) = match env_roots {
+            Some(value) => (split(value), "VERNIER_BENCH_BIN_ROOTS".to_string()),
+            None if !config.bin_roots.is_empty() => (
+                config
+                    .bin_roots
+                    .iter()
+                    .map(|root| match base {
+                        Some(base) => base.join(root).display().to_string(),
+                        None => root.clone(),
+                    })
+                    .collect(),
+                named("bin_roots"),
+            ),
+            None => (
+                DEFAULT_BIN_ROOTS.map(str::to_string).to_vec(),
+                "the default".to_string(),
+            ),
+        };
+        let (subdirs, subdirs_from) = match env_subdirs {
+            Some(value) => (split(value), "VERNIER_BENCH_BIN_SUBDIRS".to_string()),
+            None if !config.bin_subdirs.is_empty() => {
+                (config.bin_subdirs.clone(), named("bin_subdirs"))
+            }
+            None => (
+                DEFAULT_BIN_SUBDIRS.map(str::to_string).to_vec(),
+                "the default".to_string(),
+            ),
+        };
+        Self {
+            roots,
+            subdirs,
+            roots_from,
+            subdirs_from,
+        }
+    }
+}
+
+/// Find the binary @p name names: the file itself when it is one, else a
+/// file under @p search's roots and subfolders named `name`, `name_PTEST`,
+/// `name_pTest` or `BenchDemo_name` (the first in sorted order when several
+/// match, which is said).
 ///
 /// Example for a project that builds into `out/<preset>/` with `tests/` only:
 ///   VERNIER_BENCH_BIN_ROOTS=out/* VERNIER_BENCH_BIN_SUBDIRS=tests bench run Foo
-pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
+/// or, in its `.bench.yaml`, `bin_roots: ["out/*"]` and `bin_subdirs: ["tests"]`.
+pub fn resolve_binary(name: &str, search: &BinSearch) -> Result<PathBuf, Error> {
     // Exact path first: respect any explicit override. A bare name found in
     // the working directory is that file (`launch_path`), which must be
     // executable: started as it is, a bare name would run whatever PATH holds.
@@ -64,12 +156,9 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
 
     let candidates = candidate_names(name);
 
-    // Collect search roots. Env override expands shell-style "build/*" via
-    // a simple readdir; otherwise fall back to the CMake default.
-    let roots_spec =
-        std::env::var("VERNIER_BENCH_BIN_ROOTS").unwrap_or_else(|_| "build/*".to_string());
+    // An entry ending in "/*" stands for every folder in it (a readdir).
     let mut roots: Vec<PathBuf> = Vec::new();
-    for entry in roots_spec.split(':') {
+    for entry in &search.roots {
         if let Some(prefix) = entry.strip_suffix("/*") {
             if let Ok(read) = fs::read_dir(prefix) {
                 for e in read.flatten() {
@@ -84,13 +173,9 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
         }
     }
 
-    let subs_spec = std::env::var("VERNIER_BENCH_BIN_SUBDIRS")
-        .unwrap_or_else(|_| "bin/ptests:bin/tests:bin/examples".to_string());
-    let subs: Vec<&str> = subs_spec.split(':').collect();
-
     let mut found: Vec<PathBuf> = Vec::new();
     for root in &roots {
-        for sub in &subs {
+        for sub in &search.subdirs {
             for cand in &candidates {
                 let p = root.join(sub).join(cand);
                 if p.is_file() {
@@ -103,9 +188,13 @@ pub fn resolve_binary(name: &str) -> Result<PathBuf, Error> {
     found.dedup();
     if found.is_empty() {
         return Err(Error::InvalidArgs(format!(
-            "no binary matching '{}' under {} (override with \
-             VERNIER_BENCH_BIN_ROOTS / VERNIER_BENCH_BIN_SUBDIRS).",
-            name, roots_spec
+            "no binary matching '{name}' under {} ({}), in {} ({}); set .bench.yaml's \
+             bin_roots / bin_subdirs, or VERNIER_BENCH_BIN_ROOTS / VERNIER_BENCH_BIN_SUBDIRS, \
+             which take precedence",
+            search.roots.join(":"),
+            search.roots_from,
+            search.subdirs.join(":"),
+            search.subdirs_from
         )));
     }
     if found.len() > 1 {
@@ -537,6 +626,88 @@ mod doctor_tests {
         assert_eq!(
             evaluate_required_backends(&doc(), &["nsys".into()], None).status,
             0
+        );
+    }
+}
+
+#[cfg(test)]
+mod binary_tests {
+    use super::*;
+    use crate::bench::config::Config;
+
+    /// A config naming @p roots and @p subdirs.
+    fn config(roots: &[&str], subdirs: &[&str]) -> Config {
+        Config {
+            bin_roots: roots.iter().map(|s| s.to_string()).collect(),
+            bin_subdirs: subdirs.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// @test Each list comes from its environment variable when that is set,
+    /// else from the file (a relative root joined to the file's folder, an
+    /// absolute one kept), else the default, and says where it came from.
+    #[test]
+    fn bin_search_takes_each_list_from_its_source() {
+        let file = Path::new("/proj/.bench.yaml");
+        let named = config(&["out/*", "/abs/root"], &["bin/ptests"]);
+        let search = BinSearch::from_sources(None, None, &named, Some(file));
+        assert_eq!(search.roots, ["/proj/out/*", "/abs/root"]);
+        assert_eq!(search.subdirs, ["bin/ptests"]);
+        assert_eq!(search.roots_from, "bin_roots of /proj/.bench.yaml");
+        assert_eq!(search.subdirs_from, "bin_subdirs of /proj/.bench.yaml");
+
+        let search = BinSearch::from_sources(Some("alt/*:x".into()), None, &named, Some(file));
+        assert_eq!(search.roots, ["alt/*", "x"]);
+        assert_eq!(search.roots_from, "VERNIER_BENCH_BIN_ROOTS");
+        assert_eq!(
+            search.subdirs,
+            ["bin/ptests"],
+            "the file's subfolders still"
+        );
+
+        let search = BinSearch::from_sources(None, Some("tests".into()), &named, Some(file));
+        assert_eq!(search.roots, ["/proj/out/*", "/abs/root"]);
+        assert_eq!(search.subdirs, ["tests"]);
+        assert_eq!(search.subdirs_from, "VERNIER_BENCH_BIN_SUBDIRS");
+
+        let search = BinSearch::from_sources(None, None, &Config::default(), None);
+        assert_eq!(search.roots, ["build/*"]);
+        assert_eq!(search.subdirs, ["bin/ptests", "bin/tests", "bin/examples"]);
+        assert_eq!(search.roots_from, "the default");
+        assert_eq!(search.subdirs_from, "the default");
+    }
+
+    /// @test A short name is found under a root ending in `/*`, in one of
+    /// the subfolders, by one of its candidate names; a name found nowhere is
+    /// an error naming the roots, the subfolders and where each came from.
+    #[test]
+    fn resolve_binary_looks_where_the_search_says() {
+        let dir = crate::bench::tempfile_dir("resolve_binary_search");
+        let binary = dir.join("out/x/bin/ptests/Short_PTEST");
+        fs::create_dir_all(binary.parent().expect("a folder")).expect("folders");
+        fs::write(&binary, "").expect("the binary");
+        let file = dir.join(".bench.yaml");
+        let search = BinSearch::from_sources(
+            None,
+            None,
+            &config(&["out/*"], &["bin/ptests"]),
+            Some(&file),
+        );
+        let found = resolve_binary("Short", &search).map_err(|e| e.to_string());
+        let missing = resolve_binary("Missing", &search).map_err(|e| e.to_string());
+        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(found, Ok(binary));
+        let err = missing.expect_err("a name found nowhere");
+        assert!(
+            err.contains(&format!(
+                "no binary matching 'Missing' under {}/out/* (bin_roots of {}), in bin/ptests \
+                 (bin_subdirs of {})",
+                dir.display(),
+                file.display(),
+                file.display()
+            )),
+            "{err}"
         );
     }
 }

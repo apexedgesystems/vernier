@@ -407,6 +407,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   ([tools README](tools/README.md#init--config-validate---project-defaults)).
 - `bench run` reads `.bench.yaml`'s `target_time` when `--target-time` is
   not given, and `bench config-validate` knows the key.
+- `bench run` and `bench profile-all` look for a short binary name under
+  `.bench.yaml`'s `bin_roots` and `bin_subdirs`, a relative root being
+  relative to the file's folder; `VERNIER_BENCH_BIN_ROOTS` and
+  `VERNIER_BENCH_BIN_SUBDIRS` take precedence
+  ([tools README](tools/README.md#init--config-validate---project-defaults)).
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
