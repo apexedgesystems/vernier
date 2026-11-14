@@ -37,9 +37,10 @@ verify:
 	  || true
 	$(call log,verify,Format lane [dev])
 	@$(_CI_COMPOSE) run --rm -T dev make format-check
-	$(call log,verify,C++ lane: debug build + testp [dev with GPU off])
+	$(call log,verify,C++ lane: debug build + testp + test-heap [dev with GPU off])
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
+	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make test-heap
 	$(call log,verify,Rust lane [ci-build])
 	@$(_CI_COMPOSE) run --rm -T ci-build make test-rust
 	$(call log,verify,Python lane [ci-build])
