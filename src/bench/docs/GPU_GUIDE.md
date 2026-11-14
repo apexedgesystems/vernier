@@ -436,7 +436,7 @@ PERF_GPU_TEST(MyAlgorithm, CompareVersions) {
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Naive:     %.3f ms, Occupancy: %.1f%%\n",
+  std::printf("Naive:     %.3f ms, occupancy estimate: %.1f%%\n",
               baseline.kernelTimeUs / 1000.0,
               baseline.stats.occupancy.achievedOccupancy * 100);
 
@@ -451,7 +451,7 @@ PERF_GPU_TEST(MyAlgorithm, CompareVersions) {
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Optimized: %.3f ms, Occupancy: %.1f%%\n",
+  std::printf("Optimized: %.3f ms, occupancy estimate: %.1f%%\n",
               optimized.kernelTimeUs / 1000.0,
               optimized.stats.occupancy.achievedOccupancy * 100);
 
@@ -484,9 +484,10 @@ Launch configuration (grid/block dimensions) significantly impacts performance.
 **How to choose:**
 
 1. Start with 256 threads/block
-2. Check occupancy in results
-3. If occupancy <50%, try other sizes
-4. Benchmark multiple configurations
+2. Measure the other sizes on the same workload
+   ([Block Size Sweep](#block-size-sweep))
+3. Keep the size with the shortest measured time: the occupancy estimate in
+   the results says what each launch shape allows, not which one runs fastest
 
 ### Block Size Sweep
 
@@ -499,7 +500,7 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
   cudaMalloc(&d_data, N * sizeof(float));
 
   std::printf("\n%-12s %-12s %-12s %-12s\n",
-              "Threads", "Time(ms)", "Occupancy", "Throughput");
+              "Threads", "Time(ms)", "Occ. est. %", "Throughput");
   std::printf("%s\n", std::string(50, '-').c_str());
 
   for (int threads : {128, 256, 512, 1024}) {
@@ -517,9 +518,10 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
       .withLaunchConfig(grid, block)
       .measure();
 
+    // The launch-shape estimate (see Occupancy), not a measurement
     double occupancy = result.stats.occupancy.achievedOccupancy * 100;
 
-    std::printf("%-12d %-12.3f %-12.1f%% %-12.0f\n",
+    std::printf("%-12d %-12.3f %-12.1f %-12.0f\n",
                 threads,
                 result.kernelTimeUs / 1000.0,
                 occupancy,
@@ -530,16 +532,24 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
 }
 ```
 
-**Typical output:**
+**Output of one run** on the laptop RTX 5000 Ada (`--cycles 200 --repeats 5`,
+a stand-in `myKernel` doing 256 multiply-adds per element; the harness's own
+result line before each row is left out):
 
 ```
-Threads      Time(ms)     Occupancy    Throughput
+Threads      Time(ms)     Occ. est. %  Throughput
 --------------------------------------------------
-128          15.234       32.5%        65600
-256          12.456       67.8%        80300     <- Best
-512          13.890       45.2%        72000
-1024         18.123       28.9%        55200
+128          0.022        100.0        45716
+256          0.022        100.0        46408
+512          0.021        100.0        46833
+1024         0.024        66.7         41544
 ```
+
+An SM of this GPU holds 1,536 threads (48 warps) and at most 24 blocks:
+blocks of 128, 256 and 512 threads fill it (12, 6 and 3 blocks), so the
+estimate is 100% for each, and one 1024-thread block, 32 of the 48 warps,
+gives 66.7%. The estimate follows from the launch shape alone, whatever the
+kernel, so it does not say which size runs fastest; the times do.
 
 ### Understanding Occupancy
 
@@ -551,27 +561,21 @@ Threads      Time(ms)     Occupancy    Throughput
 - **Shared memory per block** - More shared mem = fewer active blocks
 - **Thread block size** - Too small/large reduces occupancy
 
-**Occupancy targets:**
+The harness's estimate counts the block size and the dynamic shared memory a
+launch declares, not the kernel's registers or static shared memory (see
+[Occupancy](#occupancy)). The CSV's CUPTI columns give the registers per
+thread and the static and dynamic shared memory of the launches it measured
+([CUPTI in-process kernel metrics](#cupti-in-process-kernel-metrics)), and
+the CUDA runtime's `cudaOccupancyMaxActiveBlocksPerMultiprocessor()` gives
+how many blocks of a kernel an SM can hold at once for a block size and
+dynamic shared memory, counting the kernel's registers and static shared
+memory as well.
 
-- **>66%**: Excellent (compute-bound kernels)
-- **33-66%**: Good (typical)
-- **<33%**: Fair (may be resource-constrained)
-
-**Important notes:**
-
-- High occupancy != always faster
-- Memory-bound kernels: 25-50% occupancy can be optimal
-- Compute-bound kernels: aim for >50% occupancy
-- Focus on wall-clock time, not just occupancy
-
-**Use NVIDIA's occupancy calculator:**
-
-```bash
-# Command-line tool
-occupancy_calculator --sm 80 --threads 256 --registers 32 --shared 4096
-
-# Or use Excel/spreadsheet version from CUDA toolkit
-```
+No occupancy figure is right for every kernel: higher occupancy is not always
+faster, and the launch shape worth keeping is the one with the best measured
+time for the workload. For the occupancy a kernel achieves, and whether
+occupancy limits it, measure with a kernel profiler
+([Profiling GPU Code](#profiling-gpu-code)).
 
 ---
 
@@ -1159,9 +1163,10 @@ PERF_GPU_TEST(MyKernel, Validated) {
   // 1. Validate result stability
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
 
-  // 2. Validate occupancy
-  EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
-    << "Low occupancy (<50%) may indicate resource constraints";
+  // 2. No occupancy threshold: the estimate says what the launch shape
+  //    allows, not how busy the GPU was or what limits the kernel (see
+  //    Occupancy). A test tuned for a launch shape can require the estimate
+  //    that shape gave, so that a changed shape shows
 
   // 3. No SM-clock drop. isThrottling() compares NVML's SM-clock readings
   //    at the window's start and end: a drop says the run's conditions
@@ -1191,7 +1196,7 @@ PERF_GPU_TEST(MyKernel, Validated) {
 | Check            | Macro                      | Typical Threshold     | Purpose           |
 | ---------------- | -------------------------- | --------------------- | ----------------- |
 | Result stability | `EXPECT_STABLE_CV_GPU`     | Auto-adaptive         | Detect jitter     |
-| Occupancy        | `EXPECT_GT(occupancy, X)`  | >0.5 compute-bound    | Resource usage    |
+| Occupancy est.   | `EXPECT_GE(occupancy, X)`  | Tuned shape's value   | Launch shape kept |
 | Copy rate        | `EXPECT_GT(bandwidth, X)`  | Measured for the link | Declared copies   |
 | No SM-clock drop | `EXPECT_FALSE(throttling)` | Always                | Flag a clock drop |
 | Speedup          | `EXPECT_GT(speedup, X)`    | Problem-dependent     | GPU worthwhile    |
@@ -1228,7 +1233,8 @@ auto optimized = perf.cudaKernel(..., "optimized_v2").measure();
 
 ### 3. Always Specify Launch Configuration
 
-**Why:** Enables occupancy tracking and validation.
+**Why:** The harness computes the occupancy estimate only for a declared
+launch configuration; without one, the CSV's `occupancy` cell stays empty.
 
 ```cpp
 // Missing occupancy data
@@ -1266,7 +1272,6 @@ auto gpuResult = perf.cudaKernel(...).measure();  // Then GPU
 
 ```cpp
 EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
-EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5);
 EXPECT_FALSE(result.stats.clocks.isThrottling());
 ```
 
@@ -1364,8 +1369,16 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
 **Symptoms:**
 
-- Occupancy < 50%
-- Kernel runs slowly
+- A low occupancy estimate (the CSV's `occupancy`)
+- A kernel profiler measures a lower achieved occupancy than the launch shape
+  allows
+
+The estimate counts only the block size and the dynamic shared memory a
+launch declares, so a low estimate comes from one of those (causes 2 and 3);
+registers and static shared memory lower what a kernel can reach without
+changing the estimate. Neither figure is a target of its own: the launch
+shape to keep is the one with the best measured time
+([Understanding Occupancy](#understanding-occupancy)).
 
 **Causes and solutions:**
 
@@ -1373,13 +1386,13 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
    - Simplify kernel logic
    - Use fewer local variables
-   - Check with: `cuobjdump -sass kernel.o | grep regs`
+   - Check with: the CSV's `cuptiRegistersMedian` and `cuptiRegistersMax`
 
 2. **Too much shared memory:**
 
    - Reduce `__shared__` allocations
    - Tile data differently
-   - Check with occupancy calculator
+   - Check with: the CSV's `cuptiStaticSmemBytes` and `cuptiDynamicSmemBytes`
 
 3. **Block size too small:**
    - Try larger block sizes (256, 512)
