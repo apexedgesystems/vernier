@@ -66,11 +66,15 @@ PERF_GPU_TEST(VectorAdd, Basic) {
   dim3 block(THREADS);
   dim3 grid(BLOCKS);
 
-  // Warmup: Critical for GPU (JIT compilation + cache priming). The kernel
-  // reads both inputs, so they go to the device first; the copies declared
-  // below repeat this in every measured repeat.
-  cudaMemcpy(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice);
+  // Inputs first: the kernel reads both. They are queued on the case's
+  // stream, the one the warmup launches on, so the warmup starts only after
+  // both copies finish. (A plain cudaMemcpy goes to the default stream,
+  // which the case's non-blocking stream does not wait for.) The copies
+  // declared below repeat this in every measured repeat.
+  cudaMemcpyAsync(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
+  cudaMemcpyAsync(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
+
+  // Warmup: Critical for GPU (JIT compilation + cache priming)
   perf.cudaWarmup([&](cudaStream_t s) {
     vectorAdd<<<grid, block, 0, s>>>(d_a, d_b, d_c, N);
   });
