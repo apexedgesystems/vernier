@@ -387,10 +387,15 @@ request before the next run: `--profile-check` with the same `--profile`
 options prints the same verdict. `--profile cupti` records no failure of its
 own, even where CUPTI is unavailable, and neither does a run without
 `--profile`: either exits 4 only when another failure is recorded, as when a
-profiler the benchmark constructs itself reports one, and the tests passed;
-when tests fail, their status stands. A benchmark with its own `main()`
-returns this status from `ProfilerRegistry::finishRun()`, called after
-`RUN_ALL_TESTS()` as in
+profiler the benchmark constructs itself reports one, or when a GPU benchmark
+is given `--capture-um` where CUPTI cannot record the unified-memory counters
+(a GPU whose CUPTI refuses them, as the Jetson AGX Thor's does; an Nsight
+session; `VERNIER_DISABLE_CUPTI=1`; a build without CUPTI) or a measurement's
+records are incomplete ([GPU guide](GPU_GUIDE.md#unified-memory-counters)),
+and the tests passed; when tests fail, their status stands. The report then
+reads `[profile] a profile failed` and lists what failed. A benchmark with its
+own `main()` returns this status from `ProfilerRegistry::finishRun()`, called
+after `RUN_ALL_TESTS()` as in
 [the advanced guide](ADVANCED_GUIDE.md#perf_main-macro).
 
 ---
@@ -749,10 +754,14 @@ cudaFree(d_data);
 cudaDeviceReset();  // Nuclear option
 ```
 
-**4. Use Unified Memory** (trades speed for capacity):
+**4. Use Unified Memory** (trades speed for capacity): allocate the test's
+buffers with `cudaMallocManaged()` in place of `cudaMalloc()`.
+`--gpu-memory unified` changes the allocation only of a test that reads the
+selected strategy, such as `GpuMemoryStrategies.SelectedStrategy` (see
+[GPU Memory Strategy Selection](ADVANCED_GUIDE.md#gpu-memory-strategy-selection)).
 
-```bash
-./test --gpu-memory unified
+```cpp
+cudaMallocManaged(&d_data, N * sizeof(float));  // in place of cudaMalloc()
 ```
 
 ---
@@ -1251,9 +1260,9 @@ parameterized test's name is written `+2F` and a `+` as `+2B`, so
 `Parts/Join.V0/n1000` gets
 `Parts+2FJoin.V0+2Fn1000.gperf/`. Under `bench run`, a profiler that
 `bench run` wraps around the whole process (the valgrind tools, heaptrack,
-compute-sanitizer, nsight, ncu, and jemalloc when its library can be
-preloaded) writes one `<binary>.<tool>/` folder for the run instead, and no
-per-test folders; its root is `--profile-output-dir`, else `bench-out/`. For
+compute-sanitizer, nsight, ncu, and jemalloc) writes one `<binary>.<tool>/`
+folder for the run instead, and no per-test folders; its root is
+`--profile-output-dir`, else `bench-out/`. For
 multi-tool runs (`--profile gperf` then `--profile callgrind`), reuse the same
 root: the tool is part of every folder name, so their artifacts stay apart.
 

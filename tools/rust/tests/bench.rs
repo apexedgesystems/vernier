@@ -1234,6 +1234,15 @@ fn validate_without_binary_reports_facts() {
             .starts_with(&format!("{t}/heaptrack is not an executable file")),
         "{heaptrack}"
     );
+    // The analyzer's row: what jeprof is for, never that it gives profiling.
+    let jeprof = validate_row(&rows, "jeprof (reads jemalloc's dumps)");
+    assert_eq!(jeprof["status"], "warn");
+    assert_eq!(
+        jeprof["detail"],
+        "jeprof not found on PATH; install it (Debian and Ubuntu: libjemalloc-dev) to read \
+         jemalloc's heap dumps; whether jemalloc profiles here: bench doctor <binary> \
+         --profile jemalloc"
+    );
     let perf = validate_row(&rows, "perf");
     assert_eq!(perf["status"], "warn");
     assert!(
@@ -3181,6 +3190,367 @@ fn run_bare_name_not_executable_is_refused() {
     assert_eq!(log, "", "something ran: {log}");
 }
 
+/* ----------------------------- Run: Sampling Rate ----------------------------- */
+
+/// The variables a sampling-rate stand-in records: the start-up setting, and
+/// everything a wrap or a capture started at launch would add.
+const STARTUP_VARIABLES: &str =
+    "CPUPROFILE_FREQUENCY|CPUPROFILE|HEAPPROFILE|VERNIER_EXTERNAL_WRAP|\
+                                 VERNIER_EXTERNAL_WRAP_DIR|LD_PRELOAD|MALLOC_CONF";
+
+/// A private directory with a stand-in benchmark and, in its `tools/`, a
+/// stand-in valgrind. Each start of either appends to `record` a line naming
+/// it, then each of STARTUP_VARIABLES it was given as NAME=value (sorted; an
+/// unset one is absent), then its arguments, and exits 0; valgrind writes
+/// the massif output its arguments name, as the tool would.
+struct RateRig {
+    dir: tempfile::TempDir,
+    record: PathBuf,
+    bench: PathBuf,
+}
+
+fn rate_rig() -> RateRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let record = dir.path().join("record.log");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create the tools dir");
+    let recorder = |name: &str| {
+        format!(
+            "#!/bin/sh\n{{ echo \"== {name}\"; env | grep -E '^({STARTUP_VARIABLES})=' | \
+             LC_ALL=C sort; echo \"argv=$*\"; }} >> '{}'\n",
+            record.display()
+        )
+    };
+    let bench = dir.path().join("fake_bench");
+    write_executable(&bench, &recorder("bench"));
+    let valgrind = recorder("valgrind")
+        + "for a in \"$@\"; do case \"$a\" in --massif-out-file=*) echo fake > \"${a#*=}\" ;; \
+           esac; done\n";
+    write_executable(&tools.join("valgrind"), &valgrind);
+    RateRig { dir, record, bench }
+}
+
+/// `bench <command> <rig's benchmark> <args>` in the rig, with its stand-ins
+/// first on PATH, every STARTUP_VARIABLES removed and then @p env added;
+/// returns the exit status, stdout, stderr and the record.
+fn run_rate_command(
+    rig: &RateRig,
+    command: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> (i32, String, String, String) {
+    let mut cmd = Command::new(bin());
+    cmd.arg(command)
+        .arg(&rig.bench)
+        .args(args)
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", rig.dir.path().join("tools").display()),
+        )
+        .current_dir(rig.dir.path());
+    for name in STARTUP_VARIABLES.split('|') {
+        cmd.env_remove(name);
+    }
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = output_of(&mut cmd);
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.record).unwrap_or_default(),
+    )
+}
+
+/// `run_rate_command` for `bench run`.
+fn run_rate(rig: &RateRig, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String, String) {
+    run_rate_command(rig, "run", args, env)
+}
+
+/// @test --profile gperf --profile-frequency starts the benchmark with
+/// CPUPROFILE_FREQUENCY set to the rate's canonical value and the flag given
+/// once, and adds nothing else: no wrap metadata, no CPUPROFILE, no folder.
+/// The Running: line shows the setting.
+#[test]
+fn run_rate_starts_the_benchmark_with_it() {
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(
+        &rig,
+        &[
+            "--profile",
+            "gperf",
+            "--profile-frequency",
+            "0250",
+            "--",
+            "--gtest_filter=A.*",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile gperf --profile-frequency 250 \
+         --gtest_filter=A.*\n"
+    );
+    assert!(
+        out.contains("Running: CPUPROFILE_FREQUENCY=250 ")
+            && out.contains(" --profile gperf --profile-frequency 250 --gtest_filter=A.*"),
+        "{out}"
+    );
+    assert!(
+        !rig.dir.path().join("bench-out").exists(),
+        "a folder was created for a profile bench run does not wrap"
+    );
+}
+
+/// @test The rate given after `--`, where the benchmark reads it, is the
+/// request's: the benchmark starts with the variable and gets the flag once.
+#[test]
+fn run_forwarded_rate_is_the_requests() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &[
+            "--profile",
+            "gperf",
+            "--",
+            "--profile-frequency",
+            "1000",
+            "--cycles",
+            "5",
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile gperf --profile-frequency 1000 \
+         --cycles 5\n"
+    );
+}
+
+/// @test Without a request bench run sets nothing: an inherited
+/// CPUPROFILE_FREQUENCY reaches the benchmark untouched, and none stays
+/// none; a request replaces the inherited value for the benchmark.
+#[test]
+fn run_inherited_rate_passes_and_a_request_overrides_it() {
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(&rig, &["--profile", "gperf"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(record, "== bench\nargv=--profile gperf\n");
+    assert!(!out.contains("CPUPROFILE_FREQUENCY"), "{out}");
+
+    let rig = rate_rig();
+    let (code, out, err, record) = run_rate(
+        &rig,
+        &["--profile", "gperf"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile gperf\n"
+    );
+    assert!(!out.contains("CPUPROFILE_FREQUENCY"), "{out}");
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &["--profile", "gperf", "--profile-frequency", "1000"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile gperf --profile-frequency 1000\n"
+    );
+}
+
+/// @test A rate that cannot apply starts nothing and creates nothing: one
+/// that is not a whole number from 1 to 4000, the "=" spelling after `--`,
+/// two different rates, a rate with no profiler (none given, or cupti) and
+/// one for a profile that takes none, wrapped (massif) or not (perf,
+/// jemalloc's environment wrap).
+#[test]
+fn run_refuses_a_rate_that_cannot_apply() {
+    for (args, expected) in [
+        (
+            &["--profile", "gperf", "--profile-frequency", "abc"][..],
+            "--profile-frequency: 'abc' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--profile-frequency", "4001"][..],
+            "--profile-frequency: '4001' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--profile-frequency", "-5"][..],
+            "--profile-frequency: '-5' is not a whole number of Hz from 1 to 4000",
+        ),
+        (
+            &["--profile", "gperf", "--", "--profile-frequency=1000"][..],
+            "--profile-frequency=1000 after --: give it as --profile-frequency 1000",
+        ),
+        (
+            &[
+                "--profile",
+                "gperf",
+                "--profile-frequency",
+                "250",
+                "--",
+                "--profile-frequency",
+                "1000",
+            ][..],
+            "--profile-frequency is given more than once with different values",
+        ),
+        (
+            &["--profile-frequency", "250"][..],
+            "--profile-frequency 250 cannot apply: no profiler is selected",
+        ),
+        (
+            &["--profile", "cupti", "--profile-frequency", "250"][..],
+            "--profile-frequency 250 cannot apply: no profiler is selected",
+        ),
+        (
+            &["--profile", "perf", "--profile-frequency", "250"][..],
+            "--profile perf does not take it",
+        ),
+        (
+            &["--profile", "massif", "--profile-frequency", "250"][..],
+            "--profile massif does not take it",
+        ),
+        (
+            &["--profile", "jemalloc", "--profile-frequency", "250"][..],
+            "--profile jemalloc does not take it",
+        ),
+    ] {
+        let rig = rate_rig();
+        let (code, _, err, record) = run_rate(&rig, args, &[]);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(err.contains(expected), "{args:?}: {err}");
+        assert_eq!(record, "", "{args:?}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{args:?}: a folder was created"
+        );
+    }
+}
+
+/// @test The wraps keep their metadata and folder, and bench run gives them
+/// no rate: massif's valgrind is told its wrap and folder and nothing else,
+/// and an inherited CPUPROFILE_FREQUENCY reaches it untouched; jemalloc's
+/// environment wrap, where the loader can preload the library, keeps its
+/// preload, configuration and wrap variables.
+#[test]
+fn run_wraps_keep_their_metadata_and_get_no_rate() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(&rig, &["--profile", "massif"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        record.starts_with(
+            "== valgrind\nVERNIER_EXTERNAL_WRAP=massif\nVERNIER_EXTERNAL_WRAP_DIR=bench-out/\
+             fake_bench.massif\nargv=--tool=massif "
+        ),
+        "{record}"
+    );
+    assert!(rig
+        .dir
+        .path()
+        .join("bench-out/fake_bench.massif/massif.out")
+        .is_file());
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate(
+        &rig,
+        &["--profile", "massif"],
+        &[("CPUPROFILE_FREQUENCY", "250")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        record.starts_with("== valgrind\nCPUPROFILE_FREQUENCY=250\nVERNIER_EXTERNAL_WRAP=massif\n"),
+        "{record}"
+    );
+
+    let rig = rate_rig();
+    let (_, _, _, record) = run_rate(&rig, &["--profile", "jemalloc"], &[]);
+    if !record.contains("LD_PRELOAD=libjemalloc.so.2") {
+        eprintln!("skipped jemalloc's wrap: the loader cannot preload libjemalloc.so.2 here");
+        return;
+    }
+    // The benchmark's own start: the lines before its first argv line.
+    let first: Vec<&str> = record
+        .lines()
+        .take_while(|line| !line.starts_with("argv="))
+        .collect();
+    assert_eq!(first[0], "== bench", "{record}");
+    let names: Vec<&str> = first[1..]
+        .iter()
+        .map(|line| line.split('=').next().unwrap_or(""))
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "LD_PRELOAD",
+            "MALLOC_CONF",
+            "VERNIER_EXTERNAL_WRAP",
+            "VERNIER_EXTERNAL_WRAP_DIR"
+        ],
+        "{record}"
+    );
+    assert!(
+        first.contains(&"VERNIER_EXTERNAL_WRAP=jemalloc")
+            && first.contains(&"VERNIER_EXTERNAL_WRAP_DIR=bench-out/fake_bench.jemalloc")
+            && first.iter().any(|l| l.starts_with("MALLOC_CONF=prof:true,")
+                && l.ends_with("prof_prefix:bench-out/fake_bench.jemalloc/jeprof")),
+        "{record}"
+    );
+}
+
+/// @test bench doctor gives the benchmark the start-up setting bench run
+/// would, so its row answers for that start, by either spelling; a rate for
+/// a profile that takes none is refused before the benchmark starts.
+#[test]
+fn doctor_starts_the_benchmark_as_bench_run_would() {
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "gperf", "--profile-frequency", "250"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=250\nargv=--profile-check --profile gperf \
+         --profile-frequency 250\n"
+    );
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "gperf", "--", "--profile-frequency", "1000"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        record,
+        "== bench\nCPUPROFILE_FREQUENCY=1000\nargv=--profile-check --profile gperf \
+         --profile-frequency 1000\n"
+    );
+
+    let rig = rate_rig();
+    let (code, _, err, record) = run_rate_command(
+        &rig,
+        "doctor",
+        &["--profile", "perf", "--profile-frequency", "250"],
+        &[],
+    );
+    assert_eq!(code, 1, "{err}");
+    assert!(err.contains("--profile perf does not take it"), "{err}");
+    assert_eq!(record, "", "the benchmark was started");
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
@@ -4342,4 +4712,319 @@ fn measurement_rows_cli_agreement() {
     );
     assert_eq!(sorted_strings(&migration["baseline_only"], None), missing);
     assert_eq!(sorted_strings(&migration["candidate_only"], None), new);
+}
+
+/* ----------------------------- Run: jemalloc ----------------------------- */
+
+/// A jemalloc rig: a stand-in benchmark that writes the dumps a test names
+/// (`FAKE_DUMPS`) under the prefix MALLOC_CONF gives it and logs what it was
+/// given, a PATH folder of stand-ins, and a library folder for
+/// LD_LIBRARY_PATH.
+struct JemallocRig {
+    dir: tempfile::TempDir,
+    tools: PathBuf,
+    lib: PathBuf,
+    log: PathBuf,
+    bench: PathBuf,
+}
+
+/// The stand-in benchmark: `own` writes a heap profile of itself named after
+/// its own process id, `zero` the same with nothing sampled, `empty` an empty
+/// one, `other` a profile of another process (git's, as a child would leave),
+/// `foreign` a profile under its own id that maps another program.
+const JEMALLOC_STAND_IN: &str = r#"#!/bin/sh
+echo "bench pid=$$ LD_PRELOAD=$LD_PRELOAD MALLOC_CONF=$MALLOC_CONF wrap=$VERNIER_EXTERNAL_WRAP dir=$VERNIER_EXTERNAL_WRAP_DIR $*" >> '{log}'
+prefix=${MALLOC_CONF##*prof_prefix:}
+self=$(/bin/readlink -f "$0")
+profile() {
+  printf 'heap_v2/524288\n  t*: 1: 82338 [%s: %s]\n\nMAPPED_LIBRARIES:\n55d0c1a00000-55d0c1a2f000 r-xp 00000000 fd:01 1048601 %s\n' "$3" "$(($3 * 6000))" "$2" > "$1"
+}
+for kind in $FAKE_DUMPS; do
+  case "$kind" in
+    own) profile "$prefix.$$.0.f.heap" "$self" 2287 ;;
+    zero) profile "$prefix.$$.0.f.heap" "$self" 0 ;;
+    empty) : > "$prefix.$$.0.f.heap" ;;
+    other) profile "$prefix.$(($$ + 2)).0.f.heap" /usr/bin/git 3 ;;
+    foreign) profile "$prefix.$$.0.f.heap" /usr/bin/git 3 ;;
+  esac
+done
+exit 0
+"#;
+
+/// The C library this test program runs on, as its memory map names it.
+fn c_library() -> PathBuf {
+    let maps = std::fs::read_to_string("/proc/self/maps").expect("this process's map");
+    maps.lines()
+        .filter_map(|l| l.find('/').map(|at| PathBuf::from(&l[at..])))
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("libc.so"))
+        })
+        .expect("the C library is mapped")
+}
+
+/// A rig whose `libjemalloc.so.2` the loader preloads (@p loadable: the C
+/// library under that name, loaded already, so the preload changes nothing)
+/// or refuses (a file that is not a library).
+fn jemalloc_rig(loadable: bool) -> JemallocRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    let lib = dir.path().join("lib");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    std::fs::create_dir_all(&lib).expect("create lib dir");
+    if loadable {
+        std::os::unix::fs::symlink(c_library(), lib.join("libjemalloc.so.2")).expect("symlink");
+    } else {
+        std::fs::write(lib.join("libjemalloc.so.2"), "not a library\n").expect("write");
+    }
+    let log = dir.path().join("bench.log");
+    let bench = dir.path().join("fake_bench");
+    write_executable(
+        &bench,
+        &JEMALLOC_STAND_IN.replace("{log}", &log.display().to_string()),
+    );
+    JemallocRig {
+        dir,
+        tools,
+        lib,
+        log,
+        bench,
+    }
+}
+
+/// `bench run <rig's benchmark> --profile jemalloc <args>` with the rig's PATH
+/// and LD_LIBRARY_PATH and @p dumps for the stand-in: the exit status,
+/// stdout, stderr and the stand-in's log.
+fn run_jemalloc_rig(
+    rig: &JemallocRig,
+    args: &[&str],
+    dumps: &str,
+) -> (i32, String, String, String) {
+    let out = output_of(
+        Command::new(bin())
+            .arg("run")
+            .arg(&rig.bench)
+            .args(["--profile", "jemalloc"])
+            .args(args)
+            .env("PATH", &rig.tools)
+            .env("LD_LIBRARY_PATH", &rig.lib)
+            .env("FAKE_DUMPS", dumps)
+            .env_remove("MALLOC_CONF")
+            .env_remove("LD_PRELOAD")
+            .current_dir(rig.dir.path()),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test A library the loader cannot preload, a mode word and a folder
+/// holding ',' are refused before anything is created or started: the
+/// benchmark never runs and no folder appears.
+#[test]
+fn run_jemalloc_refusals_start_nothing() {
+    let rig = jemalloc_rig(false);
+    let (code, _, err, log) = run_jemalloc_rig(&rig, &[], "own");
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.contains(
+            "Error: tool not found: the loader cannot preload libjemalloc.so.2 (\"ERROR: ld.so: \
+             object 'libjemalloc.so.2' from LD_PRELOAD cannot be preloaded ("
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("Use a jemalloc built with profiling (configure --enable-prof;"),
+        "{err}"
+    );
+    assert!(
+        !err.contains("jeprof"),
+        "the analyzer offered for collection: {err}"
+    );
+    assert_eq!(log, "", "the benchmark ran");
+    assert!(
+        !rig.dir.path().join("bench-out").exists(),
+        "a folder was created"
+    );
+
+    let rig = jemalloc_rig(true);
+    for (args, words) in [
+        (
+            vec!["--profile-args", "x"],
+            "--profile jemalloc --profile-args 'x': 'x' is not a mode of jemalloc, which takes \
+             none",
+        ),
+        (
+            vec!["--profile-output-dir", "out,x"],
+            "it cannot write into out,x/fake_bench.jemalloc, which holds ','",
+        ),
+    ] {
+        let (code, _, err, log) = run_jemalloc_rig(&rig, &args, "own");
+        assert_eq!(code, 1, "{words}: {err}");
+        assert!(err.contains(words), "{words}: {err}");
+        assert_eq!(log, "", "{words}: the benchmark ran");
+        assert!(!rig.dir.path().join("bench-out").exists(), "{words}");
+        assert!(!rig.dir.path().join("out,x").exists(), "{words}");
+    }
+}
+
+/// @test bench run preloads jemalloc with its profiling options into the wrap
+/// folder, takes the benchmark's own exit dump and names any other process's,
+/// prints that dump with its size, no count of samples, and the jeprof
+/// command, and says jeprof is missing only when it is.
+#[test]
+fn run_jemalloc_takes_the_benchmarks_own_dump() {
+    let rig = jemalloc_rig(true);
+    let (code, stdout, err, log) = run_jemalloc_rig(&rig, &[], "own other");
+    assert_eq!(code, 0, "{err}");
+    let pid = log
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("pid="))
+        .expect("the stand-in logged its process id")
+        .to_string();
+    assert!(
+        log.starts_with(&format!(
+            "bench pid={pid} LD_PRELOAD=libjemalloc.so.2 MALLOC_CONF=prof:true,prof_final:true,\
+             prof_accum:true,prof_prefix:bench-out/fake_bench.jemalloc/jeprof wrap=jemalloc \
+             dir=bench-out/fake_bench.jemalloc --profile jemalloc"
+        )),
+        "{log}"
+    );
+    let dump = format!("bench-out/fake_bench.jemalloc/jeprof.{pid}.0.f.heap");
+    let size = std::fs::metadata(rig.dir.path().join(&dump))
+        .expect("the benchmark's dump")
+        .len();
+    assert!(
+        stdout.lines().any(|l| l
+            == format!("[bench] jemalloc wrote {dump} ({size} bytes) when the benchmark exited")),
+        "{stdout}"
+    );
+    let other: u32 = pid.parse::<u32>().expect("a process id") + 2;
+    assert!(
+        stdout.contains(&format!(
+            "[bench] jemalloc: bench-out/fake_bench.jemalloc/jeprof.{other}.0.f.heap is not the \
+             benchmark's exit dump (the benchmark is process {pid}); it is not this run's profile"
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "[bench] Read it: jeprof --text --alloc_space {} {dump}",
+            rig.bench.display()
+        )),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("[bench] jeprof is not on PATH: reading the dump needs it"),
+        "{stdout}"
+    );
+
+    write_executable(&rig.tools.join("jeprof"), "#!/bin/sh\nexit 0\n");
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "own");
+    assert_eq!(code, 0, "{err}");
+    assert!(stdout.contains("[bench] Read it: jeprof"), "{stdout}");
+    assert!(!stdout.contains("jeprof is not on PATH"), "{stdout}");
+}
+
+/// @test The completion check fails, after the benchmark exited 0, for no
+/// dump of the benchmark (also when the folder holds a previous run's dump,
+/// removed before the run, or another process's), an empty one and one of
+/// another program; a run that sampled nothing passes, with the line any run
+/// prints.
+#[test]
+fn run_jemalloc_completion_failures() {
+    let rig = jemalloc_rig(true);
+    let folder = rig.dir.path().join("bench-out/fake_bench.jemalloc");
+    std::fs::create_dir_all(&folder).expect("create the folder");
+    std::fs::write(folder.join("jeprof.1.0.f.heap"), "a previous run's dump\n").expect("write");
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "");
+    assert_eq!(code, 1, "{stdout}{err}");
+    assert!(
+        stdout.contains(
+            "[bench] removed bench-out/fake_bench.jemalloc/jeprof.1.0.f.heap from a \
+                         previous run"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        err.contains(
+            "Error: --profile jemalloc failed: completion: jemalloc wrote no exit dump \
+                      of the benchmark (process "
+        ),
+        "{err}"
+    );
+    for (dumps, words) in [
+        (
+            "other",
+            "; the folder holds only other dumps: bench-out/fake_bench.jemalloc/jeprof.",
+        ),
+        ("empty", ".0.f.heap is empty"),
+        ("foreign", ".0.f.heap does not map the benchmark, "),
+    ] {
+        let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], dumps);
+        assert_eq!(code, 1, "{dumps}: {stdout}{err}");
+        assert!(
+            err.contains("Error: --profile jemalloc failed: completion: ") && err.contains(words),
+            "{dumps}: {err}"
+        );
+    }
+    let (code, stdout, err, _) = run_jemalloc_rig(&rig, &[], "zero");
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        stdout.lines().any(|l| l
+            .starts_with("[bench] jemalloc wrote bench-out/fake_bench.jemalloc/jeprof.")
+            && l.ends_with(" bytes) when the benchmark exited")),
+        "{stdout}"
+    );
+}
+
+/// @test Where a jemalloc that profiles can be preloaded (the test checks so
+/// itself), a real program run by bench run leaves its own exit dump, which
+/// bench run takes: /bin/true stands for the benchmark.
+#[test]
+fn run_jemalloc_real_library_profiles_a_real_program() {
+    let check = tempfile::tempdir().expect("tempdir");
+    let probe = output_of(
+        Command::new("/bin/true")
+            .env("LD_PRELOAD", "libjemalloc.so.2")
+            .env(
+                "MALLOC_CONF",
+                format!(
+                    "prof:true,prof_final:true,prof_prefix:{}/check",
+                    check.path().display()
+                ),
+            ),
+    );
+    let wrote = std::fs::read_dir(check.path())
+        .map(|entries| entries.count() > 0)
+        .unwrap_or(false);
+    if !wrote {
+        eprintln!(
+            "skipped: no jemalloc that profiles can be preloaded here: {}",
+            String::from_utf8_lossy(&probe.stderr).trim()
+        );
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = output_of(
+        Command::new(bin())
+            .args(["run", "/bin/true", "--profile", "jemalloc"])
+            .env_remove("MALLOC_CONF")
+            .env_remove("LD_PRELOAD")
+            .current_dir(dir.path()),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{stdout}{stderr}");
+    assert!(
+        stdout.lines().any(|l| l
+            .starts_with("[bench] jemalloc wrote bench-out/true.jemalloc/jeprof.")
+            && l.contains(".0.f.heap (")
+            && l.ends_with(" bytes) when the benchmark exited")),
+        "{stdout}"
+    );
 }

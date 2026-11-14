@@ -18,7 +18,7 @@
  * Memcheck checks only when valgrind runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:
  *
- *   bench run ./MyTest --profile memcheck --cycles 5 --gtest_filter='Foo.Bar'
+ *   bench run ./MyTest --profile memcheck --cycles 5 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
  *   valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \

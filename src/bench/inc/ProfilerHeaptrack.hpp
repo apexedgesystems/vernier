@@ -17,7 +17,7 @@
  * Heaptrack records only when it runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:
  *
- *   bench run ./MyTest --profile heaptrack --cycles 1000 --gtest_filter='Foo.Bar'
+ *   bench run ./MyTest --profile heaptrack --cycles 1000 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
  *   heaptrack -o run.heaptrack \

@@ -104,6 +104,11 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   here: a counting `operator new` in the demo would let heaptrack see its C++
   allocations even with tcmalloc loaded. The demo's test names change, so CSVs
   captured from it before this release do not join with newer ones.
+- **Demo 16 and walkthrough 22 show allocation attribution with the shared
+  join example** -- including profiling-enabled jemalloc setup on the
+  Raspberry Pi 4. Cases are now `Jemalloc.JoinV0` and `Jemalloc.JoinV1`;
+  recapture older CSV references to compare the renamed cases.
+  ([#69](https://github.com/apexedgesystems/vernier/pull/69))
 - **Demo 02 (perf) reworked around the shared `join` and `filter` examples** --
   `BenchDemo_02_PerfProfiler` measures the shared `join` example and a new
   `filter` example, with a Raspberry Pi walkthrough
@@ -215,7 +220,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
     `A/B_C.Run/0`) keep separate folders. Names without `/` or `+` are
     unchanged. `+` was chosen because the folder is passed on to tools that
     give other characters a meaning of their own in output paths (valgrind
-    and nsys expand `%`, jemalloc's `MALLOC_CONF` splits on `,` and `:`), and
+    and nsys expand `%`, jemalloc's `MALLOC_CONF` ends an option at `,`), and
     it needs no quoting in a shell. Scripts that read the nested path need the
     flat one.
   - `--profile ncu` names its per-test folder `<Suite.Case>.ncu/` (it was
@@ -299,6 +304,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `--profile-analyze` runs the first of `google-pprof` and `pprof` on `PATH`,
   whose absence or failure fails the run and keeps the capture.
   **Action needed:** give gperf's `--profile-args` its modes alone.
+- **jemalloc profiling now checks allocator support and validates the
+  benchmark's own exit heap dump** -- metadata helpers run without the
+  profiler environment. Use a jemalloc built with profiling; `jeprof` is
+  needed only to read dumps.
+  ([#69](https://github.com/apexedgesystems/vernier/pull/69))
 - **GPU cells a run cannot measure are empty, and the run says why** -- the GPU
   harness fills the `cupti*` cells only from complete CUPTI records, the NVML
   cells only from readings NVML reported, `occupancy` (an estimate from the
@@ -358,6 +368,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   **Action needed:** under a `valgrind --tool=callgrind` wrap typed by hand,
   drop `--profile-analyze`, which fails such a run, and run
   `callgrind_annotate` on the profile after the process exits.
+- **`--profile-frequency` sets gperf's sampling rate** -- Gperf CPU sampling
+  requests now take effect and each completed profile's period is verified.
+  Use rates from 1 to 4000 Hz; `PerfConfig::profileFrequency` now defaults to
+  0 (no explicit request), and direct runs must set `CPUPROFILE_FREQUENCY`
+  before startup
+  ([API reference](src/bench/docs/API_REFERENCE.md#profilergperf)).
+  ([#68](https://github.com/apexedgesystems/vernier/pull/68))
 - **`bench validate` reports facts, and a binary's own rows when given
   one** -- it lists each profiling tool's path and version instead of judging
   readiness from a tool's presence, or, given a binary, that binary's
@@ -881,6 +898,14 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   up its NVML device by the CUDA device ordinal, which names another GPU where
   NVML numbers the devices differently or `CUDA_VISIBLE_DEVICES` reorders or
   hides them; it looks the device up by the CUDA device's UUID.
+- GPU benchmarks given `--capture-um` fill the `um*` CSV cells from CUPTI's
+  unified-memory counters on GPUs whose CUPTI records them, and fail with
+  status 4 where it cannot, such as on the Jetson AGX Thor. Discard `um*`
+  values in earlier CSVs.
+  ([#66](https://github.com/apexedgesystems/vernier/pull/66))
+- Demonstrate `--gpu-memory` in `GpuMemoryStrategies.SelectedStrategy` and
+  reject invalid values with status 2.
+  ([#66](https://github.com/apexedgesystems/vernier/pull/66))
 - **A `--csv` the run cannot write stops it** -- a perf binary given a `--csv`
   path it could not open (in a missing directory, a directory, an empty path)
   wrote no rows, said nothing and exited 0. It exits 2 before any test runs,
@@ -922,7 +947,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 4).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 6).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable

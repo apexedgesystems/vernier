@@ -12,7 +12,7 @@
  * Massif collects only when valgrind runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:
  *
- *   bench run ./MyTest --profile massif --cycles 10 --gtest_filter='Foo.Bar'
+ *   bench run ./MyTest --profile massif --cycles 10 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
  *   valgrind --tool=massif --massif-out-file=run.massif.out \

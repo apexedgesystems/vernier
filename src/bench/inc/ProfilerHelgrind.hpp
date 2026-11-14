@@ -18,7 +18,7 @@
  * Helgrind checks only when valgrind runs the whole process; a request run
  * without it fails (exit status 4) and prints the wrap command:
  *
- *   bench run ./MyTest --profile helgrind --cycles 5 --gtest_filter='Foo.Bar'
+ *   bench run ./MyTest --profile helgrind --cycles 5 -- --gtest_filter='Foo.Bar'
  *
  *   # or by hand:
  *   valgrind --tool=helgrind --log-file=run.helgrind.log \

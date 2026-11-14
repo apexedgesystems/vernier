@@ -65,13 +65,16 @@ namespace bench {
 /// Version of the layout shared with the bench libraries. Raise it for every
 /// change to the members of PerfConfig, Stats, PerfGpuConfig, of a struct the
 /// libraries hand back (GpuStats, PerfGpuResult, MultiGpuResult, PerfRow), of
-/// the PerfRegistry both sides publish rows through, or of a profiler class a
-/// benchmark can construct itself (the benchmark sizes the object from its
-/// header, and the library's constructor builds it): added (also at the end),
-/// removed, reordered or retyped; and for every change to Profiler's virtual
-/// functions, which no compared size shows. 3: Profiler::abortMeasure().
-/// 4: RAPLProfiler's members; OffCpuProfiler's outcome member.
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 4;
+/// the PerfRegistry both sides publish rows through, or of a profiler class
+/// these headers declare (a benchmark may construct one itself, in storage of
+/// the size its headers give, through a constructor libbench runs): added
+/// (also at the end), removed, reordered or retyped; and for every change to
+/// Profiler's virtual functions, which no compared size shows.
+/// 3: Profiler::abortMeasure(). 4: JemallocProfiler's members;
+/// OffCpuProfiler's outcome member.
+/// 5: UnifiedMemoryProfile::h2dBytes and d2hBytes, in GpuStats.
+/// 6: RAPLProfiler's members.
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 6;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;

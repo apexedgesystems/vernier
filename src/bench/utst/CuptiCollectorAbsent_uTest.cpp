@@ -60,9 +60,13 @@ TEST_F(CuptiCollectorAbsent, SaysWhy) {
             "the collector stood down (an Nsight session, VERNIER_DISABLE_CUPTI or its caller)");
 }
 
-/** @test start, stop and reset collect nothing: the stats stay empty, with no window problem */
+/**
+ * @test start, stop and reset collect nothing, the unified-memory counters
+ *       asked for included: the stats stay empty, with no window problem
+ */
 TEST_F(CuptiCollectorAbsent, CollectsNothing) {
   CuptiCollector collector;
+  collector.collectUnifiedMemory(true);
   collector.start();
   collector.stop();
   EXPECT_EQ(collector.stats().kernelLaunches, 0U);
@@ -72,6 +76,9 @@ TEST_F(CuptiCollectorAbsent, CollectsNothing) {
   EXPECT_EQ(collector.stats().dynamicSmemBytes, 0U);
   EXPECT_TRUE(collector.stats().firstKernelName.empty());
   EXPECT_TRUE(collector.windowProblem().empty()) << collector.windowProblem();
+  EXPECT_FALSE(collector.unifiedMemory().has_value());
+  EXPECT_TRUE(collector.unifiedMemoryRefusal().empty())
+      << "the reason is unavailableReason(): " << collector.unifiedMemoryRefusal();
   collector.reset();
   EXPECT_EQ(collector.stats().kernelLaunches, 0U);
 }

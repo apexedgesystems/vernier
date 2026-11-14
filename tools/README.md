@@ -201,6 +201,7 @@ bench run MyComponent --taskset 2-9 --profile perf
 bench run MyComponent --csv results.csv --analyze
 bench run MyComponent --profile massif                    # auto-wraps with valgrind
 bench run MyComponent --profile heaptrack                 # auto-wraps with heaptrack
+bench run MyComponent --profile jemalloc                  # preloads jemalloc, checks its dump
 ```
 
 **Options:**
@@ -212,6 +213,7 @@ bench run MyComponent --profile heaptrack                 # auto-wraps with heap
 | `--taskset CPUS`           | Pin to specific CPU cores                            | --           |
 | `--profile MODE`           | Enable profiling (any registered backend; see below) | --           |
 | `--profile-args ARGS`      | The profile's mode (see below); may start with `-`   | --           |
+| `--profile-frequency HZ`   | gperf's CPU sampling rate, 1 to 4000 (see below)     | --           |
 | `--profile-output-dir DIR` | Wrap-externally backends' artifact root              | `bench-out/` |
 | `--profile-analyze`        | The profile's analysis (callgrind: see below)        | --           |
 | `--analyze`                | Run summary after execution                          | --           |
@@ -233,7 +235,7 @@ anything starts:
 | `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
 | `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
 
-`callgrind`, `heaptrack` and `ncu` take no mode. A kernel replay
+`callgrind`, `heaptrack`, `jemalloc` and `ncu` take no mode. A kernel replay
 (`--profile-args replay`) is refused: its metrics are the benchmark's own, so
 run the benchmark directly, and it prints the `ncu` command that replays its
 kernels. In-process backends
@@ -241,12 +243,23 @@ kernels. In-process backends
 reads `--profile-args` itself, and the C++ harness manages its own per-test
 artifact subdirs.
 
+With `--profile gperf`, `--profile-frequency HZ` starts the binary with
+`CPUPROFILE_FREQUENCY=HZ`, the variable gperftools reads its sampling rate
+from only as the process starts, and passes the binary
+`--profile-frequency HZ`, which checks that each profile it writes records
+that rate's period; the `Running:` line shows the variable. Nothing else is
+added: no wrap, no folder. The rate is refused before anything starts
+when it is not a whole number from 1 to 4000, or when no profiler, or another
+one, is requested. Without the flag `bench run` sets nothing, and a
+`CPUPROFILE_FREQUENCY` it inherited reaches the binary as it is.
+
 Arguments after `--` reach the binary as they are, except the request's own
-fields: `--profile`, `--profile-args` and `--profile-output-dir` (or the
-binary's `--artifact-root`) given there are the request `bench run` routes, as
-if given to it, and reach the binary once. A field given twice with
-different values, to `bench run` and after `--`, is refused before anything
-starts.
+fields: `--profile`, `--profile-args`, `--profile-frequency` and
+`--profile-output-dir` (or the binary's `--artifact-root`) given there are the
+request `bench run` routes, as if given to it, and reach the binary once. A
+field given twice with different values, to `bench run` and after `--`, is
+refused before anything starts, and so is `--profile-frequency=HZ` after
+`--`, which the binary does not read.
 
 **A wrapped run's output.** Before it starts the benchmark, `bench run`
 creates the wrap's folder (a folder it cannot create stops the run before
@@ -280,6 +293,31 @@ still running when the program exits is ended, and `bench run` says so, while
 the program's own exit status decides the analysis; SIGINT, SIGTERM or SIGHUP
 sent to `bench run` meanwhile ends the group, then `bench run` itself (a
 signal `bench run` was started with ignored stays ignored).
+
+**jemalloc's wrap.** jemalloc has no program to start the benchmark under:
+`bench run` starts the benchmark itself with `LD_PRELOAD=libjemalloc.so.2`
+and `MALLOC_CONF=prof:true,prof_final:true,prof_accum:true,prof_prefix:<folder>/jeprof`,
+so jemalloc samples allocations with their stacks and writes, when the
+process exits, a dump holding the bytes allocated over the whole run. The
+loader resolves `libjemalloc.so.2` through `LD_LIBRARY_PATH` first, which is
+how a jemalloc built with profiling outside the system's folders is selected.
+Before anything starts, `bench run` refuses a library the loader cannot
+preload (quoting the loader) and a folder holding `,`, which `MALLOC_CONF`
+cannot carry; whether the library profiles is the benchmark's to decide, and
+a run whose jemalloc cannot exits with status 4. After the benchmark exits 0,
+only the dump named after its own process, `jeprof.<pid>.<n>.f.heap`, counts:
+it must be a heap profile that maps the benchmark, with its totals line
+(`t*:`). The run prints
+`[bench] jemalloc wrote <dump> (<n> bytes) when the benchmark exited` (a run
+that sampled nothing is a valid run) and the `jeprof --text --alloc_space`
+command that reads it, and names any other process's dump in the folder as
+not this run's. It prints no number from the totals line: jemalloc writes it
+in an encoding of its own for `jeprof`, not as counts of the samples taken,
+and `jeprof` estimates the bytes from each stack's own record. Otherwise it
+fails with
+`completion: jemalloc wrote no exit dump of the benchmark ...`, or says what
+is wrong with the dump. Without `jeprof` on `PATH` it says that only reading
+the dump needs it.
 
 **compute-sanitizer's verdict.** The route passes `--error-exitcode 5`: the
 tool ends with status 5 when it reports errors, whatever the benchmark itself
@@ -331,9 +369,10 @@ and prints one `[require]` line per backend: on stderr when `--json` is also
 given, so that stdout stays one document, and on stdout otherwise. A binary
 whose doctor prints no valid document is an error (exit 1).
 
-`--profile`, `--profile-args`, `--profile-analyze` and the arguments after
-`--` make the request `bench run` would make of them, and are passed to the
-binary as `bench run` passes them; the doctor adds a row for that request.
+`--profile`, `--profile-args`, `--profile-frequency`, `--profile-analyze` and
+the arguments after `--` make the request `bench run` would make of them, and
+are passed to the binary as `bench run` passes them, with the
+`CPUPROFILE_FREQUENCY` it would set; the doctor adds a row for that request.
 `--require` judges the requested backend by that row and every other backend
 by its default mode's row, so a requirement on `massif` with
 `--profile-args pages` is met only when that mode is ready. The row must
@@ -530,7 +569,7 @@ run started without it fails with the command that would start it.
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, lock order)  |
 | `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)       |
 | `heaptrack`         | CPU   | heaptrack heap profiler (~1.5x)                   |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)       |
+| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded)     |
 | `nsight`            | GPU   | Nsight Systems / Compute (auto-extracts stats)    |
 | `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)       |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck/race/init) |

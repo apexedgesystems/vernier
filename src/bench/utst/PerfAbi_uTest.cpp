@@ -23,7 +23,9 @@
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
+#include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/ProfilerJemalloc.hpp"
 #include "src/bench/inc/ProfilerRAPL.hpp"
 
 #include <gtest/gtest.h>
@@ -38,10 +40,12 @@
 using vernier::bench::BENCH_ABI_MISMATCH_EXIT_CODE;
 using vernier::bench::BENCH_ABI_VERSION;
 using vernier::bench::checkBenchAbi;
+using vernier::bench::JemallocProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
 using vernier::bench::RAPLProfiler;
 using vernier::bench::Stats;
+using vernier::bench::UnifiedMemoryProfile;
 using vernier::bench::detail::AbiField;
 using vernier::bench::detail::abiMismatchMessage;
 
@@ -90,12 +94,15 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 
 // The tables and bindings below describe this version and no other. Version 3
 // changed Profiler's virtual functions (AbiProfilerInterface.cmake holds that
-// change). Version 4 changed RAPLProfiler's members and is the first version
-// to stop a benchmark built before OffCpuProfiler's outcome member, which
-// reached the headers under version 3. No table here describes those
+// change) and version 4 the members of JemallocProfiler and OffCpuProfiler,
+// none a member of these structs, whose layout is version 2's.
+// JemallocProfiler's size is pinned with theirs.
+// Version 5 appended two members to UnifiedMemoryProfile, which GpuStats
+// carries in the results libbench_cuda hands back (pinned below); PerfConfig,
+// Stats and PerfGpuConfig keep version 2's layout.
+// Version 6 changed RAPLProfiler's members. No table here describes those
 // profilers' members; RAPLProfiler's size is pinned with the structs' sizes.
-// The layout of these structs is version 2's.
-static_assert(BENCH_ABI_VERSION == 4,
+static_assert(BENCH_ABI_VERSION == 6,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 
@@ -164,11 +171,18 @@ TEST(PerfConfigLayoutTest, NewMembersAreAppended) {
 }
 
 #if defined(__GLIBCXX__) && defined(__LP64__)
-/** @test On 64-bit libstdc++ the shared structs and RAPLProfiler have this version's sizes */
+/** @test On 64-bit libstdc++ the shared structs, JemallocProfiler and RAPLProfiler have this
+ * version's sizes */
 TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   EXPECT_EQ(sizeof(PerfConfig), 240U);
   EXPECT_EQ(sizeof(Stats), 80U);
   EXPECT_EQ(sizeof(PerfGpuConfig), 40U);
+  EXPECT_EQ(sizeof(UnifiedMemoryProfile), 56U);
+  // A benchmark can construct a JemallocProfiler itself: it sizes the object
+  // from its own header and libbench's constructor builds it there, so its
+  // members are part of this version's layout. A change that moves the size
+  // fails here: raise BENCH_ABI_VERSION, then pin the new size.
+  EXPECT_EQ(sizeof(JemallocProfiler), 56U);
   // A benchmark can construct a RAPLProfiler itself: it sizes the object from
   // its own header, the library's constructor builds it there, and the
   // header's inline destructor takes it apart, so its members belong to this
@@ -258,6 +272,37 @@ TEST(PerfGpuConfigLayoutTest, MembersStayInOrder) {
       VERNIER_PINNED_MEMBER(PerfGpuConfig, useHighPriorityStream, bool),
       VERNIER_PINNED_MEMBER(PerfGpuConfig, minSpeedupVsCpu, double),
       VERNIER_PINNED_MEMBER(PerfGpuConfig, maxTransferOverhead, double),
+  };
+  expectContiguousFromZero(PINNED);
+}
+
+/* ----------------------------- UnifiedMemoryProfile Layout Tests ----------------------------- */
+
+/** @test UnifiedMemoryProfile has exactly the members of this ABI version, in this order */
+TEST(UnifiedMemoryProfileLayoutTest, HasExactlyTheMembersOfThisAbiVersion) {
+  const UnifiedMemoryProfile UM;
+  const auto& [pageFaults, h2dMigrations, d2hMigrations, migrationTimeUs, thrashingEvents, h2dBytes,
+               d2hBytes] = UM;
+  EXPECT_EQ(static_cast<const void*>(&pageFaults), &UM.pageFaults);
+  EXPECT_EQ(static_cast<const void*>(&h2dMigrations), &UM.h2dMigrations);
+  EXPECT_EQ(static_cast<const void*>(&d2hMigrations), &UM.d2hMigrations);
+  EXPECT_EQ(static_cast<const void*>(&migrationTimeUs), &UM.migrationTimeUs);
+  EXPECT_EQ(static_cast<const void*>(&thrashingEvents), &UM.thrashingEvents);
+  EXPECT_EQ(static_cast<const void*>(&h2dBytes), &UM.h2dBytes);
+  EXPECT_EQ(static_cast<const void*>(&d2hBytes), &UM.d2hBytes);
+}
+
+/** @test UnifiedMemoryProfile members keep their order and types; version 5's byte counts are
+ * appended */
+TEST(UnifiedMemoryProfileLayoutTest, MembersStayInOrder) {
+  const Member PINNED[] = {
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, pageFaults, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, h2dMigrations, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, d2hMigrations, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, migrationTimeUs, double),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, thrashingEvents, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, h2dBytes, size_t),
+      VERNIER_PINNED_MEMBER(UnifiedMemoryProfile, d2hBytes, size_t),
   };
   expectContiguousFromZero(PINNED);
 }

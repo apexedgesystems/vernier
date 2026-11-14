@@ -152,6 +152,13 @@ enum Command {
         #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 
+        /// gperf's CPU sampling rate, a whole number of Hz from 1 to 4000: the
+        /// binary is started with CPUPROFILE_FREQUENCY set to it, which
+        /// gperftools reads only as the process starts, and is passed
+        /// --profile-frequency; refused with any other profile
+        #[arg(long, allow_hyphen_values = true)]
+        profile_frequency: Option<String>,
+
         /// Per-test profiler watchdog timeout in seconds, passed to the binary
         /// as --profile-test-timeout: 0 turns the watchdog off; omitted, the
         /// binary uses 300 under --profile
@@ -229,6 +236,11 @@ enum Command {
         /// The request's mode, passed to the binary as --profile-args
         #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
+        /// gperf's CPU sampling rate, as bench run applies it: the binary
+        /// starts with CPUPROFILE_FREQUENCY set and is passed
+        /// --profile-frequency
+        #[arg(long, allow_hyphen_values = true)]
+        profile_frequency: Option<String>,
         /// The request's analysis, passed to the binary as --profile-analyze
         #[arg(long)]
         profile_analyze: bool,
@@ -468,6 +480,7 @@ fn run(args: Args) -> Result<(), Error> {
             repeats,
             profile,
             profile_args,
+            profile_frequency,
             profile_test_timeout,
             profile_output_dir,
             taskset,
@@ -493,6 +506,7 @@ fn run(args: Args) -> Result<(), Error> {
                 repeats: repeats.or(file_cfg.repeats),
                 profile,
                 profile_args,
+                profile_frequency,
                 profile_test_timeout,
                 profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
                 profile_analyze,
@@ -601,6 +615,7 @@ fn run(args: Args) -> Result<(), Error> {
             require,
             profile,
             profile_args,
+            profile_frequency,
             profile_analyze,
             extra_args,
         } => {
@@ -608,6 +623,7 @@ fn run(args: Args) -> Result<(), Error> {
                 binary: binary.clone(),
                 profile,
                 profile_args,
+                profile_frequency,
                 profile_analyze,
                 extra_args,
                 ..Default::default()

@@ -551,10 +551,18 @@ without it fails with the command that would start it.
 | `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
 | `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
 | `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc prof sampling                           | libjemalloc on PATH (LD_PRELOAD)                                       | ~5-10%   |
+| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                | jemalloc built with `--enable-prof`, preloaded                         | 1.0-1.7x |
 | `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
 | `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
 | `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
+
+jemalloc's overhead is measured in the
+[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs):
+on the Raspberry Pi 4 rig, a Release build of the `join` example timed under
+one jemalloc build with profiling off and with `bench run`'s options on,
+1.01x for `joinV1`, which allocates 7.5 KB per call, and 1.73x for `joinV0`,
+which allocates 11.8 MB per call. It grows with the bytes allocated per
+second.
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
@@ -868,7 +876,7 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 --profile TOOL         # Profiler: perf|gperf|bpftrace|rapl|callgrind|massif|memcheck|helgrind|offcpu|heaptrack|jemalloc|nsight (or nsys)|ncu|compute-sanitizer|rocprof
 --profile-args ARGS    # Profiler-specific arguments
 --artifact-root DIR    # Output directory (default: .)
---profile-frequency N  # Rate asked of gperf (default: 10000); set too late to take effect, see API_REFERENCE.md
+--profile-frequency N  # gperf CPU sampling rate, 1 to 4000 Hz (default: gperftools' 100); bench run applies it, see API_REFERENCE.md
 --profile-analyze      # Run the profile's analysis (callgrind: bench run, after valgrind exits)
 --bpf LIST             # BPF script names/paths (comma-separated): fsync_latency,write_latency
 --bpf-scripts DIR      # Directory --bpf names are looked up in (sets PERF_BPF_SCRIPTS)
@@ -879,8 +887,9 @@ std::printf("Running with %d cycles\n", cfg.cycles);
 ```bash
 --gpu-device N      # CUDA device ID (default: 0)
 --gpu-warmup N      # GPU warmup iterations (default: 10)
---gpu-memory MODE   # Memory strategy: explicit|unified|pinned|mapped
+--gpu-memory MODE   # Strategy for the tests that read it: explicit|unified|pinned|mapped; others exit 2
 --min-speedup F     # Minimum expected speedup vs CPU
+--capture-um        # Unified-memory counters from CUPTI (where it records them)
 ```
 
 **Example combinations:**
@@ -964,30 +973,60 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU Memory Strategy Selection
 
-Control memory management strategy via command-line:
+`--gpu-memory explicit|unified|pinned|mapped` selects a memory strategy for
+the tests that allocate by one; any other value stops the run with status 2.
+The harness does not read it: it allocates no test's memory and copies only
+what a test declares (`withHostToDevice()`, `withDeviceToHost()`). Nor does
+the flag ask for unified-memory counters; `--capture-um` does (see the GPU
+guide's [Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters)).
 
-```bash
-# Explicit malloc/memcpy (default)
-./test --gpu-memory explicit --csv results.csv
+The test reads the strategy, not the harness.
+`GpuMemoryStrategies.SelectedStrategy`
+([`GpuMemoryStrategies_pTest.cu`](../ptst/gpu/GpuMemoryStrategies_pTest.cu))
+reads `perf.gpuConfig().memStrategy` (`explicit` without the flag) and
+allocates its input and output, 64K floats each, with a helper of its own:
 
-# Unified memory (automatic migration)
-./test --gpu-memory unified --csv results.csv
+| `--gpu-memory`       | The host's buffers  | The kernel's buffers     | Copies declared | Each repeat times                                        |
+| -------------------- | ------------------- | ------------------------ | --------------- | -------------------------------------------------------- |
+| `explicit` (default) | pageable            | device memory            | in and out      | the copy in, the launches, the copy out                  |
+| `pinned`             | page-locked         | device memory            | in and out      | the same, from and to page-locked memory                 |
+| `unified`            | managed             | the same managed buffers | none            | the launches; the first moves the input to the GPU       |
+| `mapped`             | page-locked, mapped | the same host buffers    | none            | the launches, each reading and writing the host's memory |
 
-# Pinned host memory (faster transfers)
-./test --gpu-memory pinned --csv results.csv
+```cpp
+const auto STRATEGY = perf.gpuConfig().memStrategy; // the test reads it
+StrategyBuffer in(STRATEGY, N), out(STRATEGY, N);   // and allocates by it
 
-# Mapped memory (zero-copy)
-./test --gpu-memory mapped --csv results.csv
+ub::CudaKernelBuilder kernel = perf.cudaKernel(LAUNCH);
+kernel.withLaunchConfig(GRID, BLOCK);
+if (in.needsCopy()) { // explicit and pinned: the kernel's buffers are device memory
+  kernel.withHostToDevice(in.host(), in.kernel(), BYTES)
+      .withDeviceToHost(out.kernel(), out.host(), BYTES);
+}
+const ub::PerfGpuResult RESULT = kernel.measure();
 ```
 
-**Strategy comparison:**
+Run it once per strategy, each into a CSV of its own; the test prints the
+strategy it allocated by:
 
-| Strategy   | Transfer Speed         | Use When                      |
-| ---------- | ---------------------- | ----------------------------- |
-| `explicit` | Fast (PCIe bandwidth)  | Default, full control         |
-| `unified`  | Variable (page faults) | Large datasets, ease of use   |
-| `pinned`   | Fastest                | Frequent H2D/D2H transfers    |
-| `mapped`   | Slowest (no copy)      | Infrequent access, small data |
+```bash
+./BenchmarkGPU_PTEST --gtest_filter=GpuMemoryStrategies.SelectedStrategy --csv explicit.csv
+./BenchmarkGPU_PTEST --gtest_filter=GpuMemoryStrategies.SelectedStrategy --gpu-memory pinned --csv pinned.csv
+./BenchmarkGPU_PTEST --gtest_filter=GpuMemoryStrategies.SelectedStrategy --gpu-memory unified --csv unified.csv
+./BenchmarkGPU_PTEST --gtest_filter=GpuMemoryStrategies.SelectedStrategy --gpu-memory mapped --csv mapped.csv
+```
+
+```text
+[GpuMemoryStrategies.SelectedStrategy] memory strategy pinned: page-locked host buffers, copied to and from device buffers
+```
+
+On an RTX 5000 Ada laptop GPU, at the default cycles and repeats, the
+pinned row's copies took 94 to 103 us against 146 to 178 us for explicit,
+at the same 4.1 to 4.3 us per launch; the unified row had no copies and the
+same launch time, the input's one move to the GPU diluted into the median;
+and the mapped row's launches took 41 to 42 us, about ten times the others',
+each reaching the host's memory over PCIe. The sample's four other cases
+each measure one strategy, whatever the flag says.
 
 ### Multi-GPU Parameterized Tests
 
@@ -1089,13 +1128,20 @@ linked at build time; no `--profile` flag required. See
 
 #### Unified Memory Columns
 
-| Column              | Type   | Description               | Present When   |
-| ------------------- | ------ | ------------------------- | -------------- |
-| `umPageFaults`      | int64  | GPU page faults           | Unified memory |
-| `umH2DMigrations`   | int64  | Host->device migrations   | Unified memory |
-| `umD2HMigrations`   | int64  | Device->host migrations   | Unified memory |
-| `umMigrationTimeUs` | double | Total migration overhead  | Unified memory |
-| `umThrashing`       | bool   | Memory thrashing detected | Unified memory |
+| Column              | Type   | Description                                | Present When   |
+| ------------------- | ------ | ------------------------------------------ | -------------- |
+| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults | `--capture-um` |
+| `umH2DMigrations`   | int64  | Host->device transfers of managed memory   | `--capture-um` |
+| `umD2HMigrations`   | int64  | Device->host transfers of managed memory   | `--capture-um` |
+| `umMigrationTimeUs` | double | The transfers' durations, summed (us)      | `--capture-um` |
+| `umThrashing`       | bool   | CUPTI recorded thrashing in the window     | `--capture-um` |
+
+Under `--capture-um` each row carries CUPTI's unified-memory counters over its
+measurement's window, zeros when nothing migrated, on a GPU whose CUPTI records
+them. Where CUPTI cannot (the Jetson AGX Thor, an Nsight session,
+`VERNIER_DISABLE_CUPTI=1`), the cells stay empty and a run whose tests pass
+exits with status 4. See
+[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
 
 ### GPU Profiler Integration
 

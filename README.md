@@ -87,9 +87,10 @@ side, so remove the directory when switching between them.
   `--profile`, so such a loop that hangs while profiled fails loudly (exit
   status 2) instead of hanging the run; `contentionRun()` and GPU measurements
   are not covered
-- CUDA GPU benchmarking with multi-GPU and Unified Memory support, plus
-  in-process CUPTI kernel metrics (register / smem / launch counts) without
-  spawning ncu
+- CUDA GPU benchmarking with multi-GPU support, plus in-process CUPTI kernel
+  metrics (register / smem / launch counts) without spawning ncu, and, under
+  `--capture-um`, CUPTI's unified-memory migration and page-fault counters on
+  GPUs whose CUPTI records them
 - NVTX timeline annotation API auto-injected into Nsight Systems runs
 - Companion `vernier::monitor` library for lightweight runtime
   instrumentation in production runs (lock-free queue, env-var-driven
@@ -240,7 +241,7 @@ request).
 | `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)   |
 | `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)   |
 | `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
-| `jemalloc`          | CPU   | jemalloc prof sampling (~5-10%, LD_PRELOAD)   |
+| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded) |
 | `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)              |
 | `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)   |
 | `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
@@ -295,7 +296,8 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 - valgrind (`callgrind` / `massif` / `memcheck` backends)
 - bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
 - heaptrack (`heaptrack` backend -- low-overhead heap profiler)
-- jemalloc with `prof` enabled (`jemalloc` backend; LD_PRELOAD)
+- a jemalloc built with profiling (`--enable-prof`), for the `jemalloc` backend,
+  which preloads it; `jeprof` reads its dumps
 - ROCm + rocprof (AMD GPU profiling via the `rocprof` backend)
 - Rust toolchain (for `bench` CLI tool)
 - Python 3.10+ with Poetry (for the `bench-plot` CLI tool)

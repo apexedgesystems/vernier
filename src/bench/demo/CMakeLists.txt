@@ -128,7 +128,7 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demos Built on a Shared Example (16)
+# Demos Built on a Shared Example (17)
 # ------------------------------------------------------------------------------
 # After both demo lists, so every demo target exists. The GPU demos and their
 # example are only built where the GPU demos are.
@@ -180,6 +180,10 @@ target_link_libraries(
 )
 target_link_libraries(
   BenchDemo_15_HeaptrackProfiler
+  PRIVATE demo_example_join
+)
+target_link_libraries(
+  BenchDemo_16_JemallocProfiler
   PRIVATE demo_example_join
 )
 
@@ -257,7 +261,7 @@ if (TARGET BenchDemo_Gpu_02_NsightProfiler)
 endif ()
 
 # ------------------------------------------------------------------------------
-# Demo Effect Checks Run by CTest (8)
+# Demo Effect Checks Run by CTest (9)
 # ------------------------------------------------------------------------------
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
@@ -277,7 +281,6 @@ vernier_add_gtest(
   cpu/utst/12_MemcheckProfiler_uTest.cpp
   LINK
   bench
-  demo_helpers
   demo_example_join
   LABELS
   demo
@@ -302,7 +305,6 @@ vernier_add_gtest(
   cpu/utst/14_HelgrindProfiler_uTest.cpp
   LINK
   bench
-  demo_helpers
   LABELS
   demo
   helgrind
@@ -317,6 +319,33 @@ foreach (_helgrind_check Helgrind.FindsTheRace Helgrind.LockedTotalReportsNothin
   string(REPLACE "." "\\." _helgrind_pattern "${_helgrind_check}")
   set_tests_properties(
     ${_helgrind_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_helgrind_pattern}"
+  )
+endforeach ()
+
+# Demo 16's check runs the demo as bench run's jemalloc wrap does and reads its
+# exit dump with jeprof; it takes the wrap's options from libbench
+# (jemallocWrapEnvironment), so it links bench.
+vernier_add_gtest(
+  TARGET
+  TestDemoJemalloc
+  SOURCES
+  cpu/utst/16_JemallocProfiler_uTest.cpp
+  LINK
+  bench
+  LABELS
+  demo
+  jemalloc
+)
+target_compile_definitions(
+  TestDemoJemalloc PRIVATE VERNIER_DEMO_16_BINARY="$<TARGET_FILE:BenchDemo_16_JemallocProfiler>"
+)
+add_dependencies(TestDemoJemalloc BenchDemo_16_JemallocProfiler)
+foreach (_jemalloc_check Jemalloc.JoinV0BytesAreUnderJoinV0
+                         Jemalloc.JoinV1AllocatesAFractionOfJoinV0
+)
+  string(REPLACE "." "\\." _jemalloc_pattern "${_jemalloc_check}")
+  set_tests_properties(
+    ${_jemalloc_check} PROPERTIES SKIP_REGULAR_EXPRESSION "\\[  SKIPPED \\] ${_jemalloc_pattern}"
   )
 endforeach ()
 
@@ -393,7 +422,6 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp
     LINK
     bench
-    demo_helpers
     CUDA::cudart
     LABELS
     demo
@@ -550,7 +578,6 @@ vernier_add_gtest(
   helpers/utst/SkipUnlessUnderComputeSanitizer_uTest.cpp
   LINK
   bench
-  demo_helpers
   LABELS
   demo
 )
