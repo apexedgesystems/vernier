@@ -10,7 +10,9 @@
 //! on what this test process inherited. Every wait is for something a
 //! process wrote (a process id, a log line, a line of bench's own), bounded
 //! only to fail a stuck run; the stand-in and the commands wait for files the
-//! test creates, never for a delay.
+//! test creates, never for a delay. A run's cleanup signals only bench's
+//! process group, while bench, its leader, is not yet reaped, and reaps bench
+//! after; no process is signalled by a number read from a file.
 
 use std::fs;
 use std::io::{ErrorKind, PipeReader, PipeWriter, Read, Write};
@@ -27,9 +29,12 @@ use vernier_rust_tools::bench::gpu_lock::{self, LockConfig, Tool};
 /* ----------------------------- Fixtures ----------------------------- */
 
 /// nvidia-smi as gpu-lock calls it. Each rig links it into its own folder as
-/// `nvidia-smi` and writes `stand-in.env` beside the link: where to log, and
-/// whether to hold the lock or the reset until a file exists (`lock_gate`,
-/// `reset_gate`), to hang in a call (`hang`) or to refuse one (`fail`).
+/// `nvidia-smi` and writes `stand-in.env` beside the link: the rig's folder,
+/// where to log, and whether to hold the lock or the reset until a file
+/// exists (`lock_gate`, `reset_gate`), to hang in a call (`hang`) or to
+/// refuse one (`fail`). A held call ends, refused, once the rig's folder is
+/// gone: it runs in a process group of its own, which a run's cleanup does
+/// not signal, so a test that fails while it is held leaves nothing behind.
 const STAND_IN: &str = r#"#!/bin/sh
 . "$(dirname "$0")/stand-in.env"
 case " $* " in
@@ -47,7 +52,10 @@ gate=""
 [ "$call" = reset ] && gate=$reset_gate
 if [ -n "$gate" ]; then
   echo "$call waiting" >> "$log"
-  while [ ! -e "$gate" ]; do /bin/sleep 0.01; done
+  while [ ! -e "$gate" ]; do
+    [ -d "$rig" ] || exit 1
+    /bin/sleep 0.01
+  done
 fi
 if [ "$call" = "$hang" ]; then
   echo $$ > "$hang_pid"
@@ -116,7 +124,8 @@ impl Rig {
         symlink(target, dir.path().join("nvidia-smi")).expect("link the stand-in");
         let rig = Self { dir };
         let settings = format!(
-            "log='{}'\nlock_gate=\nreset_gate=\nhang=\nhang_pid='{}'\nfail=\n",
+            "rig='{}'\nlog='{}'\nlock_gate=\nreset_gate=\nhang=\nhang_pid='{}'\nfail=\n",
+            rig.dir.path().display(),
             rig.path("nvidia-smi.log").display(),
             rig.path("hang.pid").display()
         );
@@ -203,12 +212,17 @@ enum Parent {
     Ignoring,
 }
 
-/// A started `bench`, the leader of its own process group; its group is
-/// killed if the test ends before bench did.
+/// A started `bench`, the leader of its own process group. Its end is seen
+/// without reaping it (`exited`): bench is reaped only when the run is
+/// dropped, once its whole group has been sent SIGKILL. Until then its
+/// process id, which is also its group's, cannot pass to another process,
+/// so a signal sent to bench or to its group, by a test or by the cleanup,
+/// reaches bench and the processes of its group (the command and what the
+/// command starts) and nothing else. No process is signalled by a number
+/// read from a file.
 struct Run {
     bench: Child,
     status: Option<ExitStatus>,
-    command_pid: PathBuf,
 }
 
 impl Run {
@@ -216,6 +230,19 @@ impl Run {
     /// watched signals as @p parent says; its stderr to bench.stderr, or to
     /// @p stderr.
     fn start(rig: &Rig, args: &[&str], parent: Parent, stderr: Option<Stdio>) -> Self {
+        Self::start_with(rig, args, parent, stderr, None)
+    }
+
+    /// As `start`, with @p held, a pipe's write end, as descriptor 3 of
+    /// bench, inherited by every process bench starts and by what they
+    /// start: the pipe's read end sees its end once all of them have ended.
+    fn start_with(
+        rig: &Rig,
+        args: &[&str],
+        parent: Parent,
+        stderr: Option<Stdio>,
+        held: Option<PipeWriter>,
+    ) -> Self {
         let out = fs::File::create(rig.path("bench.stdout")).expect("bench's stdout");
         let err = match stderr {
             Some(stderr) => stderr,
@@ -240,10 +267,12 @@ impl Run {
             .stdout(out)
             .stderr(err)
             .process_group(0);
+        let held_fd = held.as_ref().map(AsRawFd::as_raw_fd);
         // SAFETY: the closure runs in the child between fork and exec and
-        // calls only sigaction, which is async-signal-safe; a zeroed
-        // sigaction given the default or the ignore handler is a valid value
-        // of the type.
+        // calls only sigaction, fcntl and dup2, which are async-signal-safe;
+        // a zeroed sigaction given the default or the ignore handler is a
+        // valid value of the type; `held_fd` is open in the child, as @p held
+        // is alive until the spawn returns.
         unsafe {
             command.pre_exec(move || {
                 for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
@@ -253,20 +282,72 @@ impl Run {
                         return Err(std::io::Error::last_os_error());
                     }
                 }
+                // Descriptor 3, without close-on-exec, so that it is inherited.
+                let held = match held_fd {
+                    None => 0,
+                    Some(3) => libc::fcntl(3, libc::F_SETFD, 0),
+                    Some(fd) => libc::dup2(fd, 3),
+                };
+                if held < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
                 Ok(())
             });
         }
+        let bench = command.spawn().expect("start bench");
+        // This test's own copy of the held end: from here only bench and
+        // what it starts hold it.
+        drop(held);
         Self {
-            bench: command.spawn().expect("start bench"),
+            bench,
             status: None,
-            command_pid: rig.path("command.pid"),
         }
     }
 
-    /// bench's process id, which is also its group's while it is unreaped.
+    /// bench's process id, which is also its group's: neither can pass to
+    /// another process before the run is dropped, which alone reaps bench.
     fn pid(&self) -> libc::pid_t {
-        assert!(self.status.is_none(), "bench was reaped already");
         libc::pid_t::try_from(self.bench.id()).expect("a process id")
+    }
+
+    /// How bench ended, once it has, seen with waitid(2) and WNOWAIT, which
+    /// leaves it unreaped.
+    fn exited(&mut self) -> Option<ExitStatus> {
+        while self.status.is_none() {
+            // SAFETY: a zeroed siginfo_t is a valid value of the type; waitid
+            // only writes into `info`, owned here, and with WNOWAIT leaves
+            // bench for the drop to reap.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.bench.id(),
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc != 0 {
+                let e = std::io::Error::last_os_error();
+                assert_eq!(e.kind(), ErrorKind::Interrupted, "waitid on bench: {e}");
+                continue;
+            }
+            // SAFETY: waitid filled `info`; with WNOHANG its process id stays
+            // 0 while bench runs, and its status is the exit code or the
+            // signal, as si_code says.
+            let (pid, code, value) = unsafe { (info.si_pid(), info.si_code, info.si_status()) };
+            if pid == 0 {
+                break;
+            }
+            // The wait status ExitStatus is built from: an exit code in the
+            // second byte, a signal in the first (0x80 for a core dump).
+            let raw = match code {
+                libc::CLD_EXITED => (value & 0xff) << 8,
+                libc::CLD_DUMPED => value | 0x80,
+                _ => value,
+            };
+            self.status = Some(ExitStatus::from_raw(raw));
+        }
+        self.status
     }
 
     /// Send @p signal to bench's whole group, as a terminal does.
@@ -284,13 +365,8 @@ impl Run {
 
     /// Wait for bench to end, and return how it ended.
     fn end(&mut self) -> ExitStatus {
-        let mut status = None;
-        wait_until("bench to end", || {
-            status = self.bench.try_wait().expect("wait for bench");
-            status.is_some()
-        });
-        self.status = status;
-        status.expect("bench ended")
+        wait_until("bench to end", || self.exited().is_some());
+        self.status.expect("bench ended")
     }
 
     /// Wait until bench's stderr in @p rig holds @p text @p times; a bench
@@ -300,8 +376,7 @@ impl Run {
             if rig.stderr().matches(text).count() >= times {
                 return true;
             }
-            if let Some(status) = self.bench.try_wait().expect("wait for bench") {
-                self.status = Some(status);
+            if let Some(status) = self.exited() {
                 panic!(
                     "bench ended ({status}) before it said '{text}' {times} time(s):\n{}",
                     rig.stderr()
@@ -313,24 +388,13 @@ impl Run {
 }
 
 impl Drop for Run {
+    /// End what is left of bench's group (bench too, if it still runs, and a
+    /// command that outlived it), then reap bench.
     fn drop(&mut self) {
-        if self.status.is_none() {
-            // SAFETY: killpg only sends a signal, to the group of bench, which
-            // is unreaped, so the group's id is still its own.
-            unsafe { libc::killpg(self.bench.id() as libc::pid_t, libc::SIGKILL) };
-            let _ = self.bench.wait();
-        }
-        // A command that outlived bench, which this test started through it.
-        if let Some(pid) = fs::read_to_string(&self.command_pid)
-            .ok()
-            .and_then(|text| text.trim().parse::<libc::pid_t>().ok())
-        {
-            if still_running(pid as u32) {
-                // SAFETY: kill only sends a signal, to the command this test
-                // started, which still runs.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
-            }
-        }
+        // SAFETY: killpg only sends a signal, to the group bench leads; bench
+        // is reaped only below, so the group's id is still its own.
+        unsafe { libc::killpg(self.pid(), libc::SIGKILL) };
+        let _ = self.bench.wait();
     }
 }
 
@@ -1035,6 +1099,148 @@ fn a_full_stderr_holds_up_nothing_when_the_reset_is_refused() {
         pipe.holds_only_its_filling(),
         "a message got into the full pipe"
     );
+}
+
+/* ----------------------------- Cleanup ----------------------------- */
+
+/// A process this test starts and owns, outside bench's group: its process
+/// id stands for the number a stale command.pid holds once the command it
+/// named was reaped and the number passed to another process. No cleanup of
+/// a run may signal it. Asked with SIGUSR1, it answers by exiting 0; dropped
+/// unasked, it is ended through its own handle.
+struct Sentinel(Child);
+
+impl Sentinel {
+    /// The sentinel, once its answer is set up (it touches @p ready then).
+    fn start(ready: &Path) -> Self {
+        let child = Command::new("/bin/sh")
+            .args([
+                "-c",
+                "trap 'exit 0' USR1; : > \"$0\"; while :; do /bin/sleep 0.01; done",
+            ])
+            .arg(ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start the sentinel");
+        wait_until("the sentinel to be ready", || ready.exists());
+        Self(child)
+    }
+
+    fn pid(&self) -> u32 {
+        self.0.id()
+    }
+
+    /// Whether no one else signalled it: asked with SIGUSR1, it exits 0,
+    /// where a SIGKILL sent to it earlier has ended it already, by SIGKILL,
+    /// which the kernel acts on before any later signal. Either way it ends
+    /// at once, and is reaped here.
+    fn untouched(&mut self) -> bool {
+        let pid = libc::pid_t::try_from(self.0.id()).expect("a process id");
+        // SAFETY: kill only sends a signal, to this test's own child, which
+        // is unreaped (it is reaped only below, once it has ended).
+        unsafe { libc::kill(pid, libc::SIGUSR1) };
+        let mut status = None;
+        wait_until("the sentinel to end", || {
+            status = self.0.try_wait().expect("wait for the sentinel");
+            status.is_some()
+        });
+        status.and_then(|status| status.code()) == Some(0)
+    }
+}
+
+impl Drop for Sentinel {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// @test A run's cleanup ends what bench left in its group, and nothing
+/// else: the command leaves a process in bench's group and exits, bench
+/// resets the clocks and exits 0, and command.pid then names a process this
+/// test owns outside the group, as a stale file does once the command was
+/// reaped and its number reused. Dropping the run ends the process left
+/// behind (no process holds bench's descriptor 3 any more) and leaves the
+/// test's own process running.
+#[test]
+fn cleanup_ends_what_bench_left_in_its_group_and_nothing_else() {
+    let rig = Rig::new();
+    let mut sentinel = Sentinel::start(&rig.path("sentinel.ready"));
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let mut run = Run::start_with(
+        &rig,
+        &wrap(&["/bin/sh", "-c", "/bin/sleep 60 & exit 0"]),
+        Parent::Default,
+        None,
+        Some(holder),
+    );
+    assert_eq!(run.end().code(), Some(0), "{}", rig.stderr());
+    assert_eq!(rig.events(), [LOCK, "lock done", RESET, "reset done"]);
+    fs::write(rig.path("command.pid"), sentinel.pid().to_string()).expect("a stale command.pid");
+    drop(run);
+    assert!(
+        sentinel.untouched(),
+        "the cleanup signalled a process outside bench's group"
+    );
+    read_to_eof(&mut held, "the process bench left in its group to end");
+}
+
+/// @test A run dropped while bench and its command run, as when a test
+/// fails partway: the cleanup ends both, and nothing else, though
+/// command.pid names a process this test owns outside bench's group.
+#[test]
+fn cleanup_after_a_failure_ends_bench_and_its_command_and_nothing_else() {
+    let place = tempfile::tempdir().expect("tempdir");
+    let mut sentinel = Sentinel::start(&place.path().join("sentinel.ready"));
+    let stale = sentinel.pid().to_string();
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let rig = Rig::new();
+        let _run = Run::start_with(
+            &rig,
+            &wrap(&["/bin/sh", "-c", WAITING]),
+            Parent::Default,
+            None,
+            Some(holder),
+        );
+        rig.pid("command.pid");
+        fs::write(rig.path("command.pid"), stale).expect("a stale command.pid");
+        panic!("a test that fails while bench and its command run");
+    }));
+    assert!(failed.is_err());
+    assert!(
+        sentinel.untouched(),
+        "the cleanup signalled a process outside bench's group"
+    );
+    read_to_eof(&mut held, "bench and its command to end");
+}
+
+/// @test A run dropped while nvidia-smi holds the lock, as when a test fails
+/// there: nvidia-smi, in a process group of its own that the cleanup does not
+/// signal, ends by itself once the rig's folder is gone, so nothing bench
+/// started is left.
+#[test]
+fn cleanup_after_a_failure_leaves_no_held_nvidia_smi() {
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let failed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let rig = Rig::new();
+        rig.gate("lock");
+        let _run = Run::start_with(
+            &rig,
+            &wrap(&["/bin/true"]),
+            Parent::Default,
+            None,
+            Some(holder),
+        );
+        wait_until("the lock to wait", || {
+            rig.events().iter().any(|e| e == "lock waiting")
+        });
+        panic!("a test that fails while nvidia-smi holds the lock");
+    }));
+    assert!(failed.is_err());
+    read_to_eof(&mut held, "bench and the held nvidia-smi to end");
 }
 
 /* ----------------------------- Bounds ----------------------------- */
