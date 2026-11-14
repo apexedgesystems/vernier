@@ -17,11 +17,16 @@ release from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`.
 
 **The energy steps were captured on this laptop's Intel Core Ultra 7 165H on
-2026-11-14, as root, without dedicated reference-rig qualification.** What
-transfers to another machine is the ratio between the two versions' energy per
-call, not the joules and watts, which belong to this package, its settings and
-whatever else ran on it. Steps 1 and 2 are captured as an ordinary user: the
-time per call, and what a run without access does.
+2026-11-14, as root, without dedicated reference-rig qualification.** In that
+capture JoinV0's estimated energy per call was 27.2 to 33.5 times JoinV1's
+over five runs, 32.6 times in the run step 3 shows. JoinV1 does less work
+([The Example](#the-example)), so its calls are shorter, and the ratio of the
+estimates is the two versions' time ratio multiplied by the ratio of the
+power the package drew over their windows. One session on one laptop shows
+those ratios, not what another machine gives: measure both versions' time per
+call and power on yours. The joules and watts belong to this package, its
+settings and whatever else ran on it. Steps 1 and 2 are captured as an
+ordinary user: the time per call, and what a run without access does.
 [Validate the Energy Steps](#validate-the-energy-steps) gives the rest of the
 session that captured steps 3 and 4. The page meets the walkthrough contract in
 [the demo README](../README.md#7-reference-rigs-and-the-demo-contract) only
@@ -30,12 +35,12 @@ in part, and says so where it applies.
 ## Overview
 
 A timer says how long a call takes. RAPL says how much energy the processor
-package used while the calls ran, and from that, how much energy a call
-costs. This walkthrough measures the two versions of the `join` example, which
-build the same string 30 times apart in time on this laptop, under Vernier's
-`rapl` backend. Step 1 measures them; step 2 shows what an ordinary user
-gets: a run that refuses, says why, and fails; steps 3 and 4 measure the
-energy with access, and read the report.
+package used while the calls ran, and from that and the median time per call
+Vernier estimates the energy a call costs. This walkthrough measures the two
+versions of the `join` example, which build the same string 30 times apart in
+time on this laptop, under Vernier's `rapl` backend. Step 1 measures them;
+step 2 shows what an ordinary user gets: a run that refuses, says why, and
+fails; steps 3 and 4 measure the energy with access, and read the report.
 
 ## What is RAPL?
 
@@ -163,8 +168,8 @@ RaplProfiler.JoinV1         4.023    2.8%      248.5K  OK
 JoinV0 takes 122.7 us a call and JoinV1 4.0 us, 30 times less, each with a
 spread of a few percent on this busy machine. Each window is about two
 seconds (903 and 24,450 calls a repeat, 20 repeats). That ratio is what the
-energy should follow, unless the package draws very different power for the
-two.
+estimates of energy per call in step 3 should follow, unless the package
+draws very different power for the two.
 
 ## Step 2: Check Access
 
@@ -298,15 +303,20 @@ and `RaplProfiler.JoinV1.rapl/energy.txt` in the working directory. Run with
 repeats and the harness's summary and row for the case, which end before the
 second reading: JoinV0's window is 1.971 seconds of the test's 1985 ms.
 
-JoinV0 cost 4.272 mJ a call and JoinV1 0.131 mJ, 32.6 times less
-(4.272 / 0.131). The time per call fell 31.0 times (110.459 / 3.558); the
-rest is the package's power, 38.67 W over JoinV0's window against 36.73 W
-over JoinV1's, 1.053 times as much (31.0 x 1.053 = 32.6). Both windows drew
-more than the 32.176 and 29.315 W the package drew in the session's two idle
-windows, before its runs and after them
-([Validate the Energy Steps](#validate-the-energy-steps)): energy per call is
-the package's whole draw over the window shared among the calls, not what the
-calls alone added.
+The report's energy per call is an estimate for a call of median duration at
+the window's average package power: that power times the median time per
+call. JoinV0's is 4.272 mJ and JoinV1's 0.131 mJ, 32.6 times less
+(4.272 / 0.131). The median time per call fell 31.0 times
+(110.459 / 3.558); the rest is the package's power, 38.67 W over JoinV0's
+window against 36.73 W over JoinV1's, 1.053 times as much
+(31.0 x 1.053 = 32.6). Both windows drew more than the 32.176 and 29.315 W
+the package drew in the session's two idle windows, before its runs and after
+them ([Validate the Energy Steps](#validate-the-energy-steps)): the estimates
+include that background draw, and neither is what the calls alone added. Nor
+is an estimate an equal share of the window's energy: the calls' mean time
+can differ from their median, and the window also holds work that is not a
+measured call, so the window's energy divided by its calls can give another
+figure, as it does in the session's fourth run.
 
 ## Step 4: Read the Report
 
@@ -352,18 +362,19 @@ The section's numbers follow from one another: 1,248,823 counts of
 61.0352 uJ are 76.222 J; over 1.970944 s that is 38.673 W; and 38.672893 W
 for a median call of 110.459 us is 4.2718 mJ, the report's 4.271751 rounded.
 A window over which the counter did not advance says so in its section. Read
-energy per call against time per call: JoinV1's is a fraction of JoinV0's, by
-about the time ratio unless the package's power differs much between the two,
-and each version's average power says whether it does, as step 3 shows.
+the estimated energy per call against time per call: JoinV1's is a fraction
+of JoinV0's, by about the time ratio unless the package's power differs much
+between the two, and each version's average power says whether it does, as
+step 3 shows.
 
 ## What Should Reproduce
 
-| Reading                         | On this laptop                                                                                         | Elsewhere                                                                                                      |
-| ------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| JoinV0 / JoinV1 time per call   | 30x (122.7 / 4.0 us), step 1                                                                           | same direction; size depends on CPU and allocator                                                              |
-| the refusal without access      | `denied`, exit status 4, no folder (step 2)                                                            | the cause of that machine: denied, missing, unsupported                                                        |
-| JoinV0 / JoinV1 energy per call | 32.6x (4.272 / 0.131 mJ), step 3; 27.2x to 33.5x over five runs                                        | same direction, by about the time ratio where both versions draw similar package power; this is what transfers |
-| joules and watts                | JoinV0 4.272 to 4.979 mJ a call, JoinV1 0.131 to 0.164, at 36.73 to 45.28 W; idle, 32.176 and 29.315 W | depend on the machine, its state and other load on the package                                                 |
+| Reading                                   | On this laptop                                                                                                      | Elsewhere                                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| JoinV0 / JoinV1 time per call             | 30x (122.7 / 4.0 us), step 1                                                                                        | same direction; size depends on CPU and allocator                                                                      |
+| the refusal without access                | `denied`, exit status 4, no folder (step 2)                                                                         | the cause of that machine: denied, missing, unsupported                                                                |
+| JoinV0 / JoinV1 estimated energy per call | 32.6x (4.272 / 0.131 mJ), step 3; 27.2x to 33.5x over five runs                                                     | measure both versions' time and power there: the estimates' ratio is their time ratio times their windows' power ratio |
+| joules and watts                          | JoinV0's estimate 4.272 to 4.979 mJ a call, JoinV1's 0.131 to 0.164, at 36.73 to 45.28 W; idle, 32.176 and 29.315 W | depend on the machine, its state and other load on the package                                                         |
 
 The ranges are the session's five runs of step 3's command, one after
 another ([Validate the Energy Steps](#validate-the-energy-steps)). They
@@ -474,14 +485,19 @@ Energy per op:       0.139 mJ/call (average power x median call time)
 
 The time per call barely moved: 110.372 to 111.254 us for JoinV0, 3.558 to
 3.614 us for JoinV1. The package's power moved more, from 36.73 to 45.28 W,
-and the energy per call with it: 4.272 to 4.979 mJ for JoinV0, 0.131 to 0.164
-mJ for JoinV1. JoinV0 over JoinV1, run by run, is 32.6, 29.6, 27.2, 33.0 and
-33.5 times (4.272 / 0.131, 4.298 / 0.145, 4.453 / 0.164, 4.979 / 0.151 and
-4.658 / 0.139). Where the ratio fell furthest, in the third run, JoinV1's
-window drew 45.28 W against JoinV0's 40.02 W while their times kept a ratio
-of 30.8 (111.254 / 3.614): the package's power moved it, not the version's
-work. The fourth run's JoinV0 window was unstable (CV 15.2%) and drew the
-most, 45.04 W, at the same median time as the others.
+and the estimates of energy per call with it, each the power times a median
+that barely moved: 4.272 to 4.979 mJ for JoinV0, 0.131 to 0.164 mJ for
+JoinV1. JoinV0's estimate over JoinV1's, run by run, is 32.6, 29.6, 27.2,
+33.0 and 33.5 times (4.272 / 0.131, 4.298 / 0.145, 4.453 / 0.164,
+4.979 / 0.151 and 4.658 / 0.139). Where the ratio fell furthest, in the third
+run, JoinV1's window drew 45.28 W against JoinV0's 40.02 W while their times
+kept a ratio of 30.8 (111.254 / 3.614): the package's power moved it, not the
+version's work. The fourth run's JoinV0 window was unstable (CV 15.2%) and
+drew the most, 45.04 W, at the same median time as the others. From its
+report and CSV, which this page does not show, the window's energy divided by
+its calls is 94.276 J over 18,000 calls (900 a repeat, 20 repeats), 5.238 mJ
+a call: 5% more than the estimate's 4.979 mJ, as its mean call, 116.292 us,
+was 5% longer than its median.
 
 The same case over two window lengths, JoinV0 alone with 50 ms and 200 ms a
 repeat (the progress line left out):
@@ -504,11 +520,11 @@ Duration:            2.069 seconds
 
 The energy follows the window: 83.631 J against 18.182 J is 4.6 times as
 much, for 2.069 s against 0.495 s, 4.18 times as long, the rest the power
-(40.41 W against 36.76 W, 1.099 times as much). The energy per call, 4.481
-and 4.074 mJ, differs by the same 10% as the power.
+(40.41 W against 36.76 W, 1.099 times as much). The estimated energy per
+call, 4.481 and 4.074 mJ, differs by the same 10% as the power.
 
-`TestDemoRapl`, run as root, passed its eight tests; its effect test measured
-31.4x:
+`TestDemoRapl`, run as root, passed its eight tests; its effect test put
+JoinV0's estimate at 31.4 times JoinV1's:
 
 ```
 [Rapl.EnergyPerCall]  JoinV0 4.279301 mJ/call, JoinV1 0.136410 mJ/call (31.4x)
@@ -517,8 +533,8 @@ and 4.074 mJ, differs by the same 10% as the power.
 ```
 
 With the demo's JoinV1 changed to call `joinV0` and the demo rebuilt, the
-effect test failed its assertion that JoinV1 costs at most a third of
-JoinV0; with the source restored and the demo rebuilt, it passed again:
+effect test failed its assertion that JoinV1's estimate is at most a third of
+JoinV0's; with the source restored and the demo rebuilt, it passed again:
 
 ```
 [Rapl.EnergyPerCall]  JoinV0 5.048026 mJ/call, JoinV1 5.517446 mJ/call (0.9x)
@@ -584,9 +600,9 @@ code.
   step 2 shows (exit status 4, the notice once, no folder), then skips
   quoting the notice; where RAPL can, it fails unless each case's report
   holds one window over which the counter advanced, its numbers agree with
-  one another, and JoinV1's energy per call is at most a third of JoinV0's.
-  `RaplReportTest` holds its reading of notices and reports to text from
-  real runs and from the backend.
+  one another, and JoinV1's estimated energy per call is at most a third of
+  JoinV0's. `RaplReportTest` holds its reading of notices and reports to text
+  from real runs and from the backend.
 - Vernier's own tests hold the backend: `RaplCheckTest` and
   `RaplAccessRefusalTest` its decision, cause by cause, on files that stand
   in for `/proc/cpuinfo` and the device; `RaplRunTest` the refusal through
