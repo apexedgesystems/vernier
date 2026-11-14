@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <cstdio>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -25,9 +26,11 @@
 #include <thread>
 #include <vector>
 
+using vernier::monitor::AlertLevel;
 using vernier::monitor::Monitor;
 using vernier::monitor::MonitorConfig;
 using vernier::monitor::MonitorTag;
+using vernier::monitor::nowNs;
 using vernier::monitor::ScopeGuard;
 using vernier::monitor::SINK_CONSOLE;
 using vernier::monitor::SINK_FILE;
@@ -55,6 +58,34 @@ std::size_t countLines(const std::filesystem::path& path) {
 std::filesystem::path sinkPath(const char* stem) {
   return std::filesystem::temp_directory_path() /
          ("vernier_mon_" + std::string(stem) + "_" + std::to_string(::getpid()) + ".log");
+}
+
+/// The lines of @p text, each with its runs of spaces collapsed to one and trimmed.
+std::vector<std::string> collapsedLines(const std::string& text) {
+  std::vector<std::string> lines;
+  std::string line;
+  bool space = false;
+  for (const char C : text + "\n") {
+    if (C == '\n') {
+      lines.push_back(line);
+      line.clear();
+      space = false;
+    } else if (C == ' ') {
+      space = !line.empty();
+    } else {
+      if (space) {
+        line += ' ';
+        space = false;
+      }
+      line += C;
+    }
+  }
+  return lines;
+}
+
+/// True if @p lines holds @p line.
+bool hasLine(const std::vector<std::string>& lines, const std::string& line) {
+  return std::find(lines.begin(), lines.end(), line) != lines.end();
 }
 
 /// A sink file's records, each split at its tabs (none if the file does not exist).
@@ -349,31 +380,80 @@ TEST(MonitorTest, RuntimeToggle) {
   EXPECT_EQ(IT->second.count, 2u); // Skipped the disabled one
 }
 
-/** @test File sink writes output */
+/**
+ * @test Writes each kind's record in the documented columns, a breach with a seventh
+ *
+ * timestamp_ns, kind, tag/id, scope, duration_ns, value (MonitorFileSink.hpp).
+ * The scopes start above 2^32 ns, so a timestamp cut to 32 bits shows.
+ */
 TEST(MonitorTest, FileSinkOutput) {
-  const auto TMP_PATH = std::filesystem::temp_directory_path() / "vernier_mon_test.log";
+  const auto TMP_PATH = sinkPath("records");
   std::filesystem::remove(TMP_PATH);
 
   MonitorConfig cfg;
   cfg.sinks = SINK_FILE;
   cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
+  mon.setThreshold("slow", 7, 1000);
+  mon.start();
+
+  constexpr std::uint64_t T0 = 5000000000ULL;
+  const MonitorTag TAG("file", 7);
+  const std::uint64_t BEFORE = nowNs();
+  mon.recordScope("work", TAG, T0, T0 + 2500000);
+  mon.recordScope("slow", TAG, T0 + 10, T0 + 10 + 3000000);
+  mon.gauge("depth", TAG, 42.5);
+  mon.increment("event", TAG, 3.0);
+  const std::uint64_t AFTER = nowNs();
+  mon.stop();
+
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 4u);
+  EXPECT_EQ(RECORDS[0], (std::vector<std::string>{"5000000000", "SCOPE", "file/7", "work",
+                                                  "2500000", "0.000000"}));
+  EXPECT_EQ(RECORDS[1], (std::vector<std::string>{"5000000010", "SCOPE", "file/7", "slow",
+                                                  "3000000", "1000.000000", "THRESHOLD_BREACH"}));
+  // A gauge and a counter are stamped when recorded and have no duration.
+  ASSERT_EQ(RECORDS[2].size(), 6u);
+  EXPECT_EQ(std::vector<std::string>(RECORDS[2].begin() + 1, RECORDS[2].end()),
+            (std::vector<std::string>{"GAUGE", "file/7", "depth", "0", "42.500000"}));
+  ASSERT_EQ(RECORDS[3].size(), 6u);
+  EXPECT_EQ(std::vector<std::string>(RECORDS[3].begin() + 1, RECORDS[3].end()),
+            (std::vector<std::string>{"COUNTER", "file/7", "event", "0", "3.000000"}));
+  for (const std::size_t I : {std::size_t{2}, std::size_t{3}}) {
+    const std::uint64_t STAMP = std::stoull(RECORDS[I][0]);
+    EXPECT_GE(STAMP, BEFORE) << "record " << I;
+    EXPECT_LE(STAMP, AFTER) << "record " << I;
+  }
+
+  std::filesystem::remove(TMP_PATH);
+}
+
+/** @test A file sink at WARNING writes the threshold breach and nothing else */
+TEST(MonitorTest, FileSinkAtWarningWritesOnlyTheBreach) {
+  const auto TMP_PATH = sinkPath("warning");
+  std::filesystem::remove(TMP_PATH);
+
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
+  cfg.fileLevel = AlertLevel::WARNING;
+  Monitor mon(cfg);
+  mon.setThreshold("slow", 7, 1000);
   mon.start();
 
   const MonitorTag TAG("file", 7);
-  mon.increment("event", TAG, 1.0);
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.recordScope("work", TAG, 1000, 1000 + 2500000);
+  mon.recordScope("slow", TAG, 1000, 1000 + 3000000);
+  mon.gauge("depth", TAG, 42.5);
+  mon.increment("event", TAG, 3.0);
   mon.stop();
 
-  // Verify file was written
-  std::ifstream f(TMP_PATH);
-  ASSERT_TRUE(f.is_open());
-  std::string line;
-  ASSERT_TRUE(std::getline(f, line));
-  EXPECT_TRUE(line.find("COUNTER") != std::string::npos);
-  EXPECT_TRUE(line.find("file/7") != std::string::npos);
-  EXPECT_TRUE(line.find("event") != std::string::npos);
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 1u);
+  EXPECT_EQ(RECORDS[0], (std::vector<std::string>{"1000", "SCOPE", "file/7", "slow", "3000000",
+                                                  "1000.000000", "THRESHOLD_BREACH"}));
+  EXPECT_EQ(mon.summary().size(), 4u) << "the summary keeps every kind";
 
   std::filesystem::remove(TMP_PATH);
 }
@@ -604,6 +684,74 @@ TEST(MonitorTest, DisableMidRunKeepsEarlierHistory) {
   EXPECT_EQ(countLines(TMP_PATH), 3u);
 
   std::filesystem::remove(TMP_PATH);
+}
+
+/** @test Prints a scope, a gauge and a counter row with their cells, then the totals */
+TEST(MonitorTest, SummaryTablePrintsEachKindsCells) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_CONSOLE;
+  cfg.consoleLevel = AlertLevel::WARNING; // no line per sample: the table alone
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("print", 18);
+  std::string captured;
+  {
+    StderrCapture capture;
+    mon.start();
+    mon.recordScope("work", TAG, 0, 1500000);
+    mon.recordScope("work", TAG, 0, 2500000);
+    mon.recordScope("work", TAG, 0, 3500000);
+    mon.gauge("depth", TAG, -5.0);
+    mon.gauge("depth", TAG, -3.0);
+    mon.gauge("depth", TAG, -9.0);
+    mon.increment("events", TAG, 2.0);
+    mon.increment("events", TAG, 3.0);
+    mon.stop();
+    captured = capture.text();
+  }
+
+  // Tag, scope, calls, median, nearest-rank P99, max, breaches; a counter
+  // shows its total under Max.
+  const std::vector<std::string> LINES = collapsedLines(captured);
+  EXPECT_TRUE(hasLine(LINES, "print/18 work 3 2.500 ms 3.500 ms 3.500 ms 0")) << captured;
+  EXPECT_TRUE(hasLine(LINES, "print/18 depth (g) 3 -5.000 -3.000 -3.000 -")) << captured;
+  EXPECT_TRUE(hasLine(LINES, "print/18 events (c) 2 - - 5 -")) << captured;
+  const auto TOTALS = std::find_if(LINES.begin(), LINES.end(), [](const std::string& line) {
+    return line.rfind("Total samples:", 0) == 0;
+  });
+  ASSERT_NE(TOTALS, LINES.end()) << captured;
+  EXPECT_EQ(TOTALS->rfind("Total samples: 8 | Dropped: 0 | Wall time: ", 0), 0u) << *TOTALS;
+}
+
+/** @test Counts every sample in Total samples and the ring buffer's overflow in Dropped */
+TEST(MonitorTest, SummaryCountsTheSamplesTheQueueDropped) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_CONSOLE;
+  cfg.consoleLevel = AlertLevel::WARNING;
+  cfg.queueCapacity = 64;
+  Monitor mon(cfg);
+
+  const MonitorTag TAG("drops", 19);
+  std::string captured;
+  {
+    StderrCapture capture;
+    // Queued before start(), with nothing draining: 64 fit and 36 are dropped.
+    for (int i = 0; i < 100; ++i) {
+      mon.increment("events", TAG, 1.0);
+    }
+    mon.start();
+    mon.stop();
+    captured = capture.text();
+  }
+
+  const std::vector<std::string> LINES = collapsedLines(captured);
+  EXPECT_TRUE(hasLine(LINES, "drops/19 events (c) 64 - - 64 -")) << captured;
+  const auto TOTALS = std::find_if(LINES.begin(), LINES.end(), [](const std::string& line) {
+    return line.rfind("Total samples:", 0) == 0;
+  });
+  ASSERT_NE(TOTALS, LINES.end()) << captured;
+  EXPECT_EQ(TOTALS->rfind("Total samples: 100 | Dropped: 36 | Wall time: ", 0), 0u) << *TOTALS;
+  EXPECT_EQ(mon.queue().droppedCount(), 36u);
 }
 
 /** @test A threshold set before a restart flags after it; one set while stopped, from the next */
