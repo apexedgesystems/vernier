@@ -3256,3 +3256,31 @@ TEST_F(PerfGpuHarnessTest, TheCasesDeviceIsCurrentWhileItLaunches) {
   EXPECT_EQ(fill.firstWrong(), -1);
   EXPECT_EQ(recording.stop().refusedCalls, 0);
 }
+
+/* ----------------------------- Legacy Default Stream ----------------------------- */
+
+/**
+ * @test Work a measured callable puts on the legacy default stream is timed:
+ *       a 200 us spin launched without a stream reads at least 180 us a launch
+ *       on the case's high-priority stream and on its plain one
+ */
+TEST_F(PerfGpuHarnessTest, LegacyDefaultStreamWorkIsTimed) {
+  constexpr unsigned long long SPIN_NS = 200'000;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 4;
+  cfg.repeats = 3;
+  const auto ON_STREAM_ZERO = [](cudaStream_t) { spinKernel<<<1, 1>>>(SPIN_NS); };
+  for (const bool HIGH_PRIORITY : {true, false}) {
+    SCOPED_TRACE(HIGH_PRIORITY ? "the high-priority stream" : "the plain stream");
+    const StreamPriorityRule RULE(HIGH_PRIORITY);
+    ub::PerfGpuCase perf{uniqueSuite("GpuLegacyStream") + ".Spin", cfg};
+    perf.cudaWarmup(ON_STREAM_ZERO);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(ON_STREAM_ZERO, "spin").measure();
+    static_cast<void>(lastRow());
+    // Spins the events did not wait for are still running: they end first.
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    EXPECT_GE(RESULT.kernelTimeUs, 0.9 * static_cast<double>(SPIN_NS) / 1000.0)
+        << "a 200 us spin on the legacy default stream read " << RESULT.kernelTimeUs << " us";
+  }
+}

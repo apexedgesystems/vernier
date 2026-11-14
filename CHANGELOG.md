@@ -974,6 +974,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   naming the test and the error, instead of publishing a row timed from
   nothing. Both run with the case's device current, and a multi-GPU worker's
   CUDA error reaches the caller instead of ending the process.
+- Work a measured GPU callable puts on the legacy default stream (a launch
+  without a stream, `cudaMemset`, a library call on its default stream) is
+  timed under the default high-priority stream too, instead of reading a few
+  microseconds. Work on other streams, or on the per-thread default stream, is
+  not: launch on the stream the callable is given.
 
 ## v1.0.3 - 2026-06-28
 

@@ -55,6 +55,10 @@ struct PerfGpuConfig {
   int deviceId = 0;
 
   // ---- Stream configuration ----
+  /// Make the case's stream at the device's greatest priority (true) or at
+  /// the default one. Either way it is a blocking stream: work a measured
+  /// callable puts on the legacy default stream is ordered with it and timed
+  /// (PerfGpuCase::cudaKernel() says what is not).
   bool useHighPriorityStream = true;
 
   // ---- Validation thresholds ----

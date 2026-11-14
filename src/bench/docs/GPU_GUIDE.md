@@ -335,6 +335,19 @@ PERF_GPU_TEST(MyKernel, Basic) {
 }
 ```
 
+### Launch on the Stream You Are Given
+
+The callable gets the stream to launch on, and the harness times that stream
+with CUDA events, so queue the measured work there. The case's stream is a
+blocking stream (with `PerfGpuConfig::useHighPriorityStream`, the default, and
+without it): work that lands on the legacy default stream, such as a launch
+without a stream, `cudaMemset`, or a library call left on its default stream,
+is ordered with it and timed too. Work on any other stream is not timed unless
+the callable joins it back to the stream it was given (records an event there
+and has the given stream wait for it), and work on the per-thread default
+stream, in code built with `--default-stream per-thread`, is not ordered with
+the case's stream at all: the events do not time it.
+
 ### Comparing Implementations
 
 ```cpp

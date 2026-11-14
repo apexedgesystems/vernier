@@ -418,12 +418,17 @@ private:
  */
 class OwnedStream {
 public:
-  /** @param highPriority Make it at the device's greatest stream priority. */
+  /**
+   * @param highPriority Make it at the device's greatest stream priority.
+   *        Either way it is a blocking stream: work on the legacy default
+   *        stream is ordered with it, so a measured callable's launch or
+   *        library call that lands there falls between its timing events.
+   */
   explicit OwnedStream(bool highPriority) {
     if (highPriority) {
       int leastPriority, greatestPriority;
       CUDA_CHECK(cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority));
-      CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamNonBlocking, greatestPriority));
+      CUDA_CHECK(cudaStreamCreateWithPriority(&stream_, cudaStreamDefault, greatestPriority));
     } else {
       CUDA_CHECK(cudaStreamCreate(&stream_));
     }

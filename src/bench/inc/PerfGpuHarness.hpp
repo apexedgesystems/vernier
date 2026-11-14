@@ -204,9 +204,29 @@ public:
    * @note NOT RT-safe (runs a measurement, records the result).
    */
   PerfResult cpuBaseline(CpuFn fn, std::string label = "cpu_baseline");
+
+  /**
+   * @brief A kernel measurement of @p kernel, configured on the builder and
+   *        run by its measure().
+   *
+   * @p kernel gets the stream to launch on and must queue its work there: the
+   * harness times that stream with CUDA events. The case's stream is a
+   * blocking stream, so work the callable puts on the legacy default stream
+   * (a launch without a stream, cudaMemset(), a library left on its default
+   * stream) is ordered with it and timed too. Work on any other stream is not
+   * timed unless the callable joins it back to the stream it was given (an
+   * event recorded there, waited for on the given stream), and work on the
+   * per-thread default stream (code built with --default-stream per-thread)
+   * is not ordered with it either.
+   */
   CudaKernelBuilder cudaKernel(KernelFn kernel, std::string label = "cuda_kernel");
 
-  // Multi-GPU support
+  /**
+   * @brief A measurement across @p deviceCount devices, run by the builder's
+   *        measure(): @p kernel gets each device's id and a stream of that
+   *        device to launch on, a blocking stream, under cudaKernel()'s
+   *        contract.
+   */
   MultiGpuKernelBuilder cudaKernelMultiGpu(int deviceCount, MultiGpuKernelFn kernel,
                                            std::string label = "multi_gpu_kernel");
 
