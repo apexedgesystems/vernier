@@ -1456,12 +1456,12 @@ shape to keep is the one with the best measured time
 
 **Causes:**
 
-1. **The copies take most of each round trip:**
+1. **The copies take most of the median round trip:**
 
-   `speedupVsCpu` divides by `totalTimeUs`, which includes the declared
-   copies. A `transferTimeUs / totalTimeUs` near 100% shows that the copies
-   take most of each round trip only while the copy times hold steady; an
-   Nsight Systems timeline shows each copy's time
+   `speedupVsCpu` divides by `totalTimeUs`, the median round trip, which
+   includes the declared copies. A `transferTimeUs / totalTimeUs` near 100%
+   shows that the copies take most of the median round trip only while the
+   copy times hold steady; an Nsight Systems timeline shows each copy's time
    ([Transfer Overhead](#transfer-overhead)). If the copies dominate:
 
    - Keep data on GPU longer
