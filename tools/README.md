@@ -333,6 +333,10 @@ only the tool's own `Error:` line fails the run as `collection:`, a missing
 report or one without its summary as `completion:`, and nothing is counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
+Its `gtest_filter` is passed to the binary as `--gtest_filter=<filter>`,
+before the arguments after `--`, unless one of those starts with
+`--gtest_filter=`: a filter given on the command line is the only one the
+binary gets.
 
 **How a run ends.** `bench run` exits 0 when the benchmark does and 1
 otherwise, and its last line names how the benchmark ended:
@@ -411,7 +415,9 @@ bench profile-all MyComponent --quick --filter '*Hot*'
 ```
 
 Each profiler runs as `bench run --profile <name>` does, into
-`<out>/<name>/`, whatever the others did. The run ends with one line per
+`<out>/<name>/`, whatever the others did. Each is given `--filter` as
+`--gtest_filter`, or without it `.bench.yaml`'s `gtest_filter`, as `bench run`
+gives it. The run ends with one line per
 profiler, `completed` or `failed` with the reason, and exits 1 when any of them
 failed:
 
@@ -528,7 +534,13 @@ bench nsight-parse mixed/ --csv mixed.csv   # exits 1
 
 `bench init` scaffolds a `.bench.yaml` at the project root (cycles, repeats,
 profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read by `run` and
-`profile-all` when the corresponding CLI flag is omitted.
+`profile-all` when the corresponding CLI flag is omitted. `gtest_filter` is
+the default test filter: `run` passes it unless a `--gtest_filter=` follows
+`--`, and `profile-all` unless `--filter` is given. A filter passed this way,
+or typed, takes precedence over `GTEST_FILTER` in the environment, which
+GoogleTest reads only when no `--gtest_filter` is given: to filter with
+`GTEST_FILTER`, remove the key. In a filter, everything after the first `-`
+excludes: `-*Large*:*PayloadScaling*` runs every test but those two kinds.
 
 ```bash
 bench init                              # writes .bench.yaml in CWD

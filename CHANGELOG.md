@@ -400,6 +400,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   first of them; a reset that fails exits 1, naming the commands that reset
   the clocks by hand
   ([tools README](tools/README.md#gpu-lock---clock-management)).
+- `bench run` passes `.bench.yaml`'s `gtest_filter` to the benchmark unless
+  a `--gtest_filter=` follows `--`, as `bench profile-all` passes it unless
+  `--filter` is given; the scaffold's example filter excludes both patterns
+  it names
+  ([tools README](tools/README.md#init--config-validate---project-defaults)).
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

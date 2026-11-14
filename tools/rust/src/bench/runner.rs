@@ -59,6 +59,10 @@ pub struct RunConfig {
     /// the binary; for callgrind, run by the runner after the exit).
     pub profile_analyze: bool,
     pub taskset: Option<String>,
+    /// The project's default test filter (`.bench.yaml`'s `gtest_filter`):
+    /// given to the benchmark as `--gtest_filter=<it>`, before the arguments
+    /// after `--`, unless one of those starts with `--gtest_filter=`.
+    pub gtest_filter: Option<String>,
     pub extra_args: Vec<String>,
 }
 
@@ -105,6 +109,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     let tool = cfg.profile.as_deref().map(canonical_backend);
     args.extend(profile_request_args(cfg));
+    args.extend(configured_filter(cfg));
     // --profile-analyze given to bench run, or forwarded after `--`: one
     // request either way.
     let analyze = cfg.profile_analyze || cfg.extra_args.iter().any(|a| a == "--profile-analyze");
@@ -387,6 +392,25 @@ pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
         args.push("--profile-analyze".to_string());
     }
     args
+}
+
+/// The one spelling of an argument GoogleTest reads its test filter from,
+/// up to the filter.
+const GTEST_FILTER_FLAG: &str = "--gtest_filter=";
+
+/// What the benchmark is given for the project's default test filter
+/// (`RunConfig::gtest_filter`): `--gtest_filter=<it>`, unless an argument
+/// after `--` starts with `--gtest_filter=`, which is then the only filter
+/// the benchmark gets; nothing without a default. A filter the benchmark is
+/// given takes precedence over `GTEST_FILTER` in its environment, which
+/// GoogleTest reads only when no flag gives one.
+fn configured_filter(cfg: &RunConfig) -> Option<String> {
+    let filter = cfg.gtest_filter.as_deref()?;
+    let given = cfg
+        .extra_args
+        .iter()
+        .any(|arg| arg.starts_with(GTEST_FILTER_FLAG));
+    (!given).then(|| format!("{GTEST_FILTER_FLAG}{filter}"))
 }
 
 /// Create a wrap's folder and remove from it the previous run's copies of the
@@ -2193,6 +2217,49 @@ mod tests {
             err.to_string(),
             "invalid arguments: --profile-frequency=1000 after --: give it as \
              --profile-frequency 1000, which the benchmark reads"
+        );
+    }
+
+    /// @test The project's default filter is given when no argument after
+    /// `--` starts with `--gtest_filter=`, and not when one does, which is
+    /// then the benchmark's only filter (an empty one too); arguments that
+    /// only look like a filter flag, which GoogleTest does not read as one,
+    /// do not count; without a default nothing is given.
+    #[test]
+    fn configured_filter_gives_way_to_the_command_lines() {
+        let cfg = |filter: Option<&str>, extra: &[&str]| RunConfig {
+            gtest_filter: filter.map(str::to_string),
+            ..request(None, None, extra)
+        };
+        let configured = Some("--gtest_filter=Join.*".to_string());
+        assert_eq!(configured_filter(&cfg(Some("Join.*"), &[])), configured);
+        assert_eq!(
+            configured_filter(&cfg(Some("Join.*"), &["--cycles", "5"])),
+            configured
+        );
+        for given in ["--gtest_filter=Other.*", "--gtest_filter="] {
+            assert_eq!(
+                configured_filter(&cfg(Some("Join.*"), &["--cycles", "5", given])),
+                None,
+                "{given}"
+            );
+        }
+        for similar in [
+            "--gtest_filter",
+            "-gtest_filter=Other.*",
+            "--gtest_filters=Other.*",
+            "gtest_filter=Other.*",
+        ] {
+            assert_eq!(
+                configured_filter(&cfg(Some("Join.*"), &[similar])),
+                configured,
+                "{similar}"
+            );
+        }
+        assert_eq!(configured_filter(&cfg(None, &[])), None);
+        assert_eq!(
+            configured_filter(&cfg(None, &["--gtest_filter=Other.*"])),
+            None
         );
     }
 

@@ -3551,6 +3551,79 @@ fn doctor_starts_the_benchmark_as_bench_run_would() {
     assert_eq!(record, "", "the benchmark was started");
 }
 
+/* ----------------------------- Run: Project Defaults ----------------------------- */
+
+/// Write @p text as the `.bench.yaml` of the folder bench runs from in @p rig.
+fn bench_yaml(rig: &RouteRig, text: &str) {
+    std::fs::write(rig.dir.path().join(".bench.yaml"), text).expect("write .bench.yaml");
+}
+
+/// Fail unless no folder above @p dir holds a `.bench.yaml`: bench looks for
+/// one from the working directory up, and a stray one there would decide
+/// what these tests check.
+fn no_bench_yaml_above(dir: &Path) {
+    let found = vernier_rust_tools::bench::config::find(dir);
+    assert!(
+        found.is_none(),
+        "{found:?} would be read as this test's .bench.yaml; move it away to run these tests"
+    );
+}
+
+/// @test bench run gives the benchmark the project's default filter, once.
+#[test]
+fn run_passes_the_configured_filter() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --gtest_filter=Join.*\n");
+}
+
+/// @test A filter given after `--` takes precedence over the configured one,
+/// which the benchmark is then not given at all.
+#[test]
+fn run_command_line_filter_takes_precedence() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let (code, err, log) = run_rig(&rig, &["--", "--gtest_filter=Other.*"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --gtest_filter=Other.*\n");
+}
+
+/// @test The configured filter goes after the profile request and before
+/// the arguments after `--`, which the file's other defaults precede too, and
+/// the Running line shows it.
+#[test]
+fn run_configured_filter_goes_before_the_forwarded_arguments() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "cycles: 7\ngtest_filter: \"Join.*\"\n");
+    let (code, out, err, log) =
+        run_rig_env(&rig, &["--profile", "perf", "--", "--repeats", "2"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --cycles 7 --profile perf --gtest_filter=Join.* --repeats 2\n"
+    );
+    assert!(
+        out.contains(" --profile perf --gtest_filter=Join.* --repeats 2"),
+        "{out}"
+    );
+}
+
+/// @test Without a configured filter, no file or a file without the key,
+/// bench run gives the benchmark none.
+#[test]
+fn run_without_a_configured_filter_passes_none() {
+    let rig = route_rig(&[]);
+    no_bench_yaml_above(rig.dir.path());
+    let (code, err, _) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    bench_yaml(&rig, "cycles: 7\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= \nbench wrap= --cycles 7\n");
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
@@ -3646,6 +3719,51 @@ fn profile_all_all_succeed() {
     assert!(
         log.contains("valgrind wrap=callgrind --tool=callgrind"),
         "{log}"
+    );
+}
+
+/// @test profile-all gives each run the filter as bench run gives it: the
+/// file's `gtest_filter` without `--filter`, and `--filter` over the file's.
+#[test]
+fn profile_all_takes_the_filter_as_run_does() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let out = rig.dir.path().join("out");
+    let (code, err, log) = run_profile_all(&rig, "gperf,perf", None, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "bench --profile gperf --profile-output-dir {} --gtest_filter=Join.*\n\
+             bench --profile perf --profile-output-dir {} --gtest_filter=Join.*\n",
+            out.join("gperf").display(),
+            out.join("perf").display()
+        )
+    );
+    let given = output_of(
+        Command::new(bin())
+            .arg("profile-all")
+            .arg(&rig.bench)
+            .args(["--profilers", "perf", "--filter", "Cli.*", "--out"])
+            .arg(&out)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path()),
+    );
+    assert!(
+        given.status.success(),
+        "{}",
+        String::from_utf8_lossy(&given.stderr)
+    );
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    assert_eq!(
+        log.lines().last(),
+        Some(
+            format!(
+                "bench --profile perf --profile-output-dir {} --gtest_filter=Cli.*",
+                out.join("perf").display()
+            )
+            .as_str()
+        )
     );
 }
 

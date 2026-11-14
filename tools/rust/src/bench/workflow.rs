@@ -552,6 +552,8 @@ pub struct ProfileAllConfig {
     pub binary: PathBuf,
     pub profilers: Vec<String>,
     pub artifact_root: Option<PathBuf>,
+    /// The test filter, `--filter` or else `.bench.yaml`'s `gtest_filter`:
+    /// each run passes it as `bench run` passes a configured one.
     pub gtest_filter: Option<String>,
     pub cycles: Option<u32>,
     pub repeats: Option<u32>,
@@ -613,11 +615,8 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             profile_output_dir: Some(out_dir.clone()),
             profile_analyze: false,
             taskset: None,
-            extra_args: cfg
-                .gtest_filter
-                .as_ref()
-                .map(|f| vec![format!("--gtest_filter={}", f)])
-                .unwrap_or_default(),
+            gtest_filter: cfg.gtest_filter.clone(),
+            extra_args: Vec::new(),
         };
         let result = fs::create_dir_all(&out_dir)
             .map_err(|e| {

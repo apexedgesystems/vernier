@@ -7,9 +7,11 @@
 //!
 //! `.bench.yaml` at the project root captures those defaults so per-binary
 //! invocations don't have to. The runner reads the file at startup and
-//! applies any unset CLI flags from it. The bench binary itself does NOT
-//! read this file -- it stays purely flag-driven so it works the same way
-//! whether or not the runner is involved.
+//! applies any unset CLI flags from it; `gtest_filter` is given to the
+//! benchmark unless a filter follows `--` (`runner::RunConfig::gtest_filter`).
+//! The bench binary itself does NOT read this file -- it stays purely
+//! flag-driven so it works the same way whether or not the runner is
+//! involved.
 //!
 //! Schema (minimal, intentional -- expand only as concrete need arises):
 //!
@@ -17,7 +19,7 @@
 //!   cycles: 10000
 //!   repeats: 10
 //!   profile_output_dir: bench-out
-//!   gtest_filter: "-*Large*:-*PayloadScaling*"
+//!   gtest_filter: "-*Large*:*PayloadScaling*"
 //!   bin_roots: ["build/*"]               # for resolve_binary
 //!   bin_subdirs: ["bin/ptests", "bin/tests"]
 //!
@@ -74,9 +76,9 @@ repeats: 10
 # Where profile artifacts land (--profile-output-dir / --artifact-root)
 profile_output_dir: bench-out
 
-# Default --gtest_filter; leading minus excludes patterns.
-# Useful for skipping tests that are inherently noisy or blocking.
-# gtest_filter: \"-*Large*:-*PayloadScaling*\"
+# Default --gtest_filter, given unless a --gtest_filter= follows `--`.
+# Everything after its first minus excludes: skips noisy or blocking tests.
+# gtest_filter: \"-*Large*:*PayloadScaling*\"
 
 # Where the binary lookup walks when you pass `bench run Foo` (short name).
 # Override only when the build layout differs from CMake's default.

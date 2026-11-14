@@ -263,7 +263,8 @@ enum Command {
         #[arg(long, visible_alias = "profile-output-dir")]
         out: Option<PathBuf>,
 
-        /// --gtest_filter to pass through
+        /// --gtest_filter to pass through; without it, .bench.yaml's
+        /// gtest_filter is passed, as bench run passes it
         #[arg(long)]
         filter: Option<String>,
 
@@ -512,6 +513,8 @@ fn run(args: Args) -> Result<(), Error> {
                 profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
                 profile_analyze,
                 taskset,
+                // Given unless a filter follows `--` (runner::configured_filter).
+                gtest_filter: file_cfg.gtest_filter,
                 extra_args,
             };
 
