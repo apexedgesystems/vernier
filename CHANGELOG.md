@@ -964,6 +964,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 - Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
+- `make asan`, `make tsan` and `make ubsan` test a named selection in their
+  own CPU-only build trees, fail on any sanitizer report, and leave the debug
+  build's configuration as it was. For the whole suite under a sanitizer,
+  build the target's tree and run CTest in it.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ## v1.0.3 - 2026-06-28
 
