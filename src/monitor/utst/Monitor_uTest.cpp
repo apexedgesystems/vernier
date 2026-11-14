@@ -23,6 +23,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 using vernier::monitor::Monitor;
 using vernier::monitor::MonitorConfig;
@@ -54,6 +55,27 @@ std::size_t countLines(const std::filesystem::path& path) {
 std::filesystem::path sinkPath(const char* stem) {
   return std::filesystem::temp_directory_path() /
          ("vernier_mon_" + std::string(stem) + "_" + std::to_string(::getpid()) + ".log");
+}
+
+/// A sink file's records, each split at its tabs (none if the file does not exist).
+std::vector<std::vector<std::string>> readRecords(const std::filesystem::path& path) {
+  std::vector<std::vector<std::string>> records;
+  std::ifstream f(path);
+  std::string line;
+  while (std::getline(f, line)) {
+    std::vector<std::string> fields;
+    std::size_t start = 0;
+    for (;;) {
+      const std::size_t TAB = line.find('\t', start);
+      fields.push_back(line.substr(start, TAB == std::string::npos ? TAB : TAB - start));
+      if (TAB == std::string::npos) {
+        break;
+      }
+      start = TAB + 1;
+    }
+    records.push_back(fields);
+  }
+  return records;
 }
 
 /**
@@ -151,29 +173,35 @@ TEST(MonitorTest, DoubleStop) {
   mon.stop(); // Should not crash
 }
 
-/** @test Scope recording works end-to-end */
+/** @test Records a scope's duration from its two timestamps, and its start as its timestamp */
 TEST(MonitorTest, ScopeRecording) {
+  const auto TMP_PATH = sinkPath("scope");
+  std::filesystem::remove(TMP_PATH);
+
   MonitorConfig cfg;
-  cfg.sinks = SINK_NONE;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
   mon.start();
 
   const MonitorTag TAG("test", 1);
-  {
-    ScopeGuard guard(mon, "work", TAG);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  // Allow I/O thread to drain
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  mon.recordScope("x", TAG, 1000, 2501000); // 2.5 ms from 1000 ns
   mon.stop();
 
   EXPECT_EQ(mon.summary().size(), 1u);
   const auto& ENTRIES = mon.summary().entries();
-  const auto IT = ENTRIES.find("test/1::work");
+  const auto IT = ENTRIES.find("test/1::x");
   ASSERT_NE(IT, ENTRIES.end());
   EXPECT_EQ(IT->second.count, 1u);
-  EXPECT_GT(IT->second.median(), 0.0); // Duration in ms
+  EXPECT_DOUBLE_EQ(IT->second.median(), 2.5); // ms
+
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 1u);
+  ASSERT_GE(RECORDS[0].size(), 5u);
+  EXPECT_EQ(RECORDS[0][0], "1000");    // the timestamp: the scope's start
+  EXPECT_EQ(RECORDS[0][4], "2500000"); // the duration in nanoseconds
+
+  std::filesystem::remove(TMP_PATH);
 }
 
 /** @test Counter increment recording */
@@ -219,29 +247,57 @@ TEST(MonitorTest, GaugeRecording) {
   EXPECT_DOUBLE_EQ(IT->second.maxVal, 100.0);
 }
 
-/** @test Threshold breach detection */
+/** @test Flags only a scope longer than the threshold of its own scope and tag id */
 TEST(MonitorTest, ThresholdBreach) {
+  const auto TMP_PATH = sinkPath("breach");
+  std::filesystem::remove(TMP_PATH);
+
   MonitorConfig cfg;
-  cfg.sinks = SINK_NONE;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = TMP_PATH.string();
   Monitor mon(cfg);
-  mon.setThreshold("work", 4, 1000); // 1ms threshold
+  mon.setThreshold("work", 4, 1000); // 1 ms
   mon.start();
 
-  const MonitorTag TAG("slow", 4);
-
-  // Record a scope that exceeds 1ms
-  {
-    ScopeGuard guard(mon, "work", TAG);
-    std::this_thread::sleep_for(std::chrono::milliseconds(5));
-  }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  // Under, at and over the threshold (only longer breaches), then 5 ms on the
+  // same scope with another tag id and on another scope with the same id.
+  const MonitorTag TAG4("slow", 4);
+  const MonitorTag TAG5("slow", 5);
+  mon.recordScope("work", TAG4, 1000, 1000 + 999000);
+  mon.recordScope("work", TAG4, 1000, 1000 + 1000000);
+  mon.recordScope("work", TAG4, 1000, 1000 + 1001000);
+  mon.recordScope("work", TAG5, 1000, 1000 + 5000000);
+  mon.recordScope("other", TAG4, 1000, 1000 + 5000000);
   mon.stop();
 
   const auto& ENTRIES = mon.summary().entries();
-  const auto IT = ENTRIES.find("slow/4::work");
-  ASSERT_NE(IT, ENTRIES.end());
-  EXPECT_GE(IT->second.breaches, 1u);
+  const auto WORK4 = ENTRIES.find("slow/4::work");
+  const auto WORK5 = ENTRIES.find("slow/5::work");
+  const auto OTHER4 = ENTRIES.find("slow/4::other");
+  ASSERT_NE(WORK4, ENTRIES.end());
+  ASSERT_NE(WORK5, ENTRIES.end());
+  ASSERT_NE(OTHER4, ENTRIES.end());
+  EXPECT_EQ(WORK4->second.count, 3u);
+  EXPECT_EQ(WORK4->second.breaches, 1u);
+  EXPECT_EQ(WORK5->second.breaches, 0u);
+  EXPECT_EQ(OTHER4->second.breaches, 0u);
+
+  // The breach's record carries the threshold, in microseconds, as its value.
+  const auto RECORDS = readRecords(TMP_PATH);
+  ASSERT_EQ(RECORDS.size(), 5u);
+  std::size_t breaches = 0;
+  for (const auto& record : RECORDS) {
+    if (record.size() == 7 && record[6] == "THRESHOLD_BREACH") {
+      ++breaches;
+      EXPECT_EQ(record[2], "slow/4");
+      EXPECT_EQ(record[3], "work");
+      EXPECT_EQ(record[4], "1001000");
+      EXPECT_EQ(record[5], "1000.000000");
+    }
+  }
+  EXPECT_EQ(breaches, 1u);
+
+  std::filesystem::remove(TMP_PATH);
 }
 
 /** @test Disabled monitor skips all recording */
@@ -657,7 +713,7 @@ TEST(MonitorTest, ThresholdTableSurvivesRestartWithLiveProducer) {
   EXPECT_EQ(EARLY->second.count + LATE->second.count + mon.queue().droppedCount(), calls);
 }
 
-/** @test VERNIER_MONITOR_SCOPE macro compiles and works */
+/** @test VERNIER_MONITOR_SCOPE times the rest of its scope as one sample */
 TEST(MonitorTest, ScopeMacro) {
   MonitorConfig cfg;
   cfg.sinks = SINK_NONE;
@@ -667,15 +723,15 @@ TEST(MonitorTest, ScopeMacro) {
   const MonitorTag TAG("macro", 8);
   {
     VERNIER_MONITOR_SCOPE(mon, "stage", TAG);
-    // Simulate work
-    volatile int x = 0;
-    for (int i = 0; i < 100; ++i)
-      x += i;
-    (void)x;
+    // The work the guard times: a sleep lasts at least its 2 ms.
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
-
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
   mon.stop();
 
-  EXPECT_GE(mon.summary().size(), 1u);
+  EXPECT_EQ(mon.summary().size(), 1u);
+  const auto& ENTRIES = mon.summary().entries();
+  const auto IT = ENTRIES.find("macro/8::stage");
+  ASSERT_NE(IT, ENTRIES.end());
+  EXPECT_EQ(IT->second.count, 1u);
+  EXPECT_GE(IT->second.median(), 2.0); // ms
 }
