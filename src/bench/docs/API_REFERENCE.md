@@ -76,7 +76,9 @@ PERF_MAIN()                              // Main function with CSV export
 
 `PERF_MAIN()` and `PERF_GPU_MAIN()` return the tests' status, or 4
 (`BENCH_PROFILE_FAILED_EXIT_CODE`) when the tests passed and the requested
-`--profile` failed, after a report of each failure. A benchmark with its own
+`--profile` failed (or, in a GPU benchmark, `--capture-um` asked for
+unified-memory counters that CUPTI could not record), after a report of each
+failure. A benchmark with its own
 `main()` gets the same status from `ProfilerRegistry::finishRun()`; the
 [advanced guide](ADVANCED_GUIDE.md#perf_main-macro) shows the call.
 
@@ -202,7 +204,7 @@ struct PerfConfig {
   std::string profileArgs;             // Verbatim pass-through to the tool
   std::vector<std::string> bpfScripts; // Script names/paths: "fsync_latency", "write_latency"
   std::string artifactRoot;            // Profiler artifact directory
-  int profileFrequency = 10000;        // Rate asked of gperf; set too late to take effect (see ProfilerGperf)
+  int profileFrequency = 0;            // gperf CPU sampling rate asked for (Hz, 1 to 4000); 0: gperftools' default
   bool profileAnalyze = false;         // Auto-run analysis after profiling
   int profileTestTimeoutSecs = -1;     // Watchdog seconds per measured()/throughputLoop() loop under --profile: -1 not given (300 under --profile), 0 off; contentionRun() and GPU runs are not covered
 
@@ -295,7 +297,7 @@ CPU:
 - `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
 - `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
 - `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
-- `jemalloc` - jemalloc prof sampling (~5-10%, LD_PRELOAD)
+- `jemalloc` - jemalloc's sampling heap profiler (a jemalloc built with profiling, preloaded)
 
 GPU:
 
@@ -505,7 +507,7 @@ struct GpuStats {
   double totalTimeMedianUs{};
   std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
   std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
-  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only with managed memory
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only under --capture-um
 };
 ```
 
@@ -612,27 +614,41 @@ google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof
 google-pprof --pdf ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof > profile.pdf
 ```
 
-**Sampling rate:** gperftools samples 100 times a second by default, and the
-`CPUPROFILE_FREQUENCY` environment variable sets another rate
+**Sampling rate:** gperftools samples 100 times a second by default and reads
+its rate once, from the `CPUPROFILE_FREQUENCY` environment variable, when the
+process starts
 ([gperftools CPU profiler](https://gperftools.github.io/gperftools/cpuprofile.html)).
-`--profile-frequency` (default 10000) does not change the rate in 1.0.4. The
-backend does use it: just before `ProfilerStart()` it sets
-`CPUPROFILE_FREQUENCY` to the flag's value. That is too late for the
-profiler's initialization: with gperftools 2.16 on the
-[Pi 4 rig](rigs/RIG_PI4.md) and 2.15 on x86_64, a run with
-`--profile-frequency 1000` records the default period, 10000 us. Set the
-variable before the process starts instead:
+Ask for another rate with `--profile-frequency`, a whole number of Hz from 1
+to 4000, the most gperftools samples. `bench run` sets the variable before it
+starts the benchmark; run directly, the benchmark needs the variable set to
+the same value before it starts, and otherwise fails without profiling,
+printing the command that works. The variable set alone is the rate too, and
+is held to the same rule: any other value fails the run, since gperftools
+would read it its own way without saying so.
 
 ```bash
-# Period 4000 us: about 250 samples a second
-CPUPROFILE_FREQUENCY=250 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput" --target-time 200ms
+# Period 4000 us: 250 samples a second of CPU time
+bench run ./MyComponent_PTEST --profile gperf --profile-frequency 250 -- --gtest_filter="*Throughput" --target-time 200ms
+CPUPROFILE_FREQUENCY=250 ./MyComponent_PTEST --profile gperf --profile-frequency 250 --gtest_filter="*Throughput" --target-time 200ms
 ```
 
-The rate taken can still differ from the rate asked for. Asked for 10000 a
-second, gperftools recorded a period of 250 us (4000 a second), and it counted
-about 249 samples a second on the Pi, whose kernel ticks 250 times a second,
-and about 1000 on the x86_64 machine, whose kernel ticks 1000 times; on the Pi
-a request for 1000 also gave about 249.
+Each finished profile records the period gperftools used, `1000000 / rate`
+microseconds rounded down (3000 Hz records 333 us), and is checked: a profile
+whose period is not the one expected fails the run with status 4 and is kept.
+With a rate asked for or set, each case prints what its profile records:
+`[gperf] MyComponent.Throughput: cpu.prof records a period of 4000 us (250 Hz requested), <n> samples`.
+The rate taken can still be lower than the rate configured: on the
+[Pi 4 rig](rigs/RIG_PI4.md), whose kernel ticks 250 times a second, 1000 Hz
+gave about 249 samples a second, and on an x86_64 machine whose kernel ticks
+1000 times, 4000 Hz gave about 1000.
+
+Only gperf takes a rate: a request that gives one to another profiler fails
+before anything is collected, in the doctor and the run alike, and one with
+no profiler (no `--profile`, or `--profile cupti`) stops the benchmark with
+status 2. A backend's own factory function called directly (for example
+`makePerfProfiler()`), rather than through the profiler guard,
+`attachProfilerHooks()` or `makePerfCaseWithProfiler()`, does not check the
+rate and ignores it.
 
 ### ProfilerBpftrace
 
@@ -779,13 +795,21 @@ time; no `--profile` flag required.
 
 ### Unified Memory Columns
 
-| Column              | Type   | Description               |
-| ------------------- | ------ | ------------------------- |
-| `umPageFaults`      | int64  | GPU page faults           |
-| `umH2DMigrations`   | int64  | Host-to-device migrations |
-| `umD2HMigrations`   | int64  | Device-to-host migrations |
-| `umMigrationTimeUs` | double | Total migration overhead  |
-| `umThrashing`       | bool   | Thrashing detected        |
+| Column              | Type   | Description                                     |
+| ------------------- | ------ | ----------------------------------------------- |
+| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults      |
+| `umH2DMigrations`   | int64  | Host-to-device transfers of managed memory      |
+| `umD2HMigrations`   | int64  | Device-to-host transfers of managed memory      |
+| `umMigrationTimeUs` | double | The transfers' durations, summed (us)           |
+| `umThrashing`       | bool   | CUPTI recorded thrashing in the measured window |
+
+These cells are filled only under `--capture-um` (or
+`PerfGpuConfig::captureUnifiedMemory`), from CUPTI's unified-memory counters
+over each measurement's window, on a GPU whose CUPTI records them; zeros mean
+nothing migrated. Without the request they are empty. Where CUPTI cannot
+record them, they stay empty, the run reports the request as unsupported, and
+a run whose tests pass exits with status 4. See the GPU guide's
+[Unified-Memory Counters](GPU_GUIDE.md#unified-memory-counters).
 
 ---
 
@@ -823,19 +847,20 @@ time; no `--profile` flag required.
 | `--profile-check`        | flag   | -       | Print binary readiness + per-backend env doctor, then exit                                                                                                                                                                                  |
 | `--profile-check-json`   | flag   | -       | Machine-readable twin of `--profile-check`: one JSON document (readiness rows + backend rows), then exit. Consumed by `bench doctor --json` / `--require`                                                                                   |
 | `--artifact-root DIR`    | string | .       | Profiler output directory                                                                                                                                                                                                                   |
-| `--profile-frequency N`  | int    | 10000   | Rate asked of gperf, the only backend that reads it; set too late to take effect, see [ProfilerGperf](#profilergperf)                                                                                                                       |
+| `--profile-frequency N`  | int    | 0       | gperf CPU sampling rate, 1 to 4000 Hz (0: gperftools' 100): `bench run` sets it before the benchmark starts (run directly, set `CPUPROFILE_FREQUENCY=N` too); checked in each profile, see [ProfilerGperf](#profilergperf)                  |
 | `--profile-analyze`      | bool   | false   | Run the requested profile's analysis after profiling: gperf's pprof report in the benchmark; for callgrind, `bench run --profile-analyze` annotates the profile after valgrind has written it                                               |
 | `--bpf LIST`             | string | -       | Scripts to run, comma-separated: a name is `<name>.bt` in the `--bpf-scripts` directory, a name with a `/` a path from the working directory, `.bt` optional; e.g. `write_latency`, `./my_script.bt`                                        |
 | `--bpf-scripts DIR`      | string | -       | Directory `--bpf` looks script names up in: sets `PERF_BPF_SCRIPTS` in the process environment, over an inherited value. Default, or an empty value: `src/bench/bpf/` of the source tree the library was built from                         |
 
 ### GPU-Specific Flags
 
-| Flag                  | Type   | Default  | Description                                        |
-| --------------------- | ------ | -------- | -------------------------------------------------- |
-| `--gpu-device N`      | int    | 0        | CUDA device ID                                     |
-| `--gpu-warmup N`      | int    | 10       | GPU warmup iterations                              |
-| `--gpu-memory MODE`   | string | explicit | Memory strategy: explicit\|unified\|pinned\|mapped |
-| `--min-speedup FLOAT` | double | 1.0      | Minimum expected GPU speedup                       |
+| Flag                  | Type   | Default  | Description                                                                                                                                            |
+| --------------------- | ------ | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--gpu-device N`      | int    | 0        | CUDA device ID                                                                                                                                         |
+| `--gpu-warmup N`      | int    | 10       | GPU warmup iterations                                                                                                                                  |
+| `--gpu-memory MODE`   | string | explicit | Memory strategy for the tests that read it (`gpuConfig().memStrategy`): explicit\|unified\|pinned\|mapped; any other value stops the run with status 2 |
+| `--min-speedup FLOAT` | double | 1.0      | Minimum expected GPU speedup                                                                                                                           |
+| `--capture-um`        | bool   | false    | Unified-memory counters, where CUPTI records them                                                                                                      |
 
 ### GoogleTest Integration
 
@@ -857,7 +882,7 @@ time; no `--profile` flag required.
 # Multi-threaded test with profiling
 ./MyComponent_PTEST --threads 8 --profile perf --gtest_filter="*Contention"
 
-# GPU test with specific device
+# GPU test on device 1; the tests that read the memory strategy allocate managed memory
 ./MyGpuTest_PTEST --gpu-device 1 --gpu-memory unified --csv gpu_results.csv
 
 # Production CI run

@@ -19,6 +19,7 @@
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/SamplingRateTable.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
@@ -911,6 +912,133 @@ TEST(ProfilerRoutesTable, AliasesAndExitStatus) {
                                      vernier::bench::BENCH_PROFILE_FAILED_EXIT_CODE}) {
     EXPECT_NE(FINDINGS, BENCHMARK_STATUS);
   }
+}
+
+/* ----------------------------- Sampling Rate ----------------------------- */
+
+using vernier::bench::readinessRequestFor;
+using vernier::bench::SAMPLING_RATE_VARIABLE;
+
+/** @brief A configuration asking backend @p name for a sampling rate of @p hz. */
+PerfConfig rateConfig(const std::string& name, int hz) {
+  PerfConfig cfg = configFor(name);
+  cfg.profileFrequency = hz;
+  return cfg;
+}
+
+/** @brief The doctor's row for @p cfg in @p ctx (the selected request). */
+ReadinessResult selectedRow(const PerfConfig& cfg, const ReadinessContext& ctx) {
+  return ProfilerRegistry::instance().checkRequest(
+      readinessRequestFor(cfg, ReadinessScope::PREFLIGHT, ctx), ctx);
+}
+
+/** @brief The refusal of rate @p hz by backend @p name, which takes none. */
+std::string notTakenMessage(const std::string& name, int hz) {
+  return "configuration: --profile-frequency " + std::to_string(hz) +
+         " sets gperftools' CPU sampling rate; '" + name + "' does not take it";
+}
+
+/**
+ * @test A rate for a backend whose registration does not declare the
+ * variable a rate is applied through is a configuration error, decided
+ * before the backend's check runs: the doctor's row and the run say the
+ * same, the run records it, builds no profiler and ends with status 4 under
+ * a header naming the rate. Without a rate the request is decided as before,
+ * and a backend registered with a zero-argument check refuses a rate the
+ * same way.
+ */
+TEST_F(ProfilerOutcomeTest, RateForABackendThatTakesNoneIsRefused) {
+  ScopedBackend backend("rate-refused");
+  backend.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::READY, "ok", ""); });
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const ReadinessContext CTX = contextWith({{SAMPLING_RATE_VARIABLE, "250"}});
+  const PerfConfig CFG = rateConfig(backend.name(), 250);
+
+  const ReadinessResult ROW = selectedRow(CFG, CTX);
+  EXPECT_EQ(ROW.report.status, EnvReport::Status::Error);
+  EXPECT_EQ(ROW.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_EQ(ROW.report.message, notTakenMessage(backend.name(), 250));
+  EXPECT_EQ(ROW.report.hint, "Drop --profile-frequency, or profile with --profile gperf.");
+  EXPECT_EQ(backend.calls()->checks.load(), 0) << "the check decided a rate it cannot take";
+
+  StderrCapture capture;
+  (void)reg.make(backend.name(), CFG, "T.N", CTX);
+  EXPECT_EQ(backend.calls()->factories.load(), 0) << "a profiler was built for a refused rate";
+  const std::vector<ProfileFailure> FAILED = reg.failures();
+  ASSERT_EQ(FAILED.size(), 1U);
+  EXPECT_EQ(FAILED[0].result.report.message, ROW.report.message) << "the run and the doctor differ";
+  EXPECT_EQ(reg.finishRun(CFG, 0, 1), 4);
+  const std::string ERR = capture.text();
+  EXPECT_NE(ERR.find("[profile] --profile " + backend.name() +
+                     " --profile-frequency 250 failed; the run exits with status 4"),
+            std::string::npos)
+      << ERR;
+
+  const ReadinessResult PLAIN = selectedRow(rateConfig(backend.name(), 0), CTX);
+  EXPECT_EQ(PLAIN.report.status, EnvReport::Status::Ok) << PLAIN.report.message;
+  EXPECT_EQ(backend.calls()->checks.load(), 1);
+
+  ScopedBackend legacy("rate-refused-legacy");
+  legacy.legacy([] { return EnvReport{EnvReport::Status::Ok, "legacy ok", ""}; });
+  const ReadinessResult LEGACY = selectedRow(rateConfig(legacy.name(), 250), CTX);
+  EXPECT_EQ(LEGACY.report.message, notTakenMessage(legacy.name(), 250));
+  EXPECT_EQ(legacy.calls()->checks.load(), 0);
+}
+
+/**
+ * @test A backend whose registration declares the variable takes a rate,
+ * and every rate and every value of the variable is a decision of its own:
+ * four different requests are four decisions, and one of them asked again
+ * in the same context is not decided again.
+ */
+TEST(ProfilerReadinessRouting, RateIsDecidedPerRateAndVariable) {
+  ScopedBackend backend("rate-taken");
+  backend.readiness(
+      [](const ReadinessRequest&) { return readinessResult(ReadinessCause::READY, "ok", ""); },
+      {SAMPLING_RATE_VARIABLE});
+  ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const std::vector<std::pair<int, std::string>> REQUESTS = {
+      {250, "250"}, {1000, "250"}, {1000, "1000"}, {0, "250"}};
+  for (const auto& [HZ, VARIABLE] : REQUESTS) {
+    const ReadinessContext CTX = contextWith({{SAMPLING_RATE_VARIABLE, VARIABLE}});
+    EXPECT_EQ(selectedRow(rateConfig(backend.name(), HZ), CTX).report.status, EnvReport::Status::Ok)
+        << HZ << " Hz, " << VARIABLE;
+    (void)reg.make(backend.name(), rateConfig(backend.name(), HZ), "T.N", CTX);
+  }
+  // The doctor decides afresh each time (4); the run's decisions are kept (4).
+  EXPECT_EQ(backend.calls()->checks.load(), 8) << "two of the run's requests shared a decision";
+  (void)reg.make(backend.name(), rateConfig(backend.name(), 1000), "T.N",
+                 contextWith({{SAMPLING_RATE_VARIABLE, "250"}}));
+  EXPECT_EQ(backend.calls()->checks.load(), 8) << "the same request was decided again";
+  EXPECT_EQ(backend.calls()->factories.load(), 5);
+}
+
+/**
+ * @test Each backend the shared table names takes a rate or refuses one as
+ * the table says, in the decision the doctor and a run share; a name this
+ * build does not register is skipped.
+ */
+TEST(ProfilerSamplingRateTable, BackendsTakeARateAsTheTableSays) {
+  const auto ROWS = vernier::bench::test::samplingRateRows("backend");
+  ASSERT_GE(ROWS.size(), 16U) << "the shared table was not read";
+  const ProfilerRegistry& reg = ProfilerRegistry::instance();
+  const ReadinessContext CTX = contextWith({{SAMPLING_RATE_VARIABLE, "250"}});
+  int checked = 0;
+  for (const auto& row : ROWS) {
+    const std::string NAME = ProfilerRegistry::canonicalName(row[1]);
+    if (!reg.hasBackend(NAME)) {
+      continue;
+    }
+    ++checked;
+    const ReadinessResult R = selectedRow(rateConfig(NAME, 250), CTX);
+    if (row[2] == "take") {
+      EXPECT_NE(R.report.message, notTakenMessage(NAME, 250)) << row[1];
+    } else {
+      EXPECT_EQ(R.report.message, notTakenMessage(NAME, 250)) << row[1];
+    }
+  }
+  EXPECT_GE(checked, 12) << "the CPU backends are registered in every build";
 }
 
 } // namespace

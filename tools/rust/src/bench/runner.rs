@@ -11,7 +11,10 @@
 //! nsight's nsys route the runner also extracts the canonical `nsys stats`
 //! reports after the run (the .nsys-rep only exists once the wrapped process
 //! exits), and for compute-sanitizer it reads the tool's report to tell the
-//! errors the tool found from the benchmark's own status.
+//! errors the tool found from the benchmark's own status. jemalloc is wrapped
+//! through the environment instead (`env_wrap_for`): the library preloaded
+//! and its profiling options set, refused before anything starts when the
+//! loader cannot preload it, and its exit dump checked after the run.
 
 use std::ffi::OsString;
 use std::fs;
@@ -47,6 +50,9 @@ pub struct RunConfig {
     pub repeats: Option<u32>,
     pub profile: Option<String>,
     pub profile_args: Option<String>,
+    /// `--profile-frequency`: gperf's CPU sampling rate as given, checked by
+    /// `startup_env` against the one grammar both languages share.
+    pub profile_frequency: Option<String>,
     pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
     /// `--profile-analyze`: the requested profile's analysis (forwarded to
@@ -71,6 +77,9 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     // One request decides the wrap, the benchmark's arguments and the folder.
     let cfg = &effective_request(cfg, "bench run")?;
+    // What the benchmark reads only as it starts (gperf's sampling rate):
+    // decided before anything is created or started, never a wrap.
+    let startup = startup_env(cfg)?;
 
     let mut args: Vec<String> = Vec::new();
 
@@ -151,6 +160,9 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         Some(t) => env_wrap_for(t, &cfg.binary, cfg.profile_output_dir.as_deref())?,
         None => None,
     };
+    // The benchmark as a process's memory map names it, for the completion
+    // check of an environment wrap's dump.
+    let binary_path = fs::canonicalize(&cfg.binary).unwrap_or_else(|_| cfg.binary.clone());
     if let Some(ref pairs) = env_wrap {
         for (k, v) in pairs {
             cmd.env(k, v);
@@ -169,19 +181,23 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
             }
         }
     }
+    for (k, v) in &startup {
+        cmd.env(k, v);
+    }
 
     let env_prefix = env_wrap
-        .as_ref()
-        .map(|pairs| {
-            pairs
-                .iter()
-                .map(|(k, v)| format!("{k}={v} "))
-                .collect::<String>()
-        })
-        .unwrap_or_default();
+        .iter()
+        .flatten()
+        .chain(startup.iter())
+        .map(|(k, v)| format!("{k}={v} "))
+        .collect::<String>();
     println!("Running: {}{}", env_prefix, format_command(&launch, &args));
 
-    let status = cmd.status()?;
+    // The process started here is the benchmark (taskset execs it): jemalloc
+    // names its exit dump after this process id.
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let status = child.wait()?;
 
     // compute-sanitizer's status mixes its own verdict with the benchmark's:
     // its report decides which one this is.
@@ -214,10 +230,15 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     if env_wrap.is_some() {
         if let Some(tool) = tool {
-            require_jemalloc_dumps(
+            let dump = require_jemalloc_dump(
                 &wrap_artifact_dir(tool, &cfg.binary, cfg.profile_output_dir.as_deref()),
                 &request_text(tool, cfg.profile_args.as_deref()),
+                pid,
+                &binary_path,
             )?;
+            for line in jeprof_hint(&cfg.binary, &dump, lookup_in_path) {
+                println!("{line}");
+            }
         }
     }
 
@@ -227,29 +248,38 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
 /// The fields of a profile request that `bench run` routes on, as the
 /// benchmark spells them after `--`: each takes the word after it, and
 /// `--artifact-root` is the benchmark's other name for the output folder.
-const ROUTED_FIELDS: [&str; 4] = [
+const ROUTED_FIELDS: [&str; 5] = [
     "--profile",
     "--profile-args",
+    "--profile-frequency",
     "--profile-output-dir",
     "--artifact-root",
 ];
 
 /// The one profile request @p cfg makes, for `bench run` and `bench doctor`
-/// (@p command, for messages) alike: its `--profile`, `--profile-args` and
-/// `--profile-output-dir`, each also taken from the arguments after `--`,
-/// where the benchmark would read it, and those arguments without them. The
-/// wrap, the folder, the benchmark's arguments and the doctor's row all come
-/// from this request, and the benchmark receives each field once. A field
-/// given twice with different values (to the command and after `--`, or
-/// twice after `--`) is refused, as is one after `--` without its value,
+/// (@p command, for messages) alike: its `--profile`, `--profile-args`,
+/// `--profile-frequency` and `--profile-output-dir`, each also taken from
+/// the arguments after `--`, where the benchmark would read it, and those
+/// arguments without them. The wrap, the folder, the start-up setting, the
+/// benchmark's arguments and the doctor's row all come from this request,
+/// and the benchmark receives each field once. A field given twice with
+/// different values (to the command and after `--`, or twice after `--`) is
+/// refused, as is one after `--` without its value, and a rate written
+/// `--profile-frequency=N` after `--`, which the benchmark does not read,
 /// before anything is created or started; the same value twice is one
-/// request (`nsys` is `nsight`). Every other argument after `--`,
-/// `--profile-analyze` among them, stays as it is, in its place.
+/// request (`nsys` is `nsight`, `0250` is 250). Every other argument after
+/// `--`, `--profile-analyze` among them, stays as it is, in its place.
 pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Error> {
     let mut forwarded: Vec<(&str, &str)> = Vec::new();
     let mut rest = Vec::with_capacity(cfg.extra_args.len());
     let mut args = cfg.extra_args.iter();
     while let Some(arg) = args.next() {
+        if let Some(value) = arg.strip_prefix("--profile-frequency=") {
+            return Err(Error::InvalidArgs(format!(
+                "{arg} after --: give it as --profile-frequency {value}, which the benchmark \
+                 reads"
+            )));
+        }
         let Some(field) = ROUTED_FIELDS.iter().find(|f| **f == arg) else {
             rest.push(arg.clone());
             continue;
@@ -301,6 +331,17 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
         canonical_backend(a) == canonical_backend(b)
     })?;
     out.profile_args = one("--profile-args", cfg.profile_args.clone(), &exact)?;
+    // Two spellings of one rate are one request; text that is no rate is
+    // compared as written and refused by startup_env.
+    out.profile_frequency = one(
+        "--profile-frequency",
+        cfg.profile_frequency.clone(),
+        &|a, b| {
+            a == b
+                || parse_profile_frequency(a)
+                    .is_some_and(|hz| Some(hz) == parse_profile_frequency(b))
+        },
+    )?;
     out.profile_output_dir = one(
         "--profile-output-dir",
         cfg.profile_output_dir
@@ -314,11 +355,12 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
 }
 
 /// The profile request as the benchmark reads it: `--profile` by its
-/// canonical name, `--profile-args`, `--profile-test-timeout`,
-/// `--profile-output-dir`, and `--profile-analyze` unless it is among the
-/// arguments forwarded after `--` (which the caller appends after these).
-/// `bench run` and `bench doctor` spell a request with this one function,
-/// for the request `effective_request` made.
+/// canonical name, `--profile-args`, `--profile-frequency` by its canonical
+/// value, `--profile-test-timeout`, `--profile-output-dir`, and
+/// `--profile-analyze` unless it is among the arguments forwarded after `--`
+/// (which the caller appends after these). `bench run` and `bench doctor`
+/// spell a request with this one function, for the request
+/// `effective_request` made.
 pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
     let mut args = Vec::new();
     if let Some(tool) = cfg.profile.as_deref().map(canonical_backend) {
@@ -328,6 +370,10 @@ pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
     if let Some(ref pa) = cfg.profile_args {
         args.push("--profile-args".to_string());
         args.push(pa.clone());
+    }
+    if let Some(ref hz) = cfg.profile_frequency {
+        args.push("--profile-frequency".to_string());
+        args.push(parse_profile_frequency(hz).map_or_else(|| hz.clone(), |v| v.to_string()));
     }
     if let Some(t) = cfg.profile_test_timeout {
         args.push("--profile-test-timeout".to_string());
@@ -443,30 +489,145 @@ fn jemalloc_dumps(dir: &Path) -> Vec<PathBuf> {
     dumps
 }
 
-/// Require a non-empty jemalloc dump from this run, and print each.
-fn require_jemalloc_dumps(dir: &Path, request: &str) -> Result<(), Error> {
-    let dumps: Vec<(PathBuf, u64)> = jemalloc_dumps(dir)
-        .into_iter()
-        .map(|p| {
-            let size = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-            (p, size)
-        })
-        .filter(|(_, size)| *size > 0)
+/// The process id and kind a jemalloc dump's name carries,
+/// `jeprof.<pid>.<n>.<kind>.heap`: `f` for the dump written at exit.
+fn jemalloc_dump_owner(dump: &Path) -> Option<(u32, String)> {
+    let name = dump.file_name()?.to_str()?;
+    let middle = name.strip_prefix("jeprof.")?.strip_suffix(".heap")?;
+    let mut parts = middle.split('.');
+    let pid = parts.next()?.parse().ok()?;
+    let _sequence = parts.next()?;
+    Some((pid, parts.next()?.to_string()))
+}
+
+/// True when a heap profile's text has its totals line,
+/// `t*: <a>: <b> [<c>: <d>]`, four integers. Only its presence is checked:
+/// jemalloc writes these totals in an encoding of its own for `jeprof`
+/// (with its default `prof_unbias` they are neither the samples taken nor
+/// their bytes), and `jeprof` estimates the bytes from each stack's record,
+/// not from this line.
+fn has_totals_line(text: &str) -> bool {
+    let Some(line) = text.lines().find_map(|l| l.trim().strip_prefix("t*:")) else {
+        return false;
+    };
+    let numbers: Result<Vec<u64>, _> = line
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|n| !n.is_empty())
+        .map(str::parse::<u64>)
         .collect();
-    if dumps.is_empty() {
-        return Err(profile_failure(
+    numbers.is_ok_and(|n| n.len() == 4)
+}
+
+/// True when the `MAPPED_LIBRARIES:` section of a heap profile's text maps
+/// @p binary: a line whose path, from its first '/', is the binary's.
+fn dump_maps(text: &str, binary: &Path) -> bool {
+    text.lines()
+        .skip_while(|l| !l.starts_with("MAPPED_LIBRARIES:"))
+        .filter_map(|l| l.find('/').map(|at| &l[at..]))
+        .any(|path| Path::new(path.trim_end()) == binary)
+}
+
+/// The dump jemalloc writes when the benchmark exits,
+/// `jeprof.<pid>.<n>.f.heap` for the process `bench run` started (@p pid),
+/// checked after that exit: present, not empty, a heap profile (`heap_v2/`)
+/// mapping @p binary (the benchmark, as a memory map names it), with its
+/// totals line (all zero for a run that sampled nothing, which is a valid
+/// run's). Every other dump in the folder, of a process the benchmark started
+/// under the same preload for one, is named and never taken for the
+/// benchmark's. Prints the dump and its size, and returns it.
+fn require_jemalloc_dump(
+    dir: &Path,
+    request: &str,
+    pid: u32,
+    binary: &Path,
+) -> Result<PathBuf, Error> {
+    let fail = |message: String| Err(profile_failure(request, "completion", message));
+    let (own, others): (Vec<PathBuf>, Vec<PathBuf>) =
+        jemalloc_dumps(dir).into_iter().partition(|dump| {
+            jemalloc_dump_owner(dump).is_some_and(|(owner, kind)| owner == pid && kind == "f")
+        });
+    for other in &others {
+        println!(
+            "[bench] jemalloc: {} is not the benchmark's exit dump (the benchmark is process \
+             {pid}); it is not this run's profile",
+            other.display()
+        );
+    }
+    let Some(dump) = own.into_iter().next() else {
+        let held = if others.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "; the folder holds only other dumps: {}",
+                others
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        return fail(format!(
+            "jemalloc wrote no exit dump of the benchmark (process {pid}), \
+             jeprof.{pid}.<n>.f.heap, in {}{held}",
+            dir.display()
+        ));
+    };
+    let bytes = fs::read(&dump).map_err(|e| {
+        profile_failure(
             request,
             "completion",
-            format!(
-                "no jemalloc dump (jeprof.*.heap) was written in {}",
-                dir.display()
-            ),
+            format!("{} cannot be read: {e}", dump.display()),
+        )
+    })?;
+    if bytes.is_empty() {
+        return fail(format!("{} is empty", dump.display()));
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if !text.starts_with("heap_v2/") {
+        let head: String = text.lines().next().unwrap_or("").chars().take(40).collect();
+        return fail(format!(
+            "{} is not a heap profile: it starts '{head}'",
+            dump.display()
         ));
     }
-    for (dump, size) in dumps {
-        println!("[bench] jemalloc wrote {} ({size} bytes)", dump.display());
+    if !dump_maps(&text, binary) {
+        return fail(format!(
+            "{} does not map the benchmark, {}: it is not this run's profile",
+            dump.display(),
+            binary.display()
+        ));
     }
-    Ok(())
+    if !has_totals_line(&text) {
+        return fail(format!(
+            "{} has no totals line (t*:); it is not a whole heap profile",
+            dump.display()
+        ));
+    }
+    println!(
+        "[bench] jemalloc wrote {} ({} bytes) when the benchmark exited",
+        dump.display(),
+        bytes.len()
+    );
+    Ok(dump)
+}
+
+/// After a jemalloc capture, what bench run prints: the command that reads
+/// its dump, and, when `jeprof` is not on PATH (@p lookup), that only reading
+/// needs it.
+fn jeprof_hint(binary: &Path, dump: &Path, lookup: impl Fn(&str) -> InPath) -> Vec<String> {
+    let mut lines = vec![format!(
+        "[bench] Read it: jeprof --text --alloc_space {} {}",
+        binary.display(),
+        dump.display()
+    )];
+    if !matches!(lookup("jeprof"), InPath::Executable(_)) {
+        lines.push(
+            "[bench] jeprof is not on PATH: reading the dump needs it (Debian and Ubuntu ship \
+             it in libjemalloc-dev); collecting it did not"
+                .to_string(),
+        );
+    }
+    lines
 }
 
 /// How a helper program ended, for messages.
@@ -508,6 +669,71 @@ fn benchmark_exit(status: ExitStatus) -> Option<BenchmarkExit> {
         }
     }
     Some(BenchmarkExit::Status(-1))
+}
+
+/* ----------------------------- Start-up settings ----------------------------- */
+
+/// The environment variable gperftools reads its CPU sampling rate from,
+/// once, as the process starts (the benchmark's `SAMPLING_RATE_VARIABLE`).
+const SAMPLING_RATE_VARIABLE: &str = "CPUPROFILE_FREQUENCY";
+
+/// The most samples a second gperftools takes; it clamps a higher rate.
+const MAX_SAMPLING_HZ: u32 = 4000;
+
+/// The one profile that takes a sampling rate.
+const SAMPLING_RATE_PROFILE: &str = "gperf";
+
+/// `--profile` names that select no profiler: the benchmark runs unprofiled.
+const NO_PROFILER: [&str; 1] = ["cupti"];
+
+/// A sampling rate as the benchmark reads `--profile-frequency` and
+/// CPUPROFILE_FREQUENCY: ASCII digits only, a whole number of Hz from 1 to
+/// MAX_SAMPLING_HZ, leading zeros allowed; `None` for anything else, which
+/// gperftools would read as its default rate or its maximum. The shared
+/// table `tests/fixtures/profile_frequency.tsv` holds the cases both
+/// languages are tested against.
+pub(crate) fn parse_profile_frequency(text: &str) -> Option<u32> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // Digits only: the one way left to fail is a number too large.
+    let hz: u64 = text.parse().ok()?;
+    (1..=u64::from(MAX_SAMPLING_HZ))
+        .contains(&hz)
+        .then_some(hz as u32)
+}
+
+/// What the benchmark of request @p cfg must find in its environment as it
+/// starts, because it is read only then: for a sampling rate with `--profile
+/// gperf`, CPUPROFILE_FREQUENCY set to the rate's canonical value; nothing
+/// when no rate is asked for, so an inherited value reaches the benchmark
+/// untouched. Never a wrap: no wrap variables, no folder, no CPUPROFILE. A
+/// rate that is not a whole number from 1 to 4000, one with no profiler to
+/// take it and one for a profile that takes none are refused, before
+/// anything is created or started.
+pub fn startup_env(cfg: &RunConfig) -> Result<Vec<(String, String)>, Error> {
+    let Some(ref text) = cfg.profile_frequency else {
+        return Ok(Vec::new());
+    };
+    let Some(hz) = parse_profile_frequency(text) else {
+        return Err(Error::InvalidArgs(format!(
+            "--profile-frequency: '{text}' is not a whole number of Hz from 1 to \
+             {MAX_SAMPLING_HZ} (gperftools samples at most {MAX_SAMPLING_HZ} times a second)"
+        )));
+    };
+    match cfg.profile.as_deref().map(canonical_backend) {
+        Some(tool) if tool == SAMPLING_RATE_PROFILE => {
+            Ok(vec![(SAMPLING_RATE_VARIABLE.to_string(), hz.to_string())])
+        }
+        Some(tool) if !NO_PROFILER.contains(&tool) => Err(Error::InvalidArgs(format!(
+            "--profile-frequency {hz} sets gperftools' CPU sampling rate; --profile {tool} \
+             does not take it; drop --profile-frequency, or profile with --profile gperf"
+        ))),
+        _ => Err(Error::InvalidArgs(format!(
+            "--profile-frequency {hz} cannot apply: no profiler is selected; add --profile \
+             gperf, or drop --profile-frequency"
+        ))),
+    }
 }
 
 /* ----------------------------- Wrap-externally backends ----------------------------- */
@@ -673,14 +899,18 @@ fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
 /// (perf, gperf, rapl, bpftrace, offcpu), jemalloc's environment wrap and
 /// rocprof. A word the tool does not take, a combination it cannot run, a
 /// mode `bench run` does not wrap and an output folder the tool would
-/// rewrite (heaptrack's %h and %p) are refused, naming what is accepted.
-/// Creates nothing.
+/// rewrite (heaptrack's %h and %p) or misread (jemalloc's ',') are refused,
+/// naming what is accepted. Creates nothing.
 fn route_for(
     tool: &str,
     profile_args: Option<&str>,
     binary: &Path,
     output_dir: Option<&Path>,
 ) -> Result<Option<Route>, Error> {
+    if tool == "jemalloc" {
+        refuse_for_jemalloc(profile_args, binary, output_dir)?;
+        return Ok(None);
+    }
     let Some(accepted) = wrapped_modes(tool) else {
         return Ok(None);
     };
@@ -868,6 +1098,34 @@ fn route_for(
     }))
 }
 
+/// What jemalloc's environment wrap refuses before anything is created or
+/// started: any `--profile-args` word (jemalloc takes no mode), and a folder
+/// holding ',', since the folder reaches jemalloc inside MALLOC_CONF, which
+/// ends an option at ',' and has no escape (the rest would be lost, or read
+/// as options of its own).
+fn refuse_for_jemalloc(
+    profile_args: Option<&str>,
+    binary: &Path,
+    output_dir: Option<&Path>,
+) -> Result<(), Error> {
+    let request = request_text("jemalloc", profile_args);
+    if let Some(word) = mode_words(profile_args).first() {
+        return Err(Error::InvalidArgs(format!(
+            "{request}: '{word}' is not a mode of jemalloc, which takes none"
+        )));
+    }
+    let dir = wrap_artifact_dir("jemalloc", binary, output_dir);
+    let d = dir.display().to_string();
+    if d.contains(',') {
+        return Err(Error::InvalidArgs(format!(
+            "{request}: jemalloc reads its dump folder inside MALLOC_CONF, which ends an \
+             option at ',' and has no escape, so it cannot write into {d}, which holds ','; \
+             choose a --profile-output-dir (and a binary name) without ','"
+        )));
+    }
+    Ok(())
+}
+
 /// A route's program, arguments and required outputs, as `route_for` builds them.
 type Routed = (
     &'static str,
@@ -875,17 +1133,22 @@ type Routed = (
     &'static [&'static [&'static str]],
 );
 
-/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing prof dumps at @p dir.
-/// prof_final:true guarantees the exit-time dump the backend's docs promise.
-/// The preload is by soname: ld.so searches the same dirs for LD_PRELOAD as
-/// for any other resolution, so no path lookup is needed or wanted.
+/// What jemalloc's environment wrap preloads: its soname, which ld.so
+/// resolves through LD_LIBRARY_PATH first, as for any other library.
+const JEMALLOC_PRELOAD: &str = "libjemalloc.so.2";
+
+/// Env pairs for jemalloc's LD_PRELOAD wrap, pointing its dumps at @p dir:
+/// profiling on (`prof`), a dump written when the process exits
+/// (`prof_final`), holding the bytes allocated over the whole run
+/// (`prof_accum`, which `jeprof --alloc_space` reads). The shared route table
+/// pins the pairs, which the benchmark's jemalloc backend probes with too.
 fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
     vec![
-        ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string()),
+        ("LD_PRELOAD".to_string(), JEMALLOC_PRELOAD.to_string()),
         (
             "MALLOC_CONF".to_string(),
             format!(
-                "prof:true,prof_final:true,prof_prefix:{}/jeprof",
+                "prof:true,prof_final:true,prof_accum:true,prof_prefix:{}/jeprof",
                 dir.display()
             ),
         ),
@@ -893,18 +1156,29 @@ fn jemalloc_env(dir: &Path) -> Vec<(String, String)> {
 }
 
 /// Wrap for backends that inject via environment rather than argv.
-/// jemalloc: LD_PRELOAD the library and enable profiling with a final dump
+/// jemalloc: LD_PRELOAD the library and enable profiling with a dump at exit
 /// into the per-binary artifact dir, whose previous dumps are removed first.
-/// `Ok(None)` when the tool is not env-shaped or the loader cannot resolve
-/// the library (the binary's own hint then explains the manual setup); an
-/// error when the folder cannot be prepared.
+/// A library the loader cannot preload is refused before anything is created
+/// or started: the benchmark would run without it, the loader only warning.
+/// Whether the library profiles is the benchmark's backend's decision, made
+/// when its profiler is created. `Ok(None)` when the tool is not env-shaped;
+/// an error when the folder cannot be prepared.
 fn env_wrap_for(
     tool: &str,
     binary: &Path,
     output_dir: Option<&Path>,
 ) -> Result<Option<Vec<(String, String)>>, Error> {
-    if tool != "jemalloc" || !jemalloc_preloadable() {
+    if tool != "jemalloc" {
         return Ok(None);
+    }
+    if let Some(refusal) = jemalloc_preload_refusal()? {
+        return Err(Error::ToolNotFound(format!(
+            "the loader cannot preload {JEMALLOC_PRELOAD} (\"{refusal}\"), and --profile \
+             jemalloc runs the benchmark with it preloaded. Use a jemalloc built with profiling \
+             (configure --enable-prof; Debian's and Ubuntu's libjemalloc2 have it on amd64 and \
+             i386, not on arm64), with its library folder first on LD_LIBRARY_PATH when it is \
+             not the system's; bench doctor <binary> --profile jemalloc checks it"
+        )));
     }
     let dir = wrap_artifact_dir(tool, binary, output_dir);
     prepare_folder(&dir, &[])?;
@@ -914,17 +1188,34 @@ fn env_wrap_for(
     Ok(Some(jemalloc_env(&dir)))
 }
 
-/// The loader is the only honest oracle for "will LD_PRELOAD work": preload
-/// by soname against /bin/true and let ld.so answer. Stderr stays silent on
-/// success; "cannot be preloaded" means the wrapped binary would not get the
-/// library either (ld.so warns and continues, and the C++ side would then
-/// see LD_PRELOAD set and believe it is profiled -- this gate prevents that).
-fn jemalloc_preloadable() -> bool {
-    Command::new("/bin/true")
-        .env("LD_PRELOAD", "libjemalloc.so.2")
-        .output()
-        .map(|o| !String::from_utf8_lossy(&o.stderr).contains("cannot be preloaded"))
-        .unwrap_or(false)
+/// How long the loader's check of jemalloc's preload may take.
+const PRELOAD_CHECK_BOUND: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The loader is the only honest oracle for "will LD_PRELOAD work": it
+/// preloads jemalloc by soname into /bin/true, an owned run, and its
+/// "cannot be preloaded" line, if it prints one, is returned (the wrapped
+/// benchmark would not get the library either: ld.so warns and continues).
+/// None when the library loads.
+fn jemalloc_preload_refusal() -> Result<Option<String>, Error> {
+    let mut command = Command::new("/bin/true");
+    command
+        .env("LD_PRELOAD", JEMALLOC_PRELOAD)
+        .env_remove("MALLOC_CONF");
+    let what = format!("/bin/true with {JEMALLOC_PRELOAD} preloaded");
+    match run_owned(&mut command, &what, PRELOAD_CHECK_BOUND) {
+        Ok(OwnedEnd::Exited(_, _, stderr)) => Ok(stderr
+            .lines()
+            .find(|l| l.contains("cannot be preloaded"))
+            .map(|l| l.trim().to_string())),
+        Ok(OwnedEnd::TimedOut) => Err(Error::ToolNotFound(format!(
+            "{what} did not end within {} s, so whether the loader preloads it is not known",
+            PRELOAD_CHECK_BOUND.as_secs()
+        ))),
+        Err(OwnedError::Start(e) | OwnedError::Wait(e)) => Err(Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("{what}: {e}"),
+        ))),
+    }
 }
 
 /// How long `callgrind_annotate` may take on one profile.
@@ -1344,7 +1635,6 @@ fn format_command(launch: &[OsString], args: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bench::tempfile_dir;
 
     /// @test Each way a benchmark can end maps to one report; success to none.
     #[test]
@@ -1698,6 +1988,234 @@ mod tests {
         assert!(r.extra_args.is_empty());
     }
 
+    /// A request for @p profile with the rate @p hz given to the command.
+    fn rate_request(profile: Option<&str>, hz: &str) -> RunConfig {
+        RunConfig {
+            profile_frequency: Some(hz.to_string()),
+            ..request(profile, None, &[])
+        }
+    }
+
+    /// @test The rates the shared table accepts parse to its values, and
+    /// every other input, which gperftools would read as another rate, is
+    /// none; the variable and the maximum are the table's.
+    #[test]
+    fn parse_profile_frequency_follows_the_shared_table() {
+        let rows = fixture_rows("profile_frequency.tsv", "rate");
+        assert!(rows.len() >= 20, "the shared table was not read");
+        for row in rows {
+            let parsed = parse_profile_frequency(&row[1]);
+            if row[2] == "ok" {
+                assert_eq!(
+                    parsed,
+                    Some(row[3].parse().expect("a value")),
+                    "'{}'",
+                    row[1]
+                );
+            } else {
+                assert_eq!(parsed, None, "'{}' is accepted", row[1]);
+            }
+        }
+        let variable = fixture_rows("profile_frequency.tsv", "variable");
+        assert_eq!(variable.len(), 1);
+        assert_eq!(SAMPLING_RATE_VARIABLE, variable[0][1]);
+        let maximum = fixture_rows("profile_frequency.tsv", "maximum");
+        assert_eq!(maximum.len(), 1);
+        assert_eq!(MAX_SAMPLING_HZ.to_string(), maximum[0][1]);
+    }
+
+    /// @test A rate for gperf is one start-up setting, the variable with the
+    /// rate's canonical value, and nothing else: no wrap metadata, no
+    /// folder, no CPUPROFILE. Without a rate there is none, whatever the
+    /// profile.
+    #[test]
+    fn startup_env_sets_only_the_sampling_rate() {
+        for (hz, canonical) in [
+            ("250", "250"),
+            ("0250", "250"),
+            ("4000", "4000"),
+            ("1", "1"),
+        ] {
+            let env = startup_env(&rate_request(Some("gperf"), hz)).expect("a rate for gperf");
+            assert_eq!(
+                env,
+                [(SAMPLING_RATE_VARIABLE.to_string(), canonical.to_string())],
+                "'{hz}'"
+            );
+        }
+        for profile in [
+            None,
+            Some("gperf"),
+            Some("perf"),
+            Some("massif"),
+            Some("cupti"),
+        ] {
+            assert!(
+                startup_env(&request(profile, None, &[]))
+                    .expect("no rate")
+                    .is_empty(),
+                "{profile:?}"
+            );
+        }
+    }
+
+    /// @test A rate is refused before anything starts when the shared table
+    /// refuses it, when no profiler takes it (no --profile, or a name that
+    /// selects none) and for every profile the table says does not take it;
+    /// it is accepted for the one that does.
+    #[test]
+    fn startup_env_refuses_a_rate_that_cannot_apply() {
+        for row in fixture_rows("profile_frequency.tsv", "rate") {
+            if row[2] == "refused" {
+                let err = startup_env(&rate_request(Some("gperf"), &row[1]))
+                    .expect_err("an invalid rate");
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "invalid arguments: --profile-frequency: '{}' is not a whole number of \
+                         Hz from 1 to 4000 (gperftools samples at most 4000 times a second)",
+                        row[1]
+                    )
+                );
+            }
+        }
+        let none = "invalid arguments: --profile-frequency 250 cannot apply: no profiler is \
+                    selected; add --profile gperf, or drop --profile-frequency";
+        let err = startup_env(&rate_request(None, "250")).expect_err("no profiler");
+        assert_eq!(err.to_string(), none);
+        let names = fixture_rows("profile_frequency.tsv", "noprofiler");
+        assert_eq!(names.len(), 1, "the shared table was not read");
+        for row in names {
+            let err = startup_env(&rate_request(Some(&row[1]), "250")).expect_err("none");
+            assert_eq!(err.to_string(), none, "{}", row[1]);
+        }
+        let backends = fixture_rows("profile_frequency.tsv", "backend");
+        assert!(backends.len() >= 16, "the shared table lost its backends");
+        for row in backends {
+            let result = startup_env(&rate_request(Some(&row[1]), "250"));
+            if row[2] == "take" {
+                assert!(result.is_ok(), "{}: {result:?}", row[1]);
+            } else {
+                let err = result.expect_err("a profile that takes no rate");
+                assert_eq!(
+                    err.to_string(),
+                    format!(
+                        "invalid arguments: --profile-frequency 250 sets gperftools' CPU \
+                         sampling rate; --profile {} does not take it; drop \
+                         --profile-frequency, or profile with --profile gperf",
+                        canonical_backend(&row[1])
+                    ),
+                    "{}",
+                    row[1]
+                );
+            }
+        }
+    }
+
+    /// @test Each precedence row's request, as bench run prepares it: the
+    /// child gets the request's canonical rate, and without a request bench
+    /// run adds nothing, so the inherited value (or its absence) reaches the
+    /// child untouched.
+    #[test]
+    fn startup_env_follows_the_precedence_rows() {
+        let rows = fixture_rows("profile_frequency.tsv", "precedence");
+        assert!(rows.len() >= 8, "the shared table was not read");
+        for row in rows {
+            let (requested, inherited, child) = (&row[1], &row[2], &row[3]);
+            let cfg = if requested.is_empty() {
+                request(Some("gperf"), None, &[])
+            } else {
+                rate_request(Some("gperf"), requested)
+            };
+            let env = startup_env(&cfg).expect("a request the table expects to start");
+            let prepared = env
+                .iter()
+                .find(|(k, _)| k == SAMPLING_RATE_VARIABLE)
+                .map(|(_, v)| v.as_str());
+            // What the child sees: the runner's value over the inherited one.
+            let seen = prepared.or((!inherited.is_empty()).then_some(inherited.as_str()));
+            assert_eq!(
+                seen.unwrap_or(""),
+                child.as_str(),
+                "request '{requested}', inherited '{inherited}'"
+            );
+        }
+    }
+
+    /// @test A rate after `--` is the request's: taken in and removed from
+    /// the arguments after `--`; the same rate given to the command and after
+    /// `--` is one request, by value ("0250" is 250), different rates are
+    /// refused, and so is the "--profile-frequency=N" spelling, which the
+    /// benchmark does not read.
+    #[test]
+    fn effective_request_takes_in_a_forwarded_rate() {
+        let r = effective_request(
+            &request(
+                Some("gperf"),
+                None,
+                &[
+                    "--gtest_filter=A.*",
+                    "--profile-frequency",
+                    "1000",
+                    "--cycles",
+                    "5",
+                ],
+            ),
+            "bench run",
+        )
+        .expect("one request");
+        assert_eq!(r.profile_frequency.as_deref(), Some("1000"));
+        assert_eq!(r.extra_args, ["--gtest_filter=A.*", "--cycles", "5"]);
+        let same = RunConfig {
+            extra_args: vec!["--profile-frequency".into(), "0250".into()],
+            ..rate_request(Some("gperf"), "250")
+        };
+        let r = effective_request(&same, "bench run").expect("the same rate twice");
+        assert_eq!(r.profile_frequency.as_deref(), Some("250"));
+        assert!(r.extra_args.is_empty());
+        let differ = RunConfig {
+            extra_args: vec!["--profile-frequency".into(), "1000".into()],
+            ..rate_request(Some("gperf"), "250")
+        };
+        let err = effective_request(&differ, "bench run").expect_err("two rates");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-frequency is given more than once with different \
+             values ('250' to bench run, '1000' after --); give it once"
+        );
+        let err = effective_request(
+            &request(Some("gperf"), None, &["--profile-frequency=1000"]),
+            "bench run",
+        )
+        .expect_err("the = spelling");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-frequency=1000 after --: give it as \
+             --profile-frequency 1000, which the benchmark reads"
+        );
+    }
+
+    /// @test The benchmark is given the rate once, by its canonical value,
+    /// after the profile's mode.
+    #[test]
+    fn profile_request_args_names_the_rate_once() {
+        let cfg = RunConfig {
+            profile_args: Some("cpu".into()),
+            ..rate_request(Some("gperf"), "0250")
+        };
+        assert_eq!(
+            profile_request_args(&cfg),
+            [
+                "--profile",
+                "gperf",
+                "--profile-args",
+                "cpu",
+                "--profile-frequency",
+                "250"
+            ]
+        );
+    }
+
     /// @test A route decides without creating its folder.
     #[test]
     fn route_for_creates_nothing() {
@@ -1710,10 +2228,18 @@ mod tests {
         assert!(!root.exists());
     }
 
-    /// One row of the shared table, split on tabs, with `-` read as empty.
+    /// One row of the shared route table, split on tabs, with `-` read as empty.
     fn table_rows(kind: &str) -> Vec<Vec<String>> {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/profile_routes.tsv");
-        let text = fs::read_to_string(&path).expect("the shared route table");
+        fixture_rows("profile_routes.tsv", kind)
+    }
+
+    /// The rows of @p kind in the shared table @p file, split on tabs, with
+    /// `-` read as empty.
+    fn fixture_rows(file: &str, kind: &str) -> Vec<Vec<String>> {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(file);
+        let text = fs::read_to_string(&path).expect("the shared table");
         text.lines()
             .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
             .map(|l| {
@@ -1919,55 +2445,233 @@ mod tests {
         assert_eq!(d, PathBuf::from("out/t.massif"));
     }
 
-    /// @test jemalloc env wrap composes LD_PRELOAD + MALLOC_CONF with a
-    /// final dump into the artifact dir. The preload is by soname: ld.so
-    /// owns the search, so no path appears anywhere.
+    /// @test jemalloc's environment wrap is the shared table's `env` rows, in
+    /// order: the preload by soname (ld.so owns the search, so no path
+    /// appears), profiling on, a dump at exit, the bytes allocated over the
+    /// run, into the folder. The benchmark's backend probes with the same rows.
     #[test]
-    fn jemalloc_env_composition() {
-        let pairs = jemalloc_env(Path::new("out/t.jemalloc"));
+    fn jemalloc_env_matches_the_shared_table() {
+        let rows: Vec<(String, String)> = table_rows("env")
+            .into_iter()
+            .filter(|row| row[1] == "jemalloc")
+            .map(|row| (row[2].clone(), row[3].replace("<dir>", "out/t.jemalloc")))
+            .collect();
+        assert_eq!(rows.len(), 2, "the table lost jemalloc's environment rows");
+        assert_eq!(jemalloc_env(Path::new("out/t.jemalloc")), rows);
         assert_eq!(
-            pairs[0],
-            ("LD_PRELOAD".to_string(), "libjemalloc.so.2".to_string())
-        );
-        assert_eq!(
-            pairs[1],
-            (
-                "MALLOC_CONF".to_string(),
-                "prof:true,prof_final:true,prof_prefix:out/t.jemalloc/jeprof".to_string()
-            )
+            rows[1].1,
+            "prof:true,prof_final:true,prof_accum:true,prof_prefix:out/t.jemalloc/jeprof"
         );
     }
 
-    /// @test jemalloc's dumps are found by the wrap's prefix and suffix only,
-    /// and a run needs a non-empty one.
+    /// @test jemalloc's dumps are found by the wrap's prefix and suffix, and
+    /// their names give the process and the kind.
     #[test]
     fn jemalloc_dumps_match_the_wrap_prefix() {
-        let dir = tempfile_dir("vernier_runner_utst_jemalloc_dumps");
+        let dir = tempfile::tempdir().expect("tempdir");
         for (name, text) in [
             ("jeprof.41.0.f.heap", "heap"),
             ("jeprof.41.1.i0.heap", ""),
             ("jeprof.txt", "not a dump"),
             ("other.heap", "not the wrap's"),
         ] {
-            fs::write(dir.join(name), text).expect("write");
+            fs::write(dir.path().join(name), text).expect("write");
         }
-        let names: Vec<String> = jemalloc_dumps(&dir)
+        let names: Vec<String> = jemalloc_dumps(dir.path())
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
         assert_eq!(names, ["jeprof.41.0.f.heap", "jeprof.41.1.i0.heap"]);
-        assert!(require_jemalloc_dumps(&dir, "--profile jemalloc").is_ok());
-        fs::remove_file(dir.join("jeprof.41.0.f.heap")).expect("remove");
-        let err = require_jemalloc_dumps(&dir, "--profile jemalloc")
-            .expect_err("only an empty dump is left");
-        assert!(
-            err.to_string().starts_with(
-                "--profile jemalloc failed: completion: no jemalloc dump (jeprof.*.heap) was \
-                 written in"
-            ),
-            "{err}"
+        assert_eq!(
+            jemalloc_dump_owner(Path::new("d/jeprof.41.0.f.heap")),
+            Some((41, "f".to_string()))
         );
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(
+            jemalloc_dump_owner(Path::new("jeprof.7.3.i0.heap")),
+            Some((7, "i0".to_string()))
+        );
+        assert_eq!(jemalloc_dump_owner(Path::new("jeprof.x.0.f.heap")), None);
+        assert_eq!(jemalloc_dump_owner(Path::new("jeprof.41.heap")), None);
+    }
+
+    /// @test A heap profile has its totals line when its `t*:` line holds
+    /// four integers, zeros included; a text without one, or with a part of
+    /// one, has none.
+    #[test]
+    fn totals_line_holds_four_integers() {
+        assert!(has_totals_line(
+            "heap_v2/524288\n  t*: 1: 82338 [2287: 14782155]\n  t0: 1: 82338 [2287: 14782155]\n"
+        ));
+        assert!(has_totals_line("heap_v2/524288\n  t*: 0: 0 [0: 0]\n"));
+        assert!(!has_totals_line("heap_v2/524288\n"));
+        assert!(!has_totals_line("  t*: 1: 2\n"));
+        assert!(!has_totals_line(
+            "  t*: 1: 82338 [99999999999999999999: 1]\n"
+        ));
+    }
+
+    /// A heap profile of process @p binary as jemalloc 5.3.0 writes one
+    /// (header, totals, a stack, the map), with @p count where its totals
+    /// and stack record hold the run's encoded count: 0 for a run that
+    /// sampled nothing.
+    fn heap_profile(binary: &Path, count: u64) -> String {
+        format!(
+            "heap_v2/524288\n  t*: 1: 82338 [{count}: {}]\n  t0: 1: 82338 [{count}: {}]\n\
+             @ 0x7f0000001000 0x55d0c1a01000\n  t*: 1: 82338 [{count}: {}]\n\n\
+             MAPPED_LIBRARIES:\n\
+             55d0c1a00000-55d0c1a2f000 r-xp 00000000 fd:01 1048601 {}\n\
+             7f0000000000-7f00000a0000 r-xp 00000000 fd:01 900001 /usr/lib/libjemalloc.so.2\n",
+            count * 6000,
+            count * 6000,
+            count * 6000,
+            binary.display()
+        )
+    }
+
+    /// @test The completion check takes the benchmark's own exit dump and
+    /// nothing else: another process's dump is named and never accepted, an
+    /// empty dump, a text that is not a heap profile and a profile of another
+    /// program fail at completion, and a run that sampled nothing passes.
+    #[test]
+    fn jemalloc_completion_takes_the_benchmarks_own_dump() {
+        let binary = Path::new("/opt/bench/bin/MyTest");
+        let check = |files: &[(&str, String)]| {
+            let dir = tempfile::tempdir().expect("tempdir");
+            for (name, text) in files {
+                fs::write(dir.path().join(name), text).expect("write");
+            }
+            let result = require_jemalloc_dump(dir.path(), "--profile jemalloc", 4711, binary);
+            (dir, result)
+        };
+        let own = heap_profile(binary, 2287);
+        let (dir, ok) = check(&[("jeprof.4711.0.f.heap", own.clone())]);
+        assert_eq!(
+            ok.expect("the benchmark's dump"),
+            dir.path().join("jeprof.4711.0.f.heap")
+        );
+
+        let (dir, both) = check(&[
+            ("jeprof.4711.0.f.heap", own.clone()),
+            (
+                "jeprof.4713.0.f.heap",
+                heap_profile(Path::new("/usr/bin/git"), 3),
+            ),
+        ]);
+        assert_eq!(
+            both.expect("the benchmark's dump"),
+            dir.path().join("jeprof.4711.0.f.heap")
+        );
+
+        let (_dir, zero) = check(&[("jeprof.4711.0.f.heap", heap_profile(binary, 0))]);
+        assert!(
+            zero.is_ok(),
+            "a run that sampled nothing is a valid run: {zero:?}"
+        );
+
+        let failures = [
+            (
+                vec![(
+                    "jeprof.4713.0.f.heap",
+                    heap_profile(Path::new("/usr/bin/git"), 3),
+                )],
+                "jemalloc wrote no exit dump of the benchmark (process 4711), \
+                 jeprof.4711.<n>.f.heap, in ",
+            ),
+            (
+                vec![],
+                "jemalloc wrote no exit dump of the benchmark (process 4711)",
+            ),
+            (
+                vec![("jeprof.4711.0.i0.heap", own.clone())],
+                "the folder holds only other dumps: ",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", String::new())],
+                "jeprof.4711.0.f.heap is empty",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", "garbage\n".to_string())],
+                "jeprof.4711.0.f.heap is not a heap profile: it starts 'garbage'",
+            ),
+            (
+                vec![(
+                    "jeprof.4711.0.f.heap",
+                    heap_profile(Path::new("/usr/bin/git"), 3),
+                )],
+                "jeprof.4711.0.f.heap does not map the benchmark, /opt/bench/bin/MyTest: it \
+                 is not this run's profile",
+            ),
+            (
+                vec![("jeprof.4711.0.f.heap", own.replace("t*:", "t?:"))],
+                "has no totals line (t*:)",
+            ),
+        ];
+        for (files, words) in failures {
+            let (_dir, result) = check(&files);
+            let err = result.expect_err(words);
+            let text = err.to_string();
+            assert!(
+                text.starts_with("--profile jemalloc failed: completion: "),
+                "{words}: {text}"
+            );
+            assert!(text.contains(words), "{words}: {text}");
+        }
+    }
+
+    /// @test After a capture bench run prints the jeprof command, and says
+    /// that only reading needs jeprof when it is not on PATH.
+    #[test]
+    fn jeprof_hint_names_the_command_and_a_missing_analyzer() {
+        let binary = Path::new("./build/MyTest");
+        let dump = Path::new("bench-out/MyTest.jemalloc/jeprof.4711.0.f.heap");
+        let found = jeprof_hint(binary, dump, |_| {
+            InPath::Executable(PathBuf::from("/usr/bin/jeprof"))
+        });
+        assert_eq!(
+            found,
+            [
+                "[bench] Read it: jeprof --text --alloc_space ./build/MyTest \
+              bench-out/MyTest.jemalloc/jeprof.4711.0.f.heap"
+            ]
+        );
+        let missing = jeprof_hint(binary, dump, |_| InPath::Absent);
+        assert_eq!(missing.len(), 2);
+        assert_eq!(missing[0], found[0]);
+        assert!(
+            missing[1].starts_with("[bench] jeprof is not on PATH: reading the dump needs it"),
+            "{}",
+            missing[1]
+        );
+    }
+
+    /// @test jemalloc takes no mode and cannot write into a folder holding
+    /// ',', from the output folder or the binary's name: both are refused
+    /// before anything is created, naming the folder.
+    #[test]
+    fn jemalloc_refusals_create_nothing() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let out = root.path().join("out");
+        let refused = route_for("jemalloc", Some("pages"), Path::new("./b"), Some(&out))
+            .expect_err("a mode word");
+        assert_eq!(
+            refused.to_string(),
+            "invalid arguments: --profile jemalloc --profile-args 'pages': 'pages' is not a \
+             mode of jemalloc, which takes none"
+        );
+        let named = route_for("jemalloc", None, Path::new("./a,b"), Some(&out))
+            .expect_err("a binary name with ','");
+        assert!(
+            named.to_string().contains(&format!(
+                "cannot write into {}/a,b.jemalloc, which holds ','",
+                out.display()
+            )),
+            "{named}"
+        );
+        assert!(matches!(
+            route_for("jemalloc", None, Path::new("./b"), Some(&out)),
+            Ok(None)
+        ));
+        assert!(!out.exists(), "a refusal or a decision created the folder");
     }
 
     /// @test env_wrap_for is None for tools that are not env-shaped.

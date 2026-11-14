@@ -30,6 +30,7 @@
 #include "src/bench/inc/PerfUtils.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/PerfValidation.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp" // runBoundedProbe, for git describe
 
 namespace vernier {
 namespace bench {
@@ -226,28 +227,38 @@ inline std::string captureTimestamp() {
   return std::string(buf.data());
 }
 
+/// How long the run's `git describe` may take; past it, it is ended and the
+/// hash is "unknown".
+inline constexpr int GIT_DESCRIBE_TIMEOUT_MS = 10000;
+
 /**
  * @brief Capture git commit hash (short form).
- * @note NOT RT-safe (spawns subprocess via popen).
+ *
+ * Runs `git describe --always --dirty --tags` in the working directory as a
+ * bounded child without a shell (runBoundedProbe()), in the probe environment
+ * (ReadinessContext::probeEnvironment()): without LD_PRELOAD, MALLOC_CONF and
+ * the other variables that put a profiler into a process, so a benchmark that
+ * a tool's wrap started (bench run's jemalloc preload, for one) starts git
+ * without that tool. "unknown" when git is not on PATH, fails, prints
+ * nothing or outlives GIT_DESCRIBE_TIMEOUT_MS.
+ * @note NOT RT-safe (starts a process).
  */
 inline std::string captureGitHash() {
-  std::array<char, 128> buf{};
-  FILE* pipe = popen("git describe --always --dirty --tags 2>/dev/null", "r");
-  if (!pipe) {
+  const ReadinessContext CTX = ReadinessContext::capture();
+  const std::optional<ResolvedTool> GIT = resolveExecutable("git", CTX);
+  if (!GIT || !GIT->executable) {
     return "unknown";
   }
-
-  if (fgets(buf.data(), static_cast<int>(buf.size()), pipe)) {
-    pclose(pipe);
-    std::string result(buf.data());
-    while (!result.empty() && (result.back() == '\n' || result.back() == '\r')) {
-      result.pop_back();
-    }
-    return result.empty() ? "unknown" : result;
+  const ProbeResult RUN = runBoundedProbe({GIT->path, "describe", "--always", "--dirty", "--tags"},
+                                          GIT_DESCRIBE_TIMEOUT_MS, CTX, ProbeStreams::SEPARATE);
+  if (!RUN.succeeded()) {
+    return "unknown";
   }
-
-  pclose(pipe);
-  return "unknown";
+  std::string result = RUN.output.substr(0, RUN.output.find('\n'));
+  if (!result.empty() && result.back() == '\r') {
+    result.pop_back();
+  }
+  return result.empty() ? "unknown" : result;
 }
 
 /**

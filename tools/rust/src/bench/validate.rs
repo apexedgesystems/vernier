@@ -65,10 +65,13 @@ pub fn run_checks() -> Vec<Row> {
             "heaptrack",
             "install heaptrack for low-overhead heap profiling",
         ),
+        // jeprof reads jemalloc's dumps and decides nothing about collecting
+        // them: whether this machine's jemalloc profiles is the doctor's row.
         tool_row(
-            "jemalloc",
+            "jeprof (reads jemalloc's dumps)",
             "jeprof",
-            "install jemalloc (built with prof) for allocation sampling",
+            "install it (Debian and Ubuntu: libjemalloc-dev) to read jemalloc's heap dumps; \
+             whether jemalloc profiles here: bench doctor <binary> --profile jemalloc",
         ),
         check_rapl(),
         check_aslr(),
@@ -100,7 +103,7 @@ pub fn run_checks() -> Vec<Row> {
 /// The rows for @p binary: the host facts, then the binary's default-mode
 /// doctor rows at advisory severity (its `--profile-check-json` document).
 pub fn binary_rows(binary: &Path) -> Result<Vec<Row>, Error> {
-    let doc = super::workflow::read_doctor_document(binary, &[])?;
+    let doc = super::workflow::read_doctor_document(binary, &[], &[])?;
     let backends = advisory_rows(&doc.value).map_err(|why| {
         Error::Parse(format!(
             "{} --profile-check-json printed no usable doctor document: {why}",

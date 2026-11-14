@@ -25,9 +25,12 @@
 #include <sys/wait.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -66,6 +69,27 @@ constexpr const char* CUSTOM_MAIN = VERNIER_READINESS_CUSTOM_MAIN_TARGET;
 /// Heap profiling is compiled into libbench (VERNIER_LINK_TCMALLOC=ON).
 constexpr bool HEAP_BUILT = VERNIER_READINESS_HEAP_BUILT != 0;
 
+/// The fixtures are built with a sanitizer jemalloc does not profile under,
+/// as this test is: the address or thread sanitizer, whose allocator serves
+/// the program, or clang's undefined-behaviour sanitizer, whose runtime,
+/// linked into the program, keeps a preloaded jemalloc from taking
+/// MALLOC_CONF.
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr bool SANITIZED = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) ||                         \
+    __has_feature(undefined_behavior_sanitizer)
+constexpr bool SANITIZED = true;
+#else
+constexpr bool SANITIZED = false;
+#endif
+#else
+constexpr bool SANITIZED = false;
+#endif
+
+/// The options bench run sets for jemalloc, before the dumps' prefix.
+constexpr const char* JEMALLOC_OPTIONS = "prof:true,prof_final:true,prof_accum:true";
+
 /// What the fake perf logs after its own directory for a run's launch, up to the pid.
 constexpr const char* PERF_STAT =
     "/perf stat -e cpu-cycles,instructions,branches,branch-misses,cache-misses -p ";
@@ -74,17 +98,11 @@ constexpr const char* PERF_STAT =
 const std::vector<std::string> QUICK = {"--cycles", "50", "--repeats", "2", "--warmup", "0"};
 
 /// Settings removed from a run's environment, so the test alone decides.
-const std::vector<std::string> UNSET = {"BENCH_SUDO",
-                                        "PERF_BPF",
-                                        "PERF_BPF_SUDO",
-                                        "PERF_BPF_SCRIPTS",
-                                        "PERF_BPF_FMT",
-                                        "PERF_BPF_OUT",
-                                        "VERNIER_EXTERNAL_WRAP",
-                                        "VERNIER_EXTERNAL_WRAP_DIR",
-                                        "FAKE_SUDO_DENY",
-                                        "LD_PRELOAD",
-                                        "MALLOC_CONF"};
+const std::vector<std::string> UNSET = {
+    "BENCH_SUDO",     "PERF_BPF",     "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
+    "PERF_BPF_FMT",   "PERF_BPF_OUT", "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
+    "FAKE_SUDO_DENY", "LD_PRELOAD",   "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
+    "CPUPROFILE"};
 
 /// @p args followed by QUICK.
 std::vector<std::string> quick(std::vector<std::string> args) {
@@ -182,6 +200,47 @@ std::vector<std::map<std::string, std::string>> csvRows(const std::string& path)
     rows.push_back(std::move(row));
   }
   return rows;
+}
+
+/**
+ * @brief Why no jemalloc with profiling can be preloaded here, or why that
+ * could not be checked; empty when one can. The test's own check, apart from
+ * the backend's: preloaded into /bin/true with profiling and a dump at exit,
+ * jemalloc leaves that dump in @p dir. The dump decides. Without it,
+ * std::system's result says whether the check ran: -1 when it could not
+ * start the shell or read its end; a shell that never ran leaves no stderr
+ * file (glibc reports one it could not start as exit status 127).
+ */
+std::string noProfilingJemalloc(const std::string& dir) {
+  const std::string ERR = dir + "/check.err";
+  const std::string COMMAND =
+      "/usr/bin/env LD_PRELOAD=libjemalloc.so.2 " +
+      shellQuote("MALLOC_CONF=prof:true,prof_final:true,prof_prefix:" + dir + "/check") +
+      " /bin/true 2>" + shellQuote(ERR);
+  const int STATUS = std::system(COMMAND.c_str());
+  const int SYSTEM_ERRNO = errno;
+  if (!namesEndingWith(dir, ".f.heap").empty()) {
+    return "";
+  }
+  std::string why = readText(ERR);
+  while (!why.empty() && why.back() == '\n') {
+    why.pop_back();
+  }
+  const std::string SAID = why.empty() ? std::string{} : ": " + why;
+  if (STATUS == -1) {
+    return "the check for a jemalloc with profiling did not complete: std::system could not "
+           "start its shell or read its end (" +
+           std::string(std::strerror(SYSTEM_ERRNO)) + ")" + SAID;
+  }
+  std::error_code ec;
+  if (!std::filesystem::exists(ERR, ec)) {
+    const std::string ENDED = WIFEXITED(STATUS)
+                                  ? "exit status " + std::to_string(WEXITSTATUS(STATUS))
+                                  : "wait status " + std::to_string(STATUS);
+    return "the check for a jemalloc with profiling did not run: its shell wrote no stderr file (" +
+           ENDED + ")";
+  }
+  return "no jemalloc with profiling can be preloaded here" + SAID;
 }
 
 /// How one run of a fixture ended.
@@ -334,12 +393,27 @@ TEST_F(ReadinessFixtureRun, MassifUnwrappedFails) {
 
 /**
  * @test heaptrack records /bin/true for the doctor; the run is not under
- * heaptrack, so it collects nothing and fails, printing the wrap command.
+ * heaptrack, so it collects nothing and fails, printing the wrap command. In
+ * a build with heap profiling the fixture loads tcmalloc, whose operator new
+ * heaptrack's malloc hooks never see, so the doctor's row is a caveat that
+ * says so instead.
  */
 TEST_F(ReadinessFixtureRun, HeaptrackUnwrappedFails) {
   dir_.install("fake_heaptrack.sh", "heaptrack");
   const std::string DOCTOR = doctorJson({"--profile", "heaptrack"});
-  EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status (heaptrack records)";
+  if (HEAP_BUILT) {
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "warn") << "doctor status (tcmalloc is loaded)";
+    EXPECT_EQ(selectedField(DOCTOR, "message"),
+              "heaptrack records /bin/true, but libtcmalloc is loaded in this process: C++ "
+              "allocations will be missing from its trace")
+        << "doctor message";
+    EXPECT_EQ(selectedField(DOCTOR, "hint"),
+              "Use a build without tcmalloc (-DVERNIER_LINK_TCMALLOC=OFF, the default) and do "
+              "not preload it.")
+        << "doctor hint";
+  } else {
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status (heaptrack records)";
+  }
   const RunResult RUN = run(quick({"--profile", "heaptrack"}));
   EXPECT_EQ(RUN.status, 4) << "run exit status";
   EXPECT_THAT(RUN.err,
@@ -714,4 +788,424 @@ TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
                                  MESSAGE))
       << "run-end report";
   EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
+
+/* --------------------------------- jemalloc --------------------------------- */
+
+/**
+ * @test A file that is not a library, first on LD_LIBRARY_PATH, which the
+ * loader refuses to preload: the doctor and a run name the same cause. Not
+ * wrapped, the run fails with the wrap command; wrapped by hand, the loader
+ * says why at start-up and the run fails naming the preload it refused.
+ * Nothing is written for the request.
+ */
+TEST_F(ReadinessFixtureRun, JemallocUnloadableDoctorAndRunAgree) {
+  dir_.writeFile("libjemalloc.so.2", "this is not a shared library, only a file with its name\n");
+  env_.push_back("LD_LIBRARY_PATH=" + dir_.path());
+  const std::string CAUSE = SANITIZED ? "unsupported: " : "missing: ";
+  const std::string DOCTOR = doctorJson({"--profile", "jemalloc"});
+  EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << "doctor status";
+  EXPECT_THAT(selectedField(DOCTOR, "message"),
+              HasSubstr(SANITIZED ? "unsupported: jemalloc does not profile a program built with "
+                                  : "missing: the loader cannot preload libjemalloc.so.2 ("))
+      << "doctor message";
+
+  const RunResult PLAIN = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(PLAIN.status, 4) << "unwrapped run exit status";
+  EXPECT_THAT(PLAIN.err, HasSubstr("[FAIL] Profiler 'jemalloc': " + CAUSE)) << "unwrapped notice";
+  if (!SANITIZED) {
+    EXPECT_THAT(
+        PLAIN.err,
+        HasSubstr("missing: jemalloc collects only as the process's allocator, and this "
+                  "process does not run on jemalloc\n   Wrap it: LD_PRELOAD=libjemalloc.so.2 "
+                  "MALLOC_CONF=" +
+                  std::string{JEMALLOC_OPTIONS} +
+                  ",prof_prefix:./jeprof <this-binary> --profile jemalloc [...]; or run "
+                  "it with bench run --profile jemalloc, which wraps it.\n"))
+        << "unwrapped notice";
+  }
+
+  const std::string DUMPS = dir_.path() + "/dumps";
+  env_.push_back("LD_PRELOAD=libjemalloc.so.2");
+  env_.push_back(std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS +
+                 "/jeprof");
+  const RunResult WRAPPED = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(WRAPPED.status, 4) << "wrapped run exit status";
+  EXPECT_THAT(WRAPPED.err, HasSubstr("from LD_PRELOAD cannot be preloaded"))
+      << "the loader's own refusal";
+  EXPECT_THAT(WRAPPED.err, HasSubstr("[FAIL] Profiler 'jemalloc': " + CAUSE)) << "wrapped notice";
+  if (!SANITIZED) {
+    EXPECT_THAT(WRAPPED.err, HasSubstr("missing: LD_PRELOAD names libjemalloc.so.2, but jemalloc "
+                                       "is not this process's allocator"))
+        << "wrapped notice";
+  }
+  EXPECT_THAT(namesEndingWith(work_, ".jemalloc"), IsEmpty()) << "folders of a refused request";
+  EXPECT_FALSE(std::filesystem::exists(DUMPS)) << "dumps of a refused request";
+}
+
+/**
+ * @test Where a jemalloc with profiling can be preloaded (the test checks so
+ * itself): the doctor is ok and says jeprof is missing without failing; a
+ * run wrapped by hand with bench run's options exits 0, announces the dump
+ * without claiming it, and after its exit the folder holds one final dump,
+ * of the run's own process. With profiling off, or no dump configured, the
+ * run fails with a configuration error and writes nothing; with the bytes
+ * not accumulated it collects, with a caveat.
+ */
+TEST_F(ReadinessFixtureRun, JemallocProfilingRunLeavesItsOwnDump) {
+  if (SANITIZED) {
+    GTEST_SKIP() << "the fixture is built with a sanitizer jemalloc does not profile under (the "
+                    "address or thread sanitizer's allocator, or clang's undefined-behaviour "
+                    "sanitizer linked in)";
+  }
+  if (const std::string WHY = noProfilingJemalloc(dir_.makeDirectory("check")); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const std::string DOCTOR = doctorJson({"--profile", "jemalloc"});
+  EXPECT_EQ(selectedField(DOCTOR, "status"), "ok") << "doctor status";
+  EXPECT_THAT(selectedField(DOCTOR, "message"),
+              HasSubstr(" profiles: preloaded with bench run's options, it wrote its final heap "
+                        "dump at exit (probe: /bin/cat /proc/self/maps); jeprof is not on PATH "
+                        "(only reading the dumps needs it)"))
+      << "doctor message";
+
+  const std::string DUMPS = dir_.makeDirectory("dumps");
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS + "/jeprof"};
+  const RunResult RUN = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[jemalloc] jemalloc profiles this process and writes its heap "
+                                 "dump when the\n[jemalloc] process exits, as " +
+                                 DUMPS + "/jeprof."))
+      << "announcement";
+  EXPECT_THAT(RUN.err, HasSubstr("[jemalloc] This run does not check that dump; bench run "
+                                 "--profile jemalloc does."))
+      << "announcement";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("written"))) << "a dump announced as written";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("Profiler 'jemalloc'"))) << "a notice for a ready request";
+  const std::vector<std::string> FINAL = namesEndingWith(DUMPS, ".f.heap");
+  ASSERT_EQ(FINAL.size(), 1U) << "final dumps after the run's exit";
+  const std::string DUMP = readText(DUMPS + "/" + FINAL.front());
+  EXPECT_EQ(DUMP.compare(0, 8, "heap_v2/"), 0) << FINAL.front() << " is not a heap profile";
+  EXPECT_THAT(DUMP, HasSubstr(std::filesystem::canonical(FIXTURE).string()))
+      << FINAL.front() << " does not map the fixture";
+
+  struct Options {
+    const char* what;
+    const char* options;
+    int status;
+    const char* words;
+  };
+  const Options OTHERS[] = {
+      {"profiling off", "prof_final:true", 4,
+       "), but its profiling is off: MALLOC_CONF has no prof:true"},
+      {"no dump", "prof:true", 4,
+       ") but writes no dump: MALLOC_CONF has no prof_final:true, and no interval or growth "
+       "dumps"},
+      {"bytes not accumulated", "prof:true,prof_final:true", 0,
+       "[WARN] Profiler 'jemalloc': jemalloc profiles this process ("},
+  };
+  int other = 0;
+  for (const Options& OTHER : OTHERS) {
+    // Named without the options: a ',' in the prefix would end it.
+    const std::string FOLDER = dir_.makeDirectory("other_" + std::to_string(other++));
+    env_ = {"LD_PRELOAD=libjemalloc.so.2",
+            std::string{"MALLOC_CONF="} + OTHER.options + ",prof_prefix:" + FOLDER + "/jeprof"};
+    const RunResult OTHER_RUN = run(quick({"--profile", "jemalloc"}));
+    EXPECT_EQ(OTHER_RUN.status, OTHER.status) << OTHER.what;
+    EXPECT_THAT(OTHER_RUN.err, HasSubstr(OTHER.words)) << OTHER.what;
+    EXPECT_EQ(namesEndingWith(FOLDER, ".f.heap").size(), OTHER.status == 0 ? 1U : 0U) << OTHER.what;
+  }
+}
+
+/**
+ * @test Where a jemalloc with profiling can be preloaded (the test checks so
+ * itself): bench run's options with an empty prof_prefix, which turns
+ * jemalloc's automatic dumps off, fail the run with status 4 before any
+ * folder is created, and no dump is written anywhere; the same options with
+ * a prefix leave the run's final dump. The prefix is jemalloc's own answer,
+ * read in the run.
+ */
+TEST_F(ReadinessFixtureRun, JemallocEmptyPrefixFailsBeforeAnyFolder) {
+  if (SANITIZED) {
+    GTEST_SKIP() << "the fixture is built with a sanitizer jemalloc does not profile under (the "
+                    "address or thread sanitizer's allocator, or clang's undefined-behaviour "
+                    "sanitizer linked in)";
+  }
+  if (const std::string WHY = noProfilingJemalloc(dir_.makeDirectory("check")); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:"};
+  const RunResult EMPTY = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(EMPTY.status, 4) << "run exit status with an empty prefix";
+  EXPECT_THAT(EMPTY.err,
+              HasSubstr("[FAIL] Profiler 'jemalloc': configuration: jemalloc profiles this "
+                        "process ("))
+      << "notice";
+  EXPECT_THAT(EMPTY.err, HasSubstr(") but writes no dump: its prof_prefix is empty, which turns "
+                                   "its automatic dumps off\n   Give prof_prefix a path"))
+      << "notice";
+  EXPECT_THAT(namesEndingWith(work_, ".jemalloc"), IsEmpty()) << "folders of a refused request";
+  EXPECT_THAT(namesEndingWith(work_, ".heap"), IsEmpty()) << "dumps of a refused request";
+
+  const std::string DUMPS = dir_.makeDirectory("dumps");
+  env_ = {"LD_PRELOAD=libjemalloc.so.2",
+          std::string{"MALLOC_CONF="} + JEMALLOC_OPTIONS + ",prof_prefix:" + DUMPS + "/jeprof"};
+  const RunResult NAMED = run(quick({"--profile", "jemalloc"}));
+  EXPECT_EQ(NAMED.status, 0) << "run exit status with a prefix";
+  EXPECT_THAT(NAMED.err, Not(HasSubstr("Profiler 'jemalloc'"))) << "a notice for a ready request";
+  EXPECT_EQ(namesEndingWith(DUMPS, ".f.heap").size(), 1U) << "final dumps with a prefix";
+}
+
+/* ------------------------------ gperf: Sampling Rate ------------------------------ */
+
+namespace {
+
+/// The cases of a fixture run that the profiler guard profiles.
+const std::vector<std::string> GUARDED = {"ReadinessFixture.First", "ReadinessFixture.Second"};
+
+/**
+ * @brief The sampling period the header of the CPU profile at @p path records,
+ * in microseconds (its fourth pointer-sized slot); -1 when it has no header.
+ * Read here, apart from the backend's own reader.
+ */
+long long recordedPeriodUs(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  std::uintptr_t slots[5] = {};
+  if (!in.read(reinterpret_cast<char*>(slots), sizeof slots) || slots[0] != 0 || slots[1] < 3 ||
+      slots[2] != 0) {
+    return -1;
+  }
+  return static_cast<long long>(slots[3]);
+}
+
+/// The doctor's message for a gperf CPU request with no analyzer on PATH, then @p clause.
+std::string gperfReady(const std::string& clause = "") {
+  return std::string{"gperftools profiles cpu (built: "} + (HEAP_BUILT ? "cpu, heap" : "cpu") +
+         "); no analyzer on PATH (only --profile-analyze needs one)" +
+         (clause.empty() ? "" : "; " + clause);
+}
+
+/// The remedy of a rate @p hz the fixture was not started with.
+std::string startRemedy(const std::string& hz) {
+  const std::string REQUEST = "--profile gperf --profile-frequency " + hz;
+  return "Run it through bench run " + shellQuote(FIXTURE) + " " + REQUEST +
+         ", which sets CPUPROFILE_FREQUENCY before the benchmark starts, or start it as "
+         "CPUPROFILE_FREQUENCY=" +
+         hz + " " + shellQuote(FIXTURE) + " " + REQUEST + ".";
+}
+
+} // namespace
+
+/**
+ * @test A rate asked for and carried by the environment the fixture starts
+ * with, at 250 and at 1000 Hz: the doctor says so, the run exits 0, each
+ * guarded case writes its own folder and profile, both record the rate's
+ * period, and each case prints its rate line.
+ */
+TEST_F(ReadinessFixtureRun, GperfRequestedRateIsEveryCasesPeriod) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  for (const auto& [HZ, PERIOD] : {std::pair<std::string, long long>{"250", 4000},
+                                   std::pair<std::string, long long>{"1000", 1000}}) {
+    env_ = {"CPUPROFILE_FREQUENCY=" + HZ};
+    const std::vector<std::string> REQUEST = {"--profile", "gperf", "--profile-frequency", HZ};
+    EXPECT_EQ(selectedField(doctorJson(REQUEST), "message"),
+              gperfReady(HZ +
+                         " Hz requested; the current environment matches the request "
+                         "(CPUPROFILE_FREQUENCY=" +
+                         HZ + "); expected period " + std::to_string(PERIOD) +
+                         " us, checked in each finished profile"))
+        << HZ << " Hz: doctor message";
+    const RunResult RUN = run(quick(REQUEST));
+    EXPECT_EQ(RUN.status, 0) << HZ << " Hz: run exit status";
+    std::vector<std::string> folders = namesEndingWith(work_, ".gperf");
+    std::sort(folders.begin(), folders.end());
+    EXPECT_EQ(folders, (std::vector<std::string>{"ReadinessFixture.First.gperf",
+                                                 "ReadinessFixture.Second.gperf"}))
+        << HZ << " Hz: one folder per case";
+    for (const std::string& TEST : GUARDED) {
+      EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), PERIOD)
+          << HZ << " Hz: " << TEST << "'s profile";
+      EXPECT_THAT(RUN.err, HasSubstr("[gperf] " + TEST + ": cpu.prof records a period of " +
+                                     std::to_string(PERIOD) + " us (" + HZ + " Hz requested), "))
+          << HZ << " Hz: " << TEST << "'s rate line";
+    }
+    EXPECT_EQ(countOf(RUN.err, ": cpu.prof records a period of "), 2U) << HZ << " Hz: rate lines";
+  }
+}
+
+/**
+ * @test A rate in the environment the fixture starts with, none asked for:
+ * the doctor and the run take it, and each case's profile records its period.
+ */
+TEST_F(ReadinessFixtureRun, GperfInheritedRateIsEveryCasesPeriod) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=250"};
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"),
+            gperfReady("sampling at CPUPROFILE_FREQUENCY=250 from the environment: expected "
+                       "period 4000 us, checked in each finished profile"))
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 4000) << TEST;
+    EXPECT_THAT(RUN.err, HasSubstr("[gperf] " + TEST +
+                                   ": cpu.prof records a period of 4000 us "
+                                   "(CPUPROFILE_FREQUENCY=250 from the "
+                                   "environment), "))
+        << TEST << "'s rate line";
+  }
+}
+
+/**
+ * @test A rate the fixture's environment does not carry, absent or another
+ * value: the doctor and the run refuse it with the command that starts the
+ * fixture with it, the run collects nothing, creates no folder and exits 4.
+ */
+TEST_F(ReadinessFixtureRun, GperfRateTheProcessDidNotStartWithFails) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const std::vector<std::string> REQUEST = {"--profile", "gperf", "--profile-frequency", "1000"};
+  for (const std::string& SETTING : {std::string{}, std::string{"CPUPROFILE_FREQUENCY=250"}}) {
+    env_.clear();
+    if (!SETTING.empty()) {
+      env_.push_back(SETTING);
+    }
+    const std::string MESSAGE =
+        "configuration: 1000 Hz requested, and this process's environment has " +
+        std::string{SETTING.empty() ? "no CPUPROFILE_FREQUENCY" : "CPUPROFILE_FREQUENCY='250'"} +
+        ": gperftools reads the rate only when the process starts";
+    const std::string DOCTOR = doctorJson(REQUEST);
+    EXPECT_EQ(selectedField(DOCTOR, "status"), "fail") << SETTING << ": doctor status";
+    EXPECT_EQ(selectedField(DOCTOR, "message"), MESSAGE) << SETTING << ": doctor message";
+    EXPECT_EQ(selectedField(DOCTOR, "hint"), startRemedy("1000")) << SETTING << ": doctor hint";
+    const RunResult RUN = run(quick(REQUEST));
+    EXPECT_EQ(RUN.status, 4) << SETTING << ": run exit status";
+    EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE + "\n   " +
+                                   startRemedy("1000") + "\n   Nothing is collected"))
+        << SETTING << ": run notice";
+    EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty())
+        << SETTING << ": a folder for a refused rate";
+  }
+}
+
+/** @test The highest rate gperftools takes, carried by the environment: a period of 250 us. */
+TEST_F(ReadinessFixtureRun, GperfHighestRate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=4000"};
+  const RunResult RUN = run(quick({"--profile", "gperf", "--profile-frequency", "4000"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 250) << TEST;
+  }
+}
+
+/**
+ * @test A rate above the highest stops the benchmark as its command line is
+ * read, in every build: exit 2, nothing run or created.
+ */
+TEST_F(ReadinessFixtureRun, RateAboveTheHighestStopsTheRun) {
+  env_ = {"CPUPROFILE_FREQUENCY=4001"};
+  const RunResult RUN = run(quick({"--profile", "gperf", "--profile-frequency", "4001"}));
+  EXPECT_EQ(RUN.status, 2) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("--profile-frequency: '4001' is not a whole number of Hz from 1 "
+                                 "to 4000 (gperftools samples at most 4000 times a second)"))
+      << "refusal";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused rate";
+}
+
+/**
+ * @test A rate with heap profiling alone is refused by the doctor and the run
+ * (in a build without heap profiling, the heap request is refused for that
+ * first): exit 4, no folder.
+ */
+TEST_F(ReadinessFixtureRun, GperfHeapAloneRefusesARate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=1000"};
+  const std::vector<std::string> REQUEST = {
+      "--profile", "gperf", "--profile-args", "heap", "--profile-frequency", "1000"};
+  const std::string MESSAGE = selectedField(doctorJson(REQUEST), "message");
+  if (HEAP_BUILT) {
+    EXPECT_EQ(MESSAGE, "configuration: --profile-frequency 1000 sets the CPU sampling rate, and "
+                       "--profile-args heap profiles the heap only")
+        << "doctor message";
+  } else {
+    EXPECT_THAT(MESSAGE, HasSubstr("unsupported: heap profiling is not compiled in"))
+        << "doctor message";
+  }
+  const RunResult RUN = run(quick(REQUEST));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE)) << "run notice";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused rate";
+}
+
+/**
+ * @test A rate for perf, which takes none, in every build: the doctor's row
+ * and the run refuse it alike before perf's own check, and the run starts no
+ * perf and exits 4.
+ */
+TEST_F(ReadinessFixtureRun, RateForPerfIsRefusedBeforePerfRuns) {
+  dir_.install("fake_perf.sh", "perf");
+  env_ = {"CPUPROFILE_FREQUENCY=1000"};
+  const std::vector<std::string> REQUEST = {"--profile", "perf", "--profile-frequency", "1000"};
+  const std::string MESSAGE = "configuration: --profile-frequency 1000 sets gperftools' CPU "
+                              "sampling rate; 'perf' does not take it";
+  EXPECT_EQ(selectedField(doctorJson(REQUEST), "message"), MESSAGE) << "doctor message";
+  std::error_code ec;
+  std::filesystem::remove(dir_.logPath(), ec);
+  const RunResult RUN = run(quick(REQUEST));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'perf': " + MESSAGE)) << "run notice";
+  EXPECT_EQ(dir_.log(), "") << "perf was run for a refused rate";
+}
+
+/**
+ * @test Without a rate, asked for or in the environment, a gperf run prints
+ * what it printed before rates were checked: the doctor's message is
+ * unchanged, no rate line is printed, and both profiles record gperftools'
+ * default period, 10000 us.
+ */
+TEST_F(ReadinessFixtureRun, GperfDefaultRunPrintsNoRate) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"), gperfReady())
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  EXPECT_THAT(RUN.err, Not(HasSubstr("cpu.prof records a period of"))) << "a rate line";
+  for (const std::string& TEST : GUARDED) {
+    EXPECT_EQ(recordedPeriodUs(work_ + "/" + TEST + ".gperf/cpu.prof"), 10000) << TEST;
+  }
+}
+
+/**
+ * @test A value in the environment that is not a whole number from 1 to 4000,
+ * with no rate asked for: the doctor and the run refuse it, and the run exits
+ * 4 without a folder.
+ */
+TEST_F(ReadinessFixtureRun, GperfRefusedVariableFails) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_FREQUENCY=abc"};
+  const std::string MESSAGE =
+      "configuration: CPUPROFILE_FREQUENCY='abc' in the environment is not a whole number of Hz "
+      "from 1 to 4000: gperftools reads such a value without saying what rate it takes from it";
+  EXPECT_EQ(selectedField(doctorJson({"--profile", "gperf"}), "message"), MESSAGE)
+      << "doctor message";
+  const RunResult RUN = run(quick({"--profile", "gperf"}));
+  EXPECT_EQ(RUN.status, 4) << "run exit status";
+  EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'gperf': " + MESSAGE)) << "run notice";
+  EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused value";
 }
