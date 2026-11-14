@@ -210,7 +210,7 @@ struct GpuStats {
   double totalTimeMedianUs{};                       // Total time
   std::optional<MultiGpuMetrics> multiGpu{};        // Only in cudaKernelMultiGpu()
   std::optional<P2PTransferProfile> p2pProfile{};   // Only with P2P transfers
-  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only with managed memory
+  std::optional<UnifiedMemoryProfile> unifiedMemory{}; // Only under --capture-um
 };
 ```
 
@@ -219,7 +219,9 @@ struct GpuStats {
 - **transfers, occupancy, clocks**: Always populated (values may be zero/default)
 - **multiGpu**: Only when using `cudaKernelMultiGpu()`
 - **p2pProfile**: Only when P2P transfers are measured
-- **unifiedMemory**: Only when using managed memory
+- **unifiedMemory**: Only when the measurement asked for unified-memory
+  counters (`--capture-um`) and CUPTI recorded them completely (see
+  [Unified-Memory Counters](#unified-memory-counters))
 
 ### Key Metrics Explained
 
@@ -734,39 +736,108 @@ cudaFree(d_data);
 
 ### Unified Memory
 
-Automatic memory migration between CPU and GPU:
+Managed memory gives the CPU and the GPU one pointer, and CUDA makes the data
+available where it is used:
 
 ```cpp
-// Unified Memory - same pointer on CPU and GPU
 float* data;
 cudaMallocManaged(&data, SIZE);
-kernel<<<...>>>(data);  // Automatic migration!
+kernel<<<...>>>(data);
+cudaDeviceSynchronize();  // before the host reads data
 cudaFree(data);
 ```
 
-**Testing with Unified Memory:**
+**Measuring it.** The harness times a kernel on managed memory as it times any
+kernel. It does not allocate or move a test's memory, so the test chooses the
+strategy: allocate with `cudaMallocManaged()` and declare no transfer
+(`withHostToDevice()` and `withDeviceToHost()` time explicit copies, which
+managed data does not need). Kernel time is the median over the repeats of
+each repeat's time per launch. A wait for pages to reach the GPU inside the
+timed interval counts in its repeat's sample: averaging over the launches and
+taking the median can dilute or hide a one-time wait, but neither isolates it
+nor guarantees that it is left out. Under `--capture-um` each measurement also
+says whether pages moved in its window, in which direction and for how long
+([Unified-Memory Counters](#unified-memory-counters)); a warmup that touches
+the data moves its pages before the window, so the measurement after it shows
+no migration.
 
-```bash
-# Run with UM
-./MyKernel_GPU_PTEST --gpu-memory unified --csv um_results.csv
+### Unified-Memory Counters
 
-# Compare strategies
-./MyKernel_GPU_PTEST --gpu-memory explicit --csv explicit.csv
-./MyKernel_GPU_PTEST --gpu-memory unified --csv unified.csv
-bench compare explicit.csv unified.csv
+`--capture-um` asks for unified-memory counters, as does a test that sets
+`PerfGpuConfig::captureUnifiedMemory`. The harness's in-process CUPTI
+collector then records CUPTI's unified-memory counter activity over each
+measurement's window, from before its timed repeats to after them (the
+declared copies and the launches, not the warmup), and the result's
+`GpuStats::unifiedMemory` and its CSV row carry what the records add up to:
+
+| Column              | From CUPTI's records in the window                                            |
+| ------------------- | ----------------------------------------------------------------------------- |
+| `umPageFaults`      | the GPU page-fault groups, plus one for each CPU page fault                   |
+| `umH2DMigrations`   | the host-to-device transfers (their bytes: `unifiedMemory->h2dBytes`)         |
+| `umD2HMigrations`   | the device-to-host transfers (their bytes: `unifiedMemory->d2hBytes`)         |
+| `umMigrationTimeUs` | the transfers' durations, summed: transfers that overlap each count their own |
+| `umThrashing`       | 1 when CUPTI recorded thrashing in the window, otherwise 0                    |
+
+A migration is one transfer record. The driver moves a buffer in transfers
+of its own choosing, so their number varies from run to run for the same
+access while the bytes do not. A window that migrates nothing has zeros, which
+are observed: copies of device memory migrate nothing, and neither does a
+kernel on managed pages already on the GPU. The counters are the process's,
+so a multi-GPU measurement, which records them over its devices' launches,
+counts every device's. `isThrashing()` and `migrationOverheadPct()` are
+arithmetic over the counts, not CUPTI's report. The counts reach the result
+and the CSV; the run prints no line for them, as for the other GPU cells.
+
+`GpuUnifiedMemory.CountersFollowTheBuffer`
+([`GpuUnifiedMemory_pTest.cu`](../ptst/gpu/GpuUnifiedMemory_pTest.cu)) checks
+them against what it does to a 1 MiB managed buffer: a host write then a
+kernel read moves at least the buffer to the device and nothing back, a
+kernel write then a host read at least the buffer back and nothing to the
+device. On an RTX 5000 Ada laptop GPU each step moved exactly 1048576 bytes,
+to the device in a number of transfers that changed from run to run and back
+in 10 every time, and an Nsight Systems trace of the same steps gave the same
+bytes and directions.
+
+**Where CUPTI cannot record them.** On the Jetson AGX Thor CUPTI refuses the
+configuration, and under an Nsight Systems or Nsight Compute session, with
+`VERNIER_DISABLE_CUPTI=1` or in a build without CUPTI the collector records
+nothing. There the request fails as a `--profile` request that cannot collect
+does: the tests still run, timed as without it, and their rows are written
+with the five cells empty, but the first measurement reports the request with
+the device and the reason, and a run whose tests pass exits with status 4
+([troubleshooting](TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
+On the Thor:
+
+```text
+[FAIL] Profiler 'capture-um': unsupported: NVIDIA Thor: CUPTI refused to configure the unified-memory counters (CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED): umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty
+   Run without --capture-um (or leave PerfGpuConfig::captureUnifiedMemory false); the timing and the CSV do not change.
+   The run will fail (exit status 4 if the tests pass).
 ```
 
-### Understanding UM Metrics
+and, at the end of the run:
 
-Unified Memory CSV columns:
+```text
+[profile] a profile failed; the run exits with status 4:
+[profile]   capture-um: unsupported: NVIDIA Thor: CUPTI refused to configure the unified-memory counters (CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED): umPageFaults, umH2DMigrations, umD2HMigrations, umMigrationTimeUs and umThrashing stay empty
+```
 
-| Column              | Meaning             | Good Value    | Bad Value     |
-| ------------------- | ------------------- | ------------- | ------------- |
-| `umPageFaults`      | GPU page faults     | <1000         | >10000        |
-| `umH2DMigrations`   | Host->device moves  | Low           | High          |
-| `umD2HMigrations`   | Device->host moves  | Low           | High          |
-| `umMigrationTimeUs` | Migration overhead  | <10% of total | >50% of total |
-| `umThrashing`       | Memory ping-ponging | false         | true          |
+A measurement whose records are incomplete (CUPTI dropped some, for instance)
+fails the request for its test in the same way, naming the problem, and its
+cells stay empty. A failed test keeps its own status.
+
+**What the request costs.** Switching the counters on before the timed
+repeats, and flushing and switching them off after them, adds about 45 ms to
+each measurement on the laptop GPU, outside the timed interval. While the
+repeats run, CUPTI records every migration and fault; on that GPU the
+sample's kernel medians with and without the request agreed within their
+run-to-run spread, but compare timings from runs made the same way.
+
+`--gpu-memory unified` asks for no counters. It selects managed memory for
+the tests that allocate by the selected strategy, such as
+`GpuMemoryStrategies.SelectedStrategy`, whose row under
+`--gpu-memory unified --capture-um` counts its input's move to the GPU; the
+harness changes no test's allocation
+([GPU Memory Strategy Selection](ADVANCED_GUIDE.md#gpu-memory-strategy-selection)).
 
 **When Unified Memory is good:**
 
@@ -782,49 +853,54 @@ Unified Memory CSV columns:
 - Need maximum performance
 - Production optimization
 
-**Example comparison:**
+**Example comparison:** the same kernel on managed and on device memory, in
+one test. Each measurement is its own CSV row,
+`MemoryStrategy.Compare/managed_memory` and
+`MemoryStrategy.Compare/device_memory`:
 
 ```cpp
 PERF_GPU_TEST(MemoryStrategy, Compare) {
   PERF_GPU_GUARD(perf);
 
   const int N = 1024 * 1024;
+  const size_t BYTES = N * sizeof(float);
   std::vector<float> h_data(N, 1.0f);
 
   dim3 block(256);
   dim3 grid((N + 255) / 256);
 
-  // Test explicit memory
-  float* d_data;
-  cudaMalloc(&d_data, N * sizeof(float));
+  float* um_data;  // the host fills it through the same pointer
+  float* d_data;   // filled with an explicit copy
+  cudaMallocManaged(&um_data, BYTES);
+  cudaMalloc(&d_data, BYTES);
+  std::copy(h_data.begin(), h_data.end(), um_data);
+  cudaMemcpy(d_data, h_data.data(), BYTES, cudaMemcpyHostToDevice);
 
-  auto explicit_result = perf.cudaKernel([&](cudaStream_t s) {
-    myKernel<<<grid, block, 0, s>>>(d_data, N);
-  }, "explicit_memory")
-    .withHostToDevice(h_data.data(), d_data, N * sizeof(float))
-    .withDeviceToHost(d_data, h_data.data(), N * sizeof(float))
+  auto managed = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(um_data, N);
+  }, "managed_memory")
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Explicit:  kernel=%.2f ms, transfers=%.2f ms\n",
-              explicit_result.kernelTimeUs / 1000.0,
-              explicit_result.transferTimeUs / 1000.0);
+  auto device = perf.cudaKernel([&](cudaStream_t s) {
+    myKernel<<<grid, block, 0, s>>>(d_data, N);
+  }, "device_memory")
+    .withLaunchConfig(grid, block)
+    .measure();
 
+  std::printf("managed/device kernel time: %.2f\n",
+              managed.kernelTimeUs / device.kernelTimeUs);
+
+  cudaFree(um_data);
   cudaFree(d_data);
-
-  // Test unified memory (if enabled with --gpu-memory unified)
-  // Results will show umPageFaults, umMigrationTimeUs, etc.
 }
 ```
 
-**Typical output:**
-
-```
-Explicit:  kernel=123.4 ms, transfers=45.6 ms
-Unified:   kernel=234.5 ms, umMigrationTimeUs=156.7 ms, umPageFaults=12450
-
-Analysis: Explicit 2x faster due to UM page fault overhead
-```
+The ratio is this machine's, and can differ with another GPU or driver, and
+where the GPU shares the host's memory. `GpuUnifiedMemory` in
+`src/bench/ptst/gpu/GpuUnifiedMemory_pTest.cu` runs this comparison with every
+result checked, and times kernels after the host wrote and after it read a
+managed buffer.
 
 ---
 
@@ -953,7 +1029,9 @@ Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
 cache hit rates), keep `--profile nsight --profile-args replay` or wrap
-externally with `ncu`.
+externally with `ncu`. Under `--capture-um` the same collector also records
+CUPTI's unified-memory counters over each measured window
+([Unified-Memory Counters](#unified-memory-counters)).
 
 CUPTI allows a single client per process, so this in-process collector and an
 external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,

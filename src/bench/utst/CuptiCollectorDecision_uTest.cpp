@@ -4,7 +4,9 @@
  *        a setting that stands it down, or that is rejected, registers nothing.
  *        And it checks what CUPTI answers: a refusal leaves it unavailable
  *        with the reason, and a window whose records are not known to be
- *        complete reports no launch and names the problem.
+ *        complete reports no launch and names the problem. Asked for the
+ *        unified-memory counters, a window configures and reads what
+ *        UnifiedMemoryProfile documents, and nothing without the request.
  *
  * Built against the counting stand-in in fake_cupti/ instead of CUPTI (first on
  * this target's include path), so it runs on any machine: it compiles the real
@@ -191,6 +193,7 @@ TEST_F(CuptiCollectorDecision, EnablesKernelRecordsOnly) {
   collector.stop();
   EXPECT_EQ(fake_cupti::calls().disables, 1);
   EXPECT_EQ(fake_cupti::calls().flushes, 1);
+  EXPECT_EQ(fake_cupti::calls().configures, 0) << "unified-memory counters configured unasked";
 }
 
 /** @test A refused registration leaves it unavailable, says why, and nothing is switched on. */
@@ -438,4 +441,311 @@ TEST_F(CuptiCollectorDecision, AWindowAfterAFailedWalkCountsAgain) {
   EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
   EXPECT_TRUE(collector.isAvailable());
   EXPECT_EQ(fake_cupti::calls().enables, 2) << "the second window switches kernel records on again";
+}
+
+/* ----------------------------- Unified-Memory Counters ----------------------------- */
+
+namespace {
+
+using vernier::bench::UnifiedMemoryProfile;
+
+/// The CPU fault records' value: the faulting instruction's address, never a count.
+constexpr std::uint64_t FAULTING_PC = 0x7f00deadbeefULL;
+
+/**
+ * @brief Records a flush delivers after the kernel records: two host-to-device
+ *        transfers (4096 and 61440 bytes, 2592 and 7424 ns), one device-to-host
+ *        (8192 bytes, 1280 ns), three GPU fault records of 12, 4 and 1 fault
+ *        groups, five CPU faults and two thrashing records.
+ */
+void deliverUnifiedMemory() {
+  using fake_cupti::unifiedMemoryRecord;
+  fake_cupti::behaviour().unifiedMemoryRecords = {
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD, 4096,
+                          1000, 3592),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD, 61440,
+                          3592, 11016),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH, 8192,
+                          20000, 21280),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT, 12, 500, 900),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT, 4, 950, 990),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT, 1, 995, 999),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+                          FAULTING_PC, 19000),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+                          FAULTING_PC, 19100),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+                          FAULTING_PC, 19200),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+                          FAULTING_PC, 19300),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+                          FAULTING_PC, 19400),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THRASHING, 65536, 30000),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THRASHING, 65536, 31000),
+  };
+}
+
+/** @brief A collector asked for the unified-memory counters. */
+struct AskingCollector {
+  CuptiCollector collector;
+  AskingCollector() { collector.collectUnifiedMemory(true); }
+};
+
+} // namespace
+
+/**
+ * @test Asked for the counters, a window configures the five kinds it reads
+ *       (each enabled), switches their kind on after the kernel records, and
+ *       at stop flushes before it switches either kind off: switched off
+ *       first, the unified-memory kind loses the window's device-side records
+ */
+TEST_F(CuptiCollectorDecision, ARequestConfiguresTheFiveCountersThenFlushesFirst) {
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_EQ(fake_cupti::calls().configures, 1);
+  const std::vector<CUpti_ActivityUnifiedMemoryCounterConfig>& CONFIG =
+      fake_cupti::calls().configuration;
+  ASSERT_EQ(CONFIG.size(), 5U);
+  const CUpti_ActivityUnifiedMemoryCounterKind KINDS[] = {
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD,
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOH,
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_CPU_PAGE_FAULT_COUNT,
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_GPU_PAGE_FAULT,
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THRASHING};
+  for (std::size_t i = 0; i < CONFIG.size(); ++i) {
+    EXPECT_EQ(CONFIG[i].kind, KINDS[i]) << "configuration entry " << i;
+    EXPECT_EQ(CONFIG[i].enable, 1U) << "configuration entry " << i;
+    EXPECT_EQ(CONFIG[i].scope, CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_SCOPE_PROCESS_SINGLE_DEVICE);
+  }
+  EXPECT_EQ(fake_cupti::calls().log,
+            (std::vector<std::string>{"enable 3", "configure", "enable 25", "flush", "disable 3",
+                                      "disable 25"}));
+  EXPECT_TRUE(asking.collector.unifiedMemoryRefusal().empty())
+      << asking.collector.unifiedMemoryRefusal();
+}
+
+/**
+ * @test Each record adds to its field: the GPU fault groups and the CPU faults
+ *       (one each, whatever their value) to pageFaults; each transfer to its
+ *       direction's count and bytes, and its end minus start to the time; each
+ *       thrashing record to thrashingEvents. The kernel records beside them
+ *       keep their stats
+ */
+TEST_F(CuptiCollectorDecision, EachUnifiedMemoryRecordAddsToItsField) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.windowProblem().empty()) << asking.collector.windowProblem();
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  const UnifiedMemoryProfile& UM = *asking.collector.unifiedMemory();
+  EXPECT_EQ(UM.pageFaults, 17U + 5U);
+  EXPECT_EQ(UM.h2dMigrations, 2U);
+  EXPECT_EQ(UM.h2dBytes, 65536U);
+  EXPECT_EQ(UM.d2hMigrations, 1U);
+  EXPECT_EQ(UM.d2hBytes, 8192U);
+  EXPECT_DOUBLE_EQ(UM.migrationTimeUs, (2592.0 + 7424.0 + 1280.0) / 1000.0);
+  EXPECT_EQ(UM.thrashingEvents, 2U);
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_EQ(asking.collector.stats().registersMedian, REGISTERS);
+}
+
+/**
+ * @test Records of kinds the counters do not read (configured elsewhere in the
+ *       process: CUPTI keeps a kind's configuration) add nothing
+ */
+TEST_F(CuptiCollectorDecision, RecordsOfOtherKindsAddNothing) {
+  deliverLaunches();
+  using fake_cupti::unifiedMemoryRecord;
+  fake_cupti::behaviour().unifiedMemoryRecords = {
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_THROTTLING, 0, 100, 700),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_REMOTE_MAP, 4096, 800),
+      unifiedMemoryRecord(CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_DTOD, 4096, 900,
+                          950)};
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  const UnifiedMemoryProfile& UM = *asking.collector.unifiedMemory();
+  EXPECT_EQ(UM.pageFaults + UM.h2dMigrations + UM.d2hMigrations + UM.thrashingEvents, 0U);
+  EXPECT_EQ(UM.h2dBytes + UM.d2hBytes, 0U);
+  EXPECT_DOUBLE_EQ(UM.migrationTimeUs, 0.0);
+}
+
+/** @test A window that records the counters and gets no record observes zeros. */
+TEST_F(CuptiCollectorDecision, AWindowWithoutUnifiedMemoryRecordsObservesZeros) {
+  deliverLaunches();
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemory()->pageFaults, 0U);
+  EXPECT_EQ(asking.collector.unifiedMemory()->h2dMigrations, 0U);
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+}
+
+/**
+ * @test A window without a kernel launch says so and keeps its counters: they
+ *       need complete records, not a launch
+ */
+TEST_F(CuptiCollectorDecision, AWindowWithoutALaunchKeepsItsCounters) {
+  deliverUnifiedMemory();
+  AskingCollector asking;
+  window(asking.collector);
+  EXPECT_EQ(asking.collector.windowProblem(), "CUPTI recorded no kernel launch");
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, 0U);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemory()->h2dMigrations, 2U);
+}
+
+/**
+ * @test A refused configuration leaves the window without counters and says so
+ *       in CUPTI's words; the kind is never switched on, the kernel records are
+ *       collected, and the next window asks again
+ */
+TEST_F(CuptiCollectorDecision, ARefusedConfigurationIsStated) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  fake_cupti::behaviour().configureResult = CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED;
+  AskingCollector asking;
+  window(asking.collector);
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemoryRefusal(),
+            "CUPTI refused to configure the unified-memory counters "
+            "(CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED)");
+  EXPECT_EQ(fake_cupti::calls().enabled,
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+  EXPECT_EQ(fake_cupti::calls().disabled,
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_TRUE(asking.collector.isAvailable());
+  EXPECT_TRUE(asking.collector.windowProblem().empty()) << asking.collector.windowProblem();
+  window(asking.collector);
+  EXPECT_EQ(fake_cupti::calls().configures, 2) << "each window asks again";
+  EXPECT_FALSE(asking.collector.unifiedMemoryRefusal().empty());
+}
+
+/**
+ * @test A refused kind leaves the window without counters, though records
+ *       reach the buffer, and says so in CUPTI's words; it is not switched off
+ *       at stop, and the kernel records are collected
+ */
+TEST_F(CuptiCollectorDecision, ARefusedKindIsStated) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  fake_cupti::behaviour().unifiedMemoryEnableResult = CUPTI_ERROR_NOT_READY;
+  AskingCollector asking;
+  window(asking.collector);
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemoryRefusal(),
+            "CUPTI refused to record unified-memory counter activity (CUPTI_ERROR_NOT_READY)");
+  EXPECT_EQ(fake_cupti::calls().disabled,
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_TRUE(asking.collector.isAvailable());
+}
+
+/**
+ * @test A kind CUPTI does not switch off keeps that window's counters, which
+ *       were flushed first; no later window switches it on or reads its records,
+ *       each says why, and kernel windows go on
+ */
+TEST_F(CuptiCollectorDecision, AKindThatStaysOnEndsTheCounters) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  fake_cupti::behaviour().unifiedMemoryDisableResult = CUPTI_ERROR_UNKNOWN;
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemory()->h2dMigrations, 2U);
+
+  window(asking.collector);
+  EXPECT_EQ(fake_cupti::calls().configures, 1) << "a later window configured the counters again";
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value())
+      << "a later window read the records of a kind it did not switch on";
+  EXPECT_EQ(asking.collector.unifiedMemoryRefusal(),
+            "CUPTI did not stop recording unified-memory counter activity (CUPTI_ERROR_UNKNOWN)");
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_TRUE(asking.collector.isAvailable());
+}
+
+/**
+ * @test Each problem that leaves a window's records incomplete leaves it
+ *       without counters, as it leaves it without kernel stats
+ */
+TEST_F(CuptiCollectorDecision, IncompleteRecordsLeaveNoCounters) {
+  struct Case {
+    const char* name;
+    void (*set)();
+  };
+  const Case CASES[] = {
+      {"a failed flush", [] { fake_cupti::behaviour().flushResult = CUPTI_ERROR_UNKNOWN; }},
+      {"dropped records", [] { fake_cupti::behaviour().droppedPerFlush = 2; }},
+      {"an uncounted drop",
+       [] { fake_cupti::behaviour().droppedCountResult = CUPTI_ERROR_UNKNOWN; }},
+      {"a walk ended early", [] { failWalkAfter(1); }},
+  };
+  for (const Case& c : CASES) {
+    fake_cupti::reset();
+    deliverLaunches();
+    deliverUnifiedMemory();
+    c.set();
+    AskingCollector asking;
+    window(asking.collector);
+    EXPECT_FALSE(asking.collector.windowProblem().empty()) << c.name;
+    EXPECT_FALSE(asking.collector.unifiedMemory().has_value()) << c.name;
+    EXPECT_EQ(asking.collector.stats().kernelLaunches, 0U) << c.name;
+  }
+}
+
+/**
+ * @test A transfer that ends before it starts leaves the window without
+ *       counters and kernel stats, and says so: its time would wrap
+ */
+TEST_F(CuptiCollectorDecision, ATransferEndingBeforeItStartsLeavesNoCounters) {
+  deliverLaunches();
+  fake_cupti::behaviour().unifiedMemoryRecords = {fake_cupti::unifiedMemoryRecord(
+      CUPTI_ACTIVITY_UNIFIED_MEMORY_COUNTER_KIND_BYTES_TRANSFER_HTOD, 4096, 5000, 4000)};
+  AskingCollector asking;
+  window(asking.collector);
+  EXPECT_EQ(asking.collector.windowProblem(),
+            "CUPTI recorded 1 unified-memory transfer that ends before it starts");
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, 0U);
+}
+
+/** @test A window that was not asked for the counters reads none of their records. */
+TEST_F(CuptiCollectorDecision, AWindowNotAskedReadsNoUnifiedMemoryRecord) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  CuptiCollector collector;
+  window(collector);
+  EXPECT_FALSE(collector.unifiedMemory().has_value());
+  EXPECT_TRUE(collector.unifiedMemoryRefusal().empty()) << collector.unifiedMemoryRefusal();
+  EXPECT_EQ(fake_cupti::calls().configures, 0);
+  EXPECT_EQ(collector.stats().kernelLaunches, LAUNCHES);
+}
+
+/** @test The request can be withdrawn: the next window configures and switches on nothing. */
+TEST_F(CuptiCollectorDecision, AWithdrawnRequestRecordsNoCounters) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  asking.collector.collectUnifiedMemory(false);
+  fake_cupti::calls() = {};
+  window(asking.collector);
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(fake_cupti::calls().configures, 0);
+  EXPECT_EQ(fake_cupti::calls().enabled,
+            std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_KERNEL});
+}
+
+/** @test reset() clears the last window's counters. */
+TEST_F(CuptiCollectorDecision, ResetClearsTheCounters) {
+  deliverUnifiedMemory();
+  AskingCollector asking;
+  window(asking.collector);
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  asking.collector.reset();
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
 }

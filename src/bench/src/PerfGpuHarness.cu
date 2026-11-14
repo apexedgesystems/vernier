@@ -1,16 +1,16 @@
 /**
  * @file PerfGpuHarness.cu
- * @brief Implementation of GPU performance test harness with multi-GPU support
- *        and Unified Memory profiling.
+ * @brief Implementation of GPU performance test harness with multi-GPU support.
  */
 
 #include "src/bench/inc/PerfGpuHarness.hpp"
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfGpuTestMacros.hpp"
-#include "src/bench/inc/PerfUtils.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/src/NvmlTelemetry.hpp"
 
 #include <cuda_runtime.h>
@@ -92,54 +92,6 @@ void calculateOccupancy(OccupancyMetrics& occ, dim3 grid, dim3 block, size_t sha
     occ.limitingFactor = OccupancyMetrics::LimitingFactor::Unknown;
   }
 }
-
-// ============================================================================
-// Unified Memory Profiling Helpers
-// ============================================================================
-
-#if CUDART_VERSION >= 8000
-
-struct UMSnapshot {
-  size_t totalMem = 0;
-  size_t freeMem = 0;
-  double timestamp = 0.0;
-};
-
-UMSnapshot captureUMSnapshot(int deviceId) {
-  UMSnapshot snap;
-  cudaSetDevice(deviceId);
-  cudaMemGetInfo(&snap.freeMem, &snap.totalMem);
-  snap.timestamp = nowUs();
-  return snap;
-}
-
-void trackUnifiedMemory(UnifiedMemoryProfile& profile, const UMSnapshot& before,
-                        const UMSnapshot& after, size_t managedBytes) {
-  const size_t MEM_CHANGE = (before.freeMem > after.freeMem) ? (before.freeMem - after.freeMem)
-                                                             : (after.freeMem - before.freeMem);
-
-  const size_t PAGE_SIZE = 4096;
-  profile.pageFaults = managedBytes / PAGE_SIZE;
-
-  if (MEM_CHANGE > managedBytes / 2) {
-    profile.h2dMigrations = profile.pageFaults / 2;
-  }
-
-  profile.migrationTimeUs = static_cast<double>(profile.pageFaults) * 1.0;
-  profile.thrashingEvents = (profile.h2dMigrations > profile.pageFaults / 4) ? 1 : 0;
-}
-
-#else
-
-struct UMSnapshot {
-  double timestamp = 0.0;
-};
-
-UMSnapshot captureUMSnapshot(int) { return UMSnapshot{}; }
-
-void trackUnifiedMemory(UnifiedMemoryProfile&, const UMSnapshot&, const UMSnapshot&, size_t) {}
-
-#endif
 
 // ============================================================================
 // Suite-wide CPU baseline
@@ -232,9 +184,12 @@ double sharedSuiteBaselineUs(const std::string& testName) {
 
 // ============================================================================
 // A GPU cell a run cannot measure is left empty, and the run says why. What
-// holds for the whole run (this build has no CUPTI, a provider refused) is
-// said once per process, at the first measurement it empties cells of; what
-// went wrong in one measured window is said for that window, naming the test.
+// holds for the whole run (this build has no CUPTI, a provider refused, the
+// run asked for unified-memory counters CUPTI cannot record here, which also
+// fails the run) is said once per process, at the first measurement it
+// empties cells of; what went wrong in one measured window is said for that
+// window, naming the test (for requested unified-memory counters, that also
+// fails the run).
 // ============================================================================
 
 namespace {
@@ -252,6 +207,109 @@ void stateOnce(const std::string& line) {
   if (stated.insert(line).second) {
     std::fprintf(stderr, "%s\n", line.c_str());
   }
+}
+
+/// The CSV columns filled from the unified-memory counters.
+constexpr const char* UM_CELLS = "umPageFaults, umH2DMigrations, umD2HMigrations, "
+                                 "umMigrationTimeUs and umThrashing";
+
+/// How a run whose request for unified-memory counters cannot be met can pass.
+constexpr const char* UM_REMEDY = "Run without --capture-um (or leave "
+                                  "PerfGpuConfig::captureUnifiedMemory false); the timing and "
+                                  "the CSV do not change.";
+
+/// How a run whose window lost unified-memory records can pass.
+constexpr const char* UM_WINDOW_REMEDY = "Run the test again, or without --capture-um.";
+
+/** @brief CUDA device @p deviceId's name, for a message; its number when CUDA cannot say. */
+std::string deviceName(int deviceId) {
+  cudaDeviceProp prop{};
+  if (cudaGetDeviceProperties(&prop, deviceId) == cudaSuccess) {
+    return prop.name;
+  }
+  static_cast<void>(cudaGetLastError()); // the failed query leaves no error behind
+  return "CUDA device " + std::to_string(deviceId);
+}
+
+/** @brief The current CUDA device's number; the configured one when CUDA cannot say. */
+int currentDevice(const PerfGpuConfig& cfg) {
+  int device = 0;
+  if (cudaGetDevice(&device) == cudaSuccess) {
+    return device;
+  }
+  static_cast<void>(cudaGetLastError());
+  return cfg.deviceId;
+}
+
+/**
+ * @brief Answers a request for unified-memory counters
+ *        (PerfGpuConfig::captureUnifiedMemory) at a measurement whose window
+ *        has started: a window that does not record them fails the request,
+ *        as a profile that cannot collect does.
+ * @param deviceId The device the measurement runs on, which the report names.
+ * @return Whether the window records the counters.
+ *
+ * The window records them unless the collector is unavailable (its reason:
+ * it stood down for an Nsight session or VERNIER_DISABLE_CUPTI, this build has
+ * no CUPTI, CUPTI refused it) or CUPTI refused the counters
+ * (CuptiCollector::unifiedMemoryRefusal(): a platform without them). The
+ * profiler registry records the failure and reports it the first time
+ * (ProfilerRegistry::reportFailure()); the measurement goes on with the um*
+ * cells empty, and ProfilerRegistry::finishRun() gives a run whose tests pass
+ * exit status 4.
+ */
+bool stateUnifiedMemoryRequest(const PerfGpuConfig& cfg, const CuptiCollector& cupti,
+                               int deviceId) {
+  if (!cfg.captureUnifiedMemory) {
+    return false;
+  }
+  const std::string& WHY =
+      cupti.isAvailable() ? cupti.unifiedMemoryRefusal() : cupti.unavailableReason();
+  if (WHY.empty()) {
+    return true;
+  }
+  ProfilerRegistry::instance().reportFailure(
+      "capture-um", "",
+      readinessResult(ReadinessCause::UNSUPPORTED,
+                      deviceName(deviceId) + ": " + WHY + ": " + UM_CELLS + " stay empty",
+                      UM_REMEDY));
+  return false;
+}
+
+/**
+ * @brief The five um* cells from a window's counters; all empty when it has
+ *        none. umThrashing is 1 when CUPTI recorded thrashing in the window, not
+ *        UnifiedMemoryProfile::isThrashing()'s ratio.
+ */
+void fillUnifiedMemoryCells(PerfRow& row, const std::optional<UnifiedMemoryProfile>& um) {
+  if (!um.has_value()) {
+    return;
+  }
+  row.umPageFaults = um->pageFaults;
+  row.umH2DMigrations = um->h2dMigrations;
+  row.umD2HMigrations = um->d2hMigrations;
+  row.umMigrationTimeUs = um->migrationTimeUs;
+  row.umThrashing = um->thrashingEvents > 0;
+}
+
+/**
+ * @brief After a window that recorded the unified-memory counters: a window
+ *        whose records are not complete fails the request for @p test, naming
+ *        the problem, and its row's um* cells stay empty.
+ */
+void stateIncompleteUnifiedMemory(const CuptiCollector& cupti, const std::string& test) {
+  if (cupti.unifiedMemory().has_value()) {
+    return;
+  }
+  // The window's problem; should the collector name none, that it returned no counters.
+  const std::string PROBLEM = cupti.windowProblem().empty()
+                                  ? std::string("the collector returned no unified-memory counters")
+                                  : cupti.windowProblem();
+  ProfilerRegistry::instance().reportFailure(
+      "capture-um", test,
+      readinessResult(ReadinessCause::UNUSABLE,
+                      PROBLEM + " in the measured window: " + UM_CELLS + " stay empty",
+                      UM_WINDOW_REMEDY, ReadinessStage::COMPLETION));
 }
 
 } // namespace
@@ -487,6 +545,7 @@ public:
     // stated once per process.
     const bool cuptiEnabled = !cuptiYields_;
     if (cuptiEnabled) {
+      cupti_.collectUnifiedMemory(gpuCfg_.captureUnifiedMemory);
       cupti_.start();
       if (!cupti_.isAvailable()) {
         stateOnce("[gpu] " + cupti_.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.");
@@ -501,16 +560,10 @@ public:
     // only its own launches.
     const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
 
-    UnifiedMemoryProfile umProfile{};
-    UMSnapshot umBefore, umAfter;
-    size_t totalManagedBytes = 0;
-
-    if (gpuCfg_.captureUnifiedMemory) {
-      for (const auto& xfer : h2d) {
-        totalManagedBytes += xfer.bytes;
-      }
-      umBefore = captureUMSnapshot(dev.deviceId);
-    }
+    // Unified-memory counters, when asked for: a window that does not record
+    // them fails the request.
+    const bool UM_RECORDED = gpuCfg_.captureUnifiedMemory &&
+                             stateUnifiedMemoryRequest(gpuCfg_, cupti_, currentDevice(gpuCfg_));
 
     for (int r = 0; r < cpuCfg_.repeats; ++r) {
       // A test that declares no transfer has no leg to time: an event pair
@@ -559,11 +612,6 @@ public:
       totalTimes.push_back(h2dTimes.back() + kernelTimes.back() + d2hTimes.back());
     }
 
-    if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
-      umAfter = captureUMSnapshot(dev.deviceId);
-      trackUnifiedMemory(umProfile, umBefore, umAfter, totalManagedBytes);
-    }
-
     dev.nvml->readEnd(nvmlReadings);
     ClockSpeedProfile clocks{};
     PowerThermalProfile powerThermal{};
@@ -585,6 +633,9 @@ public:
       if (!cupti_.windowProblem().empty()) {
         std::fprintf(stderr, "[gpu] %s in %s's measured window, so its %s stay empty.\n",
                      cupti_.windowProblem().c_str(), testName_.c_str(), CUPTI_CELLS);
+      }
+      if (UM_RECORDED) {
+        stateIncompleteUnifiedMemory(cupti_, testName_);
       }
     }
 
@@ -617,6 +668,7 @@ public:
     result.stats.powerThermal = powerThermal;
     if (cuptiEnabled) {
       result.stats.cupti = cupti_.stats();
+      result.stats.unifiedMemory = cupti_.unifiedMemory();
     }
 
     size_t totalH2D = 0, totalD2H = 0;
@@ -633,10 +685,6 @@ public:
     result.stats.kernelTimeMedianUs = kernelStats.median;
     result.stats.transferTimeMedianUs = result.transferTimeUs;
     result.stats.totalTimeMedianUs = totalStats.median;
-
-    if (gpuCfg_.captureUnifiedMemory && totalManagedBytes > 0) {
-      result.stats.unifiedMemory = umProfile;
-    }
 
     if (hasLaunchConfig) {
       calculateOccupancy(result.stats.occupancy, grid, block, sharedMemBytes, dev.prop);
@@ -660,27 +708,6 @@ public:
                    "[gpu] %s declares no launch configuration (.withLaunchConfig(grid, block)), "
                    "so its occupancy stays empty.\n",
                    testName_.c_str());
-    }
-
-    if (result.stats.unifiedMemory.has_value()) {
-      const auto& um = *result.stats.unifiedMemory;
-      std::printf("\n=== Unified Memory Profile ===\n");
-      std::printf("Page faults: %zu\n", um.pageFaults);
-      std::printf("H->D migrations: %zu\n", um.h2dMigrations);
-      std::printf("D->H migrations: %zu\n", um.d2hMigrations);
-      std::printf("Migration time: %.2f us (%.1f%% overhead)\n", um.migrationTimeUs,
-                  um.migrationOverheadPct(result.kernelTimeUs, cpuCfg_.cycles));
-
-      if (um.isThrashing()) {
-        std::fprintf(stderr, "Warning: UM thrashing detected - consider prefetching\n");
-      }
-
-      if (um.migrationOverheadPct(result.kernelTimeUs, cpuCfg_.cycles) > 20.0) {
-        std::printf("Hint: High migration overhead - consider:\n");
-        std::printf("   - cudaMemPrefetchAsync() for predictable access\n");
-        std::printf("   - cudaMemAdvise() for access hints\n");
-        std::printf("   - Explicit H2D/D2H transfers if pattern is regular\n");
-      }
     }
 
     publishResult(result, nvml_telemetry::cellsOf(nvmlReadings));
@@ -714,6 +741,22 @@ public:
       result.aggregatedStats.p2pProfile =
           measureP2PBandwidth(p2pSrcDevice, p2pDstDevice, p2pTestBytes);
     }
+
+    // Unified-memory counters, when asked for: the collector's window over
+    // the devices' launches (the counters are the process's, so it counts
+    // every device's records), opened only under the request, and the request
+    // answered as a kernel measurement answers it.
+    const bool UM_WINDOW = gpuCfg_.captureUnifiedMemory && !cuptiYields_;
+    if (UM_WINDOW) {
+      cupti_.collectUnifiedMemory(true);
+      cupti_.start();
+    }
+    // Stating the request, sizing the results or starting the first worker
+    // can throw before the window's stop below; the window then stops here,
+    // so this case's next window counts only its own records.
+    const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
+    const bool UM_RECORDED = gpuCfg_.captureUnifiedMemory &&
+                             stateUnifiedMemoryRequest(gpuCfg_, cupti_, gpuCfg_.deviceId);
 
     std::vector<std::thread> threads;
     std::vector<PerfGpuResult> deviceResults(deviceCount);
@@ -776,6 +819,14 @@ public:
 
     for (auto& t : threads) {
       t.join();
+    }
+
+    if (UM_WINDOW) {
+      cupti_.stop();
+      if (UM_RECORDED) {
+        stateIncompleteUnifiedMemory(cupti_, testName_);
+      }
+      result.aggregatedStats.unifiedMemory = cupti_.unifiedMemory();
     }
 
     result.perDevice = std::move(deviceResults);
@@ -1065,15 +1116,9 @@ private:
     }
     row.deviceCount = 1;
 
-    if (result.stats.unifiedMemory.has_value()) {
-      const auto& um = *result.stats.unifiedMemory;
-      row.umPageFaults = um.pageFaults;
-      row.umH2DMigrations = um.h2dMigrations;
-      row.umD2HMigrations = um.d2hMigrations;
-      row.umMigrationTimeUs = um.migrationTimeUs;
-      row.umThrashing = um.isThrashing();
-    }
-
+    // The um* cells, from the window's unified-memory counters when it has
+    // them.
+    fillUnifiedMemoryCells(row, result.stats.unifiedMemory);
     PerfRegistry::instance().set(row);
   }
 
@@ -1096,6 +1141,8 @@ private:
     if (firstDev.stats.occupancy.blockSize > 0) {
       row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
     }
+    // The um* cells, from the window over all the devices' launches.
+    fillUnifiedMemoryCells(row, result.aggregatedStats.unifiedMemory);
 
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;
