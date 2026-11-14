@@ -8,7 +8,10 @@ from the development tree at project version 1.0.3, whose CLI reported
 `bench 1.0.3`. The doctor's `gperf` row in Needs comes from this rig on
 2026-10-03 (UTC), a later tree at the same version; the skip and the row
 quoted under If It Does Not Match, from a Debug build of that tree without
-gperftools on an x86-64 laptop.
+gperftools on an x86-64 laptop. The sampling-rate flag example under If It
+Does Not Match was recaptured on this rig on 2026-10-17 (UTC); the
+inherited-variable result beside it retains this rig's earlier capture, of
+2026-09-24 (UTC).
 
 ## Overview
 
@@ -442,17 +445,16 @@ runs of the check on each kind of core.
   skips under `--profile` (`runs its own profiles; run it without --profile`),
   because it takes profiles of its own.
 - **Too few samples.** The profiler's default is 100 samples per second of CPU
-  time, and `--profile-frequency` does not change it as Vernier applies it: the
-  gperf backend sets `CPUPROFILE_FREQUENCY` from the flag just before it starts
-  the profiler, and by then the installed gperftools has already read the
-  variable, so profiles taken with `--profile-frequency 1000` on this rig still
-  record a 10,000-microsecond period. Setting the variable before the process
-  starts does change the rate: `CPUPROFILE_FREQUENCY=250 bench run ...`
-  recorded a 4,000-microsecond period and took 475 samples in 1.9 s here. Or
-  size the profiled run: the steps above use `--target-time 200ms --repeats 10`
-  for about 200 samples. The rate asked for is not always the rate taken: this
-  rig's kernel ticks 250 times a second, and asked for 1,000 samples a second,
-  gperftools took 249 a second.
+  time. Ask for more with `--profile-frequency`:
+  `bench run ... --profile gperf --profile-frequency 1000 -- ...` starts the
+  benchmark with `CPUPROFILE_FREQUENCY=1000`, and here recorded a
+  1,000-microsecond period and took 459 samples in 1.8 s. Setting the variable
+  yourself before the process starts works too:
+  `CPUPROFILE_FREQUENCY=250 bench run ...` recorded a 4,000-microsecond period
+  and took 475 samples in 1.9 s here. Or size the profiled run: the steps above
+  use `--target-time 200ms --repeats 10` for about 200 samples. The rate asked
+  for is not always the rate taken: this rig's kernel ticks 250 times a second,
+  so asked for 1,000 samples a second, gperftools took about 249 a second.
 - **`joinV0 [clone .constprop.0]` instead of `joinV0`.** A build with
   link-time optimization lets GCC specialize the function for the one
   separator every caller passes. It is the same function under a longer name.
