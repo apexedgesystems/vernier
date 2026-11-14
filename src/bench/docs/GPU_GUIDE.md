@@ -269,24 +269,21 @@ struct GpuStats {
 **What it is:** An estimate of the share of an SM's warp slots the launch
 shape lets the kernel fill, which the harness computes when a test declares
 `.withLaunchConfig()`. It counts the block size, the SM's thread and block
-limits and the dynamic shared memory the launch declares, not the kernel's
-registers or static shared memory, so it overstates the occupancy of a kernel
-those limit. It is not a measurement: the occupancy a kernel achieves needs a
-kernel profiler.
+limits and the dynamic shared memory the launch declares. It does not count
+the kernel's registers or static shared memory, so it overstates the
+occupancy of a kernel those limit, and it does not count the grid: one block
+and thousands of blocks of the same shape get the same figure, although one
+block runs on a single SM and thousands spread over all of them.
 
 **Formula:** `warps per block x blocks per SM those limits allow / max warps per SM`
 
-**Interpretation:**
-
-- **>75%** = Excellent, GPU well-utilized
-- **50-75%** = Good, some optimization possible
-- **25-50%** = Fair, likely resource-constrained
-- **<25%** = Poor, need to investigate
-
-**Important:** High occupancy doesn't always mean fast!
-
-- Memory-bound kernels: 25% occupancy can be optimal
-- Compute-bound kernels: aim for >50%
+**Interpretation:** the figure is the most the launch shape allows, not a
+measure of how busy the GPU was, so it grades neither the kernel nor the
+GPU's use. A low figure says the block size or the declared shared memory
+holds the warps an SM can take below its maximum; a high one says only that
+they do not. For the occupancy a kernel achieves, and whether occupancy is
+what limits it, measure with a kernel profiler
+([Profiling GPU Code](#profiling-gpu-code)).
 
 #### Transfer Overhead
 
