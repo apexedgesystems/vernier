@@ -326,10 +326,15 @@ RISC-V. macOS and Windows are not supported in this release.
 
 `rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only and not
 validated on AMD hardware; `nsight`, `ncu` and `compute-sanitizer`, the CUPTI
-columns and NVTX need an NVIDIA GPU. A profiler that cannot run on the machine
-fails the run that asks for it (exit status 4 when the tests pass) and says
-why, and `bench doctor` lists what works there; a run without `--profile`
-needs none of them.
+columns and `--capture-um` (CUPTI's unified-memory counters) need an NVIDIA
+GPU. NVTX ranges do not: the macros emit them when the NVTX3 headers are there
+at build time and compile to nothing otherwise, so annotated code also builds
+and runs without CUDA. A profiler that cannot run on the machine fails the run
+that asks for it (exit status 4 when the tests pass) and says why, and
+`bench doctor` lists what works there; `--capture-um` fails a run the same way
+when the counters cannot be recorded. A timing run with neither `--profile`
+nor `--capture-um` needs none of these, though a GPU benchmark still needs its
+NVIDIA GPU.
 
 ---
 
