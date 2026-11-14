@@ -550,8 +550,9 @@ binary given by a short name: under each root (an entry ending in `/*`
 stands for every folder in it), in each subfolder. A relative `bin_roots`
 entry is relative to the folder of the `.bench.yaml` that names it, wherever
 the command runs from below it. `VERNIER_BENCH_BIN_ROOTS` and
-`VERNIER_BENCH_BIN_SUBDIRS` (colon-separated, relative to the working
-directory) take precedence over the keys, each over its own; without either,
+`VERNIER_BENCH_BIN_SUBDIRS` (colon-separated; a relative root in
+`VERNIER_BENCH_BIN_ROOTS` is relative to the working directory) take
+precedence over the keys, each over its own; without either,
 the lookup is `build/*` and `bin/ptests`, `bin/tests`, `bin/examples`. A name
 found nowhere is an error naming the roots and subfolders searched and where
 each came from.

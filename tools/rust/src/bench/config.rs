@@ -21,8 +21,9 @@
 //!   target_time: 100ms                   # bench run's --target-time
 //!   profile_output_dir: bench-out
 //!   gtest_filter: "-*Large*:*PayloadScaling*"
-//!   bin_roots: ["build/*"]               # workflow::BinSearch; relative
-//!   bin_subdirs: ["bin/ptests", "bin/tests"]  # to this file's folder
+//!   bin_roots: ["build/*"]               # workflow::BinSearch; a relative
+//!                                        # root is relative to this file's folder
+//!   bin_subdirs: ["bin/ptests", "bin/tests"]  # below each root
 //!
 //! Anything not listed here is parsed as a top-level string-keyed map and
 //! preserved in `Config::extras` so a project can layer custom fields
