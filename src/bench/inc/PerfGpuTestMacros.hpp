@@ -31,7 +31,7 @@
  * Example:
  * @code{.cpp}
  * PERF_GPU_SCALING(MatMul, MultiGpu) {
- *   UB_PERF_GPU_GUARD(perf);
+ *   PERF_GPU_GUARD(perf);
  *
  *   auto results = perf.cudaKernelMultiGpu(4,
  *     [&](int dev, cudaStream_t s) {

@@ -37,7 +37,7 @@
  * #include "src/bench/inc/Perf.hpp"
  *
  * PERF_TEST(MyComponent, Throughput) {
- *   UB_PERF_GUARD(perf);  // Profiler hooks auto-attached
+ *   PERF_GUARD(perf);  // Profiler hooks auto-attached
  *
  *   auto data = prepareData();
  *   perf.warmup([&]{ process(data); });
@@ -104,7 +104,7 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
 
 /**
  * @brief Define a general perf test (semantic alias of gtest TEST).
- * Provide a PerfCase with UB_PERF_GUARD inside the body when needed.
+ * Provide a PerfCase with PERF_GUARD inside the body when needed.
  */
 #define PERF_TEST(Suite, Name) TEST(Suite, Name)
 
@@ -146,7 +146,7 @@ inline const PerfConfig& getPerfConfig() { return perfConfigSingleton(); }
  * Usage inside a PERF_* body:
  * @code
  * PERF_TEST(Suite, Case) {
- *   UB_PERF_GUARD(perf);  // Profiler hooks auto-attached
+ *   PERF_GUARD(perf);  // Profiler hooks auto-attached
  *   perf.warmup([&]{ work(); });
  *   auto result = perf.throughputLoop([&]{ work(); }, "label");
  * }

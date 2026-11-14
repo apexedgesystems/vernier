@@ -118,7 +118,7 @@ private:
  * past the end can leave both right: staying in bounds is memcheck's to check.
  */
 PERF_GPU_TEST(ComputeSanitizer, SaxpyKernel) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   DeviceVectors device;
   ASSERT_TRUE(device.ok()) << "device allocation failed";

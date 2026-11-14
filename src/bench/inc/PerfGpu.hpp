@@ -13,7 +13,7 @@
  *   #include "src/bench/inc/PerfGpu.hpp"  // GPU extensions
  *
  *   PERF_GPU_TEST(MatrixMul, CudaKernel) {
- *     UB_PERF_GPU_GUARD(perf);
+ *     PERF_GPU_GUARD(perf);
  *
  *     // CPU baseline
  *     auto cpuResult = perf.cpuBaseline([&]{ matmul_cpu(A, B, C, N); });
@@ -26,7 +26,7 @@
  *     EXPECT_GT(gpuResult.speedupVsCpu, 10.0);
  *   }
  *
- *   PERF_MAIN()
+ *   PERF_GPU_MAIN()
  * @endcode
  */
 
