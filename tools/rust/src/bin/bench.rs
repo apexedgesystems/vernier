@@ -351,7 +351,8 @@ enum GpuLockAction {
         #[arg(long)]
         freq: Option<u32>,
 
-        /// Command to run while clocks are locked (clocks reset on exit)
+        /// Command to run while the clocks are locked; they are reset once it
+        /// has ended, also when SIGINT, SIGTERM or SIGHUP interrupts the run
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -534,27 +535,27 @@ fn run(args: Args) -> Result<(), Error> {
                 freq,
                 command,
             } => {
-                let lock_cfg = bench::gpu_lock::LockConfig { device, freq };
+                let lock_cfg = bench::gpu_lock::LockConfig {
+                    device,
+                    freq,
+                    tool: bench::gpu_lock::Tool::default(),
+                };
 
                 if command.is_empty() {
                     // Standalone lock mode
                     bench::gpu_lock::lock_clocks(&lock_cfg)?;
                 } else {
-                    // Wrapper mode: lock -> run -> reset
+                    // Wrapper mode: lock -> run -> reset. Interrupted, it ends
+                    // the process by the signal once the clocks are reset.
                     let wrap_cfg = bench::gpu_lock::WrapConfig {
                         lock: lock_cfg,
                         command,
                     };
-                    let exit_code = bench::gpu_lock::wrap_command(&wrap_cfg)?;
-                    if exit_code != 0 {
-                        return Err(Error::InvalidArgs(format!(
-                            "wrapped command exited with code {exit_code}"
-                        )));
-                    }
+                    bench::gpu_lock::wrap_command(&wrap_cfg)?;
                 }
             }
             GpuLockAction::Reset { device } => {
-                bench::gpu_lock::reset_clocks(device)?;
+                bench::gpu_lock::reset_clocks(device, &bench::gpu_lock::Tool::default())?;
             }
         },
 

@@ -1,6 +1,7 @@
 //! A helper program a bench command owns until it returns: bench run's
-//! annotator and `nsys stats` (`run_owned`), and bench validate's version
-//! probes (`validate::run_version`), each with its own caller policy. The
+//! annotator and `nsys stats` (`run_owned`), bench validate's version
+//! probes (`validate::run_version`) and bench gpu-lock's nvidia-smi calls
+//! (`gpu_lock`), each with its own caller policy. The
 //! program runs in a process group of its own, made when it is spawned, so
 //! the processes it starts stay in that group after it exits. When the
 //! program exits, outruns its bound or the command is interrupted, the whole
@@ -20,12 +21,14 @@
 //!   or SA_NOCLDWAIT cannot have the system reap it as it exits. A program
 //!   whose end cannot be observed (another wait in this process took it) is
 //!   not the run's any more: its group is not signalled.
-//! - The signal handler only stores the signal's number in an atomic.
+//! - The signal handler only stores to lock-free atomics: the latest signal,
+//!   the first one (a compare-and-swap, so a later signal cannot replace it)
+//!   and a bit for each signal that arrived.
 //! - Only the read ends of the program's own pipes are made non-blocking.
 
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -320,36 +323,84 @@ fn running_in_group(group: u32) -> Vec<u32> {
         .collect()
 }
 
-/// The signal a `Watch` recorded; 0 for none.
+/// The signal a `Watch` recorded last; 0 for none.
 static PENDING: AtomicI32 = AtomicI32::new(0);
+
+/// The first signal a `Watch` recorded; 0 for none. Set once, by a
+/// compare-and-swap, so a later signal cannot replace it.
+static FIRST: AtomicI32 = AtomicI32::new(0);
+
+/// One bit per signal number a `Watch` recorded since its last look
+/// (`Watch::arrivals`). Arrivals are not counted: one signal arriving twice
+/// between two looks is one, as the kernel keeps one pending instance of it.
+static ARRIVED: AtomicU32 = AtomicU32::new(0);
 
 #[cfg(unix)]
 extern "C" fn record(signal: libc::c_int) {
+    // The first is settled before the arrival can be seen.
+    let _ = FIRST.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
+    if (0..32).contains(&signal) {
+        ARRIVED.fetch_or(1 << signal, Ordering::SeqCst);
+    }
     PENDING.store(signal, Ordering::SeqCst);
 }
 
-/// While it lives, SIGINT, SIGTERM and SIGHUP are recorded for the run to
-/// end its group: the group is not the terminal's foreground group, so a
-/// Ctrl-C reaches the bench command alone. A signal whose action is not the
-/// default (ignored, as under nohup, or handled) is left as it is.
-/// Dropping it restores each action it replaced.
+/// While it lives, SIGINT, SIGTERM and SIGHUP are recorded for the bench
+/// command to act on: an owned run ends its group, which is not the
+/// terminal's foreground group, so a Ctrl-C reaches the bench command alone;
+/// bench gpu-lock resets the clocks once its command, which stays in the
+/// terminal's group, has ended. A signal whose action is not the default
+/// (ignored, as under nohup, or handled) is left as it is. Dropping it
+/// restores each action it replaced.
 pub(crate) struct Watch {
     #[cfg(unix)]
     replaced: Vec<(libc::c_int, libc::sigaction)>,
 }
 
 impl Watch {
+    /// Forget what an earlier watch recorded, and record SIGINT, SIGTERM and
+    /// SIGHUP where their action is the default.
     pub(crate) fn start() -> Self {
         PENDING.store(0, Ordering::SeqCst);
+        FIRST.store(0, Ordering::SeqCst);
+        ARRIVED.store(0, Ordering::SeqCst);
         Self {
             #[cfg(unix)]
             replaced: record_signals(),
         }
     }
 
-    /// The flag the recorded signal's number is stored in.
+    /// The flag the latest recorded signal's number is stored in.
     pub(crate) fn flag(&self) -> &'static AtomicI32 {
         &PENDING
+    }
+
+    /// The first signal recorded since the watch started, if one was.
+    pub(crate) fn first(&self) -> Option<i32> {
+        match FIRST.load(Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        }
+    }
+
+    /// The signals recorded since the last look, or since the start, lowest
+    /// number first; a signal that arrived more than once in between is
+    /// reported once.
+    pub(crate) fn arrivals(&self) -> Vec<i32> {
+        let bits = ARRIVED.swap(0, Ordering::SeqCst);
+        (0..32).filter(|signal| bits & (1 << signal) != 0).collect()
+    }
+
+    /// Stop recording, putting back each action the watch replaced, and
+    /// return the first signal it recorded. The first is read once the
+    /// actions are back: a signal that arrives before then is recorded, and
+    /// one that arrives after takes its own action, so none is lost.
+    pub(crate) fn stop(self) -> Option<i32> {
+        drop(self);
+        match FIRST.load(Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        }
     }
 }
 
@@ -360,15 +411,15 @@ impl Drop for Watch {
     }
 }
 
-/// Record SIGINT, SIGTERM and SIGHUP in `PENDING` where their action is
-/// the default; returns each replaced action.
+/// Record SIGINT, SIGTERM and SIGHUP (`record`) where their action is the
+/// default; returns each replaced action.
 #[cfg(unix)]
 fn record_signals() -> Vec<(libc::c_int, libc::sigaction)> {
     let mut replaced = Vec::new();
     for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
         // SAFETY: zeroed sigaction values are valid values of the type;
         // sigaction only reads `action` and writes `old`, both owned here;
-        // the handler installed only stores to an atomic.
+        // the handler installed only stores to lock-free atomics.
         unsafe {
             let mut old: libc::sigaction = std::mem::zeroed();
             if libc::sigaction(signal, std::ptr::null(), &mut old) != 0
@@ -845,6 +896,123 @@ mod tests {
         assert!(
             error.to_string().contains("could not be observed"),
             "{error}"
+        );
+    }
+
+    /* ----------------------------- Watch ----------------------------- */
+
+    /// The file `watch_keeps_the_first_signal`'s process of its own writes
+    /// what its watch recorded to.
+    #[cfg(target_os = "linux")]
+    const WATCH_REPORT_VARIABLE: &str = "VERNIER_WATCH_REPORT";
+
+    /// Whether SIGINT, SIGTERM and SIGHUP all have their default action.
+    #[cfg(target_os = "linux")]
+    fn watched_signals_at_default() -> bool {
+        [libc::SIGINT, libc::SIGTERM, libc::SIGHUP]
+            .iter()
+            .all(|&signal| {
+                // SAFETY: a zeroed sigaction is a valid value of the type;
+                // with a null new action, sigaction only writes the current
+                // one into `now`, owned here.
+                unsafe {
+                    let mut now: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(signal, std::ptr::null(), &mut now) == 0
+                        && now.sa_sigaction == libc::SIG_DFL
+                }
+            })
+    }
+
+    /// Not a test of its own: the body of `watch_keeps_the_first_signal`,
+    /// which runs this test binary for it in a process of its own, since a
+    /// signal's action is the process's; without that test's variable it
+    /// does nothing. raise() runs the handler before it returns, so the
+    /// signals are recorded in the order they are raised.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_in_a_process_of_its_own() {
+        let Ok(report) = std::env::var(WATCH_REPORT_VARIABLE) else {
+            return;
+        };
+        let raise = |signal: libc::c_int| {
+            // SAFETY: raise only sends @p signal to this thread, whose action
+            // for it is the watch's handler, which only stores to atomics.
+            unsafe { libc::raise(signal) };
+        };
+        let watch = Watch::start();
+        raise(libc::SIGTERM);
+        raise(libc::SIGINT);
+        raise(libc::SIGTERM);
+        let arrived = watch.arrivals();
+        raise(libc::SIGHUP);
+        let then = watch.arrivals();
+        let latest = watch.flag().load(Ordering::SeqCst);
+        let first = watch.first();
+        let stopped = watch.stop();
+        let line = format!(
+            "first {first:?}; arrived {arrived:?}; then {then:?}; latest {latest}; stopped \
+             {stopped:?}; defaults back {}",
+            watched_signals_at_default()
+        );
+        fs::write(report, line).expect("write the report");
+    }
+
+    /// @test A watch keeps the first signal it records, whatever arrives
+    /// after it (it also stores the latest); reports each signal that arrived
+    /// since its last look once, however often it arrived; and on stopping
+    /// puts the default actions back and still returns the first. In a
+    /// process of its own (this test binary, running
+    /// `watch_in_a_process_of_its_own`), with SIGINT, SIGTERM and SIGHUP at
+    /// their default actions, raised in the order SIGTERM, SIGINT, SIGTERM,
+    /// SIGHUP.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_keeps_the_first_signal() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile_dir("watch_first");
+        let report = dir.join("report.txt");
+        let name = format!(
+            "{}::watch_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+        command
+            .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+            .env(WATCH_REPORT_VARIABLE, &report);
+        // SAFETY: the closure runs in the child between fork and exec and
+        // calls only sigaction, which is async-signal-safe; a zeroed sigaction
+        // given the default handler is a valid value of the type.
+        unsafe {
+            command.pre_exec(|| {
+                for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    action.sa_sigaction = libc::SIG_DFL;
+                    if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let out = command.output().expect("run this test binary");
+        let line = fs::read_to_string(&report).unwrap_or_default();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            line,
+            format!(
+                "first Some({term}); arrived [{int}, {term}]; then [{hup}]; latest {hup}; \
+                 stopped Some({term}); defaults back true",
+                term = libc::SIGTERM,
+                int = libc::SIGINT,
+                hup = libc::SIGHUP
+            )
         );
     }
 }

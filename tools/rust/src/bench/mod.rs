@@ -150,6 +150,9 @@ pub enum Error {
         regressions: usize,
         missing: usize,
     },
+    /// `bench gpu-lock`: the clocks were not locked or not reset, or the
+    /// wrapped command did not succeed; the cause names itself.
+    GpuLock(String),
 }
 
 impl std::error::Error for Error {}
@@ -180,6 +183,7 @@ impl fmt::Display for Error {
                 "--fail-on-regression: {regressions} regression(s), \
                  {missing} baseline test(s) missing from the candidate"
             ),
+            Error::GpuLock(s) => write!(f, "{s}"),
         }
     }
 }

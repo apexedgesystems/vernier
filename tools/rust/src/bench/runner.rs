@@ -630,8 +630,9 @@ fn jeprof_hint(binary: &Path, dump: &Path, lookup: impl Fn(&str) -> InPath) -> V
     lines
 }
 
-/// How a helper program ended, for messages.
-fn describe_status(status: ExitStatus) -> String {
+/// How a program ended, for messages ("exited with status 3", "was ended by
+/// signal 9"): a helper's here, the wrapped command's in `gpu_lock`.
+pub(crate) fn describe_status(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exited with status {code}");
     }

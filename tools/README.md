@@ -643,7 +643,7 @@ clock boost/throttle variance that inflates CV%.
 bench gpu-lock lock
 bench gpu-lock lock --freq 1500
 
-# Lock clocks, run a benchmark, then auto-reset on exit
+# Lock clocks, run a benchmark, then reset them once it has ended
 bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --quick --csv results.csv
 
 # Reset clocks to driver-managed default
@@ -652,10 +652,10 @@ bench gpu-lock reset
 
 **Subcommands:**
 
-| Subcommand | Description                                       |
-| ---------- | ------------------------------------------------- |
-| `lock`     | Lock clocks (reset on exit if wrapping a command) |
-| `reset`    | Reset clocks to driver-managed default            |
+| Subcommand | Description                                     |
+| ---------- | ----------------------------------------------- |
+| `lock`     | Lock clocks (reset when a wrapped command ends) |
+| `reset`    | Reset clocks to driver-managed default          |
 
 **Lock options:**
 
@@ -665,8 +665,47 @@ bench gpu-lock reset
 | `--freq MHz` | Target frequency in MHz                | max clock |
 | `-- CMD...`  | Command to run while clocks are locked | --        |
 
-The wrapper mode (`lock -- <command>`) uses a drop guard to guarantee clock
-reset even if the wrapped command fails or is interrupted with Ctrl-C.
+**The wrapper mode** (`lock -- <command>`) locks the clocks, runs the
+command, and resets the clocks after the command has ended, however it ends:
+
+| The run ends with                                                        | The clocks                        | `bench`                                                                       |
+| ------------------------------------------------------------------------ | --------------------------------- | ----------------------------------------------------------------------------- |
+| the command exiting 0                                                    | reset                             | exits 0                                                                       |
+| the command exiting with another status, or ended by a signal of its own | reset                             | exits 1, naming the status or the signal                                      |
+| a command that cannot start                                              | reset                             | exits 1, naming the command                                                   |
+| SIGINT (Ctrl-C), SIGTERM or SIGHUP sent to `bench`                       | reset after the command has ended | ends by the first of them it received (130, 143 or 129 in a shell)            |
+| a reset that `nvidia-smi` refuses, or that does not finish within 30 s   | not reset                         | names the commands that reset them, and exits 1 unless a signal above ends it |
+
+The clocks are reset only after the command has ended: whatever `bench`
+receives, it waits for the command, so the clocks stay locked exactly as long
+as the command runs. A command that does not end on the signal keeps
+`bench` waiting. End the command yourself with a stronger signal,
+`kill -KILL <pid>` with the command's process id, which `bench` prints when
+it receives a signal; the reset follows at once, and `bench` then ends by
+the first signal it received.
+
+The command runs in `bench`'s own process group, with its terminal, as it
+would without the wrapper: Ctrl-C, Ctrl-Z and a hangup reach the command and
+`bench` together. `bench` passes a SIGTERM on to the command, since a
+terminal never sends one; SIGINT and SIGHUP reach the command from the
+terminal. Two consequences: a SIGTERM sent to the whole process group (as
+`kill %1` sends it) reaches the command twice, from the sender and from
+`bench`; and a SIGINT sent to `bench` alone (`kill -INT <pid>`) is not passed
+on, so `bench` waits for the command to end by itself. A signal ignored when
+`bench` started (under `nohup`, or in a background job of a shell without job
+control) stays ignored, for `bench` and the command. Each `nvidia-smi` call
+runs in a process group of its own, which no signal sent to `bench` reaches,
+so a lock or a reset is never stopped halfway; a signal received meanwhile
+is acted on once the call has finished.
+
+Not covered: SIGKILL sent to `bench`, SIGQUIT (Ctrl-\, which also dumps
+core), a crash of `bench` and a power loss end it without the reset. Reset
+the clocks by hand:
+
+```bash
+bench gpu-lock reset --device N      # or, as root: nvidia-smi -i N -rgc
+```
+
 Persistence mode is auto-enabled if needed.
 
 ### gpu-monitor - GPU State Snapshots

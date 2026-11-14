@@ -395,6 +395,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   binary's document alone, and a document that does not parse is an error.
   **Action needed:** read the `[require]` lines from stderr when `--json` is
   given.
+- `bench gpu-lock lock -- <command>` resets the clocks after the command ends
+  also when SIGINT, SIGTERM or SIGHUP interrupts the run, then ends by the
+  first of them; a reset that fails exits 1, naming the commands that reset
+  the clocks by hand
+  ([tools README](tools/README.md#gpu-lock---clock-management)).
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
