@@ -533,8 +533,10 @@ bench nsight-parse mixed/ --csv mixed.csv   # exits 1
 ### init / config-validate - Project Defaults
 
 `bench init` scaffolds a `.bench.yaml` at the project root (cycles, repeats,
-profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read by `run` and
-`profile-all` when the corresponding CLI flag is omitted. `gtest_filter` is
+target_time, profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read
+by `run` and `profile-all` when the corresponding CLI flag is omitted;
+`target_time` (`--target-time`) by `run` alone, passed as written for the
+binary to read. `gtest_filter` is
 the default test filter: `run` passes it unless a `--gtest_filter=` follows
 `--`, and `profile-all` unless `--filter` is given. A filter passed this way,
 or typed, takes precedence over `GTEST_FILTER` in the environment, which

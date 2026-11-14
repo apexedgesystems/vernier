@@ -18,6 +18,7 @@
 //!   # .bench.yaml at project root
 //!   cycles: 10000
 //!   repeats: 10
+//!   target_time: 100ms                   # bench run's --target-time
 //!   profile_output_dir: bench-out
 //!   gtest_filter: "-*Large*:*PayloadScaling*"
 //!   bin_roots: ["build/*"]               # for resolve_binary
@@ -45,7 +46,8 @@ use super::Error;
 #[derive(Debug, Default, Clone)]
 pub struct Config {
     pub cycles: Option<u32>,
-    /// Auto-size cycles to a wall-time window (e.g. "100ms")
+    /// Auto-size cycles to a wall-time window (e.g. "100ms"): `bench run`'s
+    /// `--target-time`, passed on as written; the benchmark reads the value.
     pub target_time: Option<String>,
     pub repeats: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
@@ -72,6 +74,10 @@ cycles: 10000
 
 # Measurement repeats (--repeats N)
 repeats: 10
+
+# Size cycles so one repeat spans about this wall time (--target-time; e.g.
+# 500us, 100ms, 2s; a bare number is ms). Read by `bench run` only.
+# target_time: 100ms
 
 # Where profile artifacts land (--profile-output-dir / --artifact-root)
 profile_output_dir: bench-out
@@ -185,6 +191,7 @@ fn parse(text: &str, path: &Path) -> Result<Config, Error> {
         let v = strip_quotes(val).to_string();
         match key {
             "cycles" => cfg.cycles = v.parse().ok(),
+            "target_time" => cfg.target_time = Some(v),
             "repeats" => cfg.repeats = v.parse().ok(),
             "profile_output_dir" => cfg.profile_output_dir = Some(PathBuf::from(v)),
             "gtest_filter" => cfg.gtest_filter = Some(v),
@@ -353,6 +360,17 @@ mod tests {
         let text = "bin_subdirs:\n  - bin/ptests\n  - bin/tests\n";
         let cfg = parse(text, Path::new("test.yaml")).unwrap();
         assert_eq!(cfg.bin_subdirs, vec!["bin/ptests", "bin/tests"]);
+    }
+
+    /// @test target_time is a key of its own, kept as written for the
+    /// benchmark to read, and not an extra.
+    #[test]
+    fn parse_target_time() {
+        let text = "target_time: 250ms\ncycles: 5\n";
+        let cfg = parse(text, Path::new("test.yaml")).unwrap();
+        assert_eq!(cfg.target_time.as_deref(), Some("250ms"));
+        assert_eq!(cfg.cycles, Some(5));
+        assert!(cfg.extras.is_empty(), "{:?}", cfg.extras);
     }
 
     /// @test Surrounding quotes are stripped from scalar values.

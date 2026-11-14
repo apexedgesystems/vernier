@@ -405,6 +405,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `--filter` is given; the scaffold's example filter excludes both patterns
   it names
   ([tools README](tools/README.md#init--config-validate---project-defaults)).
+- `bench run` reads `.bench.yaml`'s `target_time` when `--target-time` is
+  not given, and `bench config-validate` knows the key.
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

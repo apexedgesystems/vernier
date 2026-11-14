@@ -3624,6 +3624,36 @@ fn run_without_a_configured_filter_passes_none() {
     assert_eq!(log, "bench wrap= \nbench wrap= --cycles 7\n");
 }
 
+/// @test bench run gives the benchmark the file's target_time, as written,
+/// when --target-time is not given, and the command line's when it is.
+#[test]
+fn run_passes_the_configured_target_time() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "target_time: 250ms\n");
+    let (code, err, _) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(&rig, &["--target-time", "1s"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --target-time 250ms\nbench wrap= --target-time 1s\n"
+    );
+}
+
+/// @test config-validate knows target_time: it is no unrecognized key.
+#[test]
+fn config_validate_knows_target_time() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".bench.yaml");
+    std::fs::write(&path, "target_time: 250ms\n").expect("write .bench.yaml");
+    let (code, out, err) = run(&["config-validate", &path.display().to_string()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !out.contains("unrecognized") && !out.contains("target_time"),
+        "{out}"
+    );
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
