@@ -1,27 +1,29 @@
 # Demo 08: Intel RAPL -- the Energy a Call Costs
 
 **Reference rig:** none. RAPL needs an Intel CPU, and neither reference rig
-has one ([Reference Rigs](../../docs/rigs/README.md)). This page is captured
-on an Intel laptop without dedicated reference-rig qualification.
+has one ([Reference Rigs](../../docs/rigs/README.md)).
 **Captured on:** an x86-64 laptop with an Intel Core Ultra 7 165H, Ubuntu
 22.04.5, Linux 6.8.0, `intel_pstate` with governor `powersave`, energy
 preference `balance_performance` and power profile `balanced`, on AC power;
 timing pinned to CPU 10, one of its performance cores. It is a development
 machine shared with other work, not a reference: the load average was about
-25 while the steps below ran.
+25 while steps 1 and 2 ran, and 7.51 when the session of steps 3 and 4 began
+([Validate the Energy Steps](#validate-the-energy-steps)).
 **Build:** Release, on the laptop itself ([Prerequisites](#prerequisites)).
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-10-17 (UTC), steps 1 and 2. Written for the Vernier 1.0.4
+**Captured:** 2026-10-17 (UTC), steps 1 and 2, as an ordinary user;
+2026-11-14 (UTC), steps 3 and 4, as root. Written for the Vernier 1.0.4
 release from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`.
 
-**The energy steps of this page have not run.** Reading the energy counter
-needs access this laptop's ordinary user does not have, and no run with that
-access has been made for this release yet. Steps 1 and 2 are captured as an
-ordinary user: the time per call, and what a run without access does. Steps
-3 and 4, which need the access, are written as instructions and marked _Not
-run_, with no invented output. [Validate the Energy Steps](#validate-the-energy-steps)
-says what is missing. The page meets the walkthrough contract in
+**The energy steps were captured on this laptop's Intel Core Ultra 7 165H on
+2026-11-14, as root, without dedicated reference-rig qualification.** What
+transfers to another machine is the ratio between the two versions' energy per
+call, not the joules and watts, which belong to this package, its settings and
+whatever else ran on it. Steps 1 and 2 are captured as an ordinary user: the
+time per call, and what a run without access does.
+[Validate the Energy Steps](#validate-the-energy-steps) gives the rest of the
+session that captured steps 3 and 4. The page meets the walkthrough contract in
 [the demo README](../README.md#7-reference-rigs-and-the-demo-contract) only
 in part, and says so where it applies.
 
@@ -116,9 +118,11 @@ PERF_THROUGHPUT(RaplProfiler, JoinV0) {
 ```
 
 `RaplProfiler.JoinV1` is the same with `joinV1`. A window of about two
-seconds a case (`--target-time 100ms --repeats 20`) holds some two thousand
-of the counter's updates, which Intel documents as happening about once a
-millisecond; this page has not measured that interval.
+seconds a case (`--target-time 100ms --repeats 20`) holds some 1,700 of the
+counter's updates: in the session of step 3 the counter changed 429 times in
+half a second, four times that in two seconds, a median 1.143 ms apart, close
+to the once a millisecond Intel documents
+([Validate the Energy Steps](#validate-the-energy-steps)).
 
 ## Step 1: Measure
 
@@ -230,26 +234,107 @@ run that measures without energy is not reported as one that measured it.
 
 ## Step 3: Measure the Energy
 
-_Not run._ With access, as root here:
+With access, as root here:
 
 ```bash
 sudo "$(command -v bench)" run ./build/bin/ptests/BenchDemo_08_RaplProfiler \
   --taskset 10 --profile rapl --target-time 100ms --repeats 20 --csv rapl.csv
 ```
 
-For each case the backend reads the counter before the first repeat and after
-the last, prints a summary (`=== Energy Measurement (RAPL, package 0) ===`:
-the window's number, its energy in joules, average power in watts, energy per
-call in millijoules, its duration, and the report's path), and writes
-`RaplProfiler.JoinV0.rapl/energy.txt` and `RaplProfiler.JoinV1.rapl/energy.txt`
-in the working directory. Run with `sudo`, the folders and the CSV belong to
-root. The window spans the measured repeats and the harness's summary and
-row for the case, which end before the second reading.
+Captured output, the first of five runs of this command in one session:
+
+```
+Running: taskset -c 10 ./build/bin/ptests/BenchDemo_08_RaplProfiler --csv rapl.csv --target-time 100ms --repeats 20 --profile rapl
+[==========] Running 2 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 2 tests from RaplProfiler
+[ RUN      ] RaplProfiler.JoinV0
+[target-time] 100.000 ms -> cycles=892 (calibrated 112.0000 us/call, batch of 16)
+[RaplProfiler.JoinV0]  110.459 us/call  CV=0.3%  ~9.1K calls/s  (p10=110.235 p90=110.625 sd=0.301)
+
+=== Energy Measurement (RAPL, package 0) ===
+Window:              1
+Energy consumed:     76.222 Joules
+Average power:       38.67 Watts
+Energy per op:       4.272 mJ/call (average power x median call time)
+Duration:            1.971 seconds
+Scope:               package 0, every core included; nothing outside it
+Report:              ./RaplProfiler.JoinV0.rapl/energy.txt
+
+[       OK ] RaplProfiler.JoinV0 (1985 ms)
+[ RUN      ] RaplProfiler.JoinV1
+[target-time] 100.000 ms -> cycles=26975 (calibrated 3.7070 us/call, batch of 512)
+[RaplProfiler.JoinV1]  3.558 us/call  CV=0.3%  ~281.1K calls/s  (p10=3.546 p90=3.571 sd=0.011)
+
+=== Energy Measurement (RAPL, package 0) ===
+Window:              1
+Energy consumed:     70.528 Joules
+Average power:       36.73 Watts
+Energy per op:       0.131 mJ/call (average power x median call time)
+Duration:            1.920 seconds
+Scope:               package 0, every core included; nothing outside it
+Report:              ./RaplProfiler.JoinV1.rapl/energy.txt
+
+[       OK ] RaplProfiler.JoinV1 (1924 ms)
+[----------] 2 tests from RaplProfiler (3909 ms total)
+
+[----------] Global test environment tear-down
+[==========] 2 tests from 1 test suite ran. (3909 ms total)
+[  PASSED  ] 2 tests.
+
+=====================================================================
+Test                  Median (us)     CV%     Calls/s  Status
+---------------------------------------------------------------------
+RaplProfiler.JoinV0       110.459    0.3%        9.1K  OK
+RaplProfiler.JoinV1         3.558    0.3%      281.1K  OK
+---------------------------------------------------------------------
+2 tests | 2 stable | 0 unstable
+```
+
+For each case the backend read the counter before the first repeat and after
+the last, printed its summary, and wrote `RaplProfiler.JoinV0.rapl/energy.txt`
+and `RaplProfiler.JoinV1.rapl/energy.txt` in the working directory. Run with
+`sudo`, the folders and the CSV belong to root. The window spans the measured
+repeats and the harness's summary and row for the case, which end before the
+second reading: JoinV0's window is 1.971 seconds of the test's 1985 ms.
+
+JoinV0 cost 4.272 mJ a call and JoinV1 0.131 mJ, 32.6 times less
+(4.272 / 0.131). The time per call fell 31.0 times (110.459 / 3.558); the
+rest is the package's power, 38.67 W over JoinV0's window against 36.73 W
+over JoinV1's, 1.053 times as much (31.0 x 1.053 = 32.6). Both windows drew
+more than the 32.176 and 29.315 W the package drew in the session's two idle
+windows, before its runs and after them
+([Validate the Energy Steps](#validate-the-energy-steps)): energy per call is
+the package's whole draw over the window shared among the calls, not what the
+calls alone added.
 
 ## Step 4: Read the Report
 
-_Not run._ The report of a case holds a header, then one numbered section per
-measured window, in the order of the case's CSV rows:
+JoinV0's report from that run, `RaplProfiler.JoinV0.rapl/energy.txt`:
+
+```
+=== RAPL Energy Measurement ===
+Test: RaplProfiler.JoinV0
+CPU: Intel(R) Core(TM) Ultra 7 165H
+Family: 6, Model: 170
+Scope: package 0, read through /dev/cpu/0/msr (MSR 0x611): every core, cache and the integrated graphics of the package, whatever runs on them; nothing outside the package
+Counter: 32 bits, wrapping after 262144.000 J at this unit; a window's delta is its energy only when the window uses less than that
+Energy per operation: the window's average package power x its median time per call
+
+--- Window 1 ---
+Energy consumed: 76.222107 J
+Duration: 1.970944 s
+Average power: 38.672893 W
+Energy per operation: 4.271751 mJ/call
+Median time per call: 110.459 us
+Energy unit: 61.0352 uJ
+Start counter: 1358076129
+End counter: 1359324952
+Delta counter: 1248823
+```
+
+It holds a header, then one numbered section per measured window, in the
+order of the case's CSV rows:
 
 | Field                                           | What it is                                                               |
 | ----------------------------------------------- | ------------------------------------------------------------------------ |
@@ -263,19 +348,26 @@ measured window, in the order of the case's CSV rows:
 | `Energy unit`                                   | one count, in microjoules (from MSR 0x606)                               |
 | `Start counter`, `End counter`, `Delta counter` | the counter's low 32 bits at each end, and their difference              |
 
+The section's numbers follow from one another: 1,248,823 counts of
+61.0352 uJ are 76.222 J; over 1.970944 s that is 38.673 W; and 38.672893 W
+for a median call of 110.459 us is 4.2718 mJ, the report's 4.271751 rounded.
 A window over which the counter did not advance says so in its section. Read
-energy per call against time per call: JoinV1's should be a fraction of
-JoinV0's, by about the time ratio unless the package's power differs much
-between the two, and each version's average power says whether it does.
+energy per call against time per call: JoinV1's is a fraction of JoinV0's, by
+about the time ratio unless the package's power differs much between the two,
+and each version's average power says whether it does, as step 3 shows.
 
 ## What Should Reproduce
 
-| Reading                               | On this laptop                              | Elsewhere                                                      |
-| ------------------------------------- | ------------------------------------------- | -------------------------------------------------------------- |
-| JoinV0 / JoinV1 time per call         | 30x (122.7 / 4.0 us), step 1                | same direction; size depends on CPU and allocator              |
-| the refusal without access            | `denied`, exit status 4, no folder (step 2) | the cause of that machine: denied, missing, unsupported        |
-| JoinV1's energy per call against V0's | _Not run_                                   | _Not run_                                                      |
-| joules and watts                      | _Not run_                                   | depend on the machine, its state and other load on the package |
+| Reading                         | On this laptop                                                                                         | Elsewhere                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| JoinV0 / JoinV1 time per call   | 30x (122.7 / 4.0 us), step 1                                                                           | same direction; size depends on CPU and allocator                                                              |
+| the refusal without access      | `denied`, exit status 4, no folder (step 2)                                                            | the cause of that machine: denied, missing, unsupported                                                        |
+| JoinV0 / JoinV1 energy per call | 32.6x (4.272 / 0.131 mJ), step 3; 27.2x to 33.5x over five runs                                        | same direction, by about the time ratio where both versions draw similar package power; this is what transfers |
+| joules and watts                | JoinV0 4.272 to 4.979 mJ a call, JoinV1 0.131 to 0.164, at 36.73 to 45.28 W; idle, 32.176 and 29.315 W | depend on the machine, its state and other load on the package                                                 |
+
+The ranges are the session's five runs of step 3's command, one after
+another ([Validate the Energy Steps](#validate-the-energy-steps)). They
+describe those runs, not a bound another run has to meet.
 
 ## If It Does Not Match
 
@@ -299,10 +391,187 @@ between the two, and each version's average power says whether it does.
 
 ## Validate the Energy Steps
 
-What this page lacks is one session with access on this laptop: step 3's
-command run five times on a quiet machine, the report of each read as step 4
-says, and the check below run with that access. Until then the steps that
-need it stay _Not run_.
+Steps 3 and 4 come from one session with access on this laptop, as root, with
+no build or test running. The load average was 7.51 when it began and 6.05
+after its runs (one-minute averages):
+
+```
+load average: 7.51 6.42 8.89 5/3902 570853
+...
+load average: 6.05 6.15 8.65 4/3916 596581
+```
+
+Outside Vernier, the session read the energy register and the kernel's
+powercap counter side by side over ten idle seconds before its runs and after
+them, read the register's unit, and timed the counter's updates:
+
+```
+window: 10.009 s
+register 0x611: 1346110702 -> 1351387315: 5276613 counts, 322.058899 J, 32.176 W
+powercap package-0 energy_uj: 82159866696 -> 82481924771: 322.058075 J, 32.176 W
+register / powercap: 1.000003
+...
+register 0x606: energy-status unit 14
+energy unit from the register: 61.035156250 uJ
+powercap max_energy_range_uj: 262143328850
+powercap range / 2^32: 61.034999986 uJ
+register unit / powercap unit: 1.000002560
+...
+reads: 168365 in 0.500 s; the counter changed 429 times
+ms between changes: min 0.696, median 1.143, max 1.851
+...
+window: 10.010 s
+register 0x611: 1374668466 -> 1379476199: 4807733 counts, 293.440735 J, 29.315 W
+powercap package-0 energy_uj: 83902889822 -> 84196329805: 293.439983 J, 29.315 W
+register / powercap: 1.000003
+```
+
+The register and powercap agree on the energy and on the unit to within 3
+parts in a million (1.000003 and 1.000002560). With no test running, the
+package drew 32.176 W before the runs and 29.315 W after them; that draw is
+in every window below.
+
+Step 3's command ran five times in a row. Each run's two cases, in order (the
+first run is step 3's; the harness's progress line, which it overwrites, left
+out):
+
+```
+[RaplProfiler.JoinV0]  110.459 us/call  CV=0.3%  ~9.1K calls/s  (p10=110.235 p90=110.625 sd=0.301)
+Average power:       38.67 Watts
+Energy per op:       4.272 mJ/call (average power x median call time)
+[RaplProfiler.JoinV1]  3.558 us/call  CV=0.3%  ~281.1K calls/s  (p10=3.546 p90=3.571 sd=0.011)
+Average power:       36.73 Watts
+Energy per op:       0.131 mJ/call (average power x median call time)
+
+[RaplProfiler.JoinV0]  110.540 us/call  CV=0.2%  ~9.0K calls/s  (p10=110.350 p90=110.852 sd=0.169)
+Average power:       38.88 Watts
+Energy per op:       4.298 mJ/call (average power x median call time)
+[RaplProfiler.JoinV1]  3.565 us/call  CV=6.7%  ~280.5K calls/s  (p10=3.542 p90=3.607 sd=0.242)
+Average power:       40.57 Watts
+Energy per op:       0.145 mJ/call (average power x median call time)
+
+[RaplProfiler.JoinV0]  111.254 us/call  CV=0.3%  ~9.0K calls/s  (p10=111.041 p90=111.548 sd=0.313)
+Average power:       40.02 Watts
+Energy per op:       4.453 mJ/call (average power x median call time)
+[RaplProfiler.JoinV1]  3.614 us/call  CV=2.5%  ~276.7K calls/s  (p10=3.547 p90=3.724 sd=0.091)
+Average power:       45.28 Watts
+Energy per op:       0.164 mJ/call (average power x median call time)
+
+[RaplProfiler.JoinV0]  110.552 us/call  CV=15.2%  ~9.0K calls/s  (p10=110.025 p90=118.082 sd=17.640) [UNSTABLE]
+Average power:       45.04 Watts
+Energy per op:       4.979 mJ/call (average power x median call time)
+[RaplProfiler.JoinV1]  3.614 us/call  CV=0.6%  ~276.7K calls/s  (p10=3.593 p90=3.641 sd=0.021)
+Average power:       41.72 Watts
+Energy per op:       0.151 mJ/call (average power x median call time)
+
+[RaplProfiler.JoinV0]  110.372 us/call  CV=3.2%  ~9.1K calls/s  (p10=109.979 p90=111.691 sd=3.602)
+Average power:       42.20 Watts
+Energy per op:       4.658 mJ/call (average power x median call time)
+[RaplProfiler.JoinV1]  3.581 us/call  CV=0.4%  ~279.3K calls/s  (p10=3.562 p90=3.598 sd=0.015)
+Average power:       38.94 Watts
+Energy per op:       0.139 mJ/call (average power x median call time)
+```
+
+The time per call barely moved: 110.372 to 111.254 us for JoinV0, 3.558 to
+3.614 us for JoinV1. The package's power moved more, from 36.73 to 45.28 W,
+and the energy per call with it: 4.272 to 4.979 mJ for JoinV0, 0.131 to 0.164
+mJ for JoinV1. JoinV0 over JoinV1, run by run, is 32.6, 29.6, 27.2, 33.0 and
+33.5 times (4.272 / 0.131, 4.298 / 0.145, 4.453 / 0.164, 4.979 / 0.151 and
+4.658 / 0.139). Where the ratio fell furthest, in the third run, JoinV1's
+window drew 45.28 W against JoinV0's 40.02 W while their times kept a ratio
+of 30.8 (111.254 / 3.614): the package's power moved it, not the version's
+work. The fourth run's JoinV0 window was unstable (CV 15.2%) and drew the
+most, 45.04 W, at the same median time as the others.
+
+The same case over two window lengths, JoinV0 alone with 50 ms and 200 ms a
+repeat (the progress line left out):
+
+```
+[target-time] 50.000 ms -> cycles=446 (calibrated 111.9375 us/call, batch of 16)
+[RaplProfiler.JoinV0]  110.822 us/call  CV=0.3%  ~9.0K calls/s  (p10=110.689 p90=111.100 sd=0.302)
+Energy consumed:     18.182 Joules
+Average power:       36.76 Watts
+Energy per op:       4.074 mJ/call (average power x median call time)
+Duration:            0.495 seconds
+...
+[target-time] 200.000 ms -> cycles=1807 (calibrated 110.6250 us/call, batch of 16)
+[RaplProfiler.JoinV0]  110.881 us/call  CV=5.0%  ~9.0K calls/s  (p10=110.769 p90=124.134 sd=5.740)
+Energy consumed:     83.631 Joules
+Average power:       40.41 Watts
+Energy per op:       4.481 mJ/call (average power x median call time)
+Duration:            2.069 seconds
+```
+
+The energy follows the window: 83.631 J against 18.182 J is 4.6 times as
+much, for 2.069 s against 0.495 s, 4.18 times as long, the rest the power
+(40.41 W against 36.76 W, 1.099 times as much). The energy per call, 4.481
+and 4.074 mJ, differs by the same 10% as the power.
+
+`TestDemoRapl`, run as root, passed its eight tests; its effect test measured
+31.4x:
+
+```
+[Rapl.EnergyPerCall]  JoinV0 4.279301 mJ/call, JoinV1 0.136410 mJ/call (31.4x)
+...
+[  PASSED  ] 8 tests.
+```
+
+With the demo's JoinV1 changed to call `joinV0` and the demo rebuilt, the
+effect test failed its assertion that JoinV1 costs at most a third of
+JoinV0; with the source restored and the demo rebuilt, it passed again:
+
+```
+[Rapl.EnergyPerCall]  JoinV0 5.048026 mJ/call, JoinV1 5.517446 mJ/call (0.9x)
+...
+Expected: (3.0 * V1) <= (V0), actual: 16.552337999999999 vs 5.0480260000000001
+JoinV1's energy per call is not at most a third of JoinV0's
+...
+[  FAILED  ] 1 test, listed below:
+...
+[Rapl.EnergyPerCall]  JoinV0 4.265530 mJ/call, JoinV1 0.141699 mJ/call (30.1x)
+...
+[  PASSED  ] 1 test.
+```
+
+The performance sample `Profilers.RAPLIntegration` measured with access, and,
+run as the ordinary user, was refused and exited with status 4:
+
+```
+[Profilers.RAPLIntegration]  0.455 us/call  CV=24.8%  ~2.2M calls/s  (p10=0.452 p90=0.761 sd=0.138) [UNSTABLE]
+...
+Energy consumed:     1.865 Joules
+Average power:       33.58 Watts
+Energy per op:       0.015 mJ/call (average power x median call time)
+...
+[  PASSED  ] 1 test.
+...
+[FAIL] Profiler 'rapl': denied: cannot open /dev/cpu/0/msr: Permission denied
+[Profilers.RAPLIntegration]  0.482 us/call  CV=0.2%  ~2.1M calls/s  (p10=0.481 p90=0.483 sd=0.001)
+[  PASSED  ] 1 test.
+[profile] --profile rapl failed; the run exits with status 4:
+```
+
+Last, a copy of the demo beside it, given `cap_sys_rawio=ep` by root and run
+as the ordinary user, loaded its libraries and listed its tests, and its read
+of the counter was refused while the device kept its mode (the session
+changes no device permission):
+
+```
+./build/bin/ptests/BenchDemo_08_RaplProfiler.setcap-check cap_sys_rawio=ep
+...
+RaplProfiler.
+  JoinV0
+  JoinV1
+...
+[FAIL] Profiler 'rapl': denied: cannot open /dev/cpu/0/msr: Permission denied
+```
+
+So a file capability alone does not let the user open the device, whose
+mode still refuses it: the access requirement in
+[What is RAPL?](#what-is-rapl) says so, and this session shows it. The
+session gave no ordinary user read permission without the capability, so the
+other half, that the driver checks the capability, rests on the driver's
+code.
 
 ## What Keeps This Page True
 

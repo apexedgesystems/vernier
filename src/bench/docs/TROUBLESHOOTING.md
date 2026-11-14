@@ -1027,9 +1027,10 @@ sudo ./MyComponent_PTEST --profile rapl
 ```
 
 A file capability on the benchmark (`setcap cap_sys_rawio=ep`) is not
-enough alone: the device's mode still refuses an ordinary user. Whether a
-build-tree benchmark given that capability still loads its libraries has not
-been checked for this release.
+enough alone: the device's mode still refuses an ordinary user. Walkthrough
+08's session showed both on a build-tree copy of its demo: given that
+capability, the copy loaded its libraries and was refused `denied`
+([Validate the Energy Steps](../demo/docs/08_RAPL_PROFILER.md#validate-the-energy-steps)).
 
 **`missing`: no device.** The msr driver is not loaded, or a container was
 started without the device:
