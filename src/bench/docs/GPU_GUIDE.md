@@ -1131,13 +1131,15 @@ PERF_GPU_TEST(MyKernel, Validated) {
   EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
     << "Low occupancy (<50%) may indicate resource constraints";
 
-  // 3. Validate no thermal throttling
+  // 3. No SM-clock drop. isThrottling() compares NVML's SM-clock readings
+  //    at the window's start and end: a drop says the run's conditions
+  //    changed, not why (see Troubleshooting)
   EXPECT_FALSE(result.stats.clocks.isThrottling())
-    << "GPU is thermally throttling - results may be unstable";
+    << "SM clock fell more than 10% during the measurement - find out why";
 
-  // 4. Validate bandwidth utilization
-  double bw = result.stats.transfers.bandwidthGBs();
-  EXPECT_GT(bw, 100.0) << "Memory bandwidth suspiciously low";
+  // 4. No copy-rate check: this test declares no copies, so bandwidthGBs()
+  //    is 0. A test that declares copies can require a floor measured for
+  //    those copies on its own system's link (see Memory Bandwidth)
 
   // 5. Validate speedup (if CPU baseline measured)
   if (result.speedupVsCpu > 0) {
@@ -1158,8 +1160,8 @@ PERF_GPU_TEST(MyKernel, Validated) {
 | ----------------- | --------------------------- | --------------------- | ------------------ |
 | Result stability  | `EXPECT_STABLE_CV_GPU`      | Auto-adaptive         | Detect jitter      |
 | Occupancy         | `EXPECT_GT(occupancy, X)`   | >0.5 compute-bound    | Resource usage     |
-| Bandwidth         | `EXPECT_GT(bandwidth, X)`   | >100 GB/s modern GPUs | Memory efficiency  |
-| No throttling     | `EXPECT_FALSE(throttling)`  | Always                | Thermal stability  |
+| Copy rate         | `EXPECT_GT(bandwidth, X)`   | Measured for the link | Declared copies    |
+| No SM-clock drop  | `EXPECT_FALSE(throttling)`  | Always                | Flag a clock drop  |
 | Speedup           | `EXPECT_GT(speedup, X)`     | Problem-dependent     | GPU worthwhile     |
 | Transfer overhead | `EXPECT_LT(transferPct, X)` | <50%                  | Not transfer-bound |
 
@@ -1284,10 +1286,19 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    bench gpu-lock reset
    ```
 
-2. **Thermal throttling:**
+2. **The SM clock fell during the run:**
+
+   `isThrottling()` (the CSV's `throttling`) compares two SM-clock readings,
+   NVML's at the start and the end of the measured window. It reads no
+   temperature and no reason for the change, so a drop is a signal to
+   investigate, not a diagnosis of heat, and no drop does not show the clock
+   held between the two readings. Where NVML did not report them,
+   `isThrottling()` is false and the CSV cell is empty. Snapshots before and
+   after the run record the temperature, power, clocks and the clock-event
+   reasons `nvidia-smi` reports at each moment:
 
    ```bash
-   # Snapshot before and after to detect thermal drift
+   # Snapshot before and after: what changed around the run
    bench gpu-monitor snapshot -o before.json
    ./bin/ptests/BenchmarkGPU_PTEST --csv results.csv
    bench gpu-monitor snapshot -o after.json
@@ -1296,7 +1307,9 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
    ```cpp
    if (result.stats.clocks.isThrottling()) {
-     // Improve cooling, reduce load, or increase fan speed
+     // The SM clock fell more than 10% over the window: compare the
+     // snapshots and the row's temperature and power cells before trusting
+     // the timing
    }
    ```
 
