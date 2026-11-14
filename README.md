@@ -297,7 +297,8 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 **Optional:**
 
-- CUDA toolkit 12+ (GPU benchmarking, NVTX, CUPTI, Compute Sanitizer)
+- CUDA toolkit 12+ (GPU benchmarking, NVTX ranges with CMake 3.25+, CUPTI,
+  Compute Sanitizer)
 - gperftools (`gperf` backend)
 - valgrind (`callgrind` / `massif` / `memcheck` backends)
 - bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
@@ -327,9 +328,12 @@ RISC-V. macOS and Windows are not supported in this release.
 `rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only and not
 validated on AMD hardware; `nsight`, `ncu` and `compute-sanitizer`, the CUPTI
 columns and `--capture-um` (CUPTI's unified-memory counters) need an NVIDIA
-GPU. NVTX ranges do not: the macros emit them when the NVTX3 headers are there
-at build time and compile to nothing otherwise, so annotated code also builds
-and runs without CUDA. A profiler that cannot run on the machine fails the run
+GPU. NVTX ranges do not: the macros emit them when vernier was configured
+with the CUDA toolkit and CMake 3.25 or newer, which provides the toolkit's
+`CUDA::nvtx3` target, and compile to nothing otherwise, even where the NVTX3
+headers are installed, so annotated code also builds and runs without CUDA
+([GPU Guide](src/bench/docs/GPU_GUIDE.md#nvtx-annotation-api)). A profiler
+that cannot run on the machine fails the run
 that asks for it (exit status 4 when the tests pass) and says why, and
 `bench doctor` lists what works there; `--capture-um` fails a run the same way
 when the counters cannot be recorded. A timing run with neither `--profile`

@@ -1134,9 +1134,18 @@ void processFrame() {
 }
 ```
 
-The macros emit ranges when the CUDA toolkit's NVTX3 headers are there at
-compile time, and compile to nothing otherwise, so the same code builds
-without CUDA.
+Whether the macros emit ranges is settled when vernier is configured. With
+the CUDA toolkit found (a GPU build, the default) and CMake 3.25 or newer,
+which defines the toolkit's `CUDA::nvtx3` target, `vernier::bench` hands
+`COMPAT_NVTX_AVAILABLE=1` and that target, and with it the NVTX3 headers, to
+the code that links it, and the macros emit ranges. Without the target (CMake
+3.24, no toolkit, or `-DVERNIER_BUILD_GPU=OFF`) it hands on
+`COMPAT_NVTX_AVAILABLE=0`, and the macros compile to nothing even where the
+headers are installed, so the same code builds and runs without CUDA. An
+installed vernier keeps the value of the build it came from, and the range
+`--profile nsight` puts around each test follows that value too. Code that
+includes `Nvtx.hpp` without vernier's targets, where `COMPAT_NVTX_AVAILABLE`
+is undefined, gets ranges whenever `<nvtx3/nvToolsExt.h>` can be included.
 
 ### CUPTI in-process kernel metrics
 
