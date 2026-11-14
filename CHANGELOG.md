@@ -396,22 +396,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   **Action needed:** read the `[require]` lines from stderr when `--json` is
   given.
 - `bench gpu-lock lock -- <command>` resets the clocks after the command ends
-  also when SIGINT, SIGTERM or SIGHUP interrupts the run, then ends by the
-  first of them; a reset that fails exits 1, naming the commands that reset
-  the clocks by hand
-  ([tools README](tools/README.md#gpu-lock---clock-management)).
-- `bench run` passes `.bench.yaml`'s `gtest_filter` to the benchmark unless
-  a `--gtest_filter=` follows `--`, as `bench profile-all` passes it unless
-  `--filter` is given; the scaffold's example filter excludes both patterns
-  it names
-  ([tools README](tools/README.md#init--config-validate---project-defaults)).
-- `bench run` reads `.bench.yaml`'s `target_time` when `--target-time` is
-  not given, and `bench config-validate` knows the key.
-- `bench run` and `bench profile-all` look for a short binary name under
-  `.bench.yaml`'s `bin_roots` and `bin_subdirs`, a relative root being
-  relative to the file's folder; `VERNIER_BENCH_BIN_ROOTS` and
-  `VERNIER_BENCH_BIN_SUBDIRS` take precedence
-  ([tools README](tools/README.md#init--config-validate---project-defaults)).
+  even when SIGINT, SIGTERM or SIGHUP interrupts the run, and a reset that does
+  not happen fails the run and says how to reset the clocks by hand.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` applies `.bench.yaml`'s `gtest_filter` and `target_time`, and
+  `bench run` and `bench profile-all` find short binary names under its
+  `bin_roots` and `bin_subdirs`.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
