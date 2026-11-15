@@ -91,8 +91,9 @@ jobs:
               tools/py/poetry.lock|tools/py/pyproject.toml) py=true; docker=true ;;
               ExternalDependencies.cmake) cpp=true; docker=true ;;
               tools/CMakeLists.txt) cpp=true; rust=true; py=true ;;
-              tools/rust/*) rust=true ;;
-              tools/py/*)   py=true ;;
+              # The C++ job also runs the CLI agreement test and the tools check.
+              tools/rust/*) rust=true; cpp=true ;;
+              tools/py/*)   py=true; cpp=true ;;
               src/*|CMakeLists.txt|cmake/*|CMakePresets.json) cpp=true ;;
               # Gate-image inputs (the images the jobs below run in)
               docker/base.Dockerfile|docker/dev/cpu.Dockerfile) docker=true ;;
@@ -228,9 +229,7 @@ jobs:
         run: docker compose run --rm -T dev ccache -s
 
       - name: Verify tools built
-        run: |
-          test -f build/native-linux-debug/bin/tools/rust/bench
-          test -f build/native-linux-debug/bin/tools/py/bench-plot
+        run: docker compose run --rm -T dev make tools-check
 
       # The same setting: make testp builds through its debug prerequisite.
       - name: Run C++ tests

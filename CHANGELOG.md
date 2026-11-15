@@ -331,6 +331,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   (a summary with no data is a warning; `--timeout` bounds each tool command).
   Scripts put `bench` in front and drop the word `parse`; one that relied on
   exit 0 after a failed read now sees 1.
+- `make cuda-check` builds every CUDA target and runs the GPU tests that need
+  no device, and `make verify` runs it beside every other CI lane, the
+  AddressSanitizer selection included.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ### Fixed
 
@@ -974,6 +978,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - `make asan`, `make tsan` and `make ubsan` run named CPU-only checks in
   their own build trees, fail on any sanitizer report, and leave the debug
   build's configuration as it was.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
+- A CUDA configure linked against NVML's driver stub reports the stub instead
+  of "NVML found".
   ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ## v1.0.3 - 2026-06-28
