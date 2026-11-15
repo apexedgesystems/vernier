@@ -16,7 +16,10 @@
 //! before it exists, ends it as it starts. Bench waits for the command to
 //! end, however it ends and however long it takes, so the clocks stay locked
 //! exactly as long as the command runs; then it resets them once and ends by
-//! the first signal it recorded, which no later signal replaces. A command
+//! the first signal it recorded, which no later signal replaces. With no
+//! signal recorded, bench exits with the command's own status (128 + N when
+//! signal N ended it), or with 125 (`WRAPPER_FAILED`) when a part of its own
+//! failed: the lock, the command's start or the reset. A command
 //! that does not end keeps bench waiting: the user ends it (kill -KILL), and
 //! the reset follows. SIGKILL and SIGQUIT end bench itself at once, without
 //! the reset: `bench gpu-lock reset` resets the clocks by hand.
@@ -59,6 +62,12 @@ const SAY_BOUND: Duration = Duration::from_secs(1);
 
 /// How often a message that waits looks again at whether stderr has room.
 const SAY_POLL: Duration = Duration::from_millis(10);
+
+/// The status `bench gpu-lock lock -- <command>` exits with when a part of
+/// its own fails: the lock refused or past its bound, the command that
+/// cannot start, the reset refused or past its bound. Any other status is
+/// the command's own, passed through.
+pub const WRAPPER_FAILED: u8 = 125;
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -515,10 +524,13 @@ pub fn reset_clocks(device: u32, tool: &Tool) -> Result<(), Error> {
 /// return then. A signal that arrives while the clocks are being locked lets
 /// the lock finish, starts no command and resets the clocks.
 ///
-/// Otherwise `Ok` when the command exited 0 and the clocks were reset, and
-/// an error naming each problem: the lock refused, the command that did not
-/// start or did not succeed, the reset that did not happen.
-pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
+/// Otherwise, once the clocks are reset, the status to exit with: the
+/// command's own, or 128 + N when signal N ended it, which is said when it is
+/// not 0. A part of bench's own that failed (the lock refused, the command
+/// that did not start, the reset that did not happen) is an error naming
+/// each problem, the command's status among them when it is not 0, which
+/// bench ends with status `WRAPPER_FAILED`.
+pub fn wrap_command(cfg: &WrapConfig) -> Result<u8, Error> {
     let Some((program, args)) = cfg.command.split_first() else {
         return Err(Error::InvalidArgs(
             "no command provided after '--'".to_string(),
@@ -530,7 +542,7 @@ pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
     let watch = owned_run::Watch::start();
 
     let outcome = match lock_clocks(&cfg.lock) {
-        Err(e) => Err(e),
+        Err(e) => Err(Error::GpuLockWrap(e.to_string())),
         Ok(()) => {
             let mut guard = ResetOnUnwind {
                 lock: &cfg.lock,
@@ -551,21 +563,25 @@ pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
             guard.armed = false;
             let reset = reset_clocks(cfg.lock.device, &cfg.lock.tool);
             let mut problems = Vec::new();
+            let mut ended = None;
             match ran {
-                Some(Ok(status)) if !status.success() => problems.push(format!(
-                    "the wrapped command {}",
-                    super::runner::describe_status(status)
-                )),
+                Some(Ok(status)) => ended = Some(status),
                 Some(Err(e)) => problems.push(e.to_string()),
-                _ => {}
+                None => {}
             }
             if let Err(e) = reset {
+                if let Some(status) = ended.filter(|status| !status.success()) {
+                    problems.push(format!(
+                        "the wrapped command {}",
+                        super::runner::describe_status(status)
+                    ));
+                }
                 problems.push(e.to_string());
             }
             if problems.is_empty() {
-                Ok(())
+                Ok(ended)
             } else {
-                Err(Error::GpuLock(problems.join("; ")))
+                Err(Error::GpuLockWrap(problems.join("; ")))
             }
         }
     };
@@ -580,7 +596,32 @@ pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
             say(&format!("Error: {e}"));
         }
     });
-    outcome
+    // No command ran only when a signal arrived during the lock, and bench
+    // has then ended by it above.
+    let Some(ended) = outcome? else {
+        return Ok(0);
+    };
+    let status = shell_status(ended);
+    if status != 0 {
+        say(&format!(
+            "[bench] gpu-lock: the wrapped command {}; bench exits {status}",
+            super::runner::describe_status(ended)
+        ));
+    }
+    Ok(status)
+}
+
+/// The status a shell gives a command that ended as @p status: its exit
+/// status, or 128 + N when signal N ended it.
+fn shell_status(status: ExitStatus) -> u8 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return u8::try_from(128 + signal).unwrap_or(u8::MAX);
+        }
+    }
+    status.code().map_or(1, |code| (code & 0xff) as u8)
 }
 
 /* ----------------------------- Tests ----------------------------- */
@@ -652,6 +693,29 @@ mod tests {
         assert_eq!(failure("out\n", "err\n", status), "err");
         assert_eq!(failure("out\n", "  \n", status), "out");
         assert_eq!(failure("", "", status), "exited with status 4");
+    }
+
+    /// @test A command's ending is the status a shell reports: its exit
+    /// status, or 128 + N for its signal N.
+    #[test]
+    #[cfg(unix)]
+    fn shell_status_is_the_status_or_128_plus_the_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(shell_status(ExitStatus::from_raw(0)), 0);
+        assert_eq!(shell_status(ExitStatus::from_raw(3 << 8)), 3);
+        assert_eq!(shell_status(ExitStatus::from_raw(255 << 8)), 255);
+        assert_eq!(shell_status(ExitStatus::from_raw(libc::SIGKILL)), 137);
+        assert_eq!(shell_status(ExitStatus::from_raw(libc::SIGTERM)), 143);
+    }
+
+    /// @test A failure of the wrapper's own part ends bench with
+    /// `WRAPPER_FAILED`, any other error with 1.
+    #[test]
+    fn wrapper_failures_exit_125_and_others_1() {
+        assert_eq!(WRAPPER_FAILED, 125);
+        assert_eq!(Error::GpuLockWrap("x".into()).exit_status(), 125);
+        assert_eq!(Error::GpuLock("x".into()).exit_status(), 1);
+        assert_eq!(Error::InvalidArgs("x".into()).exit_status(), 1);
     }
 
     /// @test The three recorded signals are named; any other by its number.

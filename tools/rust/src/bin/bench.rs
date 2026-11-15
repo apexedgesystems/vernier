@@ -367,7 +367,9 @@ enum GpuLockAction {
         freq: Option<u32>,
 
         /// Command to run while the clocks are locked; they are reset once it
-        /// has ended, also when SIGINT, SIGTERM or SIGHUP interrupts the run
+        /// has ended, also when SIGINT, SIGTERM or SIGHUP interrupts the run.
+        /// bench exits with the command's status (128 + N for its signal N),
+        /// or 125 when the lock, the command's start or the reset fails
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -416,10 +418,10 @@ fn main() -> ExitCode {
     }
 
     match run(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status),
         Err(e) => {
             lossy_eprintln!("Error: {e}");
-            ExitCode::FAILURE
+            ExitCode::from(e.exit_status())
         }
     }
 }
@@ -467,7 +469,9 @@ fn file_sizes(file_cfg: &bench::config::Config, quick: bool) -> Sizes {
     }
 }
 
-fn run(args: Args) -> Result<(), Error> {
+/// Run the command @p args name; the status bench exits with, 0 but for a
+/// command gpu-lock wrapped, whose status is passed through.
+fn run(args: Args) -> Result<u8, Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
             let sort_col: SortColumn = sort.parse()?;
@@ -607,13 +611,14 @@ fn run(args: Args) -> Result<(), Error> {
                     // Standalone lock mode
                     bench::gpu_lock::lock_clocks(&lock_cfg)?;
                 } else {
-                    // Wrapper mode: lock -> run -> reset. Interrupted, it ends
-                    // the process by the signal once the clocks are reset.
+                    // Wrapper mode: lock -> run -> reset, then the command's
+                    // status. Interrupted, it ends the process by the signal
+                    // once the clocks are reset.
                     let wrap_cfg = bench::gpu_lock::WrapConfig {
                         lock: lock_cfg,
                         command,
                     };
-                    bench::gpu_lock::wrap_command(&wrap_cfg)?;
+                    return bench::gpu_lock::wrap_command(&wrap_cfg);
                 }
             }
             GpuLockAction::Reset { device } => {
@@ -783,5 +788,5 @@ fn run(args: Args) -> Result<(), Error> {
         }
     }
 
-    Ok(())
+    Ok(0)
 }

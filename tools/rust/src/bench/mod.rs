@@ -153,9 +153,13 @@ pub enum Error {
         regressions: usize,
         missing: usize,
     },
-    /// `bench gpu-lock`: the clocks were not locked or not reset, or the
-    /// wrapped command did not succeed; the cause names itself.
+    /// `bench gpu-lock`: the clocks were not locked or not reset; the cause
+    /// names itself.
     GpuLock(String),
+    /// `bench gpu-lock lock -- <command>`: a part of the wrapper's own failed
+    /// (the lock, the command's start, the reset); the cause names itself.
+    /// bench exits `gpu_lock::WRAPPER_FAILED` on it.
+    GpuLockWrap(String),
 }
 
 impl std::error::Error for Error {}
@@ -187,7 +191,19 @@ impl fmt::Display for Error {
                 "--fail-on-regression: {regressions} regression(s), \
                  {missing} baseline test(s) missing from the candidate"
             ),
-            Error::GpuLock(s) => write!(f, "{s}"),
+            Error::GpuLock(s) | Error::GpuLockWrap(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl Error {
+    /// The status bench exits with on this error: `gpu_lock::WRAPPER_FAILED`
+    /// for a failure of gpu-lock's wrapper, whose other statuses are its
+    /// command's own; 1 for any other.
+    pub fn exit_status(&self) -> u8 {
+        match self {
+            Error::GpuLockWrap(_) => gpu_lock::WRAPPER_FAILED,
+            _ => 1,
         }
     }
 }

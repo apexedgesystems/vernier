@@ -542,18 +542,32 @@ fn the_clocks_are_reset_after_the_command_exits() {
 }
 
 /// @test A command that fails, by its status or by a signal of its own: the
-/// clocks are reset, and bench exits 1 saying how the command ended.
+/// clocks are reset, and bench exits with the command's status, 128 + N for
+/// its signal N, as a shell reports it, saying how the command ended; 125, the
+/// status bench keeps for its own failures, passes through too.
 #[test]
-fn a_failed_command_is_named_and_the_clocks_reset() {
+fn a_failed_command_passes_its_status_through_and_the_clocks_reset() {
     let usr1 = libc::SIGUSR1;
-    for (script, said) in [
+    for (script, code, said) in [
         (
             "exit 3",
-            "Error: the wrapped command exited with status 3".to_string(),
+            3,
+            "[bench] gpu-lock: the wrapped command exited with status 3; bench exits 3".to_string(),
+        ),
+        (
+            "exit 125",
+            125,
+            "[bench] gpu-lock: the wrapped command exited with status 125; bench exits 125"
+                .to_string(),
         ),
         (
             "kill -USR1 $$",
-            format!("Error: the wrapped command was ended by signal {usr1}"),
+            128 + usr1,
+            format!(
+                "[bench] gpu-lock: the wrapped command was ended by signal {usr1}; bench \
+                 exits {}",
+                128 + usr1
+            ),
         ),
     ] {
         let rig = Rig::new();
@@ -564,8 +578,13 @@ fn a_failed_command_is_named_and_the_clocks_reset() {
             None,
         );
         let status = run.end();
-        assert_eq!(status.code(), Some(1), "{script}: {}", rig.stderr());
+        assert_eq!(status.code(), Some(code), "{script}: {}", rig.stderr());
         assert!(rig.stderr().contains(&said), "{script}: {}", rig.stderr());
+        assert!(
+            !rig.stderr().contains("Error"),
+            "{script}: {}",
+            rig.stderr()
+        );
         assert_eq!(
             rig.events(),
             [LOCK, "lock done", RESET, "reset done"],
@@ -575,7 +594,7 @@ fn a_failed_command_is_named_and_the_clocks_reset() {
 }
 
 /// @test A command that cannot start: the clocks, locked first, are reset,
-/// and bench exits 1 naming the command.
+/// and bench exits 125, its own failure, naming the command.
 #[test]
 fn a_command_that_cannot_start_is_named_and_the_clocks_reset() {
     let rig = Rig::new();
@@ -586,7 +605,7 @@ fn a_command_that_cannot_start_is_named_and_the_clocks_reset() {
         None,
     );
     let status = run.end();
-    assert_eq!(status.code(), Some(1), "{}", rig.stderr());
+    assert_eq!(status.code(), Some(125), "{}", rig.stderr());
     assert!(
         rig.stderr()
             .contains("Error: failed to start '/nonexistent/command'"),
@@ -614,23 +633,55 @@ fn without_freq_the_clocks_lock_to_the_maximum() {
     );
 }
 
-/// @test A reset nvidia-smi refuses fails the run, which then says how to
-/// reset the clocks by hand, though the command succeeded.
+/// @test A reset nvidia-smi refuses fails the run with 125, whatever the
+/// command's status, which the error names when it is not 0, and says how to
+/// reset the clocks by hand.
 #[test]
 fn a_refused_reset_fails_the_run() {
-    let rig = Rig::new();
-    rig.set("fail", "reset");
-    let mut run = Run::start(&rig, &wrap(&["/bin/true"]), Parent::Default, None);
-    assert_eq!(run.end().code(), Some(1), "{}", rig.stderr());
-    assert!(
-        rig.stderr().contains(
-            "Error: the clocks of GPU 0 were not reset: Insufficient Permissions; reset them \
-             with `bench gpu-lock reset --device 0`, or as root with `nvidia-smi -i 0 -rgc`"
+    let refused = "the clocks of GPU 0 were not reset: Insufficient Permissions; reset them \
+                   with `bench gpu-lock reset --device 0`, or as root with \
+                   `nvidia-smi -i 0 -rgc`";
+    for (script, said) in [
+        ("exit 0", format!("Error: {refused}")),
+        (
+            "exit 3",
+            format!("Error: the wrapped command exited with status 3; {refused}"),
         ),
+    ] {
+        let rig = Rig::new();
+        rig.set("fail", "reset");
+        let mut run = Run::start(
+            &rig,
+            &wrap(&["/bin/sh", "-c", script]),
+            Parent::Default,
+            None,
+        );
+        assert_eq!(run.end().code(), Some(125), "{script}: {}", rig.stderr());
+        assert!(rig.stderr().contains(&said), "{script}: {}", rig.stderr());
+        assert_eq!(rig.events(), [LOCK, "lock done", RESET], "{script}");
+    }
+}
+
+/// @test A lock nvidia-smi refuses ends bench with 125, its own failure,
+/// naming why: no command starts, and nothing is reset.
+#[test]
+fn a_refused_lock_ends_bench_with_125_and_starts_nothing() {
+    let rig = Rig::new();
+    rig.set("fail", "lock");
+    let mut run = Run::start(
+        &rig,
+        &wrap(&["/bin/sh", "-c", WAITING]),
+        Parent::Default,
+        None,
+    );
+    assert_eq!(run.end().code(), Some(125), "{}", rig.stderr());
+    assert!(
+        rig.stderr()
+            .contains("Error: failed to lock clocks on GPU 0: Insufficient Permissions"),
         "{}",
         rig.stderr()
     );
-    assert_eq!(rig.events(), [LOCK, "lock done", RESET]);
+    assert_eq!(rig.events(), [LOCK]);
 }
 
 /// @test A stderr no one reads (a pipe whose read end is closed, as a
@@ -651,18 +702,19 @@ fn a_stderr_no_one_reads_does_not_stop_the_reset() {
 }
 
 /// @test With a stderr no one reads, a run that fails still ends with the
-/// status the README gives it, 1, whether the command failed or the reset
-/// was refused: the error line bench cannot write is lost, and the clocks
-/// are reset first.
+/// status the README gives it, the command's own when it failed (3) and 125
+/// when the reset was refused: the line bench cannot write is lost, and the
+/// clocks are reset first.
 #[test]
-fn a_failed_run_with_a_stderr_no_one_reads_still_exits_1() {
-    for (script, refuse_reset, events) in [
+fn a_failed_run_with_a_stderr_no_one_reads_keeps_its_status() {
+    for (script, refuse_reset, code, events) in [
         (
             "exit 3",
             false,
+            3,
             &[LOCK, "lock done", RESET, "reset done"][..],
         ),
-        ("exit 0", true, &[LOCK, "lock done", RESET][..]),
+        ("exit 0", true, 125, &[LOCK, "lock done", RESET][..]),
     ] {
         let rig = Rig::new();
         if refuse_reset {
@@ -678,7 +730,7 @@ fn a_failed_run_with_a_stderr_no_one_reads_still_exits_1() {
         );
         assert_eq!(
             run.end().code(),
-            Some(1),
+            Some(code),
             "{script}, reset refused: {refuse_reset}"
         );
         assert_eq!(rig.events(), events, "{script}");

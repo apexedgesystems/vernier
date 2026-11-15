@@ -426,6 +426,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   folder, as `bin_roots` is, wherever `bench run` or `bench profile-all` runs
   below it, instead of from the working directory.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench gpu-lock lock -- <command>` exits with the command's own status,
+  128 + N when signal N ends it, and keeps 125 for its own failures: the lock,
+  the command's start or the reset. **Action needed:** a script that tested
+  for 1 now sees the command's own status.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

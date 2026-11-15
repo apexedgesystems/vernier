@@ -716,13 +716,20 @@ bench gpu-lock reset
 **The wrapper mode** (`lock -- <command>`) locks the clocks, runs the
 command, and resets the clocks after the command has ended, however it ends:
 
-| The run ends with                                                        | The clocks                        | `bench`                                                                       |
-| ------------------------------------------------------------------------ | --------------------------------- | ----------------------------------------------------------------------------- |
-| the command exiting 0                                                    | reset                             | exits 0                                                                       |
-| the command exiting with another status, or ended by a signal of its own | reset                             | exits 1, naming the status or the signal                                      |
-| a command that cannot start                                              | reset                             | exits 1, naming the command                                                   |
-| SIGINT (Ctrl-C), SIGTERM or SIGHUP sent to `bench`                       | reset after the command has ended | ends by the first of them it received (130, 143 or 129 in a shell)            |
-| a reset that `nvidia-smi` refuses, or that does not finish within 30 s   | not reset                         | names the commands that reset them, and exits 1 unless a signal above ends it |
+| The run ends with                                                      | The clocks                                                       | `bench`                                                                                                           |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| the command exiting 0                                                  | reset                                                            | exits 0                                                                                                           |
+| the command exiting with another status N                              | reset                                                            | exits N, saying so                                                                                                |
+| the command ended by a signal N of its own                             | reset                                                            | exits 128 + N, saying so (137 for SIGKILL), as a shell reports it                                                 |
+| a lock that `nvidia-smi` refuses, or that does not finish within 30 s  | not locked (one past 30 s is reset, as it may have taken effect) | exits 125, naming why, and starts no command                                                                      |
+| a command that cannot start                                            | reset                                                            | exits 125, naming the command                                                                                     |
+| SIGINT (Ctrl-C), SIGTERM or SIGHUP sent to `bench`                     | reset after the command has ended                                | ends by the first of them it received (130, 143 or 129 in a shell)                                                |
+| a reset that `nvidia-smi` refuses, or that does not finish within 30 s | not reset                                                        | names the commands that reset them and the command's status if not 0, and exits 125 unless a signal above ends it |
+
+Status 125 is `bench`'s own: a failure of the lock, the command's start or
+the reset, which an `Error:` line on stderr names. Every other status is the
+command's, passed through, so a script reads the command's own result; a
+command that itself exits 125 is passed through as 125, without that line.
 
 The clocks are reset only after the command has ended: whatever `bench`
 receives, it waits for the command, so the clocks stay locked exactly as long
