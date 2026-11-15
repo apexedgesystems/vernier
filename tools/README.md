@@ -277,6 +277,9 @@ command.
 Under ncu no row is timed: the timing cells stay empty, since ncu's
 instrumentation adds to what the benchmark would measure, and the run says
 why ([GPU guide](../src/bench/docs/GPU_GUIDE.md#using-nsight-compute)).
+`bench summary` and `bench compare` refuse such a row, saying that the run
+was a profiling capture, and `bench run` refuses `--analyze` for a run under
+ncu before anything starts.
 
 In-process backends (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the
 binary directly, which reads `--profile-args` itself, and the C++ harness

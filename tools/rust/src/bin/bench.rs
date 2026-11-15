@@ -39,7 +39,10 @@
 //! is missing, or any shown value that is not a finite number of its kind
 //! exits 1 with the cause on stderr and no summary output; `bench summary`
 //! leaves stdout empty, while `run --analyze` preserves run output already
-//! emitted.
+//! emitted. An empty timing cell in a row the Nsight backend profiled is
+//! named as a profiling capture's: under Nsight Compute the benchmark leaves
+//! the timing cells empty, so `run --analyze` is refused before a run under
+//! ncu starts.
 
 use std::{
     path::{Path, PathBuf},
@@ -193,7 +196,8 @@ enum Command {
         #[arg(long)]
         profile_analyze: bool,
 
-        /// Auto-run comparison after execution (requires --csv)
+        /// Print the summary of the run's CSV after it ends (requires --csv;
+        /// refused for a run under Nsight Compute, which has no timing)
         #[arg(long)]
         analyze: bool,
 
@@ -582,6 +586,11 @@ fn run(args: Args) -> Result<u8, Error> {
                 extra_args,
             };
 
+            // The summary is of the run's timing, which a run under Nsight
+            // Compute does not have: refused before the run starts.
+            if analyze {
+                bench::runner::refuse_analysis_of_capture(&cfg)?;
+            }
             let csv_path = bench::run_benchmark(&cfg)?;
 
             if analyze {

@@ -256,6 +256,36 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     Ok(cfg.csv.clone())
 }
 
+/// Refuse `bench run --analyze` for a run that is a profiling capture under
+/// Nsight Compute (ncu), before anything is created or started: the
+/// benchmark leaves the timing cells empty under ncu, so there is no timing
+/// to summarise. The route is the one `run_benchmark` takes for
+/// the request (`effective_request`, then `route_for`); a request it refuses
+/// is left for it to refuse.
+pub fn refuse_analysis_of_capture(cfg: &RunConfig) -> Result<(), Error> {
+    let Ok(cfg) = effective_request(cfg, "bench run") else {
+        return Ok(());
+    };
+    let Some(tool) = cfg.profile.as_deref().map(canonical_backend) else {
+        return Ok(());
+    };
+    let route = route_for(
+        tool,
+        cfg.profile_args.as_deref(),
+        &cfg.binary,
+        cfg.profile_output_dir.as_deref(),
+    );
+    match route {
+        Ok(Some(route)) if route.program == "ncu" => Err(Error::InvalidArgs(format!(
+            "--analyze summarises the run's timing, and {} runs the benchmark under Nsight \
+             Compute (ncu), a profiling capture that leaves the timing cells empty; drop \
+             --analyze, or time the benchmark in a run without ncu",
+            request_text(tool, cfg.profile_args.as_deref())
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The fields of a profile request that `bench run` routes on, as the
 /// benchmark spells them after `--`: each takes the word after it, and
 /// `--artifact-root` is the benchmark's other name for the output folder.
@@ -2618,6 +2648,68 @@ mod tests {
         let replay = read("ncu", "replay").expect("read");
         assert!(replay.compute && replay.replay);
         assert_eq!(replay.options()[1], REPLAY_METRICS.join(","));
+    }
+
+    /// @test --analyze is refused for a run under Nsight Compute, whichever
+    /// way the request reaches ncu (after `--` too), and taken for a run
+    /// under any other route or none; a request bench run refuses for itself
+    /// is left to it.
+    #[test]
+    fn analysis_of_an_ncu_capture_is_refused() {
+        for (profile, args, extra, text) in [
+            (Some("ncu"), None, &[][..], "--profile ncu"),
+            (
+                Some("ncu"),
+                Some("replay"),
+                &[],
+                "--profile ncu --profile-args 'replay'",
+            ),
+            (
+                Some("nsight"),
+                Some("compute"),
+                &[],
+                "--profile nsight --profile-args 'compute'",
+            ),
+            (
+                Some("nsys"),
+                Some("--section Occupancy"),
+                &[],
+                "--profile nsight --profile-args '--section Occupancy'",
+            ),
+            (
+                None,
+                None,
+                &["--profile", "ncu", "--profile-args", "--set full"],
+                "--profile ncu --profile-args '--set full'",
+            ),
+        ] {
+            assert_eq!(
+                refuse_analysis_of_capture(&request(profile, args, extra))
+                    .expect_err("refused")
+                    .to_string(),
+                format!(
+                    "invalid arguments: --analyze summarises the run's timing, and {text} runs \
+                     the benchmark under Nsight Compute (ncu), a profiling capture that leaves \
+                     the timing cells empty; drop --analyze, or time the benchmark in a run \
+                     without ncu"
+                ),
+                "{profile:?} {args:?} {extra:?}"
+            );
+        }
+        for (profile, args, extra) in [
+            (None, None, &[][..]),
+            (Some("nsight"), None, &[]),
+            (Some("nsys"), None, &[]),
+            (Some("perf"), None, &[]),
+            (Some("massif"), Some("pages"), &[]),
+            (Some("ncu"), Some("--kernel-name k"), &[]),
+            (Some("ncu"), None, &["--profile", "perf"]),
+        ] {
+            assert!(
+                refuse_analysis_of_capture(&request(profile, args, extra)).is_ok(),
+                "{profile:?} {args:?} {extra:?}"
+            );
+        }
     }
 
     /// One row of the shared route table, split on tabs, with `-` read as empty.

@@ -14,7 +14,8 @@
 //! A caller that computes from or presents a numeric column states how it
 //! needs the column (`Need`) and loads with `load_csv_strict`: a row that
 //! falls short is an error naming the file, line, test, column and value,
-//! rather than a default or a NaN that looks like a measurement.
+//! rather than a default or a NaN that looks like a measurement. A timing
+//! cell a profiling capture under Nsight Compute left empty is named as such.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -181,6 +182,38 @@ fn unmet(column: &str, found: Found<'_>, need: Need, header_len: usize) -> Optio
     }
 }
 
+/// The columns a run under Nsight Compute (ncu) leaves empty in every row,
+/// of those a `BenchRow` reads: the benchmark's timing and what it computes
+/// from it.
+const CAPTURE_EMPTY_COLUMNS: [&str; 12] = [
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallP99",
+    "wallP999",
+    "wallMin",
+    "wallMax",
+    "wallMean",
+    "wallStddev",
+    "wallCV",
+    "callsPerSecond",
+    "stable",
+];
+
+/// Why `column` is empty in a row whose profileTool cell holds
+/// `profile_tool`, when the row is from a profiling capture, or None. The
+/// benchmark's Nsight backend writes "nsight" there under Nsight Systems and
+/// under Nsight Compute alike; under Nsight Compute it leaves every row's
+/// timing cells empty, since ncu's instrumentation adds to what host timers
+/// and CUDA events measure.
+fn capture_note(column: &str, profile_tool: &str) -> Option<&'static str> {
+    (profile_tool == "nsight" && CAPTURE_EMPTY_COLUMNS.contains(&column)).then_some(
+        "; its profileTool is nsight, and a run under Nsight Compute (ncu) is a profiling \
+         capture, which leaves the timing cells empty: time the benchmark in a run without \
+         ncu",
+    )
+}
+
 /// Why a test name cannot identify a row, or None when it can. The name is
 /// only checked: a name with spaces around it is kept, as a different test
 /// from the same name without them.
@@ -261,7 +294,10 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
 /// default `load_csv` gives an unreadable field, or a NaN, from a measured
 /// value, so it names the column here with how it needs it. A row that falls
 /// short is an error naming the file, the line, the test, the column and
-/// what the field held. Every other column is read as `load_csv` reads it.
+/// what the field held; an empty timing cell in a row the benchmark's Nsight
+/// backend profiled adds that a run under Nsight Compute is a profiling
+/// capture, which leaves those cells empty. Every other column is read as
+/// `load_csv` reads it.
 pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchRow>, Error> {
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
@@ -306,10 +342,15 @@ pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchR
                     Error::InvalidArgs(format!("no numeric column '{column}' is read into a row"))
                 })?;
             if let Some(problem) = unmet(column, held, need, headers.len()) {
+                let note = match held {
+                    Found::Empty => capture_note(column, get_str(&record, &hmap, "profileTool")),
+                    _ => None,
+                };
                 return Err(Error::Parse(format!(
-                    "{}: test '{}' {problem}",
+                    "{}: test '{}' {problem}{}",
                     location(path, &record),
-                    row.test
+                    row.test,
+                    note.unwrap_or("")
                 )));
             }
         }
@@ -455,6 +496,67 @@ mod tests {
                 tmp.path().display()
             )
         );
+    }
+
+    /// @test An empty timing cell in a row the Nsight backend profiled is
+    /// named as a profiling capture's; an empty cell of any other column, or
+    /// of a row another profiler or none profiled, and a timing cell holding
+    /// text, keep the plain cause.
+    #[test]
+    fn strict_column_empty_in_a_capture_says_why() {
+        const HEADER: &str = "test,cycles,wallMedian,wallCV,callsPerSecond,profileTool,profileDir";
+        const NEEDS: [(&str, Need); 3] = [
+            ("cycles", Need::Required),
+            ("wallMedian", Need::Required),
+            ("wallCV", Need::Required),
+        ];
+        const NOTE: &str = "; its profileTool is nsight, and a run under Nsight Compute (ncu) \
+                            is a profiling capture, which leaves the timing cells empty: time \
+                            the benchmark in a run without ncu";
+        for (row, cause, noted) in [
+            (
+                "Saxpy.G1,2,,,,nsight,bench-out/b.ncu",
+                "has no wallMedian value: the field is empty",
+                true,
+            ),
+            (
+                "Saxpy.G1,2,1,,,nsight,bench-out/b.ncu",
+                "has no wallCV value: the field is empty",
+                true,
+            ),
+            (
+                "Saxpy.G1,,1,0.1,1,nsight,bench-out/b.ncu",
+                "has no cycles value: the field is empty",
+                false,
+            ),
+            (
+                "Saxpy.G1,2,,,,perf,bench-out/b.perf",
+                "has no wallMedian value: the field is empty",
+                false,
+            ),
+            (
+                "Saxpy.G1,2,,,,,",
+                "has no wallMedian value: the field is empty",
+                false,
+            ),
+            (
+                "Saxpy.G1,2,n/a,0.1,1,nsight,bench-out/b.ncu",
+                "has wallMedian 'n/a', which is not a number",
+                false,
+            ),
+        ] {
+            let tmp = csv_with(HEADER, &["Cpu.Case,2,1,0.1,1,nsight,bench-out/b.ncu", row]);
+            let err = load_csv_strict(tmp.path(), &NEEDS).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "parse error: {}, line 3: test 'Saxpy.G1' {cause}{}",
+                    tmp.path().display(),
+                    if noted { NOTE } else { "" }
+                ),
+                "{row}"
+            );
+        }
     }
 
     /// @test A row that ends before a strict column is an error, not a zero.

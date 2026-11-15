@@ -385,6 +385,32 @@ fn missing_test_column_is_an_error() {
     }
 }
 
+/// @test summary and compare refuse the rows of a run under Nsight Compute,
+/// which leaves every row untimed, as text and as JSON, saying that the run
+/// was a profiling capture.
+#[test]
+fn summary_and_compare_name_an_ncu_capture() {
+    let csv = fixture("summary_ncu_capture.csv");
+    let good = fixture("sample_bench.csv");
+    let (csv, good) = (csv.as_str(), good.as_str());
+    let expected = format!(
+        "{csv}, line 2: test 'Saxpy.EndToEnd' has no wallMedian value: the field is empty; its \
+         profileTool is nsight, and a run under Nsight Compute (ncu) is a profiling capture, \
+         which leaves the timing cells empty: time the benchmark in a run without ncu"
+    );
+    for args in [
+        vec!["summary", csv],
+        vec!["summary", csv, "--json"],
+        vec!["compare", good, csv],
+        vec!["compare", csv, good, "--json", "--fail-on-regression"],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(out.is_empty(), "{args:?}: {out}");
+        assert!(err.contains(&expected), "{args:?}: {err}");
+    }
+}
+
 /* ----------------------------- Compare ----------------------------- */
 
 /// @test Two identical runs label every test neutral and exit 0.
@@ -2644,6 +2670,63 @@ fn run_refuses_unknown_modes_and_ncu_options() {
             "{profile} {args}: a folder was created"
         );
     }
+}
+
+/// @test bench run --analyze is refused before anything starts or is
+/// created for a run under Nsight Compute, whichever way the request reaches
+/// ncu (after `--` too); under Nsight Systems the run starts as before.
+#[test]
+fn run_analyze_is_refused_under_ncu() {
+    for (args, request) in [
+        (
+            &["--profile", "ncu", "--csv", "out.csv", "--analyze"][..],
+            "--profile ncu",
+        ),
+        (
+            &[
+                "--profile",
+                "nsight",
+                "--profile-args",
+                "replay",
+                "--analyze",
+            ],
+            "--profile nsight --profile-args 'replay'",
+        ),
+        (
+            &[
+                "--analyze",
+                "--",
+                "--profile",
+                "ncu",
+                "--profile-args",
+                "--set full",
+            ],
+            "--profile ncu --profile-args '--set full'",
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, err, log) = run_rig(&rig, args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(
+            err.contains(&format!(
+                "Error: invalid arguments: --analyze summarises the run's timing, and {request} \
+                 runs the benchmark under Nsight Compute (ncu), a profiling capture that leaves \
+                 the timing cells empty; drop --analyze, or time the benchmark in a run without \
+                 ncu"
+            )),
+            "{args:?}: {err}"
+        );
+        assert_eq!(log, "", "{args:?}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{args:?}: a folder was created"
+        );
+    }
+    let rig = route_rig(&["nsys", "ncu"]);
+    let (code, err, log) = run_rig(&rig, &["--profile", "nsight", "--analyze"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(log.starts_with("nsys wrap=nsight profile "), "{log}");
+    assert!(err.contains("--analyze requires --csv"), "{err}");
 }
 
 /// @test --profile-args may start with a hyphen, and reaches the benchmark

@@ -448,6 +448,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   table shows `NOT TIMED`. **Action needed:** time code in a run without ncu,
   and rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench summary` and `bench compare` say that a timing cell left empty
+  under Nsight Compute is a profiling capture's, and `bench run` refuses
+  `--analyze` for a run under ncu before it starts.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
