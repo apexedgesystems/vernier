@@ -352,6 +352,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   pull request and their component cases nightly, as
   `make test-heap-component` and `make asan-component`.
   ([#74](https://github.com/apexedgesystems/vernier/pull/74))
+- The nightly workflow also runs `make tsan` and `make ubsan`, so a data race
+  or undefined behaviour in a unit test's path fails a run on main.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ### Fixed
 

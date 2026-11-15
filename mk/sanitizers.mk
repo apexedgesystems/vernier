@@ -13,8 +13,8 @@
 # selection). The debug tree is not touched. make asan, make tsan and make ubsan
 # run the unit selection, make asan-component the component one; every pull
 # request runs make asan, and the nightly workflow (mk/checks.mk) runs make
-# asan-component. For the whole suite under a sanitizer, build the tree and run
-# ctest in it.
+# asan-component, make tsan and make ubsan. For the whole suite under a
+# sanitizer, build the tree and run ctest in it.
 # ==============================================================================
 
 ifndef SANITIZERS_MK_GUARD

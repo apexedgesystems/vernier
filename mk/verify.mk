@@ -27,14 +27,15 @@
 #
 # What no lane proves, and where it is proven:
 #   - The component tests, the heap tree's and the AddressSanitizer
-#     selection's component cases among them: the nightly workflow (make
-#     test-component, make test-heap-component, make asan-component).
+#     selection's component cases among them, and the unit selection under
+#     ThreadSanitizer and UndefinedBehaviorSanitizer: the nightly workflow
+#     (make test-component, test-heap-component, asan-component, tsan and
+#     ubsan).
 #   - GPU execution, the CUDA cases that need a device and the two-GPU paths,
 #     real bpftrace and off-CPU captures (a container's PID namespace prevents
 #     them), the hardware-counter checks (they need counter access), and every
 #     other rig test: make test-rig on a host that has what they need, dev-cuda
 #     on a GPU host for the GPU's.
-#   - TSan and UBSan: make tsan and make ubsan, Make targets, not lanes.
 #   - The image leaves (the CUDA, cross and toolchain images): CI's
 #     image-graph job.
 #

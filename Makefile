@@ -161,8 +161,8 @@ help:
 	@printf '  %-28s %s\n' "make static" "Run static analysis (scan-build)"
 	@printf '  %-28s %s\n' "make asan" "AddressSanitizer: unit selection in build/asan (CPU)"
 	@printf '  %-28s %s\n' "make asan-component" "AddressSanitizer: component selection (CPU, nightly)"
-	@printf '  %-28s %s\n' "make tsan" "ThreadSanitizer: unit selection in build/tsan (CPU)"
-	@printf '  %-28s %s\n' "make ubsan" "UBSanitizer: unit selection in build/ubsan (CPU)"
+	@printf '  %-28s %s\n' "make tsan" "ThreadSanitizer: unit selection in build/tsan (CPU, nightly)"
+	@printf '  %-28s %s\n' "make ubsan" "UBSanitizer: unit selection in build/ubsan (CPU, nightly)"
 	@printf '\n'
 	@printf '%s\n' "Tools:"
 	@printf '  %-28s %s\n' "make tools" "Build all tools (C++, Python, Rust)"

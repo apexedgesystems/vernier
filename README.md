@@ -357,7 +357,8 @@ AddressSanitizer), and `make cuda-check` (every CUDA target compiled and
 linked, then the cases that need no device), with `make tools-check`, which
 checks that the debug build made every CLI tool. Their component cases run
 nightly: `make test-heap-component` and `make asan-component`, beside
-`make test-component`.
+`make test-component`; so do `make tsan` and `make ubsan`, the unit selection
+under ThreadSanitizer and UndefinedBehaviorSanitizer.
 
 ```bash
 # Build and run the unit tests (Docker)

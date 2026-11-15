@@ -29,7 +29,11 @@ CHECKS_MK_GUARD := 1
 # test-heap-component, asan-component: the component cases of the heap tree
 # (mk/test.mk) and of the AddressSanitizer selection (mk/sanitizers.mk), whose
 # unit cases every pull request runs.
-CHECKS_NIGHTLY := test-component test-heap-component asan-component
+# tsan, ubsan: the unit selection under ThreadSanitizer and
+# UndefinedBehaviorSanitizer (mk/sanitizers.mk), each in a tree of its own.
+# ThreadSanitizer turns ASLR off for its own process, a personality call the
+# dev service's privilege allows.
+CHECKS_NIGHTLY := test-component test-heap-component asan-component tsan ubsan
 
 # ------------------------------------------------------------------------------
 # Aggregate Targets
