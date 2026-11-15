@@ -979,6 +979,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - A monitor gauge whose readings are all negative reports its real maximum in
   the summary instead of 0.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A benchmark's own `alarm()` and SIGALRM handler, and gperftools sampling
+  under `CPUPROFILE_REALTIME`, keep working under `--profile`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

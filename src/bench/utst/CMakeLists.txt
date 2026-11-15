@@ -386,6 +386,24 @@ vernier_add_test_program(
 )
 
 # ------------------------------------------------------------------------------
+# Watchdog Helper Program (1)
+# ------------------------------------------------------------------------------
+# The program TestBench's watchdog cases run as a child: the watchdog ends the
+# process it guards, so each case in which it fires, or must not, runs there
+# and the test reads how it ended. A test fixture, never installed.
+# ------------------------------------------------------------------------------
+
+vernier_add_test_program(
+  TARGET WatchdogHelper SOURCES "${CMAKE_CURRENT_LIST_DIR}/WatchdogHelper.cpp" LINK bench
+)
+if (TARGET TestBench AND TARGET WatchdogHelper)
+  target_compile_definitions(
+    TestBench PRIVATE VERNIER_WATCHDOG_HELPER="$<TARGET_FILE:WatchdogHelper>"
+  )
+  add_dependencies(TestBench WatchdogHelper)
+endif ()
+
+# ------------------------------------------------------------------------------
 # Startup-Fault Fixture
 # ------------------------------------------------------------------------------
 # StartupFaultUnderValgrind.cpp aborts during static initialization when its

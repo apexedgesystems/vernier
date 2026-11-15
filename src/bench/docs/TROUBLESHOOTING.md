@@ -568,7 +568,7 @@ before any profiler or `--repeats` run.
 
 **Built-in watchdog:**
 
-Under `--profile X`, vernier arms a SIGALRM watchdog around each measured loop
+Under `--profile X`, vernier arms a watchdog around each measured loop
 (the repeats of `measured()` and `throughputLoop()`). A loop that runs longer
 than 300 s stops the run with exit status 2 and a diagnostic naming the test and
 the profile tool. `--profile-test-timeout <seconds>` changes the limit, and
@@ -577,7 +577,10 @@ whole number of seconds from 0 (a negative number, `30s`, text) stops the run
 before any test with exit status 2 and the accepted range. It is not armed
 without `--profile`, and it does not cover warmup, `--target-time`
 calibration, the profiler's own start and stop, `contentionRun()` or GPU
-measurements; an external `timeout` bounds those.
+measurements; an external `timeout` bounds those. The watchdog waits on a
+thread of its own and uses no signal or timer, so a benchmark's own `alarm()`
+and SIGALRM handler, and gperftools sampling on the real-time timer
+(`CPUPROFILE_REALTIME`), work under `--profile`.
 
 **Debug:**
 

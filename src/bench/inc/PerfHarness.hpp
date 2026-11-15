@@ -12,18 +12,21 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 #include <thread>
 
-#include <unistd.h> // gethostname, _exit, write
+#include <unistd.h> // gethostname, getpid, _exit, write
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
@@ -134,18 +137,24 @@ inline void clearProgress() { std::fprintf(stderr, "\r%*s\r", 80, ""); }
 
 /* ----------------------------- Watchdog ----------------------------- */
 
+/**
+ * The per-test watchdog under --profile, armed by measured() around its
+ * repeats. One thread per process, started by the first arm() and parked on a
+ * condition variable between arms, writes a message naming the case and the
+ * profiler and ends the process with exit status 2 when a deadline passes
+ * while still armed. It touches no signal disposition and no timer, so a
+ * benchmark's own alarm() and SIGALRM handler, and a profiler that samples on
+ * SIGALRM, work under it.
+ */
 namespace perf_watchdog {
 
-// Async-signal-safe state: SIGALRM handler can read these.
-// Buffers are bounded so the handler never allocates.
+/// Whether a measured loop is under the watchdog: set by arm(), cleared by disarm().
 inline std::atomic<bool> g_armed{false};
-inline char g_testName[160] = {0};
-inline char g_profileTool[32] = {0};
-inline unsigned int g_timeoutSecs = 0;
 
 // Writes the whole buffer to stderr, resuming after a short write or EINTR.
 // Any other failure ends the attempt: the caller is about to _exit and has no
-// other channel to report on. Async-signal-safe: write(2) and errno only.
+// other channel to report on. write(2) alone, without stdio or the allocator,
+// whose locks the hung thread may hold.
 inline void writeStderr(const char* data, std::size_t len) noexcept {
   while (len > 0) {
     const ssize_t WRITTEN = ::write(STDERR_FILENO, data, len);
@@ -160,9 +169,29 @@ inline void writeStderr(const char* data, std::size_t len) noexcept {
   }
 }
 
-// SIGALRM handler. Prints a diagnostic and exits hard.
-// Must be async-signal-safe -- only write(2) + _exit(2) here.
-inline void handler(int /*sig*/) {
+/**
+ * @brief The watchdog's state in one process, made by its first arm() and
+ * never destroyed, so the detached thread waiting on it never sees it go at
+ * exit. A child of fork() makes its own and leaves the copied one as it is:
+ * the parent's thread is not copied, and the copied lock may be held.
+ */
+struct State {
+  std::mutex mutex;
+  std::condition_variable changed; ///< Notified by arm() and disarm().
+  bool watching = false;           ///< The thread is started.
+  bool armed = false;
+  std::uint64_t arming = 0; ///< Counts arm() calls: a re-arm restarts the wait.
+  std::chrono::steady_clock::time_point deadline{};
+  char testName[160] = {0};   ///< A fixed buffer, so the expiry does not allocate.
+  char profileTool[32] = {0}; ///< Likewise.
+  pid_t pid = 0;              ///< The process this state belongs to.
+};
+
+/// This process's state: none before its first arm(), the parent's in a child of fork().
+inline std::atomic<State*> g_state{nullptr};
+
+// Writes the message for the armed case and ends the process with exit status 2.
+[[noreturn]] inline void expire(const State& state) noexcept {
   static const char kPrefix[] = "\n[bench] watchdog timeout: test '";
   static const char kMid[] = "' under --profile ";
   static const char kSuffix[] =
@@ -171,34 +200,106 @@ inline void handler(int /*sig*/) {
       "[bench] measured loop. Identify the test, exclude it via --gtest_filter,\n"
       "[bench] or raise --profile-test-timeout. Aborting.\n";
   writeStderr(kPrefix, sizeof(kPrefix) - 1);
-  writeStderr(g_testName, std::strlen(g_testName));
+  writeStderr(state.testName, std::strlen(state.testName));
   writeStderr(kMid, sizeof(kMid) - 1);
-  writeStderr(g_profileTool, std::strlen(g_profileTool));
+  writeStderr(state.profileTool, std::strlen(state.profileTool));
   writeStderr(kSuffix, sizeof(kSuffix) - 1);
   ::_exit(2);
 }
 
-inline void arm(const char* testName, const char* profileTool, unsigned int timeoutSecs) {
-  // Copy to async-signal-safe buffers (no allocation in the handler path).
-  std::strncpy(g_testName, testName ? testName : "?", sizeof(g_testName) - 1);
-  g_testName[sizeof(g_testName) - 1] = '\0';
-  std::strncpy(g_profileTool, profileTool ? profileTool : "?", sizeof(g_profileTool) - 1);
-  g_profileTool[sizeof(g_profileTool) - 1] = '\0';
-  g_timeoutSecs = timeoutSecs;
-
-  struct sigaction sa{};
-  sa.sa_handler = handler;
-  ::sigemptyset(&sa.sa_mask);
-  // No SA_RESTART: we want syscalls to return on signal, allowing prompt exit.
-  sa.sa_flags = 0;
-  ::sigaction(SIGALRM, &sa, nullptr);
-  ::alarm(timeoutSecs);
-  g_armed.store(true, std::memory_order_relaxed);
+// The watchdog's thread: parked until armed, then waiting for the deadline, a
+// disarm or a re-arm. A deadline that passes while still armed ends the process.
+inline void watch(State* state) {
+  std::unique_lock<std::mutex> lock(state->mutex);
+  for (;;) {
+    state->changed.wait(lock, [state] { return state->armed; });
+    const std::uint64_t ARMING = state->arming;
+    const auto DEADLINE = state->deadline;
+    const bool ENDED = state->changed.wait_until(
+        lock, DEADLINE, [state, ARMING] { return !state->armed || state->arming != ARMING; });
+    if (!ENDED) {
+      expire(*state);
+    }
+  }
 }
 
+// Starts the thread for @p state with every signal blocked on it (a thread
+// takes the mask of the thread that starts it), so a signal meant for the
+// benchmark, one its own threads block among them, is never delivered to it.
+inline void startWatching(State* state) {
+  sigset_t all;
+  sigset_t previous;
+  ::sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, &previous);
+  struct Restore {
+    const sigset_t& mask;
+    ~Restore() { ::pthread_sigmask(SIG_SETMASK, &mask, nullptr); }
+  } const RESTORE{previous};
+  std::thread(watch, state).detach();
+}
+
+// This process's state, made on the first call in it.
+inline State* processState() {
+  const pid_t SELF = ::getpid();
+  State* current = g_state.load(std::memory_order_acquire);
+  while (current == nullptr || current->pid != SELF) {
+    auto* made = new State;
+    made->pid = SELF;
+    if (g_state.compare_exchange_strong(current, made, std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
+      return made;
+    }
+    delete made; // another thread of this process made it first
+  }
+  return current;
+}
+
+/**
+ * @brief Arm the watchdog: unless disarm() comes first, @p timeout from now
+ * it writes its message naming @p testName and @p profileTool ("?" for a null
+ * name) and ends the process with exit status 2. A later arm() replaces the
+ * deadline and the names. The first arm() in a process starts the thread,
+ * which throws std::system_error when the thread cannot be started; nothing
+ * is armed then.
+ */
+inline void arm(const char* testName, const char* profileTool,
+                std::chrono::steady_clock::duration timeout) {
+  State* state = processState();
+  {
+    const std::lock_guard<std::mutex> LOCK(state->mutex);
+    if (!state->watching) {
+      startWatching(state);
+      state->watching = true;
+    }
+    std::strncpy(state->testName, testName != nullptr ? testName : "?",
+                 sizeof(state->testName) - 1);
+    std::strncpy(state->profileTool, profileTool != nullptr ? profileTool : "?",
+                 sizeof(state->profileTool) - 1);
+    state->deadline = std::chrono::steady_clock::now() + timeout;
+    ++state->arming;
+    state->armed = true;
+  }
+  g_armed.store(true, std::memory_order_relaxed);
+  state->changed.notify_one();
+}
+
+/** @brief arm() for @p timeoutSecs whole seconds, as --profile-test-timeout gives them. */
+inline void arm(const char* testName, const char* profileTool, unsigned int timeoutSecs) {
+  arm(testName, profileTool, std::chrono::seconds(timeoutSecs));
+}
+
+/** @brief Disarm the watchdog; its thread parks until the next arm(). */
 inline void disarm() {
-  ::alarm(0);
   g_armed.store(false, std::memory_order_relaxed);
+  State* state = g_state.load(std::memory_order_acquire);
+  if (state == nullptr || state->pid != ::getpid()) {
+    return; // never armed in this process
+  }
+  {
+    const std::lock_guard<std::mutex> LOCK(state->mutex);
+    state->armed = false;
+  }
+  state->changed.notify_one();
 }
 
 } // namespace perf_watchdog
@@ -531,11 +632,12 @@ public:
    *
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
    *
-   * An exception from @p fn ends the measurement: the watchdog is turned off,
-   * the abort hook runs (attachProfilerHooks(): the profiler ends what its
-   * before hook started, without analysis), nothing is summarized or
-   * published, the after hook does not run, and the exception reaches the
-   * caller unchanged. The case can then measure again.
+   * An exception from @p fn, or from starting the watchdog's thread under
+   * --profile, ends the measurement: the watchdog is turned off, the abort
+   * hook runs (attachProfilerHooks(): the profiler ends what its before hook
+   * started, without analysis), nothing is summarized or published, the after
+   * hook does not run, and the exception reaches the caller unchanged. The
+   * case can then measure again.
    */
   PerfResult measured(Fn fn, std::string label = "measured") {
     if (beforeHook_) {
@@ -547,17 +649,18 @@ public:
     bool showedProgress = false;
 
     // Arm the per-test watchdog only when profiling AND the timeout is above
-    // zero (0 turns it off). SIGALRM is the cleanest way to abort a hung fn():
-    // drain-loop / blocking-recv tests cannot be interrupted from the
-    // measured() thread itself because fn() holds the CPU.
+    // zero (0 turns it off). Its own thread ends a hung fn(): a drain loop or
+    // a blocking recv cannot be interrupted from the thread that runs it.
     const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
-    if (watchdogActive) {
-      perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
-                         static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
-    }
 
     std::vector<double> perCall;
     try {
+      // Inside the try: a watchdog thread that cannot be started ends the
+      // measurement as an exception from fn() does.
+      if (watchdogActive) {
+        perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
+                           static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
+      }
       perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
       for (int r = 0; r < cfg_.repeats; ++r) {
         // Time points, not nowUs(), so the repeat keeps the clock's own
@@ -579,7 +682,7 @@ public:
         }
       }
     } catch (...) {
-      // Left armed, the alarm would end a later case of this process.
+      // Left armed, the watchdog would end the process during a later case.
       if (showedProgress) {
         clearProgress();
       }
