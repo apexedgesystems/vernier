@@ -651,8 +651,12 @@ warmup = 2;      // Extra warmup to stabilize
 
 **Performance impact:**
 
-- 25,000 measured calls against 100,000 (5,000 x 5 against 10,000 x 10):
-  about a quarter of the measured time, whatever setup and warmup take
+- With the default counts, 25,000 measured calls instead of 100,000
+  (5,000 x 5 against 10,000 x 10, per thread under `contentionRun()`). The
+  time this saves depends on the workload: work that grows with the calls
+  takes a quarter as long, while work done once per repeat inside the
+  measured window, such as a GPU test's copies or the start and join of
+  `contentionRun()`'s threads, only halves
 - Less statistical confidence (higher CV%)
 - May miss outliers/edge cases
 - Same CSV format (compatible with analysis tools)
