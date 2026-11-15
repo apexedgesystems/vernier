@@ -59,7 +59,7 @@ if [ -n "$gate" ]; then
   done
 fi
 if [ "$call" = "$hang" ]; then
-  exec 3<>"$rig/hang.fifo"
+  exec 9<>"$rig/hang.fifo"
   while [ -d "$rig" ]; do /bin/sleep 0.01; done
   exit 1
 fi
