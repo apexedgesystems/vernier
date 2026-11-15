@@ -200,7 +200,8 @@ endif ()
 # Demo 02's guard timing built against the tracked stand-in for the CUDA
 # runtime (examples/saxpy/utst/fake_cuda), so every configuration, CPU-only
 # included, checks that it releases its stream and events on every path,
-# exceptions included: TestDemoNsightProfilerTiming.
+# exceptions included; a thread-sanitizer build skips the failed host
+# allocation, as it cannot replace operator new: TestDemoNsightProfilerTiming.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
