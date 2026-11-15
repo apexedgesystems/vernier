@@ -970,6 +970,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - Refused CUDA launches fail GPU measurements and warmup; worker errors reach
   the caller. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- A profiler attached to a GPU case ends its capture when the measurement
+  fails, so the next case can start its own.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - GPU timing includes legacy-default-stream work under both priority settings.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - `bench run --profile compute-sanitizer` identifies truncated racecheck reports

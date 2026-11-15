@@ -183,6 +183,7 @@ public:
   using MultiGpuKernelFn = std::function<void(int deviceId, cudaStream_t stream)>;
   using BeforeHook = std::function<void(const PerfGpuCase&)>;
   using AfterHook = std::function<void(const PerfGpuCase&, const GpuStats&)>;
+  using AbortHook = std::function<void(const PerfGpuCase&)>;
 
   PerfGpuCase(std::string testName, PerfConfig cpuCfg);
   ~PerfGpuCase();
@@ -250,6 +251,23 @@ public:
    */
   void setBeforeMeasureHook(BeforeHook h);
   void setAfterMeasureHook(AfterHook h);
+
+  /**
+   * @brief The hook a measurement runs in place of the after hook when it ends
+   * by an exception after its before hook ran (a refused launch, a device's
+   * thread that failed, a callable that threw), before the exception leaves
+   * measure() or cpuBaseline(): it ends what the before hook started, with
+   * nothing summarized or published, so the case, kept or not, and other
+   * cases can measure again. An exception it throws is dropped, so the caller
+   * gets the measurement's own. attachGpuProfilerHooks() installs the
+   * profiler's abortMeasure() here.
+   *
+   * @note Compatibility: a benchmark built with this header needs a library
+   * that has this member, which attachGpuProfilerHooks() (inline, below)
+   * calls; one built with an earlier header behaves as before on a library
+   * that has it: no abort hook is installed.
+   */
+  void setAbortMeasureHook(AbortHook h);
 
   [[nodiscard]] int cycles() const noexcept;
   [[nodiscard]] int repeats() const noexcept;
@@ -328,7 +346,10 @@ MultiGpuKernelBuilder::measureP2PBandwidth(int srcDevice, int dstDevice, size_t 
  *
  * Dispatches through the registry so any GPU-aware backend
  * (nsight, compute-sanitizer, future additions) plugs in automatically
- * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here.
+ * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here. The
+ * profiler lives through the before, after and abort hooks: a measurement
+ * that ends by an exception calls its abortMeasure(), which ends its
+ * collection in a backend that implements it.
  */
 inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
   auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
@@ -339,6 +360,8 @@ inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
     prof->afterMeasure(s.cpuStats);
     PerfRegistry::instance().updateProfileMeta(prof->toolName(), prof->artifactDir());
   });
+
+  pc.setAbortMeasureHook([prof](const PerfGpuCase&) { prof->abortMeasure(); });
 }
 
 } // namespace bench

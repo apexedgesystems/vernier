@@ -952,7 +952,11 @@ ncu --csv --print-summary per-kernel MyKernel.MyKernel.nsight/kernel_replay.ncu-
 
 `PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is
 selected by `--profile X` fires around the measured window. No manual
-`attachGpuProfilerHooks` call required.
+`attachGpuProfilerHooks` call required. A measurement that ends by an
+exception (a refused launch, a device's thread that failed, a callable that
+throws) calls the backend's `abortMeasure()` at once, with nothing analyzed or
+published. Only a backend that implements it, gperf today, ends its capture
+this way, and the case and other cases can then capture again.
 
 ```cpp
 PERF_GPU_TEST(MyKernel, WithProfiling) {

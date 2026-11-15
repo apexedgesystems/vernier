@@ -630,16 +630,57 @@ std::map<std::string, std::string>& probeCalls() {
   return calls;
 }
 
-/** @brief A backend that records its hook calls: the registry path the GPU guard takes. */
+/**
+ * @brief The test whose probe capture runs, empty while none does: one
+ *        capture at a time in the process, as gperftools runs its CPU profile.
+ */
+std::string& probeCaptureOwner() {
+  static std::string owner;
+  return owner;
+}
+
+/**
+ * @brief A backend that records its hook calls, 'b' before, 'a' after, 'x'
+ *        abort and 'r' for a start refused because another capture runs, and
+ *        holds the process's one capture from its before hook to its after or
+ *        abort hook: the registry path the GPU guard takes.
+ */
 class GpuHookProbe final : public ub::Profiler {
 public:
   explicit GpuHookProbe(std::string testName) : testName_(std::move(testName)) {}
   std::string toolName() const noexcept override { return "gpu-hook-probe"; }
   std::string artifactDir() const noexcept override { return "probe-dir/" + testName_; }
-  void beforeMeasure() override { probeCalls()[testName_] += 'b'; }
-  void afterMeasure(const ub::Stats& /*s*/) override { probeCalls()[testName_] += 'a'; }
+
+  void beforeMeasure() override {
+    if (!probeCaptureOwner().empty()) {
+      probeCalls()[testName_] += 'r';
+      return;
+    }
+    probeCaptureOwner() = testName_;
+    probeCalls()[testName_] += 'b';
+  }
+
+  void afterMeasure(const ub::Stats& /*s*/) override {
+    endCapture();
+    probeCalls()[testName_] += 'a';
+  }
+
+  void abortMeasure() noexcept override {
+    endCapture();
+    try {
+      probeCalls()[testName_] += 'x';
+    } catch (...) {
+      // Unrecorded: the missing 'x' fails the test that looks for it.
+    }
+  }
 
 private:
+  void endCapture() noexcept {
+    if (probeCaptureOwner() == testName_) {
+      probeCaptureOwner().clear();
+    }
+  }
+
   std::string testName_;
 };
 
@@ -3255,6 +3296,93 @@ TEST_F(PerfGpuHarnessTest, TheCasesDeviceIsCurrentWhileItLaunches) {
   EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again";
   EXPECT_EQ(fill.firstWrong(), -1);
   EXPECT_EQ(recording.stop().refusedCalls, 0);
+}
+
+/**
+ * @test A measurement that ends by an exception after the selected profiler
+ *       started ends that profiler's capture at once, through its
+ *       abortMeasure() and with no after hook, while the failed case stays
+ *       alive: a refused launch, a refused launch in a multi-GPU worker, and a
+ *       CPU baseline whose callable throws once the capture runs. The caller
+ *       gets the measurement's own exception and no row is published; another
+ *       case's profiler then starts its capture, ends it through its after
+ *       hook and stamps that case's row
+ */
+TEST_F(PerfGpuHarnessTest, AnExceptionalExitEndsTheProfilersCapture) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string BASELINE_FAILED = "the baseline's callable threw in its measured window";
+  ub::PerfConfig cfg = cfg_;
+  cfg.profileTool = "gpu-hook-probe";
+  SaxpyFixtureData data;
+  struct Path {
+    const char* name;
+    std::function<void(ub::PerfGpuCase&)> measure;
+    bool namesTheRefusal; ///< The exception names the test and the runtime's error
+    const char* alsoNamed;
+  };
+  const Path PATHS[] = {
+      {"a refused launch",
+       [](ub::PerfGpuCase& perf) {
+         static_cast<void>(perf.cudaKernel(refusedLaunch, "refused").measure());
+       },
+       true, ""},
+      {"a refused launch in a multi-GPU worker",
+       [](ub::PerfGpuCase& perf) {
+         static_cast<void>(
+             perf.cudaKernelMultiGpu(1, [](int, cudaStream_t s) { refusedLaunch(s); }).measure());
+       },
+       true, "device 0"},
+      {"a CPU baseline that throws in its window",
+       [&BASELINE_FAILED](ub::PerfGpuCase& perf) {
+         const std::string OWNER = perf.testName();
+         static_cast<void>(perf.cpuBaseline([&] {
+           if (probeCaptureOwner() == OWNER) {
+             throw std::runtime_error(BASELINE_FAILED);
+           }
+         }));
+       },
+       false, ""},
+  };
+  for (const Path& path : PATHS) {
+    SCOPED_TRACE(path.name);
+    // A capture a failed check leaves running would refuse the next path's.
+    struct CaptureCleared {
+      ~CaptureCleared() { probeCaptureOwner().clear(); }
+    } const CLEARED;
+    const std::string FAILING = uniqueSuite("GpuProfilerAbort") + ".Failing";
+    ub::PerfGpuCase failing{FAILING, cfg};
+    ub::attachGpuProfilerHooks(failing, cfg);
+
+    const std::string WHAT = runtimeErrorOf([&] { path.measure(failing); });
+    if (path.namesTheRefusal) {
+      EXPECT_NE(WHAT.find(FAILING), std::string::npos) << "the caller got: '" << WHAT << "'";
+      EXPECT_NE(WHAT.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WHAT;
+      EXPECT_NE(WHAT.find(path.alsoNamed), std::string::npos) << WHAT;
+    } else {
+      EXPECT_EQ(WHAT, BASELINE_FAILED);
+    }
+    EXPECT_EQ(probeCalls()[FAILING], "bx")
+        << "the capture did not end through abortMeasure() alone";
+    EXPECT_TRUE(probeCaptureOwner().empty())
+        << "the failed measurement left " << probeCaptureOwner() << "'s capture running";
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "the failed measurement published a row";
+
+    // The failed case is still alive: another case measures under its own capture.
+    const std::string NEXT = uniqueSuite("GpuProfilerAbort") + ".Next";
+    ub::PerfGpuCase next{NEXT, cfg};
+    ub::attachGpuProfilerHooks(next, cfg);
+    next.cudaWarmup(data.launch());
+    static_cast<void>(next.cudaKernel(data.launch(), "saxpy").measure());
+    EXPECT_EQ(probeCalls()[NEXT], "ba") << "another case's profiler could not take the capture";
+    EXPECT_TRUE(probeCaptureOwner().empty());
+    const ub::PerfRow ROW = lastRow();
+    ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the row";
+    EXPECT_EQ(*ROW.profileTool, "gpu-hook-probe");
+    ASSERT_TRUE(ROW.profileDir.has_value());
+    EXPECT_EQ(*ROW.profileDir, "probe-dir/" + NEXT);
+  }
 }
 
 /* ----------------------------- Legacy Default Stream ----------------------------- */

@@ -561,11 +561,14 @@ public:
 
   void setAfterMeasureHook(PerfGpuCase::AfterHook h) { afterHook_ = std::move(h); }
 
+  void setAbortMeasureHook(PerfGpuCase::AbortHook h) { abortHook_ = std::move(h); }
+
   PerfResult cpuBaseline(std::function<void()> fn, std::string label) {
     PerfCase cpuPerf(testName_, cpuCfg_);
     // The baseline is a measured window of this case like any other: the
     // inner PerfCase runs the case's hooks around it, and its after hook
-    // follows the row it publishes, so the profiler stamps the baseline row.
+    // follows the row it publishes, so the profiler stamps the baseline row;
+    // a callable that throws in the window runs the case's abort hook there.
     if (beforeHook_) {
       cpuPerf.setBeforeMeasureHook([this](const PerfCase&) { beforeHook_(*owner_); });
     }
@@ -575,6 +578,9 @@ public:
         stats.cpuStats = s;
         afterHook_(*owner_, stats);
       });
+    }
+    if (abortHook_) {
+      cpuPerf.setAbortMeasureHook([this](const PerfCase&) { runAbortHook(); });
     }
     cpuPerf.warmup([&]() {
       for (int i = 0; i < cpuCfg_.cycles; ++i) {
@@ -626,10 +632,12 @@ public:
 
     // The profiler window opens here, before anything is timed, and closes
     // after the row is published (below), so every hook pair brackets one
-    // measurement.
+    // measurement; an exception from here on closes it through the abort
+    // hook instead.
     if (beforeHook_) {
       beforeHook_(*owner_);
     }
+    AbortOnException abortOnException(*this);
 
     std::vector<double> kernelTimes, h2dTimes, d2hTimes, totalTimes;
     kernelTimes.reserve(cpuCfg_.repeats);
@@ -815,6 +823,7 @@ public:
     }
 
     publishResult(result, nvml_telemetry::cellsOf(nvmlReadings));
+    abortOnException.dismiss();
 
     // After publishResult(): the hook stamps profileTool/profileDir onto the
     // row just published.
@@ -832,6 +841,9 @@ public:
     if (beforeHook_) {
       beforeHook_(*owner_);
     }
+    // A failed peer copy, a device's thread that failed or any other
+    // exception from here on ends the profiler window through the abort hook.
+    AbortOnException abortOnException(*this);
 
     MultiGpuResult result;
     result.label = std::move(label);
@@ -1000,6 +1012,7 @@ public:
     }
 
     publishMultiGpuResult(result);
+    abortOnException.dismiss();
 
     // The published row carries the first device's times, so the hook gets
     // the same: the aggregated struct holds no timing of its own.
@@ -1022,6 +1035,50 @@ public:
   cudaStream_t stream() const noexcept { return own_->stream; }
 
 private:
+  /**
+   * @brief Runs the abort hook, if any, for a measurement that ended by an
+   *        exception after its before hook ran. What the hook throws is
+   *        dropped, so the measurement's exception is the one the caller gets.
+   */
+  void runAbortHook() noexcept {
+    if (!abortHook_) {
+      return;
+    }
+    try {
+      abortHook_(*owner_);
+    } catch (...) {
+      // Dropped: the measurement's exception is the one rethrown.
+    }
+  }
+
+  /**
+   * @brief Runs the case's abort hook when a measurement leaves by an
+   *        exception: made just after the before hook, dismissed once the
+   *        row is published, ahead of the after hook. What the before hook
+   *        started then ends at the failure, not with the case, which the
+   *        caller may keep and measure again while other cases measure.
+   */
+  class AbortOnException {
+  public:
+    explicit AbortOnException(PerfGpuCaseImpl& impl) : impl_(impl) {}
+
+    ~AbortOnException() {
+      if (armed_) {
+        impl_.runAbortHook();
+      }
+    }
+
+    AbortOnException(const AbortOnException&) = delete;
+    AbortOnException& operator=(const AbortOnException&) = delete;
+
+    /** @brief The measurement reached its row: the after hook ends the window. */
+    void dismiss() noexcept { armed_ = false; }
+
+  private:
+    PerfGpuCaseImpl& impl_;
+    bool armed_ = true;
+  };
+
   /**
    * @brief The CPU baseline a speedup is measured against: this case's own
    *        when it ran one, otherwise the one its suite recorded.
@@ -1300,6 +1357,7 @@ private:
 
   PerfGpuCase::BeforeHook beforeHook_{};
   PerfGpuCase::AfterHook afterHook_{};
+  PerfGpuCase::AbortHook abortHook_{};
   /// The case this implementation belongs to, for the hook signatures
   /// (non-owning; set by the PerfGpuCase constructor).
   const PerfGpuCase* owner_ = nullptr;
@@ -1368,6 +1426,8 @@ void PerfGpuCase::cudaWarmup(KernelFn kernel) { impl_->cudaWarmup(std::move(kern
 void PerfGpuCase::setBeforeMeasureHook(BeforeHook h) { impl_->setBeforeMeasureHook(std::move(h)); }
 
 void PerfGpuCase::setAfterMeasureHook(AfterHook h) { impl_->setAfterMeasureHook(std::move(h)); }
+
+void PerfGpuCase::setAbortMeasureHook(AbortHook h) { impl_->setAbortMeasureHook(std::move(h)); }
 
 int PerfGpuCase::cycles() const noexcept { return impl_->cycles(); }
 int PerfGpuCase::repeats() const noexcept { return impl_->repeats(); }
