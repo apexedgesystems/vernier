@@ -964,28 +964,16 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 - Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
-- GPU measurements with the CUPTI collector on (the default) no longer run
-  concurrent kernels one after another. The collector still records over the
-  timed launches, so the time CUPTI adds to each launch stays in them.
+- CUPTI recording preserves concurrent GPU kernel execution.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
-- After a failed CUPTI flush, or a CUPTI kind that does not switch off, later
-  GPU measurements of the same run leave the affected `cupti*` or `um*` cells
-  empty and say why, instead of counting records an earlier window left.
+- GPU measurements leave incomplete or stale CUPTI results empty and report why.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
-- A GPU measurement or warmup whose launch the CUDA runtime refuses throws,
-  naming the test and the error, instead of publishing a row timed from
-  nothing. Both run with the case's device current, and a multi-GPU worker's
-  CUDA error reaches the caller instead of ending the process.
+- Refused CUDA launches fail GPU measurements and warmup; worker errors reach
+  the caller. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- GPU timing includes legacy-default-stream work under both priority settings.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
-- Work a measured GPU callable puts on the legacy default stream (a launch
-  without a stream, `cudaMemset`, a library call on its default stream) is
-  timed under the default high-priority stream too, instead of reading a few
-  microseconds. Work on other streams, or on the per-thread default stream, is
-  not: launch on the stream the callable is given.
-  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
-- `bench run --profile compute-sanitizer` reports a racecheck report that ends
-  before its summary as incomplete, not as the tool's own error quoting a race
-  finding. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `bench run --profile compute-sanitizer` identifies truncated racecheck reports
+  as incomplete. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 
 ## v1.0.3 - 2026-06-28
 
