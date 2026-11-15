@@ -35,6 +35,8 @@
 #                as perf does, instead of exiting 130
 #   some-unsupported  answers SIGINT with the counts and one event
 #                <not supported>, as perf on the Pi reports branches:u
+#   unconfirmed  answers SIGINT in record mode by writing its data file, but
+#                not perf's "Captured and wrote" line that confirms it
 
 PATH=/usr/bin:/bin
 export PATH
@@ -138,6 +140,10 @@ done
 
 finish() {
   case "$mode" in
+  unconfirmed)
+    printf 'fake perf data\n' >"$out"
+    echo "[ perf record: Woken up 1 times to write data ]" >&2
+    ;;
   error-text)
     echo "Error: the fake perf could not read its counters" >&2
     ;;

@@ -434,6 +434,25 @@ TEST_F(PerfLifecycleTest, RecordNeedsItsConfirmedData) {
                 "counters");
 }
 
+/**
+ * @test A record whose data file perf wrote but never confirmed (no "Captured
+ * and wrote" line in its error output) is not counted complete: one failure,
+ * at the completion stage, naming the file, the missing confirmation and
+ * what perf said instead.
+ */
+TEST_F(PerfLifecycleTest, RecordWithoutConfirmationFails) {
+  const Window W = window("unconfirmed", "record -g");
+  std::error_code ec;
+  EXPECT_GT(std::filesystem::file_size(W.folder + "/perf.data", ec), 0U)
+      << "the stand-in wrote no data file to leave unconfirmed";
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.stage, ReadinessStage::COMPLETION);
+  EXPECT_EQ(W.failures[0].result.report.message,
+            "completion: unusable: " + W.folder +
+                "/perf.data was not confirmed written (no \"Captured and wrote\" in " + W.folder +
+                "/record.err.txt): perf: [ perf record: Woken up 1 times to write data ]");
+}
+
 /* ----------------------------- Start Handshake ----------------------------- */
 
 /**
