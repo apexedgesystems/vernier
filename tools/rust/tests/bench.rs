@@ -386,28 +386,32 @@ fn missing_test_column_is_an_error() {
 }
 
 /// @test summary and compare refuse the rows of a run under Nsight Compute,
-/// which leaves every row untimed, as text and as JSON, saying that the run
-/// was a profiling capture.
+/// as text and as JSON, saying that the run was a profiling capture: by
+/// bench run's route, whose file has profile columns, and by ncu started
+/// by hand without --profile, whose file has none.
 #[test]
 fn summary_and_compare_name_an_ncu_capture() {
-    let csv = fixture("summary_ncu_capture.csv");
     let good = fixture("sample_bench.csv");
-    let (csv, good) = (csv.as_str(), good.as_str());
-    let expected = format!(
-        "{csv}, line 2: test 'Saxpy.EndToEnd' has no wallMedian value: the field is empty; its \
-         profileTool is nsight, and a run under Nsight Compute (ncu) is a profiling capture, \
-         which leaves the timing cells empty: time the benchmark in a run without ncu"
-    );
-    for args in [
-        vec!["summary", csv],
-        vec!["summary", csv, "--json"],
-        vec!["compare", good, csv],
-        vec!["compare", csv, good, "--json", "--fail-on-regression"],
-    ] {
-        let (code, out, err) = run(&args);
-        assert_eq!(code, 1, "{args:?}: {err}");
-        assert!(out.is_empty(), "{args:?}: {out}");
-        assert!(err.contains(&expected), "{args:?}: {err}");
+    for file in ["summary_ncu_capture.csv", "summary_ncu_capture_typed.csv"] {
+        let csv = fixture(file);
+        let (csv, good) = (csv.as_str(), good.as_str());
+        let expected = format!(
+            "{csv}, line 2: test 'Saxpy.EndToEnd' has no wallMedian value: the field is empty; \
+             every timing cell of the row is empty, as the benchmark leaves a row it did not \
+             time: a run under Nsight Compute (ncu) is a profiling capture; time the benchmark \
+             in a run without ncu"
+        );
+        for args in [
+            vec!["summary", csv],
+            vec!["summary", csv, "--json"],
+            vec!["compare", good, csv],
+            vec!["compare", csv, good, "--json", "--fail-on-regression"],
+        ] {
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?}: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
     }
 }
 
