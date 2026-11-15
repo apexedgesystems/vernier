@@ -279,9 +279,11 @@ target_compile_options(
 # Build Logic Tests (2)
 # ------------------------------------------------------------------------------
 # Script-mode tests of configure logic; they need no toolkit and no GPU, so they
-# run on every lane, including CPU-only ones: the CUDA architecture rules, and
-# what vernier_add_gtest's NO_REGISTER registers (a scratch project is
-# configured with this build's generator and compiler; nothing is built).
+# run on every lane, including CPU-only ones: the CUDA architecture rules, what
+# vernier_add_gtest's NO_REGISTER registers (a scratch project is configured
+# with this build's generator and compiler; nothing is built), and the skip
+# expression it gives each case (a scratch project with GoogleTest, built from
+# the source this build fetched, is built and its cases run through CTest).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
@@ -299,6 +301,16 @@ add_test(
     "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/AddGtestNoRegister_test.cmake"
 )
 set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake")
+
+add_test(
+  NAME SkipPatternNamesTheCaseTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/skip_pattern_names_the_case
+    "-DGENERATOR=${CMAKE_GENERATOR}" -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -DGOOGLETEST_DIR=${googletest_SOURCE_DIR} -P
+    "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/SkipPatternNamesTheCase_test.cmake"
+)
+set_tests_properties(SkipPatternNamesTheCaseTest PROPERTIES LABELS "benchmarking;cmake")
 
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
@@ -581,8 +593,7 @@ endif ()
 # cases: workers that add under a mutex must report no error, workers that add
 # without one must still report their race. It learns a build it cannot run
 # under valgrind from the build's SANITIZER setting. The racy probe skips
-# itself outside valgrind, and CTest reports that as skipped; each skip
-# expression names its own test, whose failure messages quote the probe runs.
+# itself outside valgrind, and CTest reports that as skipped.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -600,16 +611,6 @@ vernier_add_gtest(
 if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
   target_compile_definitions(TestStartGateHelgrind PRIVATE START_GATE_SANITIZER="${SANITIZER}")
 endif ()
-
-foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateReportsNothing
-                          StartGateHelgrindTest.WorkerRaceIsStillReported
-)
-  string(REPLACE "." "\\." _start_gate_pattern "${_start_gate_test}")
-  set_tests_properties(
-    ${_start_gate_test} PROPERTIES SKIP_REGULAR_EXPRESSION
-                                   "\\[  SKIPPED \\] ${_start_gate_pattern}"
-  )
-endforeach ()
 
 # ------------------------------------------------------------------------------
 # Subdirectories

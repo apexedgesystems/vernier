@@ -191,6 +191,7 @@ function (vernier_add_gtest)
     WORKING_DIRECTORY "${_working_dir}"
     TEST_LIST _all_tests
   )
+  _vernier_gtest_skip_patterns(${_all_tests})
 
   # Base labels
   if (GT_LABELS)
@@ -285,6 +286,30 @@ function (vernier_add_gtest)
   message(STATUS "[Test] target=${GT_TARGET} tests=${_disc_len} timed=${_timed_len} "
                  "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg}"
   )
+endfunction ()
+
+# ------------------------------------------------------------------------------
+# _vernier_gtest_skip_patterns(<test>...)
+#
+# Give each GoogleTest case gtest_add_tests registered the skip expression that
+# names it, in place of the "\[  SKIPPED \]" gtest_add_tests sets: any skip line
+# matches that one, so a case whose failure message quotes a child's output,
+# skip line and all, would be reported Skipped and pass the run. The expression
+# is the two lines GoogleTest prints for that case alone when it skips, with
+# the time ("[  SKIPPED ] Suite.Case (0 ms)") and at a line's end (without the
+# time, as under --gtest_print_time=0, and in the run's list of skipped
+# cases). The name's regex characters are escaped, and each * of a
+# parameterized name matches one part of the name.
+# ------------------------------------------------------------------------------
+function (_vernier_gtest_skip_patterns)
+  foreach (_test IN LISTS ARGN)
+    string(REGEX REPLACE "([][+.?()^$\\|])" "\\\\\\1" _name "${_test}")
+    string(REPLACE "*" "[^ \n]*" _name "${_name}")
+    set_tests_properties(
+      "${_test}" PROPERTIES SKIP_REGULAR_EXPRESSION
+                            "\\[  SKIPPED \\] ${_name} \\(;\\[  SKIPPED \\] ${_name}\n"
+    )
+  endforeach ()
 endfunction ()
 
 # ------------------------------------------------------------------------------
