@@ -114,8 +114,9 @@ endif ()
 # ------------------------------------------------------------------------------
 # The SAXPY kernel without its bounds guard, which compute-sanitizer finds, is
 # a source of its own, compiled with device line information whatever the
-# build type, so the tool's report names the line of the access. Nothing else
-# in the build changes.
+# build type, so the tool's report names the line of the access: -lineinfo,
+# except in a Debug build, whose -G carries the lines already and would
+# override it with a warning. Nothing else in the build changes.
 # ------------------------------------------------------------------------------
 
 if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
@@ -123,7 +124,8 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     BenchDemo_Gpu_04_ComputeSanitizerProfiler PRIVATE gpu/04_ComputeSanitizerProfiler_Unguarded.cu
   )
   set_source_files_properties(
-    gpu/04_ComputeSanitizerProfiler_Unguarded.cu PROPERTIES COMPILE_OPTIONS "-lineinfo"
+    gpu/04_ComputeSanitizerProfiler_Unguarded.cu PROPERTIES COMPILE_OPTIONS
+                                                            "$<$<NOT:$<CONFIG:Debug>>:-lineinfo>"
   )
 endif ()
 

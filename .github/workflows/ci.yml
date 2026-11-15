@@ -59,6 +59,7 @@ jobs:
       py: ${{ steps.d.outputs.py }}
       docker: ${{ steps.d.outputs.docker }}
       leaves: ${{ steps.d.outputs.leaves }}
+      cuda_image: ${{ steps.d.outputs.cuda_image }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -81,6 +82,7 @@ jobs:
           echo "Changed files ($RANGE):"; echo "$files"
 
           cpp=false; rust=false; py=false; docker=false; leaves=false; all=false
+          cuda_image=false
           for f in $files; do
             case "$f" in
               # Baked dependency manifests: the gate images bake these, so the
@@ -100,6 +102,8 @@ jobs:
               # builder/* and final.Dockerfile are release-time (they embed a full
               # artifact build); the release pipeline proves them.
               docker/builder/*|docker/final.Dockerfile) : ;;
+              # The CUDA tier the CUDA job runs in is a leaf of its own.
+              docker/dev/cuda.Dockerfile) leaves=true; cuda_image=true ;;
               docker/dev/*|docker/toolchain/*) leaves=true ;;
               *) all=true ;;
             esac
@@ -113,6 +117,7 @@ jobs:
           if [ "$docker" = true ]; then leaves=true; fi
 
           printf '%s=%s\n' cpp "$cpp" rust "$rust" py "$py" docker "$docker" leaves "$leaves" | tee -a "$GITHUB_OUTPUT"
+          printf '%s=%s\n' cuda_image "$cuda_image" | tee -a "$GITHUB_OUTPUT"
 
   # ----------------------------------------------------------------------------
   # Format check -- clang-format, prettier, shfmt etc. via 'make format-check'
@@ -378,6 +383,62 @@ jobs:
 
       - name: AddressSanitizer selection
         run: docker compose run --rm -T dev make asan
+
+  # ----------------------------------------------------------------------------
+  # CUDA compile and device-free tests -- make cuda-check on the lean CUDA tier,
+  # without a GPU: every CUDA target built and linked in the shipped
+  # configuration, then the cases that need no device in an NVML-off tree. The
+  # cases that need a device run on a GPU host, not here.
+  # ----------------------------------------------------------------------------
+  cuda:
+    name: CUDA compile and device-free tests
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.cuda_image == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-cuda-${{ runner.os }}-${{ hashFiles('docker/dev/cuda.Dockerfile', 'docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-cuda-${{ runner.os }}-${{ hashFiles('docker/dev/cuda.Dockerfile', 'docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-
+            ccache-cuda-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached CUDA build tier
+        run: |
+          docker pull $REGISTRY/vernier.build-base:latest \
+            && docker tag $REGISTRY/vernier.build-base:latest vernier.build-base || true
+          docker pull $REGISTRY/vernier.build.cuda:latest \
+            && docker tag $REGISTRY/vernier.build.cuda:latest vernier.build.cuda || true
+
+      - name: Rebuild CUDA build tier (image inputs changed)
+        if: needs.changes.outputs.docker == 'true' || needs.changes.outputs.cuda_image == 'true'
+        run: |
+          $COMPOSE build build-base
+          $COMPOSE build build-cuda
+
+      - name: CUDA compile and device-free tests
+        run: $COMPOSE run --rm -T ci-build-cuda make cuda-check
 
   # ----------------------------------------------------------------------------
   # Image graph check -- prove the platform leaves still build.

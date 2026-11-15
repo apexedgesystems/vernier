@@ -35,6 +35,9 @@ verify:
 	@docker pull --quiet "$(_CI_REGISTRY)/vernier.build.cpu:latest" \
 	  && docker tag "$(_CI_REGISTRY)/vernier.build.cpu:latest" vernier.build.cpu \
 	  || true
+	@docker pull --quiet "$(_CI_REGISTRY)/vernier.build.cuda:latest" \
+	  && docker tag "$(_CI_REGISTRY)/vernier.build.cuda:latest" vernier.build.cuda \
+	  || true
 	$(call log,verify,Format lane [dev])
 	@$(_CI_COMPOSE) run --rm -T dev make format-check
 	$(call log,verify,C++ lane: debug build + testp + test-heap [dev with GPU off])
@@ -47,6 +50,8 @@ verify:
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 	$(call log,verify,ASan lane: the sanitizer selection in build/asan [dev])
 	@$(_CI_COMPOSE) run --rm -T dev make asan
+	$(call log,verify,CUDA lane: every CUDA target and the device-free cases [ci-build-cuda])
+	@$(_CI_COMPOSE) run --rm -T ci-build-cuda make cuda-check
 	$(call log,verify,All CI lanes green locally)
 
 # ------------------------------------------------------------------------------

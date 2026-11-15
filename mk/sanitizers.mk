@@ -78,12 +78,8 @@ _sanitizer_remedy_tsan = ThreadSanitizer could not run here: it needs ASLR off f
   process, and this process may not turn it off. Run make compose-tsan (the dev service allows \
   the personality call that does it), or setarch -R make tsan where that call is allowed.
 
-# One SANITIZER_TESTS word's program and patterns, and the whole selection, run
-# from inside a sanitizer tree.
-_sanitizer_program   = bin/tests/$(firstword $(subst =, ,$(1)))
-_sanitizer_patterns  = $(subst :, ,$(word 2,$(subst =, ,$(1))))
-_sanitizer_selection = $(foreach t,$(SANITIZER_TESTS),$(call _gtest_selection,$(call \
-  _sanitizer_program,$(t)),$(call _sanitizer_patterns,$(t)),$(SANITIZER_EXCLUDE));)
+# The whole selection, run from inside a sanitizer tree.
+_sanitizer_selection = $(call _gtest_selections,$(SANITIZER_TESTS),$(SANITIZER_EXCLUDE))
 
 # _sanitizer_build: Configure, build, and run the selection with a sanitizer
 # Usage: $(call _sanitizer_build,name,display_name)

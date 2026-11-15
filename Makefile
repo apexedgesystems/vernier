@@ -130,6 +130,7 @@ help:
 	@printf '  %-28s %s\n' "make test-heap" "Run allocator-dependent tests (tcmalloc tree)"
 	@printf '  %-28s %s\n' "make test-py" "Run Python tools tests"
 	@printf '  %-28s %s\n' "make test-rust" "Run Rust tools tests"
+	@printf '  %-28s %s\n' "make cuda-check" "Build every CUDA target; run the device-free cases"
 	@printf '\n'
 	@printf '%s\n' "Quality:"
 	@printf '  %-28s %s\n' "make format" "Auto-fix formatting issues"
