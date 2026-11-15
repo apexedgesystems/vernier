@@ -401,17 +401,27 @@ fn main() -> ExitCode {
     // Before any command starts a child: each stays waitable until the
     // command reaps it, whatever SIGCHLD action this process inherited.
     if let Err(e) = bench::runner::keep_children_waitable() {
-        eprintln!("Error: SIGCHLD could not be given its default action: {e}");
+        last_word(&format!(
+            "Error: SIGCHLD could not be given its default action: {e}"
+        ));
         return ExitCode::FAILURE;
     }
 
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("Error: {e}");
+            last_word(&format!("Error: {e}"));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Write @p line, bench's error, to stderr. A stderr that refuses it (a pipe
+/// whose reader is gone, a terminal that hung up) loses it: the exit status
+/// stays the documented one, where `eprintln!` would panic (exit 101).
+fn last_word(line: &str) {
+    use std::io::Write;
+    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 /// The project's `.bench.yaml`, the first found from the working directory

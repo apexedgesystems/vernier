@@ -270,6 +270,24 @@ fn summary_blank_test_name_is_an_error() {
     }
 }
 
+/// @test An error keeps its documented exit status when bench cannot write
+/// its error line: summary refuses a row without a test name with exit 1,
+/// also with a stderr no one reads (a pipe whose read end is closed).
+#[test]
+fn an_error_keeps_its_status_with_a_stderr_no_one_reads() {
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let out = Command::new(bin())
+        .args(["summary", &fixture("compare_name_empty.csv")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(writer)
+        .output()
+        .expect("run bench summary");
+    assert_eq!(out.status.code(), Some(1), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "printed a summary");
+}
+
 /// @test A test name with spaces around it is kept as written in summary.
 #[test]
 fn summary_keeps_a_padded_test_name() {

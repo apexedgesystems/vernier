@@ -618,6 +618,41 @@ fn a_stderr_no_one_reads_does_not_stop_the_reset() {
     assert_eq!(rig.events(), [LOCK, "lock done", RESET, "reset done"]);
 }
 
+/// @test With a stderr no one reads, a run that fails still ends with the
+/// status the README gives it, 1, whether the command failed or the reset
+/// was refused: the error line bench cannot write is lost, and the clocks
+/// are reset first.
+#[test]
+fn a_failed_run_with_a_stderr_no_one_reads_still_exits_1() {
+    for (script, refuse_reset, events) in [
+        (
+            "exit 3",
+            false,
+            &[LOCK, "lock done", RESET, "reset done"][..],
+        ),
+        ("exit 0", true, &[LOCK, "lock done", RESET][..]),
+    ] {
+        let rig = Rig::new();
+        if refuse_reset {
+            rig.set("fail", "reset");
+        }
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        let mut run = Run::start(
+            &rig,
+            &wrap(&["/bin/sh", "-c", script]),
+            Parent::Default,
+            Some(writer.into()),
+        );
+        assert_eq!(
+            run.end().code(),
+            Some(1),
+            "{script}, reset refused: {refuse_reset}"
+        );
+        assert_eq!(rig.events(), events, "{script}");
+    }
+}
+
 /* ----------------------------- Signals ----------------------------- */
 
 /// @test A SIGINT sent to the group, as a terminal's Ctrl-C: the command
