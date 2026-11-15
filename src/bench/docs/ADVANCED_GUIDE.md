@@ -1070,7 +1070,8 @@ ncu-ui kernel_replay.ncu-rep
    });
    ```
 
-2. **Use appropriate launch configuration** - Check occupancy
+2. **Declare the launch configuration** - compare launch shapes by their
+   times
 
    ```cpp
    auto result = perf.cudaKernel([&](cudaStream_t s) {
@@ -1079,8 +1080,11 @@ ncu-ui kernel_replay.ncu-rep
      .withLaunchConfig(grid, block, sharedMemBytes)
      .measure();
 
-   EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
-     << "Low occupancy - increase threads or reduce resources";
+   // The occupancy figure is the launch shape's estimate, not how busy the
+   // GPU was, so it grades neither the kernel nor the GPU's use. A test
+   // tuned for this shape can require the estimate it gave, so that a
+   // changed shape shows
+   EXPECT_GE(result.stats.occupancy.achievedOccupancy, TUNED_SHAPE_ESTIMATE);
    ```
 
 3. **Profile with multiple block sizes** - Find optimal configuration
@@ -1098,25 +1102,26 @@ ncu-ui kernel_replay.ncu-rep
    }
    ```
 
-4. **Measure transfer overhead separately** - Identify bottlenecks
+4. **Read the copies and the launch apart** - one measurement times both
 
    ```cpp
-   // Just transfers (no kernel)
-   auto transfer = perf.cudaKernel([&](cudaStream_t) {}, "transfer-only")
-     .withHostToDevice(h_in, d_in, SIZE)
-     .withDeviceToHost(d_out, h_out, SIZE)
-     .measure();
-
-   // Full pipeline
    auto full = perf.cudaKernel([&](cudaStream_t s) {
        myKernel<<<grid, block, 0, s>>>(d_in, d_out, N);
      }, "full")
      .withHostToDevice(h_in, d_in, SIZE)
      .withDeviceToHost(d_out, h_out, SIZE)
+     .withLaunchConfig(grid, block)
      .measure();
 
-   double kernelOnlyUs = full.kernelTimeUs - transfer.transferTimeUs;
+   // One launch, the two copy medians and one round trip: medians taken
+   // separately, so the first two need not add up to the third, and their
+   // ratio to it is not a share of one round trip
+   std::printf("launch %.1f us, copies %.1f us, round trip %.1f us\n",
+               full.kernelTimeUs, full.transferTimeUs, full.totalTimeUs);
    ```
+
+   An Nsight Systems timeline gives the copies' share of each round trip
+   (the GPU guide's [Transfer Overhead](GPU_GUIDE.md#transfer-overhead)).
 
 ---
 
@@ -1134,9 +1139,11 @@ ncu-ui kernel_replay.ncu-rep
 ### GPU Benchmarking
 
 6. **Always warmup GPU kernels** - First launch includes JIT compilation
-7. **Check occupancy** - Target >50% for compute-bound kernels
+7. **Read occupancy as an estimate** - the launch shape's, not the GPU's use;
+   compare launch shapes by their times
 8. **Profile multiple block sizes** - Find optimal configuration
-9. **Measure transfers separately** - Identify bottlenecks
+9. **Read the copies and the launch apart** - an Nsight Systems timeline for
+   the copies' share of a round trip
 10. **Use appropriate memory strategy** - Test explicit vs unified vs pinned
 
 ### General

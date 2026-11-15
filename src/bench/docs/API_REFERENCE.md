@@ -475,7 +475,7 @@ struct PerfGpuResult {
   GpuStats stats{};         // Comprehensive GPU statistics (see GpuStats below)
   double kernelTimeUs{};    // CUDA event kernel time
   double transferTimeUs{};  // H2D + D2H transfer time
-  double totalTimeUs{};     // Kernel + transfers
+  double totalTimeUs{};     // One round trip: copies in, one launch, copies out
   double callsPerSecond{};  // 1e6 / totalTimeUs
   double speedupVsCpu{};    // Set by cpuBaseline() comparison
   std::string label;        // Kernel label from cudaKernel()
@@ -483,12 +483,12 @@ struct PerfGpuResult {
 };
 
 struct GpuStats {
-  Stats cpuStats{};                    // CPU-side timing
+  Stats cpuStats{};                    // Per-repeat round-trip times
   GpuDeviceInfo deviceInfo{};          // GPU model, compute capability
   MemoryTransferProfile transfers{};   // H2D/D2H bytes and bandwidthGBs()
-  OccupancyMetrics occupancy{};        // achievedOccupancy, block size, warps
-  ClockSpeedProfile clocks{};          // smClockMHzEnd, isThrottling()
-  PowerThermalProfile powerThermal{};  // Power draw, temperature (NVML)
+  OccupancyMetrics occupancy{};        // Launch shape and its occupancy estimate
+  ClockSpeedProfile clocks{};          // NVML SM/memory clocks at start and end
+  PowerThermalProfile powerThermal{};  // NVML power and temperature at start and end
   CuptiKernelStats cupti{};            // In-process per-launch kernel metrics
   double kernelTimeMedianUs{};
   double transferTimeMedianUs{};
@@ -505,14 +505,26 @@ struct GpuStats {
 // GPU CV% validation
 EXPECT_STABLE_CV_GPU(gpuResult, perf.cpuConfig());
 
-// Occupancy validation
-EXPECT_GT(gpuResult.stats.occupancy.achievedOccupancy, 0.5)
-  << "Low occupancy - kernel may be register/shared memory bound";
+// Occupancy: the estimate says what the launch shape allows, not how busy
+// the GPU was. A test tuned for a launch shape can require the estimate that
+// shape gave, so that a changed shape shows
+EXPECT_GE(gpuResult.stats.occupancy.achievedOccupancy, TUNED_SHAPE_ESTIMATE);
 
-// Bandwidth validation
-EXPECT_GT(gpuResult.stats.transfers.bandwidthGBs(), 10.0)
-  << "Low transfer bandwidth - check PCIe link";
+// Copy rate: the declared copies' bytes over their time, against a floor
+// measured for those copies on this system's link
+EXPECT_GT(gpuResult.stats.transfers.bandwidthGBs(), MEASURED_FLOOR_GBS);
+
+// No SM-clock drop: isThrottling() compares NVML's readings, and a reading
+// NVML did not report is 0, so ask it only when the start, end and maximum
+// SM clocks are all there
+const auto& clocks = gpuResult.stats.clocks;
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+  EXPECT_FALSE(clocks.isThrottling());
+}
 ```
+
+The GPU guide's [Result Validation](GPU_GUIDE.md#result-validation) gives
+what each check can and cannot say.
 
 ---
 
