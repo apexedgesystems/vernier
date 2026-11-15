@@ -64,6 +64,17 @@ std::string collectsNote(const NsightSelection& selection) {
   return WHAT.empty() ? std::string{} : "; the request collects " + WHAT;
 }
 
+/**
+ * @brief For an Nsight Compute mode, that the run will time nothing (the
+ * harnesses' untimeUnderNcu()), so it is known before the run; else "".
+ */
+std::string untimedNote(NsightMode mode) {
+  return mode == NsightMode::Systems
+             ? std::string{}
+             : "; no row of the run is timed: its timing cells stay empty, as ncu's "
+               "instrumentation adds to what the benchmark measures";
+}
+
 /** @brief The line of a `--version` output that names the version, else its last line. */
 std::string versionLine(const std::string& output) {
   std::istringstream in(output);
@@ -151,7 +162,7 @@ ReadinessResult probeTool(const std::string& tool, const NsightSelection& select
   }
   return readinessResult(ReadinessCause::UNVERIFIED,
                          RESOLVED->path + " runs here (" + versionLine(VERSION.output) + ")" +
-                             collectsNote(selection) +
+                             collectsNote(selection) + untimedNote(selection.mode) +
                              "; whether it captures the benchmark's GPU work is not checked "
                              "before the run" +
                              countersNote(selection.mode, ctx, driverParams),

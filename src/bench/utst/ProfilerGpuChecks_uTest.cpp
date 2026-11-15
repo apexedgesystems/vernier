@@ -283,7 +283,10 @@ TEST(SanitizerTools, RoutesMatchTheSharedTable) {
 
 /* ----------------------------- Doctor ----------------------------- */
 
-/** @test The doctor probes only the selected mode's tool, and a tool that runs is unverified. */
+/**
+ * @test The doctor probes only the selected mode's tool, and a tool that runs
+ * is unverified; an Nsight Compute row says the run's timing cells stay empty.
+ */
 TEST(GpuDoctorRows, EachModeProbesOnlyItsTool) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
@@ -303,12 +306,14 @@ TEST(GpuDoctorRows, EachModeProbesOnlyItsTool) {
   EXPECT_EQ(dir.logLines("nsys --version").size(), 1U) << dir.log();
 
   const std::string NCU = dir.install("fake_nvidia_tool.sh", "ncu");
+  const std::string UNTIMED = "; no row of the run is timed: its timing cells stay empty, as "
+                              "ncu's instrumentation adds to what the benchmark measures";
   const ReadinessResult NCU_ROW =
       checkNsightRequest(request("ncu", "", ReadinessScope::DEFAULT_INVENTORY), CTX);
   EXPECT_EQ(NCU_ROW.report.message,
             "unverified: " + NCU +
-                " runs here (Version 2026.2.0.0 (build 37790515) (public-release)); whether it "
-                "captures the benchmark's GPU work is not checked before the run");
+                " runs here (Version 2026.2.0.0 (build 37790515) (public-release))" + UNTIMED +
+                "; whether it captures the benchmark's GPU work is not checked before the run");
   EXPECT_EQ(dir.logLines("ncu --version").size(), 1U) << dir.log();
   EXPECT_EQ(dir.logLines("nsys --version").size(), 1U) << "ncu's row ran nsys:\n" << dir.log();
 
@@ -318,10 +323,11 @@ TEST(GpuDoctorRows, EachModeProbesOnlyItsTool) {
                             "the run";
   EXPECT_EQ(checkNsightRequest(request("nsight", "--set full", ReadinessScope::PREFLIGHT), CTX)
                 .report.message,
-            "unverified: " + NCU + VERSION + "; the request collects --set full" + AFTER);
+            "unverified: " + NCU + VERSION + "; the request collects --set full" + UNTIMED + AFTER);
   EXPECT_EQ(
       checkNsightRequest(request("ncu", "replay", ReadinessScope::PREFLIGHT), CTX).report.message,
-      "unverified: " + NCU + VERSION + "; the request collects the replay metrics (11)" + AFTER);
+      "unverified: " + NCU + VERSION + "; the request collects the replay metrics (11)" + UNTIMED +
+          AFTER);
 }
 
 /**
