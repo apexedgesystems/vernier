@@ -141,13 +141,15 @@ std::vector<pid_t> threads() {
   return ids;
 }
 
-/// The one thread in @p after that @p before does not hold: the watchdog's,
-/// when the first arm() came between the two listings; -1 when not one.
-pid_t startedThread(const std::vector<pid_t>& before, const std::vector<pid_t>& after) {
+/// The threads in @p after that @p before does not hold: when the first
+/// arm() came between the two listings, the watchdog's, and the thread
+/// sanitizer's own, which its runtime starts with a program's first thread.
+std::vector<pid_t> startedThreads(const std::vector<pid_t>& before,
+                                  const std::vector<pid_t>& after) {
   std::vector<pid_t> started;
   std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
                       std::back_inserter(started));
-  return started.size() == 1 ? started.front() : -1;
+  return started;
 }
 
 /// Where a thread is blocked, as /proc/self/task/<tid>/syscall shows it: in a
@@ -174,20 +176,23 @@ Blocked blockedOf(pid_t tid, std::string& shown) {
   return std::stoul(timeout, nullptr, 16) == 0 ? Blocked::PARKED : Blocked::ON_A_DEADLINE;
 }
 
-/// Waits up to WAIT_BOUND for @p tid to be blocked as @p wanted; says what
-/// /proc last showed, and returns false, when it is not.
-bool waitUntilBlocked(pid_t tid, Blocked wanted, const char* what) {
+/// Waits up to WAIT_BOUND for one of @p candidates to be blocked as @p wanted:
+/// that thread, the watchdog's (no other thread here waits on a condition
+/// variable); or -1 after saying what /proc last showed.
+pid_t waitUntilBlocked(const std::vector<pid_t>& candidates, Blocked wanted, const char* what) {
   const auto UNTIL = std::chrono::steady_clock::now() + WAIT_BOUND;
   std::string shown;
   do {
-    if (blockedOf(tid, shown) == wanted) {
-      return true;
+    for (const pid_t TID : candidates) {
+      if (blockedOf(TID, shown) == wanted) {
+        return TID;
+      }
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   } while (std::chrono::steady_clock::now() < UNTIL);
   std::printf("the watchdog's thread did not %s within 2 s: /proc showed '%s'\n", what,
               shown.c_str());
-  return false;
+  return -1;
 }
 
 /// The watchdog armed for LONG as @p first, the first arming of this
@@ -196,13 +201,8 @@ bool waitUntilBlocked(pid_t tid, Blocked wanted, const char* what) {
 pid_t armAndWatch(const char* first) {
   const std::vector<pid_t> BEFORE = threads();
   perf_watchdog::arm(first, "perf", LONG);
-  const pid_t WATCHDOG = startedThread(BEFORE, threads());
-  if (WATCHDOG < 0) {
-    std::puts("the first arm() started no thread of its own");
-    return -1;
-  }
-  return waitUntilBlocked(WATCHDOG, Blocked::ON_A_DEADLINE, "wait for the deadline") ? WATCHDOG
-                                                                                     : -1;
+  return waitUntilBlocked(startedThreads(BEFORE, threads()), Blocked::ON_A_DEADLINE,
+                          "wait for the deadline");
 }
 
 int hangLater(int argc, char** argv) {
@@ -214,12 +214,8 @@ int hangLater(int argc, char** argv) {
   }
   // The first case's line, kept when the watchdog ends the program.
   std::fflush(stdout);
-  const pid_t WATCHDOG = startedThread(BEFORE, threads());
-  if (WATCHDOG < 0) {
-    std::puts("the first case started no watchdog thread of its own");
-    return 4;
-  }
-  if (!waitUntilBlocked(WATCHDOG, Blocked::PARKED, "park after the first case")) {
+  if (waitUntilBlocked(startedThreads(BEFORE, threads()), Blocked::PARKED,
+                       "park after the first case") < 0) {
     return 4;
   }
   PerfCase second{"Watchdog.HungLater", CFG};
@@ -234,7 +230,7 @@ int later() {
     return 4;
   }
   perf_watchdog::disarm();
-  if (!waitUntilBlocked(WATCHDOG, Blocked::PARKED, "park after disarm()")) {
+  if (waitUntilBlocked({WATCHDOG}, Blocked::PARKED, "park after disarm()") < 0) {
     return 4;
   }
   perf_watchdog::arm("Watchdog.Later", "perf", SHORT);
