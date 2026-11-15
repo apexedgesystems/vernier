@@ -74,9 +74,9 @@ _sanitizer_reports   = ^==[0-9]+==ERROR: [A-Za-z]+Sanitizer|^WARNING: ThreadSani
 # A runtime that cannot start here prints its own fatal line; the target then
 # names the limitation and the remedy, and still fails.
 _sanitizer_limit_tsan = ThreadSanitizer: unexpected memory mapping|incompatible memory layout
-_sanitizer_remedy_tsan = ThreadSanitizer could not run here: it needs ASLR off or lower ASLR \
-  entropy, and this process may not change it. Run make compose-tsan (the dev service allows \
-  it), or on the host lower the entropy (sudo sysctl vm.mmap_rnd_bits=28) or run under setarch -R.
+_sanitizer_remedy_tsan = ThreadSanitizer could not run here: it needs ASLR off for its own \
+  process, and this process may not turn it off. Run make compose-tsan (the dev service allows \
+  the personality call that does it), or setarch -R make tsan where that call is allowed.
 
 # One SANITIZER_TESTS word's program and patterns, and the whole selection, run
 # from inside a sanitizer tree.
