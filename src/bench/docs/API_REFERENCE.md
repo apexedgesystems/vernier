@@ -259,6 +259,10 @@ Estimated efficiency: 78.4% of theoretical peak (~12000 MB/s)
 Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 ```
 
+Each line divides by the median call time, so a run under Nsight Compute,
+which is not timed, prints none of them; the returned result keeps its
+`memoryProfile`.
+
 **Interpretation:**
 
 - **Efficiency < 10%:** CPU-bound (algorithm optimization needed)

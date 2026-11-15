@@ -711,8 +711,10 @@ public:
     auto result = measured(loop, std::move(label));
     result.memoryProfile = memProfile;
 
-    // Print bandwidth analysis if provided
-    if (memProfile.has_value()) {
+    // Print bandwidth analysis if provided: every figure in it divides by the
+    // median, so a run under Nsight Compute, which measured() left untimed,
+    // prints none of it. The returned result keeps its numbers.
+    if (memProfile.has_value() && !profiledByNcu()) {
       const double BW = memProfile->bandwidthMBs(result.stats.median);
       std::printf("  Memory bandwidth: %.1f MB/s (%.1f MB read, %.1f MB written per call)\n", BW,
                   memProfile->bytesRead / 1e6, memProfile->bytesWritten / 1e6);

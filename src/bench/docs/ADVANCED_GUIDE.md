@@ -656,9 +656,10 @@ the case's CSV rows:
 - `Energy consumed` - energy over the window (J): the counter's delta in units
 - `Duration` - the window's wall-clock duration (s)
 - `Average power` - energy over duration (W)
-- `Energy per operation` - average power x median time per call (mJ/call)
-- `Median time per call`, `Energy unit`, `Start counter`, `End counter`,
-  `Delta counter`
+- `Energy per operation` - average power x median time per call (mJ/call);
+  not computed under Nsight Compute, whose calls are not timed
+- `Median time per call` (not under Nsight Compute)
+- `Energy unit`, `Start counter`, `End counter`, `Delta counter`
 
 The counter is the whole package's, whatever runs on it. Energy stays in this
 file, not in CSV columns: the row's `profileDir` names the folder.

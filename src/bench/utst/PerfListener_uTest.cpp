@@ -36,8 +36,10 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -47,9 +49,11 @@
 using vernier::bench::buildPerfRow;
 using vernier::bench::installPerfEventListener;
 using vernier::bench::makePerfCaseWithProfiler;
+using vernier::bench::MemoryProfile;
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
+using vernier::bench::PerfResult;
 using vernier::bench::PerfRow;
 using vernier::bench::PerfSummaryEntry;
 using vernier::bench::printSummaryTable;
@@ -599,6 +603,65 @@ TEST_F(CsvListenerTest, NsightComputeLeavesACasesTimingCellsEmpty) {
     EXPECT_EQ(TABLE.find("NOT TIMED") == std::string::npos, session.timed) << WHAT << "\n" << TABLE;
     if (!session.timed) {
       EXPECT_EQ(lastLine(TABLE), "3 tests | 0 stable | 0 unstable | 3 not timed") << TABLE;
+    }
+  }
+}
+
+/**
+ * @test The memory-profile throughput loop, through each public overload,
+ *       prints its bandwidth, efficiency and hint from the timing only where
+ *       the run is timed: under Nsight Compute none of them, the result it
+ *       returns keeping its numbers; without a session and under Nsight
+ *       Systems all of them, as before.
+ */
+TEST_F(CsvListenerTest, NsightComputeLeavesTheMemoryBandwidthUnprinted) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  const struct {
+    const char* name;
+    const char* value;
+    bool timed;
+  } SESSIONS[] = {{nullptr, nullptr, true},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521", true},
+                  {"VERNIER_EXTERNAL_WRAP", "ncu", false},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152", false}};
+  // Few bytes against microseconds a call: the bandwidth is far below the
+  // estimated peak, so the timed run always prints the low-utilization hint.
+  const std::function<PerfResult(PerfCase&)> OVERLOADS[] = {
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "profile", MemoryProfile{32, 16, 0});
+      },
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "read", std::size_t{32});
+      },
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "read_write", std::size_t{32},
+                                   std::size_t{16});
+      }};
+  for (const auto& session : SESSIONS) {
+    const NoNsightSession CLEARED;
+    std::optional<ScopedEnv> set;
+    if (session.name != nullptr) {
+      set.emplace(session.name, session.value);
+    }
+    const std::string WHAT = session.name != nullptr
+                                 ? std::string(session.name) + "=" + session.value
+                                 : std::string("no session");
+    for (const auto& run : OVERLOADS) {
+      PerfCase perf{"Listener.MemoryProfile", caseCfg};
+      ::testing::internal::CaptureStdout();
+      const PerfResult RESULT = run(perf);
+      const std::string PRINTED = ::testing::internal::GetCapturedStdout();
+      (void)PerfRegistry::instance().take();
+      for (const char* FIGURE : {"  Memory bandwidth: ", "  Estimated efficiency: ", "  Hint: "}) {
+        EXPECT_EQ(PRINTED.find(FIGURE) != std::string::npos, session.timed)
+            << WHAT << ": " << FIGURE << " in:\n"
+            << PRINTED;
+      }
+      ASSERT_TRUE(RESULT.memoryProfile.has_value()) << WHAT;
+      EXPECT_EQ(RESULT.memoryProfile->bytesRead, 32U) << WHAT;
+      EXPECT_GT(RESULT.stats.median, 0.0) << WHAT;
     }
   }
 }
