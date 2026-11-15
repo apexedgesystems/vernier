@@ -532,10 +532,10 @@ by the test below.
   for the same request.
 
 This repository has no continuous-integration lane on the reference board.
-The hosted CI's C++ job runs `TestDemoJemalloc` in the project's development
-container, whose jemalloc profiles; on the rig the steps above, and the test
-with the profiling build selected, are run by hand before a release, and the
-reference CSV is re-captured when the numbers move.
+`TestDemoJemalloc` is a component test: `make test-component` runs it in the
+project's development container, whose jemalloc profiles; on the rig the
+steps above, and the test with the profiling build selected, are run by hand
+before a release, and the reference CSV is re-captured when the numbers move.
 
 ## See Also
 

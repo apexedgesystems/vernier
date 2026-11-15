@@ -12,13 +12,17 @@
  * for more than they verified, and decisions are memoized per request and
  * context until resetReadiness(). The outcome tests pin the run's result: a
  * failed request is recorded once, finishRun() reports it and returns 4 when
- * the tests passed, and a run that created no profiler says so.
+ * the tests passed, and a run that created no profiler says so. A case that
+ * runs every registered backend's check (runCheck(), runAllChecks(), the
+ * doctor) runs it with PATH an empty directory, so no check finds a tool the
+ * host installed.
  */
 
 #include "src/bench/inc/PerfAbi.hpp"
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/SamplingRateTable.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -53,6 +57,8 @@ using vernier::bench::ReadinessResult;
 using vernier::bench::readinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
+using vernier::bench::test::FakeToolDir;
+using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
 
 // Backends compiled into libbench that self-register on load. compute-sanitizer
@@ -61,6 +67,26 @@ using vernier::bench::test::StderrCapture;
 const std::vector<std::string> CPU_BACKENDS = {"perf",   "gperf",     "callgrind", "bpftrace",
                                                "rapl",   "massif",    "memcheck",  "helgrind",
                                                "offcpu", "heaptrack", "jemalloc",  "rocprof"};
+
+/**
+ * @brief While it lives, PATH is a private directory with no tool in it. The
+ * real backends' checks, which the zero-argument checks and the doctor run in
+ * this process's environment, then find none of their tools and answer at
+ * once, whatever the host has installed; the cases that use it read only a
+ * test backend's row or the rows' shape.
+ */
+class EmptyToolPath {
+public:
+  EmptyToolPath() : path_("PATH", tools_.path()) {
+    EXPECT_TRUE(tools_.ok()) << "the empty tool directory could not be created";
+  }
+  EmptyToolPath(const EmptyToolPath&) = delete;
+  EmptyToolPath& operator=(const EmptyToolPath&) = delete;
+
+private:
+  FakeToolDir tools_;
+  ScopedEnv path_;
+};
 
 /** @test Every CPU profiler backend self-registers. */
 TEST(ProfilerRegistryTest, CpuBackendsRegistered) {
@@ -96,6 +122,7 @@ TEST(ProfilerRegistryTest, MakeNeverReturnsNull) {
 
 /** @test runCheck() yields a valid status per backend, Error for unknown. */
 TEST(ProfilerRegistryTest, RunCheckReturnsStatus) {
+  const EmptyToolPath NO_TOOLS;
   const ProfilerRegistry& reg = ProfilerRegistry::instance();
   for (const std::string& NAME : CPU_BACKENDS) {
     const EnvReport report = reg.runCheck(NAME);
@@ -108,6 +135,7 @@ TEST(ProfilerRegistryTest, RunCheckReturnsStatus) {
 
 /** @test runAllChecks() reports one entry per registered backend, name-aligned. */
 TEST(ProfilerRegistryTest, RunAllChecksMatchesBackendNames) {
+  const EmptyToolPath NO_TOOLS;
   const ProfilerRegistry& reg = ProfilerRegistry::instance();
   const std::vector<std::string> names = reg.backendNames();
   const std::vector<std::pair<std::string, EnvReport>> checks = reg.runAllChecks();
@@ -528,6 +556,7 @@ TEST(ProfilerReadinessRouting, RunPrintsTheSelectedDoctorReport) {
 
 /** @test The doctor labels its rows as default-mode checks and never memoizes. */
 TEST(ProfilerReadinessRouting, DoctorLabelsRowsAndDecidesAfresh) {
+  const EmptyToolPath NO_TOOLS;
   ScopedBackend backend("doctor");
   backend.readiness([](const ReadinessRequest& request) {
     return readinessResult(ReadinessCause::CAVEAT, "asked about '" + request.profileArgs + "'", "");
@@ -549,6 +578,7 @@ TEST(ProfilerReadinessRouting, DoctorLabelsRowsAndDecidesAfresh) {
 
 /** @test With a request the doctor adds one selected row for exactly that request. */
 TEST(ProfilerReadinessRouting, DoctorSelectedRow) {
+  const EmptyToolPath NO_TOOLS;
   ScopedBackend backend("selected");
   backend.readiness([](const ReadinessRequest& request) {
     return readinessResult(ReadinessCause::CAVEAT, "asked about '" + request.profileArgs + "'",
@@ -568,6 +598,7 @@ TEST(ProfilerReadinessRouting, DoctorSelectedRow) {
 
 /** @test The JSON document labels its rows and carries the selected decision. */
 TEST(ProfilerReadinessRouting, DoctorJsonKeys) {
+  const EmptyToolPath NO_TOOLS;
   ScopedBackend backend("json");
   backend.readiness([](const ReadinessRequest& request) {
     return readinessResult(ReadinessCause::CAVEAT, "asked \"" + request.profileArgs + "\"", "hint");
@@ -598,6 +629,7 @@ TEST(ProfilerReadinessRouting, DoctorJsonKeys) {
  * backend asked without the analysis is Ok everywhere.
  */
 TEST(ProfilerReadinessRouting, AnalysisStageErrorFailsEveryViewAndItsTwinIsOk) {
+  const EmptyToolPath NO_TOOLS;
   ScopedBackend backend("analysis-views");
   backend.readiness([](const ReadinessRequest& request) {
     return request.analyze ? readinessResult(ReadinessCause::MISSING, "no analyzer", "install one",
