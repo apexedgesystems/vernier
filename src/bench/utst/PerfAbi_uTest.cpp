@@ -26,6 +26,7 @@
 #include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 #include "src/bench/inc/ProfilerJemalloc.hpp"
+#include "src/bench/inc/ProfilerRAPL.hpp"
 
 #include <gtest/gtest.h>
 
@@ -42,6 +43,7 @@ using vernier::bench::checkBenchAbi;
 using vernier::bench::JemallocProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
+using vernier::bench::RAPLProfiler;
 using vernier::bench::Stats;
 using vernier::bench::UnifiedMemoryProfile;
 using vernier::bench::detail::AbiField;
@@ -98,7 +100,9 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 // Version 5 appended two members to UnifiedMemoryProfile, which GpuStats
 // carries in the results libbench_cuda hands back (pinned below); PerfConfig,
 // Stats and PerfGpuConfig keep version 2's layout.
-static_assert(BENCH_ABI_VERSION == 5,
+// Version 6 changed RAPLProfiler's members. No table here describes those
+// profilers' members; RAPLProfiler's size is pinned with the structs' sizes.
+static_assert(BENCH_ABI_VERSION == 6,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 
@@ -167,7 +171,8 @@ TEST(PerfConfigLayoutTest, NewMembersAreAppended) {
 }
 
 #if defined(__GLIBCXX__) && defined(__LP64__)
-/** @test On 64-bit libstdc++ the shared structs have the sizes of this ABI version */
+/** @test On 64-bit libstdc++ the shared structs, JemallocProfiler and RAPLProfiler have this
+ * version's sizes */
 TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   EXPECT_EQ(sizeof(PerfConfig), 240U);
   EXPECT_EQ(sizeof(Stats), 80U);
@@ -178,6 +183,14 @@ TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   // members are part of this version's layout. A change that moves the size
   // fails here: raise BENCH_ABI_VERSION, then pin the new size.
   EXPECT_EQ(sizeof(JemallocProfiler), 56U);
+  // A benchmark can construct a RAPLProfiler itself: it sizes the object from
+  // its own header, the library's constructor builds it there, and the
+  // header's inline destructor takes it apart, so its members belong to this
+  // version's layout although no compared size shows them. A change that
+  // moves its size fails here: raise BENCH_ABI_VERSION, then pin the new
+  // size. A member that fits into padding leaves the size alone; only the
+  // version shows that.
+  EXPECT_EQ(sizeof(RAPLProfiler), 120U);
 }
 
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */
