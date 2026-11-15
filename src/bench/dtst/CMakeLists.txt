@@ -23,7 +23,8 @@ set(COMPONENT_TEST_SOURCES
 # Component Tests
 # ------------------------------------------------------------------------------
 # The fake tools and the helpers they share with the unit tests come from
-# bench_test_support, which ../utst owns.
+# bench_test_support, a test-only interface target ../utst owns; COVERAGE_FOR
+# names bench, the one library the program's coverage reports.
 # ------------------------------------------------------------------------------
 
 vernier_add_devtest(
@@ -33,10 +34,9 @@ vernier_add_devtest(
   ${COMPONENT_TEST_SOURCES}
   LINK
   bench
+  bench_test_support
+  COVERAGE_FOR
+  bench
   LABELS
   benchmarking
 )
-
-if (TARGET TestBenchComponent)
-  target_link_libraries(TestBenchComponent PRIVATE bench_test_support)
-endif ()

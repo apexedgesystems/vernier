@@ -38,6 +38,10 @@ set(UNIT_TEST_SOURCES
 # ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
+# COVERAGE_FOR names bench, the one library the program's coverage reports:
+# bench_test_support (Readiness Fixtures, below) is a test-only interface
+# target with no library of its own.
+# ------------------------------------------------------------------------------
 
 vernier_add_gtest(
   TARGET
@@ -45,6 +49,9 @@ vernier_add_gtest(
   SOURCES
   ${UNIT_TEST_SOURCES}
   LINK
+  bench
+  bench_test_support
+  COVERAGE_FOR
   bench
   LABELS
   benchmarking
@@ -322,7 +329,6 @@ target_link_libraries(
 )
 
 if (TARGET TestBench)
-  target_link_libraries(TestBench PRIVATE bench_test_support)
   # Tables both languages are tested against (the Rust tools read them in
   # place), e.g. the profile aliases and the profile-failed exit status.
   target_compile_definitions(
