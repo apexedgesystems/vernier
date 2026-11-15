@@ -44,7 +44,9 @@ set(UNIT_TEST_SOURCES
 # bench_test_support (Readiness Fixtures, below) is a test-only interface
 # target with no library of its own. RaplRunTest's cases are component: the
 # registry, the profiler and its factory decide on this machine's
-# /proc/cpuinfo and msr device, which no context can replace.
+# /proc/cpuinfo and msr device, which no context can replace. So are the two
+# watchdog cases that run the helper program end to end under the whole-second
+# --profile-test-timeout flag and wait that second out.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -61,6 +63,7 @@ vernier_add_gtest(
   benchmarking
   COMPONENT_PATTERNS
   "^RaplRunTest\\."
+  "^PerfWatchdogTest\\.(Later)?HungLoopEndsWithStatusTwo$"
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
   "^PerfCaseTimingTest\\."
@@ -329,7 +332,7 @@ add_test(
     -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -DGOOGLETEST_DIR=${googletest_SOURCE_DIR} -P
     "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/SkipPatternNamesTheCase_test.cmake"
 )
-set_tests_properties(SkipPatternNamesTheCaseTest PROPERTIES LABELS "benchmarking;cmake")
+set_tests_properties(SkipPatternNamesTheCaseTest PROPERTIES LABELS "benchmarking;cmake;component")
 
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
@@ -637,7 +640,9 @@ endif ()
 # without one must still report their race. It learns a build it cannot run
 # under valgrind from the build's SANITIZER setting. The racy probe skips
 # itself outside valgrind, so it is a worker source, compiled in and not
-# registered.
+# registered. The two helgrind runs and the locked probe they run are
+# component tests; the check that libbench marks the gate unless built with
+# NVALGRIND runs no tool and is a unit test.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -652,8 +657,9 @@ vernier_add_gtest(
   LABELS
   benchmarking
   helgrind
-  CLASS
-  component
+  COMPONENT_PATTERNS
+  "^StartGateHelgrindTest\\.(GateReportsNothing|WorkerRaceIsStillReported)$"
+  "^StartGateProbe\\.LockedWorkers$"
 )
 
 if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)

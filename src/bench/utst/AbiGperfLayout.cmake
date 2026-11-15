@@ -86,6 +86,9 @@ target_compile_options(
 # ------------------------------------------------------------------------------
 # Test (1)
 # ------------------------------------------------------------------------------
+# It runs the two consumers built against this tree's library: a component
+# test, as the other consumer checks are.
+# ------------------------------------------------------------------------------
 
 add_test(
   NAME AbiGperfLayoutTest
@@ -94,4 +97,4 @@ add_test(
     -DHIDDEN=$<TARGET_FILE:AbiGperfConsumerHidden> -P
     "${CMAKE_CURRENT_LIST_DIR}/AbiGperfLayout_test.cmake"
 )
-set_tests_properties(AbiGperfLayoutTest PROPERTIES LABELS "benchmarking;abi")
+set_tests_properties(AbiGperfLayoutTest PROPERTIES LABELS "benchmarking;abi;component")
