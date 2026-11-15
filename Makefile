@@ -22,6 +22,7 @@ include mk/docker.mk
 include mk/compose.mk
 include mk/clean.mk
 include mk/verify.mk
+include mk/checks.mk
 
 # ==============================================================================
 # Configuration
@@ -125,17 +126,36 @@ help:
 	@printf '  %-28s %s\n' "make riscv-release" "Build for RISC-V 64 release"
 	@printf '\n'
 	@printf '%s\n' "Testing:"
-	@printf '  %-28s %s\n' "make test" "Run all tests (serial)"
-	@printf '  %-28s %s\n' "make testp" "Run tests (parallel + timing serial)"
+	@printf '  %-28s %s\n' "make test" "Run the unit tests (serial)"
+	@printf '  %-28s %s\n' "make testp" "Run the unit tests (parallel + timing serial)"
+	@printf '  %-28s %s\n' "make test-component" "Run the component tests (parallel)"
+	@printf '  %-28s %s\n' "make test-rig" "Run the rig tests (serial, on a rig host)"
 	@printf '  %-28s %s\n' "make test-heap" "Run allocator-dependent tests (tcmalloc tree)"
 	@printf '  %-28s %s\n' "make test-py" "Run Python tools tests"
 	@printf '  %-28s %s\n' "make test-rust" "Run Rust tools tests"
 	@printf '  %-28s %s\n' "make cuda-check" "Build every CUDA target; run the device-free cases"
 	@printf '\n'
+	@printf '%s\n' "Test classes (every CTest entry is labelled unit or component):"
+	@printf '  %-28s %s\n' "unit" "One unit in isolation, with stand-ins it controls;"
+	@printf '  %-28s %s\n' "" "about 1 s a test at most, a whole program in seconds"
+	@printf '  %-28s %s\n' "component" "A component through its real protocol, or an"
+	@printf '  %-28s %s\n' "" "integration (real tools, consumer builds, a benchmark"
+	@printf '  %-28s %s\n' "" "end to end); about 10 s a test"
+	@printf '  %-28s %s\n' "rig (beside a class)" "Needs hardware, privileges or a device a hosted"
+	@printf '  %-28s %s\n' "" "runner lacks; no lane but make test-rig runs it"
+	@printf '  %s\n' "The times are guidance, never enforced: each lane ends by listing its"
+	@printf '  %s\n' "slowest tests. Pull-request CI and make verify run the unit tests;"
+	@printf '  %s\n' "the nightly workflow runs the component tests on main."
+	@printf '\n'
+	@printf '%s\n' "Nightly (.github/workflows/nightly.yml, on main and on demand):"
+	@printf '  %-28s %s\n' "make checks-nightly" "Run every nightly check (mk/checks.mk)"
+	@printf '  %-28s %s\n' "make list-checks" "List the nightly checks"
+	@printf '  %-28s %s\n' "make print-nightly-checks" "The nightly checks as the workflow's JSON"
+	@printf '\n'
 	@printf '%s\n' "Quality:"
 	@printf '  %-28s %s\n' "make format" "Auto-fix formatting issues"
 	@printf '  %-28s %s\n' "make format-check" "Check formatting (no fixes)"
-	@printf '  %-28s %s\n' "make verify" "Run every CI lane locally, no GPU (pre-PR gate)"
+	@printf '  %-28s %s\n' "make verify" "Run a pull request's CI lanes locally, no GPU (pre-PR gate)"
 	@printf '  %-28s %s\n' "make coverage" "Generate code coverage report"
 	@printf '  %-28s %s\n' "make static" "Run static analysis (scan-build)"
 	@printf '  %-28s %s\n' "make asan" "AddressSanitizer: named selection in build/asan (CPU)"
@@ -153,8 +173,8 @@ help:
 	@printf '  %-28s %s\n' "make compose-debug" "Native debug via dev-cuda"
 	@printf '  %-28s %s\n' "make compose-release" "Native release via dev-cuda"
 	@printf '  %-28s %s\n' "make compose-docs" "Documentation via dev-cuda"
-	@printf '  %-28s %s\n' "make compose-test" "Run tests via dev-cuda, GPU cases on a GPU host"
-	@printf '  %-28s %s\n' "make compose-testp" "Run tests (parallel) via dev-cuda, GPU cases on a GPU host"
+	@printf '  %-28s %s\n' "make compose-test" "Run the unit tests via dev-cuda"
+	@printf '  %-28s %s\n' "make compose-testp" "Run the unit tests (parallel) via dev-cuda"
 	@printf '  %-28s %s\n' "make compose-coverage" "Coverage report via dev-cuda"
 	@printf '  %-28s %s\n' "make compose-format" "Format code via dev-cuda"
 	@printf '  %-28s %s\n' "make compose-static" "Static analysis via dev-cuda"

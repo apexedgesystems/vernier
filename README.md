@@ -323,10 +323,41 @@ timing harness always works.
 
 ## 8. Testing
 
+Every test CTest runs is labelled with its class, `unit` or `component`, and
+also `rig` when it needs hardware, privileges or a device a hosted runner
+lacks:
+
+- **`unit`** -- one unit in isolation (a function, class, decision, parser or
+  reader), its collaborators values or stand-ins the test controls, with no
+  real tool, device, privilege or network. About 1 s a test at most, a whole
+  unit program in seconds. `make test` (serial) and `make testp` (parallel)
+  run them, and so do `make verify` and CI on every pull request.
+- **`component`** -- a component through its real protocol, or an
+  integration: a backend started and stopped, a benchmark run end to end, a
+  real tool, a consumer or install build. About 10 s a test.
+  `make test-component` runs them, and so does the nightly workflow on main,
+  off the pull-request path.
+- **`rig`**, beside either class -- needs a GPU, hardware counters, the RAPL
+  registers, privileged bpftrace or the like. `make test-rig` runs them, on a
+  host that has what they need; no other lane does.
+
+The times are guidance for review, not limits: no test fails for its time,
+and `make test`, `make testp`, `make test-component` and `make test-rig` end
+by listing their slowest tests. A lane whose selection matches no test fails.
+
+The nightly workflow (`.github/workflows/nightly.yml`) runs every check
+`mk/checks.mk` registers, each in the CPU dev image, on a schedule and from the
+Actions tab; `make list-checks` names them. A check is added by naming its make
+target there, with no change to the workflow.
+
 ```bash
-# Build and run all tests (Docker)
+# Build and run the unit tests (Docker)
 make compose-debug
 make compose-testp
+
+# The component tests, and the rig tests on a host that has the hardware
+make test-component
+make test-rig
 
 # Run specific library tests. bash stays the container's first process (the
 # trailing exit keeps it from replacing itself with ctest) and reaps the helper
@@ -365,6 +396,7 @@ vernier/
       src/                    Profiler implementations + CUPTI collector
       bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
+      dtst/                   Component tests (backend and probe lifecycles)
       ptst/                   Performance tests (CPU + GPU)
       demo/                   16 CPU + 4 GPU walkthroughs with step-by-step docs
       docs/                   Library documentation

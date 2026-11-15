@@ -232,7 +232,9 @@ jobs:
         run: docker compose run --rm -T dev make tools-check
 
       # The same setting: make testp builds through its debug prerequisite.
-      - name: Run C++ tests
+      # make testp runs the unit tests; the component tests run in the
+      # nightly workflow (nightly.yml), off the pull-request path.
+      - name: Run C++ unit tests
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 
       # A second tree with tcmalloc linked, as make verify's C++ lane builds

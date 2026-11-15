@@ -1,7 +1,7 @@
 /**
- * @file ProfilerPerfLifecycle_uTest.cpp
- * @brief Unit tests for the perf backend's run: its start, its stop and the
- * output it leaves.
+ * @file ProfilerPerfLifecycle_dTest.cpp
+ * @brief Component tests for the perf backend's run: its start, its stop and
+ * the output it leaves.
  *
  * A fake perf (fixtures/readiness/fake_perf.sh) stands in for the tool, and
  * FAKE_PERF_MODE selects how the run's perf behaves. Each test builds the
