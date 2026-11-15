@@ -287,28 +287,14 @@ with a notice that nothing was profiled. See the
 
 **Supported profilers** (each self-registers via the backend registry):
 
-CPU:
+- CPU: `perf`, `gperf`, `callgrind`, `bpftrace`, `rapl`, `massif`,
+  `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`
+- GPU: `nsight` (or `nsys`), `ncu`, `compute-sanitizer`, `rocprof` (not
+  validated on AMD hardware)
 
-- `perf` - Linux perf_events (`stat` / `record` / `mem` / `c2c` modes)
-- `gperf` - gperftools (CPU + optional heap sampling)
-- `callgrind` - valgrind callgrind (deterministic instruction counts)
-- `bpftrace` - BPF tracing (syscall / fsync latency scripts)
-- `rapl` - Intel RAPL (energy measurement)
-- `massif` - valgrind massif (heap usage timeline, ~20x overhead)
-- `memcheck` - valgrind memcheck (memory errors and leaks)
-- `helgrind` - valgrind helgrind / DRD (data races, lock-order violations; `--profile-args drd` selects DRD)
-- `offcpu` - bpftrace on the scheduler's tracepoints (where threads spend blocked time)
-- `heaptrack` - heaptrack (low-overhead heap profiler, ~1.5x)
-- `jemalloc` - jemalloc's sampling heap profiler (a jemalloc built with profiling, preloaded)
-
-GPU:
-
-- `nsight` - NVIDIA Nsight Systems / Compute (auto-extracts the four
-  canonical nsys stats reports)
-- `ncu` - NVIDIA Nsight Compute (per-kernel analysis)
-- `compute-sanitizer` - NVIDIA Compute Sanitizer (GPU memcheck / racecheck
-  / synccheck / initcheck)
-- `rocprof` - AMD ROCm rocprof (kernel timing + Chrome-trace timeline)
+The advanced guide's
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers) gives what each
+records, needs, writes and costs.
 
 Adjacent in-process instrumentation:
 
@@ -336,7 +322,7 @@ PERF_TEST(MyComponent, Throughput) {
 # CPU profiling with perf
 ./MyComponent_PTEST --profile perf --gtest_filter="*Throughput"
 
-# Heap profiling with gperftools
+# CPU sampling with gperftools
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
 # Energy measurement with RAPL (read access to /dev/cpu/0/msr needed)
@@ -597,7 +583,9 @@ Google Performance Tools integration.
 **Features:**
 
 - CPU profiling (sampling)
-- Heap profiling (`--profile-args heap`, or `both` for CPU + heap)
+- Heap profiling (`--profile-args heap`, or `both` for CPU + heap), in a build
+  with `-DVERNIER_LINK_TCMALLOC=ON`: the heap profiler is part of tcmalloc,
+  which replaces the allocator of the whole process
 
 **Usage:**
 

@@ -496,30 +496,29 @@ must be started by that tool: `bench run --profile <name>` starts it (for
 every name marked so but `rocprof`), or you start it yourself; a run started
 without it fails with the command that would start it.
 
-| Profiler             | Layer | Purpose                                          | Requirements                                                           | Overhead |
-| -------------------- | ----- | ------------------------------------------------ | ---------------------------------------------------------------------- | -------- |
-| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)  | perf for the running kernel; `perf_event_paranoid` 2 or lower, or root | ~5%      |
-| `gperf`              | CPU   | gperftools sampling (CPU + optional heap)        | libgperftools                                                          | ~10%     |
-| `callgrind`          | CPU   | Deterministic instruction counts                 | valgrind, under the tool                                               | ~20-50x  |
-| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)     | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                 | <1%      |
-| `rapl`               | CPU   | Package energy per call                          | Intel CPU, msr driver, read access to `/dev/cpu/0/msr` (see below)     | <1%      |
-| `massif`             | CPU   | Heap usage timeline                              | valgrind, under the tool                                               | ~20x     |
-| `memcheck`           | CPU   | Memory errors and leaks                          | valgrind, under the tool                                               | ~20x     |
-| `helgrind`           | CPU   | Data races and lock-order violations (DRD opt.)  | valgrind, under the tool                                               | ~20x     |
-| `offcpu`             | CPU   | Off-CPU stack profiling                          | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs        | low      |
-| `heaptrack`          | CPU   | Lower-overhead heap profiler                     | heaptrack, under the tool                                              | ~1.5x    |
-| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                | jemalloc built with `--enable-prof`, preloaded                         | 1.0-1.7x |
-| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)            | nsys (Systems) or ncu (the compute modes), under the tool              | ~2x      |
-| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under the tool                       | ~5-10x   |
-| `rocprof`            | GPU   | AMD ROCm GPU profiler                            | rocprof (ROCm), under the tool; never reported ready                   | ~2x      |
+In **Writes**, `<case>` is the test's name, `Suite.Test`: a per-case folder
+is created in the working directory, and the folder `bench run` creates,
+`<binary>.<profiler>/`, in `bench-out/`; `--profile-output-dir` moves either
+root. **Cost** is what a walkthrough measured, on the rig it names; it depends
+on the code and the machine, so time one profiled call before sizing a run.
 
-jemalloc's overhead is measured in the
-[jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs):
-on the Raspberry Pi 4 rig, a Release build of the `join` example timed under
-one jemalloc build with profiling off and with `bench run`'s options on,
-1.01x for `joinV1`, which allocates 7.5 KB per call, and 1.73x for `joinV0`,
-which allocates 11.8 MB per call. It grows with the bytes allocated per
-second.
+| Profiler             | Layer | Purpose                                                             | Requirements                                                                          | Writes                                                    | Cost                                                                                                                     |
+| -------------------- | ----- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `perf`               | CPU   | Hardware counters (`stat`/`record`/`mem`/`c2c`)                     | perf for the running kernel; `perf_event_paranoid` 2 or lower, or root                | `<case>.perf/stat.txt`; `perf.data` with `record`         | none seen in `stat` mode: 919.7 against 926.9 to 1,002.6 us a call, Pi 4 ([02](../demo/docs/02_PERF_PROFILER.md))        |
+| `gperf`              | CPU   | gperftools sampling (CPU; heap with `--profile-args heap`)          | libgperftools; heap mode also a build with `-DVERNIER_LINK_TCMALLOC=ON`               | `<case>.gperf/cpu.prof`; `heap.<N>.heap` in heap mode     | about 1%, within the runs' own spread, at 100 samples a second, Pi 4 ([03](../demo/docs/03_GPERF_PROFILER.md))           |
+| `callgrind`          | CPU   | Deterministic instruction counts                                    | valgrind, under the tool                                                              | `<binary>.callgrind/callgrind.out`                        | 50x and 94x, Pi 4 ([07](../demo/docs/07_CALLGRIND_PROFILER.md))                                                          |
+| `bpftrace`           | CPU   | Kernel tracing (fsync / write latency, etc.)                        | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant)                                | `<case>.bpf/<script>.out.text`                            | per traced event: about 1.5 us a `write()` under `write_latency.bt`, Pi 4 ([09](../demo/docs/09_BPFTRACE_PROFILER.md))   |
+| `rapl`               | CPU   | Package energy per call                                             | Intel CPU, msr driver, read access to `/dev/cpu/0/msr` (see below)                    | `<case>.rapl/energy.txt`                                  | two register reads a window, outside the timed calls ([08](../demo/docs/08_RAPL_PROFILER.md))                            |
+| `massif`             | CPU   | Heap usage timeline                                                 | valgrind, under the tool                                                              | `<binary>.massif/massif.out`                              | 2.3x and 6.2x, Pi 4 ([14](../demo/docs/14_MASSIF_PROFILER.md))                                                           |
+| `memcheck`           | CPU   | Memory errors and leaks                                             | valgrind, under the tool                                                              | `<binary>.memcheck/memcheck.log`                          | about 115x, Pi 4 ([15](../demo/docs/15_MEMCHECK_PROFILER.md))                                                            |
+| `helgrind`           | CPU   | Data races and lock-order violations; DRD with `--profile-args drd` | valgrind, under the tool                                                              | `<binary>.helgrind/helgrind.log`                          | thousands of times, five times apart between runs, Pi 4 ([20](../demo/docs/20_HELGRIND_PROFILER.md))                     |
+| `offcpu`             | CPU   | Off-CPU stack profiling                                             | bpftrace as root (`BENCH_SUDO=1` with a sudoers grant), tracefs                       | `<case>.offcpu/offcpu.txt`                                | not measured: timed medians with and without it overlapped, Pi 4 ([16](../demo/docs/16_OFFCPU_PROFILER.md))              |
+| `heaptrack`          | CPU   | Heap allocations and their call stacks                              | heaptrack, under the tool                                                             | `<binary>.heaptrack/run.zst` (or `run.gz`)                | 1.4x to 1.5x and 4.2x to 4.3x, growing with the allocation rate, Pi 4 ([21](../demo/docs/21_HEAPTRACK_PROFILER.md))      |
+| `jemalloc`           | CPU   | jemalloc's sampling heap profiler                                   | jemalloc built with `--enable-prof`, preloaded                                        | `<binary>.jemalloc/jeprof.<pid>.<n>.f.heap`               | 1.01x and 1.73x, growing with the bytes allocated, Pi 4 ([22](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs)) |
+| `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)                               | nsys (Systems) or ncu (the compute modes), under the tool                             | `<binary>.nsight/profile.nsys-rep` and the nsys summaries | none seen: 3,367 against 3,439 us a call, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                |
+| `ncu`                | GPU   | Nsight Compute per-kernel counters                                  | ncu, under the tool; the GPU's performance counters, which a driver can keep for root | `<binary>.ncu/kernel_profile.ncu-rep`                     | about a second a profiled launch, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                        |
+| `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck                    | compute-sanitizer (CUDA toolkit), under the tool                                      | `<binary>.compute-sanitizer/sanitizer.log`                | 54x to 57x, Thor; about 116x, RTX 5000 Ada laptop ([17](../demo/docs/17_COMPUTE_SANITIZER.md))                           |
+| `rocprof`            | GPU   | AMD ROCm GPU profiler, not validated on AMD hardware                | rocprof (ROCm), under the tool; never reported ready                                  | rocprof's files, where its `-o` says                      | not measured ([18](../demo/docs/18_ROCPROF_PROFILER.md))                                                                 |
 
 CUPTI activity counters (per-launch register count, static + dynamic shared
 memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
@@ -1041,16 +1040,9 @@ empty.
 
 ### GPU Profiler Integration
 
-GPU-specific profilers:
-
-| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                        |
-| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute`), `kernel_replay.ncu-rep` (the printed replay command) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                               |
-| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                               |
-
-"Under it" means the process must be started by the tool, as for the CPU
-tools in [Available Profilers](#available-profilers).
+The GPU profilers, `nsight`, `ncu`, `compute-sanitizer` and `rocprof`, are
+rows of [Available Profilers](#available-profilers), with what each needs,
+writes and costs.
 
 **Using Nsight:**
 

@@ -233,23 +233,14 @@ name; `bench doctor` lists them all with their environment readiness
 lane on the backends it needs, `--profile X` with its options to check one
 request).
 
-| Backend             | Layer | Wraps                                            |
-| ------------------- | ----- | ------------------------------------------------ |
-| `perf`              | CPU   | Linux perf_events (stat / record / mem / c2c)    |
-| `gperf`             | CPU   | gperftools                                       |
-| `callgrind`         | CPU   | valgrind callgrind                               |
-| `bpftrace`          | CPU   | bpftrace scripts                                 |
-| `rapl`              | CPU   | Intel RAPL MSRs                                  |
-| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)            |
-| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)               |
-| `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)      |
-| `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)      |
-| `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)             |
-| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded)    |
-| `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)                 |
-| `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)      |
-| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)          |
-| `rocprof`           | GPU   | AMD ROCm rocprof (not validated on AMD hardware) |
+- CPU: `perf`, `gperf`, `callgrind`, `bpftrace`, `rapl`, `massif`,
+  `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`
+- GPU: `nsight` (or `nsys`), `ncu`, `compute-sanitizer`, `rocprof` (not
+  validated on AMD hardware)
+
+The advanced guide's
+[Available Profilers](src/bench/docs/ADVANCED_GUIDE.md#available-profilers)
+gives what each records, needs, writes and costs.
 
 CUPTI kernel metrics fill the GPU CSV columns of every GPU benchmark without
 `--profile`, except where CUPTI is unavailable or an nsys or ncu session owns
@@ -300,9 +291,9 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 - CUDA toolkit 12+ (GPU benchmarking, NVTX ranges with CMake 3.25+, CUPTI,
   Compute Sanitizer)
 - gperftools (`gperf` backend)
-- valgrind (`callgrind` / `massif` / `memcheck` backends)
+- valgrind (`callgrind` / `massif` / `memcheck` / `helgrind` backends)
 - bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
-- heaptrack (`heaptrack` backend -- low-overhead heap profiler)
+- heaptrack (`heaptrack` backend -- heap allocations and their call stacks)
 - a jemalloc built with profiling (`--enable-prof`), for the `jemalloc` backend,
   which preloads it; `jeprof` reads its dumps
 - ROCm + rocprof (the `rocprof` backend, not validated on AMD hardware)

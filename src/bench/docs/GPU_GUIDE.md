@@ -1077,11 +1077,11 @@ PERF_GPU_TEST(MyKernel, WithProfiling) {
 
 ### GPU-side backends
 
-| Backend             | Wraps                         | Use it for                                                             |
-| ------------------- | ----------------------------- | ---------------------------------------------------------------------- |
-| `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern*sum / api_sum / mem*\* |
-| `compute-sanitizer` | NVIDIA Compute Sanitizer      | GPU memcheck / racecheck / synccheck / initcheck                       |
-| `rocprof`           | AMD ROCm rocprof              | Legacy integration, not validated on AMD hardware (walkthrough 18)     |
+The GPU profilers are `nsight` (or `nsys`), `ncu`, `compute-sanitizer` and
+`rocprof`, the legacy integration that is not validated on AMD hardware
+(walkthrough 18). The advanced guide's
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers) gives what each
+records, needs, writes and costs.
 
 Each of these tools records a process only when it starts it. Under the tool,
 the backend stays passive and reports the tool's output as the artifact; run
@@ -1098,8 +1098,9 @@ pass, and prints the command that would start it under the tool.
 nsys profile -o run.nsys-rep -t cuda,nvtx \
     ./MyGpuTest --profile nsight --gtest_filter='*'
 
-# GPU memory error detection
-compute-sanitizer --tool=memcheck --log-file=run.sanitizer.log \
+# GPU memory error detection: --error-exitcode makes a run in which the
+# tool finds an error exit 5, so that a job fails on it
+compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file run.sanitizer.log \
     ./MyGpuTest --profile compute-sanitizer --cycles 5
 
 # AMD GPU (HIP-built binary): the legacy rocprof integration, not validated
@@ -1352,11 +1353,15 @@ if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockM
 
 ### 8. Profile Selectively
 
-**Why:** Profiling adds overhead - use for specific investigations.
+**Why:** a profiler costs time, from none seen under nsys to about a second
+a launch under ncu (the cost column of
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers)) - use it for
+specific investigations.
 
 ```bash
-# Profile just one test
-./test --profile nsight --gtest_filter="*MyKernel.Optimized"
+# Profile just one test: nsys records only a process it starts, so bench run
+# starts the benchmark under it
+bench run ./test --profile nsight -- --gtest_filter="*MyKernel.Optimized"
 ```
 
 ---

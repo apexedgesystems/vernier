@@ -146,8 +146,13 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
   a run, an under-voltage or thermal event happened during the
   measurement. Use a supply that holds 5 V under load and a heat sink or
   fan; this rig idles at 36 C.
-- **Valgrind tools.** Callgrind, Massif, Memcheck and Helgrind run 20 to
-  100 times slower, on an already slow core. The CPU walkthroughs size
+- **Valgrind tools.** On this board the walkthroughs' profiled calls ran
+  2.3 and 6.2 times as long under massif, 50 and 94 times under callgrind,
+  about 115 times under memcheck and thousands of times under helgrind
+  (walkthroughs [14](../../demo/docs/14_MASSIF_PROFILER.md),
+  [07](../../demo/docs/07_CALLGRIND_PROFILER.md),
+  [15](../../demo/docs/15_MEMCHECK_PROFILER.md) and
+  [20](../../demo/docs/20_HELGRIND_PROFILER.md)). The CPU walkthroughs size
   their profiled runs for this board; keep `--cycles` small under
   `--profile`.
 
@@ -205,7 +210,6 @@ it left out:
              Install the CUDA toolkit's Nsight Systems (nsys), or add its bin folder (for example /usr/local/cuda/bin) to PATH.
   [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace), and a copy with unbuffered output armed on this process's arm thread (pid 33733, thread 33832); not checked: the grant for the run's own command (/usr/bin/bpftrace -B none -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [WARN] perf       perf stat counts this process, but branches:u <not supported> here; those columns stay empty; kernel.perf_event_paranoid=2 limits this user to user-space events
-  [FAIL] rapl       unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
   [FAIL] rocprof    missing: rocprof not found on PATH
              Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
 
@@ -218,9 +222,14 @@ it left out:
   --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
 
-The `rapl` row in this block was not captured on this rig: it is the row
-the backend prints where `/proc/cpuinfo` names no CPU vendor, as on an
-ARM CPU, and the block is still to be recaptured here.
+The block leaves out the `rapl` row it was captured with, which the
+backend no longer prints; its count still includes it. Where
+`/proc/cpuinfo` names no CPU vendor, as on this ARM CPU, the backend now
+prints the row below, which has not been captured here:
+
+```
+  [FAIL] rapl       unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
+```
 
 Six backends fail here: the three NVIDIA tools, which this rig does not
 have, `rapl`, which is Intel-only, `rocprof`, which is AMD's, and `jemalloc`,
@@ -228,6 +237,7 @@ because the distribution's jemalloc is built without profiling. With the
 profiling build from the [one-time setup](#2-one-time-setup) first on
 `LD_LIBRARY_PATH`, as the jemalloc walkthrough selects it, the `jemalloc` row
 is `[OK]`, naming that library. `perf` warns because this core has no
-`branches:u` event, so the branch columns stay empty. Without `BENCH_SUDO=1`,
+`branches:u` event: that line of perf's report reads `<not supported>`, and
+perf's counts stay in its `stat.txt`, not in the CSV. Without `BENCH_SUDO=1`,
 `bpftrace` and `offcpu` fail as `denied:`, quoting bpftrace: `ERROR: bpftrace
 currently only supports running as the root user.`
