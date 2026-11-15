@@ -4,8 +4,10 @@
 //! every call.
 
 use std::fs;
+use std::io::{PipeReader, PipeWriter, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -21,10 +23,15 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/nsig
 /// "unwritten"; ends its export by SIGKILL for one named "killed"; fails
 /// `cuda_api_sum` for one named "failing_summary" and prints a record longer
 /// than its header there for one named "long_record"; and for one named
-/// "slow" starts a long `sleep` under itself and waits for it, as a launcher
-/// waits for the tool it started.
+/// "slow" starts a process under itself and waits for it, as a launcher waits
+/// for the tool it started. That process runs until its process group is
+/// killed and leaves by itself once the test's folder is gone; the fake
+/// writes its process id to tool.pid and then creates `started`.
 const FAKE_NSYS: &str = r#"#!/bin/sh
 echo "nsys $*" >> "$NSIGHT_FAKE_LOG"
+lasting() {
+  while [ -d "$NSIGHT_CASE" ]; do "$SLEEP" 0.05; done
+}
 cmd=$1
 shift
 if [ "$cmd" = export ]; then
@@ -40,7 +47,7 @@ if [ "$cmd" = export ]; then
   case "$rep" in *broken*) echo "fake nsys: cannot read $rep" >&2; exit 1 ;; esac
   case "$rep" in *unwritten*) echo "fake nsys: exported nothing"; exit 0 ;; esac
   case "$rep" in *killed*) kill -s KILL $$ ;; esac
-  case "$rep" in *slow*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; wait; exit 0 ;; esac
+  case "$rep" in *slow*) lasting & echo $! > "$NSIGHT_FAKE_PIDS"; : > "$NSIGHT_FAKE_STARTED"; wait; exit 0 ;; esac
   : > "$out"
   exit 0
 fi
@@ -213,7 +220,9 @@ impl Case {
             .env("PATH", fakes())
             .env("TMPDIR", self.path("tmp"))
             .env("NSIGHT_FAKE_LOG", self.path("calls.log"))
+            .env("NSIGHT_CASE", self.dir.path())
             .env("NSIGHT_FAKE_PIDS", self.path("tool.pid"))
+            .env("NSIGHT_FAKE_STARTED", self.path("started"))
             .env("NSIGHT_FAKE_LAUNCHER", self.path("launcher.pid"))
             .env("NSIGHT_FIXTURES", FIXTURES)
             .env("CAT", which("cat"))
@@ -351,6 +360,104 @@ fn wait_for_exit(child: &mut std::process::Child, within: Duration) -> ExitStatu
             panic!("bench did not end within {within:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `bench`, started by a test as its own child, holding the write end of a
+/// pipe whose read end the test keeps: bench and every process it starts
+/// inherit that end, so the pipe reads its end once all of them have ended
+/// (`all_ended`), whatever their process ids. Dropped, it ends bench by its
+/// handle, which signals nothing once bench has been reaped; the processes
+/// bench started are left to end by themselves (the slow fake's process
+/// leaves once its case's folder is gone). Nothing is signalled by a process
+/// id read from a file.
+struct Owned {
+    bench: std::process::Child,
+}
+
+impl Owned {
+    /// Start @p command with @p holder, a pipe's write end, open in its
+    /// process without close-on-exec; this test's copy of it is closed once
+    /// the process has started.
+    fn start(mut command: Command, holder: PipeWriter) -> Self {
+        let fd = holder.as_raw_fd();
+        // SAFETY: the closure runs in the child between fork and exec and
+        // calls only fcntl(2), which is async-signal-safe; `fd` is open in the
+        // child, as `holder` lives until the spawn has returned.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let bench = command.spawn().expect("spawn bench");
+        drop(holder);
+        Self { bench }
+    }
+
+    /// Wait at most 20 s for the fake to start its process (it then creates
+    /// `started`); a run that ends first fails the test.
+    fn wait_for_start(&mut self, case: &Case) {
+        let until = Instant::now() + Duration::from_secs(20);
+        while !case.path("started").exists() {
+            if let Some(status) = self.bench.try_wait().expect("wait") {
+                panic!("bench ended before its tool started: {status:?}");
+            }
+            assert!(Instant::now() < until, "the fake never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// What bench wrote to its stderr, once it has ended, when it was piped.
+    fn stderr(&mut self) -> String {
+        let mut text = String::new();
+        if let Some(mut stderr) = self.bench.stderr.take() {
+            stderr
+                .read_to_string(&mut text)
+                .expect("read bench's stderr");
+        }
+        text
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // By its handle: a bench already reaped is not signalled again, and
+        // one not yet reaped still has its own process id.
+        let _ = self.bench.kill();
+        let _ = self.bench.wait();
+    }
+}
+
+/// Whether every process holding @p held's write end has ended within
+/// @p within: the pipe then reads its end.
+fn all_ended(held: &mut PipeReader, within: Duration) -> bool {
+    let fd = held.as_raw_fd();
+    // SAFETY: fcntl(2) only reads and sets the flags of a descriptor that
+    // @p held owns and keeps open through the calls.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        assert!(flags >= 0, "F_GETFL: {}", std::io::Error::last_os_error());
+        let set = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        assert!(set >= 0, "F_SETFL: {}", std::io::Error::last_os_error());
+    }
+    let until = Instant::now() + within;
+    let mut chunk = [0u8; 64];
+    loop {
+        match held.read(&mut chunk) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= until {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("read the pipe: {e}"),
+        }
     }
 }
 
@@ -960,14 +1067,26 @@ fn timeout_removes_the_private_export() {
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
 }
 
-/// Start a run on a slow export with @p signal at its default action, send it
-/// that signal once its tool runs, and check that the tool, the private
-/// export and the CSV are all gone and that the run ended by that signal.
-/// With @p name, stderr is the line naming the signal; without, stderr is a
-/// pipe no one reads (its read end closed).
-fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: Option<&str>) {
-    let case = Case::new();
-    case.report("slow.nsys-rep");
+/// Start a run on @p report in @p case with @p signal at its default action,
+/// send it that signal once its tool runs, and check that the tool and what
+/// it started, the private export and the CSV are all gone and that the run
+/// ended by that signal. With @p name, stderr is the line naming the signal;
+/// without, stderr is a pipe no one reads (its read end closed). With
+/// @p path, bench's PATH is that folder instead of the fakes'.
+///
+/// bench is this test's child (`Owned`): it is signalled before it is reaped
+/// and, if it outlasts the bound, ended by its handle. Whether the tool and
+/// what it started have ended is read from the pipe they inherit from bench,
+/// not from a process id; the slow fake's process leaves by itself once the
+/// case's folder is gone, so a run that fails leaves nothing behind.
+fn interrupt(
+    case: &Case,
+    report: &str,
+    signal: &'static str,
+    number: i32,
+    name: Option<&str>,
+    path: Option<&Path>,
+) {
     let stderr = if name.is_some() {
         Stdio::piped()
     } else {
@@ -975,46 +1094,40 @@ fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: Option<&st
         drop(reader);
         writer.into()
     };
-    let mut child = case
-        .command_with(
-            Start::Default(signal),
-            &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
-        )
-        .stdout(Stdio::piped())
-        .stderr(stderr)
-        .spawn()
-        .expect("spawn bench");
-    let tool = case.tool_pid();
-
-    send_signal(child.id(), signal);
-
-    let until = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait") {
-            break status;
-        }
-        if Instant::now() >= until {
-            let _ = child.kill();
-            end(tool);
-            panic!("bench did not end after {signal}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    };
-    let out = child.wait_with_output().expect("output");
-    let stopped = ended(tool);
-    if !stopped {
-        end(tool);
+    let mut command = case.command_with(
+        Start::Default(signal),
+        &[COMMAND, report, "--csv", "out.csv"],
+    );
+    command.stdout(Stdio::null()).stderr(stderr);
+    if let Some(path) = path {
+        command.env("PATH", path);
     }
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(case);
+
+    send_signal(run.bench.id(), signal);
+
+    let status = wait_for_exit(&mut run.bench, Duration::from_secs(30));
+    let stderr = run.stderr();
+    let stopped = all_ended(&mut held, Duration::from_secs(5));
     assert_eq!(status.signal(), Some(number), "{status:?}");
-    assert!(stopped, "the tool's own process {tool} still runs");
+    assert!(stopped, "the tool, or a process it started, still runs");
     if let Some(name) = name {
         assert_eq!(
-            String::from_utf8_lossy(&out.stderr),
+            stderr,
             format!("[{COMMAND}] stopped by {name}; nothing was written\n")
         );
     }
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
     assert!(!case.path("work").join("out.csv").exists());
+}
+
+/// `interrupt` on a slow export, with the fakes on PATH.
+fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: Option<&str>) {
+    let case = Case::new();
+    case.report("slow.nsys-rep");
+    interrupt(&case, "slow.nsys-rep", signal, number, name, None);
 }
 
 /// @test SIGINT stops the tool and what it started, removes the private
@@ -1043,6 +1156,65 @@ fn sighup_cleans_up() {
 #[test]
 fn sigint_with_a_stderr_no_one_reads_cleans_up() {
     interrupted_run_cleans_up("INT", 2, None);
+}
+
+/// @test No process is signalled by a process id read from a file. tool.pid
+/// names a live process of this test's own (a sentinel, kept unreaped, so
+/// that its id stays its own); an interruption run whose tool is not on PATH,
+/// or ends at once, then leaves the sentinel running, whether the run's
+/// checks pass or fail.
+#[test]
+fn a_recorded_process_id_is_never_signalled() {
+    for (report, unavailable) in [("slow.nsys-rep", true), ("unwritten.nsys-rep", false)] {
+        let mut sentinel = Command::new(which("sleep"))
+            .arg("60")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("start the sentinel");
+        let case = Case::new();
+        case.report(report);
+        fs::write(case.path("tool.pid"), sentinel.id().to_string()).expect("a stale tool.pid");
+        let empty = case.path("empty-bin");
+        let path = unavailable.then_some(empty.as_path());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            interrupt(&case, report, "INT", 2, Some("SIGINT"), path);
+        }));
+        let state = sentinel.try_wait().expect("the sentinel's state");
+        let _ = sentinel.kill();
+        let _ = sentinel.wait();
+        assert_eq!(
+            state, None,
+            "{report}: the process tool.pid names was signalled"
+        );
+    }
+}
+
+/// @test A run that fails while the slow fake runs leaves nothing behind.
+/// bench, ended by its handle as a failed check ends it, does not stop its
+/// tool's process group: the fake and what it started keep running, and
+/// leave by themselves once the case's folder is gone.
+#[test]
+fn a_failed_run_leaves_nothing_behind() {
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let case = Case::new();
+    case.report("slow.nsys-rep");
+    let mut command = case.command_with(
+        Start::Default("INT"),
+        &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
+    );
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(&case);
+    drop(run);
+    assert!(
+        !all_ended(&mut held, Duration::from_millis(300)),
+        "the fake ended with bench"
+    );
+    drop(case);
+    assert!(
+        all_ended(&mut held, Duration::from_secs(20)),
+        "the fake outlived its case's folder"
+    );
 }
 
 /// Start a run on a slow export with @p signal ignored, send it that signal

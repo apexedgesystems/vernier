@@ -31,8 +31,9 @@ use vernier_rust_tools::bench::gpu_lock::{self, LockConfig, Tool};
 /// nvidia-smi as gpu-lock calls it. Each rig links it into its own folder as
 /// `nvidia-smi` and writes `stand-in.env` beside the link: the rig's folder,
 /// where to log, and whether to hold the lock or the reset until a file
-/// exists (`lock_gate`, `reset_gate`), to hang in a call (`hang`) or to
-/// refuse one (`fail`). A held call ends, refused, once the rig's folder is
+/// exists (`lock_gate`, `reset_gate`), to hang in a call (`hang`; it then
+/// holds the rig's `hang.fifo` open until it ends) or to refuse one
+/// (`fail`). A held or hung call ends, refused, once the rig's folder is
 /// gone: it runs in a process group of its own, which a run's cleanup does
 /// not signal, so a test that fails while it is held leaves nothing behind.
 const STAND_IN: &str = r#"#!/bin/sh
@@ -58,8 +59,9 @@ if [ -n "$gate" ]; then
   done
 fi
 if [ "$call" = "$hang" ]; then
-  echo $$ > "$hang_pid"
-  exec /bin/sleep 60
+  exec 3<>"$rig/hang.fifo"
+  while [ -d "$rig" ]; do /bin/sleep 0.01; done
+  exit 1
 fi
 if [ "$call" = "$fail" ]; then
   echo "Insufficient Permissions" >&2
@@ -124,10 +126,9 @@ impl Rig {
         symlink(target, dir.path().join("nvidia-smi")).expect("link the stand-in");
         let rig = Self { dir };
         let settings = format!(
-            "rig='{}'\nlog='{}'\nlock_gate=\nreset_gate=\nhang=\nhang_pid='{}'\nfail=\n",
+            "rig='{}'\nlog='{}'\nlock_gate=\nreset_gate=\nhang=\nfail=\n",
             rig.dir.path().display(),
-            rig.path("nvidia-smi.log").display(),
-            rig.path("hang.pid").display()
+            rig.path("nvidia-smi.log").display()
         );
         fs::write(rig.path("stand-in.env"), settings).expect("the stand-in's settings");
         rig
@@ -152,6 +153,48 @@ impl Rig {
 
     fn open(&self, call: &str) {
         fs::write(self.path(&format!("{call}.gate")), "").expect("open the gate");
+    }
+
+    /// Have the stand-in hang in @p call ("lock" or "reset"). It then holds
+    /// `hang.fifo` open until it ends, so `hang_ended` tells whether it has
+    /// without its process id.
+    fn hang(&self, call: &str) {
+        use std::os::unix::ffi::OsStrExt;
+
+        let fifo = std::ffi::CString::new(self.path("hang.fifo").as_os_str().as_bytes())
+            .expect("a path without NUL");
+        // SAFETY: mkfifo(3) only reads the path, a NUL-terminated string
+        // that lives through the call.
+        let made = unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+        self.set("hang", call);
+    }
+
+    /// Whether the hung call has ended, within `BOUND`: once no process holds
+    /// `hang.fifo` open, reading it gives its end.
+    fn hang_ended(&self) -> bool {
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let mut fifo = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(self.path("hang.fifo"))
+            .expect("open hang.fifo");
+        let until = Instant::now() + BOUND;
+        let mut chunk = [0u8; 64];
+        loop {
+            match fifo.read(&mut chunk) {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    if Instant::now() >= until {
+                        return false;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(e) => panic!("read hang.fifo: {e}"),
+            }
+        }
     }
 
     /// Let the waiting command end.
@@ -406,17 +449,6 @@ fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
         assert!(Instant::now() < until, "waited {BOUND:?} for {what}");
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-/// Whether process @p pid runs: listed in /proc, neither a zombie nor dead.
-fn still_running(pid: u32) -> bool {
-    fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            let state = stat.rsplit_once(')')?.1.split_whitespace().next()?;
-            Some(!matches!(state, "Z" | "X"))
-        })
-        .unwrap_or(false)
 }
 
 /// `gpu-lock lock --freq 1000 -- <command>`.
@@ -1293,7 +1325,7 @@ fn short_tool(rig: &Rig) -> Tool {
 #[test]
 fn a_lock_past_its_bound_is_ended_and_reset() {
     let rig = Rig::new();
-    rig.set("hang", "lock");
+    rig.hang("lock");
     let cfg = LockConfig {
         device: 0,
         freq: Some(1000),
@@ -1306,8 +1338,7 @@ fn a_lock_past_its_bound_is_ended_and_reset() {
          since it may have taken effect"
     );
     assert_eq!(rig.events(), [LOCK, RESET, "reset done"]);
-    let hung = rig.pid("hang.pid");
-    assert!(!still_running(hung), "the hung lock {hung} still runs");
+    assert!(rig.hang_ended(), "the hung lock still runs");
 }
 
 /// @test A reset still running at its bound is ended with its process group,
@@ -1315,7 +1346,7 @@ fn a_lock_past_its_bound_is_ended_and_reset() {
 #[test]
 fn a_reset_past_its_bound_says_how_to_reset_by_hand() {
     let rig = Rig::new();
-    rig.set("hang", "reset");
+    rig.hang("reset");
     let err = gpu_lock::reset_clocks(0, &short_tool(&rig)).expect_err("a reset past its bound");
     assert_eq!(
         err.to_string(),
@@ -1323,6 +1354,5 @@ fn a_reset_past_its_bound_says_how_to_reset_by_hand() {
          was ended; reset them with `bench gpu-lock reset --device 0`, or as root with \
          `nvidia-smi -i 0 -rgc`"
     );
-    let hung = rig.pid("hang.pid");
-    assert!(!still_running(hung), "the hung reset {hung} still runs");
+    assert!(rig.hang_ended(), "the hung reset still runs");
 }

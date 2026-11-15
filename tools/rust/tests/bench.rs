@@ -53,6 +53,62 @@ fn output_with_stderr_no_one_reads(command: &mut Command) -> Output {
     child.wait_with_output().expect("wait for bench")
 }
 
+/// Give @p command's process @p holder, a pipe's write end, open without
+/// close-on-exec: that process and every process it starts inherit it, so
+/// the pipe reads its end once all of them have ended (`all_ended`),
+/// whatever their process ids. @p holder must stay open until the process
+/// has started.
+fn inherit(command: &mut Command, holder: &std::io::PipeWriter) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let fd = holder.as_raw_fd();
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only fcntl(2), which is async-signal-safe; `fd` is open in the child,
+    // as the caller keeps `holder` open until the spawn has returned.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// Whether every process holding @p held's write end has ended within
+/// @p within: the pipe then reads its end.
+fn all_ended(held: &mut std::io::PipeReader, within: std::time::Duration) -> bool {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    let fd = held.as_raw_fd();
+    // SAFETY: fcntl(2) only reads and sets the flags of a descriptor that
+    // @p held owns and keeps open through the calls.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        assert!(flags >= 0, "F_GETFL: {}", std::io::Error::last_os_error());
+        let set = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        assert!(set >= 0, "F_SETFL: {}", std::io::Error::last_os_error());
+    }
+    let until = std::time::Instant::now() + within;
+    let mut chunk = [0u8; 64];
+    loop {
+        match held.read(&mut chunk) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= until {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("read the pipe: {e}"),
+        }
+    }
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = output_of(Command::new(bin()).args(args));
     let code = out.status.code().unwrap_or(255);
@@ -2732,6 +2788,8 @@ fn run_keeps_its_status_with_a_stderr_no_one_reads() {
     };
     let mut nsight = start(&["run", &bench, "--profile", "nsight"]);
     nsight.env("FAKE_NSYS_STATS", "leave");
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    inherit(&mut nsight, &holder);
     for mut command in [
         start(&["run", "Short"]),
         start(&["run", "build/a/bin/ptests/Short_PTEST", "--analyze"]),
@@ -2740,15 +2798,13 @@ fn run_keeps_its_status_with_a_stderr_no_one_reads() {
         let out = output_with_stderr_no_one_reads(&mut command);
         assert_eq!(out.status.code(), Some(0), "{command:?}: {:?}", out.status);
     }
+    drop(holder);
     let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
     assert!(log.starts_with("a \na \n"), "{log}");
-    let pids = std::fs::read_to_string(rig.dir.path().join("nsys_left.pids")).unwrap_or_default();
-    assert_eq!(pids.lines().count(), 4, "{pids}");
-    let running: Vec<&str> = pids
-        .lines()
-        .filter(|pid| pid.parse().is_ok_and(still_running))
-        .collect();
-    assert!(running.is_empty(), "still running: {running:?}");
+    assert!(
+        all_ended(&mut held, std::time::Duration::from_secs(20)),
+        "a process the nsight run started still runs"
+    );
     for report in [
         "cuda_gpu_kern_sum",
         "cuda_api_sum",
