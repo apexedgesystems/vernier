@@ -45,6 +45,8 @@ verify:
 	@$(_CI_COMPOSE) run --rm -T ci-build make test-rust
 	$(call log,verify,Python lane [ci-build])
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
+	$(call log,verify,ASan lane: the sanitizer selection in build/asan [dev])
+	@$(_CI_COMPOSE) run --rm -T dev make asan
 	$(call log,verify,All CI lanes green locally)
 
 # ------------------------------------------------------------------------------

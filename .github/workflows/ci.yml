@@ -324,6 +324,62 @@ jobs:
         run: $COMPOSE run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 
   # ----------------------------------------------------------------------------
+  # AddressSanitizer selection -- make asan beside the C++ job: the unit
+  # programs' named selection in its own tree (CPU), failing on a test, an
+  # empty selection or any sanitizer report. Its own ccache key, as the trees
+  # differ in flags.
+  # ----------------------------------------------------------------------------
+  asan:
+    name: AddressSanitizer selection
+    needs: changes
+    if: needs.changes.outputs.cpp == 'true' || needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-asan-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-${{ github.sha }}
+          restore-keys: |
+            ccache-asan-${{ runner.os }}-${{ hashFiles('docker/base.Dockerfile', 'CMakeLists.txt', 'cmake/**/*.cmake', 'CMakePresets.json') }}-
+            ccache-asan-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      - name: Rebuild dev image (image inputs changed)
+        if: needs.changes.outputs.docker == 'true'
+        run: |
+          $COMPOSE build base
+          $COMPOSE build dev
+
+      - name: AddressSanitizer selection
+        run: docker compose run --rm -T dev make asan
+
+  # ----------------------------------------------------------------------------
   # Image graph check -- prove the platform leaves still build.
   #
   # The test jobs only exercise base + the cpu leaf; a broken cuda/cross leaf
