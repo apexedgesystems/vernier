@@ -43,6 +43,6 @@ add_test(
     "${CMAKE_CURRENT_LIST_DIR}/InstallConsumer_test.cmake"
 )
 set_tests_properties(
-  InstallConsumerTest PROPERTIES LABELS "benchmarking;install" PROCESSORS ${_install_consumer_jobs}
-                                 TIMEOUT 600
+  InstallConsumerTest PROPERTIES LABELS "benchmarking;install;component" PROCESSORS
+                                 ${_install_consumer_jobs} TIMEOUT 600
 )

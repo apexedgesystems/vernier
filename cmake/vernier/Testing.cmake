@@ -18,7 +18,17 @@ include_guard(GLOBAL)
 # beside the target; the options that describe registered tests are refused
 # with it. A source that defines main (PERF_MAIN) keeps it: an object's main
 # is linked before GoogleTest's. vernier_add_test_program builds a program with
-# no GoogleTest in it through this same path.
+# no GoogleTest in it through this same path, and vernier_add_devtest a
+# component test program, placed in bin/dtests.
+#
+# Every registered test carries one class label, unit or component: the
+# program's CLASS (unit unless set; a vernier_add_devtest program's is
+# component), or component where COMPONENT_PATTERNS names the test. rig goes
+# beside the class on the tests RIG_PATTERNS names, or on a whole program
+# through LABELS. The class labels are the helper's, not LABELS', and a
+# pattern that names no test of the program is an error. A coverage run, the
+# whole program, is component when any of its tests is. The lanes select by
+# these labels (mk/test.mk).
 #
 # Arguments:
 #   TARGET          <n>              required
@@ -28,6 +38,9 @@ include_guard(GLOBAL)
 #   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
 #   INC             <dir>            optional
 #   LABELS          <labels...>      optional
+#   CLASS           <unit|component> optional (the program's class; unit)
+#   COMPONENT_PATTERNS <regex...>    optional (its tests that are component)
+#   RIG_PATTERNS    <regex...>       optional (its tests that need a rig)
 #   WORKING_DIR     <dir>            optional
 #   RESOURCE_LOCK   <n>              optional
 #   NO_COVERAGE                      optional flag (skip coverage)
@@ -44,10 +57,11 @@ function (vernier_add_gtest)
   endif ()
 
   # _PLAIN_PROGRAM is vernier_add_test_program's: no GoogleTest is linked.
+  # _COMPONENT is vernier_add_devtest's: the program goes to bin/dtests.
   cmake_parse_arguments(
-    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM"
-    "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
-    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
+    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
+    "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS;CLASS"
+    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS" ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
 
@@ -55,6 +69,9 @@ function (vernier_add_gtest)
     foreach (
       _opt
       LABELS
+      CLASS
+      COMPONENT_PATTERNS
+      RIG_PATTERNS
       WORKING_DIR
       RESOURCE_LOCK
       REQUIRES_THREADS
@@ -69,6 +86,28 @@ function (vernier_add_gtest)
       endif ()
     endforeach ()
   endif ()
+
+  # The program's class; COMPONENT_PATTERNS can make some of its tests
+  # component (Class labels, below).
+  set(_class unit)
+  if (GT__COMPONENT)
+    set(_class component)
+  endif ()
+  if (GT_CLASS)
+    if (NOT GT_CLASS MATCHES "^(unit|component)$" OR (GT__COMPONENT AND GT_CLASS STREQUAL "unit"))
+      message(FATAL_ERROR "${GT_TARGET}: CLASS ${GT_CLASS}: a program's class is unit or "
+                          "component, and a component program's is component"
+      )
+    endif ()
+    set(_class "${GT_CLASS}")
+  endif ()
+  foreach (_label IN ITEMS unit component)
+    if (_label IN_LIST GT_LABELS)
+      message(FATAL_ERROR "${GT_TARGET}: ${_label} is a class, set by CLASS or "
+                          "COMPONENT_PATTERNS, not a label"
+      )
+    endif ()
+  endforeach ()
 
   add_executable(${GT_TARGET})
   target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES})
@@ -102,8 +141,13 @@ function (vernier_add_gtest)
 
   target_link_libraries(${GT_TARGET} PRIVATE ${_gtest_libs} ${GT_LINK})
 
+  set(_out_dir "tests")
+  if (GT__COMPONENT)
+    set(_out_dir "dtests")
+  endif ()
   set_target_properties(
-    ${GT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests"
+    ${GT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY
+                            "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${_out_dir}"
   )
 
   # Coverage instrumentation (auto-detect from LINK or use COVERAGE_FOR override)
@@ -201,6 +245,40 @@ function (vernier_add_gtest)
     )
   endif ()
 
+  # Class labels: the program's class, or component where a pattern names the
+  # test; rig beside it where a pattern names the test.
+  set(_component_tests "")
+  set(_rig_tests "")
+  foreach (_kind IN ITEMS component rig)
+    string(TOUPPER "${_kind}" _arg)
+    foreach (_rx IN LISTS GT_${_arg}_PATTERNS)
+      set(_named "")
+      foreach (_name IN LISTS _all_tests)
+        if (_name MATCHES "${_rx}")
+          list(APPEND _named "${_name}")
+        endif ()
+      endforeach ()
+      if (NOT _named)
+        message(FATAL_ERROR "${GT_TARGET}: ${_arg}_PATTERNS '${_rx}' names no test of the program")
+      endif ()
+      list(APPEND _${_kind}_tests ${_named})
+    endforeach ()
+  endforeach ()
+  foreach (_name IN LISTS _all_tests)
+    set(_test_labels "${_class}")
+    if (_name IN_LIST _component_tests)
+      set(_test_labels component)
+    endif ()
+    if (_name IN_LIST _rig_tests)
+      list(APPEND _test_labels rig)
+    endif ()
+    set_property(
+      TEST "${_name}"
+      APPEND
+      PROPERTY LABELS ${_test_labels}
+    )
+  endforeach ()
+
   # Set working directory for all discovered tests
   set_tests_properties(${_all_tests} PROPERTIES WORKING_DIRECTORY "${_working_dir}")
 
@@ -260,11 +338,20 @@ function (vernier_add_gtest)
     endif ()
   endif ()
 
-  # Coverage test (when any coverage libraries detected)
+  # Coverage test (when any coverage libraries detected). It runs the whole
+  # program: component when any of its tests is, rig when any of them is.
   if (_coverage_libs)
     set(_cov_labels "Coverage")
     if (GT_LABELS)
       list(APPEND _cov_labels ${GT_LABELS})
+    endif ()
+    if (_component_tests)
+      list(APPEND _cov_labels component)
+    else ()
+      list(APPEND _cov_labels ${_class})
+    endif ()
+    if (_rig_tests AND NOT "rig" IN_LIST GT_LABELS)
+      list(APPEND _cov_labels rig)
     endif ()
 
     add_test(NAME ${GT_TARGET}_coverage COMMAND $<TARGET_FILE:${GT_TARGET}>)
@@ -282,8 +369,20 @@ function (vernier_add_gtest)
   if (GT_REQUIRES_THREADS)
     set(_req_threads_msg " threads=${GT_REQUIRES_THREADS}")
   endif ()
+  list(REMOVE_DUPLICATES _component_tests)
+  list(REMOVE_DUPLICATES _rig_tests)
+  list(LENGTH _component_tests _component_len)
+  list(LENGTH _rig_tests _rig_len)
+  if (_class STREQUAL "component")
+    set(_component_len ${_disc_len})
+  endif ()
+  if ("rig" IN_LIST GT_LABELS)
+    set(_rig_len ${_disc_len})
+  endif ()
+  math(EXPR _unit_len "${_disc_len} - ${_component_len}")
   message(STATUS "[Test] target=${GT_TARGET} tests=${_disc_len} timed=${_timed_len} "
-                 "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg}"
+                 "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg} unit=${_unit_len} "
+                 "component=${_component_len} rig=${_rig_len}"
   )
 endfunction ()
 
@@ -448,62 +547,14 @@ endfunction ()
 # ------------------------------------------------------------------------------
 # vernier_add_devtest(...)
 #
-# Add a development/integration test executable that is built but NOT registered
-# with CTest. These tests require manual execution (e.g., external data files,
-# special hardware).
-#
-# The executable is placed in bin/dtests/ and can be run manually with:
+# Add a component test program: GoogleTest cases that drive a whole component
+# through its real protocol, too slow for a unit test program. vernier_add_gtest
+# builds and registers it, with the same arguments and coverage policy, in
+# bin/dtests/, where it also runs by hand:
 #   ./build/bin/dtests/TestName --gtest_filter="*Pattern*"
 #
-# Arguments:
-#   TARGET          <n>              required
-#   SOURCES         <src...>         required
-#   CUDA            <cu...>          optional
-#   LINK            <libs...>        optional
-#   INC             <dir>            optional
+# Arguments: those of vernier_add_gtest.
 # ------------------------------------------------------------------------------
 function (vernier_add_devtest)
-  # Skip on bare-metal
-  if (CMAKE_SYSTEM_NAME STREQUAL "Generic")
-    return()
-  endif ()
-
-  cmake_parse_arguments(DT "" "TARGET;INC" "SOURCES;CUDA;LINK" ${ARGN})
-  vernier_require(DT_TARGET DT_SOURCES)
-
-  add_executable(${DT_TARGET})
-  target_sources(${DT_TARGET} PRIVATE ${DT_SOURCES})
-
-  if (DT_INC)
-    target_include_directories(${DT_TARGET} PRIVATE "${DT_INC}")
-  endif ()
-
-  # CUDA sources
-  if (DT_CUDA
-      AND CUDAToolkit_FOUND
-      AND CMAKE_CUDA_COMPILER
-  )
-    vernier_cuda_sources(${DT_TARGET} FILES ${DT_CUDA})
-  endif ()
-
-  # GTest linkage
-  if (NOT TARGET GTest::gtest_main)
-    find_package(GTest QUIET CONFIG)
-    if (NOT TARGET GTest::gtest_main)
-      find_package(GTest QUIET)
-    endif ()
-    if (NOT TARGET GTest::gtest_main)
-      message(FATAL_ERROR "vernier_add_devtest: GTest::gtest_main not found")
-    endif ()
-  endif ()
-
-  target_link_libraries(${DT_TARGET} PRIVATE GTest::gtest_main GTest::gmock ${DT_LINK})
-
-  set_target_properties(
-    ${DT_TARGET} PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/dtests"
-  )
-
-  # NOTE: No gtest_add_tests() - dev tests are not registered with CTest
-
-  message(STATUS "[Dev] target=${DT_TARGET} out=dtests/ (manual execution only)")
+  vernier_add_gtest(${ARGN} _COMPONENT)
 endfunction ()

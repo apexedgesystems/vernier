@@ -53,6 +53,9 @@ target_include_directories(
 # ------------------------------------------------------------------------------
 # Device Tests (requires CUDA toolkit)
 # ------------------------------------------------------------------------------
+# SaxpyVersions' cases run the GPU versions on a device: component tests,
+# labelled rig. SaxpyCpuLoop's are unit tests.
+# ------------------------------------------------------------------------------
 
 if (TARGET demo_example_saxpy)
   vernier_add_gtest(
@@ -64,5 +67,9 @@ if (TARGET demo_example_saxpy)
     demo_example_saxpy
     LABELS
     demo
+    COMPONENT_PATTERNS
+    "/SaxpyVersions\\."
+    RIG_PATTERNS
+    "/SaxpyVersions\\."
   )
 endif ()

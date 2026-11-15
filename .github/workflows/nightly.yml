@@ -1,0 +1,97 @@
+# ==============================================================================
+# Nightly -- the checks too slow or too broad for every pull request, run once
+# a day on main and on demand, off the PR path.
+#
+# The set of checks is the registry in mk/checks.mk (CHECKS_NIGHTLY); `make
+# print-nightly-checks` emits it as a JSON array that drives the matrix below.
+# To add or drop a nightly check, edit the registry: this workflow needs no
+# change. Today it holds test-component, the component tests (mk/test.mk).
+#
+# Each matrix leg pulls the CPU dev image and runs one `make <check>` in it,
+# with ci.yml's C++ settings (GPU off), so a check builds the tree a pull
+# request builds. fail-fast is off so one failing check never cancels the
+# others. A failing leg makes the run red in the Actions tab; GitHub notifies
+# the user who last changed the cron line below (a scheduled run has no other
+# author), and for a manual run the user who started it.
+#
+# GitHub runs a schedule and offers workflow_dispatch only for a workflow file
+# on the default branch.
+# ==============================================================================
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  set-matrix:
+    name: Resolve nightly checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      checks: ${{ steps.list.outputs.checks }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read the nightly checks from the registry
+        id: list
+        run: echo "checks=$(make -s print-nightly-checks)" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: ${{ matrix.check }}
+    needs: set-matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      matrix:
+        check: ${{ fromJSON(needs.set-matrix.outputs.checks) }}
+
+    env:
+      REGISTRY: ghcr.io/${{ github.repository }}
+      CCACHE_HOST: ${{ github.workspace }}/.ccache
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare environment
+        run: |
+          touch ~/.gitconfig
+          mkdir -p ~/.ssh "$CCACHE_HOST"
+          echo "HOST_UID=$(id -u)" >> "$GITHUB_ENV"
+          echo "HOST_GID=$(id -g)" >> "$GITHUB_ENV"
+
+      # A leg starts from its own last cache, or from the C++ job's on main.
+      - name: Restore ccache
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.CCACHE_HOST }}
+          key: ccache-nightly-${{ matrix.check }}-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-nightly-${{ matrix.check }}-${{ runner.os }}-
+            ccache-cpp-${{ runner.os }}-
+
+      - name: Login to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull cached dev images
+        run: |
+          docker pull $REGISTRY/vernier.base:latest \
+            && docker tag $REGISTRY/vernier.base:latest    vernier.base    || true
+          docker pull $REGISTRY/vernier.dev.cpu:latest \
+            && docker tag $REGISTRY/vernier.dev.cpu:latest vernier.dev.cpu || true
+
+      # As ci.yml's C++ job builds and tests: POETRY_VIRTUALENVS_IN_PROJECT=false
+      # and the GPU off, the debug tree built through the check's prerequisite.
+      - name: Run ${{ matrix.check }}
+        run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make ${{ matrix.check }} CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"

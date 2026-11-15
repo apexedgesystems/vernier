@@ -748,7 +748,7 @@ Three things check what this page shows, and all fail loudly:
   `contentionRun()` with four threads, 25 calls per thread and three
   repeats, and fails unless the total holds every call's joined length.
 - The backend's own tests drive it with a stand-in for bpftrace, in
-  `TestBench` (`BpfCheckTest.OffCpu*`, `OffCpuCaptureTest.*`) and through
+  `TestBenchComponent` (`BpfCheckTest.OffCpu*`, `OffCpuCaptureTest.*`) and through
   the CLI (`ReadinessCli.Offcpu*`): a capture whose tracer never
   acknowledges, acknowledges for another process or thread, ends before the
   stop, cannot be stopped or leaves its dump cut short is reported as
