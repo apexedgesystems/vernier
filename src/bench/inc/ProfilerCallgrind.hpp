@@ -59,7 +59,8 @@ namespace bench {
  * @brief Valgrind Callgrind profiler implementation.
  *
  * Under a wrap started by hand, switches instrumentation on before each
- * measured window and off after it, so the profile valgrind writes at exit
+ * measured window and off after it, also when the window ends by an exception
+ * (abortMeasure()), so the profile valgrind writes at exit
  * holds the measured calls and the harness's own work between the two hooks,
  * and not the rest of the process. It switches it from inside the process with
  * callgrind's client requests, dropping what was counted before the first
@@ -93,6 +94,12 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+
+  /**
+   * @brief The measured window ended by an exception: switch the recording
+   * off, as afterMeasure() does, so the caller's code after it is not counted.
+   */
+  void abortMeasure() noexcept override;
 
 private:
   void applyPlan();

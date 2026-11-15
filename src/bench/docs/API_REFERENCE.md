@@ -139,9 +139,12 @@ const std::string& testName() const noexcept;
 - If `fn()` throws, the abort hook runs in place of the after hook, nothing
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
-  `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  `abortMeasure()`, which ends the collection at once, without analysis, so
+  this case and others can collect again: gperf stops its CPU and heap
+  captures, perf stops and renames its output (`stat.aborted.txt`,
+  `<name>.aborted.data`), bpftrace and offcpu stop their tracers and publish
+  no capture, and callgrind under a wrap started by hand switches its
+  recording off
 
 **`contentionRun(worker, label)`**
 
@@ -542,7 +545,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; each collecting backend ends it
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);

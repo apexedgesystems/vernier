@@ -252,6 +252,20 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
 #endif
 }
 
+void CallgrindProfiler::abortMeasure() noexcept {
+#ifdef __linux__
+  if (!canToggle_) {
+    return;
+  }
+  try {
+    switchInstrumentation(false);
+  } catch (...) {
+    // Called while an exception is on its way to the caller: nothing here
+    // may replace it.
+  }
+#endif
+}
+
 /* --------------------------------- API --------------------------------- */
 
 std::unique_ptr<Profiler> makeCallgrindProfiler(const PerfConfig& cfg,

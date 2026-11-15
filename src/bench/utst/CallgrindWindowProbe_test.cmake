@@ -17,7 +17,8 @@
 #
 # hint:   run the probe without valgrind, then under the valgrind command the
 #         callgrind backend printed, and expect the profile to hold the
-#         measured window and nothing that ran before or after it.
+#         measured windows and nothing that ran before, between or after them:
+#         the work after the window that ended by an exception neither.
 # hintvgdboff: the hint case with valgrind's gdbserver off
 #         (VALGRIND_OPTS=--vgdb=no): the same profile.
 # hintinstratstart: the hint case with the printed command's
@@ -157,7 +158,7 @@ if (CASE MATCHES "^hint")
     )
   endif ()
   set(_present workInsideWindow)
-  set(_absent workBeforeWindow workAfterWindow)
+  set(_absent workBeforeWindow workBetweenWindows workAfterWindow)
 elseif (CASE STREQUAL "runner" OR CASE STREQUAL "analyze")
   set(_wrap_dir "${WORK_DIR}/wrap")
   file(MAKE_DIRECTORY "${_wrap_dir}")

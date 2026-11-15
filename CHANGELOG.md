@@ -1002,6 +1002,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   without `--instr-atstart=no` or valgrind's gdbserver, also with a libbench
   built where valgrind is not installed, as the release packages are.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A measured window that throws ends the bpftrace, off-CPU, perf and callgrind
+  collections at once instead of leaving them running, and publishes nothing:
+  perf sets its output aside as `stat.aborted.txt` or `<name>.aborted.data`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
   say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark compiled without gperftools' headers lays out `GperfProfiler` as

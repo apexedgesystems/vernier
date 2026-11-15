@@ -475,9 +475,10 @@ target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_D
 # ------------------------------------------------------------------------------
 # Callgrind Window Probe (6 tests)
 # ------------------------------------------------------------------------------
-# A benchmark with work before, inside and after its measured window, run under
-# valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
-# prints must record the window and none of the work around it, also with
+# A benchmark with work before, inside and after its measured windows, one of
+# which ends by an exception, run under valgrind by
+# CallgrindWindowProbe_test.cmake: the wrap the callgrind backend prints must
+# record the windows and none of the work around them, also with
 # valgrind's gdbserver off, without --instr-atstart=no and with no
 # callgrind_control on PATH; the wrap `bench run` uses the whole process; and
 # under that wrap with --profile-analyze the benchmark leaves the annotation to
