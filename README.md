@@ -328,8 +328,10 @@ timing harness always works.
 make compose-debug
 make compose-testp
 
-# Run specific library tests
-docker compose run --rm -T dev-cuda ctest --test-dir build/native-linux-debug -L bench
+# Run specific library tests. bash stays the container's first process (the
+# trailing exit keeps it from replacing itself with ctest) and reaps the helper
+# processes some tests leave behind, which would otherwise keep ctest waiting.
+docker compose run --rm -T dev-cuda bash -c 'ctest --test-dir build/native-linux-debug -L bench; exit $?'
 
 # CLI tool tests
 make test-rust
@@ -339,6 +341,10 @@ make test-py
 # build/ubsan; a failing test or any sanitizer report fails the target,
 # whatever ASAN_OPTIONS, LSAN_OPTIONS, TSAN_OPTIONS or UBSAN_OPTIONS say
 make compose-asan
+
+# The whole suite under a sanitizer, in the tree that target configured, with
+# bash as the container's first process as above
+docker compose run --rm -T dev bash -c 'cmake --build build/asan -j8 && ctest --test-dir build/asan -j8; exit $?'
 ```
 
 ---
