@@ -200,7 +200,12 @@ function (_vernier_coverage_write_manifest _file _mappings)
   string(APPEND _content "set(IGNORE_REGEX \"${VERNIER_COVERAGE_IGNORE_REGEX}\")\n")
   string(APPEND _content "set(BUILD_DIR \"${CMAKE_BINARY_DIR}\")\n")
   string(APPEND _content "set(LIB_DIR \"${CMAKE_LIBRARY_OUTPUT_DIRECTORY}\")\n")
-  string(APPEND _content "set(TEST_DIR \"${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tests\")\n")
+  # Each test program where it is built: bin/tests, or bin/dtests for a
+  # component test program.
+  foreach (_m IN LISTS _mappings)
+    string(REGEX REPLACE ":.*" "" _test "${_m}")
+    string(APPEND _content "set(TEST_FILE_${_test} \"$<TARGET_FILE:${_test}>\")\n")
+  endforeach ()
   file(
     GENERATE
     OUTPUT "${_file}"
@@ -250,7 +255,7 @@ foreach (_mapping IN LISTS COVERAGE_MAPPINGS)
   list(GET _parts 0 _test)
   list(GET _parts 1 _lib)
 
-  set(_test_exe "${TEST_DIR}/${_test}")
+  set(_test_exe "${TEST_FILE_${_test}}")
   set(_lib_so "${LIB_DIR}/lib${_lib}.so")
 
   if (NOT EXISTS "${_test_exe}")

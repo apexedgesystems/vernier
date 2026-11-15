@@ -468,12 +468,12 @@ not.
   counting run gives the same totals. It is registered with `ctest` as
   `CallgrindDemoInstructionCountsTest`, under the `callgrind` and `demo`
   labels, because an instruction count does not depend on what else the
-  machine is doing, so every build that runs `ctest` checks it (CI's
-  configuration is a Debug x86 build in the dev image, where the ratio is
-  6.9x). It skips where valgrind is not installed, where valgrind stops
-  reading the program's debug information, and in a sanitizer build (see
-  [If It Does Not Match](#if-it-does-not-match)), and fails, with the run's
-  output, when a counting run does not reach its worker.
+  machine is doing. It runs valgrind, so it is a component test:
+  `make test-component` checks it, in the dev image a Debug x86 build where
+  the ratio is 6.9x. It skips where valgrind is not installed, where valgrind
+  stops reading the program's debug information, and in a sanitizer build
+  (see [If It Does Not Match](#if-it-does-not-match)), and fails, with the
+  run's output, when a counting run does not reach its worker.
 - The `callgrind` label also runs the two tests that hold the callgrind backend
   to its hint: in `CallgrindWindowHintTest`, run the way the hint says, the
   profile holds the measured calls and none of the work before or after them,

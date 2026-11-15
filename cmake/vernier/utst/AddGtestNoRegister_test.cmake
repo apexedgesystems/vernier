@@ -1,7 +1,7 @@
 # ==============================================================================
 # AddGtestNoRegister_test.cmake - Test of vernier_add_gtest's NO_REGISTER
-# option, of vernier_add_test_program, which builds through it, and of
-# WORKER_SOURCES
+# option, of vernier_add_test_program, which builds through it, of the class
+# labels vernier_add_gtest gives the tests it registers, and of WORKER_SOURCES
 #
 # Run with: cmake -DWORK_DIR=<dir> -DGENERATOR=<name> [-DMAKE_PROGRAM=<path>]
 #                 -DCXX_COMPILER=<path> -P AddGtestNoRegister_test.cmake
@@ -32,11 +32,20 @@
 #    report, with no coverage run.
 # 6. LABELS beside it stops configuration, naming the option.
 #
+# The same project with two other programs, one whose tests are of two classes
+# (COMPONENT_PATTERNS and RIG_PATTERNS name one of them) and one of CLASS
+# component:
+#
+# 7. Each test carries its class, and rig where a pattern names it.
+# 8. With coverage on, the mixed program's coverage run is component and rig.
+# 9. A class among LABELS, or a pattern that names no test of its program,
+#    stops configuration, naming it.
+#
 # The GoogleTest project again, with one more program whose WORKER_SOURCES
 # source defines a case:
 #
-# 7. That source is among the program's sources, and its case is not
-#    registered; the cases of its SOURCES are.
+# 10. That source is among the program's sources, and its case is not
+#     registered; the cases of its SOURCES are.
 #
 # The work directory is kept when a check fails and removed when all pass.
 # ==============================================================================
@@ -85,9 +94,15 @@ if (PLAIN)
 else ()
   add_library(GTest::gtest_main INTERFACE IMPORTED)
   add_library(GTest::gmock INTERFACE IMPORTED)
-  vernier_add_gtest(TARGET Ordinary SOURCES Probe_uTest.cpp LINK probe_lib LABELS probe)
-  vernier_add_gtest(TARGET Fixture SOURCES Probe_uTest.cpp LINK probe_lib NO_REGISTER)
-  add_test(NAME FixtureController COMMAND Fixture --gtest_filter=Probe.Case)
+  if (CLASSES)
+    vernier_add_gtest(TARGET Mixed SOURCES Mixed_uTest.cpp LINK probe_lib
+                      COMPONENT_PATTERNS "^Mixed\\.Tool$" RIG_PATTERNS "^Mixed\\.Tool$")
+    vernier_add_gtest(TARGET Whole SOURCES Whole_uTest.cpp CLASS component)
+  else ()
+    vernier_add_gtest(TARGET Ordinary SOURCES Probe_uTest.cpp LINK probe_lib LABELS probe)
+    vernier_add_gtest(TARGET Fixture SOURCES Probe_uTest.cpp LINK probe_lib NO_REGISTER)
+    add_test(NAME FixtureController COMMAND Fixture --gtest_filter=Probe.Case)
+  endif ()
 endif ()
 
 if (REFUSED STREQUAL "LABELS")
@@ -96,6 +111,10 @@ elseif (REFUSED STREQUAL "TIMING_ALL")
   vernier_add_gtest(TARGET Refused SOURCES Probe_uTest.cpp NO_REGISTER TIMING_ALL)
 elseif (REFUSED STREQUAL "PLAIN_LABELS")
   vernier_add_test_program(TARGET Refused SOURCES Plain.cpp LABELS probe)
+elseif (REFUSED STREQUAL "CLASS_LABEL")
+  vernier_add_gtest(TARGET Refused SOURCES Refused_uTest.cpp LABELS unit)
+elseif (REFUSED STREQUAL "UNMATCHED")
+  vernier_add_gtest(TARGET Refused SOURCES Refused_uTest.cpp COMPONENT_PATTERNS "^Elsewhere\\.")
 endif ()
 
 if (WORKER)
@@ -121,6 +140,9 @@ file(WRITE "${_src}/CMakeLists.txt" "${_project}")
 file(WRITE "${_src}/Probe_uTest.cpp" "TEST(Probe, Case) {}\n")
 file(WRITE "${_src}/Lib.cpp" "")
 file(WRITE "${_src}/Plain.cpp" "#if 0\nTEST(Plain, Case) {}\n#endif\nint main() { return 0; }\n")
+file(WRITE "${_src}/Mixed_uTest.cpp" "TEST(Mixed, Pure) {}\nTEST(Mixed, Tool) {}\n")
+file(WRITE "${_src}/Whole_uTest.cpp" "TEST(Whole, Case) {}\n")
+file(WRITE "${_src}/Refused_uTest.cpp" "TEST(Refused, Case) {}\n")
 file(WRITE "${_src}/Scanned_uTest.cpp" "TEST(Scanned, Case) {}\n")
 file(WRITE "${_src}/Worker_uTest.cpp" "TEST(Worker, Case) {}\n")
 
@@ -198,7 +220,7 @@ function (tests _case _out_var)
 endfunction ()
 
 # ------------------------------------------------------------------------------
-# Cases (7)
+# Cases (10)
 # ------------------------------------------------------------------------------
 
 # 1. Registration and placement, coverage off.
@@ -295,7 +317,43 @@ expect("refused plain LABELS: configure stops" "${_rc}" "1")
 contains("${_out}" "Refused: LABELS describes registered tests" _named)
 expect("refused plain LABELS: the error names the option" "${_named}" "yes")
 
-# 7. A worker source is compiled in, and its case is not registered.
+# 7. The class labels.
+configure(classes -DCLASSES=ON)
+expect("classes: configure status" "${_rc}" "0")
+tests(classes _all)
+expect("classes: registered tests" "${_all}" "Mixed.Pure;Mixed.Tool;Whole.Case")
+tests(classes _unit "^unit$")
+expect("classes: tests labelled unit" "${_unit}" "Mixed.Pure")
+tests(classes _component "^component$")
+expect("classes: tests labelled component" "${_component}" "Mixed.Tool;Whole.Case")
+tests(classes _rig "^rig$")
+expect("classes: tests labelled rig" "${_rig}" "Mixed.Tool")
+
+# 8. The coverage run's class.
+configure(classes_coverage -DCLASSES=ON -DENABLE_COVERAGE=ON)
+expect("classes coverage: configure status" "${_rc}" "0")
+tests(classes_coverage _component "^component$")
+expect("classes coverage: tests labelled component" "${_component}"
+       "Mixed.Tool;Mixed_coverage;Whole.Case"
+)
+tests(classes_coverage _rig "^rig$")
+expect("classes coverage: tests labelled rig" "${_rig}" "Mixed.Tool;Mixed_coverage")
+
+# 9. A class among LABELS, and a pattern that names no test.
+configure(refused_class -DCLASSES=ON -DREFUSED=CLASS_LABEL)
+expect("refused class label: configure stops" "${_rc}" "1")
+contains("${_out}" "Refused: unit is a class, set by CLASS or COMPONENT_PATTERNS, not a label"
+         _named
+)
+expect("refused class label: the error names the class" "${_named}" "yes")
+configure(refused_pattern -DCLASSES=ON -DREFUSED=UNMATCHED)
+expect("refused pattern: configure stops" "${_rc}" "1")
+contains("${_out}" "Refused: COMPONENT_PATTERNS '^Elsewhere\\.' names no test of the program"
+         _named
+)
+expect("refused pattern: the error names the pattern" "${_named}" "yes")
+
+# 10. A worker source is compiled in, and its case is not registered.
 configure(worker -DWORKER=ON)
 expect("worker: configure status" "${_rc}" "0")
 tests(worker _all)

@@ -89,5 +89,5 @@ foreach (_case Matched Mixed)
            COMMAND "${CMAKE_COMMAND}" -DCLIENT=$<TARGET_FILE:AbiProfilerClient${_case}>
                    -DEXPECT=${_expect} -P "${CMAKE_CURRENT_LIST_DIR}/AbiProfilerClient_test.cmake"
   )
-  set_tests_properties(AbiProfiler${_case}Test PROPERTIES LABELS "benchmarking;abi")
+  set_tests_properties(AbiProfiler${_case}Test PROPERTIES LABELS "benchmarking;abi;component")
 endforeach ()

@@ -230,8 +230,8 @@ target_include_directories(
 # build collects them) and NVML's readings, every cell the run cannot fill
 # empty and stated. It compiles the SAXPY example's kernel source into itself
 # to read the kernel's compiled resource use, so it links no example library.
-# Built where the GPU demos are, under the demo and gpu labels; it compares no
-# timing.
+# Built where the GPU demos are, under the demo and gpu labels, a component
+# test labelled rig; it compares no timing.
 # ------------------------------------------------------------------------------
 
 if (TARGET BenchDemo_Gpu_02_NsightProfiler)
@@ -247,6 +247,9 @@ if (TARGET BenchDemo_Gpu_02_NsightProfiler)
     LABELS
     demo
     gpu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoKernelColumns
@@ -262,13 +265,15 @@ endif ()
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
 # holds only what it teaches. It runs the demo binary, whose path it is given,
-# under the demo label and the tool's, so ordinary test runs include it and
-# never the demo's timing cases. Its failure messages quote the child runs'
-# output; the skip expression vernier_add_gtest gives each case names that
-# case, so the children's own GoogleTest lines cannot turn a failure into a
-# skip. A GPU demo's check keeps its report reading, which needs no CUDA, in a
-# second program named after it with Report, built in every configuration
-# under the same labels.
+# under the demo label and the tool's, as a component test (labelled rig too
+# where the tool needs a privilege or a device), so the component lane runs it
+# and never the demo's timing cases; the program's tests of the report
+# reading are unit tests. Its failure messages quote the child runs' output;
+# the skip expression vernier_add_gtest gives each case names that case, so
+# the children's own GoogleTest lines cannot turn a failure into a skip. A GPU
+# demo's check keeps its report reading, which needs no CUDA, in a second
+# program named after it with Report, built in every configuration under the
+# same labels.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -282,6 +287,8 @@ vernier_add_gtest(
   LABELS
   demo
   memcheck
+  COMPONENT_PATTERNS
+  "^Memcheck\\.FindsTheOffByOne$"
 )
 target_compile_definitions(
   TestDemoMemcheck
@@ -301,6 +308,8 @@ vernier_add_gtest(
   LABELS
   demo
   helgrind
+  COMPONENT_PATTERNS
+  "^Helgrind\\.(FindsTheRace|LockedTotalReportsNothing)$"
 )
 target_compile_definitions(
   TestDemoHelgrind
@@ -322,6 +331,8 @@ vernier_add_gtest(
   LABELS
   demo
   jemalloc
+  CLASS
+  component
 )
 target_compile_definitions(
   TestDemoJemalloc PRIVATE VERNIER_DEMO_16_BINARY="$<TARGET_FILE:BenchDemo_16_JemallocProfiler>"
@@ -343,6 +354,10 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^Bpftrace\\.CountsEveryWrite$"
+  RIG_PATTERNS
+  "^Bpftrace\\.CountsEveryWrite$"
 )
 target_compile_definitions(
   TestDemoBpftrace PRIVATE VERNIER_DEMO_09_BINARY="$<TARGET_FILE:BenchDemo_09_BpftraceProfiler>"
@@ -369,6 +384,11 @@ vernier_add_gtest(
   bench
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^RaplDemoTest\\.MeasuresBothVersions$"
+  "^Rapl\\.EnergyPerCall$"
+  RIG_PATTERNS
+  "^Rapl\\.EnergyPerCall$"
 )
 target_compile_definitions(
   TestDemoRapl PRIVATE VERNIER_DEMO_08_BINARY="$<TARGET_FILE:BenchDemo_08_RaplProfiler>"
@@ -398,6 +418,9 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     demo
     compute-sanitizer
     gpu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoComputeSanitizer
@@ -448,6 +471,9 @@ if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
     demo
     nsight
     gpu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoNvtxRanges
@@ -498,6 +524,10 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^OffCpu\\.CapturesTheLockWait$"
+  RIG_PATTERNS
+  "^OffCpu\\.CapturesTheLockWait$"
 )
 target_compile_definitions(
   TestDemoOffCpu PRIVATE VERNIER_DEMO_13_BINARY="$<TARGET_FILE:BenchDemo_13_OffCpuProfiler>"
@@ -516,7 +546,9 @@ set_tests_properties(OffCpu.CapturesTheLockWait PROPERTIES RUN_SERIAL TRUE TIMEO
 # The helpers the demos share, under the demo label with the examples' tests.
 # Each helper's probe case skips itself in an ordinary run, which is the
 # helper working: the tests run it as a child, plainly and under the tool, so
-# it is a worker source, compiled in and not registered.
+# it is a worker source, compiled in and not registered. The two cases that
+# run a probe under the real tool are component tests; compute-sanitizer's,
+# which needs a device, is labelled rig too.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -532,6 +564,11 @@ vernier_add_gtest(
   bench
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^SkipUnlessUnderValgrindTest\\.ValgrindRunRunsTheProbe$"
+  "^SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe$"
+  RIG_PATTERNS
+  "^SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe$"
 )
 
 # ------------------------------------------------------------------------------
@@ -541,7 +578,8 @@ vernier_add_gtest(
 # reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
 # GPU, so every configuration runs it, under the check's labels.
 # TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
-# check also ncu), are built where the GPU demos are, and carry the gpu label.
+# check also ncu) and are built where the GPU demos are: component tests,
+# labelled gpu and rig.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -566,6 +604,9 @@ if (TARGET bench_cuda)
     LABELS
     demo
     gpu
+    rig
+    CLASS
+    component
   )
   target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
 
@@ -582,6 +623,9 @@ if (TARGET bench_cuda)
     demo
     ncu
     gpu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoBankConflicts

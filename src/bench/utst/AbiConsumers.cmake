@@ -96,7 +96,7 @@ foreach (_case Match Mismatch)
       -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/abi_consumer_${_expect} -P
       "${CMAKE_CURRENT_LIST_DIR}/AbiConsumer_test.cmake"
   )
-  set_tests_properties(AbiConsumer${_case}Test PROPERTIES LABELS "benchmarking;abi")
+  set_tests_properties(AbiConsumer${_case}Test PROPERTIES LABELS "benchmarking;abi;component")
 endforeach ()
 
 # The driver's own check: a sanitizer report in a consumer's output fails the
@@ -108,4 +108,4 @@ add_test(
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/abi_consumer_driver -P
     "${CMAKE_CURRENT_LIST_DIR}/AbiConsumerDriver_test.cmake"
 )
-set_tests_properties(AbiConsumerDriverTest PROPERTIES LABELS "benchmarking;abi")
+set_tests_properties(AbiConsumerDriverTest PROPERTIES LABELS "benchmarking;abi;component")
