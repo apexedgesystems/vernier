@@ -3419,6 +3419,51 @@ TEST_F(OffCpuCaptureTest, WithSleepsIsWritten) {
 }
 
 /**
+ * @test A measured window that ends by an exception, run through the harness
+ * as a benchmark runs it: the exception reaches the caller as it was thrown,
+ * nothing is published, and by then the window's tracer has ended; its
+ * capture is neither read nor published, then or when the case ends ("stacks
+ * written" never printed), no failure is recorded, and one line says so.
+ */
+TEST_F(OffCpuCaptureTest, AbortEndsTheCaptureUnpublished) {
+  const HarnessEnvironment ENV(*this);
+  const ScopedEnv DUMP("FAKE_BPFTRACE_OUTPUT", offCpuFixture("offcpu_dump.txt"));
+  ProfilerRegistry& registry = ProfilerRegistry::instance();
+  registry.resetFailures();
+  (void)vernier::bench::PerfRegistry::instance().takeAll();
+  StderrCapture err;
+  pid_t tracer = -1;
+  {
+    vernier::bench::PerfCase pc =
+        vernier::bench::makePerfCaseWithProfiler("OffCpu.Aborted", harnessConfig("offcpu"));
+    try {
+      pc.measured([] { throw WindowFailed{8}; });
+      ADD_FAILURE() << "the window's exception did not reach the caller";
+    } catch (const WindowFailed& failed) {
+      EXPECT_EQ(failed.mark, 8) << "another exception reached the caller";
+    }
+    // While the case lives, as a benchmark that caught the exception keeps it.
+    tracer = lastRunTracer();
+    ASSERT_NE(tracer, -1) << dir_.log();
+    EXPECT_TRUE(gone(tracer)) << "the window's tracer " << tracer
+                              << " still runs after the window ended";
+  }
+  endIfLeft(tracer);
+  EXPECT_FALSE(vernier::bench::PerfRegistry::instance().take().has_value())
+      << "the aborted window published a row";
+  const std::vector<ProfileFailure> FAILED = registry.failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+  registry.resetFailures();
+  const std::string TEXT = err.text();
+  EXPECT_EQ(TEXT.find("stacks written"), std::string::npos) << TEXT;
+  EXPECT_NE(TEXT.find("[offcpu] the measured window ended by an exception: the tracer was "
+                      "stopped, and its capture in " +
+                      captures() + "/OffCpu.Aborted.offcpu is not published\n"),
+            std::string::npos)
+      << TEXT;
+}
+
+/**
  * @test A capture the tracer armed and disarmed in which no thread slept is
  * a verified zero: its own line, never "stacks written", and Ok. The dump
  * is the rig's for such a window.
