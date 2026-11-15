@@ -669,13 +669,30 @@ PERF_GPU_TEST(MyAlgorithm, CpuVsGpu) {
 speedupVsCpu = cpuTime / gpuTotalTime
 ```
 
-**CSV output:**
+**In the CSV** (`--csv results.csv`) the two measurements are the test's two
+rows, named by their labels. The columns that compare them, picked by name:
+
+```bash
+awk -F, -v OFS=, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i }
+  { print $col["test"], $col["wallMedian"], $col["kernelTimeUs"],
+          $col["transferTimeUs"], $col["speedupVsCpu"] }' results.csv
+```
+
+From one run on the laptop RTX 5000 Ada (`--cycles 10 --repeats 5`, with
+stand-ins for `processOnCpu()` and `myKernel` that each do 64 multiply-adds
+per element):
 
 ```
-test,cpuMedianUs,gpuTotalUs,speedupVsCpu
-MyAlgorithm.CpuVsGpu/cpu_version,1234.5,,,
-MyAlgorithm.CpuVsGpu/gpu_version,,156.7,7.87
+test,wallMedian,kernelTimeUs,transferTimeUs,speedupVsCpu
+MyAlgorithm.CpuVsGpu/cpu_version,11080.3,,,
+MyAlgorithm.CpuVsGpu/gpu_version,1194.94,12.016000,1186.623991,9.272702
 ```
+
+The CPU row leaves the GPU columns empty. `speedupVsCpu` is the CPU row's
+`wallMedian` over the GPU row's, the round trip with its copies
+(11080.3 / 1194.94 = 9.27); over `kernelTimeUs` alone the ratio would be 922.
+The API reference's [CSV Schema](API_REFERENCE.md#csv-schema) describes every
+column.
 
 **When to use CPU comparison:**
 

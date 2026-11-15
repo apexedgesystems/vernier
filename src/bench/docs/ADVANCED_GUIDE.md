@@ -378,54 +378,10 @@ values in order, so the value itself is in the `msgBytes` column, not the name.
 
 ## CSV Schema Reference
 
-### Complete CPU Test Schema
-
-All CPU performance tests produce CSV with these columns:
-
-#### Base Columns (Always Present)
-
-| Column           | Type   | Description                 | Example                  |
-| ---------------- | ------ | --------------------------- | ------------------------ |
-| `test`           | string | Test name (Suite.Name)      | "MyComponent.Throughput" |
-| `cycles`         | int    | Operations per repeat       | 10000                    |
-| `repeats`        | int    | Samples collected           | 10                       |
-| `warmup`         | int    | Warmup iterations           | 1000                     |
-| `threads`        | int    | Thread count                | 1                        |
-| `msgBytes`       | int    | Payload size (bytes)        | 1024                     |
-| `console`        | bool   | Console output enabled      | true                     |
-| `nonBlocking`    | bool   | Non-blocking I/O mode       | false                    |
-| `minLevel`       | string | Minimum log level           | "INFO"                   |
-| `wallMedian`     | double | Median per-call time        | 0.543                    |
-| `wallP10`        | double | 10th percentile             | 0.512                    |
-| `wallP90`        | double | 90th percentile             | 0.587                    |
-| `wallMin`        | double | Minimum time                | 0.498                    |
-| `wallMax`        | double | Maximum time                | 0.623                    |
-| `wallMean`       | double | Mean time                   | 0.546                    |
-| `wallStddev`     | double | Standard deviation          | 0.023                    |
-| `wallCV`         | double | Coefficient of variation    | 0.042                    |
-| `callsPerSecond` | double | Throughput                  | 1843317.0                |
-| `stable`         | bool   | CV below adaptive threshold | 1                        |
-| `cvThreshold`    | double | Adaptive CV threshold used  | 0.05                     |
-
-#### Metadata Columns
-
-| Column        | Type   | Description        | Example                |
-| ------------- | ------ | ------------------ | ---------------------- |
-| `profileTool` | string | Profiler used      | "perf"                 |
-| `profileDir`  | string | Artifact directory | "./perf-data"          |
-| `timestamp`   | string | ISO 8601 timestamp | "2024-11-02T10:30:45Z" |
-| `gitHash`     | string | Git commit (short) | "a3f9c2b"              |
-| `hostname`    | string | Machine name       | "perf-test-01"         |
-| `platform`    | string | Architecture       | "x86_64"               |
-
-**Note:** Memory bandwidth analysis from `MemoryProfile` is printed to the console
-during test execution but is not exported to CSV columns. The CSV captures timing
-and throughput metrics. For bandwidth data, parse the console output or add custom
-columns via the `PerfRegistry`.
-
-#### GPU-Specific Columns
-
-See GPU_GUIDE.md for complete GPU column schema.
+`--csv` writes one row per measurement. The API reference's
+[CSV Schema](API_REFERENCE.md#csv-schema) gives the columns, their order,
+what each holds and when a cell is empty. `MemoryProfile`'s bandwidth is
+printed to the console, not written to the file.
 
 ### Using CSV Data
 
@@ -451,10 +407,11 @@ separately. The labels compare two runs; they are not a significance test.
 bench compare baseline.csv candidate.csv --threshold 5
 ```
 
-**Filter by test:**
+**Filter by test** (keeping the header line, which `bench` and `bench-plot`
+read the columns from):
 
 ```bash
-grep "MyComponent.Encode" results.csv > encode_only.csv
+(head -n 1 results.csv; grep "^MyComponent\.Encode" results.csv) > encode_only.csv
 ```
 
 ---
@@ -1076,72 +1033,11 @@ INSTANTIATE_TEST_SUITE_P(
 
 ### GPU CSV Schema
 
-Complete GPU-specific CSV columns:
-
-#### GPU Performance Columns
-
-| Column              | Type   | Description                 | Example                 |
-| ------------------- | ------ | --------------------------- | ----------------------- |
-| `gpuModel`          | string | GPU device name             | "NVIDIA A100-SXM4-40GB" |
-| `computeCapability` | string | CUDA compute capability     | "8.0"                   |
-| `kernelTimeUs`      | double | GPU kernel execution time   | 123.45                  |
-| `transferTimeUs`    | double | H2D + D2H transfer time     | 45.67                   |
-| `h2dBytes`          | int64  | Host-to-device bytes        | 4194304                 |
-| `d2hBytes`          | int64  | Device-to-host bytes        | 4194304                 |
-| `speedupVsCpu`      | double | GPU vs CPU speedup          | 15.3                    |
-| `memBandwidthGBs`   | double | Memory bandwidth            | 850.2                   |
-| `occupancy`         | double | Kernel occupancy [0-1]      | 0.82                    |
-| `smClockMHz`        | double | SM clock frequency          | 1410.0                  |
-| `throttling`        | bool   | Thermal throttling detected | false                   |
-
-#### Power and Thermal Columns (NVML)
-
-| Column              | Type   | Description                             | Example |
-| ------------------- | ------ | --------------------------------------- | ------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       | 19.79   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      | 80.0    |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) | 2       |
-
-#### CUPTI In-Process Kernel Metrics
-
-| Column                  | Type | Description                                       | Example |
-| ----------------------- | ---- | ------------------------------------------------- | ------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches observed in this measure() window | 25000   |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       | 16      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                 | 16      |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  | 0       |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     | 0       |
-
-CUPTI columns populate automatically on every GPU run when libcupti is
-linked at build time; no `--profile` flag required. See
-[demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
-
-#### Multi-GPU Columns
-
-| Column               | Type   | Description               | Present When    |
-| -------------------- | ------ | ------------------------- | --------------- |
-| `deviceId`           | int    | Primary device ID         | Multi-GPU tests |
-| `deviceCount`        | int    | Number of GPUs used       | Multi-GPU tests |
-| `multiGpuEfficiency` | double | Parallel efficiency [0-1] | Multi-GPU tests |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | Peer copy timed |
-
-#### Unified Memory Columns
-
-| Column              | Type   | Description                                | Present When   |
-| ------------------- | ------ | ------------------------------------------ | -------------- |
-| `umPageFaults`      | int64  | GPU page-fault groups plus CPU page faults | `--capture-um` |
-| `umH2DMigrations`   | int64  | Host->device transfers of managed memory   | `--capture-um` |
-| `umD2HMigrations`   | int64  | Device->host transfers of managed memory   | `--capture-um` |
-| `umMigrationTimeUs` | double | The transfers' durations, summed (us)      | `--capture-um` |
-| `umThrashing`       | bool   | CUPTI recorded thrashing in the window     | `--capture-um` |
-
-Under `--capture-um` each row carries CUPTI's unified-memory counters over its
-measurement's window, zeros when nothing migrated, on a GPU whose CUPTI records
-them. Where CUPTI cannot (the Jetson AGX Thor, an Nsight session,
-`VERNIER_DISABLE_CUPTI=1`), the cells stay empty and a run whose tests pass
-exits with status 4. See
-[GPU_GUIDE.md](GPU_GUIDE.md#unified-memory-counters).
+A GPU benchmark's file has 29 more columns: the device, the kernel and copy
+times, NVML's power and thermal readings, CUPTI's kernel metrics, the
+multi-GPU columns and the unified-memory counters. The API reference's
+[CSV Schema](API_REFERENCE.md#csv-schema) describes each, and when it is
+empty.
 
 ### GPU Profiler Integration
 

@@ -232,7 +232,7 @@ inline std::string captureTimestamp() {
 inline constexpr int GIT_DESCRIBE_TIMEOUT_MS = 10000;
 
 /**
- * @brief Capture git commit hash (short form).
+ * @brief Name the working directory's commit the way `git describe` does.
  *
  * Runs `git describe --always --dirty --tags` in the working directory as a
  * bounded child without a shell (runBoundedProbe()), in the probe environment

@@ -334,6 +334,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **The CSV schema is described once, with the columns the file has** -- in
+  the API reference, in the writer's order with `wallP99` and `wallP999`, the
+  row names and when a cell is empty.
+  ([#72](https://github.com/apexedgesystems/vernier/pull/72))
 - **The profile-settings, registration and environment headers describe
   what the code does** -- the backend list, `--profile-args` as each backend
   reads it, the registration macros and the doctor's rows.
