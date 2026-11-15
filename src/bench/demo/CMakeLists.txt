@@ -382,8 +382,9 @@ set_property(
 set_tests_properties(Rapl.EnergyPerCall PROPERTIES RUN_SERIAL TRUE TIMEOUT 120)
 
 # Demo 04's check runs the GPU demo under compute-sanitizer, so it exists only
-# where the GPU demos are built. It links the CUDA runtime for one question
-# decided before anything runs: whether a device is there.
+# where the GPU demos are built, under the gpu label too. It links the CUDA
+# runtime for one question decided before anything runs: whether a device is
+# there.
 if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
   vernier_add_gtest(
     TARGET
@@ -396,6 +397,7 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     LABELS
     demo
     compute-sanitizer
+    gpu
   )
   target_compile_definitions(
     TestDemoComputeSanitizer
@@ -417,8 +419,9 @@ vernier_add_gtest(
 )
 
 # Demo 05's check runs the GPU demo under Nsight Systems, so it exists only where
-# the GPU demos are built; its tool's label is nsight. It links the CUDA runtime
-# for one question decided before anything runs: whether a device is there.
+# the GPU demos are built, under the gpu label too; its tool's label is nsight.
+# It links the CUDA runtime for one question decided before anything runs:
+# whether a device is there.
 # What it reads and decides with needs neither, so the tests of that code are a
 # program of their own, built in every configuration.
 vernier_add_gtest(
@@ -444,6 +447,7 @@ if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
     LABELS
     demo
     nsight
+    gpu
   )
   target_compile_definitions(
     TestDemoNvtxRanges
@@ -537,7 +541,7 @@ vernier_add_gtest(
 # reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
 # GPU, so every configuration runs it, under the check's labels.
 # TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
-# check also ncu) and are built where the GPU demos are.
+# check also ncu), are built where the GPU demos are, and carry the gpu label.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -561,6 +565,7 @@ if (TARGET bench_cuda)
     CUDA::cudart
     LABELS
     demo
+    gpu
   )
   target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
 
@@ -576,6 +581,7 @@ if (TARGET bench_cuda)
     LABELS
     demo
     ncu
+    gpu
   )
   target_compile_definitions(
     TestDemoBankConflicts
