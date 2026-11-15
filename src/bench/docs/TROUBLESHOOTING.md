@@ -202,7 +202,7 @@ bench compare before.csv after.csv
 python3 -c '
 import csv, sys
 path, *cols = sys.argv[1:]
-out = csv.writer(sys.stdout, lineterminator="\n")
+out = csv.writer(sys.stdout)
 out.writerow(cols)
 for row in csv.DictReader(open(path, newline="")):
     if None in row or None in row.values():
@@ -667,7 +667,7 @@ const int N = 1024 * 1024;
 python3 -c '
 import csv, sys
 path, *cols = sys.argv[1:]
-out = csv.writer(sys.stdout, lineterminator="\n")
+out = csv.writer(sys.stdout)
 out.writerow(cols)
 for row in csv.DictReader(open(path, newline="")):
     if None in row or None in row.values():
@@ -708,7 +708,7 @@ bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*CpuVsGpu*"
 python3 -c '
 import csv, sys
 path, *cols = sys.argv[1:]
-out = csv.writer(sys.stdout, lineterminator="\n")
+out = csv.writer(sys.stdout)
 out.writerow(cols)
 for row in csv.DictReader(open(path, newline="")):
     if None in row or None in row.values():

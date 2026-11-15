@@ -678,7 +678,7 @@ in one column:
 python3 -c '
 import csv, sys
 path, *cols = sys.argv[1:]
-out = csv.writer(sys.stdout, lineterminator="\n")
+out = csv.writer(sys.stdout)
 out.writerow(cols)
 for row in csv.DictReader(open(path, newline="")):
     if None in row or None in row.values():

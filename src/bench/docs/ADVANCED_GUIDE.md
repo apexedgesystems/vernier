@@ -417,7 +417,7 @@ python3 -c '
 import csv, sys
 path, prefix = sys.argv[1:]
 rows = csv.DictReader(open(path, newline=""))
-out = csv.DictWriter(sys.stdout, rows.fieldnames, lineterminator="\n")
+out = csv.DictWriter(sys.stdout, rows.fieldnames)
 out.writeheader()
 for row in rows:
     if None in row or None in row.values():
@@ -426,6 +426,10 @@ for row in rows:
         out.writerow(row)
 ' results.csv MyComponent.Encode > encode_only.csv
 ```
+
+The file it writes ends each record with CR LF, CSV's standard line end,
+where the harness's own file ends them with LF; `bench` and `bench-plot` read
+both.
 
 ---
 
