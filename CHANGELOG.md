@@ -346,9 +346,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   as its header comment states: the harness calls it `--cycles` times on each
   thread. ([#72](https://github.com/apexedgesystems/vernier/pull/72))
 - **RAPL checks register access and reports failed captures, retaining energy
-  in per-case reports** -- its performance sample attaches the profiler. Drop
-  RAPL mode words and --profile-analyze.
-  ([#67](https://github.com/apexedgesystems/vernier/pull/67))
+  in per-case reports** -- its performance sample attaches the profiler.
+  **Action needed:** drop RAPL mode words, which rapl refuses, and
+  `--profile-analyze`, which it reports as unsupported: the energy report is
+  its result. ([#67](https://github.com/apexedgesystems/vernier/pull/67))
 - **`bench run` runs the tool and mode a request names** -- `--profile nsys`
   is wrapped as `nsight` is, and a wrapped profile's `--profile-args` mode
   reaches its tool, also from a request given after `--`; a word the profile
