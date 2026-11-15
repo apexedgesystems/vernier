@@ -765,6 +765,19 @@ Two writes are ordinary ones that a full pipe nobody reads can hold up: the
 error line of a run that fails with no signal received, which comes after
 the reset, and Rust's own message if `bench` panics.
 
+The SIGTERM `bench` passes on reaches the command it started, the process
+named after `--`, and no process that command starts. A shell script that
+runs its benchmark as a child is ended by the signal (a shell without a trap
+for it ends at once) while the benchmark goes on: `bench` then resets the
+clocks under the running benchmark and ends by the signal. So a wrapper
+script should `exec` its benchmark (`exec ./MyBench_PTEST "$@"` as its last
+line), which makes the benchmark the command `bench` started, or forward the
+signal to it: start it in the background, `trap` SIGTERM to `kill` it, and
+`wait` for it. To end a whole job, `bench` and every process the command
+started, send the signal to the job's process group (`kill -TERM -- -<pgid>`,
+as a shell's `kill %1` does): each process in it receives the signal, and
+`bench` still waits for the command to end before it resets the clocks.
+
 Not covered: SIGKILL sent to `bench`, SIGQUIT (Ctrl-\, which also dumps
 core), a crash of `bench` and a power loss end it without the reset. Reset
 the clocks by hand:
