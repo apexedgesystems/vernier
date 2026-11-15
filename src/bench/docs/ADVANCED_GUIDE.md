@@ -1056,9 +1056,10 @@ TEST_P(MultiGpuTest, Scaling) {
     .withP2PAccess()
     .measure();
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << deviceCount << " GPUs";
+  // Check that no device lags the others (scaling efficiency is not
+  // measured: GPU_GUIDE.md says how to time it)
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << deviceCount << " GPUs";
 
   // Cleanup
   for (int i = 0; i < deviceCount; ++i) {
@@ -1121,12 +1122,12 @@ calls, at most 1000 (the example's test ran 10000 cycles). See
 
 #### Multi-GPU Columns
 
-| Column               | Type   | Description               | Present When    |
-| -------------------- | ------ | ------------------------- | --------------- |
-| `deviceId`           | int    | Primary device ID         | Multi-GPU tests |
-| `deviceCount`        | int    | Number of GPUs used       | Multi-GPU tests |
-| `multiGpuEfficiency` | double | Parallel efficiency [0-1] | Multi-GPU tests |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | Peer copy timed |
+| Column               | Type   | Description            | Present When    |
+| -------------------- | ------ | ---------------------- | --------------- |
+| `deviceId`           | int    | Primary device ID      | Multi-GPU tests |
+| `deviceCount`        | int    | Number of GPUs used    | Multi-GPU tests |
+| `multiGpuEfficiency` | double | Not measured           | Never           |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth | Peer copy timed |
 
 #### Unified Memory Columns
 

@@ -635,15 +635,13 @@ PERF_GPU_TEST(MyKernel, MultiGpu) {
                 result.perDevice[i].kernelTimeUs / 1000.0);
   }
 
-  // Aggregated metrics
-  std::printf("\nScaling efficiency: %.1f%%\n",
-              result.aggregatedStats.multiGpu->scalingEfficiency * 100);
-  std::printf("Total speedup: %.2fx vs single GPU\n",
-              result.totalSpeedupVsCpu);
+  // Aggregated metrics: the devices against each other
+  std::printf("\nLoad imbalance: %.2f (slowest over fastest device)\n",
+              result.aggregatedStats.multiGpu->loadImbalance);
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << DEVICE_COUNT << " GPUs";
+  // Check that no device lags the others
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << DEVICE_COUNT << " GPUs";
 
   // Cleanup
   for (int i = 0; i < DEVICE_COUNT; ++i) {
@@ -655,13 +653,20 @@ PERF_GPU_TEST(MyKernel, MultiGpu) {
 
 ### Understanding Scaling Efficiency
 
-Scaling efficiency measures how well your code utilizes multiple GPUs:
+Scaling efficiency measures how well your code uses multiple GPUs. The harness
+does not measure it: it needs the time one device takes on the whole job, and
+a multi-GPU measurement times each device on its own share only, so
+`MultiGpuMetrics::scalingEfficiency` stays 0 and the CSV's `multiGpuEfficiency`
+cell stays empty. Time the whole job on one device in a case of its own and
+compare its median with the multi-GPU row's `wallMedian`:
 
 ```
-scalingEfficiency = (speedup / num_devices) * 100%
-
-where speedup = single_gpu_time / multi_gpu_time
+scaling efficiency = single_gpu_time / (num_devices * multi_gpu_time) * 100%
 ```
+
+A multi-GPU row's `speedupVsCpu` is the CPU baseline over the row's own
+`wallMedian` (the first device's median), as a kernel row's is over its own;
+`MultiGpuResult::totalSpeedupVsCpu` is the devices' speedups summed.
 
 **Interpretation:**
 
@@ -715,7 +720,7 @@ Additional columns when using multi-GPU:
 | Column               | Type   | Description                          |
 | -------------------- | ------ | ------------------------------------ |
 | `deviceCount`        | int    | Number of GPUs used                  |
-| `multiGpuEfficiency` | double | Scaling efficiency [0-1]             |
+| `multiGpuEfficiency` | double | Not measured: always empty           |
 | `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth (if measured) |
 
 ---

@@ -42,6 +42,8 @@ struct PerfGpuResult {
 struct MultiGpuResult {
   std::vector<PerfGpuResult> perDevice;
   GpuStats aggregatedStats{};
+  /// The devices' speedups (perDevice[i].speedupVsCpu), summed; not the row's
+  /// speedupVsCpu, which is the CPU baseline over the row's own wallMedian.
   double totalSpeedupVsCpu{};
   std::string label;
 };

@@ -800,12 +800,12 @@ launches; no timed launch runs while CUPTI records kernels.
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description            |
-| -------------------- | ------ | ---------------------- |
-| `deviceId`           | int    | Primary CUDA device ID |
-| `deviceCount`        | int    | Number of GPUs used    |
-| `multiGpuEfficiency` | double | Parallel efficiency    |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth |
+| Column               | Type   | Description                |
+| -------------------- | ------ | -------------------------- |
+| `deviceId`           | int    | Primary CUDA device ID     |
+| `deviceCount`        | int    | Number of GPUs used        |
+| `multiGpuEfficiency` | double | Not measured: always empty |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
 
 ### Unified Memory Columns
 

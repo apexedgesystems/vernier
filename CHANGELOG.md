@@ -986,6 +986,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - GPU timing includes legacy-default-stream work under both priority settings.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `multiGpuEfficiency` stays empty: the harness measures no scaling efficiency.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- A multi-GPU row's `speedupVsCpu` is the CPU baseline over its own
+  `wallMedian`, not a sum over its devices.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - `bench run --profile compute-sanitizer` identifies truncated racecheck reports
   as incomplete. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 

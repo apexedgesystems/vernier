@@ -89,6 +89,8 @@ struct PerfRow {
   std::optional<double> transferTimeUs;
   std::optional<size_t> h2dBytes;
   std::optional<size_t> d2hBytes;
+  /// The CPU baseline over this row's wallMedian (a multi-GPU row's: the
+  /// first device's median); empty without a baseline to use.
   std::optional<double> speedupVsCpu;
   // The declared transfers' bytes over their time (empty when a test declares
   // none) and the harness's occupancy estimate (empty without a launch
@@ -119,7 +121,7 @@ struct PerfRow {
   // Multi-GPU fields
   std::optional<int> deviceId;              ///< Which GPU (0-N), -1 = single-GPU test
   std::optional<int> deviceCount;           ///< Total GPUs used in this test
-  std::optional<double> multiGpuEfficiency; ///< Speedup / N_gpus (ideal=1.0)
+  std::optional<double> multiGpuEfficiency; ///< Not measured: always empty
   std::optional<double> p2pBandwidthGBs;    ///< Peer-to-peer bandwidth
 
   // Unified Memory counters of the measurement's window

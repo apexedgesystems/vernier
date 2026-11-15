@@ -351,8 +351,12 @@ TEST_F(PerfGpuHarnessTest, SpeedupCellIsEmptyWithoutBaseline) {
 }
 
 /**
- * @test The multi-GPU path reads the same suite baseline, so its speedup and
- *       scaling efficiency are the measured ones.
+ * @test The multi-GPU path reads the same suite baseline: each device's
+ *       speedup is the baseline over its time, the result's total is their
+ *       sum, and the row's speedupVsCpu is the baseline over the row's own
+ *       wallMedian. No scaling efficiency is measured: the field stays 0 and
+ *       the multiGpuEfficiency cell empty. With one device the sum and the
+ *       row's quotient agree; with more the row's stays the quotient
  */
 TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   const std::string SUITE = uniqueSuite("GpuMultiBaseline");
@@ -378,11 +382,36 @@ TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   const double DEVICE_TIME = RESULT.perDevice[0].kernelTimeUs;
   EXPECT_NEAR(RESULT.totalSpeedupVsCpu, CPU.stats.median / DEVICE_TIME, 1e-9);
   ASSERT_TRUE(RESULT.aggregatedStats.multiGpu.has_value());
-  EXPECT_NEAR(RESULT.aggregatedStats.multiGpu->scalingEfficiency, RESULT.totalSpeedupVsCpu, 1e-9);
+  EXPECT_EQ(RESULT.aggregatedStats.multiGpu->scalingEfficiency, 0.0)
+      << "a scaling efficiency was computed from the CPU speedups";
 
   const ub::PerfRow ROW = lastRow();
   ASSERT_TRUE(ROW.speedupVsCpu.has_value());
-  EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.totalSpeedupVsCpu);
+  EXPECT_NEAR(*ROW.speedupVsCpu, CPU.stats.median / ROW.stats.median,
+              1e-9 * CPU.stats.median / ROW.stats.median);
+  EXPECT_FALSE(ROW.multiGpuEfficiency.has_value())
+      << "multiGpuEfficiency " << ROW.multiGpuEfficiency.value_or(-1.0);
+}
+
+/**
+ * @test A multi-GPU row without a CPU baseline has neither a speedup nor a
+ *       multiGpuEfficiency cell: no scaling efficiency is measured, and 0 is
+ *       not an unknown
+ */
+TEST_F(PerfGpuHarnessTest, AMultiGpuRowWithoutABaselineHasNoEfficiencyCell) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase gpuCase{uniqueSuite("GpuMultiNoBaseline") + ".MultiGpu", cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  const ub::MultiGpuResult RESULT =
+      gpuCase.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure();
+  ASSERT_TRUE(RESULT.aggregatedStats.multiGpu.has_value());
+  EXPECT_EQ(RESULT.aggregatedStats.multiGpu->scalingEfficiency, 0.0);
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.speedupVsCpu.has_value());
+  EXPECT_FALSE(ROW.multiGpuEfficiency.has_value())
+      << "multiGpuEfficiency " << ROW.multiGpuEfficiency.value_or(-1.0);
+  ASSERT_TRUE(ROW.deviceCount.has_value());
+  EXPECT_EQ(*ROW.deviceCount, 1);
 }
 
 /**

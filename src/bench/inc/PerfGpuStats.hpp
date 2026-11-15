@@ -150,11 +150,17 @@ struct PowerThermalProfile {
  */
 struct MultiGpuMetrics {
   int deviceCount = 1;
-  double scalingEfficiency = 0.0; ///< Speedup / N_gpus (ideal=1.0)
-  double loadImbalance = 0.0;     ///< Max/Min device time ratio (ideal=1.0)
+  /// Not measured: always 0. A scaling efficiency needs one device's time on
+  /// the whole job, which a multi-GPU measurement does not take; the field
+  /// keeps its place in the layout, so a check against it fails rather than
+  /// pass on another number.
+  double scalingEfficiency = 0.0;
+  double loadImbalance = 0.0; ///< Max/Min device time ratio (ideal=1.0)
   bool p2pEnabled = false;
   double p2pBandwidthGBs = 0.0;
 
+  /// The mean of min(1, scalingEfficiency) and the balance score: with the
+  /// efficiency not measured (0), at most 0.5 and only the balance moves it.
   [[nodiscard]] double scalingQuality() const {
     const double EFFICIENCY_SCORE = std::min(1.0, scalingEfficiency);
     const double BALANCE_SCORE = 1.0 / std::max(1.0, loadImbalance);

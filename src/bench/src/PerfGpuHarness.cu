@@ -1012,14 +1012,16 @@ public:
       totalSpeedup += devRes.speedupVsCpu;
     }
 
+    // The devices' speedups, summed: not the row's speedup, which is the
+    // baseline over the row's own time (publishMultiGpuResult()).
     result.totalSpeedupVsCpu = totalSpeedup;
 
+    // No scaling efficiency: it needs one device's time on the whole job,
+    // which this measurement does not take, and a sum of CPU speedups over the
+    // device count is not one. MultiGpuMetrics::scalingEfficiency stays 0.
     MultiGpuMetrics mgpu;
     mgpu.deviceCount = deviceCount;
     mgpu.loadImbalance = (minTime > 0.0) ? (maxTime / minTime) : 1.0;
-    mgpu.scalingEfficiency = (totalSpeedup > 0.0 && deviceCount > 0)
-                                 ? totalSpeedup / static_cast<double>(deviceCount)
-                                 : 0.0;
     mgpu.p2pEnabled = enableP2P;
     if (result.aggregatedStats.p2pProfile.has_value()) {
       mgpu.p2pBandwidthGBs = result.aggregatedStats.p2pProfile->bandwidthGBs();
@@ -1037,7 +1039,6 @@ public:
     std::printf("\n=== Multi-GPU Results ===\n");
     std::printf("Devices: %d\n", deviceCount);
     std::printf("Total speedup: %.2fx\n", totalSpeedup);
-    std::printf("Scaling efficiency: %.2f (ideal=1.0)\n", mgpu.scalingEfficiency);
     std::printf("Load imbalance: %.2f (ideal=1.0)\n", mgpu.loadImbalance);
     if (enableP2P) {
       std::printf("P2P enabled: yes\n");
@@ -1356,8 +1357,12 @@ private:
     row.computeCapability = std::to_string(firstDev.stats.deviceInfo.computeCapability[0]) + "." +
                             std::to_string(firstDev.stats.deviceInfo.computeCapability[1]);
     row.kernelTimeUs = firstDev.kernelTimeUs;
-    if (result.totalSpeedupVsCpu > 0.0) {
-      row.speedupVsCpu = result.totalSpeedupVsCpu;
+    // The row's speedup is the baseline over the row's own time, its
+    // wallMedian (the first device's median), as a kernel row's is over its
+    // own; the devices' summed speedups are MultiGpuResult::totalSpeedupVsCpu.
+    const double BASELINE_US = baselineUs();
+    if (BASELINE_US > 0.0 && firstDev.stats.cpuStats.median > 0.0) {
+      row.speedupVsCpu = BASELINE_US / firstDev.stats.cpuStats.median;
     }
     if (firstDev.stats.occupancy.blockSize > 0) {
       row.occupancy = firstDev.stats.occupancy.achievedOccupancy;
@@ -1367,7 +1372,7 @@ private:
 
     row.deviceId = -1;
     row.deviceCount = result.aggregatedStats.multiGpu->deviceCount;
-    row.multiGpuEfficiency = result.aggregatedStats.multiGpu->scalingEfficiency;
+    // multiGpuEfficiency stays empty: no scaling efficiency is measured.
     // A rate needs a timed copy: without a peer to copy to, the cell stays
     // empty rather than a 0 a reader would take for a measurement.
     if (result.aggregatedStats.p2pProfile.has_value() &&
