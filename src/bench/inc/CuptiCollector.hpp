@@ -12,8 +12,10 @@
  * CONCURRENT_KERNEL records, under which kernels on different streams still
  * run at the same time (the KERNEL kind serializes them), but CUPTI's record
  * keeping still adds time to every launch made while a window is open, most
- * of it on the host, and once a window has stopped about 1 us of host time to
- * every later launch of the process. The harness therefore times no launch in
+ * of it on the host, and once a window has stopped host time to every later
+ * launch of the process, how much depending on the core the launching thread
+ * runs on (GPU_GUIDE.md gives the figures measured on a laptop's performance
+ * and efficiency cores). The harness therefore times no launch in
  * a kernel-records window: its kernel records come from an untimed batch of
  * the measured launches after the timed repeats. Asked to
  * (collectUnifiedMemory()), a window also records CUPTI's unified-memory

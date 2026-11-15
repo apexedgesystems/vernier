@@ -850,7 +850,9 @@ repeats run, CUPTI records every migration and fault and no kernel record
 (the CUPTI cells come from a batch after the repeats); on that GPU the
 sample's kernel medians with and without the request agreed within their
 run-to-run spread, and a 16 x 256 store through a one-device multi-GPU
-measurement read 3.18 against 3.11 us a launch (five alternating runs), but
+measurement read 1.76 against 1.85 us a launch with the request and without
+on a performance core, and 2.80 against 2.90 us on an efficiency core
+(medians of 20 alternating runs each, every run pinned to one CPU), but
 compare timings from runs made the same way.
 
 `--gpu-memory unified` asks for no counters. It selects managed memory for
@@ -1053,9 +1055,12 @@ shared memory, and launch count into the GPU CSV section on every GPU run
 | `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch           |
 
 **Where CUPTI collects.** No timed launch runs while CUPTI records kernels:
-its record keeping costs a launch about 2.5 us of host time, which a kernel
-shorter than the host's interval between two launches carries in full. After
-a kernel measurement's timed repeats the harness calls the measured callable
+its record keeping adds host time to every launch made while it records,
+which a kernel shorter than the host's interval between two launches
+carries in full; on the laptop a 16 x 256 store took about 0.6 us more a
+launch with the launching thread on a performance core (1.35x) and about
+2 us more on an efficiency core (1.8x). After a kernel measurement's timed
+repeats the harness calls the measured callable
 `cycles` times more, at most 1000, untimed, with CUPTI recording kernels, and
 the five cells describe those launches: `cuptiKernelLaunches` counts the
 batch's launches (20 for a test at `--cycles 20`, 40 if each call launches
@@ -1064,20 +1069,36 @@ timed and those calls more, so a callable with side effects sees them all. No
 batch runs where the collector does not collect (an nsys or ncu session,
 `VERNIER_DISABLE_CUPTI=1`, a build without CUPTI, CUPTI refusing the
 collector), so a tool that holds CUPTI sees no extra launch. What the batch
-adds to one measurement on the laptop's RTX 5000 Ada, at 1000 cycles: about
-7 ms for a 16 x 256 store (a microsecond kernel) and 1.0 s for a 1 ms kernel,
-whose 1000 calls run once more; less in proportion at fewer cycles.
+adds to one measurement on the laptop's RTX 5000 Ada, at 1000 cycles: a few
+milliseconds for a 16 x 256 store (a microsecond kernel; 4.2 ms with the
+launching thread on a performance core and 3.3 ms on an efficiency core,
+medians of five rounds that spread by several milliseconds) and 1.0 s for a
+1 ms kernel, whose 1000 calls run once more; less in proportion at fewer
+cycles.
 
 **What CUPTI still leaves on the timed launches.** Host time, which reaches
-only kernels shorter than the host's launch interval. Once the collector has
-registered with CUPTI, at a case's construction, a launch takes about 0.3 us
-more (a 16 x 256 store at 200 cycles: 3.23 against 2.95 us a launch, the
-median of five fresh processes); once a CUPTI batch has run in the process,
-about 1.4 us more (4.31 us), because a stopped CUPTI window leaves its host
-cost on every later launch of the process. Kernels longer than that interval
-(walkthroughs 10 and 19's SAXPY over 1 Mi floats, a 1 ms spin) read within 5%
-of their time with the collector stood down. For the shortest kernels,
-compare runs made the same way, or set `VERNIER_DISABLE_CUPTI=1`.
+only kernels shorter than the host's launch interval, and how much depends
+on the core the launching thread runs on. The collector's registration with
+CUPTI, at a case's construction, leaves none the measurements could tell
+from their run-to-run spread: with the collector on and stood down, a
+16 x 256 store at 200 cycles read 1.84 against 1.80 us a launch on a
+performance core and 2.73 against 2.43 us on an efficiency core (medians of
+20 alternating runs; the differences per pair of runs spread from -0.7 to
++1.1 us), and over 100 fresh processes on each core the median difference
+between the two was 0.02 us or less. Once a CUPTI batch has run in the
+process, a launch takes more, because a stopped CUPTI window leaves host cost
+on every later launch of the process: about 0.3 us more on a performance core
+(1.98 against 1.72 us) and about 0.9 us more on an efficiency core (3.48
+against 2.57 us). Kernels longer than the launch interval (walkthroughs 10
+and 19's SAXPY over 1 Mi floats, a 1 ms spin) read within 1.5% of their time
+with the collector stood down on either core (medians over the rounds), as
+long as the host keeps the GPU fed: on a busy core the launch interval grows,
+and so does the set of kernels that host time reaches. Every figure here is a
+median of runs pinned to one CPU, a process each, the settings alternating;
+`GpuCollectorCost`
+([`GpuCollectorCost_pTest.cu`](../ptst/gpu/GpuCollectorCost_pTest.cu)) takes
+them on another machine. For the shortest kernels, compare runs made
+the same way, on the same kind of core, or set `VERNIER_DISABLE_CUPTI=1`.
 
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
