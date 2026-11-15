@@ -358,7 +358,10 @@ private:
     std::unique_ptr<ThresholdTable> table(
         frozenThresholds_.exchange(nullptr, std::memory_order_relaxed));
     while (table) {
-      table = std::move(table->replaced);
+      // Taken out first: moving from table->replaced into table would read
+      // the link after the move had deleted the table that holds it.
+      std::unique_ptr<ThresholdTable> next = std::move(table->replaced);
+      table = std::move(next);
     }
   }
 
