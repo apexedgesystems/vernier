@@ -114,7 +114,6 @@ namespace fake_cupti {
 struct Calls {
   int registrations = 0;                    ///< cuptiActivityRegisterCallbacks
   int enables = 0;                          ///< cuptiActivityEnable
-  int disables = 0;                         ///< cuptiActivityDisable
   int flushes = 0;                          ///< cuptiActivityFlushAll
   int configures = 0;                       ///< cuptiActivityConfigureUnifiedMemoryCounter
   std::vector<CUpti_ActivityKind> enabled;  ///< Kinds asked of cuptiActivityEnable, in order
@@ -283,7 +282,6 @@ inline CUptiResult cuptiActivityEnable(CUpti_ActivityKind kind) {
              : fake_cupti::behaviour().enableResult;
 }
 inline CUptiResult cuptiActivityDisable(CUpti_ActivityKind kind) {
-  ++fake_cupti::calls().disables;
   fake_cupti::calls().disabled.push_back(kind);
   fake_cupti::calls().log.push_back("disable " + std::to_string(static_cast<int>(kind)));
   return kind == CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER
