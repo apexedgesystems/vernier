@@ -96,25 +96,32 @@ public:
   CuptiCollector& operator=(const CuptiCollector&) = delete;
 
   /**
-   * @return true while the collector can collect: this build links CUPTI, the
-   *         decision did not stand it down, CUPTI accepted its callbacks, no
-   *         start() has since failed to switch kernel records on, and
-   *         collection has not ended in this process. A stop() of any
-   *         collector of the process whose kernel records did not switch off,
-   *         or whose flush failed, ends it for all of them: CUPTI's buffers
+   * @return Whether this collector can collect, as this collector last found
+   *         out: at its construction and at each of its own start() and
+   *         stop() calls, not when another collector fails. True when this
+   *         build links CUPTI, the decision did not stand it down, CUPTI
+   *         accepted its callbacks, and none of its start() or stop() calls
+   *         has since found collection impossible. A stop() of any collector
+   *         of the process whose kernel records did not switch off, or whose
+   *         flush failed, ends collection for all of them (CUPTI's buffers
    *         and records are the process's, so what CUPTI still holds or
-   *         records would reach a later window.
+   *         records would reach a later window); a collector built before
+   *         that still reads true until its next start(), which checks the
+   *         process's state before it enables anything, then reads false
+   *         and collects nothing.
    */
   [[nodiscard]] bool isAvailable() const noexcept { return available_; }
 
   /**
-   * @return Why isAvailable() is false, as a phrase a message can quote (this
-   *         build has no CUPTI; the collector stood down; CUPTI refused its
-   *         callbacks, or to record kernel activity; in a window of this
-   *         collector or of an earlier one in the process, CUPTI did not stop
-   *         recording kernel activity or failed to flush its activity
-   *         buffers; with CUPTI's name for the result). Empty while it is
-   *         available.
+   * @return Why isAvailable() is false, as this collector last found out, in
+   *         a phrase a message can quote (this build has no CUPTI; the
+   *         collector stood down; CUPTI refused its callbacks, or to record
+   *         kernel activity; in a window of this collector or of an earlier
+   *         one in the process, CUPTI did not stop recording kernel activity
+   *         or failed to flush its activity buffers; with CUPTI's name for the
+   *         result). Empty while isAvailable() reads true, which includes a
+   *         collector built before another one ended collection, until its
+   *         next start().
    */
   [[nodiscard]] const std::string& unavailableReason() const noexcept;
 

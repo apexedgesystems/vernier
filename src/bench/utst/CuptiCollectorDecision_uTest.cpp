@@ -335,6 +335,34 @@ TEST_F(CuptiCollectorDecision, AFailedFlushLeavesNothingStale) {
       << "a buffer CUPTI handed over after collection ended was read";
 }
 
+/**
+ * @test A collector built before another one's failed flush ended collection
+ *       still reads available, with no reason, as it last found out; its next
+ *       start() checks the process's state before it enables anything, so its
+ *       window switches nothing on, flushes nothing and counts nothing, and it
+ *       then reads unavailable with the failure's reason
+ */
+TEST_F(CuptiCollectorDecision, ACollectorBuiltBeforeTheEndRefusesItsNextWindow) {
+  const std::string FAILED = "CUPTI failed to flush its activity buffers (CUPTI_ERROR_UNKNOWN)";
+  deliverLaunches();
+  CuptiCollector earlier;
+  CuptiCollector failing;
+  fake_cupti::behaviour().flushResult = CUPTI_ERROR_UNKNOWN;
+  window(failing);
+  ASSERT_EQ(failing.unavailableReason(), FAILED);
+  EXPECT_TRUE(earlier.isAvailable()) << "a collector's availability is what it last found out";
+  EXPECT_TRUE(earlier.unavailableReason().empty()) << earlier.unavailableReason();
+
+  fake_cupti::behaviour().flushResult = CUPTI_SUCCESS;
+  const fake_cupti::Calls BEFORE = fake_cupti::calls();
+  window(earlier);
+  EXPECT_EQ(fake_cupti::calls().enables, BEFORE.enables) << "the earlier collector switched on";
+  EXPECT_EQ(fake_cupti::calls().flushes, BEFORE.flushes);
+  EXPECT_EQ(earlier.stats().kernelLaunches, 0U) << "the earlier collector counted";
+  EXPECT_FALSE(earlier.isAvailable());
+  EXPECT_EQ(earlier.unavailableReason(), FAILED);
+}
+
 /** @test Dropped records leave the window without stats and are counted in the problem. */
 TEST_F(CuptiCollectorDecision, DroppedRecordsEmptyTheWindow) {
   deliverLaunches();
