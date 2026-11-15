@@ -1,8 +1,21 @@
 # ==============================================================================
 # mk/test.mk - Test execution
 #
-# CTest wrappers for unit tests and timing-sensitive tests.
-# Supports both serial and parallel execution modes with TTY output and logging.
+# CTest wrappers by test class. Every CTest entry is labelled with one class,
+# unit or component, and rig beside it where it needs a rig
+# (cmake/vernier/Testing.cmake):
+#   unit       one unit in isolation, its collaborators values or stand-ins the
+#              test controls: about 1 s a test at most, a whole unit program in
+#              seconds. make test (serial) and make testp (parallel) run them,
+#              and so do make verify and CI on every pull request.
+#   component  a component through its real protocol, or an integration (real
+#              tools, consumer builds, a benchmark end to end): about 10 s a
+#              test. make test-component runs them.
+#   rig        needs hardware, privileges or a device a hosted runner lacks.
+#              make test-rig runs them, on a host that has it; no other lane.
+# The times are guidance for review, never enforced: no test fails for its
+# time, and each lane ends by listing its slowest tests. Supports serial and
+# parallel execution with TTY output and logging.
 #
 # Note: Performance tests (ptst/) are not in CTest. Run them directly:
 #   ./build/native-linux-release/bin/ptests/BenchmarkCPU_PTEST
@@ -21,8 +34,10 @@ TEST_MK_GUARD := 1
 # Uses BUILD_DIR and NUM_JOBS from common.mk
 
 # Test labels (must match CMake test properties)
-COVERAGE_LABEL ?= Coverage
-TIMING_LABEL   ?= Timing
+COVERAGE_LABEL  ?= Coverage
+TIMING_LABEL    ?= Timing
+COMPONENT_LABEL ?= component
+RIG_LABEL       ?= rig
 
 # Log files
 TEST_LOG ?= ctest.log
@@ -47,23 +62,38 @@ HEAP_RUN_FILTER  ?= ReadinessFixtureRun.HeaptrackUnwrappedFails
 # ------------------------------------------------------------------------------
 # A lane whose selection matches no test fails (--no-tests=error: CTest exits
 # 8): a mistyped label or a tree without tests is not a passing run. The timing
-# pass may match none; the lane's selection is both passes.
+# pass may match none; the lane's selection is both passes. Each label regex is
+# anchored, so a label is matched whole.
 
-# All tests except Coverage, serial execution
+# The unit class leaves out the other classes' labels and the coverage runs, so
+# a test with no class label runs with the unit tests.
+UNIT_EXCLUDE := $(COVERAGE_LABEL)|$(COMPONENT_LABEL)|$(RIG_LABEL)
+
+# The unit class, serial execution
 # Note: Perf tests are not in CTest (use bin/ptests/* directly)
 CTEST_ALL_SERIAL := ctest \
-  -LE "$(COVERAGE_LABEL)" \
+  -LE "^($(UNIT_EXCLUDE))$$" \
   -j1 --no-tests=error --output-on-failure
 
-# All tests except Coverage and Timing, parallel execution
+# The unit class except Timing, parallel execution
 CTEST_ALL_PARALLEL := ctest \
-  -LE "$(COVERAGE_LABEL)|$(TIMING_LABEL)" \
+  -LE "^($(UNIT_EXCLUDE)|$(TIMING_LABEL))$$" \
   -j$(NUM_JOBS) --no-tests=error --output-on-failure
 
-# Timing tests only, serial execution
+# The unit class's Timing tests, serial execution
 CTEST_TIMING_SERIAL := ctest \
-  -L "$(TIMING_LABEL)" \
+  -L "^$(TIMING_LABEL)$$" -LE "^($(UNIT_EXCLUDE))$$" \
   -j1 --no-tests=ignore --output-on-failure
+
+# The component class, rig tests aside, parallel execution
+CTEST_COMPONENT := ctest \
+  -L "^$(COMPONENT_LABEL)$$" -LE "^($(COVERAGE_LABEL)|$(RIG_LABEL))$$" \
+  -j$(NUM_JOBS) --no-tests=error --output-on-failure
+
+# The rig tests of both classes, serial execution
+CTEST_RIG := ctest \
+  -L "^$(RIG_LABEL)$$" -LE "^$(COVERAGE_LABEL)$$" \
+  -j1 --no-tests=error --output-on-failure
 
 # ------------------------------------------------------------------------------
 # Internal Helpers
@@ -93,27 +123,49 @@ endef
 # Targets
 # ------------------------------------------------------------------------------
 
-# All tests (serial) - excludes Coverage and Perf labels; ends with the slowest
+# Unit tests (serial) - excludes the component, rig and Coverage labels; ends
+# with the slowest
 test: debug
-	$(call log,test,Running all tests (serial))
+	$(call log,test,Running the unit tests (serial))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
-	@cd "$(BUILD_DIR)" && $(call _test_header,ALL (serial) - excluding: $(COVERAGE_LABEL)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_header,UNIT (serial) - excluding: $(UNIT_EXCLUDE)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_ALL_SERIAL)) 2>&1 | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
-	@cd "$(BUILD_DIR)" && $(call _test_footer,all (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_footer,unit (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
-# Parallel tests - runs non-timing parallel, then timing serial; ends with the
-# slowest of both
+# Unit tests in parallel - runs the non-timing ones parallel, then the timing
+# ones serial; ends with the slowest of both
 testp: debug
-	$(call log,test,Running tests (parallel + timing serial))
+	$(call log,test,Running the unit tests (parallel + timing serial))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
-	@cd "$(BUILD_DIR)" && $(call _test_header,NON-TIMING (parallel -j$(NUM_JOBS))) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_header,UNIT NON-TIMING (parallel -j$(NUM_JOBS))) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_ALL_PARALLEL)) 2>&1 | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && printf '\n' | tee -a "$(TEST_LOG)"
-	@cd "$(BUILD_DIR)" && $(call _test_header,TIMING (serial)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_header,UNIT TIMING (serial)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_TIMING_SERIAL)) 2>&1 | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
-	@cd "$(BUILD_DIR)" && $(call _test_footer,parallel + timing,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_footer,unit parallel + timing,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+
+# Component tests (parallel) - excludes the rig and Coverage labels; ends with
+# the slowest. No pull request runs them.
+test-component: debug
+	$(call log,test,Running the component tests (parallel))
+	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_header,COMPONENT (parallel -j$(NUM_JOBS)) - excluding: $(RIG_LABEL)|$(COVERAGE_LABEL)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_COMPONENT)) 2>&1 | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_footer,component (parallel),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+
+# Rig tests (serial) - the tests labelled rig, of either class, which need
+# hardware, privileges or a device a hosted runner lacks; where it is missing
+# they skip. Run on a rig host; ends with the slowest.
+test-rig: debug
+	$(call log,test,Running the rig tests (serial))
+	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_header,RIG (serial) - excluding: $(COVERAGE_LABEL)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_RIG)) 2>&1 | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_footer,rig (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
 # Heap-profiling tests: gperf's lifecycle and reader cases, the captures of
 # both kinds at once included, and the heaptrack fixture run, built with
@@ -147,6 +199,6 @@ test-rust:
 # Phony Declarations
 # ------------------------------------------------------------------------------
 
-.PHONY: test testp test-heap test-py test-rust
+.PHONY: test testp test-component test-rig test-heap test-py test-rust
 
 endif  # TEST_MK_GUARD
