@@ -334,6 +334,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **The profile-settings, registration and environment headers describe
+  what the code does** -- the backend list, `--profile-args` as each backend
+  reads it, the registration macros and the doctor's rows.
+  ([#72](https://github.com/apexedgesystems/vernier/pull/72))
 - **The contention examples pass `contentionRun()` one operation per call**,
   as its header comment states: the harness calls it `--cycles` times on each
   thread. ([#72](https://github.com/apexedgesystems/vernier/pull/72))
