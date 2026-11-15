@@ -887,14 +887,22 @@ mod tests {
         }
         let before = sigchld_setting();
         let dir = tempfile_dir(&format!("owned_run_policy_{policy}"));
-        // The process the program leaves holds it open while it runs.
+        // The process the program leaves holds it open while it runs, and
+        // creates `ready` once it does; the program exits only then (5 s at
+        // the most), so the FIFO's end, read after the run, is that process's
+        // end and not a start still to come.
         let mut left = HeldFifo::new(&dir.join("left"));
+        let ready = dir.join("ready");
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
             &format!(
-                "echo out; /bin/sleep 60 9<>'{}' & exit 3",
-                dir.join("left").display()
+                "echo out; /bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; exec /bin/sleep 60' '{}' '{}' & \
+                 i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done; \
+                 exit 3",
+                dir.join("left").display(),
+                ready.display(),
+                ready.display()
             ),
         ]);
         let run = owned_run::spawn(&mut command).and_then(|child| {
@@ -904,6 +912,7 @@ mod tests {
                 &std::sync::atomic::AtomicI32::new(0),
             )
         });
+        let left_held = ready.exists();
         let left_runs = left.held();
         let line = match run {
             Ok(run) => {
@@ -914,7 +923,7 @@ mod tests {
                 };
                 format!(
                     "before: {before}; {ending}; stdout {:?}; left running {}; the process left \
-                     still runs: {left_runs}; after: {}",
+                     held its FIFO: {left_held}; still runs: {left_runs}; after: {}",
                     run.stdout,
                     run.left_running,
                     sigchld_setting()
@@ -980,7 +989,7 @@ mod tests {
             let line = fs::read_to_string(&report).unwrap_or_default();
             let expected = format!(
                 "before: {before}; exited Some(3); stdout \"out\\n\"; left running 1; the process \
-                 left still runs: false; after: default"
+                 left held its FIFO: true; still runs: false; after: default"
             );
             if !out.status.success() || line != expected {
                 seen.push(format!(

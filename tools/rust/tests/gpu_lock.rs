@@ -32,10 +32,12 @@ use vernier_rust_tools::bench::gpu_lock::{self, LockConfig, Tool};
 /// `nvidia-smi` and writes `stand-in.env` beside the link: the rig's folder,
 /// where to log, and whether to hold the lock or the reset until a file
 /// exists (`lock_gate`, `reset_gate`), to hang in a call (`hang`; it then
-/// holds the rig's `hang.fifo` open until it ends) or to refuse one
-/// (`fail`). A held or hung call ends, refused, once the rig's folder is
-/// gone: it runs in a process group of its own, which a run's cleanup does
-/// not signal, so a test that fails while it is held leaves nothing behind.
+/// opens the rig's `hang.fifo`, holds it until it ends and, once it holds
+/// it, creates `hang.held`) or to refuse one (`fail`). A held or hung call
+/// ends, refused, once the rig's folder is gone, and a hung one also once
+/// `hang.end` exists: it runs in a process group of its own, which a run's
+/// cleanup does not signal, so a test that fails while it is held leaves
+/// nothing behind.
 const STAND_IN: &str = r#"#!/bin/sh
 . "$(dirname "$0")/stand-in.env"
 case " $* " in
@@ -60,7 +62,8 @@ if [ -n "$gate" ]; then
 fi
 if [ "$call" = "$hang" ]; then
   exec 9<>"$rig/hang.fifo"
-  while [ -d "$rig" ]; do /bin/sleep 0.01; done
+  : > "$rig/hang.held"
+  while [ -d "$rig" ] && [ ! -e "$rig/hang.end" ]; do /bin/sleep 0.01; done
   exit 1
 fi
 if [ "$call" = "$fail" ]; then
@@ -156,8 +159,8 @@ impl Rig {
     }
 
     /// Have the stand-in hang in @p call ("lock" or "reset"). It then holds
-    /// `hang.fifo` open until it ends, so `hang_ended` tells whether it has
-    /// without its process id.
+    /// `hang.fifo` open until it ends, and says so (`hang.held`) once it holds
+    /// it, so `hang_ended` tells whether it has without its process id.
     fn hang(&self, call: &str) {
         use std::os::unix::ffi::OsStrExt;
 
@@ -170,17 +173,32 @@ impl Rig {
         self.set("hang", call);
     }
 
-    /// Whether the hung call has ended, within `BOUND`: once no process holds
-    /// `hang.fifo` open, reading it gives its end.
+    /// Whether the hung call has ended, within `BOUND` (`hang_ended_within`).
     fn hang_ended(&self) -> bool {
+        self.hang_ended_within(BOUND)
+    }
+
+    /// Whether the hung call has ended, within @p within. Its end is read
+    /// from `hang.fifo`, which reads its end once no process holds it open,
+    /// but also before the stand-in has opened it: so the stand-in's word
+    /// that it holds the FIFO (`hang.held`, created after the open) comes
+    /// first, and only an end read after it counts. A stand-in that never
+    /// says so within @p within has not been seen to end.
+    fn hang_ended_within(&self, within: Duration) -> bool {
         use std::os::unix::fs::OpenOptionsExt;
 
+        let until = Instant::now() + within;
+        while !self.path("hang.held").exists() {
+            if Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let mut fifo = fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK)
             .open(self.path("hang.fifo"))
             .expect("open hang.fifo");
-        let until = Instant::now() + BOUND;
         let mut chunk = [0u8; 64];
         loop {
             match fifo.read(&mut chunk) {
@@ -1390,7 +1408,10 @@ fn a_lock_past_its_bound_is_ended_and_reset() {
          since it may have taken effect"
     );
     assert_eq!(rig.events(), [LOCK, RESET, "reset done"]);
-    assert!(rig.hang_ended(), "the hung lock still runs");
+    assert!(
+        rig.hang_ended(),
+        "the hung lock still runs, or never said it holds hang.fifo"
+    );
 }
 
 /// @test A reset still running at its bound is ended with its process group,
@@ -1406,5 +1427,47 @@ fn a_reset_past_its_bound_says_how_to_reset_by_hand() {
          was ended; reset them with `bench gpu-lock reset --device 0`, or as root with \
          `nvidia-smi -i 0 -rgc`"
     );
-    assert!(rig.hang_ended(), "the hung reset still runs");
+    assert!(
+        rig.hang_ended(),
+        "the hung reset still runs, or never said it holds hang.fifo"
+    );
+}
+
+/// @test `hang_ended` does not take a stand-in that has not yet opened
+/// `hang.fifo` for one that has ended. Started here, held at its gate before
+/// the open and never stopped, it is not seen to end within 300 ms; once it
+/// holds the FIFO it is still not, while it runs; once it ends by itself
+/// (`hang.end`), it is. Should the test fail first, the stand-in ends once
+/// the rig's folder is gone.
+#[test]
+fn hang_ended_waits_for_the_stand_in_to_hold_the_fifo() {
+    let rig = Rig::new();
+    rig.hang("lock");
+    rig.gate("lock");
+    let mut stand_in = Command::new(rig.path("nvidia-smi"))
+        .args(["-i", "0", "-lgc", "1000,1000"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("start the stand-in");
+    wait_until("the stand-in to wait at its gate", || {
+        rig.events().iter().any(|e| e == "lock waiting")
+    });
+    assert!(
+        !rig.hang_ended_within(Duration::from_millis(300)),
+        "a stand-in yet to open hang.fifo was taken for one that ended"
+    );
+    rig.open("lock");
+    wait_until("the stand-in to hold hang.fifo", || {
+        rig.path("hang.held").exists()
+    });
+    assert!(
+        !rig.hang_ended_within(Duration::from_millis(100)),
+        "a stand-in holding hang.fifo was taken for one that ended"
+    );
+    fs::write(rig.path("hang.end"), "").expect("end the stand-in");
+    assert!(rig.hang_ended(), "the stand-in did not end");
+    let status = stand_in.wait().expect("reap the stand-in");
+    assert_eq!(status.code(), Some(1), "{status:?}");
 }
