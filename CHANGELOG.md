@@ -417,6 +417,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - `bench` keeps its documented exit status when it cannot write to stderr,
   as to a pipe whose reader is gone, instead of exiting 101.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` and `bench profile-all` stop before starting anything on a
+  `.bench.yaml` they cannot read or use, naming the file, line and key,
+  instead of running on defaults; `bench config-validate` exits 1 on the same
+  problems. **Action needed:** correct what `bench config-validate` fails.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

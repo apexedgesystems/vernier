@@ -130,6 +130,9 @@ pub enum Error {
     Parse(String),
     InvalidArgs(String),
     ToolNotFound(String),
+    /// A `.bench.yaml` that cannot be read or used; names the file and each
+    /// problem.
+    Config(String),
     /// The benchmark ran and did not succeed; how it ended.
     Benchmark(BenchmarkExit),
     /// The benchmark succeeded and its requested profile did not.
@@ -165,6 +168,7 @@ impl fmt::Display for Error {
             Error::Parse(s) => write!(f, "parse error: {s}"),
             Error::InvalidArgs(s) => write!(f, "invalid arguments: {s}"),
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
+            Error::Config(s) => write!(f, "{s}"),
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
             Error::Sanitizer(failure) => write!(f, "{failure}"),

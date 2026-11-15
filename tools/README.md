@@ -560,6 +560,20 @@ the lookup is `build/*` and `bin/ptests`, `bin/tests`, `bin/examples`. A name
 found nowhere is an error naming the roots and subfolders searched and where
 each came from.
 
+`run` and `profile-all` read the whole file before they start anything, and
+stop on one they cannot read or use, with an error naming the file and, for
+each problem, its line, the key and what the key takes. A problem is a line
+that is not a top-level `key: value`, a `- item` below a `key:` line or a
+comment; a quote left open; a key given twice; or a value of the wrong kind:
+`cycles` and `repeats` take a whole number above 0, `target_time` a duration
+the binary reads (at least `1us`), `profile_output_dir` a path, `gtest_filter`
+one value, `bin_roots` and `bin_subdirs` a list. `config-validate` checks the
+file the same way: it lists each problem as `[FAIL]` and exits 1 with the
+error `run` would print. Its warnings do not stop a run: a key it does not
+know is the project's own (kept, read by nothing in bench; a misspelt key
+shows here), and fewer than 5 repeats or an absolute `profile_output_dir` are
+allowed.
+
 ```bash
 bench init                              # writes .bench.yaml in CWD
 bench init --path config.yaml --force   # custom path; overwrite existing

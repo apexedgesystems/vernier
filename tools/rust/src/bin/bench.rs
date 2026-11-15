@@ -324,7 +324,8 @@ enum Command {
         force: bool,
     },
 
-    /// Validate a .bench.yaml: types, ranges, unknown keys
+    /// Check a .bench.yaml: each problem run and profile-all stop on (then
+    /// exit 1), and warnings (unknown keys, low repeats)
     ConfigValidate {
         /// Path to the config file (default: walk up from CWD for .bench.yaml)
         path: Option<PathBuf>,
@@ -416,14 +417,15 @@ fn main() -> ExitCode {
 }
 
 /// The project's `.bench.yaml`, the first found from the working directory
-/// up, and the defaults it holds (none without one).
+/// up, and the defaults it holds (none without one). A file that cannot be
+/// read or used is the error, before the command starts anything.
 fn project_defaults() -> Result<(Option<PathBuf>, bench::config::Config), Error> {
     let cwd = std::env::current_dir().map_err(Error::Io)?;
     let file = bench::config::find(&cwd);
-    let config = file
-        .as_deref()
-        .and_then(|path| bench::config::load(path).ok())
-        .unwrap_or_default();
+    let config = match file.as_deref() {
+        Some(path) => bench::config::load(path)?,
+        None => bench::config::Config::default(),
+    };
     Ok((file, config))
 }
 
@@ -748,6 +750,8 @@ fn run(args: Args) -> Result<(), Error> {
             };
             let report = bench::config::validate(&resolved)?;
             bench::config::print_validation(&report);
+            // Ends as run and profile-all would on this file.
+            report.verdict()?;
         }
 
         Command::Flamegraph {

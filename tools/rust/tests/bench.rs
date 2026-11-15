@@ -3874,6 +3874,124 @@ fn config_validate_knows_target_time() {
     );
 }
 
+/// `bench config-validate` run in @p dir, which finds its file from there
+/// up; returns the exit status, stdout and stderr.
+fn config_validate_in(dir: &Path) -> (i32, String, String) {
+    let out = output_of(Command::new(bin()).arg("config-validate").current_dir(dir));
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The `.bench.yaml` of @p rig as bench names it: in the folder the working
+/// directory resolves to.
+fn rig_file(rig: &RouteRig) -> PathBuf {
+    std::fs::canonicalize(rig.dir.path())
+        .expect("the rig's folder")
+        .join(".bench.yaml")
+}
+
+/// @test A .bench.yaml holding a value of the wrong kind stops bench run
+/// before anything starts, naming the file and, for each problem, its line,
+/// the key and what the key takes. config-validate lists the same problems,
+/// and ends with the same error.
+#[test]
+fn run_stops_on_a_bench_yaml_it_cannot_use() {
+    let rig = route_rig(&[]);
+    bench_yaml(
+        &rig,
+        "cycles: many\ngtest_filter: \"Join.*\"\nbin_roots: out\n",
+    );
+    let expected = format!(
+        "Error: {} cannot be used: line 1: cycles: expected a whole number greater than 0, \
+         got 'many'; line 3: bin_roots: expected a list ([\"a\", \"b\"], or one '- item' line \
+         each), got 'out'\n",
+        rig_file(&rig).display()
+    );
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(err, expected);
+    assert_eq!(log, "", "the benchmark was started");
+
+    let (code, out, err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 1, "{out}{err}");
+    assert_eq!(err, expected);
+    for line in [
+        "  [FAIL] line 1: cycles: expected a whole number greater than 0, got 'many'\n",
+        "  [FAIL] line 3: bin_roots: expected a list ([\"a\", \"b\"], or one '- item' line each), \
+         got 'out'\n",
+        "  2 fail(s).\n",
+    ] {
+        assert!(out.contains(line), "{line:?} not in {out}");
+    }
+}
+
+/// @test A .bench.yaml that cannot be read stops bench run before anything
+/// starts, and config-validate, with the same error naming the file.
+#[test]
+fn run_stops_on_a_bench_yaml_it_cannot_read() {
+    let rig = route_rig(&[]);
+    std::fs::write(rig.dir.path().join(".bench.yaml"), b"cycles: \xff\n")
+        .expect("write .bench.yaml");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.starts_with(&format!(
+            "Error: {} cannot be read: ",
+            rig_file(&rig).display()
+        )),
+        "{err}"
+    );
+    assert_eq!(log, "", "the benchmark was started");
+    let (code, out, validate_err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(validate_err, err);
+}
+
+/// @test profile-all stops on a .bench.yaml it cannot use as bench run does:
+/// no profile run starts and its output folder is not made.
+#[test]
+fn profile_all_stops_on_a_bench_yaml_it_cannot_use() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "repeats: 0\n");
+    let (code, err, log) = run_profile_all(&rig, "perf", None, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "Error: {} cannot be used: line 1: repeats: expected a whole number greater than \
+             0, got '0'\n",
+            rig_file(&rig).display()
+        )
+    );
+    assert_eq!(log, "", "a profile run was started");
+    assert!(
+        !rig.dir.path().join("out").exists(),
+        "the output folder was made"
+    );
+}
+
+/// @test What config-validate only warns about does not stop a run: a key
+/// the project adds, and low repeats. config-validate exits 0 on them.
+#[test]
+fn a_bench_yaml_with_only_warnings_is_used() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "repeats: 2\nowner: team-a\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --repeats 2\n");
+    let (code, out, err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("  [WARN] repeats=2 is low"), "{out}");
+    assert!(
+        out.contains("  [WARN] unrecognized keys preserved as extras: [\"owner\"]"),
+        "{out}"
+    );
+    assert!(!out.contains("[FAIL]"), "{out}");
+}
+
 /// A project folder whose `.bench.yaml` names `bin_roots: ["out/*"]` and
 /// `bin_subdirs: ["bin/ptests"]`, with a stand-in `out/x/bin/ptests/Short_PTEST`
 /// that logs "found <args>", and a working folder `sub` below it holding a
