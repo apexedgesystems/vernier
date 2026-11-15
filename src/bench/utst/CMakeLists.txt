@@ -280,10 +280,11 @@ target_compile_options(
 # ------------------------------------------------------------------------------
 # Script-mode tests of configure logic; they need no toolkit and no GPU, so they
 # run on every lane, including CPU-only ones: the CUDA architecture rules, what
-# vernier_add_gtest's NO_REGISTER registers (a scratch project is configured
-# with this build's generator and compiler; nothing is built), and the skip
-# expression it gives each case (a scratch project with GoogleTest, built from
-# the source this build fetched, is built and its cases run through CTest).
+# vernier_add_gtest's NO_REGISTER and WORKER_SOURCES register (a scratch
+# project is configured with this build's generator and compiler; nothing is
+# built), and the skip expression it gives each case (a scratch project with
+# GoogleTest, built from the source this build fetched, is built and its cases
+# run through CTest).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
@@ -593,7 +594,8 @@ endif ()
 # cases: workers that add under a mutex must report no error, workers that add
 # without one must still report their race. It learns a build it cannot run
 # under valgrind from the build's SANITIZER setting. The racy probe skips
-# itself outside valgrind, and CTest reports that as skipped.
+# itself outside valgrind, so it is a worker source, compiled in and not
+# registered.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -601,6 +603,8 @@ vernier_add_gtest(
   TestStartGateHelgrind
   SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_uTest.cpp"
+  WORKER_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_Probe.cpp"
   LINK
   bench
   LABELS

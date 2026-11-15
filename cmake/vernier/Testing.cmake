@@ -20,9 +20,14 @@ include_guard(GLOBAL)
 # is linked before GoogleTest's. vernier_add_test_program builds a program with
 # no GoogleTest in it through this same path.
 #
+# WORKER_SOURCES are compiled into the program as SOURCES are, but not read for
+# cases: a case defined in one is not registered. It is for a probe case that
+# the program's own tests run as a child, which run alone would only skip.
+#
 # Arguments:
 #   TARGET          <n>              required
 #   SOURCES         <src...>         required
+#   WORKER_SOURCES  <src...>         optional (compiled in, cases not registered)
 #   CUDA            <cu...>          optional
 #   LINK            <libs...>        optional
 #   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
@@ -47,7 +52,7 @@ function (vernier_add_gtest)
   cmake_parse_arguments(
     GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
-    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
+    "SOURCES;WORKER_SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
 
@@ -71,7 +76,7 @@ function (vernier_add_gtest)
   endif ()
 
   add_executable(${GT_TARGET})
-  target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES})
+  target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES} ${GT_WORKER_SOURCES})
 
   if (GT_INC)
     target_include_directories(${GT_TARGET} PRIVATE "${GT_INC}")

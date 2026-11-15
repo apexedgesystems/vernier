@@ -717,8 +717,8 @@ Three things check what this page shows, and all fail loudly:
   a child on a probe case that uses the helper, plainly and under memcheck,
   and fail if the probe runs in the plain run or skips under valgrind. The
   probe itself, `SkipUnlessUnderValgrindProbe.RunsOnlyUnderValgrind`, is
-  reported as skipped by `ctest` in an ordinary run, which is the helper
-  working.
+  compiled into their program and not registered with `ctest`: run alone, it
+  only skips.
 - The example's unit tests hold `joinV0` and `joinV1` to the same answers,
   under the same label.
 

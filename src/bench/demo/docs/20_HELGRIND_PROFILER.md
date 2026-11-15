@@ -778,10 +778,10 @@ and the demo's check runs with the example's tests under the `demo` label:
 ctest --test-dir build -L demo
 ```
 
-Every test they select should pass, but the probes that race or make an
-error on purpose, which CTest reports as skipped outside valgrind: this page's
-is `StartGateProbe.RacyWorkers`, the racy probe of the harness's test, and
-its skip is the probe working. The demo's timing test is not registered: what it
+Every test they select should pass. The racy probe of the harness's test,
+`StartGateProbe.RacyWorkers`, is not among them: it is compiled into that
+test's program, which runs it under helgrind, and is not registered, since
+outside valgrind it only skips. The demo's timing test is not registered: what it
 measures belongs to the machine it runs on. This repository has no
 continuous-integration lane on the reference board, so before a release the
 page's commands are run on the rig by hand, and the page and its reference CSV

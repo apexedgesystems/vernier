@@ -510,8 +510,9 @@ set_tests_properties(OffCpu.CapturesTheLockWait PROPERTIES RUN_SERIAL TRUE TIMEO
 # Demo Helper Tests
 # ------------------------------------------------------------------------------
 # The helpers the demos share, under the demo label with the examples' tests.
-# The probe case skips itself in an ordinary run, which is the helper working,
-# so CTest reports it as skipped rather than passed.
+# Each helper's probe case skips itself in an ordinary run, which is the
+# helper working: the tests run it as a child, plainly and under the tool, so
+# it is a worker source, compiled in and not registered.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -520,6 +521,9 @@ vernier_add_gtest(
   SOURCES
   helpers/utst/SkipUnlessUnderValgrind_uTest.cpp
   helpers/utst/SkipUnlessUnderComputeSanitizer_uTest.cpp
+  WORKER_SOURCES
+  helpers/utst/SkipUnlessUnderValgrind_Probe.cpp
+  helpers/utst/SkipUnlessUnderComputeSanitizer_Probe.cpp
   LINK
   bench
   LABELS

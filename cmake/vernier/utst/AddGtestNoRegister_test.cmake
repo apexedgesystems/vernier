@@ -1,6 +1,7 @@
 # ==============================================================================
 # AddGtestNoRegister_test.cmake - Test of vernier_add_gtest's NO_REGISTER
-# option and of vernier_add_test_program, which builds through it
+# option, of vernier_add_test_program, which builds through it, and of
+# WORKER_SOURCES
 #
 # Run with: cmake -DWORK_DIR=<dir> -DGENERATOR=<name> [-DMAKE_PROGRAM=<path>]
 #                 -DCXX_COMPILER=<path> -P AddGtestNoRegister_test.cmake
@@ -30,6 +31,12 @@
 # 5. With coverage on, it links the coverage flags and is mapped for the
 #    report, with no coverage run.
 # 6. LABELS beside it stops configuration, naming the option.
+#
+# The GoogleTest project again, with one more program whose WORKER_SOURCES
+# source defines a case:
+#
+# 7. That source is among the program's sources, and its case is not
+#    registered; the cases of its SOURCES are.
 #
 # The work directory is kept when a check fails and removed when all pass.
 # ==============================================================================
@@ -91,6 +98,12 @@ elseif (REFUSED STREQUAL "PLAIN_LABELS")
   vernier_add_test_program(TARGET Refused SOURCES Plain.cpp LABELS probe)
 endif ()
 
+if (WORKER)
+  vernier_add_gtest(TARGET WithWorker SOURCES Scanned_uTest.cpp WORKER_SOURCES Worker_uTest.cpp)
+  get_target_property(_worker_sources WithWorker SOURCES)
+  message(STATUS "PROBE WithWorker sources=[${_worker_sources}]")
+endif ()
+
 get_property(_maps GLOBAL PROPERTY VERNIER_COVERAGE_MAPPINGS)
 foreach (_target Ordinary Fixture Plain)
   if (TARGET ${_target})
@@ -108,6 +121,8 @@ file(WRITE "${_src}/CMakeLists.txt" "${_project}")
 file(WRITE "${_src}/Probe_uTest.cpp" "TEST(Probe, Case) {}\n")
 file(WRITE "${_src}/Lib.cpp" "")
 file(WRITE "${_src}/Plain.cpp" "#if 0\nTEST(Plain, Case) {}\n#endif\nint main() { return 0; }\n")
+file(WRITE "${_src}/Scanned_uTest.cpp" "TEST(Scanned, Case) {}\n")
+file(WRITE "${_src}/Worker_uTest.cpp" "TEST(Worker, Case) {}\n")
 
 # ------------------------------------------------------------------------------
 # Helpers
@@ -183,7 +198,7 @@ function (tests _case _out_var)
 endfunction ()
 
 # ------------------------------------------------------------------------------
-# Cases (6)
+# Cases (7)
 # ------------------------------------------------------------------------------
 
 # 1. Registration and placement, coverage off.
@@ -279,6 +294,14 @@ configure(refused_plain -DPLAIN=ON -DREFUSED=PLAIN_LABELS)
 expect("refused plain LABELS: configure stops" "${_rc}" "1")
 contains("${_out}" "Refused: LABELS describes registered tests" _named)
 expect("refused plain LABELS: the error names the option" "${_named}" "yes")
+
+# 7. A worker source is compiled in, and its case is not registered.
+configure(worker -DWORKER=ON)
+expect("worker: configure status" "${_rc}" "0")
+tests(worker _all)
+expect("worker: registered tests" "${_all}" "FixtureController;Probe.Case;Scanned.Case")
+contains("${_out}" "PROBE WithWorker sources=[Scanned_uTest.cpp;Worker_uTest.cpp]" _compiled)
+expect("worker: the worker source is among the program's sources" "${_compiled}" "yes")
 
 if (_failures GREATER 0)
   message(FATAL_ERROR "${_failures} check(s) failed; the scratch project is kept in ${WORK_DIR}")
