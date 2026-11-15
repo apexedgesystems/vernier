@@ -651,7 +651,8 @@ warmup = 2;      // Extra warmup to stabilize
 
 **Performance impact:**
 
-- 30-100x faster than full run
+- 25,000 measured calls against 100,000 (5,000 x 5 against 10,000 x 10):
+  about a quarter of the measured time, whatever setup and warmup take
 - Less statistical confidence (higher CV%)
 - May miss outliers/edge cases
 - Same CSV format (compatible with analysis tools)
