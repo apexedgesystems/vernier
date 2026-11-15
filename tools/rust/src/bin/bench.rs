@@ -155,8 +155,9 @@ enum Command {
         /// profile bench run wraps it also selects the wrap (massif: pages or
         /// stacks; memcheck: leak-full, track-origins; helgrind: drd;
         /// compute-sanitizer: memcheck, racecheck, synccheck or initcheck;
-        /// nsight: compute), and any other word is refused. May start with
-        /// '-', e.g. "-e cycles" for perf
+        /// nsight: compute; ncu, and nsight's compute route: replay, or
+        /// --set NAME, --section NAME and --metrics NAMES), and any other word
+        /// is refused. May start with '-', e.g. "-e cycles" for perf
         #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 

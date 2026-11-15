@@ -32,6 +32,8 @@
  *    bench run <binary> --profile ncu          # Nsight Compute (kernel analysis)
  *    --profile nsight --profile-args compute   # Compute mode via the nsight name
  *    --profile ncu --profile-args replay       # Compute with the replay metric list
+ *    --profile ncu --profile-args '--set full' # a section set, sections, metrics
+ *                                              # (parseNsightRequest())
  *
  * Notes:
  *  - Both names dispatch to this backend; "ncu" forces Compute mode.
@@ -68,7 +70,11 @@ enum class NsightMode {
 /* ----------------------------- ReplayMetrics ----------------------------- */
 
 /**
- * @brief The metrics the replay mode's ncu command collects.
+ * @brief The metrics the replay mode's ncu command collects: the
+ * throughputs, achieved occupancy, warp execution and branch efficiency,
+ * registers per thread and the instruction mix (the ALU, FMA and load/store
+ * pipes). Every name is one ncu lists; the shared route table's replay rows
+ * pin the list, which bench run's route gives too.
  */
 struct ReplayMetrics {
   bool collectOccupancy = true;
@@ -91,7 +97,7 @@ struct ReplayMetrics {
       metrics.push_back("lts__throughput.avg.pct_of_peak_sustained_elapsed");
     }
     if (collectWarpEfficiency) {
-      metrics.push_back("smsp__average_warps_issue_stalled_per_issue_active.pct");
+      metrics.push_back("smsp__thread_inst_executed_per_inst_executed.pct");
     }
     if (collectBranchEfficiency) {
       metrics.push_back("smsp__sass_average_branch_targets_threads_uniform.pct");
@@ -100,8 +106,8 @@ struct ReplayMetrics {
       metrics.push_back("launch__registers_per_thread");
     }
     if (collectInstructionMix) {
-      metrics.push_back("smsp__inst_executed_pipe_alu_pred_on.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("smsp__inst_executed_pipe_fma_type_fp32.avg.pct_of_peak_sustained_elapsed");
+      metrics.push_back("smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed");
+      metrics.push_back("smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed");
       metrics.push_back("smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed");
     }
 

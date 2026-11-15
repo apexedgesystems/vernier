@@ -228,21 +228,55 @@ writes the artifacts to `<--profile-output-dir>/<binary-stem>.<tool>/`, where
 `--profile-args` select the tool's mode, and any other word is refused before
 anything starts:
 
-| `--profile`         | `--profile-args` words                                   | Selects                                                  |
-| ------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
-| `massif`            | `pages` or `stacks`                                      | `--pages-as-heap=yes` or `--stacks=yes`                  |
-| `memcheck`          | `leak-full`, `track-origins`                             | the full leak check (the default), `--track-origins=yes` |
-| `helgrind`          | `drd`                                                    | valgrind's DRD instead of Helgrind                       |
-| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
-| `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
+| `--profile`         | `--profile-args` words                                      | Selects                                                  |
+| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| `massif`            | `pages` or `stacks`                                         | `--pages-as-heap=yes` or `--stacks=yes`                  |
+| `memcheck`          | `leak-full`, `track-origins`                                | the full leak check (the default), `--track-origins=yes` |
+| `helgrind`          | `drd`                                                       | valgrind's DRD instead of Helgrind                       |
+| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck`    | that `--tool` (default `memcheck`)                       |
+| `nsight`            | `compute` (or `ncu`)                                        | Nsight Compute (`ncu`) instead of Nsight Systems         |
+| `ncu`, or `nsight`  | `replay`, `--set NAME`, `--section NAME`, `--metrics NAMES` | what Nsight Compute collects (below)                     |
 
-`callgrind`, `heaptrack`, `jemalloc` and `ncu` take no mode. A kernel replay
-(`--profile-args replay`) is refused: its metrics are the benchmark's own, so
-run the benchmark directly, and it prints the `ncu` command that replays its
-kernels. In-process backends
-(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly, which
-reads `--profile-args` itself, and the C++ harness manages its own per-test
-artifact subdirs.
+`callgrind`, `heaptrack` and `jemalloc` take no mode.
+
+**Nsight Compute's options.** `--profile ncu`, and `--profile nsight` when it
+selects Nsight Compute, take Vernier's supported subset of ncu's own options:
+
+- `--set NAME`, once: a section set (`ncu --list-sets`: `basic`, `detailed`,
+  `full`, ...);
+- `--section NAME`, as often as needed: a section by its identifier
+  (`ncu --list-sections`: `LaunchStats`, `Occupancy`, ...);
+- `--metrics NAME[,NAME...]`, as often as needed: metrics by name, the list
+  running on through further words to the next option or mode word;
+- `replay`: the replay metric list (throughputs, achieved occupancy, warp
+  execution and branch efficiency, registers per thread, the ALU, FMA and
+  load/store pipes), written to `kernel_replay.ncu-rep`.
+
+Each option may also be given as `--option=VALUE`. NAME is letters, digits
+and `_`, and a metric name may also hold `.`; ncu itself checks that the set,
+section or metric exists. Under `nsight`, any of these selects Nsight Compute,
+as `compute` does; `replay` takes no other selection. `bench run` starts
+`ncu -o <folder>/kernel_profile -f --target-processes all`, then the set,
+each section and one `--metrics` with every name, in that order:
+
+```bash
+bench run MyKernel_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
+bench run MyKernel_PTEST --profile ncu --profile-args \
+  '--section LaunchStats --section Occupancy --metrics smsp__inst_executed_op_shared_ld.sum'
+bench run MyKernel_PTEST --profile nsight --profile-args replay --cycles 3 --repeats 1
+```
+
+Any other ncu option (`--kernel-name`, `--launch-count`, `--replay-mode`,
+`--nvtx`, `-o`, ...), a value outside its form (a regular expression, a
+metric group), an option without its value and a second set are refused
+before anything starts, naming what is accepted: the report, its overwrite
+and `--target-processes` are `bench run`'s own. For any other option, start
+the binary under ncu yourself; `bench doctor` and the binary print the
+command.
+
+In-process backends (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the
+binary directly, which reads `--profile-args` itself, and the C++ harness
+manages its own per-test artifact subdirs.
 
 With `--profile gperf`, `--profile-frequency HZ` starts the binary with
 `CPUPROFILE_FREQUENCY=HZ`, the variable gperftools reads its sampling rate
@@ -268,7 +302,8 @@ anything starts) and removes from that folder the files a previous run of
 the same wrap left: `callgrind.out`, `massif.out`, `memcheck.log`,
 `helgrind.log`, `run.zst` and `run.gz` (heaptrack), `sanitizer.log`,
 `profile.nsys-rep` with `profile.sqlite` and the four summaries (nsight),
-`kernel_profile.ncu-rep` (ncu, and nsight's compute mode) and
+`kernel_profile.ncu-rep` (ncu, and nsight's compute mode),
+`kernel_replay.ncu-rep` (a replay) and
 `jeprof.*.heap` (jemalloc), each removal printed as `[bench] removed <file>
 from a previous run`. Nothing else in the folder, and nothing outside it, is
 removed. valgrind, compute-sanitizer, nsys and ncu read a `%` in an output

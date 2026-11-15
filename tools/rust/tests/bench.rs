@@ -2499,18 +2499,115 @@ fn run_nsight_compute_mode_uses_ncu() {
     );
 }
 
-/// @test A mode bench run does not wrap, a word the tool does not take and a
-/// combination the tool cannot run are refused before anything starts or is
-/// created.
+/// The metrics a kernel replay collects, as ncu is given them.
+const REPLAY_METRICS: &str = "sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+     sm__warps_active.avg.pct_of_peak_sustained_active,\
+     dram__throughput.avg.pct_of_peak_sustained_elapsed,\
+     l1tex__throughput.avg.pct_of_peak_sustained_elapsed,\
+     lts__throughput.avg.pct_of_peak_sustained_elapsed,\
+     smsp__thread_inst_executed_per_inst_executed.pct,\
+     smsp__sass_average_branch_targets_threads_uniform.pct,\
+     launch__registers_per_thread,\
+     smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,\
+     smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,\
+     smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed";
+
+/// @test ncu is given what the request selects after bench run's own
+/// options (the set, each section, then one --metrics with every name), and
+/// the benchmark the request as given; a selection under nsight runs ncu
+/// into nsight's folder; a kernel replay runs ncu with the replay metrics
+/// into kernel_replay, whose report bench run checks and names.
 #[test]
-fn run_refuses_replay_and_unknown_modes() {
-    for (profile, args, expected) in [
+fn run_ncu_passes_the_selection_and_runs_a_replay() {
+    for (profile, args, folder, report, options) in [
+        (
+            "ncu",
+            "--metrics dram__bytes.sum,lts__t_bytes.sum --section LaunchStats --set full",
+            "ncu",
+            "kernel_profile",
+            "--set full --section LaunchStats --metrics dram__bytes.sum,lts__t_bytes.sum"
+                .to_string(),
+        ),
         (
             "nsight",
-            "replay",
-            "bench run does not wrap a kernel replay",
+            "--section=Occupancy",
+            "nsight",
+            "kernel_profile",
+            "--section Occupancy".to_string(),
         ),
-        ("ncu", "replay", "bench run does not wrap a kernel replay"),
+        (
+            "ncu",
+            "replay",
+            "ncu",
+            "kernel_replay",
+            format!("--metrics {REPLAY_METRICS}"),
+        ),
+        (
+            "nsight",
+            "compute,replay",
+            "nsight",
+            "kernel_replay",
+            format!("--metrics {REPLAY_METRICS}"),
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, log) =
+            run_rig_env(&rig, &["--profile", profile, "--profile-args", args], &[]);
+        assert_eq!(code, 0, "{profile} {args}: {err}");
+        assert_eq!(
+            log,
+            format!(
+                "ncu wrap={profile} -o bench-out/fake_bench.{folder}/{report} -f \
+                 --target-processes all {options} {} --profile {profile} --profile-args {args}\n",
+                rig.bench.display(),
+            ),
+            "{profile} {args}"
+        );
+        assert!(
+            stdout.contains(&format!(
+                "[bench] {profile} wrote bench-out/fake_bench.{folder}/{report}.ncu-rep ("
+            )),
+            "{profile} {args}: {stdout}"
+        );
+    }
+}
+
+/// @test A word the tool does not take, a combination the tool cannot run,
+/// an ncu option outside the supported subset and a malformed ncu list are
+/// refused before anything starts or is created.
+#[test]
+fn run_refuses_unknown_modes_and_ncu_options() {
+    for (profile, args, expected) in [
+        (
+            "ncu",
+            "--kernel-name k",
+            "'--kernel-name' is not an option bench run passes to ncu; it passes --set, \
+             --section and --metrics (the report, its overwrite and --target-processes are \
+             bench run's own)",
+        ),
+        (
+            "nsight",
+            "heap",
+            "'heap' is not a mode of nsight; it takes compute, ncu, replay, --set NAME, \
+             --section NAME and --metrics NAMES",
+        ),
+        (
+            "ncu",
+            "--metrics",
+            "--metrics takes one or more metric names",
+        ),
+        (
+            "ncu",
+            "--section regex:Memory.*",
+            "'regex:Memory.*' is not a section's identifier (letters, digits and '_'); bench \
+             run passes ncu no regular expression or metric group",
+        ),
+        (
+            "ncu",
+            "replay --set full",
+            "replay collects its own metric list; give replay alone, or name what to collect \
+             without it",
+        ),
         (
             "massif",
             "heap",

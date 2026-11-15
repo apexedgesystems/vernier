@@ -38,10 +38,30 @@ std::string join(const std::vector<std::string>& parts, const std::string& separ
   return out;
 }
 
-/** @brief "--profile <backend>[ --profile-args <words>]", the words as `bench run` reads them. */
+/** @brief "--profile <backend>[ --profile-args <value>]", the value whole, as one shell word. */
 std::string requestText(const std::string& backend, const std::string& profileArgs) {
-  const std::string WORDS = join(valgrind_tool::modeWords(profileArgs), ",");
-  return "--profile " + backend + (WORDS.empty() ? std::string{} : " --profile-args " + WORDS);
+  const std::size_t FIRST = profileArgs.find_first_not_of(" \t\n,");
+  if (FIRST == std::string::npos) {
+    return "--profile " + backend;
+  }
+  const std::size_t LAST = profileArgs.find_last_not_of(" \t\n,");
+  return "--profile " + backend + " --profile-args " +
+         detail::shellQuote(profileArgs.substr(FIRST, LAST - FIRST + 1));
+}
+
+/** @brief ncu's options for @p selection, each as one shell word, each after a space. */
+std::string ncuOptionsText(const NsightSelection& selection) {
+  std::string out;
+  for (const std::string& OPTION : selection.ncuOptions()) {
+    out += " " + detail::shellQuote(OPTION);
+  }
+  return out;
+}
+
+/** @brief "; the request collects <what>" for a request that names what, else "". */
+std::string collectsNote(const NsightSelection& selection) {
+  const std::string WHAT = selection.describe();
+  return WHAT.empty() ? std::string{} : "; the request collects " + WHAT;
 }
 
 /** @brief The line of a `--version` output that names the version, else its last line. */
@@ -80,28 +100,20 @@ std::string installHint(const std::string& tool) {
 
 /**
  * @brief The remedy of a request no Nsight tool started: the command that
- * captures it, and `bench run` where it wraps the mode.
+ * captures it, and `bench run`, which wraps every mode.
  */
-std::string wrapRemedy(const std::string& backend, NsightMode mode,
+std::string wrapRemedy(const std::string& backend, const NsightSelection& selection,
                        const std::string& profileArgs) {
   const std::string REQUEST = requestText(backend, profileArgs);
-  switch (mode) {
-  case NsightMode::Systems:
+  if (selection.mode == NsightMode::Systems) {
     return "Wrap it: nsys profile -o ./profile -t cuda,nvtx --force-overwrite true <this-binary> " +
            REQUEST + " [...]; or run it with bench run " + REQUEST +
            ", which wraps it and writes the summary reports.";
-  case NsightMode::Compute:
-    return "Wrap it, with few launches (ncu replays each one): ncu -o ./kernel_profile -f "
-           "--target-processes all <this-binary> " +
-           REQUEST + " --cycles 3 --repeats 1 [...]; or run it with bench run " + REQUEST +
-           " --cycles 3 --repeats 1, which wraps it.";
-  case NsightMode::ComputeReplay:
-    break;
   }
-  return "Wrap it, with few launches (ncu replays each one): ncu --metrics " +
-         ReplayMetrics{}.toNcuMetricString() +
-         " -o ./kernel_replay -f --target-processes all <this-binary> " + REQUEST +
-         " --cycles 3 --repeats 1 [...]; bench run does not wrap a kernel replay.";
+  return std::string{"Wrap it, with few launches (ncu replays each one): ncu -o ./"} +
+         selection.ncuReport() + " -f --target-processes all" + ncuOptionsText(selection) +
+         " <this-binary> " + REQUEST + " --cycles 3 --repeats 1 [...]; or run it with bench run " +
+         REQUEST + " --cycles 3 --repeats 1, which wraps it.";
 }
 
 /** @brief "; the driver gives ... root only ..." for an ncu mode outside root, else "". */
@@ -115,8 +127,8 @@ std::string countersNote(NsightMode mode, const ReadinessContext& ctx,
 }
 
 /** @brief The doctor's decision: whether the mode's tool runs here. */
-ReadinessResult probeTool(const std::string& tool, NsightMode mode, const ReadinessContext& ctx,
-                          const std::string& driverParams) {
+ReadinessResult probeTool(const std::string& tool, const NsightSelection& selection,
+                          const ReadinessContext& ctx, const std::string& driverParams) {
   const auto RESOLVED = resolveExecutable(tool, ctx);
   if (!RESOLVED) {
     return readinessResult(ReadinessCause::MISSING, tool + " not found on PATH", installHint(tool));
@@ -138,17 +150,18 @@ ReadinessResult probeTool(const std::string& tool, NsightMode mode, const Readin
                            "Reinstall it, or fix PATH so it finds a working " + tool + ".");
   }
   return readinessResult(ReadinessCause::UNVERIFIED,
-                         RESOLVED->path + " runs here (" + versionLine(VERSION.output) +
-                             "); whether it captures the benchmark's GPU work is not checked "
+                         RESOLVED->path + " runs here (" + versionLine(VERSION.output) + ")" +
+                             collectsNote(selection) +
+                             "; whether it captures the benchmark's GPU work is not checked "
                              "before the run" +
-                             countersNote(mode, ctx, driverParams),
+                             countersNote(selection.mode, ctx, driverParams),
                          "");
 }
 
 /** @brief A run's decision: whether the mode's tool started this process. */
-ReadinessResult decideRuntime(const std::string& backend, const std::string& tool, NsightMode mode,
-                              const std::string& profileArgs, const ReadinessContext& ctx,
-                              const std::string& driverParams) {
+ReadinessResult decideRuntime(const std::string& backend, const std::string& tool,
+                              const NsightSelection& selection, const std::string& profileArgs,
+                              const ReadinessContext& ctx, const std::string& driverParams) {
   const std::string SESSION = profiler_env::nsightSessionTool(ctx);
   if (SESSION.empty()) {
     if (!resolveExecutable(tool, ctx)) {
@@ -158,20 +171,22 @@ ReadinessResult decideRuntime(const std::string& backend, const std::string& too
     return readinessResult(ReadinessCause::MISSING,
                            backend + " collects only when " + tool + " starts the process, and " +
                                tool + " did not start this one",
-                           wrapRemedy(backend, mode, profileArgs));
+                           wrapRemedy(backend, selection, profileArgs));
   }
   if (SESSION != tool) {
     return readinessResult(ReadinessCause::UNSUPPORTED,
                            requestText(backend, profileArgs) + " needs " + tool +
                                ", and this process runs under " + SESSION,
-                           wrapRemedy(backend, mode, profileArgs));
+                           wrapRemedy(backend, selection, profileArgs));
   }
   return readinessResult(ReadinessCause::UNVERIFIED,
                          SESSION +
                              " started this process and writes its report when the "
-                             "process exits; whether it captured the benchmark's GPU work "
+                             "process exits" +
+                             collectsNote(selection) +
+                             "; whether it captured the benchmark's GPU work "
                              "is not checked from inside the process" +
-                             countersNote(mode, ctx, driverParams),
+                             countersNote(selection.mode, ctx, driverParams),
                          "");
 }
 
@@ -190,25 +205,217 @@ ReadinessResult analysisDecision(const std::string& backend) {
 
 } // namespace
 
-std::optional<ReadinessResult> parseNsightMode(const std::string& backend,
-                                               const std::string& profileArgs, NsightMode& mode) {
-  const bool NCU = backend == "ncu";
-  bool compute = NCU;
-  bool replay = false;
-  std::optional<ReadinessResult> refused;
-  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
-    if (WORD == "replay") {
-      replay = true;
-    } else if (!NCU && (WORD == "compute" || WORD == "ncu")) {
-      compute = true;
-    } else if (!refused) {
-      refused =
-          valgrind_tool::refusedWord(NCU ? "ncu" : "nsight", WORD,
-                                     NCU ? std::vector<std::string>{"replay"}
-                                         : std::vector<std::string>{"compute", "ncu", "replay"});
+namespace {
+
+/** @brief An ncu option bench run passes on, by what its value names. */
+enum class NcuOption { NONE, SET, SECTION, METRICS };
+
+/** @brief The option @p name spells, "--set" and the others. */
+NcuOption ncuOptionOf(const std::string& name) {
+  if (name == "--set") {
+    return NcuOption::SET;
+  }
+  if (name == "--section") {
+    return NcuOption::SECTION;
+  }
+  return name == "--metrics" ? NcuOption::METRICS : NcuOption::NONE;
+}
+
+/** @brief The refusal of @p option given without its value. */
+std::string takesText(NcuOption option) {
+  switch (option) {
+  case NcuOption::SET:
+    return "--set takes one section set's name";
+  case NcuOption::SECTION:
+    return "--section takes one section's identifier";
+  case NcuOption::METRICS:
+  case NcuOption::NONE:
+    break;
+  }
+  return "--metrics takes one or more metric names";
+}
+
+/** @brief True when @p value is letters, digits, '_' and @p extra, and not empty. */
+bool nameForm(const std::string& value, char extra) {
+  if (value.empty()) {
+    return false;
+  }
+  for (const char C : value) {
+    const bool ALNUM = (C >= 'a' && C <= 'z') || (C >= 'A' && C <= 'Z') || (C >= '0' && C <= '9');
+    if (!ALNUM && C != '_' && C != extra) {
+      return false;
     }
   }
-  mode = replay ? NsightMode::ComputeReplay : (compute ? NsightMode::Compute : NsightMode::Systems);
+  return true;
+}
+
+/** @brief Add @p value, given to @p option, to @p selection: "", or the refusal's text. */
+std::string takeValue(NsightSelection& selection, NcuOption option, const std::string& value) {
+  constexpr const char* NO_PATTERN = "bench run passes ncu no regular expression or metric group";
+  if (value.empty()) {
+    return takesText(option);
+  }
+  switch (option) {
+  case NcuOption::SET:
+    if (!nameForm(value, '_')) {
+      return "'" + value + "' is not a section set's name (letters, digits and '_')";
+    }
+    if (!selection.set.empty()) {
+      return "--set is given twice ('" + selection.set + "', '" + value + "'); ncu takes one set";
+    }
+    selection.set = value;
+    return {};
+  case NcuOption::SECTION:
+    if (!nameForm(value, '_')) {
+      return "'" + value + "' is not a section's identifier (letters, digits and '_'); " +
+             NO_PATTERN;
+    }
+    selection.sections.push_back(value);
+    return {};
+  case NcuOption::METRICS:
+  case NcuOption::NONE:
+    break;
+  }
+  if (!nameForm(value, '.')) {
+    return "'" + value + "' is not a metric name (letters, digits, '_' and '.'); " + NO_PATTERN;
+  }
+  selection.metrics.push_back(value);
+  return {};
+}
+
+} // namespace
+
+std::vector<std::string> NsightSelection::ncuOptions() const {
+  if (mode == NsightMode::Systems) {
+    return {};
+  }
+  if (mode == NsightMode::ComputeReplay) {
+    return {"--metrics", ReplayMetrics{}.toNcuMetricString()};
+  }
+  std::vector<std::string> out;
+  if (!set.empty()) {
+    out.insert(out.end(), {"--set", set});
+  }
+  for (const std::string& SECTION : sections) {
+    out.insert(out.end(), {"--section", SECTION});
+  }
+  if (!metrics.empty()) {
+    out.insert(out.end(), {"--metrics", join(metrics, ",")});
+  }
+  return out;
+}
+
+const char* NsightSelection::ncuReport() const {
+  return mode == NsightMode::ComputeReplay ? "kernel_replay" : "kernel_profile";
+}
+
+std::string NsightSelection::describe() const {
+  if (mode == NsightMode::ComputeReplay) {
+    const std::vector<std::string> LIST =
+        valgrind_tool::modeWords(ReplayMetrics{}.toNcuMetricString());
+    return "the replay metrics (" + std::to_string(LIST.size()) + ")";
+  }
+  return join(ncuOptions(), " ");
+}
+
+std::optional<ReadinessResult> parseNsightRequest(const std::string& backend,
+                                                  const std::string& profileArgs,
+                                                  NsightSelection& selection) {
+  const bool NSIGHT = backend != "ncu";
+  NsightSelection taken;
+  bool compute = !NSIGHT;
+  bool replay = false;
+  // The option whose value comes next, whether a metric list is open, and
+  // the first problem: the rest of the words still select the mode.
+  NcuOption awaiting = NcuOption::NONE;
+  bool listing = false;
+  std::string problem;
+  const auto NOTE = [&problem](std::string text) {
+    if (problem.empty()) {
+      problem = std::move(text);
+    }
+  };
+  for (const std::string& WORD : valgrind_tool::modeWords(profileArgs)) {
+    const bool MODE = WORD == "replay" || (NSIGHT && (WORD == "compute" || WORD == "ncu"));
+    const bool OPTION = WORD[0] == '-';
+    if (MODE || OPTION) {
+      if (awaiting != NcuOption::NONE) {
+        NOTE(takesText(awaiting));
+        awaiting = NcuOption::NONE;
+      }
+      listing = false;
+    }
+    if (MODE) {
+      compute = true;
+      replay = replay || WORD == "replay";
+      continue;
+    }
+    if (OPTION) {
+      const std::size_t EQUALS = WORD.find('=');
+      const NcuOption NAMED = ncuOptionOf(WORD.substr(0, EQUALS));
+      if (NAMED == NcuOption::NONE) {
+        NOTE("'" + WORD +
+             "' is not an option bench run passes to ncu; it passes --set, --section and "
+             "--metrics (the report, its overwrite and --target-processes are bench run's own)");
+        continue;
+      }
+      compute = true;
+      if (EQUALS == std::string::npos) {
+        awaiting = NAMED;
+        continue;
+      }
+      const std::string WHY = takeValue(taken, NAMED, WORD.substr(EQUALS + 1));
+      NOTE(WHY);
+      listing = WHY.empty() && NAMED == NcuOption::METRICS;
+      continue;
+    }
+    if (awaiting != NcuOption::NONE) {
+      const NcuOption FOR = awaiting;
+      awaiting = NcuOption::NONE;
+      const std::string WHY = takeValue(taken, FOR, WORD);
+      NOTE(WHY);
+      listing = WHY.empty() && FOR == NcuOption::METRICS;
+      continue;
+    }
+    if (listing) {
+      NOTE(takeValue(taken, NcuOption::METRICS, WORD));
+      continue;
+    }
+    NOTE("'" + WORD + "' is not a mode of " + (NSIGHT ? "nsight" : "ncu") + "; it takes " +
+         (NSIGHT ? "compute, ncu, replay, --set NAME, --section NAME and --metrics NAMES"
+                 : "replay, --set NAME, --section NAME and --metrics NAMES"));
+  }
+  if (awaiting != NcuOption::NONE) {
+    NOTE(takesText(awaiting));
+  }
+  const bool SELECTS = !taken.set.empty() || !taken.sections.empty() || !taken.metrics.empty();
+  if (replay && SELECTS) {
+    NOTE("replay collects its own metric list; give replay alone, or name what to collect "
+         "without it");
+  }
+  taken.mode =
+      replay ? NsightMode::ComputeReplay : (compute ? NsightMode::Compute : NsightMode::Systems);
+  if (replay) {
+    taken.set.clear();
+    taken.sections.clear();
+    taken.metrics.clear();
+  }
+  selection = std::move(taken);
+  if (problem.empty()) {
+    return std::nullopt;
+  }
+  return readinessResult(ReadinessCause::CONFIGURATION, problem,
+                         "Give --profile-args replay, --set NAME, --section NAME or --metrics "
+                         "NAMES (under nsight also compute or ncu), Vernier's supported subset "
+                         "of ncu's options, or drop it; for any other ncu option, start the "
+                         "binary under ncu yourself.");
+}
+
+std::optional<ReadinessResult> parseNsightMode(const std::string& backend,
+                                               const std::string& profileArgs, NsightMode& mode) {
+  NsightSelection selection;
+  auto refused = parseNsightRequest(backend, profileArgs, selection);
+  mode = selection.mode;
   return refused;
 }
 
@@ -217,15 +424,15 @@ const char* nsightModeTool(NsightMode mode) { return mode == NsightMode::Systems
 ReadinessResult checkNsightRequestWith(const ReadinessRequest& request, const ReadinessContext& ctx,
                                        const std::string& driverParams) {
   const std::string BACKEND = request.backend == "ncu" ? "ncu" : "nsight";
-  NsightMode mode = NsightMode::Systems;
-  if (auto refused = parseNsightMode(BACKEND, request.profileArgs, mode)) {
+  NsightSelection selection;
+  if (auto refused = parseNsightRequest(BACKEND, request.profileArgs, selection)) {
     return *refused;
   }
-  const std::string TOOL = nsightModeTool(mode);
+  const std::string TOOL = nsightModeTool(selection.mode);
   ReadinessResult result =
       request.scope == ReadinessScope::RUNTIME
-          ? decideRuntime(BACKEND, TOOL, mode, request.profileArgs, ctx, driverParams)
-          : probeTool(TOOL, mode, ctx, driverParams);
+          ? decideRuntime(BACKEND, TOOL, selection, request.profileArgs, ctx, driverParams)
+          : probeTool(TOOL, selection, ctx, driverParams);
   if (!request.analyze) {
     return result;
   }

@@ -118,12 +118,13 @@ cmake --build build
 # Quick mode during development
 ./build/VectorAdd_GPU_PTEST --quick
 
-# With Nsight Systems timeline profiling
-./build/VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+# With Nsight Systems timeline profiling: bench run starts the binary under nsys
+bench run ./build/VectorAdd_GPU_PTEST --profile nsight -- --gtest_filter="*Basic"
 
-# With Nsight Compute kernel analysis (add --profile-args replay for
-# replay-mode metrics)
-./build/VectorAdd_GPU_PTEST --profile ncu --gtest_filter="*Basic"
+# With Nsight Compute kernel analysis, under ncu (--profile-args replay for the
+# replay metrics, or a set, sections and metrics: --profile-args '--set full')
+bench run ./build/VectorAdd_GPU_PTEST --profile ncu --cycles 3 --repeats 1 \
+  -- --gtest_filter="*Basic"
 
 # Specific GPU device
 ./build/VectorAdd_GPU_PTEST --gpu-device 1 --csv results.csv
@@ -911,29 +912,36 @@ managed buffer.
 NVIDIA Nsight Compute provides detailed kernel profiling:
 
 ```bash
-# Profile specific kernel (default Systems mode -> nsys timeline)
-./MyKernel_GPU_PTEST --profile nsight --gtest_filter="*MyKernel"
+# Profile a kernel's run (default Systems mode -> nsys timeline): bench run
+# starts the binary under nsys
+bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*MyKernel"
+# Generates: bench-out/MyKernel_GPU_PTEST.nsight/profile.nsys-rep (+ the
+# nsys stats summaries)
 
-# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep (+ auto stats reports)
-
-# Kernel deep-dive (Compute replay) -> .ncu-rep instead
-./MyKernel_GPU_PTEST --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+# Kernel deep-dive (Compute replay) -> .ncu-rep instead, under ncu
+bench run ./MyKernel_GPU_PTEST --profile nsight --profile-args replay \
+  --cycles 3 --repeats 1 -- --gtest_filter="*MyKernel"
+# Generates: bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu-ui bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 
 # Or command-line report
-ncu --csv --print-summary per-kernel MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu --csv --print-summary per-kernel bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 ```
 
-**What Nsight shows:**
+**What the replay collects:**
 
-- Roofline analysis (compute vs memory bound)
-- Warp execution efficiency
-- Memory throughput breakdown
-- Instruction mix
-- Occupancy limiters
+- Throughput of the SMs, DRAM, L1 and L2 (memory throughput breakdown)
+- Achieved occupancy
+- Warp execution efficiency and branch efficiency
+- Registers per thread
+- Instruction mix (ALU, FMA and load/store pipe utilization)
+
+For roofline analysis and occupancy limiters, name ncu's sections instead:
+`--profile-args '--section SpeedOfLight_RooflineChart --section Occupancy'`,
+or a set such as `--profile-args '--set full'` (see
+[tools/README.md](../../../tools/README.md#run---execute-benchmark-binary)).
 
 ### GPU Profiler Integration
 
@@ -1028,8 +1036,8 @@ shared memory, and launch count into the GPU CSV section on every GPU run
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
-cache hit rates), keep `--profile nsight --profile-args replay` or wrap
-externally with `ncu`. Under `--capture-um` the same collector also records
+cache hit rates), use `bench run --profile ncu --profile-args replay`, or name
+the sections and metrics ncu collects (`--profile-args '--set full'`). Under `--capture-um` the same collector also records
 CUPTI's unified-memory counters over each measured window
 ([Unified-Memory Counters](#unified-memory-counters)).
 

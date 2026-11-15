@@ -435,6 +435,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   root with a match, in the order `bin_roots` or `VERNIER_BENCH_BIN_ROOTS`
   lists them, where the first match in sorted order across all roots was
   taken. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run --profile ncu` (and nsight's compute route) passes ncu a section
+  set, sections and metrics (`--set`, `--section`, `--metrics`) and runs a
+  kernel replay (`--profile-args replay`), refusing any other ncu option or a
+  malformed list before anything starts; the replay collects warp execution
+  efficiency and the instruction mix, three of whose metric names ncu did not
+  have. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
