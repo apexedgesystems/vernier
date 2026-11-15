@@ -615,6 +615,8 @@ pub(crate) fn end_by(signal: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::bench::HeldFifo;
     use crate::bench::{owned_run, tempfile_dir};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -758,47 +760,58 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Shell that waits, 5 s at the most, until the process `$!` leads a
-    /// session of its own, as setsid makes it: only then has it left the
-    /// group the script runs in.
+    /// Shell that starts, in a session of its own (setsid), a process that
+    /// holds the script's output and the FIFO @p fifo open and runs until
+    /// @p dir is gone; it waits, 5 s at the most, until that process has
+    /// created @p ready, which it does once it has left the script's group
+    /// and opened the FIFO.
     #[cfg(target_os = "linux")]
-    const UNTIL_ITS_OWN_SESSION: &str = "i=0; while read -r s < /proc/$!/stat && set -- $s && \
-        [ \"$6\" != \"$!\" ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;";
+    fn outside_the_group(fifo: &Path, ready: &Path, dir: &Path) -> String {
+        format!(
+            "/usr/bin/setsid /bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; \
+             while [ -d \"$2\" ]; do /bin/sleep 0.05; done' '{}' '{}' '{}' & \
+             i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;",
+            fifo.display(),
+            ready.display(),
+            dir.display(),
+            ready.display()
+        )
+    }
 
     /// @test A process that leaves the program's group (setsid) is not
     /// owned: the run neither ends it nor waits on the output it holds open,
     /// and keeps what the program wrote. The program exits only once that
     /// process has left its group, which a background start may take longer
-    /// to do than the run takes to see the program exit.
+    /// to do than the run takes to see the program exit. That process holds
+    /// the FIFO `outside` and leaves once the test's folder is gone.
     #[test]
     #[cfg(target_os = "linux")]
     fn owned_run_does_not_wait_on_a_process_outside_its_group() {
-        let dir = tempfile_dir("owned_run_outside");
-        let outside = dir.join("outside.pid");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("outside");
+        let mut outside = HeldFifo::new(&fifo);
         let (run, took) = owned_sh(
             &format!(
-                "echo out; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; {} exit 0",
-                outside.display(),
-                UNTIL_ITS_OWN_SESSION
+                "echo out; {} exit 0",
+                outside_the_group(&fifo, &dir.path().join("ready"), dir.path())
             ),
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicI32::new(0),
         );
-        let outside = written_pid(&outside);
-        let outside_runs = still_runs(outside);
-        // This test started that process, through the script, and ends it,
-        // with SIGKILL: the process keeps an ignored SIGTERM it inherited.
-        let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill -KILL {outside}")])
-            .status();
+        let outside_runs = outside.held();
+        drop(dir);
+        let outside_left = outside.ends_within(std::time::Duration::from_secs(5));
         assert!(
             took < std::time::Duration::from_secs(5),
             "the run waited on a pipe held outside its group: {took:?}"
         );
         assert!(outside_runs, "a process outside the group was ended");
+        assert!(
+            outside_left,
+            "the process outside the group outlived its folder"
+        );
         assert_eq!(run.left_running, 0);
         assert_eq!(run.stdout, "out\n");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// @test Output larger than a pipe holds is read whole from both pipes.
@@ -874,13 +887,14 @@ mod tests {
         }
         let before = sigchld_setting();
         let dir = tempfile_dir(&format!("owned_run_policy_{policy}"));
-        let left = dir.join("left.pid");
+        // The process the program leaves holds it open while it runs.
+        let mut left = HeldFifo::new(&dir.join("left"));
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
             &format!(
-                "echo out; /bin/sleep 60 & echo $! > '{}'; exit 3",
-                left.display()
+                "echo out; /bin/sleep 60 9<>'{}' & exit 3",
+                dir.join("left").display()
             ),
         ]);
         let run = owned_run::spawn(&mut command).and_then(|child| {
@@ -890,14 +904,7 @@ mod tests {
                 &std::sync::atomic::AtomicI32::new(0),
             )
         });
-        let left = written_pid(&left);
-        let left_runs = still_runs(left);
-        if left_runs {
-            // This test started that process, through the script, and ends it.
-            let _ = Command::new("/bin/sh")
-                .args(["-c", &format!("kill -KILL {left}")])
-                .status();
-        }
+        let left_runs = left.held();
         let line = match run {
             Ok(run) => {
                 let ending = match run.ending {
@@ -993,18 +1000,28 @@ mod tests {
     /// it could not observe the end. Here the program leaves a process in its
     /// group, which keeps the group's id from passing to another group: a
     /// signal to the group would end that process, and it still runs after
-    /// the run (the test then ends it).
+    /// the run. That process holds the FIFO `left` and leaves once the test's
+    /// folder is gone.
     #[test]
     #[cfg(target_os = "linux")]
     fn owned_run_does_not_signal_a_group_it_no_longer_owns() {
-        let dir = tempfile_dir("owned_run_reaped_elsewhere");
-        let left = dir.join("left.pid");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("left");
+        let mut left = HeldFifo::new(&fifo);
+        let ready = dir.path().join("ready");
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
             &format!(
-                "/bin/sleep 60 > /dev/null 2>&1 & echo $! > '{}'; exit 0",
-                left.display()
+                "/bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; \
+                 while [ -d \"$2\" ]; do /bin/sleep 0.05; done' '{}' '{}' '{}' \
+                 > /dev/null 2>&1 & \
+                 i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done; \
+                 exit 0",
+                fifo.display(),
+                ready.display(),
+                dir.path().display(),
+                ready.display()
             ),
         ]);
         let child = owned_run::spawn(&mut command).expect("start sh");
@@ -1028,16 +1045,16 @@ mod tests {
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicI32::new(0),
         );
-        let left = written_pid(&left);
-        let left_runs = still_runs(left);
-        // This test started that process, through the script, and ends it.
-        let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill -KILL {left}")])
-            .status();
-        let _ = fs::remove_dir_all(&dir);
+        let left_runs = left.held();
+        drop(dir);
+        let left_ended = left.ends_within(std::time::Duration::from_secs(5));
         assert!(
             left_runs,
             "the run signalled the group of a program another wait had reaped"
+        );
+        assert!(
+            left_ended,
+            "the process the program left outlived the test's folder"
         );
         let Err(error) = run else {
             panic!("the run reported an end it could not observe");
