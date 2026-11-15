@@ -537,7 +537,10 @@ bench nsight-parse mixed/ --csv mixed.csv   # exits 1
 target_time, profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read
 by `run` and `profile-all` when the corresponding CLI flag is omitted;
 `target_time` (`--target-time`) by `run` alone, passed as written for the
-binary to read. `gtest_filter` is
+binary to read. A `--quick` on the command line takes precedence over the
+file's cycles, repeats and target_time: the binary sizes the run as
+`--quick` says, and a `--cycles` or `--repeats` given beside it is passed
+too. `gtest_filter` is
 the default test filter: `run` passes it unless a `--gtest_filter=` follows
 `--`, and `profile-all` unless `--filter` is given. A filter passed this way,
 or typed, takes precedence over `GTEST_FILTER` in the environment, which

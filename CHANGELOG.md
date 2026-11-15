@@ -401,7 +401,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench run` applies `.bench.yaml`'s `gtest_filter` and `target_time`, and
   `bench run` and `bench profile-all` find short binary names under its
-  `bin_roots` and `bin_subdirs`.
+  `bin_roots` and `bin_subdirs`; a `--quick` on their command line takes
+  precedence over the file's cycles, repeats and target_time.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole

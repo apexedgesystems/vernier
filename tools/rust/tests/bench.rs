@@ -3640,6 +3640,29 @@ fn run_passes_the_configured_target_time() {
     );
 }
 
+/// @test A --quick given to bench run takes precedence over the file's
+/// cycles, repeats and target_time: the benchmark gets --quick and none of
+/// them, while the file's filter, which is no size, still applies. A
+/// --cycles given beside --quick on the command line reaches the benchmark
+/// too, which then runs that many cycles and quick's other sizes.
+#[test]
+fn run_quick_takes_precedence_over_the_files_sizes() {
+    let rig = route_rig(&[]);
+    bench_yaml(
+        &rig,
+        "cycles: 10000\nrepeats: 10\ntarget_time: 100ms\ngtest_filter: \"Join.*\"\n",
+    );
+    let (code, err, _) = run_rig(&rig, &["--quick"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(&rig, &["--quick", "--cycles", "7"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --quick --gtest_filter=Join.*\n\
+         bench wrap= --quick --cycles 7 --gtest_filter=Join.*\n"
+    );
+}
+
 /// @test config-validate knows target_time: it is no unrecognized key.
 #[test]
 fn config_validate_knows_target_time() {
@@ -3825,6 +3848,43 @@ fn run_profile_all(
         String::from_utf8_lossy(&output.stderr).into_owned(),
         std::fs::read_to_string(&rig.log).unwrap_or_default(),
     )
+}
+
+/// @test A --quick given to profile-all takes precedence over the file's
+/// cycles and repeats, as for bench run; a --cycles given beside it reaches
+/// each run too.
+#[test]
+fn profile_all_quick_takes_precedence_over_the_files_sizes() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "cycles: 10000\nrepeats: 10\n");
+    let out = rig.dir.path().join("out");
+    for extra in [&["--quick"][..], &["--quick", "--cycles", "7"][..]] {
+        let given = output_of(
+            Command::new(bin())
+                .arg("profile-all")
+                .arg(&rig.bench)
+                .args(["--profilers", "perf", "--out"])
+                .arg(&out)
+                .args(extra)
+                .env("PATH", rig.dir.path().join("tools"))
+                .current_dir(rig.dir.path()),
+        );
+        assert!(
+            given.status.success(),
+            "{extra:?}: {}",
+            String::from_utf8_lossy(&given.stderr)
+        );
+    }
+    let perf = out.join("perf");
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench --quick --profile perf --profile-output-dir {}\n\
+             bench --quick --cycles 7 --profile perf --profile-output-dir {}\n",
+            perf.display(),
+            perf.display()
+        )
+    );
 }
 
 /// The lines of profile-all's summary, one per run, as printed.

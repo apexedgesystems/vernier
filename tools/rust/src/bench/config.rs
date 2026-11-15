@@ -8,7 +8,9 @@
 //! `.bench.yaml` at the project root captures those defaults so per-binary
 //! invocations don't have to. The runner reads the file at startup and
 //! applies any unset CLI flags from it; `gtest_filter` is given to the
-//! benchmark unless a filter follows `--` (`runner::RunConfig::gtest_filter`).
+//! benchmark unless a filter follows `--` (`runner::RunConfig::gtest_filter`),
+//! and a `--quick` on the command line keeps the file's cycles, repeats and
+//! target_time out of the run.
 //! The bench binary itself does NOT read this file -- it stays purely
 //! flag-driven so it works the same way whether or not the runner is
 //! involved.
@@ -67,7 +69,9 @@ pub const DEFAULT_TEMPLATE: &str = "\
 # .bench.yaml -- vernier project defaults.
 #
 # Anything set here is the default for `bench run` / `bench profile-all`
-# when the user hasn't passed the corresponding CLI flag explicitly.
+# when the user hasn't passed the corresponding CLI flag explicitly; a
+# --quick on the command line takes precedence over cycles, repeats and
+# target_time.
 # Remove a key to let the harness's own defaults win.
 
 # Iterations per repeat (--cycles N)

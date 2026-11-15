@@ -125,7 +125,8 @@ enum Command {
         #[arg(long)]
         csv: Option<PathBuf>,
 
-        /// Quick mode (passed to binary as --quick)
+        /// Quick mode (passed to binary as --quick); .bench.yaml's cycles,
+        /// repeats and target_time are then not used
         #[arg(long)]
         quick: bool,
 
@@ -279,7 +280,7 @@ enum Command {
         #[arg(long)]
         repeats: Option<u32>,
 
-        /// --quick mode
+        /// --quick mode; .bench.yaml's cycles and repeats are then not used
         #[arg(long)]
         quick: bool,
     },
@@ -425,6 +426,29 @@ fn project_defaults() -> Result<(Option<PathBuf>, bench::config::Config), Error>
     Ok((file, config))
 }
 
+/// The run sizes a `.bench.yaml` gives: cycles, repeats and target_time.
+#[derive(Default)]
+struct Sizes {
+    cycles: Option<u32>,
+    repeats: Option<u32>,
+    target_time: Option<String>,
+}
+
+/// The sizes @p file_cfg gives a run; none when the command line gave
+/// `--quick` (@p quick), which takes precedence over the file's sizes, the
+/// benchmark then sizing the run as `--quick` says (beside any size given on
+/// the command line itself).
+fn file_sizes(file_cfg: &bench::config::Config, quick: bool) -> Sizes {
+    if quick {
+        return Sizes::default();
+    }
+    Sizes {
+        cycles: file_cfg.cycles,
+        repeats: file_cfg.repeats,
+        target_time: file_cfg.target_time.clone(),
+    }
+}
+
 fn run(args: Args) -> Result<(), Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
@@ -506,19 +530,21 @@ fn run(args: Args) -> Result<(), Error> {
             extra_args,
         } => {
             // Pull defaults from .bench.yaml if one exists; unset CLI flags
-            // win from the file. CLI takes precedence when both are set.
+            // win from the file. CLI takes precedence when both are set, and
+            // a --quick given here over the file's sizes.
             let (file, file_cfg) = project_defaults()?;
             // Accept either a full path or a short name, looked for where
             // the environment, else the file, else the default says.
             let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
             let resolved = bench::workflow::resolve_binary(&binary, &search)?;
+            let sizes = file_sizes(&file_cfg, quick);
             let cfg = bench::runner::RunConfig {
                 binary: resolved,
                 csv: csv.clone(),
                 quick,
-                cycles: cycles.or(file_cfg.cycles),
-                target_time: target_time.or(file_cfg.target_time),
-                repeats: repeats.or(file_cfg.repeats),
+                cycles: cycles.or(sizes.cycles),
+                target_time: target_time.or(sizes.target_time),
+                repeats: repeats.or(sizes.repeats),
                 profile,
                 profile_args,
                 profile_frequency,
@@ -658,11 +684,13 @@ fn run(args: Args) -> Result<(), Error> {
             repeats,
             quick,
         } => {
-            // .bench.yaml fills in any unset flags, and says where a short
-            // name is looked for, as for bench run.
+            // .bench.yaml fills in any unset flags (its sizes not beside a
+            // --quick given here), and says where a short name is looked for,
+            // as for bench run.
             let (file, file_cfg) = project_defaults()?;
             let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
             let resolved = bench::workflow::resolve_binary(&binary, &search)?;
+            let sizes = file_sizes(&file_cfg, quick);
             let parsed_profilers = profilers
                 .map(|s| {
                     s.split(',')
@@ -676,8 +704,8 @@ fn run(args: Args) -> Result<(), Error> {
                 profilers: parsed_profilers,
                 artifact_root: out.or(file_cfg.profile_output_dir.clone()),
                 gtest_filter: filter.or(file_cfg.gtest_filter.clone()),
-                cycles: cycles.or(file_cfg.cycles),
-                repeats: repeats.or(file_cfg.repeats),
+                cycles: cycles.or(sizes.cycles),
+                repeats: repeats.or(sizes.repeats),
                 quick,
             })?;
         }
