@@ -334,6 +334,11 @@ docker compose run --rm -T dev-cuda ctest --test-dir build/native-linux-debug -L
 # CLI tool tests
 make test-rust
 make test-py
+
+# Sanitizers, CPU only: a named selection in build/asan, build/tsan or
+# build/ubsan; a failing test or any sanitizer report fails the target,
+# whatever ASAN_OPTIONS, LSAN_OPTIONS, TSAN_OPTIONS or UBSAN_OPTIONS say
+make compose-asan
 ```
 
 ---
