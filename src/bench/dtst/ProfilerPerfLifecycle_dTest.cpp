@@ -11,6 +11,8 @@
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
+#include "src/bench/inc/PerfRegistry.hpp"
+#include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerPerf.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
@@ -68,6 +70,11 @@ std::string readText(const std::string& path) {
   text << in.rdbuf();
   return text.str();
 }
+
+/** @brief What a measured window throws in the abort test, with a mark to recognise it by. */
+struct WindowFailed {
+  int mark = 0;
+};
 
 /** @brief One measured window under a fake perf in a private folder. */
 class PerfLifecycleTest : public ::testing::Test {
@@ -340,6 +347,75 @@ TEST_F(PerfLifecycleTest, ErrorAfterTheCountsFails) {
             "completion: unusable: " + W.folder +
                 "/stat.txt holds an error from perf after its counts, which therefore do not "
                 "count: perf: 0.101234567 seconds time elapsed | Error: final read failed");
+}
+
+/**
+ * @test A measured window that ends by an exception, run through the harness
+ * as a benchmark runs it, in stat mode and in record mode: the exception
+ * reaches the caller as it was thrown, nothing is published, and by then
+ * perf has ended, judged by no one: no failure is recorded, and what it wrote
+ * is set aside (stat.aborted.txt, perf.aborted.data), with a line that says
+ * where. The case then measures again, and that window's output is perf's
+ * own, its row published and nothing failed.
+ */
+TEST_F(PerfLifecycleTest, AbortStopsPerf) {
+  const char* INHERITED = std::getenv("PATH");
+  const ScopedEnv PATH_ENV("PATH", dir_.path() + ":" +
+                                       (INHERITED != nullptr ? INHERITED : "/usr/bin:/bin"));
+  const ScopedEnv MODE("FAKE_PERF_MODE", "ok");
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  struct Mode {
+    std::string test;
+    std::string args;
+    std::string output;
+    std::string aside;
+  };
+  for (const Mode& M :
+       {Mode{"Perf.Aborted", "", "stat.txt", "stat.aborted.txt"},
+        Mode{"Perf.AbortedRecord", "record -g", "perf.data", "perf.aborted.data"}}) {
+    PerfConfig cfg;
+    cfg.profileTool = "perf";
+    cfg.profileArgs = M.args;
+    cfg.artifactRoot = dir_.path();
+    ProfilerRegistry::instance().resetFailures();
+    (void)vernier::bench::PerfRegistry::instance().takeAll();
+    StderrCapture err;
+    std::string folder;
+    {
+      vernier::bench::PerfCase pc = vernier::bench::makePerfCaseWithProfiler(M.test, cfg);
+      try {
+        pc.measured([] { throw WindowFailed{9}; });
+        ADD_FAILURE() << M.test << ": the window's exception did not reach the caller";
+      } catch (const WindowFailed& failed) {
+        EXPECT_EQ(failed.mark, 9) << M.test << ": another exception reached the caller";
+      }
+      folder = dir_.path() + "/" + M.test + ".perf";
+      // While the case lives, as a benchmark that caught the exception keeps it.
+      EXPECT_TRUE(fakesGone()) << M.test << ": perf still runs after the window ended\n"
+                               << dir_.log();
+      EXPECT_FALSE(std::filesystem::exists(folder + "/" + M.output))
+          << M.test << ": the aborted window's output is left as the case's";
+      EXPECT_FALSE(readText(folder + "/" + M.aside).empty()) << M.test;
+      EXPECT_FALSE(vernier::bench::PerfRegistry::instance().take().has_value())
+          << M.test << ": the aborted window published a row";
+      const std::vector<ProfileFailure> ABORTED = ProfilerRegistry::instance().failures();
+      EXPECT_TRUE(ABORTED.empty()) << M.test << ": " << ABORTED.front().result.report.message;
+
+      pc.measured([] {});
+    }
+    EXPECT_FALSE(readText(folder + "/" + M.output).empty())
+        << M.test << ": the window measured after the aborted one left no output";
+    EXPECT_TRUE(vernier::bench::PerfRegistry::instance().take().has_value())
+        << M.test << ": the window measured after the aborted one published no row";
+    const std::vector<ProfileFailure> FAILED = ProfilerRegistry::instance().failures();
+    EXPECT_TRUE(FAILED.empty()) << M.test << ": " << FAILED.front().result.report.message;
+    EXPECT_NE(err.text().find("[perf] the measured window ended by an exception: perf was "
+                              "stopped; its output was set aside as " +
+                              folder + "/" + M.aside + "\n"),
+              std::string::npos)
+        << M.test << ":\n"
+        << err.text();
+  }
 }
 
 /** @test Record mode's data file, confirmed by perf, passes; without it the capture fails. */

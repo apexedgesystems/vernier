@@ -739,6 +739,38 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
 #endif
 }
 
+void PerfStatProfiler::abortMeasure() noexcept {
+#ifdef __linux__
+  if (!started_) {
+    return;
+  }
+  started_ = false;
+  try {
+    // Stopped as afterMeasure() stops it, and judged by nothing: what perf
+    // wrote covers part of a window that did not complete, so it is set
+    // aside under a name of its own instead of left as the case's output.
+    const HelperStopResult STOP = helper_.stop();
+    const std::filesystem::path OUTPUT{statPath_.empty() ? dataPath_ : statPath_};
+    const std::filesystem::path ASIDE =
+        OUTPUT.parent_path() / (OUTPUT.stem().string() + ".aborted" + OUTPUT.extension().string());
+    std::error_code ec;
+    std::filesystem::rename(OUTPUT, ASIDE, ec);
+    const std::string ENDED =
+        STOP.stillAlive ? "perf did not end on SIGINT, SIGTERM or SIGKILL" : "perf was stopped";
+    const std::string LEFT =
+        ec == std::errc::no_such_file_or_directory
+            ? "it left no output"
+            : (ec ? "its output " + OUTPUT.string() + " could not be set aside: " + ec.message()
+                  : "its output was set aside as " + ASIDE.string());
+    std::fprintf(stderr, "[perf] the measured window ended by an exception: %s; %s\n",
+                 ENDED.c_str(), LEFT.c_str());
+  } catch (...) {
+    // Called while an exception is on its way to the caller: nothing here
+    // may replace it.
+  }
+#endif
+}
+
 void PerfStatProfiler::checkOutput() const {
 #ifdef __linux__
   if (!statPath_.empty()) {

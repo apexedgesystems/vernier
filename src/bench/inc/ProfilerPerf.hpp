@@ -85,7 +85,10 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
  * Attaches to running process via `-p <PID>`. perf is started as
  * `/bin/sh -c "exec <perf command>"`, so `--profile-args` stays shell text and
  * perf itself is the owned child that afterMeasure() stops: SIGINT, with
- * PERF_WRITE_WAIT_MS for perf to write, then SIGTERM, then SIGKILL.
+ * PERF_WRITE_WAIT_MS for perf to write, then SIGTERM, then SIGKILL. When the
+ * measured window ends by an exception, abortMeasure() stops perf the same
+ * way, judges nothing and sets what it wrote aside: stat.txt becomes
+ * stat.aborted.txt, a data file <name>.aborted.data, and one line says so.
  */
 class PerfStatProfiler final : public Profiler {
 public:
@@ -108,6 +111,9 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+
+  /** @brief The measured window ended by an exception: stop perf, set its output aside. */
+  void abortMeasure() noexcept override;
 
   /** @brief How long perf may take to write its output after SIGINT. */
   static constexpr int PERF_WRITE_WAIT_MS = 5000;
