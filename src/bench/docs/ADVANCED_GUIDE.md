@@ -407,11 +407,24 @@ separately. The labels compare two runs; they are not a significance test.
 bench compare baseline.csv candidate.csv --threshold 5
 ```
 
-**Filter by test** (keeping the header line, which `bench` and `bench-plot`
-read the columns from):
+**Filter by test**: the header line, which `bench` and `bench-plot` read the
+columns from, and the rows whose test starts with a name. A CSV reader keeps
+a quoted test name (a measurement's label may hold a comma) whole, where a
+line-based filter would drop it or split it:
 
 ```bash
-(head -n 1 results.csv; grep "^MyComponent\.Encode" results.csv) > encode_only.csv
+python3 -c '
+import csv, sys
+path, prefix = sys.argv[1:]
+rows = csv.DictReader(open(path, newline=""))
+out = csv.DictWriter(sys.stdout, rows.fieldnames, lineterminator="\n")
+out.writeheader()
+for row in rows:
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    if row["test"].startswith(prefix):
+        out.writerow(row)
+' results.csv MyComponent.Encode > encode_only.csv
 ```
 
 ---

@@ -738,8 +738,10 @@ columns in four groups, always in this order:
 Every row has as many cells as the header; a value a row does not have is an
 empty cell (a CPU row in a GPU benchmark's file leaves the GPU columns empty).
 A test name holding a comma, a double quote or a line break is written in
-double quotes, its quotes doubled (RFC 4180). `bench` and `bench-plot` need
-the `test`, `wallMedian`, `wallCV` and `callsPerSecond` columns.
+double quotes, its quotes doubled (RFC 4180), so read the file with a CSV
+reader that honours the quotes, not by splitting lines at commas. `bench` and
+`bench-plot` need the `test`, `wallMedian`, `wallCV` and `callsPerSecond`
+columns.
 
 **Row names.** A test that publishes one measurement names its row with its
 case name, `Suite.Test`. When it publishes several, each row is

@@ -198,8 +198,17 @@ bench compare before.csv after.csv
 **5. Check warmup is sufficient**:
 
 ```bash
-# Look at warmup column in CSV
-grep "warmup" results.csv
+# Each row's warmup column, by name (the CSV schema says what it counts)
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout, lineterminator="\n")
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test warmup
 ```
 
 ---
@@ -652,9 +661,19 @@ const int N = 1024 * 1024;
 **2. The copies take most of each round trip**:
 
 ```bash
-# One launch, the two copy medians and the round trip, by column name
-awk -F, -v OFS=, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i }
-  { print $col["test"], $col["kernelTimeUs"], $col["transferTimeUs"], $col["wallMedian"] }' results.csv
+# One launch, the two copy medians and the round trip, by column name. A CSV
+# reader keeps a quoted test name (a measurement's label may hold a comma)
+# in one column, where splitting lines at commas would shift the columns
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout, lineterminator="\n")
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test kernelTimeUs transferTimeUs wallMedian
 ```
 
 `kernelTimeUs` is one launch, `transferTimeUs` the two copy medians and
@@ -685,9 +704,17 @@ out.
 # Profile to identify bottleneck (bench run starts it under nsys)
 bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*CpuVsGpu*"
 
-# The GPU columns this section reads, by name
-awk -F, -v OFS=, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i }
-  { print $col["test"], $col["transferTimeUs"], $col["occupancy"], $col["speedupVsCpu"] }' results.csv
+# The GPU columns this section reads, by name (the reader of item 2)
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout, lineterminator="\n")
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test transferTimeUs occupancy speedupVsCpu
 ```
 
 ---

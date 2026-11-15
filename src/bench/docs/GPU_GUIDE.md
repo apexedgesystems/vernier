@@ -670,12 +670,21 @@ speedupVsCpu = cpuTime / gpuTotalTime
 ```
 
 **In the CSV** (`--csv results.csv`) the two measurements are the test's two
-rows, named by their labels. The columns that compare them, picked by name:
+rows, named by their labels. The columns that compare them, picked by name
+with a CSV reader, which keeps a quoted test name (a label may hold a comma)
+in one column:
 
 ```bash
-awk -F, -v OFS=, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i }
-  { print $col["test"], $col["wallMedian"], $col["kernelTimeUs"],
-          $col["transferTimeUs"], $col["speedupVsCpu"] }' results.csv
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout, lineterminator="\n")
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test wallMedian kernelTimeUs transferTimeUs speedupVsCpu
 ```
 
 From one run on the laptop RTX 5000 Ada (`--cycles 10 --repeats 5`, with
