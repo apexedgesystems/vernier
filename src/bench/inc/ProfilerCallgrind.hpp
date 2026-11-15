@@ -61,12 +61,12 @@ namespace bench {
  * Under a wrap started by hand, switches instrumentation on before each
  * measured window and off after it, so the profile valgrind writes at exit
  * holds the measured calls and the harness's own work between the two hooks,
- * and not the rest of the process. A build that found valgrind's callgrind.h
- * switches it from inside the process with callgrind's client requests,
- * dropping what was counted before the first window, so the profile is the
- * windows with or without --instr-atstart=no and with valgrind's gdbserver
- * off; a build without it switches it with callgrind_control, which needs the
- * gdbserver and the wrap's --instr-atstart=no. Under the wrap `bench run
+ * and not the rest of the process. It switches it from inside the process with
+ * callgrind's client requests, dropping what was counted before the first
+ * window, so the profile is the windows with or without --instr-atstart=no and
+ * with valgrind's gdbserver off; a libbench built with NVALGRIND, which has no
+ * requests, switches it with callgrind_control, which needs the gdbserver and
+ * the wrap's --instr-atstart=no. Under the wrap `bench run
  * --profile callgrind` uses, the recording covers the whole process and is
  * left alone. Not under valgrind, nothing is switched and measurement proceeds
  * normally.
@@ -105,8 +105,8 @@ private:
   bool wrappedByRunner_{false};
   // True when this backend switches instrumentation around the measured
   // window: under a wrap started by hand, with callgrind's client requests
-  // built in or callgrind_control on PATH; bench run's wrap records the
-  // whole process.
+  // (every build but one with NVALGRIND) or callgrind_control on PATH; bench
+  // run's wrap records the whole process.
   bool canToggle_{false};
 };
 
@@ -125,9 +125,10 @@ std::optional<ReadinessResult> parseCallgrindMode(const std::string& profileArgs
  *
  * The doctor's scopes probe the tool's start; a run reads its own memory map
  * for valgrind's callgrind (its executable: callgrind maps no preload of its
- * own). In a build without callgrind's client requests, a wrap started by
- * hand is a caveat: with callgrind_control on PATH, the window is switched
- * through valgrind's gdbserver, and without it, it cannot be switched.
+ * own). In a libbench built with NVALGRIND, which has no callgrind client
+ * requests, a wrap started by hand is a caveat: with callgrind_control on
+ * PATH, the window is switched through valgrind's gdbserver, and without it,
+ * it cannot be switched.
  * --profile-analyze is bench run's, after the process exits: ready under its
  * wrap, an analysis-stage error under a wrap started by hand, and in the
  * doctor's scopes an analysis-stage error when callgrind_annotate is missing.

@@ -16,8 +16,9 @@
  *    thread sanitizer, where valgrind is not installed, and where valgrind
  *    stops reading this binary's debug information before the program runs,
  *    quoting valgrind; the locked run also skips where libbench says it does
- *    not mark the gate (built without helgrind.h, or with NVALGRIND). Any
- *    other way of not reaching a probe fails, with what the run printed.
+ *    not mark the gate (built with NVALGRIND), which only such a build may
+ *    say. Any other way of not reaching a probe fails, with what the run
+ *    printed.
  *  - Tests are independent of execution order.
  */
 
@@ -270,6 +271,19 @@ bool reportsRaceOfSize(const std::string& log, std::size_t size) {
 
 /* ----------------------------- API Tests ----------------------------- */
 
+/**
+ * @test libbench marks the gate in every build, from the helgrind.h it
+ * carries, whatever its build machine has installed: only NVALGRIND, the way
+ * to compile the requests out, leaves it unmarked
+ */
+TEST(StartGateHelgrindTest, MarkedUnlessBuiltWithNvalgrind) {
+#if defined(NVALGRIND)
+  EXPECT_FALSE(vernier::bench::helgrind::requestsBuiltIn());
+#else
+  EXPECT_TRUE(vernier::bench::helgrind::requestsBuiltIn());
+#endif
+}
+
 /** @test Under helgrind the locked probe reports no error: the gate's flags are not reported */
 TEST(StartGateHelgrindTest, GateReportsNothing) {
   const std::string CANNOT_RUN = reasonHelgrindCannotRun();
@@ -278,8 +292,8 @@ TEST(StartGateHelgrindTest, GateReportsNothing) {
   }
   // Whether the gate marks its flags is libbench's build-time choice, so ask it
   if (!vernier::bench::helgrind::requestsBuiltIn()) {
-    GTEST_SKIP() << "this libbench was built without valgrind's helgrind.h, or with NVALGRIND, "
-                    "so StartGate does not mark its flags for helgrind";
+    GTEST_SKIP() << "this libbench was built with NVALGRIND, so StartGate does not mark its "
+                    "flags for helgrind";
   }
   const ScratchDir SCRATCH;
   ASSERT_FALSE(SCRATCH.path().empty()) << "could not create a scratch directory";

@@ -3,16 +3,17 @@
 # and checks which of its phases the profile holds
 #
 # Run with: cmake -DPROBE=<exe> -DREADER=<exe> -DCASE=<case> -DWORK_DIR=<dir>
-#                 [-DPROBE_SANITIZER=asan|tsan|ubsan] [-DCLIENT_REQUESTS=0|1]
+#                 [-DPROBE_SANITIZER=asan|tsan|ubsan]
 #                 -P CallgrindWindowProbe_test.cmake
 #
 # PROBE_SANITIZER is the build's sanitizer setting (-DSANITIZER), with which
-# the probe was compiled. CLIENT_REQUESTS says whether the build found
-# valgrind's callgrind.h, so that libbench switches the window with callgrind's
-# client requests; without them the three cases that need them skip. READER is
-# ValgrindReaderAssertionCli, which reads valgrind's text for an assertion of
-# its reader before the probe started, with the evidence every check asks of it
-# (ValgrindReaderAssertion.hpp).
+# the probe was compiled. READER is ValgrindReaderAssertionCli, which reads
+# valgrind's text for an assertion of its reader before the probe started,
+# with the evidence every check asks of it (ValgrindReaderAssertion.hpp).
+# libbench switches the window with callgrind's client requests, which every
+# build has unless it was built with NVALGRIND; the probe's ClientRequests
+# test prints which, and the three cases that need the requests skip without
+# them.
 #
 # hint:   run the probe without valgrind, then under the valgrind command the
 #         callgrind backend printed, and expect the profile to hold the
@@ -37,12 +38,12 @@
 # Prints "SKIPPED: <reason>", the tests' skip expression, in five cases only,
 # each with valgrind's own words where it has them: the probe is built with the
 # address sanitizer (PROBE_SANITIZER=asan); valgrind is not installed; the
-# case needs the client requests and the build has none (CLIENT_REQUESTS);
-# valgrind stopped reading debug information before the probe ran (its reader
-# gave up, or failed an assertion before the probe started, as READER reads
-# it); or valgrind ran the probe without reading
-# its symbols, so the profile names none of the probe's functions and valgrind
-# warned about the probe's debug information. Anything else that keeps the
+# case needs the client requests and the probe says libbench has none (built
+# with NVALGRIND); valgrind stopped reading debug information before the probe
+# ran (its reader gave up, or failed an assertion before the probe started, as
+# READER reads it); or valgrind ran the probe without reading its symbols, so
+# the profile names none of the probe's functions and valgrind warned about the
+# probe's debug information. Anything else that keeps the
 # probe's tests from starting under valgrind fails with the run's output: a
 # failed launch, a signal, an early exit, no output. So does a profile that
 # names none of the probe's functions without that warning, and a profile
@@ -78,14 +79,26 @@ if (NOT _valgrind)
   return()
 endif ()
 
-# Without the client requests libbench switches the window with
-# callgrind_control, which needs valgrind's gdbserver, the wrap's
-# --instr-atstart=no and itself on PATH: the backend says so as a caveat.
-if (CASE MATCHES "^hint(vgdboff|instratstart|nocontrol)$" AND NOT CLIENT_REQUESTS)
-  message(STATUS "SKIPPED: this build found no valgrind/callgrind.h, so libbench has no "
-                 "callgrind client requests and switches the window with callgrind_control"
+# A libbench built with NVALGRIND has no client requests and switches the
+# window with callgrind_control, which needs valgrind's gdbserver, the wrap's
+# --instr-atstart=no and itself on PATH: the backend says so as a caveat. The
+# probe prints which libbench it runs with.
+if (CASE MATCHES "^hint(vgdboff|instratstart|nocontrol)$")
+  execute_process(
+    COMMAND "${PROBE}" --gtest_filter=CallgrindWindow.ClientRequests
+    OUTPUT_VARIABLE _requests
+    ERROR_VARIABLE _requests
   )
-  return()
+  if (_requests MATCHES "callgrind client requests: compiled out")
+    message(STATUS "SKIPPED: this libbench was built with NVALGRIND, so it has no callgrind "
+                   "client requests and switches the window with callgrind_control"
+    )
+    return()
+  elseif (NOT _requests MATCHES "callgrind client requests: built in")
+    message(FATAL_ERROR "the probe did not say whether libbench has callgrind's client "
+                        "requests:\n${_requests}"
+    )
+  endif ()
 endif ()
 
 file(REMOVE_RECURSE "${WORK_DIR}")

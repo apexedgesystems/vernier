@@ -1,22 +1,18 @@
 /**
  * @file CallgrindRequests.cpp
  * @brief libbench's callgrind client requests: the one place it includes
- *        valgrind's callgrind.h.
+ *        valgrind's callgrind.h, the copy in src/bench/third_party/valgrind.
  */
 
 #include "src/bench/src/CallgrindRequests.hpp"
 
 #include <atomic>
 
-// Compiled in where this build finds valgrind's callgrind.h. NVALGRIND, defined
-// by the build or by valgrind.h itself on a platform valgrind does not
-// support, reduces each request to nothing.
-#if defined(__has_include)
-#if __has_include(<valgrind/callgrind.h>)
-#include <valgrind/callgrind.h>
-#define VERNIER_CALLGRIND_HEADER_FOUND 1
-#endif
-#endif
+// The copy libbench carries, so every build has the requests whatever its
+// machine has installed. NVALGRIND, defined by the build or by valgrind.h
+// itself on a platform valgrind does not support, reduces each request to
+// nothing.
+#include "src/bench/third_party/valgrind/callgrind.h"
 
 namespace vernier {
 namespace bench {
@@ -25,10 +21,10 @@ namespace callgrind {
 /* ----------------------------- API ----------------------------- */
 
 bool requestsBuiltIn() noexcept {
-#if defined(VERNIER_CALLGRIND_HEADER_FOUND) && !defined(NVALGRIND)
-  return true;
-#else
+#if defined(NVALGRIND)
   return false;
+#else
+  return true;
 #endif
 }
 
@@ -37,22 +33,12 @@ void zeroStatsOnce() noexcept {
   if (zeroed.exchange(true)) {
     return;
   }
-#if defined(VERNIER_CALLGRIND_HEADER_FOUND)
   CALLGRIND_ZERO_STATS;
-#endif
 }
 
-void startInstrumentation() noexcept {
-#if defined(VERNIER_CALLGRIND_HEADER_FOUND)
-  CALLGRIND_START_INSTRUMENTATION;
-#endif
-}
+void startInstrumentation() noexcept { CALLGRIND_START_INSTRUMENTATION; }
 
-void stopInstrumentation() noexcept {
-#if defined(VERNIER_CALLGRIND_HEADER_FOUND)
-  CALLGRIND_STOP_INSTRUMENTATION;
-#endif
-}
+void stopInstrumentation() noexcept { CALLGRIND_STOP_INSTRUMENTATION; }
 
 } // namespace callgrind
 } // namespace bench

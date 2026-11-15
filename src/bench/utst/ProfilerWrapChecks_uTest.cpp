@@ -634,9 +634,22 @@ TEST(ValgrindAnalysis, CallgrindManualWrapCannotAnnotate) {
 /* ----------------------------- Callgrind's Window ----------------------------- */
 
 /**
+ * @test Every libbench has callgrind's client requests, from the callgrind.h
+ * it carries, whatever its build machine has installed: only NVALGRIND, the
+ * way to compile them out, leaves the window to callgrind_control.
+ */
+TEST(CallgrindWindowCheck, RequestsBuiltInUnlessBuiltWithNvalgrind) {
+#if defined(NVALGRIND)
+  EXPECT_FALSE(vernier::bench::callgrind::requestsBuiltIn());
+#else
+  EXPECT_TRUE(vernier::bench::callgrind::requestsBuiltIn());
+#endif
+}
+
+/**
  * @test A wrap started by hand with callgrind_control on PATH switches the
- * window: ready where the build has callgrind's client requests; a caveat
- * naming valgrind's gdbserver where it switches with callgrind_control.
+ * window: ready with callgrind's client requests; a caveat naming valgrind's
+ * gdbserver in a build with NVALGRIND, which switches with callgrind_control.
  */
 TEST(CallgrindWindowCheck, ManualWrapWithControlToggles) {
   FakeToolDir dir;
@@ -658,7 +671,7 @@ TEST(CallgrindWindowCheck, ManualWrapWithControlToggles) {
 
 /**
  * @test Without callgrind_control a wrap started by hand still has its window
- * switched where the build has callgrind's client requests; without them it
+ * switched with callgrind's client requests; in a build with NVALGRIND it
  * cannot be: a caveat, and no toggling.
  */
 TEST(CallgrindWindowCheck, ManualWrapWithoutControlSwitchesWithRequests) {
@@ -692,8 +705,8 @@ TEST(CallgrindWindowCheck, BenchRunsWrapIsLeftAlone) {
 
 /**
  * @test The printed wrap opens the window with --instr-atstart=no only when it
- * can be switched: always with callgrind's client requests, with
- * callgrind_control on PATH otherwise.
+ * can be switched: always with callgrind's client requests, and in a build
+ * with NVALGRIND when callgrind_control is on PATH.
  */
 TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   FakeToolDir dir;

@@ -454,19 +454,14 @@ target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_D
 # fixture with its own PERF_MAIN, run only by these tests; they skip without
 # valgrind, where valgrind cannot read the probe and says so, and in a build
 # with the address sanitizer, which the driver learns from the build's
-# SANITIZER setting.
+# SANITIZER setting. The three that need callgrind's client requests also skip
+# where the probe says libbench was built with NVALGRIND.
 # ------------------------------------------------------------------------------
 
 set(_probe_sanitizer "")
 if (NOT CMAKE_CROSSCOMPILING)
   set(_probe_sanitizer "${SANITIZER}")
 endif ()
-
-# Whether libbench compiles callgrind's client requests in: it finds valgrind's
-# callgrind.h, as CallgrindRequests.cpp does. The three cases that need them
-# skip in a build that does not.
-include(CheckIncludeFileCXX)
-check_include_file_cxx(valgrind/callgrind.h VERNIER_HAS_CALLGRIND_H)
 
 vernier_add_gtest(
   TARGET
@@ -487,8 +482,8 @@ if (TARGET CallgrindWindowProbe)
         "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe>
         -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=${_mode}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_${_mode}
-        -DPROBE_SANITIZER=${_probe_sanitizer} -DCLIENT_REQUESTS=$<BOOL:${VERNIER_HAS_CALLGRIND_H}>
-        -P "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
+        -DPROBE_SANITIZER=${_probe_sanitizer} -P
+        "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
     )
     set_tests_properties(
       CallgrindWindow${_case}Test PROPERTIES LABELS "benchmarking;callgrind"
@@ -606,8 +601,8 @@ endif ()
 # Start Gate Under Helgrind (1 program)
 # ------------------------------------------------------------------------------
 # contentionRun's start gate spins on two atomic flags, which helgrind cannot
-# see as synchronisation; the gate marks them unchecked where valgrind's
-# helgrind.h is available. The program runs itself under helgrind on two probe
+# see as synchronisation; the gate marks them unchecked in every libbench but
+# one built with NVALGRIND. The program runs itself under helgrind on two probe
 # cases: workers that add under a mutex must report no error, workers that add
 # without one must still report their race. It learns a build it cannot run
 # under valgrind from the build's SANITIZER setting. The racy probe skips

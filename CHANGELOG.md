@@ -458,9 +458,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - **`contentionRun`'s start gate stays out of helgrind's reports** -- the
   gate that releases a contention test's threads together spins on two atomic
   flags, which helgrind reported as data races whenever it checked a contention
-  test. A libbench built where valgrind's `helgrind.h` is installed asks
-  helgrind to leave them unchecked, so a race-free test reports nothing; one
-  built without the header, or with `NVALGRIND`, still reports them.
+  test. libbench asks helgrind to leave them unchecked, so a race-free test
+  reports nothing; a libbench built with `NVALGRIND` still reports them.
 - **bpftrace waits for its tracers to attach and traces threaded tests to their
   end** -- a run waits before its measured repeats, the doctor before it passes
   a script, and `wakeup_latency.bt` counts wakeups completed on another CPU.
@@ -503,9 +502,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   (`Collected : 0`). The backend now switches instrumentation on for each
   measured window and off after it, in a container too, so the profile holds
   the measured window and none of the test's work around it.
-  `bench run --profile callgrind` still records the whole process. Without
-  `callgrind_control` on PATH, the hint leaves out `--instr-atstart=no` and
-  says the profile covers the whole process.
+  `bench run --profile callgrind` still records the whole process. A libbench
+  built with `NVALGRIND` switches it with `callgrind_control`; without that on
+  PATH, its hint leaves out `--instr-atstart=no` and says the profile covers
+  the whole process.
 - **`vernier::monitor` keeps the samples that are still queued at `stop()`** --
   the drain thread's loop condition popped a sample once the running flag had
   cleared and then dropped it: the body popped again and processed only what it
@@ -986,8 +986,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   under `CPUPROFILE_REALTIME`, keep working under `--profile`.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A callgrind wrap started by hand records only the measured windows, with or
-  without `--instr-atstart=no` or valgrind's gdbserver, where libbench was
-  built with valgrind's `callgrind.h`.
+  without `--instr-atstart=no` or valgrind's gdbserver, also with a libbench
+  built where valgrind is not installed, as the release packages are.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
   say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))

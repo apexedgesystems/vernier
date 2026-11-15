@@ -356,6 +356,7 @@ vernier/
     bench/                    Benchmarking library (perf, GPU harness, profilers)
       inc/                    Public headers (Perf.hpp, PerfGpu.hpp, Nvtx.hpp, profilers)
       src/                    Profiler implementations + CUPTI collector
+      third_party/            valgrind's client-request headers, unmodified
       bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
       ptst/                   Performance tests (CPU + GPU)
@@ -376,7 +377,9 @@ vernier/
 
 ## 10. License
 
-MIT License. See [LICENSE](LICENSE) for details.
+MIT License. See [LICENSE](LICENSE) for details. The valgrind headers in
+`src/bench/third_party/valgrind/` keep the BSD-style license at the top of
+each file ([third-party source](src/bench/third_party/README.md)).
 
 ---
 

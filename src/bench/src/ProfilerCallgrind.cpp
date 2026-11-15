@@ -4,8 +4,8 @@
  *
  * Under a wrap started by hand, switches instrumentation on for each measured
  * window and off after it: with callgrind's client requests, from inside the
- * process, where this build has them (CallgrindRequests.cpp), and otherwise
- * with callgrind_control. A recording made by bench run's wrap covers the
+ * process (CallgrindRequests.cpp), and in a build with NVALGRIND, which has
+ * none, with callgrind_control. A recording made by bench run's wrap covers the
  * whole process and is left alone. Whether valgrind's callgrind runs the
  * process, and how the wrap began, is the readiness check's decision.
  */
@@ -50,8 +50,8 @@ ReadinessResult decideCallgrind(const ReadinessRequest& request, const Readiness
     return *refused;
   }
   // The window of a wrap started by hand is switched from inside the process
-  // by callgrind's client requests where this build has them; without them,
-  // by callgrind_control, which reaches the process through valgrind's
+  // by callgrind's client requests; in a build with NVALGRIND, which has
+  // none, by callgrind_control, which reaches the process through valgrind's
   // gdbserver. Where neither can switch it on, the wrap command leaves
   // instrumentation on from the start.
   const bool REQUESTS = callgrind::requestsBuiltIn();
@@ -76,22 +76,23 @@ ReadinessResult decideCallgrind(const ReadinessRequest& request, const Readiness
           HAS_CONTROL
               ? readinessResult(
                     ReadinessCause::CAVEAT,
-                    "valgrind's callgrind runs this process, and this build has no callgrind "
-                    "client requests (valgrind's callgrind.h was not found when it was built): "
-                    "callgrind_control switches the measured window through valgrind's "
-                    "gdbserver, so a wrap started with --vgdb=no records nothing, and each "
-                    "switch runs callgrind_control",
-                    "Keep valgrind's gdbserver on (no --vgdb=no), or run it with bench run "
-                    "--profile callgrind, which records the whole process.")
+                    "valgrind's callgrind runs this process, and this libbench has no callgrind "
+                    "client requests (it was built with NVALGRIND): callgrind_control switches "
+                    "the measured window through valgrind's gdbserver, so a wrap started with "
+                    "--vgdb=no records nothing, and each switch runs callgrind_control",
+                    "Keep valgrind's gdbserver on (no --vgdb=no), rebuild libbench without "
+                    "NVALGRIND, or run it with bench run --profile callgrind, which records the "
+                    "whole process.")
               : readinessResult(
                     ReadinessCause::CAVEAT,
-                    "valgrind's callgrind runs this process, but this build has no callgrind "
-                    "client requests (valgrind's callgrind.h was not found when it was built) "
-                    "and callgrind_control is not on PATH: the measured window cannot be "
-                    "switched on and off, so the profile holds what the wrap records (nothing, "
-                    "for a wrap started with --instr-atstart=no)",
-                    "Put valgrind's callgrind_control on PATH, or run it with bench run "
-                    "--profile callgrind, which records the whole process.");
+                    "valgrind's callgrind runs this process, but this libbench has no callgrind "
+                    "client requests (it was built with NVALGRIND) and callgrind_control is not "
+                    "on PATH: the measured window cannot be switched on and off, so the profile "
+                    "holds what the wrap records (nothing, for a wrap started with "
+                    "--instr-atstart=no)",
+                    "Put valgrind's callgrind_control on PATH, rebuild libbench without "
+                    "NVALGRIND, or run it with bench run --profile callgrind, which records the "
+                    "whole process.");
       caveat.plan = std::move(plan);
       result = std::move(caveat);
     }
@@ -162,8 +163,8 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 
 #ifdef __linux__
 /// Switch callgrind's instrumentation for this process on or off: with the
-/// client requests where this build has them, before the first window
-/// dropping what was counted before it; otherwise with callgrind_control,
+/// client requests, before the first window dropping what was counted before
+/// it; in a build with NVALGRIND, which has none, with callgrind_control,
 /// which takes the process id as a trailing argument, not as an option, and
 /// exits 0 whether or not the command reached the process, so its status is
 /// not read.

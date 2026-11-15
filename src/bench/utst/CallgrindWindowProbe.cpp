@@ -9,13 +9,19 @@
  * wrap the backend's hint prints, which must record the measured window and
  * none of the work before or after it, and under the wrap
  * `bench run --profile callgrind` uses, which must record the whole process.
+ * A second test prints whether libbench has callgrind's client requests,
+ * which the driver asks before the cases that need them.
  *
  * Usage: CallgrindWindowProbe --profile callgrind --cycles N --repeats 1
+ *        CallgrindWindowProbe --gtest_filter=CallgrindWindow.ClientRequests
  */
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
+
 #include "src/bench/inc/Perf.hpp"
+#include "src/bench/src/CallgrindRequests.hpp"
 
 namespace {
 
@@ -65,6 +71,12 @@ PERF_TEST(CallgrindWindow, Phases) {
   volatile unsigned sink = workBeforeWindow(1u);
   perf.throughputLoop([&] { sink = workInsideWindow(sink); }, "inside");
   sink = workAfterWindow(sink);
+}
+
+/** @brief Whether libbench has callgrind's client requests: only NVALGRIND compiles them out. */
+TEST(CallgrindWindow, ClientRequests) {
+  std::printf("callgrind client requests: %s\n",
+              vernier::bench::callgrind::requestsBuiltIn() ? "built in" : "compiled out");
 }
 
 PERF_MAIN()

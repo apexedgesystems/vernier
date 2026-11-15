@@ -14,8 +14,8 @@ namespace vernier {
 namespace bench {
 namespace callgrind {
 
-/// Whether this build compiled the requests in: valgrind's callgrind.h was
-/// found when it was built, and NVALGRIND is not defined.
+/// Whether this build compiled the requests in: every build does, from the
+/// copy of callgrind.h that libbench carries, unless NVALGRIND is defined.
 [[nodiscard]] bool requestsBuiltIn() noexcept;
 
 /// The first call in a process drops what callgrind has counted so far

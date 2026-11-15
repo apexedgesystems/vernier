@@ -154,9 +154,8 @@ inline int countLines(const std::string& s) {
  * helgrind sees no ordering in spin-waiting on atomics, so it reports every
  * access to the gate's two flags as a data race. The gate asks libbench to
  * mark those flags unchecked for its lifetime; the threads' own accesses are
- * checked as before. A libbench built without valgrind's helgrind.h, or with
- * NVALGRIND, makes no request (helgrind::requestsBuiltIn() says which), and
- * helgrind then reports the flags.
+ * checked as before. A libbench built with NVALGRIND makes no request
+ * (helgrind::requestsBuiltIn() says so), and helgrind then reports the flags.
  *
  * @note RT-safe (lock-free atomics, spin-wait only).
  */
