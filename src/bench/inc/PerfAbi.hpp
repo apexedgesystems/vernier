@@ -73,7 +73,8 @@ namespace bench {
 /// 3: Profiler::abortMeasure(). 4: JemallocProfiler's members;
 /// OffCpuProfiler's outcome member.
 /// 5: UnifiedMemoryProfile::h2dBytes and d2hBytes, in GpuStats.
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 5;
+/// 6: RAPLProfiler's members.
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 6;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;
