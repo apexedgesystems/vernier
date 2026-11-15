@@ -4,42 +4,49 @@
 # Runs the lanes of ci.yml's test jobs, each with its job's make target,
 # compose service and image (the ci-cache overlay defines the lean tiers and
 # the registry cache_from sources), whatever changed: CI runs a job only when
-# its files change. A branch is not "verified" until this is green; the target
-# exists because ad-hoc local checks kept missing lanes (cargo build compiles
-# no test modules, and ninja does not invoke cargo at all unless the stamp is
-# dirty).
+# its files change. The lanes run the unit tests; the component tests run in
+# the nightly workflow (mk/checks.mk), which verify does not run. A branch is
+# not "verified" until this is green; the target exists because ad-hoc local
+# checks kept missing lanes (cargo build compiles no test modules, and ninja
+# does not invoke cargo at all unless the stamp is dirty).
 #
 #   Format  make format-check in dev (vernier.dev.cpu): the formatters and
 #           linters, Rust's included, find nothing to change.
 #   C++     make debug, testp, test-heap in dev: the debug tree builds with the
-#           GPU off and its tests pass, and the allocator-dependent cases pass
-#           with tcmalloc linked.
+#           GPU off and its unit tests pass, and the allocator-dependent unit
+#           cases pass with tcmalloc linked.
 #   Tools   make tools-check in dev: the debug build made every CLI tool.
-#   ASan    make asan in dev: the unit programs' named selection passes under
-#           AddressSanitizer with no report.
+#   ASan    make asan in dev: the unit selection passes under AddressSanitizer
+#           with no report.
 #   CUDA    make cuda-check in ci-build-cuda (vernier.build.cuda), no GPU:
-#           every CUDA target compiles and links, and the cases that need no
-#           device pass.
+#           every CUDA target compiles and links, and the unit cases that need
+#           no device pass.
 #   Rust    make test-rust in ci-build (vernier.build.cpu): the tools' Rust
 #           tests pass.
 #   Python  make test-py in ci-build: the tools' Python tests pass.
 #
 # What no lane proves, and where it is proven:
-#   - GPU execution, the CUDA cases that need a device and the two-GPU paths:
-#     on a GPU host, make compose-testp in dev-cuda.
-#   - Real bpftrace and off-CPU captures, which a container's PID namespace
-#     prevents, and the hardware-counter checks, which need counter access:
-#     on the rigs.
+#   - The component tests, the heap tree's and the AddressSanitizer
+#     selection's component cases among them: the nightly workflow (make
+#     test-component, make test-heap-component, make asan-component).
+#   - GPU execution, the CUDA cases that need a device and the two-GPU paths,
+#     real bpftrace and off-CPU captures (a container's PID namespace prevents
+#     them), the hardware-counter checks (they need counter access), and every
+#     other rig test: make test-rig on a host that has what they need, dev-cuda
+#     on a GPU host for the GPU's.
 #   - TSan and UBSan: make tsan and make ubsan, Make targets, not lanes.
-#   - The unit program's lifecycle tests under ASan, which its selection
-#     excludes.
 #   - The image leaves (the CUDA, cross and toolchain images): CI's
 #     image-graph job.
 #
-# Image parity is part of the contract: CI builds the dev tier against
-# registry cache and pulls the lean build tiers every run. A stale local
-# dev image fails configure on the baked /opt/vernier-deps tier
-# (observed), so the prelude mirrors CI's image steps before any lane.
+# Images: the prelude builds the base and dev tiers here, against registry
+# cache as CI does, and pulls the published lean build tiers
+# (vernier.build.cpu, vernier.build.cuda); the lanes then run the same Make
+# targets CI runs, in the same services. Hosted CI also rebuilds the lean tiers
+# when a pull request changes their inputs (a gate image's, or
+# docker/dev/cuda.Dockerfile for the CUDA tier); verify does not, so such a
+# change is proven by the hosted run, not here. A stale local dev image fails
+# configure on the baked /opt/vernier-deps tier (observed), which is why the
+# prelude mirrors CI's image steps before any lane.
 #
 # The C++ and Python lanes run with POETRY_VIRTUALENVS_IN_PROJECT=false, as
 # ci.yml's cpp and python jobs do. A host tools build can leave tools/py/.venv
@@ -55,7 +62,7 @@ _CI_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.ci-cache.y
 _CI_REGISTRY ?= ghcr.io/apexedgesystems/vernier
 
 verify:
-	$(call log,verify,Image parity: build base+dev tiers and pull the lean build tier)
+	$(call log,verify,Image parity: build base+dev tiers and pull the lean build tiers)
 	@$(_CI_COMPOSE) build base
 	@$(_CI_COMPOSE) build dev
 	@docker pull --quiet "$(_CI_REGISTRY)/vernier.build.cpu:latest" \
@@ -76,11 +83,11 @@ verify:
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 	$(call log,verify,Tools lane: the debug build made every CLI tool [dev])
 	@$(_CI_COMPOSE) run --rm -T dev make tools-check
-	$(call log,verify,ASan lane: the sanitizer selection in build/asan [dev])
+	$(call log,verify,ASan lane: the unit selection in build/asan [dev])
 	@$(_CI_COMPOSE) run --rm -T dev make asan
-	$(call log,verify,CUDA lane: every CUDA target and the device-free cases [ci-build-cuda])
+	$(call log,verify,CUDA lane: every CUDA target and the device-free unit cases [ci-build-cuda])
 	@$(_CI_COMPOSE) run --rm -T ci-build-cuda make cuda-check
-	$(call log,verify,All CI lanes green locally)
+	$(call log,verify,Every pull-request lane green locally)
 
 # ------------------------------------------------------------------------------
 # Phony Declarations

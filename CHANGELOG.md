@@ -344,9 +344,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   (a summary with no data is a warning; `--timeout` bounds each tool command).
   Scripts put `bench` in front and drop the word `parse`; one that relied on
   exit 0 after a failed read now sees 1.
-- `make cuda-check` builds every CUDA target and runs the GPU tests that need
-  no device, and `make verify` runs it beside every other CI lane, the
-  AddressSanitizer selection included.
+- `make cuda-check` builds every CUDA target and runs the GPU unit tests that
+  need no device, and `make verify` runs it beside every other pull-request
+  lane, the AddressSanitizer selection included.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
+- The heap-profiling and AddressSanitizer lanes run their unit cases on every
+  pull request and their component cases nightly, as
+  `make test-heap-component` and `make asan-component`.
   ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ### Fixed

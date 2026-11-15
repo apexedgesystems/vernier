@@ -50,14 +50,17 @@ TEST_SLOWEST ?= 10
 PY_TOOLS_DIR := tools/py
 PY_LIB_DIR   := $(BUILD_DIR)/lib/python
 
-# Heap-profiling lane: the debug preset with tcmalloc linked, in a tree of its
+# Heap-profiling lanes: the debug preset with tcmalloc linked, in a tree of its
 # own. It is the one configuration where gperf captures the CPU and the heap at
-# once and where heaptrack's doctor row names tcmalloc. It runs every case whose
-# expectation depends on whether tcmalloc is linked; the default tree runs the
-# same cases without it, and everything else. The selection is space-separated:
-# gtest patterns for TestBench and for the readiness fixture run, then CTest
-# names. Each must select a test, so a renamed suite fails the lane instead of
-# leaving it, and none of the three lists may be empty.
+# once and where heaptrack's doctor row names tcmalloc. Its two lanes run every
+# case whose expectation depends on whether tcmalloc is linked; the default
+# tree runs the same cases without it, and everything else. make test-heap runs
+# the unit cases, TestBench's, on every pull request; make test-heap-component
+# runs the component cases, the readiness fixture runs and the command-line
+# case, each a benchmark run end to end, in the nightly workflow. The lists are
+# space-separated: gtest patterns for TestBench and for the fixture run, then
+# CTest names. Each must select a test, so a renamed suite fails its lane
+# instead of leaving it, and no list may be empty.
 HEAP_BUILD_DIR    ?= build/native-linux-debug-heap
 HEAP_TEST_FILTERS ?= GperfLifecycleTest.* GperfProfileReader.* TcmallocOptInTest.* \
                      TcmallocOptInDeathTest.* GperfCheckTest.* \
@@ -141,9 +144,6 @@ define _test_slowest
 { printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; awk '/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: / { printf "  %8.2f s  %s\n", $$(NF-1), $$4 }' "$(1)" | sort -rn | head -n $(TEST_SLOWEST) || true; }
 endef
 
-_empty :=
-_space := $(_empty) $(_empty)
-
 # Space-separated gtest patterns as one filter field, and as its negative part
 # (empty when there are none).
 _gtest_join       = $(subst $(_space),:,$(strip $(1)))
@@ -183,11 +183,13 @@ endef
 # removed before the run, must exist and record no skipped test.
 _gtest_refuse_skips = ; [ -s $(1).json ] || { printf '%s: gtest wrote no JSON report\n' '$(1)' >&2; exit 1; }; if grep -q '"result": "SKIPPED"' $(1).json; then printf '%s: a selected test skipped, and this selection refuses skips\n' '$(1)' >&2; exit 1; fi
 
-# Run program=pattern[:pattern...] words (programs under bin/tests), each
-# through _gtest_selection with the same exclusions and skip rule, from inside
-# the build tree; each run ends with a semicolon.
+# Run program=pattern[:pattern...] words (a program under bin/tests, or
+# dtests/<program> for one under bin/dtests), each through _gtest_selection
+# with the same exclusions and skip rule, from inside the build tree; each run
+# ends with a semicolon.
 # Usage: $(call _gtest_selections,words[,exclusions[,no-skips]])
-_selection_program  = bin/tests/$(firstword $(subst =, ,$(1)))
+_selection_name     = $(firstword $(subst =, ,$(1)))
+_selection_program  = bin/$(if $(findstring /,$(call _selection_name,$(1))),,tests/)$(call _selection_name,$(1))
 _selection_patterns = $(subst :, ,$(word 2,$(subst =, ,$(1))))
 _gtest_selections   = $(foreach t,$(1),$(call _gtest_selection,$(call \
   _selection_program,$(t)),$(call _selection_patterns,$(t)),$(2),$(3));)
@@ -243,21 +245,36 @@ test-rig: debug
 	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_footer,rig (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
-# Allocator-dependent tests, built with tcmalloc (VERNIER_LINK_TCMALLOC=ON):
-# gperf's lifecycle, reader, check and sampling cases (the captures of both
-# kinds at once included), the tcmalloc opt-in cases, and the gperf and
-# heaptrack fixture runs, in the gtest selections above, and the command-line
-# heap case through CTest. Builds only what they need.
-test-heap:
-	@$(call _require_lists,HEAP_TEST_FILTERS HEAP_RUN_FILTERS HEAP_CTEST_TESTS)
+# Configure the heap-profiling tree, for both heap lanes.
+define _heap_configure
 	$(call log,test,Configuring the heap-profiling tree ($(HEAP_BUILD_DIR)))
 	@cmake --preset $(HOST_DEBUG_PRESET) -B "$(HEAP_BUILD_DIR)" $(CMAKE_VERBOSE_FLAG) \
 	  -DVERNIER_LINK_TCMALLOC=ON -DVERNIER_BUILD_GPU=OFF -DVERNIER_BUILD_TOOLS=OFF
-	$(call log,test,Building TestBench and the readiness fixture run with tcmalloc)
-	@cmake --build "$(HEAP_BUILD_DIR)" -j$(NUM_JOBS) --target TestBench TestBenchReadinessRun \
-	  ReadinessFixtureTarget ReadinessCustomMainTarget
-	$(call log,test,Running the heap-profiling tests)
+endef
+
+# Allocator-dependent unit tests, built with tcmalloc (VERNIER_LINK_TCMALLOC=ON):
+# gperf's lifecycle, reader, check and sampling cases (the captures of both
+# kinds at once included) and the tcmalloc opt-in cases, in the gtest selection
+# above. Builds only TestBench. Every pull request runs it (ci.yml's C++ job).
+test-heap:
+	@$(call _require_lists,HEAP_TEST_FILTERS)
+	$(_heap_configure)
+	$(call log,test,Building TestBench with tcmalloc)
+	@cmake --build "$(HEAP_BUILD_DIR)" -j$(NUM_JOBS) --target TestBench
+	$(call log,test,Running the heap-profiling unit tests)
 	@cd "$(HEAP_BUILD_DIR)" && $(call _gtest_selection,bin/tests/TestBench,$(HEAP_TEST_FILTERS))
+
+# Allocator-dependent component tests in the same tree: the gperf and heaptrack
+# readiness fixture runs, in the gtest selection above, and the command-line
+# heap case through CTest. Builds only what they need. The nightly workflow
+# runs it (mk/checks.mk); no pull request does.
+test-heap-component:
+	@$(call _require_lists,HEAP_RUN_FILTERS HEAP_CTEST_TESTS)
+	$(_heap_configure)
+	$(call log,test,Building the readiness fixture run with tcmalloc)
+	@cmake --build "$(HEAP_BUILD_DIR)" -j$(NUM_JOBS) --target TestBenchReadinessRun \
+	  ReadinessFixtureTarget ReadinessCustomMainTarget
+	$(call log,test,Running the heap-profiling component tests)
 	@cd "$(HEAP_BUILD_DIR)" && $(call _gtest_selection,bin/tests/TestBenchReadinessRun,$(HEAP_RUN_FILTERS))
 	@cd "$(HEAP_BUILD_DIR)" && for t in $(foreach t,$(HEAP_CTEST_TESTS),'^$(subst .,\.,$(t))$$'); do \
 	  $(call with_lib_path,ctest --output-on-failure --no-tests=error -R "$$t") || exit $$?; \
@@ -268,22 +285,22 @@ test-heap:
 # ------------------------------------------------------------------------------
 # Every CUDA target compiled and linked in the shipped configuration (the debug
 # preset, the GPU, CUPTI and NVML on, the tools off) in build/cuda-check, which
-# must have compiled the CUPTI and NVML collection paths; then the cases that
-# need no device, in build/cuda-check-nonvml, built without NVML: a program
-# linked to NVML cannot start without the driver's libnvidia-ml.so.1, and the
-# CUDA images carry only its link stub. A selected case that skips fails the
-# lane. Runs in the CUDA build image; the cases that need a device run on a GPU
-# host. The CUDA launcher is named on the configure line because the preset's
-# build acceleration sets it only once CUDA is known, which a new tree is not.
+# must have compiled the CUPTI and NVML collection paths; then the unit cases
+# that need no device, in build/cuda-check-nonvml, built without NVML: a
+# program linked to NVML cannot start without the driver's libnvidia-ml.so.1,
+# and the CUDA images carry only its link stub. A selected case that skips
+# fails the lane. Every pull request runs it, in the CUDA build image; the GPU
+# programs' component and rig tests, which need a device or a tool, run under
+# make test-rig on a GPU host. The CUDA launcher is named on the configure line
+# because the preset's build acceleration sets it only once CUDA is known,
+# which a new tree is not.
 CUDA_TARGETS ?= bench_cuda NvtxRangeRecorder demo_example_saxpy TestBenchGpu TestBenchNsight \
   TestBenchNsightRange TestDemoKernelColumns TestDemoComputeSanitizer TestDemoNvtxRanges \
   TestDemoTranspose TestDemoBankConflicts TestDemoSaxpy BenchDemo_Gpu_01_GpuBasicWorkflow \
   BenchDemo_Gpu_02_NsightProfiler BenchDemo_Gpu_03_SharedMemoryOpt \
   BenchDemo_Gpu_04_ComputeSanitizerProfiler BenchDemo_Gpu_05_NvtxAnnotation BenchmarkGPU_PTEST
-CUDA_NODEVICE_TARGETS ?= TestBenchNsight TestBenchNsightRange TestDemoComputeSanitizer \
-  BenchDemo_Gpu_04_ComputeSanitizerProfiler
-CUDA_NODEVICE_TESTS ?= TestBenchNsight=* TestBenchNsightRange=NsightRangeTest.* \
-  TestDemoComputeSanitizer=ComputeSanitizer.UnguardedSkipsOutsideTheTool
+CUDA_NODEVICE_TARGETS ?= TestBenchNsight TestBenchNsightRange
+CUDA_NODEVICE_TESTS ?= TestBenchNsight=* TestBenchNsightRange=NsightRangeTest.*
 
 _cuda_check_needs_nvcc = cuda-check needs the CUDA toolkit (nvcc), which this environment \
   lacks: run it in the CUDA build image, docker compose -f docker-compose.yml -f \
@@ -307,7 +324,7 @@ cuda-check:
 	@cmake --preset $(HOST_DEBUG_PRESET) -B build/cuda-check-nonvml --fresh $(CMAKE_VERBOSE_FLAG) \
 	  -DVERNIER_BUILD_TOOLS=OFF -DVERNIER_USE_NVML=OFF -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache
 	@cmake --build build/cuda-check-nonvml -j$(NUM_JOBS) --target $(CUDA_NODEVICE_TARGETS)
-	$(call log,cuda,Running the cases that need no device)
+	$(call log,cuda,Running the unit cases that need no device)
 	@cd build/cuda-check-nonvml && { $(call _gtest_selections,$(CUDA_NODEVICE_TESTS),,no-skips) }
 
 .PHONY: cuda-check
@@ -330,6 +347,6 @@ test-rust:
 # Phony Declarations
 # ------------------------------------------------------------------------------
 
-.PHONY: test testp test-component test-rig test-heap test-py test-rust
+.PHONY: test testp test-component test-rig test-heap test-heap-component test-py test-rust
 
 endif  # TEST_MK_GUARD

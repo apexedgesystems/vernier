@@ -350,6 +350,15 @@ The nightly workflow (`.github/workflows/nightly.yml`) runs every check
 Actions tab; `make list-checks` names them. A check is added by naming its make
 target there, with no change to the workflow.
 
+Beside `make testp`, every pull request runs these lanes on unit tests:
+`make test-heap` (the allocator-dependent cases, in a tree with tcmalloc
+linked), `make asan` (the CPU unit programs' unit tests under
+AddressSanitizer), and `make cuda-check` (every CUDA target compiled and
+linked, then the cases that need no device), with `make tools-check`, which
+checks that the debug build made every CLI tool. Their component cases run
+nightly: `make test-heap-component` and `make asan-component`, beside
+`make test-component`.
+
 ```bash
 # Build and run the unit tests (Docker)
 make compose-debug
@@ -368,9 +377,10 @@ docker compose run --rm -T dev-cuda bash -c 'ctest --test-dir build/native-linux
 make test-rust
 make test-py
 
-# Sanitizers, CPU only: a named selection in build/asan, build/tsan or
-# build/ubsan; a failing test or any sanitizer report fails the target,
-# whatever ASAN_OPTIONS, LSAN_OPTIONS, TSAN_OPTIONS or UBSAN_OPTIONS say
+# Sanitizers, CPU only: the unit selection in build/asan, build/tsan or
+# build/ubsan (make asan-component runs the component one under ASan); a
+# failing test or any sanitizer report fails the target, whatever
+# ASAN_OPTIONS, LSAN_OPTIONS, TSAN_OPTIONS or UBSAN_OPTIONS say
 make compose-asan
 
 # The whole suite under a sanitizer, in the tree that target configured, with

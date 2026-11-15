@@ -9,8 +9,12 @@
 # one named selection, and runs it there. A failing test, an empty list, a
 # pattern that selects no test, or any sanitizer report, whatever the caller
 # sets in the runtime's options, fails the target; the run's output is kept in
-# the tree's sanitizer.log. The debug tree is not touched. For the whole suite
-# under a sanitizer, build the tree and run ctest in it.
+# the tree's sanitizer.log (sanitizer-component.log for the component
+# selection). The debug tree is not touched. make asan, make tsan and make ubsan
+# run the unit selection, make asan-component the component one; every pull
+# request runs make asan, and the nightly workflow (mk/checks.mk) runs make
+# asan-component. For the whole suite under a sanitizer, build the tree and run
+# ctest in it.
 # ==============================================================================
 
 ifndef SANITIZERS_MK_GUARD
@@ -24,27 +28,25 @@ SANITIZERS_MK_GUARD := 1
 # compiles the host code of CUDA sources with its default host compiler (GCC),
 # whose sanitizer runtimes do not pair with clang's.
 
-# The selection's programs, and the fixture programs the readiness run starts.
-SANITIZER_TARGETS ?= TestBench TestBenchReadinessRun ReadinessFixtureTarget \
-                     ReadinessCustomMainTarget TestMonitor
+# A selection is program=pattern[:pattern...] words: a program under bin/tests,
+# or dtests/<program> for one under bin/dtests.
 
-# The selection: program=pattern[:pattern...] for programs under bin/tests, with
-# SANITIZER_EXCLUDE taken out of every program's patterns.
-SANITIZER_TESTS ?= TestBench=* TestBenchReadinessRun=* TestMonitor=*
+# The unit selection, the unit tests of the CPU unit programs, and its programs.
+# SANITIZER_EXCLUDE is taken out of every program's patterns: TestBench's
+# component cases (RaplRunTest decides on this machine's CPU and msr device),
+# which the component selection runs.
+SANITIZER_TARGETS ?= TestBench TestMonitor
+SANITIZER_TESTS   ?= TestBench=* TestMonitor=*
+SANITIZER_EXCLUDE ?= RaplRunTest.*
 
-# TestBench's process-lifecycle scenarios (fake tracers and tools started and
-# stopped through the real code, signals escalated, children reaped, each
-# waiting out real timeouts) and the six tests that run every backend's real
-# check on the machine: nearly all of the program's run time. This list goes
-# when those tests leave TestBench for a program of their own.
-SANITIZER_EXCLUDE ?= BpfCheckTest.* OffCpuCaptureTest.* ReadinessProbes.* \
-  ReadinessOwnedHelper.* ReadinessChildProcesses.* ZombieCount.* PerfLifecycleTest.* \
-  ProfilerReadinessRouting.AnalysisStageErrorFailsEveryViewAndItsTwinIsOk \
-  ProfilerReadinessRouting.DoctorJsonKeys \
-  ProfilerReadinessRouting.DoctorLabelsRowsAndDecidesAfresh \
-  ProfilerReadinessRouting.DoctorSelectedRow \
-  ProfilerRegistryTest.RunAllChecksMatchesBackendNames \
-  ProfilerRegistryTest.RunCheckReturnsStatus
+# The component selection and its programs, with the fixture programs the
+# readiness run starts: TestBench's component cases, the readiness fixture run
+# (each case a benchmark run end to end) and the component test program (the
+# backends' and readiness processes' lifecycles through their real protocol).
+SANITIZER_COMPONENT_TARGETS ?= TestBench TestBenchReadinessRun ReadinessFixtureTarget \
+                               ReadinessCustomMainTarget TestBenchComponent
+SANITIZER_COMPONENT_TESTS   ?= TestBench=RaplRunTest.* TestBenchReadinessRun=* \
+                               dtests/TestBenchComponent=*
 
 # ------------------------------------------------------------------------------
 # Internal Helpers
@@ -78,27 +80,32 @@ _sanitizer_remedy_tsan = ThreadSanitizer could not run here: it needs ASLR off f
   process, and this process may not turn it off. Run make compose-tsan (the dev service allows \
   the personality call that does it), or setarch -R make tsan where that call is allowed.
 
-# The whole selection, run from inside a sanitizer tree.
-_sanitizer_selection = $(call _gtest_selections,$(SANITIZER_TESTS),$(SANITIZER_EXCLUDE))
+# A selection's variables and log, by its class: the unit selection's names
+# carry no class, the component one's COMPONENT_.
+_sanitizer_log_unit      = sanitizer.log
+_sanitizer_log_component = sanitizer-component.log
+_sanitizer_var_unit      = SANITIZER_
+_sanitizer_var_component = SANITIZER_COMPONENT_
 
-# _sanitizer_build: Configure, build, and run the selection with a sanitizer
-# Usage: $(call _sanitizer_build,name,display_name)
+# _sanitizer_build: Configure, build, and run one selection with a sanitizer,
+# from inside its tree, then search the run's log for reports
+# Usage: $(call _sanitizer_build,name,display_name,class)
 define _sanitizer_build
-	@$(call _require_lists,SANITIZER_TARGETS SANITIZER_TESTS)
+	@$(call _require_lists,$(_sanitizer_var_$(3))TARGETS $(_sanitizer_var_$(3))TESTS)
 	$(call log,$(1),Configuring build/$(1) with $(2))
 	@cmake --preset $(HOST_DEBUG_PRESET) -B "build/$(1)" --fresh $(CMAKE_VERBOSE_FLAG) \
 	  -DSANITIZER=$(1) -DVERNIER_BUILD_GPU=OFF -DVERNIER_BUILD_TOOLS=OFF
-	$(call log,$(1),Building the programs of the selection)
-	@cmake --build "build/$(1)" -j$(NUM_JOBS) --target $(SANITIZER_TARGETS)
-	$(call log,$(1),Running the selection under $(2) (log: build/$(1)/sanitizer.log))
-	@cd "build/$(1)" && { $(_sanitizer_env_$(1)) $(_sanitizer_selection) } 2>&1 \
-	  | tee sanitizer.log || { \
-	  $(if $(_sanitizer_limit_$(1)),grep -qE '$(_sanitizer_limit_$(1))' sanitizer.log \
+	$(call log,$(1),Building the programs of the $(3) selection)
+	@cmake --build "build/$(1)" -j$(NUM_JOBS) --target $($(_sanitizer_var_$(3))TARGETS)
+	$(call log,$(1),Running the $(3) selection under $(2) (log: build/$(1)/$(_sanitizer_log_$(3))))
+	@cd "build/$(1)" && { $(_sanitizer_env_$(1)) $(call _gtest_selections,$($(_sanitizer_var_$(3))TESTS),$(if $(filter unit,$(3)),$(SANITIZER_EXCLUDE))) } 2>&1 \
+	  | tee $(_sanitizer_log_$(3)) || { \
+	  $(if $(_sanitizer_limit_$(1)),grep -qE '$(_sanitizer_limit_$(1))' $(_sanitizer_log_$(3)) \
 	    && printf '[%s] %s\n' '$(1)' '$(_sanitizer_remedy_$(1))' >&2;) \
 	  exit 1; }
-	@cd "build/$(1)" && if grep -qE '$(_sanitizer_reports)' sanitizer.log; then \
-	  printf '[%s] %s\n' '$(1)' 'A sanitizer report is in build/$(1)/sanitizer.log:' >&2; \
-	  grep -m 20 -E '$(_sanitizer_reports)' sanitizer.log >&2; \
+	@cd "build/$(1)" && if grep -qE '$(_sanitizer_reports)' $(_sanitizer_log_$(3)); then \
+	  printf '[%s] %s\n' '$(1)' 'A sanitizer report is in build/$(1)/$(_sanitizer_log_$(3)):' >&2; \
+	  grep -m 20 -E '$(_sanitizer_reports)' $(_sanitizer_log_$(3)) >&2; \
 	  exit 1; \
 	fi
 endef
@@ -109,20 +116,24 @@ endef
 
 # AddressSanitizer - detects memory errors (use-after-free, buffer overflow)
 asan:
-	$(call _sanitizer_build,asan,AddressSanitizer)
+	$(call _sanitizer_build,asan,AddressSanitizer,unit)
+
+# AddressSanitizer on the component selection, in the same tree
+asan-component:
+	$(call _sanitizer_build,asan,AddressSanitizer,component)
 
 # ThreadSanitizer - detects data races
 tsan:
-	$(call _sanitizer_build,tsan,ThreadSanitizer)
+	$(call _sanitizer_build,tsan,ThreadSanitizer,unit)
 
 # UndefinedBehaviorSanitizer - detects undefined behavior
 ubsan:
-	$(call _sanitizer_build,ubsan,UBSanitizer)
+	$(call _sanitizer_build,ubsan,UBSanitizer,unit)
 
 # ------------------------------------------------------------------------------
 # Phony Declarations
 # ------------------------------------------------------------------------------
 
-.PHONY: asan tsan ubsan
+.PHONY: asan asan-component tsan ubsan
 
 endif  # SANITIZERS_MK_GUARD

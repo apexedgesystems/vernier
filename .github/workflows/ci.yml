@@ -238,8 +238,9 @@ jobs:
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 
       # A second tree with tcmalloc linked, as make verify's C++ lane builds
-      # it: the tests that depend on heap profiling run only there.
-      - name: Run heap-profiling tests
+      # it: the unit tests that depend on heap profiling run only there (their
+      # component cases run in the nightly workflow).
+      - name: Run heap-profiling unit tests
         run: docker compose run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make test-heap
 
   # ----------------------------------------------------------------------------
@@ -331,9 +332,10 @@ jobs:
 
   # ----------------------------------------------------------------------------
   # AddressSanitizer selection -- make asan beside the C++ job: the unit
-  # programs' named selection in its own tree (CPU), failing on a test, an
-  # empty selection or any sanitizer report. Its own ccache key, as the trees
-  # differ in flags.
+  # selection (the CPU unit programs' unit tests) in its own tree, failing on
+  # a test, an empty selection or any sanitizer report; its component cases
+  # run in the nightly workflow. Its own ccache key, as the trees differ in
+  # flags.
   # ----------------------------------------------------------------------------
   asan:
     name: AddressSanitizer selection
@@ -388,8 +390,9 @@ jobs:
   # ----------------------------------------------------------------------------
   # CUDA compile and device-free tests -- make cuda-check on the lean CUDA tier,
   # without a GPU: every CUDA target built and linked in the shipped
-  # configuration, then the cases that need no device in an NVML-off tree. The
-  # cases that need a device run on a GPU host, not here.
+  # configuration, then the unit cases that need no device in an NVML-off tree.
+  # The GPU programs' component and rig tests run under make test-rig on a GPU
+  # host, not here.
   # ----------------------------------------------------------------------------
   cuda:
     name: CUDA compile and device-free tests

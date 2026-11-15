@@ -26,7 +26,10 @@ CHECKS_MK_GUARD := 1
 # nightly = scheduled on main, and on demand (workflow_dispatch)
 
 # test-component: the component tests (mk/test.mk), which no pull request runs.
-CHECKS_NIGHTLY := test-component
+# test-heap-component, asan-component: the component cases of the heap tree
+# (mk/test.mk) and of the AddressSanitizer selection (mk/sanitizers.mk), whose
+# unit cases every pull request runs.
+CHECKS_NIGHTLY := test-component test-heap-component asan-component
 
 # ------------------------------------------------------------------------------
 # Aggregate Targets
@@ -44,8 +47,6 @@ list-checks:
 
 # A JSON array for the workflow's matrix (the registry above is its one
 # source), built in make to keep the quotes out of the shell.
-_empty :=
-_space := $(_empty) $(_empty)
 _comma := ,
 # _json_array: space-separated list -> ["a","b","c"]
 _json_array = [$(subst $(_space),$(_comma),$(patsubst %,"%",$(strip $(1))))]
