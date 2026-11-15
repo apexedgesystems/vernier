@@ -819,6 +819,12 @@ void GperfProfiler::runPprofAnalysis() const {
 
 /* --------------------------------- API --------------------------------- */
 
+namespace detail {
+
+std::size_t gperfProfilerSize() noexcept { return sizeof(GperfProfiler); }
+
+} // namespace detail
+
 std::unique_ptr<Profiler> makeGperfProfiler(const PerfConfig& cfg, const std::string& testName) {
   const ReadinessResult DECISION = decideNow(cfg);
   auto plan = ProfilerRegistry::instance().reportDecision("gperf", DECISION) ? readyPlan(DECISION)

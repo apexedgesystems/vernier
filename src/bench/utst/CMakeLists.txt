@@ -367,6 +367,15 @@ include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 
 # ------------------------------------------------------------------------------
+# GperfProfiler Layout Consumers (2)
+# ------------------------------------------------------------------------------
+# A benchmark compiled with and without gperftools' headers on its include
+# path lays GperfProfiler out as libbench does.
+# ------------------------------------------------------------------------------
+
+include("${CMAKE_CURRENT_LIST_DIR}/AbiGperfLayout.cmake")
+
+# ------------------------------------------------------------------------------
 # Virtual Interface Check (2)
 # ------------------------------------------------------------------------------
 # A benchmark built from these headers against a library built before

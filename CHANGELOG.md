@@ -949,7 +949,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 6).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
@@ -991,6 +991,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
   say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A benchmark compiled without gperftools' headers lays out `GperfProfiler` as
+  libbench does. **Action needed:** rebuild benchmarks against these headers
+  (`BENCH_ABI_VERSION` is 7).
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

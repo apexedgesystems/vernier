@@ -100,15 +100,22 @@ target_link_libraries(
             $<INSTALL_INTERFACE:$<TARGET_NAME_IF_EXISTS:GTest::gtest>>
 )
 
-# gperftools (optional): the CPU profiler links whenever it is installed.
+# gperftools (optional): the CPU profiler is built in whenever its library and
+# its header are installed (the library alone, without the development
+# package, does not build it).
 find_library(GPERF_PROFILER_LIB NAMES profiler)
-if (GPERF_PROFILER_LIB)
+find_path(GPERF_PROFILER_INCLUDE_DIR gperftools/profiler.h)
+set(_gperf_cpu 0)
+if (GPERF_PROFILER_LIB AND GPERF_PROFILER_INCLUDE_DIR)
+  set(_gperf_cpu 1)
   target_link_libraries(${LIB_NAME} PRIVATE ${GPERF_PROFILER_LIB})
+  target_include_directories(${LIB_NAME} PRIVATE "${GPERF_PROFILER_INCLUDE_DIR}")
 endif ()
 
 # tcmalloc swaps the process allocator, so it links only on request (see
-# VERNIER_LINK_TCMALLOC). The definition is PUBLIC because ProfilerGperf.hpp
-# keys the heap profiler's availability on it for every consumer of the header.
+# VERNIER_LINK_TCMALLOC); the heap profiler is built in with it where its
+# header is installed.
+set(_gperf_heap 0)
 if (VERNIER_LINK_TCMALLOC)
   find_library(GPERF_TCMALLOC_LIB NAMES tcmalloc)
   if (NOT GPERF_TCMALLOC_LIB)
@@ -116,7 +123,19 @@ if (VERNIER_LINK_TCMALLOC)
   endif ()
   target_link_libraries(${LIB_NAME} PRIVATE ${GPERF_TCMALLOC_LIB})
   target_compile_definitions(${LIB_NAME} PUBLIC VERNIER_HAS_TCMALLOC=1)
+  find_path(GPERF_HEAP_PROFILER_INCLUDE_DIR gperftools/heap-profiler.h)
+  if (GPERF_HEAP_PROFILER_INCLUDE_DIR)
+    set(_gperf_heap 1)
+    target_include_directories(${LIB_NAME} PRIVATE "${GPERF_HEAP_PROFILER_INCLUDE_DIR}")
+  endif ()
 endif ()
+
+# What was built in, PUBLIC: the backend's source and every consumer of the
+# bench target, the tests among them, read the library's answer here instead
+# of what their own include path holds (ProfilerGperf.hpp).
+target_compile_definitions(
+  ${LIB_NAME} PUBLIC UB_HAS_GPERF_CPU=${_gperf_cpu} UB_HAS_GPERF_HEAP=${_gperf_heap}
+)
 
 # NVTX3 is header-only and exposed via Nvtx.hpp in this library's public
 # include directory; downstream consumers that only link bench should
