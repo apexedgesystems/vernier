@@ -108,6 +108,8 @@ define _sanitizer_build
 	  grep -m 20 -E '$(_sanitizer_reports)' $(_sanitizer_log_$(3)) >&2; \
 	  exit 1; \
 	fi
+	@cd "build/$(1)" && $(call _selection_slowest,$(call \
+	  _selection_reports,$($(_sanitizer_var_$(3))TESTS))) | tee -a $(_sanitizer_log_$(3))
 endef
 
 # ------------------------------------------------------------------------------

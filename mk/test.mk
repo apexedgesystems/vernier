@@ -136,12 +136,31 @@ define _test_require_any
 n=$$($(1) | sed -n 's/^Total Tests: //p'); [ "$${n:-0}" -gt 0 ] || { printf 'No tests were found!!!\n' | tee -a "$(2)"; exit 8; }
 endef
 
+# Each test's time in a CTest log, one "  <seconds> s  <name>" line a test.
+define _ctest_times
+awk '/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: / { printf "  %8.2f s  %s\n", $$(NF-1), $$4 }'
+endef
+
+# Each test's time in GoogleTest JSON reports, in the same form: a test's
+# classname comes after its own name and time.
+define _gtest_times
+awk '/"name": "/ { n = $$0; sub(/.*"name": "/, "", n); sub(/".*/, "", n) } /"time": "/ { t = $$0; sub(/.*"time": "/, "", t); sub(/s".*/, "", t) } /"classname": "/ { c = $$0; sub(/.*"classname": "/, "", c); sub(/".*/, "", c); printf "  %8.2f s  %s.%s\n", t, c, n }'
+endef
+
 # The slowest tests in a lane's log, slowest first, with their times
 # (outputs to stdout, caller handles tee). Information for review only: no
 # time fails a test, and the listing's own status is never the lane's.
 # Usage: $(call _test_slowest,logfile)
 define _test_slowest
-{ printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; awk '/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: / { printf "  %8.2f s  %s\n", $$(NF-1), $$4 }' "$(1)" | sort -rn | head -n $(TEST_SLOWEST) || true; }
+{ printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; $(_ctest_times) "$(1)" | sort -rn | head -n $(TEST_SLOWEST) || true; }
+endef
+
+# The same for a lane of GoogleTest selections: from the reports $(1) their
+# programs wrote and the CTest logs $(2), either list possibly empty, read
+# from inside the tree that holds them.
+# Usage: $(call _selection_slowest,reports[,ctest logs])
+define _selection_slowest
+{ printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; { $(if $(strip $(1)),$(_gtest_times) $(1);) $(if $(strip $(2)),$(_ctest_times) $(2);) } | sort -rn | head -n $(TEST_SLOWEST) || true; }
 endef
 
 # Space-separated gtest patterns as one filter field, and as its negative part
@@ -160,9 +179,10 @@ _require_lists = $(foreach v,$(1),$(if $(strip $($(v))),,printf '%s is empty: th
 # whole selection. No pattern at all fails too: gtest runs no test for an empty
 # filter, and every test but the exclusions for exclusions alone. Each failure
 # exits explicitly, since errexit does not hold where a caller tests the run's
-# status (a teed run followed by ||). With a fourth argument, no-skips, a
-# skipped test fails the run too: the program writes gtest's JSON report, and
-# that report, the parent's own, decides, which no child's output can fake.
+# status (a teed run followed by ||). The program writes gtest's JSON report,
+# <program>.json, removed before the run: the parent's own, which no child's
+# output can fake. The lane's slowest-tests listing reads it, and with a fourth
+# argument, no-skips, a skipped test it records fails the run too.
 # Usage: $(call _gtest_selection,program,patterns[,exclusions[,no-skips]])
 define _gtest_selection
 $(if $(strip $(2)),,printf '%s: the selection names no pattern\n' '$(notdir $(1))' >&2; exit 1;) \
@@ -174,13 +194,13 @@ for p in $(foreach p,$(2),'$(p)'); do \
     exit 1; \
   fi; \
 done; \
-$(if $(4),rm -f $(notdir $(1)).json; )$(call with_lib_path,$(1)) \
-  --gtest_filter='$(call _gtest_join,$(2))$(call _gtest_exclusions,$(3))'$(if $(4), \
-  --gtest_output=json:$(notdir $(1)).json) || exit $$?$(if $(4),$(call _gtest_refuse_skips,$(notdir $(1))))
+rm -f $(notdir $(1)).json; $(call with_lib_path,$(1)) \
+  --gtest_filter='$(call _gtest_join,$(2))$(call _gtest_exclusions,$(3))' \
+  --gtest_output=json:$(notdir $(1)).json || exit $$?$(if $(4),$(call _gtest_refuse_skips,$(notdir $(1))))
 endef
 
-# The end of a run that refuses skips, for the program named: its JSON report,
-# removed before the run, must exist and record no skipped test.
+# The end of a run that refuses skips, for the program named: its JSON report
+# must exist and record no skipped test.
 _gtest_refuse_skips = ; [ -s $(1).json ] || { printf '%s: gtest wrote no JSON report\n' '$(1)' >&2; exit 1; }; if grep -q '"result": "SKIPPED"' $(1).json; then printf '%s: a selected test skipped, and this selection refuses skips\n' '$(1)' >&2; exit 1; fi
 
 # Run program=pattern[:pattern...] words (a program under bin/tests, or
@@ -193,6 +213,8 @@ _selection_program  = bin/$(if $(findstring /,$(call _selection_name,$(1))),,tes
 _selection_patterns = $(subst :, ,$(word 2,$(subst =, ,$(1))))
 _gtest_selections   = $(foreach t,$(1),$(call _gtest_selection,$(call \
   _selection_program,$(t)),$(call _selection_patterns,$(t)),$(2),$(3));)
+# The JSON reports those runs write, one a program
+_selection_reports  = $(foreach t,$(1),$(notdir $(call _selection_name,$(t))).json)
 
 # ------------------------------------------------------------------------------
 # Targets
@@ -263,6 +285,7 @@ test-heap:
 	@cmake --build "$(HEAP_BUILD_DIR)" -j$(NUM_JOBS) --target TestBench
 	$(call log,test,Running the heap-profiling unit tests)
 	@cd "$(HEAP_BUILD_DIR)" && $(call _gtest_selection,bin/tests/TestBench,$(HEAP_TEST_FILTERS))
+	@cd "$(HEAP_BUILD_DIR)" && $(call _selection_slowest,TestBench.json)
 
 # Allocator-dependent component tests in the same tree: the gperf and heaptrack
 # readiness fixture runs, in the gtest selection above, and the command-line
@@ -276,9 +299,12 @@ test-heap-component:
 	  ReadinessFixtureTarget ReadinessCustomMainTarget
 	$(call log,test,Running the heap-profiling component tests)
 	@cd "$(HEAP_BUILD_DIR)" && $(call _gtest_selection,bin/tests/TestBenchReadinessRun,$(HEAP_RUN_FILTERS))
-	@cd "$(HEAP_BUILD_DIR)" && for t in $(foreach t,$(HEAP_CTEST_TESTS),'^$(subst .,\.,$(t))$$'); do \
-	  $(call with_lib_path,ctest --output-on-failure --no-tests=error -R "$$t") || exit $$?; \
+	@cd "$(HEAP_BUILD_DIR)" && : > "$(TEST_LOG)" && \
+	  for t in $(foreach t,$(HEAP_CTEST_TESTS),'^$(subst .,\.,$(t))$$'); do \
+	  $(call with_lib_path,ctest --output-on-failure --no-tests=error -R "$$t") 2>&1 \
+	    | tee -a "$(TEST_LOG)" || exit $$?; \
 	done
+	@cd "$(HEAP_BUILD_DIR)" && $(call _selection_slowest,TestBenchReadinessRun.json,$(TEST_LOG))
 
 # ------------------------------------------------------------------------------
 # CUDA lane
@@ -326,6 +352,7 @@ cuda-check:
 	@cmake --build build/cuda-check-nonvml -j$(NUM_JOBS) --target $(CUDA_NODEVICE_TARGETS)
 	$(call log,cuda,Running the unit cases that need no device)
 	@cd build/cuda-check-nonvml && { $(call _gtest_selections,$(CUDA_NODEVICE_TESTS),,no-skips) }
+	@cd build/cuda-check-nonvml && $(call _selection_slowest,$(call _selection_reports,$(CUDA_NODEVICE_TESTS)))
 
 .PHONY: cuda-check
 
