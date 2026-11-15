@@ -548,17 +548,21 @@ GoogleTest reads only when no `--gtest_filter` is given: to filter with
 `GTEST_FILTER`, remove the key. In a filter, everything after the first `-`
 excludes: `-*Large*:*PayloadScaling*` runs every test but those two kinds.
 
+A relative path in the file, `profile_output_dir` or a `bin_roots` entry, is
+read from the folder of the `.bench.yaml` that names it, wherever the command
+runs from below it; `bin_subdirs` are below each root. A path given on the
+command line (`--profile-output-dir`, `--out`) is read from the working
+directory.
+
 `bin_roots` and `bin_subdirs` say where `run` and `profile-all` look for a
-binary given by a short name: under each root (an entry ending in `/*`
-stands for every folder in it), in each subfolder. A relative `bin_roots`
-entry is relative to the folder of the `.bench.yaml` that names it, wherever
-the command runs from below it. `VERNIER_BENCH_BIN_ROOTS` and
+binary given by a short name: under each root (an entry ending in `/*` stands
+for every folder in it), in each subfolder. `VERNIER_BENCH_BIN_ROOTS` and
 `VERNIER_BENCH_BIN_SUBDIRS` (colon-separated; a relative root in
 `VERNIER_BENCH_BIN_ROOTS` is relative to the working directory) take
-precedence over the keys, each over its own; without either,
-the lookup is `build/*` and `bin/ptests`, `bin/tests`, `bin/examples`. A name
-found nowhere is an error naming the roots and subfolders searched and where
-each came from.
+precedence over the keys, each over its own; without either, the lookup is
+`build/*`, from the working directory, and `bin/ptests`, `bin/tests`,
+`bin/examples`. A name found nowhere is an error naming the roots and
+subfolders searched and where each came from.
 
 `run` and `profile-all` read the whole file before they start anything, and
 stop on one they cannot read or use, with an error naming the file and, for

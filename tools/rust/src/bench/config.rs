@@ -21,7 +21,7 @@
 //!   cycles: 10000
 //!   repeats: 10
 //!   target_time: 100ms                   # bench run's --target-time
-//!   profile_output_dir: bench-out
+//!   profile_output_dir: bench-out        # relative to this file's folder
 //!   gtest_filter: "-*Large*:*PayloadScaling*"
 //!   bin_roots: ["build/*"]               # workflow::BinSearch; a relative
 //!                                        # root is relative to this file's folder
@@ -89,7 +89,8 @@ repeats: 10
 # 500us, 100ms, 2s; a bare number is ms). Read by `bench run` only.
 # target_time: 100ms
 
-# Where profile artifacts land (--profile-output-dir / --artifact-root)
+# Where profile artifacts land (--profile-output-dir / --artifact-root); a
+# relative folder is relative to this file's folder.
 profile_output_dir: bench-out
 
 # Default --gtest_filter, given unless a --gtest_filter= follows `--`.
@@ -120,6 +121,19 @@ pub fn find(start: &Path) -> Option<PathBuf> {
         if !here.pop() {
             return None;
         }
+    }
+}
+
+/// @p path as the `.bench.yaml` at @p file names it: a relative path is read
+/// from the file's folder, wherever the command runs; an absolute one is
+/// kept. The file's paths are read this way: `profile_output_dir` and each
+/// `bin_roots` entry (`bin_subdirs` are below each root). Paths given on the
+/// command line, or in `VERNIER_BENCH_BIN_ROOTS`, are read from the working
+/// directory instead.
+pub fn from_folder_of(file: &Path, path: &Path) -> PathBuf {
+    match file.parent() {
+        Some(folder) => folder.join(path),
+        None => path.to_path_buf(),
     }
 }
 
@@ -691,6 +705,25 @@ mod tests {
             vec!["bin/ptests", "bin/tests", "bin/examples"]
         );
         assert!(cfg.extras.is_empty(), "{:?}", cfg.extras);
+    }
+
+    /// @test A path the file names is read from the file's folder when
+    /// relative, and kept when absolute.
+    #[test]
+    fn paths_are_read_from_the_files_folder() {
+        let file = Path::new("/proj/sub/.bench.yaml");
+        assert_eq!(
+            from_folder_of(file, Path::new("bench-out")),
+            PathBuf::from("/proj/sub/bench-out")
+        );
+        assert_eq!(
+            from_folder_of(file, Path::new("../out/*")),
+            PathBuf::from("/proj/sub/../out/*")
+        );
+        assert_eq!(
+            from_folder_of(file, Path::new("/abs/out")),
+            PathBuf::from("/abs/out")
+        );
     }
 
     /// @test A named key with no value, `key:` and no item below it, is

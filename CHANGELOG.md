@@ -422,6 +422,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   instead of running on defaults; `bench config-validate` exits 1 on the same
   problems. **Action needed:** correct what `bench config-validate` fails.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- A relative `profile_output_dir` in `.bench.yaml` is read from the file's
+  folder, as `bin_roots` is, wherever `bench run` or `bench profile-all` runs
+  below it, instead of from the working directory.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

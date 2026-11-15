@@ -3853,10 +3853,86 @@ fn run_output_folder_after_the_separator_takes_precedence_over_the_files() {
         &["--profile", "perf", "--", "--artifact-root", "other"],
     );
     assert_eq!(code, 0, "{err}");
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
     assert_eq!(
         log,
-        "bench wrap= --profile perf --profile-output-dir from-yaml\n\
-         bench wrap= --profile perf --profile-output-dir other\n"
+        format!(
+            "bench wrap= --profile perf --profile-output-dir {}/from-yaml\n\
+             bench wrap= --profile perf --profile-output-dir other\n",
+            project.display()
+        )
+    );
+}
+
+/// `bench <args>` run from @p dir with @p rig's stand-ins on PATH; returns
+/// the exit status and stderr.
+fn bench_in(rig: &RouteRig, dir: &Path, args: &[&str]) -> (i32, String) {
+    let out = output_of(
+        Command::new(bin())
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(dir),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// @test A relative profile_output_dir is read from the folder of the
+/// .bench.yaml that names it, wherever bench run runs from below it; a
+/// folder given on the command line is read from the working directory.
+#[test]
+fn run_reads_the_files_output_folder_from_the_files_folder() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "profile_output_dir: bench-out\n");
+    let sub = rig.dir.path().join("sub");
+    std::fs::create_dir(&sub).expect("the subfolder");
+    let bench = rig.bench.display().to_string();
+    for (dir, extra) in [
+        (&sub, &[][..]),
+        (&rig.dir.path().to_path_buf(), &[][..]),
+        (&sub, &["--profile-output-dir", "mine"][..]),
+    ] {
+        let args = [&["run", &bench, "--profile", "perf"][..], extra].concat();
+        let (code, err) = bench_in(&rig, dir, &args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+    }
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench wrap= --profile perf --profile-output-dir {0}/bench-out\n\
+             bench wrap= --profile perf --profile-output-dir {0}/bench-out\n\
+             bench wrap= --profile perf --profile-output-dir mine\n",
+            project.display()
+        )
+    );
+}
+
+/// @test profile-all reads the file's relative profile_output_dir from the
+/// file's folder too, and an --out given on the command line from the
+/// working directory.
+#[test]
+fn profile_all_reads_the_files_output_folder_from_the_files_folder() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "profile_output_dir: bench-out\n");
+    let sub = rig.dir.path().join("sub");
+    std::fs::create_dir(&sub).expect("the subfolder");
+    let bench = rig.bench.display().to_string();
+    for extra in [&[][..], &["--out", "mine"][..]] {
+        let args = [&["profile-all", &bench, "--profilers", "perf"][..], extra].concat();
+        let (code, err) = bench_in(&rig, &sub, &args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+    }
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench --profile perf --profile-output-dir {}/bench-out/perf\n\
+             bench --profile perf --profile-output-dir mine/perf\n",
+            project.display()
+        )
     );
 }
 

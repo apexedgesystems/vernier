@@ -92,15 +92,16 @@ impl BinSearch {
             Some(file) => format!("{key} of {}", file.display()),
             None => key.to_string(),
         };
-        let base = file.and_then(Path::parent);
         let (roots, roots_from) = match env_roots {
             Some(value) => (split(value), "VERNIER_BENCH_BIN_ROOTS".to_string()),
             None if !config.bin_roots.is_empty() => (
                 config
                     .bin_roots
                     .iter()
-                    .map(|root| match base {
-                        Some(base) => base.join(root).display().to_string(),
+                    .map(|root| match file {
+                        Some(file) => super::config::from_folder_of(file, Path::new(root))
+                            .display()
+                            .to_string(),
                         None => root.clone(),
                     })
                     .collect(),

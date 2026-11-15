@@ -41,7 +41,11 @@
 //! leaves stdout empty, while `run --analyze` preserves run output already
 //! emitted.
 
-use std::{path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
 use clap::{Parser, Subcommand};
 use vernier_rust_tools::bench::{self, Error, SortColumn};
@@ -170,9 +174,11 @@ enum Command {
         profile_test_timeout: Option<u32>,
 
         /// Where wrap-externally backends (massif, memcheck, callgrind,
-        /// heaptrack, compute-sanitizer) write their artifacts. Defaults
-        /// to `bench-out/`. Forwarded to the binary as --profile-output-dir
-        /// so the C++ harness's per-test subdirs land in the same root.
+        /// heaptrack, compute-sanitizer) write their artifacts, from the
+        /// working directory. Defaults to .bench.yaml's profile_output_dir
+        /// (from the file's folder), else `bench-out/`. Forwarded to the
+        /// binary as --profile-output-dir so the C++ harness's per-test
+        /// subdirs land in the same root.
         #[arg(long)]
         profile_output_dir: Option<PathBuf>,
 
@@ -263,8 +269,10 @@ enum Command {
         #[arg(long)]
         profilers: Option<String>,
 
-        /// Artifact root; per-profiler subdirs land here. Default: bench-out/
-        /// (--profile-output-dir is accepted as an alias, matching `bench run`)
+        /// Artifact root; per-profiler subdirs land here. Default:
+        /// .bench.yaml's profile_output_dir (from the file's folder), else
+        /// bench-out/ (--profile-output-dir is accepted as an alias, matching
+        /// `bench run`)
         #[arg(long, visible_alias = "profile-output-dir")]
         out: Option<PathBuf>,
 
@@ -429,6 +437,13 @@ fn project_defaults() -> Result<(Option<PathBuf>, bench::config::Config), Error>
     Ok((file, config))
 }
 
+/// The file's `profile_output_dir`, a relative one read from the folder of
+/// @p file, the `.bench.yaml` @p file_cfg was read from.
+fn file_output_dir(file: Option<&Path>, file_cfg: &bench::config::Config) -> Option<PathBuf> {
+    let dir = file_cfg.profile_output_dir.as_deref()?;
+    Some(bench::config::from_folder_of(file?, dir))
+}
+
 /// The run sizes a `.bench.yaml` gives: cycles, repeats and target_time.
 #[derive(Default)]
 struct Sizes {
@@ -554,7 +569,7 @@ fn run(args: Args) -> Result<(), Error> {
                 profile_test_timeout,
                 profile_output_dir,
                 // Taken when no folder is given, here or after `--`.
-                default_profile_output_dir: file_cfg.profile_output_dir,
+                default_profile_output_dir: file_output_dir(file.as_deref(), &file_cfg),
                 profile_analyze,
                 taskset,
                 // Given unless a filter follows `--` (runner::configured_filter).
@@ -707,7 +722,7 @@ fn run(args: Args) -> Result<(), Error> {
             bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
                 binary: resolved,
                 profilers: parsed_profilers,
-                artifact_root: out.or(file_cfg.profile_output_dir.clone()),
+                artifact_root: out.or_else(|| file_output_dir(file.as_deref(), &file_cfg)),
                 gtest_filter: filter.or(file_cfg.gtest_filter.clone()),
                 cycles: cycles.or(sizes.cycles),
                 repeats: repeats.or(sizes.repeats),
