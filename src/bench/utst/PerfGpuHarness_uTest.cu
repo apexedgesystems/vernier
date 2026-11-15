@@ -30,6 +30,7 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -301,6 +302,122 @@ TEST_F(PerfGpuHarnessTest, KernelOnlyRecordsNoTransferTime) {
   const ub::PerfRow ROW = lastRow();
   ASSERT_TRUE(ROW.transferTimeUs.has_value());
   EXPECT_DOUBLE_EQ(*ROW.transferTimeUs, 0.0);
+}
+
+/* ----------------------------- Independent Values ----------------------------- */
+
+namespace {
+
+/// A spin of this many nanoseconds of the GPU's timer, the known length the time pins measure.
+constexpr unsigned long long PIN_SPIN_NS = 200'000;
+
+/** @brief Pinned host and device buffers of @p h2d and @p d2h bytes, freed however the test leaves.
+ */
+struct CopyBuffers {
+  std::size_t h2dBytes;
+  std::size_t d2hBytes;
+  void* hostIn = nullptr;
+  void* hostOut = nullptr;
+  void* deviceIn = nullptr;
+  void* deviceOut = nullptr;
+  CopyBuffers(std::size_t h2d, std::size_t d2h) : h2dBytes(h2d), d2hBytes(d2h) {
+    if (cudaMallocHost(&hostIn, h2d) != cudaSuccess ||
+        cudaMallocHost(&hostOut, d2h) != cudaSuccess || cudaMalloc(&deviceIn, h2d) != cudaSuccess ||
+        cudaMalloc(&deviceOut, d2h) != cudaSuccess) {
+      static_cast<void>(cudaGetLastError());
+      hostIn = hostOut = deviceIn = deviceOut = nullptr;
+    }
+  }
+  ~CopyBuffers() {
+    cudaFreeHost(hostIn);
+    cudaFreeHost(hostOut);
+    cudaFree(deviceIn);
+    cudaFree(deviceOut);
+  }
+  CopyBuffers(const CopyBuffers&) = delete;
+  CopyBuffers& operator=(const CopyBuffers&) = delete;
+  [[nodiscard]] bool ok() const { return deviceOut != nullptr; }
+};
+
+/** @brief A launch of a 1 us spin: a kernel the copies around it dwarf. */
+void shortSpin(cudaStream_t s) { spinKernel<<<1, 1, 0, s>>>(1'000); }
+
+} // namespace
+
+/**
+ * @test kernelTimeUs is one launch's time: a 200 us spin on the GPU's timer
+ *       reads 0.9x to 1.5x of 200 us at 4 and at 16 cycles, so a time per
+ *       repeat, not per launch, reads 4x or 16x and a spin cut short less
+ */
+TEST_F(PerfGpuHarnessTest, AKernelTimeIsItsSpinAtTwoCycleCounts) {
+  const double SPIN_US = static_cast<double>(PIN_SPIN_NS) / 1000.0;
+  for (const int CYCLES : {4, 16}) {
+    ub::PerfConfig cfg = cfg_;
+    cfg.cycles = CYCLES;
+    cfg.repeats = 5;
+    ub::PerfGpuCase perf{uniqueSuite("GpuPinSpin") + ".Spin", cfg};
+    const ub::PerfGpuCase::KernelFn LAUNCH = [](cudaStream_t s) {
+      spinKernel<<<1, 1, 0, s>>>(PIN_SPIN_NS);
+    };
+    perf.cudaWarmup(LAUNCH);
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(LAUNCH, "spin").measure();
+    static_cast<void>(lastRow());
+    EXPECT_GE(RESULT.kernelTimeUs, 0.9 * SPIN_US) << CYCLES << " cycles";
+    EXPECT_LE(RESULT.kernelTimeUs, 1.5 * SPIN_US) << CYCLES << " cycles";
+  }
+}
+
+/**
+ * @test transferTimeUs is the sum of the two declared legs, and the device to
+ *       host leg, four times the bytes of the other, takes the longer time
+ */
+TEST_F(PerfGpuHarnessTest, TheTransferTimeIsBothDeclaredLegs) {
+  const CopyBuffers COPIES(std::size_t{4} << 20, std::size_t{16} << 20);
+  ASSERT_TRUE(COPIES.ok()) << "pinned or device allocation failed";
+  ub::PerfGpuCase perf{uniqueSuite("GpuPinLegs") + ".Copies", cfg_};
+  perf.cudaWarmup(shortSpin);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(shortSpin, "legs")
+          .withHostToDevice(COPIES.hostIn, COPIES.deviceIn, COPIES.h2dBytes)
+          .withDeviceToHost(COPIES.deviceOut, COPIES.hostOut, COPIES.d2hBytes)
+          .measure();
+  static_cast<void>(lastRow());
+  const double H2D = RESULT.stats.transfers.h2dTimeUs;
+  const double D2H = RESULT.stats.transfers.d2hTimeUs;
+  EXPECT_DOUBLE_EQ(RESULT.transferTimeUs, H2D + D2H);
+  EXPECT_GT(D2H, H2D) << "16 MiB back took no longer than 4 MiB out";
+}
+
+/**
+ * @test With declared copies that dwarf the kernel, speedupVsCpu is the CPU
+ *       baseline over the round trip (totalTimeUs), and far from the baseline
+ *       over the kernel alone
+ */
+TEST_F(PerfGpuHarnessTest, TheSpeedupIsTheBaselineOverTheRoundTrip) {
+  const CopyBuffers COPIES(std::size_t{8} << 20, std::size_t{8} << 20);
+  ASSERT_TRUE(COPIES.ok()) << "pinned or device allocation failed";
+  ub::PerfGpuCase perf{uniqueSuite("GpuPinSpeedup") + ".Copies", cfg_};
+  std::vector<float> values(1 << 16, 1.0F);
+  const ub::PerfResult CPU = perf.cpuBaseline([&values] {
+    for (float& v : values) {
+      v = v * 1.0001F + 0.5F;
+    }
+  });
+  static_cast<void>(lastRow());
+  perf.cudaWarmup(shortSpin);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(shortSpin, "speedup")
+          .withHostToDevice(COPIES.hostIn, COPIES.deviceIn, COPIES.h2dBytes)
+          .withDeviceToHost(COPIES.deviceOut, COPIES.hostOut, COPIES.d2hBytes)
+          .measure();
+  static_cast<void>(lastRow());
+  const double BASELINE = CPU.stats.median;
+  ASSERT_GT(RESULT.totalTimeUs, 2.0 * RESULT.kernelTimeUs) << "the copies must dominate";
+  EXPECT_NEAR(RESULT.speedupVsCpu, BASELINE / RESULT.totalTimeUs,
+              1e-9 * BASELINE / RESULT.totalTimeUs);
+  EXPECT_GT(std::abs(RESULT.speedupVsCpu - BASELINE / RESULT.kernelTimeUs),
+            0.5 * BASELINE / RESULT.totalTimeUs)
+      << "the speedup is the baseline over the kernel alone";
 }
 
 /* ----------------------------- Speedup ----------------------------- */
@@ -2185,7 +2302,13 @@ TEST_F(PerfGpuHarnessTest, BandwidthCellOnlyWhenBytesMoved) {
   ASSERT_EQ(MOVED.stats.transfers.h2dBytes + MOVED.stats.transfers.d2hBytes,
             2 * SaxpyFixtureData::bytes());
   ASSERT_TRUE(TRANSFERRING.memBandwidthGBs.has_value());
-  EXPECT_DOUBLE_EQ(*TRANSFERRING.memBandwidthGBs, MOVED.stats.transfers.bandwidthGBs());
+  // The rate from the bytes and the two legs' times, computed here: GB/s is
+  // bytes per microsecond over 1000.
+  const double LEGS_US = MOVED.stats.transfers.h2dTimeUs + MOVED.stats.transfers.d2hTimeUs;
+  const double RATE = static_cast<double>(2 * SaxpyFixtureData::bytes()) / LEGS_US / 1e3;
+  EXPECT_NEAR(*TRANSFERRING.memBandwidthGBs, RATE, 1e-9 * RATE);
+  EXPECT_GT(*TRANSFERRING.memBandwidthGBs, 1.0) << "slower than any PCIe link";
+  EXPECT_LT(*TRANSFERRING.memBandwidthGBs, 1000.0) << "faster than any host link";
 }
 
 /**
