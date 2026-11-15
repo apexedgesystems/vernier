@@ -559,7 +559,9 @@ fn run(args: Args) -> Result<(), Error> {
                 profile_args,
                 profile_frequency,
                 profile_test_timeout,
-                profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
+                profile_output_dir,
+                // Taken when no folder is given, here or after `--`.
+                default_profile_output_dir: file_cfg.profile_output_dir,
                 profile_analyze,
                 taskset,
                 // Given unless a filter follows `--` (runner::configured_filter).

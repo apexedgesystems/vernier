@@ -784,6 +784,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             profile_frequency: None,
             profile_test_timeout: None,
             profile_output_dir: Some(out_dir.clone()),
+            default_profile_output_dir: None,
             profile_analyze: false,
             taskset: None,
             gtest_filter: cfg.gtest_filter.clone(),

@@ -3681,6 +3681,29 @@ fn run_quick_takes_precedence_over_the_files_sizes() {
     );
 }
 
+/// @test The file's profile_output_dir is a default: bench run gives it to
+/// the benchmark when no output folder is given, and an output folder given
+/// after `--` (here as the binary's --artifact-root, which bench run takes
+/// as if given to it) takes precedence over it, once, instead of being
+/// refused as a second value.
+#[test]
+fn run_output_folder_after_the_separator_takes_precedence_over_the_files() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "profile_output_dir: from-yaml\n");
+    let (code, err, _) = run_rig(&rig, &["--profile", "perf"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(
+        &rig,
+        &["--profile", "perf", "--", "--artifact-root", "other"],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --profile perf --profile-output-dir from-yaml\n\
+         bench wrap= --profile perf --profile-output-dir other\n"
+    );
+}
+
 /// @test config-validate knows target_time: it is no unrecognized key.
 #[test]
 fn config_validate_knows_target_time() {

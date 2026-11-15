@@ -55,6 +55,10 @@ pub struct RunConfig {
     pub profile_frequency: Option<String>,
     pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
+    /// The project's default output folder (`.bench.yaml`'s
+    /// `profile_output_dir`): taken when neither the command nor the
+    /// arguments after `--` give one (`effective_request`).
+    pub default_profile_output_dir: Option<PathBuf>,
     /// `--profile-analyze`: the requested profile's analysis (forwarded to
     /// the binary; for callgrind, run by the runner after the exit).
     pub profile_analyze: bool,
@@ -272,8 +276,10 @@ const ROUTED_FIELDS: [&str; 5] = [
 /// refused, as is one after `--` without its value, and a rate written
 /// `--profile-frequency=N` after `--`, which the benchmark does not read,
 /// before anything is created or started; the same value twice is one
-/// request (`nsys` is `nsight`, `0250` is 250). Every other argument after
-/// `--`, `--profile-analyze` among them, stays as it is, in its place.
+/// request (`nsys` is `nsight`, `0250` is 250). The project's folder
+/// (`default_profile_output_dir`) is taken when neither the command nor the
+/// arguments after `--` give one. Every other argument after `--`,
+/// `--profile-analyze` among them, stays as it is, in its place.
 pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Error> {
     let mut forwarded: Vec<(&str, &str)> = Vec::new();
     let mut rest = Vec::with_capacity(cfg.extra_args.len());
@@ -347,6 +353,8 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
                     .is_some_and(|hz| Some(hz) == parse_profile_frequency(b))
         },
     )?;
+    // The project's folder is a default: one given to the command, or
+    // after `--`, takes precedence over it, and only those can conflict.
     out.profile_output_dir = one(
         "--profile-output-dir",
         cfg.profile_output_dir
@@ -354,7 +362,8 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
             .map(|d| d.display().to_string()),
         &exact,
     )?
-    .map(PathBuf::from);
+    .map(PathBuf::from)
+    .or_else(|| cfg.default_profile_output_dir.clone());
     out.extra_args = rest;
     Ok(out)
 }
@@ -2011,6 +2020,40 @@ mod tests {
         assert_eq!(r.profile.as_deref(), Some("nsys"));
         assert_eq!(r.profile_args.as_deref(), Some("compute"));
         assert!(r.extra_args.is_empty());
+    }
+
+    /// @test The project's output folder is a default: taken when neither
+    /// the command nor the arguments after `--` give one, and set aside by
+    /// either; the command's own and one after `--` still conflict, each named
+    /// where it was given.
+    #[test]
+    fn effective_request_takes_the_projects_output_folder_last() {
+        let with = |own: Option<&str>, extra: &[&str]| RunConfig {
+            profile_output_dir: own.map(PathBuf::from),
+            default_profile_output_dir: Some(PathBuf::from("from-yaml")),
+            ..request(Some("perf"), None, extra)
+        };
+        let folder = |cfg: RunConfig| {
+            effective_request(&cfg, "bench run")
+                .expect("one request")
+                .profile_output_dir
+        };
+        assert_eq!(folder(with(None, &[])), Some(PathBuf::from("from-yaml")));
+        assert_eq!(
+            folder(with(None, &["--artifact-root", "other"])),
+            Some(PathBuf::from("other"))
+        );
+        assert_eq!(folder(with(Some("own"), &[])), Some(PathBuf::from("own")));
+        let err = effective_request(
+            &with(Some("own"), &["--profile-output-dir", "other"]),
+            "bench run",
+        )
+        .expect_err("two folders");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-output-dir is given more than once with different \
+             values ('own' to bench run, 'other' after --); give it once"
+        );
     }
 
     /// A request for @p profile with the rate @p hz given to the command.
