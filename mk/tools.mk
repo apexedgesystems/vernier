@@ -45,7 +45,9 @@ tools-py: prep
 	else printf '[tools] No Python tools to build\n'; fi
 
 # Check that a build made the CLI tools, naming each one missing: the debug
-# tree after make debug unless TOOLS_CHECK_DIR names another.
+# tree after make debug unless TOOLS_CHECK_DIR names another. It runs no
+# test; ci.yml's C++ job and make verify run it on every pull request, after
+# the debug build.
 TOOLS_CHECK_DIR   ?= $(HOST_DEBUG_DIR)
 TOOLS_CHECK_FILES ?= bin/tools/rust/bench bin/tools/py/bench-plot
 

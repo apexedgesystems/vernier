@@ -91,7 +91,8 @@ jobs:
               tools/py/poetry.lock|tools/py/pyproject.toml) py=true; docker=true ;;
               ExternalDependencies.cmake) cpp=true; docker=true ;;
               tools/CMakeLists.txt) cpp=true; rust=true; py=true ;;
-              # The C++ job also runs the CLI agreement test and the tools check.
+              # The C++ job builds the tools through the debug preset and checks
+              # them (make tools-check).
               tools/rust/*) rust=true; cpp=true ;;
               tools/py/*)   py=true; cpp=true ;;
               src/*|CMakeLists.txt|cmake/*|CMakePresets.json) cpp=true ;;
