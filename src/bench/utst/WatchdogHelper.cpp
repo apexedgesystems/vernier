@@ -9,6 +9,15 @@
  *   hang <flags...>       a case, Watchdog.Hung, measured under <flags> (the
  *                         test gives --profile perf --profile-test-timeout 1)
  *                         whose body spins and does not return
+ *   hang-later <flags...> a case, Watchdog.Returns, measured under <flags> and
+ *                         returning; once the watchdog's thread has parked, a
+ *                         second, Watchdog.HungLater, whose body spins
+ *   later                 armed for 10 s as Watchdog.First, the thread seen
+ *                         waiting for that deadline, disarmed, the thread
+ *                         seen parked, then armed for 0.1 s as Watchdog.Later
+ *   shorten               armed for 10 s as Watchdog.Long, the thread seen
+ *                         waiting for that deadline, then armed for 0.1 s as
+ *                         Watchdog.Shortened
  *   names <test> <tool>   the watchdog armed for 0.1 s with these names
  *   null-names            the watchdog armed for 0.1 s with no names
  *   disarmed              armed for 0.1 s and disarmed; then armed for 0.1 s
@@ -26,23 +35,34 @@
  *                         which hooks ran and what measured() threw
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
- * then says it did not and exits 0.
+ * then says it did not and exits 0. Where it waits for the watchdog's thread
+ * to park or to wait for a deadline (Linux: /proc/self/task/<tid>/syscall
+ * shows the system call a blocked thread is in), it waits 2 s at most, then
+ * says what it saw and exits 4.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfStats.hpp"
 
+#include <linux/futex.h>
 #include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
 #include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
@@ -62,6 +82,13 @@ constexpr std::chrono::milliseconds PAST_SHORT{300};
 
 /// How long the program waits for a watchdog that should end it.
 constexpr std::chrono::seconds FIRE_WAIT{5};
+
+/// A deadline the thread is seen waiting for: twice FIRE_WAIT, so a watchdog
+/// that fires only there leaves the program to say it did not end it.
+constexpr std::chrono::seconds LONG{10};
+
+/// How long the program waits for the watchdog's thread to reach a wait.
+constexpr std::chrono::seconds WAIT_BOUND{2};
 
 /// The flags after the mode, read as a benchmark reads its command line; one
 /// cycle, one repeat.
@@ -83,15 +110,137 @@ int waitForTheWatchdog() {
   return 0;
 }
 
+/// A measured body that spins for FIRE_WAIT.
+void spin() {
+  const auto UNTIL = std::chrono::steady_clock::now() + FIRE_WAIT;
+  while (std::chrono::steady_clock::now() < UNTIL) {
+  }
+}
+
 int hang(int argc, char** argv) {
   PerfCase perf{"Watchdog.Hung", configFrom(argc, argv)};
-  perf.measured([] {
-    const auto UNTIL = std::chrono::steady_clock::now() + FIRE_WAIT;
-    while (std::chrono::steady_clock::now() < UNTIL) {
-    }
-  });
+  perf.measured(spin);
   std::puts("the watchdog did not end the program");
   return 0;
+}
+
+/// The threads of this process, by id, in order.
+std::vector<pid_t> threads() {
+  std::vector<pid_t> ids;
+  std::error_code ec;
+  for (const auto& entry : std::filesystem::directory_iterator("/proc/self/task", ec)) {
+    ids.push_back(static_cast<pid_t>(std::stol(entry.path().filename().string())));
+  }
+  std::sort(ids.begin(), ids.end());
+  return ids;
+}
+
+/// The one thread in @p after that @p before does not hold: the watchdog's,
+/// when the first arm() came between the two listings; -1 when not one.
+pid_t startedThread(const std::vector<pid_t>& before, const std::vector<pid_t>& after) {
+  std::vector<pid_t> started;
+  std::set_difference(after.begin(), after.end(), before.begin(), before.end(),
+                      std::back_inserter(started));
+  return started.size() == 1 ? started.front() : -1;
+}
+
+/// Where a thread is blocked, as /proc/self/task/<tid>/syscall shows it: in a
+/// condition variable's wait (futex, FUTEX_WAIT_BITSET) without a deadline,
+/// parked until the next arm(); in one with a deadline; or elsewhere.
+enum class Blocked { PARKED, ON_A_DEADLINE, ELSEWHERE };
+
+Blocked blockedOf(pid_t tid, std::string& shown) {
+  std::ifstream in("/proc/self/task/" + std::to_string(tid) + "/syscall");
+  shown.clear();
+  std::getline(in, shown);
+  std::istringstream fields(shown);
+  long number = -1;
+  std::string address;
+  std::string op;
+  std::string value;
+  std::string timeout;
+  if (!(fields >> number >> address >> op >> value >> timeout) || number != SYS_futex) {
+    return Blocked::ELSEWHERE;
+  }
+  if ((std::stoul(op, nullptr, 16) & FUTEX_CMD_MASK) != FUTEX_WAIT_BITSET) {
+    return Blocked::ELSEWHERE;
+  }
+  return std::stoul(timeout, nullptr, 16) == 0 ? Blocked::PARKED : Blocked::ON_A_DEADLINE;
+}
+
+/// Waits up to WAIT_BOUND for @p tid to be blocked as @p wanted; says what
+/// /proc last showed, and returns false, when it is not.
+bool waitUntilBlocked(pid_t tid, Blocked wanted, const char* what) {
+  const auto UNTIL = std::chrono::steady_clock::now() + WAIT_BOUND;
+  std::string shown;
+  do {
+    if (blockedOf(tid, shown) == wanted) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  } while (std::chrono::steady_clock::now() < UNTIL);
+  std::printf("the watchdog's thread did not %s within 2 s: /proc showed '%s'\n", what,
+              shown.c_str());
+  return false;
+}
+
+/// The watchdog armed for LONG as @p first, the first arming of this
+/// process, and its thread seen waiting for that deadline: the thread, or -1
+/// after saying why not.
+pid_t armAndWatch(const char* first) {
+  const std::vector<pid_t> BEFORE = threads();
+  perf_watchdog::arm(first, "perf", LONG);
+  const pid_t WATCHDOG = startedThread(BEFORE, threads());
+  if (WATCHDOG < 0) {
+    std::puts("the first arm() started no thread of its own");
+    return -1;
+  }
+  return waitUntilBlocked(WATCHDOG, Blocked::ON_A_DEADLINE, "wait for the deadline") ? WATCHDOG
+                                                                                     : -1;
+}
+
+int hangLater(int argc, char** argv) {
+  const PerfConfig CFG = configFrom(argc, argv);
+  const std::vector<pid_t> BEFORE = threads();
+  {
+    PerfCase first{"Watchdog.Returns", CFG};
+    first.measured([] {});
+  }
+  // The first case's line, kept when the watchdog ends the program.
+  std::fflush(stdout);
+  const pid_t WATCHDOG = startedThread(BEFORE, threads());
+  if (WATCHDOG < 0) {
+    std::puts("the first case started no watchdog thread of its own");
+    return 4;
+  }
+  if (!waitUntilBlocked(WATCHDOG, Blocked::PARKED, "park after the first case")) {
+    return 4;
+  }
+  PerfCase second{"Watchdog.HungLater", CFG};
+  second.measured(spin);
+  std::puts("the watchdog did not end the program");
+  return 0;
+}
+
+int later() {
+  const pid_t WATCHDOG = armAndWatch("Watchdog.First");
+  if (WATCHDOG < 0) {
+    return 4;
+  }
+  perf_watchdog::disarm();
+  if (!waitUntilBlocked(WATCHDOG, Blocked::PARKED, "park after disarm()")) {
+    return 4;
+  }
+  perf_watchdog::arm("Watchdog.Later", "perf", SHORT);
+  return waitForTheWatchdog();
+}
+
+int shorten() {
+  if (armAndWatch("Watchdog.Long") < 0) {
+    return 4;
+  }
+  perf_watchdog::arm("Watchdog.Shortened", "perf", SHORT);
+  return waitForTheWatchdog();
 }
 
 int names(const char* test, const char* tool) {
@@ -210,6 +359,15 @@ int main(int argc, char** argv) {
   if (MODE == "hang") {
     return hang(argc, argv);
   }
+  if (MODE == "hang-later") {
+    return hangLater(argc, argv);
+  }
+  if (MODE == "later") {
+    return later();
+  }
+  if (MODE == "shorten") {
+    return shorten();
+  }
   if (MODE == "names" && argc == 4) {
     return names(argv[2], argv[3]);
   }
@@ -229,8 +387,8 @@ int main(int argc, char** argv) {
     return noThread(argc, argv);
   }
   std::fprintf(stderr,
-               "usage: %s hang <flags>|names <test> <tool>|null-names|disarmed|fork|signals|"
-               "no-thread <flags>\n",
+               "usage: %s hang <flags>|hang-later <flags>|later|shorten|names <test> <tool>|"
+               "null-names|disarmed|fork|signals|no-thread <flags>\n",
                argv[0]);
   return 64;
 }

@@ -7,7 +7,10 @@
  *    or must not, runs WatchdogHelper as a child and reads how it ended.
  *  - Those children wait on real timers: 0.1 s for a direct arm, 0.6 s for
  *    the disarm and re-arm case, and the 1 s of --profile-test-timeout 1 for
- *    the hung loop.
+ *    the two hung loops.
+ *  - The cases of a later arming make the helper wait until the watchdog's
+ *    thread is parked, or waiting for a deadline, before it arms again: an
+ *    arming the thread does not see at once is then never seen.
  *  - The cases in this process arm through a measured loop for 30 s or more
  *    and read the watchdog's flag; none waits for it.
  */
@@ -96,6 +99,46 @@ TEST(PerfWatchdogTest, HungLoopEndsWithStatusTwo) {
   EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Hung", "perf"));
   EXPECT_EQ(RUN.output, "");
   EXPECT_GE(ELAPSED_MS, 1000) << "it ended before its timeout";
+}
+
+/**
+ * @test A later measured loop that does not return, once the watchdog's
+ * thread has parked after a first case that returned, under --profile perf
+ * with --profile-test-timeout 1: after the second, the watchdog ends the
+ * program with exit status 2, naming the later case.
+ */
+TEST(PerfWatchdogTest, LaterHungLoopEndsWithStatusTwo) {
+  const ProbeResult RUN =
+      runHelper({"hang-later", "--profile", "perf", "--profile-test-timeout", "1"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.HungLater", "perf"));
+  EXPECT_EQ(RUN.output.rfind("[Watchdog.Returns]", 0), 0U)
+      << "the first case's line: " << RUN.output;
+}
+
+/**
+ * @test An arming after the watchdog's thread has parked: armed for 10 s,
+ * disarmed once the thread waits for that deadline, armed for 0.1 s once the
+ * thread has parked. It fires, naming the later case.
+ */
+TEST(PerfWatchdogTest, ArmingAfterTheThreadParkedFires) {
+  const ProbeResult RUN = runHelper({"later"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Later", "perf"));
+}
+
+/**
+ * @test A re-arm that shortens the deadline the thread is waiting for: armed
+ * for 10 s, then for 0.1 s. It fires at the new deadline, naming the new
+ * case, before the program's own 5 s wait ends, half the first deadline.
+ */
+TEST(PerfWatchdogTest, ShorterRearmFiresAtTheNewDeadline) {
+  const ProbeResult RUN = runHelper({"shorten"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Shortened", "perf"));
 }
 
 /** @test Reports the test and the profiler by name, in order, then exits with status 2 */
