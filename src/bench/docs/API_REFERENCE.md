@@ -773,14 +773,17 @@ Additional columns for GPU tests:
 
 ### Power and Thermal Columns
 
-| Column              | Type   | Description                             |
-| ------------------- | ------ | --------------------------------------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) |
+| Column              | Type   | Description                                              |
+| ------------------- | ------ | -------------------------------------------------------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  |
 
-Source: NVML. Populated on every NVIDIA GPU run.
+Source: NVML, read at the measured window's start and end, each cell where
+NVML reports what it needs. `powerDrawW` also needs a window of at least
+1.5 s: NVML's power reading is an average over the last second, so a shorter
+window's cell is empty and the run says why.
 
 ### CUPTI In-Process Kernel Metrics
 

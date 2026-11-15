@@ -746,6 +746,10 @@ public:
     if (!NVML_STATEMENT.empty()) {
       stateOnce(NVML_STATEMENT);
     }
+    const std::string SHORT_WINDOW = nvml_telemetry::shortWindowStatement(nvmlReadings);
+    if (!SHORT_WINDOW.empty()) {
+      stateOnce(SHORT_WINDOW);
+    }
 
     // The counters' window ends with the timed repeats.
     std::optional<UnifiedMemoryProfile> unifiedMemory;

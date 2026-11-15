@@ -15,6 +15,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -71,16 +72,37 @@ fn::Device silentDevice() {
   return d;
 }
 
-/** @brief One measured window's readings from @p device, the only one NVML numbers. */
-WindowReadings windowOf(const fn::Device& device) {
+/** @brief Makes @p w a window of @p seconds: its end sample that long after its start. */
+void lastedSeconds(WindowReadings& w, double seconds) {
+  w.endReadAt = w.startReadAt + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                    std::chrono::duration<double>(seconds));
+}
+
+/**
+ * @brief One measured window's readings from @p device, the only one NVML
+ *        numbers, lasting @p seconds (2 s unless given: long enough for the
+ *        power draw).
+ */
+WindowReadings windowOf(const fn::Device& device, double seconds = 2.0) {
   fn::behaviour().devices = {device};
   const Session SESSION(true, device.uuid);
   EXPECT_TRUE(SESSION.ready()) << SESSION.unavailableReason();
   WindowReadings w;
   SESSION.readStart(w);
   SESSION.readEnd(w);
+  lastedSeconds(w, seconds);
   return w;
 }
+
+/** @brief What the run says of @p w's power draw when the window was too short for it. */
+std::string powerStatement(const WindowReadings& w) {
+  return vernier::bench::nvml_telemetry::shortWindowStatement(w);
+}
+
+/// The statement for a window too short for NVML's power reading.
+constexpr const char* SHORT_WINDOW =
+    "[gpu] NVML's power reading is an average over the last second, so it is not the power of a "
+    "measured window shorter than 1.5 s: powerDrawW stays empty.";
 
 /// Every NVML cell stays empty, as a statement's tail names them.
 constexpr const char* ALL_CELLS = "smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC "
@@ -97,18 +119,48 @@ protected:
 
 /* ----------------------------- Cells ----------------------------- */
 
-/** @test Every reading reported fills every cell, and nothing is stated. */
+/**
+ * @test Every reading reported in a 2 s window fills every cell, and nothing
+ *       is stated; the power draw is the end's reading (30 W), not the mean
+ *       with the start's (25 W), which describes the second before the window
+ */
 TEST_F(NvmlTelemetry, EveryReadingReportedFillsEveryCell) {
   const WindowReadings W = windowOf(reportingDevice());
   const Cells CELLS = cellsOf(W);
   EXPECT_EQ(CELLS.smClockMHz, 1700);
   EXPECT_EQ(CELLS.throttling, false) << "1800 to 1700 MHz is under the 10% drop";
-  EXPECT_EQ(CELLS.powerDrawW, 25.0);
+  EXPECT_EQ(CELLS.powerDrawW, 30.0);
   EXPECT_EQ(CELLS.powerLimitW, 150.0);
   EXPECT_EQ(CELLS.temperatureC, 53);
   EXPECT_EQ(CELLS.temperatureDeltaC, 3);
   EXPECT_EQ(missingReadingsStatement(W), "");
+  EXPECT_EQ(powerStatement(W), "");
   EXPECT_EQ(throttlingWarning(W), "");
+}
+
+/**
+ * @test A window shorter than 1.5 s leaves powerDrawW empty, though NVML
+ *       reported the power at both ends, and the run says why; the other
+ *       cells are filled and no reading is called missing
+ */
+TEST_F(NvmlTelemetry, AShortWindowLeavesThePowerDrawEmptyAndSaysWhy) {
+  const WindowReadings W = windowOf(reportingDevice(), 0.5);
+  const Cells CELLS = cellsOf(W);
+  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "a 0.5 s window got " << *CELLS.powerDrawW << " W";
+  EXPECT_EQ(CELLS.smClockMHz, 1700);
+  EXPECT_EQ(CELLS.temperatureDeltaC, 3);
+  EXPECT_EQ(missingReadingsStatement(W), "");
+  EXPECT_EQ(powerStatement(W), SHORT_WINDOW);
+}
+
+/** @test The power draw needs 1.5 s: a window of 1.5 s has it, one of 1.49 s has not. */
+TEST_F(NvmlTelemetry, ThePowerDrawNeedsAWindowOfOneAndAHalfSeconds) {
+  WindowReadings w = windowOf(reportingDevice(), 1.5);
+  EXPECT_EQ(cellsOf(w).powerDrawW, 30.0);
+  EXPECT_EQ(powerStatement(w), "");
+  w = windowOf(reportingDevice(), 1.49);
+  EXPECT_FALSE(cellsOf(w).powerDrawW.has_value());
+  EXPECT_EQ(powerStatement(w), SHORT_WINDOW);
 }
 
 /** @test Readings answered "Not Supported" leave every cell empty, and say which and why. */
@@ -135,7 +187,7 @@ TEST_F(NvmlTelemetry, OneMissingReadingEmptiesOnlyItsCell) {
   const Cells CELLS = cellsOf(W);
   EXPECT_FALSE(CELLS.powerLimitW.has_value());
   EXPECT_EQ(CELLS.smClockMHz, 1700);
-  EXPECT_EQ(CELLS.powerDrawW, 25.0);
+  EXPECT_EQ(CELLS.powerDrawW, 30.0);
   EXPECT_EQ(CELLS.temperatureC, 53);
   EXPECT_EQ(missingReadingsStatement(W),
             "[gpu] NVML reported no power limit (Not Supported): powerLimitW stays empty.");
@@ -156,7 +208,7 @@ TEST_F(NvmlTelemetry, AFailedEndSampleEmptiesTheCellsThatNeedIt) {
   const Cells CELLS = cellsOf(W);
   EXPECT_FALSE(CELLS.smClockMHz.has_value());
   EXPECT_FALSE(CELLS.throttling.has_value());
-  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "a mean needs both ends";
+  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "the cell is the end's reading";
   EXPECT_FALSE(CELLS.temperatureC.has_value());
   EXPECT_FALSE(CELLS.temperatureDeltaC.has_value());
   EXPECT_EQ(CELLS.powerLimitW, 150.0);
@@ -168,7 +220,8 @@ TEST_F(NvmlTelemetry, AFailedEndSampleEmptiesTheCellsThatNeedIt) {
 
 /**
  * @test A failed start sample empties the cells that need both ends and keeps
- *       the ones read at the end
+ *       the ones read at the end, the power draw among them; the power
+ *       reading that failed at the start empties no cell and is not named
  */
 TEST_F(NvmlTelemetry, AFailedStartSampleEmptiesTheCellsThatNeedBothEnds) {
   fn::Device device = reportingDevice();
@@ -180,13 +233,13 @@ TEST_F(NvmlTelemetry, AFailedStartSampleEmptiesTheCellsThatNeedBothEnds) {
   const Cells CELLS = cellsOf(W);
   EXPECT_EQ(CELLS.smClockMHz, 1700);
   EXPECT_FALSE(CELLS.throttling.has_value());
-  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "a mean needs both ends";
+  EXPECT_EQ(CELLS.powerDrawW, 30.0);
   EXPECT_EQ(CELLS.temperatureC, 53);
   EXPECT_FALSE(CELLS.temperatureDeltaC.has_value()) << "a difference needs both ends";
   EXPECT_EQ(CELLS.powerLimitW, 150.0);
   EXPECT_EQ(missingReadingsStatement(W),
-            "[gpu] NVML reported no SM clock, power draw or GPU temperature (Unknown Error): "
-            "throttling, powerDrawW and temperatureDeltaC stay empty.");
+            "[gpu] NVML reported no SM clock or GPU temperature (Unknown Error): "
+            "throttling and temperatureDeltaC stay empty.");
 }
 
 /** @test Throttling needs the clock at both ends and the maximum, and warns only then. */

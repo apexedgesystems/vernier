@@ -103,7 +103,10 @@ struct PerfRow {
   // the run names the readings it did not report.
   std::optional<int> smClockMHz;
   std::optional<bool> throttling;
-  std::optional<double> powerDrawW;  ///< Mean of the power draw sampled at both ends (W)
+  /// NVML's power reading at the measured window's end (W), an average over
+  /// the last second; empty for a window shorter than 1.5 s, which the run
+  /// states.
+  std::optional<double> powerDrawW;
   std::optional<double> powerLimitW; ///< Configured power limit (W)
   std::optional<int> temperatureC;   ///< End-of-measure GPU core temperature (C)
   std::optional<int>

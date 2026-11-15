@@ -1097,12 +1097,12 @@ Complete GPU-specific CSV columns:
 
 #### Power and Thermal Columns (NVML)
 
-| Column              | Type   | Description                             | Example |
-| ------------------- | ------ | --------------------------------------- | ------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       | 19.79   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      | 80.0    |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) | 2       |
+| Column              | Type   | Description                                              | Example |
+| ------------------- | ------ | -------------------------------------------------------- | ------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) | 62.50   |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       | 80.0    |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  | 49      |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  | 2       |
 
 #### CUPTI In-Process Kernel Metrics
 

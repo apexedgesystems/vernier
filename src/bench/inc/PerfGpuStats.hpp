@@ -130,13 +130,18 @@ struct ClockSpeedProfile {
  * the CSV cells built from these fields are then empty and the run says why.
  */
 struct PowerThermalProfile {
-  double powerDrawWStart{}; ///< Instantaneous power draw at measure start (W)
-  double powerDrawWEnd{};   ///< Instantaneous power draw at measure end (W)
-  double powerLimitW{};     ///< Configured power limit (W)
-  int temperatureCStart{};  ///< GPU core temperature at start (Celsius)
-  int temperatureCEnd{};    ///< GPU core temperature at end (Celsius)
+  /// NVML's power reading at the measured window's start (W): not an
+  /// instant, an average over the second before it (Ampere and newer).
+  double powerDrawWStart{};
+  /// NVML's power reading at the window's end (W), an average over the last
+  /// second: the window's power only for a window of at least 1.5 s, which is
+  /// when the CSV's powerDrawW carries it.
+  double powerDrawWEnd{};
+  double powerLimitW{};    ///< Configured power limit (W)
+  int temperatureCStart{}; ///< GPU core temperature at start (Celsius)
+  int temperatureCEnd{};   ///< GPU core temperature at end (Celsius)
 
-  /** Average of start/end samples; near enough for a single short measurement. */
+  /** The mean of the two readings: not the window's power, which no mean of them is. */
   [[nodiscard]] double avgPowerDrawW() const { return (powerDrawWStart + powerDrawWEnd) * 0.5; }
 
   /** Temperature delta over the measure window (positive = warmed up). */

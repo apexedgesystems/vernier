@@ -991,6 +991,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - A multi-GPU row's `speedupVsCpu` is the CPU baseline over its own
   `wallMedian`, not a sum over its devices.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `powerDrawW` is NVML's power reading at the end of a measured window of at
+  least 1.5 s; a shorter window leaves it empty and the run says why.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - `bench run --profile compute-sanitizer` identifies truncated racecheck reports
   as incomplete. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 
