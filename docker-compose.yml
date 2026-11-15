@@ -91,6 +91,13 @@ services:
         <<: *build-args
     hostname: vernier-dev-cpu
     privileged: true
+    # The hard limit on open descriptors a developer's Docker gives, above the
+    # 65540 the readiness keeper tests need, so they run in CI too; the soft
+    # limit stays the usual 1024.
+    ulimits:
+      nofile:
+        soft: 1024
+        hard: 524288
     command: bash
 
   dev-cuda:

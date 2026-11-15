@@ -5,7 +5,7 @@
 # The set of checks is the registry in mk/checks.mk (CHECKS_NIGHTLY); `make
 # print-nightly-checks` emits it as a JSON array that drives the matrix below.
 # To add or drop a nightly check, edit the registry: this workflow needs no
-# change. Today it holds test-component, the component tests (mk/test.mk).
+# change. `make list-checks` names the checks it holds.
 #
 # Each matrix leg pulls the CPU dev image and runs one `make <check>` in it,
 # with ci.yml's C++ settings (GPU off), so a check builds the tree a pull

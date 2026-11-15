@@ -90,4 +90,13 @@ define cmd_exists
 $(shell command -v $(1) >/dev/null 2>&1 && echo yes || echo no)
 endef
 
+# ------------------------------------------------------------------------------
+# Text Utilities
+# ------------------------------------------------------------------------------
+# A space as a value, for the functions that split or join on it (the gtest
+# selections in mk/test.mk, the nightly matrix in mk/checks.mk).
+
+_empty :=
+_space := $(_empty) $(_empty)
+
 endif  # COMMON_MK_GUARD

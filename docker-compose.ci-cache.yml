@@ -13,7 +13,9 @@
 #
 # Also defines the `ci-build` service: the lean build tier (vernier.build.cpu)
 # with the workspace mounted, so the gate runs the rust/python tests on the same
-# tier the release builds with.
+# tier the release builds with; and `ci-build-cuda`, the lean CUDA tier
+# (vernier.build.cuda) with the workspace and a ccache mounted, where make
+# cuda-check runs without a GPU.
 # ==============================================================================
 x-inline-cache: &inline-cache
   - type=inline
@@ -118,3 +120,13 @@ services:
     working_dir: /home/${USER}/workspace
     volumes:
       - .:/home/${USER}/workspace:cached
+
+  # The lean CUDA tier for the CUDA lane: nvcc, CUPTI and NVML's link stub, no
+  # Nsight and no device reservation. The ccache mount is the dev service's
+  # (CCACHE_HOST binds a directory in CI); the image sets CCACHE_DIR=/ccache.
+  ci-build-cuda:
+    image: vernier.build.cuda
+    working_dir: /home/${USER}/workspace
+    volumes:
+      - .:/home/${USER}/workspace:cached
+      - ${CCACHE_HOST:-ccache}:/ccache

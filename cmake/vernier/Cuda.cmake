@@ -220,6 +220,14 @@ function (vernier_nvml_enable _target)
       set(_using_stubs TRUE)
     endif ()
   endif ()
+  # A library found in the toolkit's own directory may still be the stub: the
+  # CUDA images link it there from the stubs directory.
+  if (NVML_LIBRARY AND NOT _using_stubs)
+    get_filename_component(_nvml_real "${NVML_LIBRARY}" REALPATH)
+    if (_nvml_real MATCHES "/stubs/")
+      set(_using_stubs TRUE)
+    endif ()
+  endif ()
 
   if (NVML_INCLUDE_DIR AND NVML_LIBRARY)
     if (_using_stubs)

@@ -8,7 +8,8 @@
  * check, or the host allocation of the sample buffer, by the scalar operator new
  * family this binary replaces), and checks that nothing acquired before the
  * failure is still held afterwards. The launch does nothing; the fake's event
- * pair reports a set elapsed time.
+ * pair reports a set elapsed time. A thread-sanitizer build replaces no
+ * allocation function, so there the allocation case skips and says why.
  */
 
 #include "src/bench/demo/gpu/02_NsightProfiler_Timing.hpp"
@@ -24,7 +25,34 @@ namespace ubd = vernier::bench::demo;
 
 /* ----------------------------- Host allocation fault ----------------------------- */
 
+// The thread sanitizer's runtime defines the scalar operator new family itself,
+// and clang links that runtime statically, so a replacement cannot link beside
+// it ("duplicate symbol ... operator new"). A thread-sanitizer build therefore
+// replaces nothing, and the allocation fault cannot be armed there. The address
+// and undefined-behaviour sanitizers link beside a replacement and keep it. GCC
+// announces the thread sanitizer with a macro; clang defines none and answers
+// __has_feature instead.
+#if defined(__SANITIZE_THREAD__)
+#define VERNIER_DEMO_REPLACES_ALLOCATION 0
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define VERNIER_DEMO_REPLACES_ALLOCATION 0
+#endif
+#endif
+#ifndef VERNIER_DEMO_REPLACES_ALLOCATION
+#define VERNIER_DEMO_REPLACES_ALLOCATION 1
+#endif
+
 namespace {
+
+/// Whether this binary replaces the scalar operator new family.
+constexpr bool REPLACES_ALLOCATION = VERNIER_DEMO_REPLACES_ALLOCATION != 0;
+
+/// The reason the allocation case prints when it skips.
+constexpr const char* ALLOCATION_NOT_REPLACED =
+    "this binary is built with the thread sanitizer, whose runtime defines operator new and "
+    "delete itself; clang's cannot link beside a replacement, so this build replaces neither "
+    "and cannot fail an allocation: run this test in a build without the thread sanitizer";
 
 /// The next throwing operator new throws std::bad_alloc, once.
 bool g_failNextNew = false;
@@ -37,6 +65,8 @@ void failNextNewAfterThird(int acquisitions) {
 }
 
 } // namespace
+
+#if VERNIER_DEMO_REPLACES_ALLOCATION
 
 // Memory from one form of operator new may be released by any delete of its
 // family, so the whole scalar family is replaced together, on malloc and free:
@@ -83,6 +113,8 @@ void* operator new(std::size_t size, const std::nothrow_t& /*tag*/) noexcept {
 [[gnu::noinline]] void operator delete(void* p, const std::nothrow_t& /*tag*/) noexcept {
   std::free(p);
 }
+
+#endif // VERNIER_DEMO_REPLACES_ALLOCATION
 
 /* ----------------------------- Launch stand-in ----------------------------- */
 
@@ -187,6 +219,9 @@ TEST_F(NsightProfilerTiming, LaunchErrorReleasesEverything) {
 
 /** @test The sample buffer's allocation throws after all three acquisitions: nothing held. */
 TEST_F(NsightProfilerTiming, HostAllocationFaultReleasesEverything) {
+  if (!REPLACES_ALLOCATION) {
+    GTEST_SKIP() << ALLOCATION_NOT_REPLACED;
+  }
   fake_cuda::state().afterAcquisition = failNextNewAfterThird;
 
   EXPECT_THROW(timeIt(), std::bad_alloc);
