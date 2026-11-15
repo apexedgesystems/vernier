@@ -943,6 +943,29 @@ For roofline analysis and occupancy limiters, name ncu's sections instead:
 or a set such as `--profile-args '--set full'` (see
 [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary)).
 
+**No timing under Nsight Compute.** A process ncu profiles, under
+`bench run --profile ncu`, nsight's compute route or an ncu command typed by
+hand, is instrumented: ncu's work adds to what host timers and CUDA events
+measure, whatever metrics it collects (whether it also replays a launch
+depends on those metrics). A `PERF_TEST` case whose work launches kernels is
+slowed as a `PERF_GPU_TEST` case is, so under ncu neither harness times a
+measurement:
+
+- every row leaves its timing cells empty: `wallMedian` through `wallCV`,
+  `callsPerSecond` and `stable`; a GPU row also leaves the values computed
+  from them empty: `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`,
+  `memBandwidthGBs`, `multiGpuEfficiency` and `p2pBandwidthGBs`;
+- the run says why once on stderr, each test's console line reads
+  `[Suite.Case]  not timed: Nsight Compute (ncu) profiles this process`, and
+  the end-of-run table shows `NOT TIMED` for such a row;
+- the other cells stay: the configuration, the metadata, `gpuModel`,
+  `computeCapability`, the bytes moved, the occupancy estimate, the NVML
+  readings and the device columns.
+
+The result a test reads in its own code is unchanged. ncu's own measurements
+are in its report. Time the code in a run without ncu. A run under Nsight
+Systems (nsys) is not an ncu session: its rows stay timed.
+
 ### GPU Profiler Integration
 
 `PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is

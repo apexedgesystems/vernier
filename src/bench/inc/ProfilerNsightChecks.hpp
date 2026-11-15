@@ -21,7 +21,7 @@
 #include <string>
 #include <vector>
 
-#include "src/bench/inc/ProfilerNsight.hpp" // NsightMode, ReplayMetrics
+#include "src/bench/inc/ProfilerNsight.hpp" // NsightMode, REPLAY_METRICS
 #include "src/bench/inc/ProfilerReadiness.hpp"
 
 namespace vernier {
@@ -40,7 +40,7 @@ struct NsightSelection {
   /**
    * @brief ncu's options for the request, after bench run's own: the set,
    * each section, then one --metrics with every name; replay's metric list
-   * (ReplayMetrics) for replay; none under Systems.
+   * (REPLAY_METRICS) for replay; none under Systems.
    */
   [[nodiscard]] std::vector<std::string> ncuOptions() const;
 

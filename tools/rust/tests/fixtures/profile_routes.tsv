@@ -17,7 +17,7 @@
 # nsight the words compute and ncu. bench run passes the set, each section,
 # then one --metrics with every name, after its own options. The replay rows
 # hold the replay metric list, which the Rust route and the C++ backend's
-# ReplayMetrics both give.
+# REPLAY_METRICS both give.
 #
 # alias   <spelling>  <canonical backend>
 alias	nsys	nsight

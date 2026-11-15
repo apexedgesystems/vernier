@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "src/bench/inc/Nvtx.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
@@ -106,17 +107,11 @@ void NsightProfiler::printWrapCommand() const {
   NsightSelection selection;
   (void)parseNsightRequest(cfg_.profileTool == "ncu" ? "ncu" : "nsight", cfg_.profileArgs,
                            selection);
-  const bool REPLAY = (mode_ == NsightMode::ComputeReplay);
   std::string options;
-  if (REPLAY) {
-    options = " --metrics " + shellQuote(replayMetrics_.toNcuMetricString());
-  } else {
-    for (const std::string& OPTION : selection.ncuOptions()) {
-      options += " " + shellQuote(OPTION);
-    }
+  for (const std::string& OPTION : selection.ncuOptions()) {
+    options += " " + shellQuote(OPTION);
   }
-  const std::string OUTPUT =
-      shellQuote(artifactDir_ + (REPLAY ? "/kernel_replay" : "/kernel_profile"));
+  const std::string OUTPUT = shellQuote(artifactDir_ + "/" + selection.ncuReport());
   std::fprintf(stderr,
                "\n[nsight] No ncu session: ncu cannot attach to a running process, so this\n"
                "[nsight] run is not captured. Start the binary under ncu, with few launches:\n"

@@ -740,7 +740,11 @@ public:
     const bool IS_STABLE = totalStats.cv < CV_THRESHOLD;
 
     const std::string LABEL_STR = "[" + testName_ + "]";
-    printStatsWithHints(LABEL_STR.c_str(), totalStats, result.callsPerSecond, cpuCfg_, IS_STABLE);
+    if (profiledByNcu()) {
+      printNotTimed(LABEL_STR.c_str());
+    } else {
+      printStatsWithHints(LABEL_STR.c_str(), totalStats, result.callsPerSecond, cpuCfg_, IS_STABLE);
+    }
 
     const std::string THROTTLING = nvml_telemetry::throttlingWarning(nvmlReadings);
     if (!THROTTLING.empty()) {
@@ -910,12 +914,16 @@ public:
 
     std::printf("\n=== Multi-GPU Results ===\n");
     std::printf("Devices: %d\n", deviceCount);
-    std::printf("Total speedup: %.2fx\n", totalSpeedup);
-    std::printf("Scaling efficiency: %.2f (ideal=1.0)\n", mgpu.scalingEfficiency);
-    std::printf("Load imbalance: %.2f (ideal=1.0)\n", mgpu.loadImbalance);
+    if (profiledByNcu()) {
+      std::printf("Not timed: Nsight Compute (ncu) profiles this process\n");
+    } else {
+      std::printf("Total speedup: %.2fx\n", totalSpeedup);
+      std::printf("Scaling efficiency: %.2f (ideal=1.0)\n", mgpu.scalingEfficiency);
+      std::printf("Load imbalance: %.2f (ideal=1.0)\n", mgpu.loadImbalance);
+    }
     if (enableP2P) {
       std::printf("P2P enabled: yes\n");
-      if (mgpu.p2pBandwidthGBs > 0.0) {
+      if (mgpu.p2pBandwidthGBs > 0.0 && !profiledByNcu()) {
         std::printf("P2P bandwidth: %.2f GB/s\n", mgpu.p2pBandwidthGBs);
       }
     }
@@ -1169,6 +1177,7 @@ private:
     // The um* cells, from the window's unified-memory counters when it has
     // them.
     fillUnifiedMemoryCells(row, result.stats.unifiedMemory);
+    untimeUnderNcu(row);
     PerfRegistry::instance().set(row);
   }
 
@@ -1204,6 +1213,7 @@ private:
       row.p2pBandwidthGBs = result.aggregatedStats.p2pProfile->bandwidthGBs();
     }
 
+    untimeUnderNcu(row);
     PerfRegistry::instance().set(row);
   }
 

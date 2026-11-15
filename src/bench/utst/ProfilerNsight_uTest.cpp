@@ -37,7 +37,7 @@
 
 using vernier::bench::NsightProfiler;
 using vernier::bench::PerfConfig;
-using vernier::bench::ReplayMetrics;
+using vernier::bench::replayMetricList;
 using vernier::bench::Stats;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -260,7 +260,7 @@ TEST_F(NsightProfilerTest, ReplayModePrintsTheMetricList) {
 
   EXPECT_EQ(tools_->invocations(), "") << "the backend started a tool";
   EXPECT_NE(ERR.find("ncu -o " + folder("ncu") + "/kernel_replay -f --target-processes all " +
-                     "--metrics " + ReplayMetrics{}.toNcuMetricString()),
+                     "--metrics " + replayMetricList()),
             std::string::npos)
       << ERR;
   EXPECT_NE(ERR.find("or: bench run <this-binary> --profile ncu --profile-args replay --cycles 3 "
@@ -383,7 +383,7 @@ TEST_F(NsightProfilerTest, ReplayWrapKeepsArgumentBoundaries) {
                                              "--target-processes",
                                              "all",
                                              "--metrics",
-                                             ReplayMetrics{}.toNcuMetricString(),
+                                             replayMetricList(),
                                              BINARY,
                                              "--profile",
                                              "ncu",

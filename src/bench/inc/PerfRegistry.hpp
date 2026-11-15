@@ -137,6 +137,13 @@ struct PerfRow {
   /// The measurement's label argument. Not a CSV column: it names the row when
   /// its case measures more than once in a test.
   std::string label;
+
+  /// False when the harness did not time the measurement: a row measured
+  /// under an Nsight Compute session, whose instrumentation adds to what host
+  /// timers and CUDA events measure (untimeUnderNcu()). The CSV then leaves
+  /// the cells taken from `stats`, `callsPerSecond` and `stable` empty, and
+  /// the run says why.
+  bool timed{true};
 };
 
 /* ----------------------------- PerfSummaryEntry ----------------------------- */
@@ -149,6 +156,7 @@ struct PerfSummaryEntry {
   double callsPerSecond{};
   bool stable{true};
   double cvThreshold{0.05};
+  bool timed{true}; ///< PerfRow::timed: the table shows no numbers when false
 };
 
 /* ------------------------------ Row Identity ------------------------------ */
@@ -257,7 +265,8 @@ public:
     std::lock_guard<std::mutex> lock(mu_);
     // Accumulate summary for end-of-run table
     summary_.push_back(PerfSummaryEntry{row.testName, row.stats.median, row.stats.cv,
-                                        row.callsPerSecond, row.stable, row.cvThreshold});
+                                        row.callsPerSecond, row.stable, row.cvThreshold,
+                                        row.timed});
     waiting_.push_back(WaitingRow{std::move(row), summary_.size() - 1, std::this_thread::get_id()});
   }
 

@@ -762,9 +762,16 @@ Run directly with `--profile nsight`, without a tool around it, the run fails
 | `hostname`       | string | Machine hostname             |
 | `platform`       | string | Architecture (x86_64, arm64) |
 
+Under Nsight Compute (ncu) no row is timed: every row leaves the `wall*`
+columns, `callsPerSecond` and `stable` empty, since ncu's instrumentation adds
+to what the harness would measure
+([GPU guide](GPU_GUIDE.md#using-nsight-compute)).
+
 ### GPU Columns
 
-Additional columns for GPU tests:
+Additional columns for GPU tests. Under Nsight Compute (ncu) a GPU row also
+leaves `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`,
+`multiGpuEfficiency` and `p2pBandwidthGBs` empty (see CPU Columns).
 
 | Column              | Type   | Description                 |
 | ------------------- | ------ | --------------------------- |

@@ -936,7 +936,7 @@ fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
 /// `--metrics`: the throughputs, achieved occupancy, warp execution and
 /// branch efficiency, registers per thread and the instruction mix (the ALU,
 /// FMA and load/store pipes), which the GPU guide says a replay shows. The
-/// C++ backend prints the same list (`ReplayMetrics`); the shared table's
+/// C++ backend prints the same list (`REPLAY_METRICS`); the shared table's
 /// replay routes pin both.
 const REPLAY_METRICS: [&str; 11] = [
     "sm__throughput.avg.pct_of_peak_sustained_elapsed",

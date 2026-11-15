@@ -441,6 +441,13 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   malformed list before anything starts; the replay collects warp execution
   efficiency and the instruction mix, three of whose metric names ncu did not
   have. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- Under Nsight Compute (`bench run --profile ncu`, nsight's compute route or
+  an ncu command typed by hand) no row is timed: its timing cells, and a GPU
+  row's values computed from them, stay empty, since ncu's instrumentation
+  adds to what host timers and CUDA events measure; the run says why and its
+  table shows `NOT TIMED`. **Action needed:** time code in a run without ncu,
+  and rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

@@ -290,7 +290,7 @@ std::vector<std::string> NsightSelection::ncuOptions() const {
     return {};
   }
   if (mode == NsightMode::ComputeReplay) {
-    return {"--metrics", ReplayMetrics{}.toNcuMetricString()};
+    return {"--metrics", replayMetricList()};
   }
   std::vector<std::string> out;
   if (!set.empty()) {
@@ -311,9 +311,7 @@ const char* NsightSelection::ncuReport() const {
 
 std::string NsightSelection::describe() const {
   if (mode == NsightMode::ComputeReplay) {
-    const std::vector<std::string> LIST =
-        valgrind_tool::modeWords(ReplayMetrics{}.toNcuMetricString());
-    return "the replay metrics (" + std::to_string(LIST.size()) + ")";
+    return "the replay metrics (" + std::to_string(REPLAY_METRICS.size()) + ")";
   }
   return join(ncuOptions(), " ");
 }

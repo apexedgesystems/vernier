@@ -274,6 +274,10 @@ and `--target-processes` are `bench run`'s own. For any other option, start
 the binary under ncu yourself; `bench doctor` and the binary print the
 command.
 
+Under ncu no row is timed: the timing cells stay empty, since ncu's
+instrumentation adds to what the benchmark would measure, and the run says
+why ([GPU guide](../src/bench/docs/GPU_GUIDE.md#using-nsight-compute)).
+
 In-process backends (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the
 binary directly, which reads `--profile-args` itself, and the C++ harness
 manages its own per-test artifact subdirs.

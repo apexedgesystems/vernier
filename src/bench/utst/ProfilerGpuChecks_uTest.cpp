@@ -59,7 +59,7 @@ using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
-using vernier::bench::ReplayMetrics;
+using vernier::bench::replayMetricList;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -176,8 +176,7 @@ TEST(NsightModes, SelectionsNameWhatNcuCollects) {
   EXPECT_STREQ(selection.ncuReport(), "kernel_profile");
   EXPECT_EQ(selection.describe(), "--section X --metrics a.sum,b.avg,c");
   ASSERT_FALSE(parseNsightRequest("ncu", "replay", selection).has_value());
-  EXPECT_EQ(selection.ncuOptions(),
-            (std::vector<std::string>{"--metrics", ReplayMetrics{}.toNcuMetricString()}));
+  EXPECT_EQ(selection.ncuOptions(), (std::vector<std::string>{"--metrics", replayMetricList()}));
   EXPECT_STREQ(selection.ncuReport(), "kernel_replay");
   EXPECT_EQ(selection.describe(), "the replay metrics (11)");
   ASSERT_FALSE(parseNsightRequest("nsight", "", selection).has_value());
@@ -189,7 +188,7 @@ TEST(NsightModes, SelectionsNameWhatNcuCollects) {
 /**
  * @test The routes `bench run` starts for nsight, nsys and ncu are the tools
  * these requests need, and under ncu the report and the options are the
- * ones parsed here (the replay rows hold ReplayMetrics' list); every request
+ * ones parsed here (the replay rows hold REPLAY_METRICS); every request
  * it refuses is refused here, with the same text.
  */
 TEST(NsightModes, RoutesMatchTheSharedTable) {
@@ -429,7 +428,7 @@ TEST(GpuRuntime, UnwrappedRequestFailsWithTheCommand) {
   EXPECT_EQ(REPLAY.report.hint,
             "Wrap it, with few launches (ncu replays each one): ncu -o ./kernel_replay -f "
             "--target-processes all --metrics " +
-                ReplayMetrics{}.toNcuMetricString() +
+                replayMetricList() +
                 " <this-binary> --profile nsight --profile-args replay --cycles 3 --repeats 1 "
                 "[...]; or run it with bench run --profile nsight --profile-args replay --cycles "
                 "3 --repeats 1, which wraps it.");
