@@ -37,6 +37,8 @@
 #                <not supported>, as perf on the Pi reports branches:u
 #   unconfirmed  answers SIGINT in record mode by writing its data file, but
 #                not perf's "Captured and wrote" line that confirms it
+# In record mode the data file holds the bytes of the file FAKE_PERF_DATA
+# names, when it is set, and a line of text otherwise.
 
 PATH=/usr/bin:/bin
 export PATH
@@ -163,7 +165,11 @@ finish() {
     ;;
   *)
     if [ -n "$out" ]; then
-      printf 'fake perf data\n' >"$out"
+      if [ -n "${FAKE_PERF_DATA:-}" ]; then
+        cat "$FAKE_PERF_DATA" >"$out"
+      else
+        printf 'fake perf data\n' >"$out"
+      fi
       echo "[ perf record: Woken up 1 times to write data ]" >&2
       echo "[ perf record: Captured and wrote 0.001 MB $out ]" >&2
     else

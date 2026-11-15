@@ -1315,9 +1315,9 @@ Error: tool not found: FlameGraph scripts not found; set $FLAMEGRAPH_DIR or clon
 **1. Record call stacks, for long enough**: `--profile perf` on its own runs
 `perf stat` and writes only `stat.txt`. A flamegraph needs the `perf.data` that
 record mode writes, with samples in it. The measured phase starts once perf is
-sampling, but a phase of a few milliseconds holds few samples (with none,
-`perf report` says the file has no samples); `--target-time` lengthens the
-phase:
+sampling, but a phase of a few milliseconds holds few samples (with none, a
+`[perf] caveat:` line on stderr names the file, and `perf report` says it has
+no samples); `--target-time` lengthens the phase:
 
 ```bash
 ./MyComponent_PTEST --profile perf --profile-args "record -g" --target-time 250ms \

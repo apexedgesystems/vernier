@@ -23,6 +23,9 @@
  *    sets SA_NOCLDWAIT: never taken for a clean end), or leaves no counts
  *    (stat) or no data (record, mem, c2c) is reported through
  *    ProfilerRegistry::reportFailure(), which fails the run.
+ *  - A data file perf confirmed whose records hold no sample (a window that
+ *    runs for less than perf's sampling period records none) does not fail
+ *    the run: one caveat line on stderr names it and how to get samples.
  *
  * Readiness (checkPerfRequest): perf is resolved on PATH, `perf --version`
  * must run, and a bounded `perf stat` on this process must open the counters

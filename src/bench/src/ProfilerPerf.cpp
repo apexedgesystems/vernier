@@ -564,6 +564,70 @@ StatReport readStatReport(const std::string& text) {
   }
   return report;
 }
+
+/** @brief The little-endian unsigned integer of @p width bytes at @p at. */
+std::uint64_t littleEndian(const unsigned char* at, std::size_t width) {
+  std::uint64_t value = 0;
+  for (std::size_t i = width; i > 0; --i) {
+    value = (value << 8U) | at[i - 1];
+  }
+  return value;
+}
+
+/**
+ * @brief True when the perf data file at @p path is shown to hold no sample:
+ * each record of its data section was read, and none is a sample or a record
+ * that can carry samples.
+ *
+ * Read as perf writes the file on a little-endian machine: a header that
+ * starts "PERFILE2" and gives the data section's offset and size at bytes 40
+ * and 48, then records that each start with a 32-bit type and, at byte 6, a
+ * 16-bit size that counts the whole record. False when the file is not such
+ * a file, a record does not fit in the data section, or a record may carry
+ * samples or trace data this does not read: AUX area data, compressed
+ * records, lost events, or a type it does not know. perf's "Captured and
+ * wrote" line is no substitute: it counts the samples only when perf has read
+ * them back for build ids and the record traces no AUX area, so perf record
+ * -B or --buildid-all omit the count from a file that holds samples.
+ */
+bool holdsNoSample(const std::string& path) {
+  // The kernel's records but the sample (9), lost events (2, 13) and AUX
+  // area data (11); perf's own but tracing data (66), AUX trace data (71) and
+  // compressed records (81).
+  const auto CARRIES_NO_SAMPLE = [](std::uint64_t type) {
+    return (type >= 1 && type <= 21 && type != 2 && type != 9 && type != 11 && type != 13) ||
+           (type >= 64 && type <= 82 && type != 66 && type != 71 && type != 81);
+  };
+  constexpr std::size_t RECORD_HEADER = 8;
+  std::ifstream in(path, std::ios::binary);
+  std::array<unsigned char, 56> header{};
+  if (!in.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+      std::memcmp(header.data(), "PERFILE2", 8) != 0) {
+    return false;
+  }
+  const std::uint64_t SIZE = littleEndian(header.data() + 48, 8);
+  if (!in.seekg(static_cast<std::streamoff>(littleEndian(header.data() + 40, 8)))) {
+    return false;
+  }
+  for (std::uint64_t read = 0; read < SIZE;) {
+    std::array<unsigned char, RECORD_HEADER> record{};
+    if (SIZE - read < RECORD_HEADER ||
+        !in.read(reinterpret_cast<char*>(record.data()), record.size())) {
+      return false;
+    }
+    const std::uint64_t BYTES = littleEndian(record.data() + 6, 2);
+    if (!CARRIES_NO_SAMPLE(littleEndian(record.data(), 4)) || BYTES < RECORD_HEADER ||
+        BYTES > SIZE - read) {
+      return false;
+    }
+    in.ignore(static_cast<std::streamsize>(BYTES - RECORD_HEADER));
+    if (in.gcount() != static_cast<std::streamsize>(BYTES - RECORD_HEADER)) {
+      return false;
+    }
+    read += BYTES;
+  }
+  return true;
+}
 #endif
 
 } // namespace
@@ -813,6 +877,19 @@ void PerfStatProfiler::checkOutput() const {
          dataPath_ + " was not confirmed written (no \"Captured and wrote\" in " + errPath_ +
              "): " + perfSaid(errPath_),
          ReadinessStage::COMPLETION);
+    return;
+  }
+  // A complete file that holds no sample is no failure: perf's report of it
+  // is empty, and the line says why and what to change.
+  if (holdsNoSample(dataPath_)) {
+    std::fprintf(stderr,
+                 "[perf] caveat: %s holds no sample: perf confirmed it written, and none of its "
+                 "records is a sample. A measured window that runs on the CPU for less than "
+                 "perf's sampling period records none: lengthen it (--target-time 250ms sizes "
+                 "its cycles)%s.\n",
+                 dataPath_.c_str(),
+                 plan_->mode == PerfMode::RECORD ? ", or sample more often (-F in --profile-args)"
+                                                 : "");
   }
 #endif
 }

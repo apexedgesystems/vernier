@@ -1006,6 +1006,9 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   collections at once instead of leaving them running, and publishes nothing:
   perf sets its output aside as `stat.aborted.txt` or `<name>.aborted.data`.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A perf record, mem or c2c capture that holds no sample says so on stderr,
+  with how to get samples, instead of passing as a profile.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
   say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark compiled without gperftools' headers lays out `GperfProfiler` as

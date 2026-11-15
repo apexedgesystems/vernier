@@ -23,6 +23,7 @@
 #include <csignal>
 
 #include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -76,6 +77,52 @@ struct WindowFailed {
   int mark = 0;
 };
 
+// perf.data record types: the kernel's (linux/perf_event.h) and perf's own.
+constexpr std::uint32_t LOST = 2;
+constexpr std::uint32_t COMM = 3;
+constexpr std::uint32_t SAMPLE = 9;
+constexpr std::uint32_t MMAP2 = 10;
+constexpr std::uint32_t AUX = 11;
+constexpr std::uint32_t LOST_SAMPLES = 13;
+constexpr std::uint32_t FINISHED_ROUND = 68;
+constexpr std::uint32_t AUXTRACE = 71;
+constexpr std::uint32_t COMPRESSED = 81;
+
+/** @brief The size of each record perfDataBytes() writes: its 8-byte header and 8 bytes. */
+constexpr std::uint64_t PERF_RECORD_BYTES = 16;
+
+/**
+ * @brief The bytes of a perf data file as perf writes one on a little-endian
+ * machine, starting with @p magic: the 104-byte header (no attributes, no
+ * feature sections), then a data section of one record of each of @p types,
+ * whose size the header gives as @p dataSize (by default the records' own).
+ */
+std::string perfDataBytes(const std::vector<std::uint32_t>& types, const char* magic,
+                          std::uint64_t dataSize) {
+  constexpr std::uint64_t HEADER_BYTES = 104;
+  std::string bytes;
+  const auto PUT = [&bytes](std::uint64_t value, int width) {
+    for (int i = 0; i < width; ++i) {
+      bytes.push_back(static_cast<char>((value >> (8 * i)) & 0xFFU));
+    }
+  };
+  bytes.append(magic, 8);
+  PUT(HEADER_BYTES, 8); // the header's size
+  PUT(0, 8);            // the size of an attribute
+  PUT(HEADER_BYTES, 8); // the attributes: offset, size
+  PUT(0, 8);
+  PUT(HEADER_BYTES, 8); // the data section: offset, size
+  PUT(dataSize, 8);
+  bytes.resize(HEADER_BYTES, '\0'); // no event types, no feature sections
+  for (const std::uint32_t TYPE : types) {
+    PUT(TYPE, 4);
+    PUT(0, 2); // misc
+    PUT(PERF_RECORD_BYTES, 2);
+    PUT(0, 8); // the record's body
+  }
+  return bytes;
+}
+
 /** @brief One measured window under a fake perf in a private folder. */
 class PerfLifecycleTest : public ::testing::Test {
 protected:
@@ -87,11 +134,15 @@ protected:
 
   void TearDown() override { ProfilerRegistry::instance().resetFailures(); }
 
-  /** @brief What a window left: the failures recorded, the folder, how long the start took. */
+  /**
+   * @brief What a window left: the failures recorded, the folder, how long the
+   * start took, and what the backend printed.
+   */
   struct Window {
     std::vector<ProfileFailure> failures;
     std::string folder;
     std::chrono::steady_clock::duration startTook{};
+    std::string err;
   };
 
   /**
@@ -140,7 +191,21 @@ protected:
       profiler.afterMeasure(vernier::bench::Stats{});
     }
     out.failures = ProfilerRegistry::instance().failures();
+    out.err = quiet.text();
     return out;
+  }
+
+  /**
+   * @brief Write perfDataBytes() for @p types to @p name in the private folder
+   * and return its path, for the fake to write as its data file
+   * (FAKE_PERF_DATA); @p dataSize 0 gives the records' own size.
+   */
+  std::string writePerfData(const std::string& name, const std::vector<std::uint32_t>& types,
+                            const char* magic = "PERFILE2", std::uint64_t dataSize = 0) const {
+    const std::string PATH = dir_.path() + "/" + name;
+    std::ofstream(PATH, std::ios::binary)
+        << perfDataBytes(types, magic, dataSize != 0 ? dataSize : types.size() * PERF_RECORD_BYTES);
+    return PATH;
   }
 
   /** @brief The check's decision about the fake in @p mode, for @p args. */
@@ -422,6 +487,7 @@ TEST_F(PerfLifecycleTest, AbortStopsPerf) {
 TEST_F(PerfLifecycleTest, RecordNeedsItsConfirmedData) {
   const Window GOOD = window("ok", "record -g");
   EXPECT_TRUE(GOOD.failures.empty()) << GOOD.failures.front().result.report.message;
+  EXPECT_EQ(GOOD.err.find("caveat"), std::string::npos) << GOOD.err;
   std::error_code ec;
   EXPECT_GT(std::filesystem::file_size(GOOD.folder + "/perf.data", ec), 0U);
   ProfilerRegistry::instance().resetFailures();
@@ -451,6 +517,67 @@ TEST_F(PerfLifecycleTest, RecordWithoutConfirmationFails) {
             "completion: unusable: " + W.folder +
                 "/perf.data was not confirmed written (no \"Captured and wrote\" in " + W.folder +
                 "/record.err.txt): perf: [ perf record: Woken up 1 times to write data ]");
+}
+
+/**
+ * @test A record perf confirmed whose data section holds no sample, as perf
+ * leaves a window too short for its sampling period (its synthesized task
+ * and map records, then the end of its first round), is complete but empty:
+ * no failure, and one caveat that names the file and how to get samples:
+ * perf c2c, which takes no arguments, is not told to sample more often.
+ */
+TEST_F(PerfLifecycleTest, RecordOfNoSampleIsACaveat) {
+  ScopedEnv data("FAKE_PERF_DATA", writePerfData("no_sample.data", {COMM, MMAP2, FINISHED_ROUND}));
+  const std::string SAID =
+      " holds no sample: perf confirmed it written, and none of its records is "
+      "a sample. A measured window that runs on the CPU for less than perf's "
+      "sampling period records none: lengthen it (--target-time 250ms sizes "
+      "its cycles)";
+  const Window W = window("ok", "record -g");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_NE(W.err.find("[perf] caveat: " + W.folder + "/perf.data" + SAID +
+                       ", or sample more often (-F in --profile-args).\n"),
+            std::string::npos)
+      << W.err;
+  ProfilerRegistry::instance().resetFailures();
+  const Window C2C = window("ok", "c2c");
+  EXPECT_TRUE(C2C.failures.empty()) << C2C.failures.front().result.report.message;
+  EXPECT_NE(C2C.err.find("[perf] caveat: " + C2C.folder + "/perf.c2c.data" + SAID + ".\n"),
+            std::string::npos)
+      << C2C.err;
+}
+
+/**
+ * @test No caveat for a confirmed record not shown to hold no sample: one
+ * that holds a sample (which perf record -B confirms without a count), AUX
+ * area data, compressed records, lost events or a record type the reader does
+ * not know, a file of the other byte order, and a data section that ends
+ * inside a record. None of them fails.
+ */
+TEST_F(PerfLifecycleTest, RecordNotShownEmptyHasNoCaveat) {
+  struct Case {
+    const char* what;
+    std::string file;
+  };
+  const std::vector<Case> CASES = {
+      {"a sample", writePerfData("sample.data", {COMM, SAMPLE, FINISHED_ROUND})},
+      {"AUX area data", writePerfData("aux.data", {COMM, AUX})},
+      {"AUX trace data", writePerfData("auxtrace.data", {COMM, AUXTRACE})},
+      {"compressed records", writePerfData("compressed.data", {COMM, COMPRESSED})},
+      {"lost events", writePerfData("lost.data", {COMM, LOST})},
+      {"lost samples", writePerfData("lost_samples.data", {COMM, LOST_SAMPLES})},
+      {"a type the reader does not know", writePerfData("unknown.data", {COMM, 99})},
+      {"the other byte order", writePerfData("swapped.data", {COMM}, "2ELIFREP")},
+      {"a data section that ends inside a record",
+       writePerfData("cut.data", {COMM, FINISHED_ROUND}, "PERFILE2", PERF_RECORD_BYTES + 8)},
+  };
+  for (const Case& C : CASES) {
+    ProfilerRegistry::instance().resetFailures();
+    ScopedEnv data("FAKE_PERF_DATA", C.file);
+    const Window W = window("ok", "record -g");
+    EXPECT_TRUE(W.failures.empty()) << C.what << ": " << W.failures.front().result.report.message;
+    EXPECT_EQ(W.err.find("caveat"), std::string::npos) << C.what << ":\n" << W.err;
+  }
 }
 
 /* ----------------------------- Start Handshake ----------------------------- */

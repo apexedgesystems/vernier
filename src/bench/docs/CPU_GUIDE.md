@@ -604,7 +604,9 @@ the measured phase, which begins once perf answers that its counters are on (a
 `ping` on perf's `--control` fifo, waited for up to 5 s), so the phase is
 profiled from its first iteration. A measured phase of a few milliseconds still
 holds few samples; `--target-time 250ms` sizes the cycles so that each of the
-ten default repeats runs for roughly that long.
+ten default repeats runs for roughly that long. A data file that holds no
+sample at all does not fail the run: a `[perf] caveat:` line on stderr names
+it.
 
 **Common patterns to look for:**
 
