@@ -29,6 +29,9 @@
 //!   signal while it is blocked and then unblocks it alone, so that no later
 //!   one can end the process before it; a thread started under
 //!   `with_watched_blocked` never takes one of them.
+//! - A program started under `end_if_already_signalled` reads the record it
+//!   inherited, the watch's at the moment the child was created, in the child
+//!   before exec, with only async-signal-safe calls.
 //! - Only the read ends of the program's own pipes are made non-blocking.
 
 use std::io::{self, Read};
@@ -505,6 +508,48 @@ pub(crate) fn with_watched_blocked<T>(start: impl FnOnce() -> T) -> T {
     let _blocked = Blocked::watched();
     start()
 }
+
+/// Have @p command, started while a `Watch` records, end by a watched signal
+/// recorded before it was created: in the child, before exec, it puts back
+/// the default action of each watched signal it does not ignore and, when
+/// the record it inherited holds a first signal, raises that signal on
+/// itself. Its record is the watch's at the moment the child was created.
+/// On Linux a signal sent to the process group is either handled before
+/// that moment (a fork that meets a pending signal is restarted after the
+/// handler has run) or delivered to the child as well, so a Ctrl-C that
+/// reaches bench as its command starts ends the command once, either way.
+#[cfg(unix)]
+pub(crate) fn end_if_already_signalled(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only sigaction, raise and _exit, which are async-signal-safe, and loads
+    // an atomic; zeroed sigaction values are valid values of the type.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in WATCHED {
+                let mut now: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, std::ptr::null(), &mut now) == 0
+                    && now.sa_sigaction != libc::SIG_IGN
+                {
+                    let mut default: libc::sigaction = std::mem::zeroed();
+                    default.sa_sigaction = libc::SIG_DFL;
+                    libc::sigaction(signal, &default, std::ptr::null_mut());
+                }
+            }
+            let first = FIRST.load(Ordering::SeqCst);
+            if first != 0 {
+                libc::raise(first);
+                // raise returns only when the signal is blocked: end with
+                // the status a shell gives a program the signal ended.
+                libc::_exit(128 + first);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn end_if_already_signalled(_command: &mut Command) {}
 
 /// Record SIGINT, SIGTERM and SIGHUP (`record`) where their action is the
 /// default; returns each replaced action.

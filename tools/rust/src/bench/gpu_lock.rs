@@ -12,13 +12,14 @@
 //! signal ignored when bench started stays ignored, for bench and for the
 //! command) and passes a SIGTERM on to the command, since no terminal sends
 //! one; SIGTERMs that arrive between two looks, a tenth of a second apart,
-//! are passed on once. It waits for the command to end, however it ends and
-//! however long it takes, so the clocks stay locked exactly as long as the
-//! command runs; then it resets them once and ends by the first signal it
-//! recorded, which no later signal replaces. A command that does not end
-//! keeps bench waiting: the user ends it (kill -KILL), and the reset follows.
-//! SIGKILL and SIGQUIT end bench itself at once, without the reset:
-//! `bench gpu-lock reset` resets the clocks by hand.
+//! are passed on once. A signal recorded while the command is being started,
+//! before it exists, ends it as it starts. Bench waits for the command to
+//! end, however it ends and however long it takes, so the clocks stay locked
+//! exactly as long as the command runs; then it resets them once and ends by
+//! the first signal it recorded, which no later signal replaces. A command
+//! that does not end keeps bench waiting: the user ends it (kill -KILL), and
+//! the reset follows. SIGKILL and SIGQUIT end bench itself at once, without
+//! the reset: `bench gpu-lock reset` resets the clocks by hand.
 //!
 //! Every nvidia-smi call is an owned run (`owned_run`): it runs in a process
 //! group of its own, which no terminal signal reaches, so a lock or a reset
@@ -398,14 +399,23 @@ impl Drop for ResetOnUnwind<'_> {
 
 /// Start @p program with @p args in bench's own process group, and wait for
 /// it to end, however long it takes, passing on to it each SIGTERM @p watch
-/// records meanwhile. Returns how it ended, or why it could not start.
+/// records meanwhile. A signal @p watch recorded before the command was
+/// created ends the command as it starts, as a terminal's signal that
+/// reaches bench's group a moment later reaches the command itself
+/// (`owned_run::end_if_already_signalled`). @p before_spawn runs right
+/// before the start: nothing, in `wrap_command`; a signal, in a test of that
+/// moment. Returns how the command ended, or why it could not start.
 fn run_command(
     program: &str,
     args: &[String],
     watch: &owned_run::Watch,
+    before_spawn: impl FnOnce(),
 ) -> Result<ExitStatus, Error> {
-    let mut child = Command::new(program)
-        .args(args)
+    let mut command = Command::new(program);
+    command.args(args);
+    owned_run::end_if_already_signalled(&mut command);
+    before_spawn();
+    let mut child = command
         .spawn()
         .map_err(|e| Error::GpuLock(format!("failed to start '{program}': {e}")))?;
     let pid = child.id();
@@ -498,11 +508,12 @@ pub fn reset_clocks(device: u32, tool: &Tool) -> Result<(), Error> {
 /// SIGINT, SIGTERM and SIGHUP are recorded from before the lock until after
 /// the reset (each one whose action is the default; one ignored stays
 /// ignored). A SIGTERM is passed on to the command; SIGINT and SIGHUP reach
-/// it from the terminal. No signal stops the wait or the reset: the clocks
-/// are reset after the command ends, and bench then ends by the first signal
-/// recorded, which a later one cannot replace; this function does not return
-/// then. A signal that arrives while the clocks are being locked lets the
-/// lock finish, starts no command and resets the clocks.
+/// it from the terminal. Any of them recorded while the command is being
+/// started ends it as it starts. No signal stops the wait or the reset: the
+/// clocks are reset after the command ends, and bench then ends by the first
+/// signal recorded, which a later one cannot replace; this function does not
+/// return then. A signal that arrives while the clocks are being locked lets
+/// the lock finish, starts no command and resets the clocks.
 ///
 /// Otherwise `Ok` when the command exited 0 and the clocks were reset, and
 /// an error naming each problem: the lock refused, the command that did not
@@ -535,7 +546,7 @@ pub fn wrap_command(cfg: &WrapConfig) -> Result<(), Error> {
                 }
                 None
             } else {
-                Some(run_command(program, args, &watch))
+                Some(run_command(program, args, &watch, || {}))
             };
             guard.armed = false;
             let reset = reset_clocks(cfg.lock.device, &cfg.lock.tool);
@@ -654,5 +665,106 @@ mod tests {
             signal_name(libc::SIGUSR1),
             format!("signal {}", libc::SIGUSR1)
         );
+    }
+
+    /// The signal `start_in_a_process_of_its_own` raises, and the file it
+    /// reports to.
+    #[cfg(target_os = "linux")]
+    const START_SIGNAL_VARIABLE: &str = "VERNIER_GPU_LOCK_START_SIGNAL";
+    #[cfg(target_os = "linux")]
+    const START_REPORT_VARIABLE: &str = "VERNIER_GPU_LOCK_START_REPORT";
+
+    /// Not a test of its own: the body of
+    /// `a_signal_before_the_command_starts_ends_it`, which runs this test
+    /// binary for it in a process of its own, once for each signal; without
+    /// that test's variables it does nothing. The signal is raised where
+    /// `wrap_command` has just found none recorded and the command is not
+    /// started yet (`run_command`'s @p before_spawn); the command, `sleep 2`,
+    /// ends by the signal as it starts if the record reaches it, and after 2 s
+    /// otherwise. The report says how it ended; the process then ends by the
+    /// signal, as bench gpu-lock does.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn start_in_a_process_of_its_own() {
+        let Ok(signal) = std::env::var(START_SIGNAL_VARIABLE) else {
+            return;
+        };
+        let signal: libc::c_int = signal.parse().expect("a signal number");
+        let report = std::env::var(START_REPORT_VARIABLE).expect("the report's path");
+        let watch = owned_run::Watch::start();
+        let ended = run_command("/bin/sleep", &["2".to_string()], &watch, || {
+            // SAFETY: raise only sends @p signal to this thread, whose action
+            // for it is the watch's handler, which only stores to atomics.
+            unsafe { libc::raise(signal) };
+        });
+        let line = match ended {
+            Ok(status) => super::super::runner::describe_status(status),
+            Err(e) => format!("not run: {e}"),
+        };
+        std::fs::write(report, line).expect("write the report");
+        watch.end_by_first(|_| {});
+    }
+
+    /// @test A signal recorded after bench gpu-lock found none, while its
+    /// command is being started, ends the command as it starts: SIGINT and
+    /// SIGHUP, which bench does not pass on, as SIGTERM, which it does. The
+    /// command (`sleep 2`) ends by the signal at once instead of running to
+    /// its end with the clocks locked, and the process ends by it. Each
+    /// signal in a process of its own (this test binary, running
+    /// `start_in_a_process_of_its_own`), with no signal blocked and SIGINT,
+    /// SIGTERM and SIGHUP at their default actions.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_signal_before_the_command_starts_ends_it() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        let dir = super::super::tempfile_dir("gpu_lock_start");
+        let name = format!(
+            "{}::start_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let mut seen = Vec::new();
+        for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+            let report = dir.join(format!("{signal}.txt"));
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(START_SIGNAL_VARIABLE, signal.to_string())
+                .env(START_REPORT_VARIABLE, &report);
+            // SAFETY: the closure runs in the child between fork and exec and
+            // calls only sigaction and pthread_sigmask, which are
+            // async-signal-safe; zeroed sigaction and sigset_t values are
+            // valid values of the types, given the default handler, and
+            // initialised by sigemptyset.
+            unsafe {
+                command.pre_exec(|| {
+                    let mut none: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut none);
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+                    for watched in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                        let mut action: libc::sigaction = std::mem::zeroed();
+                        action.sa_sigaction = libc::SIG_DFL;
+                        if libc::sigaction(watched, &action, std::ptr::null_mut()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            let out = command.output().expect("run this test binary");
+            let line = std::fs::read_to_string(&report).unwrap_or_default();
+            let expected = format!("was ended by signal {signal}");
+            if out.status.signal() != Some(signal) || line != expected {
+                seen.push(format!(
+                    "{}: ended {:?}, the command {line:?}, expected {expected:?}\n{}{}",
+                    signal_name(signal),
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(seen.is_empty(), "{}", seen.join("\n"));
     }
 }

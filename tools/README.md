@@ -721,7 +721,9 @@ terminal never sends one; SIGINT and SIGHUP reach the command from the
 terminal. Two consequences: a SIGTERM sent to the whole process group (as
 `kill %1` sends it) reaches the command twice, from the sender and from
 `bench`; and a SIGINT sent to `bench` alone (`kill -INT <pid>`) is not passed
-on, so `bench` waits for the command to end by itself. A signal ignored when
+on, so `bench` waits for the command to end by itself. A signal `bench`
+receives while the command is being started, before the command exists,
+ends the command as it starts. A signal ignored when
 `bench` started (under `nohup`, or in a background job of a shell without job
 control) stays ignored, for `bench` and the command. Each `nvidia-smi` call
 runs in a process group of its own, which no signal sent to `bench` reaches,
