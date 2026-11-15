@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (23 files)
+# Sources (24 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -24,6 +24,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerArtifactDir_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerEnv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerTcmalloc_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerRAPL_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
@@ -143,9 +144,11 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
 # skip without one). Its CudaHandleRecorder.cpp defines, in the program, the
-# CUDA runtime calls that make and destroy streams and events and read a
-# device's properties: libbench_cuda's calls reach them before libcudart's,
-# so a test can count the handles the harness makes and fail a setup step.
+# CUDA runtime calls that choose, pair and describe devices, make and release
+# streams, events and device memory, record, copy and time on them, and read
+# the last error: libbench_cuda's calls reach them before libcudart's, so a
+# test can count what the harness makes, fail one step, and let the one GPU
+# stand in for two.
 # PerfGpuHarness_uTest.cu defines pthread_create the same way, to fail a
 # worker's start, except under the address or the thread sanitizer, whose
 # runtime intercepts pthread_create itself: WORKER_START_SANITIZER names the
