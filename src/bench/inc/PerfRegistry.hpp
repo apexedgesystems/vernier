@@ -107,8 +107,9 @@ struct PerfRow {
   std::optional<int>
       temperatureDeltaC; ///< Delta over the measured window (C, positive = warmed up)
 
-  // CUPTI in-process kernel records (empty when CUPTI recorded no launch for
-  // the row: a build without CUPTI, a collector that stood down, or a failure).
+  // CUPTI in-process kernel records of the untimed batch after the row's
+  // timed repeats (empty when CUPTI recorded no launch for the row: a build
+  // without CUPTI, a collector that stood down, or a failure).
   std::optional<std::size_t> cuptiKernelLaunches;
   std::optional<int> cuptiRegistersMedian;
   std::optional<int> cuptiRegistersMax;

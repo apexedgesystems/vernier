@@ -254,7 +254,10 @@ struct GpuStats {
   OccupancyMetrics occupancy{};
   ClockSpeedProfile clocks{};
   PowerThermalProfile powerThermal{};
-  CuptiKernelStats cupti{}; ///< In-process kernel metrics; zeroed when CUPTI unavailable
+  /// In-process kernel metrics of the untimed batch that follows a kernel
+  /// measurement's timed repeats (PerfGpuCase::cudaKernel()); zeroed when
+  /// CUPTI is unavailable.
+  CuptiKernelStats cupti{};
 
   double kernelTimeMedianUs{};
   double transferTimeMedianUs{};

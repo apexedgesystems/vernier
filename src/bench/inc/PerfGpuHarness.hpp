@@ -219,6 +219,11 @@ public:
    * event recorded there, waited for on the given stream), and work on the
    * per-thread default stream (code built with --default-stream per-thread)
    * is not ordered with it either.
+   *
+   * measure() calls @p kernel cycles x repeats times in its timed repeats.
+   * Where the in-process CUPTI collector collects, it then calls @p kernel
+   * min(cycles, 1000) times more, untimed, and the cupti* cells describe
+   * those launches: no timed launch carries CUPTI's record keeping.
    */
   CudaKernelBuilder cudaKernel(KernelFn kernel, std::string label = "cuda_kernel");
 

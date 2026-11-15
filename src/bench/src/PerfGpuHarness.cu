@@ -242,6 +242,13 @@ constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, 
                                     "cuptiRegistersMax, cuptiStaticSmemBytes and "
                                     "cuptiDynamicSmemBytes";
 
+/// Calls of the measured callable in the untimed batch the CUPTI cells come
+/// from: the case's cycles, at most this many. A call in the batch takes its
+/// kernel's time plus CUPTI's host time per launch, so the cap bounds what
+/// the batch adds to a measurement of many cycles (GPU_GUIDE.md gives the
+/// measured cost).
+constexpr int CUPTI_BATCH_MAX_CALLS = 1000;
+
 /** @brief Writes @p line and a newline to stderr, the first time this process asks for it. */
 void stateOnce(const std::string& line) {
   static std::mutex mu;
@@ -649,26 +656,28 @@ public:
     nvml_telemetry::WindowReadings nvmlReadings;
     dev.nvml->readStart(nvmlReadings);
 
-    // Start in-process kernel metrics. Off when this case yielded to an
-    // nsys/ncu session or to the explicit override (cuptiYields_, decided
-    // before the collector registered). A collector that cannot collect for
-    // any other reason (no CUPTI in this build, a refusal from CUPTI) is
-    // stated once per process.
+    // In-process CUPTI collection. Off when this case yielded to an nsys/ncu
+    // session or to the explicit override (cuptiYields_, decided before the
+    // collector registered). No timed launch runs in a window that records
+    // kernels: CUPTI's record keeping adds host time to every launch made in
+    // one. The unified-memory counters, when asked for, are a window of their
+    // own around the timed repeats, which records no kernel; the CUPTI cells
+    // come from an untimed batch after the repeats (below).
     const bool cuptiEnabled = !cuptiYields_;
-    if (cuptiEnabled) {
-      cupti_.collectUnifiedMemory(gpuCfg_.captureUnifiedMemory);
-      cupti_.start();
-      if (!cupti_.isAvailable()) {
-        stateOnce("[gpu] " + cupti_.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.");
-      }
-    } else {
+    if (!cuptiEnabled) {
       std::fprintf(stderr, "[gpu] in-process CUPTI collection disabled for this run "
                            "(external Nsight session or VERNIER_DISABLE_CUPTI); "
                            "CUPTI CSV columns will be empty.\n");
     }
-    // A callback or a CUDA call that throws leaves before the window's stop
+    const bool UM_WINDOW = cuptiEnabled && gpuCfg_.captureUnifiedMemory;
+    if (UM_WINDOW) {
+      cupti_.collectKernelRecords(false);
+      cupti_.collectUnifiedMemory(true);
+      cupti_.start();
+    }
+    // A callback or a CUDA call that throws leaves before a window's stop
     // below; the window then stops here, so this case's next window counts
-    // only its own launches.
+    // only its own records.
     const CuptiWindowCloser CLOSE_ON_EXIT(cupti_);
 
     // Unified-memory counters, when asked for: a window that does not record
@@ -738,16 +747,41 @@ public:
       stateOnce(NVML_STATEMENT);
     }
 
-    // Drain CUPTI activity buffers and aggregate before publishing the result.
-    // A window whose records are not known to be complete has no stats.
-    if (cuptiEnabled) {
+    // The counters' window ends with the timed repeats.
+    std::optional<UnifiedMemoryProfile> unifiedMemory;
+    if (UM_WINDOW) {
       cupti_.stop();
-      if (!cupti_.windowProblem().empty()) {
-        std::fprintf(stderr, "[gpu] %s in %s's measured window, so its %s stay empty.\n",
-                     cupti_.windowProblem().c_str(), testName_.c_str(), CUPTI_CELLS);
-      }
       if (UM_RECORDED) {
         stateIncompleteUnifiedMemory(cupti_, testName_);
+      }
+      unifiedMemory = cupti_.unifiedMemory();
+    }
+
+    // The CUPTI cells: the callable's launches once more, untimed, in a
+    // window of kernel records, at most CUPTI_BATCH_MAX_CALLS calls. No batch
+    // runs where the collector cannot collect, so a tool that holds CUPTI
+    // sees no extra launch. A window whose records are not known to be
+    // complete has no stats.
+    CuptiKernelStats kernelRecords{};
+    if (cuptiEnabled) {
+      cupti_.collectKernelRecords(true);
+      cupti_.collectUnifiedMemory(false);
+      cupti_.start();
+      if (!cupti_.isAvailable()) {
+        stateOnce("[gpu] " + cupti_.unavailableReason() + ": " + CUPTI_CELLS + " stay empty.");
+      } else {
+        const int CALLS = std::min(cpuCfg_.cycles, CUPTI_BATCH_MAX_CALLS);
+        for (int c = 0; c < CALLS; ++c) {
+          kernel(dev.stream);
+        }
+        requireLaunchesAccepted(testName_, "the CUPTI batch");
+        CUDA_CHECK(cudaStreamSynchronize(dev.stream));
+        cupti_.stop();
+        if (!cupti_.windowProblem().empty()) {
+          std::fprintf(stderr, "[gpu] %s in %s's CUPTI batch, so its %s stay empty.\n",
+                       cupti_.windowProblem().c_str(), testName_.c_str(), CUPTI_CELLS);
+        }
+        kernelRecords = cupti_.stats();
       }
     }
 
@@ -778,10 +812,8 @@ public:
     result.stats.deviceInfo = dev.info;
     result.stats.clocks = clocks;
     result.stats.powerThermal = powerThermal;
-    if (cuptiEnabled) {
-      result.stats.cupti = cupti_.stats();
-      result.stats.unifiedMemory = cupti_.unifiedMemory();
-    }
+    result.stats.cupti = kernelRecords;
+    result.stats.unifiedMemory = unifiedMemory;
 
     size_t totalH2D = 0, totalD2H = 0;
     for (const auto& xfer : h2d)
@@ -860,10 +892,13 @@ public:
 
     // Unified-memory counters, when asked for: the collector's window over
     // the devices' launches (the counters are the process's, so it counts
-    // every device's records), opened only under the request, and the request
-    // answered as a kernel measurement answers it.
+    // every device's records), opened only under the request, recording the
+    // counters alone (a multi-GPU row has no kernel-record cells, and kernel
+    // records would add CUPTI's host time to every timed launch), and the
+    // request answered as a kernel measurement answers it.
     const bool UM_WINDOW = gpuCfg_.captureUnifiedMemory && !cuptiYields_;
     if (UM_WINDOW) {
+      cupti_.collectKernelRecords(false);
       cupti_.collectUnifiedMemory(true);
       cupti_.start();
     }

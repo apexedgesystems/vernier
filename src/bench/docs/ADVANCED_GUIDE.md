@@ -1105,16 +1105,18 @@ Complete GPU-specific CSV columns:
 
 #### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                       | Example |
-| ----------------------- | ---- | ------------------------------------------------- | ------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches observed in this measure() window | 25000   |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       | 16      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                 | 16      |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  | 0       |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     | 0       |
+| Column                  | Type | Description                                                  | Example |
+| ----------------------- | ---- | ------------------------------------------------------------ | ------- |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats | 1000    |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  | 16      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            | 16      |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             | 0       |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                | 0       |
 
 CUPTI columns populate automatically on every GPU run when libcupti is
-linked at build time; no `--profile` flag required. See
+linked at build time; no `--profile` flag required. They come from an untimed
+batch of the measured callable's launches after the timed repeats: `cycles`
+calls, at most 1000 (the example's test ran 10000 cycles). See
 [demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
 
 #### Multi-GPU Columns

@@ -874,6 +874,37 @@ TEST_F(CuptiCollectorDecision, AWithdrawnRequestRecordsNoCounters) {
             std::vector<CUpti_ActivityKind>{CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL});
 }
 
+/**
+ * @test A window asked for the counters alone switches no kernel kind on or
+ *       off, counts none of the kernel records CUPTI delivers, and keeps its
+ *       counters without saying it had no launch; the collector's next window
+ *       asked for kernel records switches them on and counts them again
+ */
+TEST_F(CuptiCollectorDecision, ACountersOnlyWindowSwitchesOnNoKernelKind) {
+  deliverLaunches();
+  deliverUnifiedMemory();
+  AskingCollector asking;
+  asking.collector.collectKernelRecords(false);
+  window(asking.collector);
+  EXPECT_EQ(fake_cupti::calls().log,
+            (std::vector<std::string>{"configure", "enable 25", "flush", "disable 25"}));
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, 0U)
+      << "the window counted kernel records it did not switch on";
+  EXPECT_TRUE(asking.collector.windowProblem().empty()) << asking.collector.windowProblem();
+  ASSERT_TRUE(asking.collector.unifiedMemory().has_value());
+  EXPECT_EQ(asking.collector.unifiedMemory()->h2dBytes, 65536U);
+  EXPECT_TRUE(asking.collector.isAvailable());
+
+  asking.collector.collectKernelRecords(true);
+  asking.collector.collectUnifiedMemory(false);
+  fake_cupti::calls() = {};
+  window(asking.collector);
+  EXPECT_EQ(fake_cupti::calls().log,
+            (std::vector<std::string>{"enable 10", "flush", "disable 10"}));
+  EXPECT_EQ(asking.collector.stats().kernelLaunches, LAUNCHES);
+  EXPECT_FALSE(asking.collector.unifiedMemory().has_value());
+}
+
 /** @test reset() clears the last window's counters. */
 TEST_F(CuptiCollectorDecision, ResetClearsTheCounters) {
   deliverUnifiedMemory();

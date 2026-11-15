@@ -25,6 +25,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
@@ -96,6 +97,13 @@ std::string uniqueSuite(const char* stem) {
   static std::atomic<int> counter{0};
   return std::string(stem) + std::to_string(counter.fetch_add(1));
 }
+
+/**
+ * @brief Calls of the measured callable in the harness's untimed CUPTI batch,
+ *        which the cupti* cells describe, for a case of @p cycles: the cycles,
+ *        at most 1000 (PerfGpuCase::cudaKernel()).
+ */
+std::size_t batchCalls(int cycles) { return static_cast<std::size_t>(std::min(cycles, 1000)); }
 
 /** @brief Device and host buffers for one measurement. */
 class SaxpyFixtureData {
@@ -828,7 +836,7 @@ TEST_F(PerfGpuHarnessTest, CuptiCollectsWithoutASessionWhateverTheSpelling) {
   if (PLAIN == 0) {
     GTEST_SKIP() << "this build collects no CUPTI records";
   }
-  EXPECT_EQ(PLAIN, static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats);
+  EXPECT_EQ(PLAIN, batchCalls(cfg_.cycles));
   for (const char* tool : {"nsight", "nsys", "ncu"}) {
     EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiSpelling"), tool, data), PLAIN)
         << "--profile " << tool << " without a session";
@@ -1025,14 +1033,12 @@ private:
 } // namespace
 
 /**
- * @test Kernels a launch runs on two streams at once stay concurrent while the
- *       collector records the timed launches: a fork/join of two 200 us spins
- *       reads within 25% of the same launch measured first with the collector
- *       stood down (VERNIER_DISABLE_CUPTI=1), where kernels run one after the
- *       other would read twice. The collector's window covers the timed
- *       launches: it records both kernels of each. The spins keep both
- *       measurements GPU-bound, so the host time CUPTI adds to a launch does
- *       not reach them
+ * @test Kernels a launch runs on two streams at once stay concurrent with the
+ *       collector on: a fork/join of two 200 us spins reads within 25% of the
+ *       same launch measured first with the collector stood down
+ *       (VERNIER_DISABLE_CUPTI=1), where kernels run one after the other would
+ *       read twice, and the collector's batch records both kernels of each of
+ *       its calls. The spins keep both measurements GPU-bound
  */
 TEST_F(PerfGpuHarnessTest, ConcurrentKernelsStayConcurrentWhileCuptiRecords) {
   const YieldEnvCleared CLEARED;
@@ -1058,10 +1064,10 @@ TEST_F(PerfGpuHarnessTest, ConcurrentKernelsStayConcurrentWhileCuptiRecords) {
   }
   const ub::PerfGpuResult ON = MEASURE("CollectorOn");
 
-  const std::size_t KERNELS = 2 * static_cast<std::size_t>(cfg.cycles) * cfg.repeats;
+  const std::size_t KERNELS = 2 * batchCalls(cfg.cycles);
   ASSERT_EQ(off.stats.cupti.kernelLaunches, 0U) << "the collector did not stand down";
   ASSERT_EQ(ON.stats.cupti.kernelLaunches, KERNELS)
-      << "the collector's window did not record both kernels of every timed launch";
+      << "the collector's batch did not record both kernels of each of its calls";
   ASSERT_GE(off.kernelTimeUs, 0.9 * static_cast<double>(FORK_SPIN_NS) / 1000.0)
       << "a launch took less than one spin";
   EXPECT_LT(ON.kernelTimeUs, 1.25 * off.kernelTimeUs)
@@ -1123,8 +1129,8 @@ constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, 
 } // namespace
 
 /**
- * @test A measured window in which CUPTI recorded no kernel launch is said for
- *       its test, naming the cells it leaves empty, and they are empty
+ * @test A CUPTI batch in which CUPTI recorded no kernel launch is said for its
+ *       test, naming the cells it leaves empty, and they are empty
  */
 TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
   const YieldEnvCleared CLEARED;
@@ -1143,7 +1149,7 @@ TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
   EXPECT_FALSE(ROW.cuptiKernelLaunches.has_value());
   EXPECT_FALSE(ROW.cuptiRegistersMedian.has_value());
   const std::string LINE = "[gpu] CUPTI recorded no kernel launch in " + NAME +
-                           "'s measured window, so its " + CUPTI_CELLS + " stay empty.";
+                           "'s CUPTI batch, so its " + CUPTI_CELLS + " stay empty.";
   EXPECT_NE(captured.find(LINE), std::string::npos) << "stderr said:\n" << captured;
 }
 
@@ -1880,6 +1886,236 @@ TEST_F(PerfGpuHarnessTest, TheSelectedStrategyReachesTheCase) {
   }
 }
 
+/* ----------------------------- CUPTI's Cost to the Timed Launches ----------------------------- */
+
+namespace {
+
+/// The short kernel's blocks and threads: 16 x 256 stores, shorter on this
+/// GPU than the host's interval between two launches.
+constexpr int STORE_BLOCKS = 16;
+
+/** @brief Writes 1 to each of its threads' elements of @p out. */
+__global__ void storeKernel(float* out) { out[blockIdx.x * blockDim.x + threadIdx.x] = 1.0F; }
+
+/// The GPU-bound kernel's elements: a SAXPY over 1 Mi floats.
+constexpr int LONG_ELEMENTS = 1 << 20;
+
+/** @brief Device floats, freed however the test leaves. */
+struct DeviceFloats {
+  float* data = nullptr;
+  explicit DeviceFloats(int count) {
+    if (cudaMalloc(&data, static_cast<std::size_t>(count) * sizeof(float)) != cudaSuccess) {
+      data = nullptr;
+    }
+  }
+  ~DeviceFloats() { cudaFree(data); }
+  DeviceFloats(const DeviceFloats&) = delete;
+  DeviceFloats& operator=(const DeviceFloats&) = delete;
+};
+
+/**
+ * @brief One kernel measurement of @p launch in a case of its own, with the
+ *        collector stood down (VERNIER_DISABLE_CUPTI=1) when @p collectorOff.
+ */
+ub::PerfGpuResult measureInACaseOfItsOwn(const ub::PerfConfig& cfg,
+                                         const ub::PerfGpuCase::KernelFn& launch, const char* stem,
+                                         bool collectorOff) {
+  std::optional<ScopedEnv> off;
+  if (collectorOff) {
+    off.emplace("VERNIER_DISABLE_CUPTI", "1");
+  }
+  ub::PerfGpuCase perf{uniqueSuite(stem) + (collectorOff ? ".CollectorOff" : ".CollectorOn"), cfg};
+  perf.cudaWarmup(launch);
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(launch, "launch").measure();
+  static_cast<void>(ub::PerfRegistry::instance().take());
+  return RESULT;
+}
+
+/**
+ * @brief In a process no measurement has run in yet: measures @p launch with
+ *        the collector stood down first, then @p onRuns times with it on, and
+ *        writes "<stem>: off=... on=... ratio=... batch=... within=1" to stderr
+ *        (within=0 when the last run's time is not under @p bound times the
+ *        stood-down one; batch, the last run's cuptiKernelLaunches), then
+ *        exits 0.
+ */
+[[noreturn]] void reportCollectorCost(const char* stem, const ub::PerfConfig& cfg,
+                                      const ub::PerfGpuCase::KernelFn& launch, int onRuns,
+                                      double bound) {
+  const double OFF = measureInACaseOfItsOwn(cfg, launch, stem, true).kernelTimeUs;
+  ub::PerfGpuResult on;
+  for (int i = 0; i < onRuns; ++i) {
+    on = measureInACaseOfItsOwn(cfg, launch, stem, false);
+  }
+  const double RATIO = OFF > 0.0 ? on.kernelTimeUs / OFF : 0.0;
+  std::fprintf(stderr, "%s: off=%.3f us on=%.3f us ratio=%.3f batch=%zu within=%d\n", stem, OFF,
+               on.kernelTimeUs, RATIO, on.stats.cupti.kernelLaunches,
+               (RATIO > 0.0 && RATIO < bound) ? 1 : 0);
+  std::exit(0);
+}
+
+/**
+ * @brief In a process no measurement has run in yet: the short kernel through
+ *        a one-device multi-GPU measurement, first plain, then with the
+ *        unified-memory counters asked for; writes "counters: plain=...
+ *        counters=... ratio=... within=1" (within=0 when the second is not
+ *        under 1.2 times the first) to stderr, then exits 0.
+ */
+[[noreturn]] void reportCountersCost(const ub::PerfConfig& cfg) {
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  float* out = OUT.data;
+  const auto MEASURE = [&](bool counters) {
+    const ScopedGpuConfig GPU(counters ? parsedGpuFlags({"--capture-um"}) : parsedGpuFlags({}));
+    ub::PerfGpuCase perf{uniqueSuite("GpuCountersCost") + (counters ? ".Counters" : ".Plain"), cfg};
+    const ub::MultiGpuResult RESULT =
+        perf.cudaKernelMultiGpu(
+                1, [out](int, cudaStream_t s) { storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out); })
+            .measure();
+    static_cast<void>(ub::PerfRegistry::instance().take());
+    return RESULT.perDevice.at(0).kernelTimeUs;
+  };
+  const double PLAIN = MEASURE(false);
+  const double COUNTERS = MEASURE(true);
+  const double RATIO = PLAIN > 0.0 ? COUNTERS / PLAIN : 0.0;
+  std::fprintf(stderr, "counters: plain=%.3f us counters=%.3f us ratio=%.3f within=%d\n", PLAIN,
+               COUNTERS, RATIO, (RATIO > 0.0 && RATIO < 1.2) ? 1 : 0);
+  std::exit(0);
+}
+
+/** @brief Runs @p child in a fresh process of this binary ("threadsafe": re-executed). */
+template <typename Child> void expectInAFreshProcess(Child child, const char* expected) {
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(child(), ::testing::ExitedWithCode(0), expected);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+} // namespace
+
+/**
+ * @test A kernel shorter than the host's launch interval (16 x 256 stores, 200
+ *       cycles) reads within 35% of its time with the collector stood down,
+ *       measured first in a fresh process: no timed launch runs while CUPTI
+ *       records kernels, which costs such a launch about 2.5 us of host time
+ *       (1.6x to 2x here). The bound leaves room for what the collector's
+ *       registration with CUPTI alone adds (about 0.3 us a launch, up to 18%
+ *       on this kernel). The cupti* cells come from the batch of 200 calls
+ *       after the repeats
+ */
+TEST_F(PerfGpuHarnessDeathTest, AShortKernelIsTimedAsWithoutTheCollector) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 200;
+  cfg.repeats = 20;
+  expectInAFreshProcess(
+      [&cfg] {
+        const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+        float* out = OUT.data;
+        reportCollectorCost(
+            "GpuShortKernel", cfg,
+            [out](cudaStream_t s) { storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out); }, 1, 1.35);
+      },
+      "batch=200 within=1");
+}
+
+/**
+ * @test A GPU-bound kernel (a SAXPY over 1 Mi floats) measured after an
+ *       earlier window of its process reads within 10% of its time with the
+ *       collector stood down: CUPTI's record keeping is not over its timed
+ *       launches, and the host time a stopped window leaves on every later
+ *       launch does not reach a kernel longer than the launch interval
+ */
+TEST_F(PerfGpuHarnessDeathTest, AGpuBoundKernelAfterAWindowIsTimedAsWithoutTheCollector) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  expectInAFreshProcess(
+      [this] {
+        const DeviceFloats X(LONG_ELEMENTS);
+        const DeviceFloats Y(LONG_ELEMENTS);
+        const float* x = X.data;
+        float* y = Y.data;
+        reportCollectorCost(
+            "GpuBoundKernel", cfg_,
+            [x, y](cudaStream_t s) {
+              saxpyKernel<<<(LONG_ELEMENTS + BLOCK - 1) / BLOCK, BLOCK, 0, s>>>(2.0F, x, y,
+                                                                                LONG_ELEMENTS);
+            },
+            2, 1.1);
+      },
+      "batch=50 within=1");
+}
+
+/**
+ * @test A one-device multi-GPU measurement of the short kernel with the
+ *       unified-memory counters asked for reads within 20% of the same
+ *       measurement without them, in a fresh process: its window records the
+ *       counters alone, not the kernel records, whose host time doubles such a
+ *       launch
+ */
+TEST_F(PerfGpuHarnessDeathTest, AMultiGpuMeasurementUnderCaptureUmIsTimedAsWithout) {
+  const YieldEnvCleared CLEARED;
+  // Asked here, before the child runs it too, whether the collector can
+  // collect at all; asking whether CUPTI records the counters would open a
+  // window, whose host time would then reach the child's measurements.
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 200;
+  cfg.repeats = 20;
+  expectInAFreshProcess([&cfg] { reportCountersCost(cfg); }, "within=1");
+}
+
+/**
+ * @test measure() calls the callable cycles x repeats times in its timed
+ *       repeats and, with the collector on, min(cycles, 1000) times more in an
+ *       untimed batch, whose launches the cupti* cells count; with the
+ *       collector stood down there is no batch
+ */
+TEST_F(PerfGpuHarnessTest, TheCuptiCellsComeFromABatchAfterTheRepeats) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  const struct {
+    int cycles;
+    int repeats;
+    bool collectorOff;
+    std::size_t batch;
+  } RUNS[] = {{10, 3, false, 10}, {1200, 2, false, 1000}, {10, 3, true, 0}};
+  for (const auto& RUN : RUNS) {
+    SCOPED_TRACE("cycles " + std::to_string(RUN.cycles) +
+                 (RUN.collectorOff ? ", collector off" : ", collector on"));
+    ub::PerfConfig cfg = cfg_;
+    cfg.cycles = RUN.cycles;
+    cfg.repeats = RUN.repeats;
+    std::optional<ScopedEnv> off;
+    if (RUN.collectorOff) {
+      off.emplace("VERNIER_DISABLE_CUPTI", "1");
+    }
+    ub::PerfGpuCase perf{uniqueSuite("GpuCuptiBatch") + ".Case", cfg};
+    std::size_t calls = 0;
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                             [out, &calls](cudaStream_t s) {
+                                               ++calls;
+                                               storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                                             },
+                                             "store")
+                                         .measure();
+    static_cast<void>(lastRow());
+    EXPECT_EQ(calls, static_cast<std::size_t>(RUN.cycles) * RUN.repeats + RUN.batch);
+    EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, RUN.batch);
+  }
+}
+
 /* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
 
 namespace {
@@ -2196,7 +2432,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceMeasuresThere) {
 TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   FillOnDevice fill(currentDevice());
   {
     ub::PerfGpuCase perf{uniqueSuite("GpuThrowDefault") + ".Kernel", cfg_};
@@ -2218,7 +2454,7 @@ TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
     EXPECT_EQ(fill.firstWrong(), -1);
     if (COUNTS) {
       EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-          << "the case's next window counted the failed window's launches";
+          << "the case's next CUPTI batch counted launches it did not make";
     }
   }
 
@@ -2242,7 +2478,7 @@ TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
 TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackThrows) {
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   ub::PerfGpuCase perf{uniqueSuite("GpuThrowOwn") + ".Kernel", cfg_};
   const int OWN = perf.gpuConfig().deviceId;
   const int CALLER = currentDevice();
@@ -2273,7 +2509,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackTh
   EXPECT_EQ(currentDevice(), CALLER);
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-        << "the case's next window counted the failed window's launches";
+        << "the case's next CUPTI batch counted launches it did not make";
   }
 }
 
@@ -2291,7 +2527,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   }
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   ub::PerfGpuCase perf{uniqueSuite("GpuThrowOther") + ".Kernel", cfg_};
   const int OWN = perf.gpuConfig().deviceId;
   const int OTHER = (OWN + 1) % count;
@@ -2323,7 +2559,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   EXPECT_EQ(currentDevice(), OWN);
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-        << "the case's next window counted the failed window's launches";
+        << "the case's next CUPTI batch counted launches it did not make";
   }
 }
 

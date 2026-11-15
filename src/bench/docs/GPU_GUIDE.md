@@ -841,9 +841,12 @@ cells stay empty. A failed test keeps its own status.
 **What the request costs.** Switching the counters on before the timed
 repeats, and flushing and switching them off after them, adds about 45 ms to
 each measurement on the laptop GPU, outside the timed interval. While the
-repeats run, CUPTI records every migration and fault; on that GPU the
+repeats run, CUPTI records every migration and fault and no kernel record
+(the CUPTI cells come from a batch after the repeats); on that GPU the
 sample's kernel medians with and without the request agreed within their
-run-to-run spread, but compare timings from runs made the same way.
+run-to-run spread, and a 16 x 256 store through a one-device multi-GPU
+measurement read 3.18 against 3.11 us a launch (five alternating runs), but
+compare timings from runs made the same way.
 
 `--gpu-memory unified` asks for no counters. It selects managed memory for
 the tests that allocate by the selected strategy, such as
@@ -1036,21 +1039,48 @@ CUPTI's Activity API populates per-launch register count, static + dynamic
 shared memory, and launch count into the GPU CSV section on every GPU run
 -- no `--profile` flag required. New columns:
 
-| Column                  | Meaning                                                   |
-| ----------------------- | --------------------------------------------------------- |
-| `cuptiKernelLaunches`   | Number of kernel launches observed in the measured window |
-| `cuptiRegistersMedian`  | Median registers per thread across launches               |
-| `cuptiRegistersMax`     | Max registers per thread observed                         |
-| `cuptiStaticSmemBytes`  | Median static `__shared__` allocation                     |
-| `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch             |
+| Column                  | Meaning                                                 |
+| ----------------------- | ------------------------------------------------------- |
+| `cuptiKernelLaunches`   | Number of kernel launches in the untimed batch (below)  |
+| `cuptiRegistersMedian`  | Median registers per thread across the batch's launches |
+| `cuptiRegistersMax`     | Max registers per thread observed                       |
+| `cuptiStaticSmemBytes`  | Median static `__shared__` allocation                   |
+| `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch           |
+
+**Where CUPTI collects.** No timed launch runs while CUPTI records kernels:
+its record keeping costs a launch about 2.5 us of host time, which a kernel
+shorter than the host's interval between two launches carries in full. After
+a kernel measurement's timed repeats the harness calls the measured callable
+`cycles` times more, at most 1000, untimed, with CUPTI recording kernels, and
+the five cells describe those launches: `cuptiKernelLaunches` counts the
+batch's launches (20 for a test at `--cycles 20`, 40 if each call launches
+two kernels), not the timed ones. The callable runs `cycles x repeats` times
+timed and those calls more, so a callable with side effects sees them all. No
+batch runs where the collector does not collect (an nsys or ncu session,
+`VERNIER_DISABLE_CUPTI=1`, a build without CUPTI, CUPTI refusing the
+collector), so a tool that holds CUPTI sees no extra launch. What the batch
+adds to one measurement on the laptop's RTX 5000 Ada, at 1000 cycles: about
+7 ms for a 16 x 256 store (a microsecond kernel) and 1.0 s for a 1 ms kernel,
+whose 1000 calls run once more; less in proportion at fewer cycles.
+
+**What CUPTI still leaves on the timed launches.** Host time, which reaches
+only kernels shorter than the host's launch interval. Once the collector has
+registered with CUPTI, at a case's construction, a launch takes about 0.3 us
+more (a 16 x 256 store at 200 cycles: 3.23 against 2.95 us a launch, the
+median of five fresh processes); once a CUPTI batch has run in the process,
+about 1.4 us more (4.31 us), because a stopped CUPTI window leaves its host
+cost on every later launch of the process. Kernels longer than that interval
+(walkthroughs 10 and 19's SAXPY over 1 Mi floats, a 1 ms spin) read within 5%
+of their time with the collector stood down. For the shortest kernels,
+compare runs made the same way, or set `VERNIER_DISABLE_CUPTI=1`.
 
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
 cache hit rates), keep `--profile nsight --profile-args replay` or wrap
 externally with `ncu`. Under `--capture-um` the same collector also records
-CUPTI's unified-memory counters over each measured window
-([Unified-Memory Counters](#unified-memory-counters)).
+CUPTI's unified-memory counters over each measured window, in a window of the
+counters alone ([Unified-Memory Counters](#unified-memory-counters)).
 
 CUPTI allows a single client per process, so this in-process collector and an
 external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,

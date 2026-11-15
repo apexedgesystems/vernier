@@ -973,6 +973,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
 - CUPTI recording preserves concurrent GPU kernel execution.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- GPU timings no longer carry CUPTI's record keeping: the `cupti*` cells come
+  from an untimed batch after the timed repeats, and `cuptiKernelLaunches`
+  counts its launches.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - GPU measurements leave incomplete or stale CUPTI results empty and report why.
   ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 - Refused CUDA launches fail GPU measurements and warmup; worker errors reach

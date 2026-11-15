@@ -8,12 +8,14 @@
  * checked: a refusal to register, or to switch kernel records on, leaves the
  * collector unavailable with the reason; a refusal of the unified-memory
  * counters leaves the window without them, with the reason; a failed flush,
- * dropped records, records CUPTI could not read or no record at all leave the
- * window without stats, with the problem named. Kernel records that do not
- * switch off, or a failed flush, end collection for every collector of the
- * process, and unified-memory counters that do not switch off end the
- * counters the same way: what CUPTI still holds or records would reach a
- * later window.
+ * dropped records, records CUPTI could not read or, in a window recording
+ * kernels, no record at all leave the window without stats, with the problem
+ * named. A window can record the counters alone (collectKernelRecords(false)):
+ * it switches no kernel kind on and reads no kernel record. Kernel records
+ * that do not switch off, or a failed flush, end collection for every
+ * collector of the process, and unified-memory counters that do not switch
+ * off end the counters the same way: what CUPTI still holds or records would
+ * reach a later window.
  */
 
 #include "src/bench/inc/CuptiCollector.hpp"
@@ -188,6 +190,7 @@ struct Aggregator {
   CUptiResult droppedCount{CUPTI_SUCCESS}; ///< The first failed count of them, if any
   CUptiResult walkError{CUPTI_SUCCESS};    ///< The first error that ended a buffer's walk early
   bool enabled{false};
+  bool countsKernels{false};       ///< The window recording kernels reads their records
   bool countsUnifiedMemory{false}; ///< The window recording the counters reads their records
   /// Why no window of this process collects any more (a flush failed, or
   /// kernel records did not switch off); empty while windows collect.
@@ -324,9 +327,12 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
       break;
 
     // The collector enables CONCURRENT_KERNEL records; KERNEL records share
-    // their record type, so either kind is read.
-    if (record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL ||
-        record->kind == CUPTI_ACTIVITY_KIND_KERNEL) {
+    // their record type, so either kind is read, but only by a window that
+    // switched kernel records on itself: a window of the counters alone
+    // counts no launch.
+    if ((record->kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL ||
+         record->kind == CUPTI_ACTIVITY_KIND_KERNEL) &&
+        agg.countsKernels) {
       auto* k = reinterpret_cast<CUpti_ActivityKernel9*>(record);
       KernelRecord r;
       r.registersPerThread = k->registersPerThread;
@@ -359,6 +365,8 @@ extern "C" void CUPTIAPI cuptiBufferCompleted(CUcontext ctx, uint32_t streamId, 
 struct CuptiCollector::Impl {
   std::string unavailableReason;    ///< Why the collector does not collect; empty while it can
   std::string windowProblem;        ///< What kept the last window's records from being complete
+  bool kernelRecordsAsked{true};    ///< collectKernelRecords(), on unless switched off
+  bool kernelRecordsRunning{false}; ///< This window switched the kernel records' kind on
   bool unifiedMemoryAsked{false};   ///< collectUnifiedMemory(true)
   bool unifiedMemoryRunning{false}; ///< This window switched the counters' kind on
   std::string unifiedMemoryRefusal; ///< Why the last window that was to record them did not
@@ -465,6 +473,8 @@ const std::string& CuptiCollector::unavailableReason() const noexcept {
   return impl_->unavailableReason;
 }
 
+void CuptiCollector::collectKernelRecords(bool on) noexcept { impl_->kernelRecordsAsked = on; }
+
 void CuptiCollector::collectUnifiedMemory(bool on) noexcept { impl_->unifiedMemoryAsked = on; }
 
 const std::optional<UnifiedMemoryProfile>& CuptiCollector::unifiedMemory() const noexcept {
@@ -497,6 +507,7 @@ void CuptiCollector::start() {
     ended = aggregator().collectionEnded;
     if (ended.empty()) {
       aggregator().clearWindow();
+      aggregator().countsKernels = impl_->kernelRecordsAsked;
       aggregator().countsUnifiedMemory = false;
       aggregator().enabled = true;
     }
@@ -508,20 +519,25 @@ void CuptiCollector::start() {
     impl_->unavailableReason = ended;
     return;
   }
-  // CONCURRENT_KERNEL records only. KERNEL records would serialize every
-  // kernel the GPU runs while they are on (cupti_activity.h), so kernels a
-  // launch runs on two streams at once would be timed one after the other;
-  // the two kinds exclude each other (CUPTI_ERROR_NOT_COMPATIBLE).
-  const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
-  if (ENABLED != CUPTI_SUCCESS) {
-    {
-      std::lock_guard<std::mutex> guard(aggregator().mtx);
-      aggregator().enabled = false;
+  // CONCURRENT_KERNEL records only, unless the window is for the counters
+  // alone. KERNEL records would serialize every kernel the GPU runs while
+  // they are on (cupti_activity.h), so kernels a launch runs on two streams at
+  // once would be timed one after the other; the two kinds exclude each other
+  // (CUPTI_ERROR_NOT_COMPATIBLE).
+  if (impl_->kernelRecordsAsked) {
+    const CUptiResult ENABLED = cuptiActivityEnable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+    if (ENABLED != CUPTI_SUCCESS) {
+      {
+        std::lock_guard<std::mutex> guard(aggregator().mtx);
+        aggregator().enabled = false;
+        aggregator().countsKernels = false;
+      }
+      available_ = false;
+      impl_->unavailableReason =
+          "CUPTI refused to record kernel activity (" + resultName(ENABLED) + ")";
+      return;
     }
-    available_ = false;
-    impl_->unavailableReason =
-        "CUPTI refused to record kernel activity (" + resultName(ENABLED) + ")";
-    return;
+    impl_->kernelRecordsRunning = true;
   }
   if (impl_->unifiedMemoryAsked) {
     impl_->startUnifiedMemory();
@@ -540,7 +556,9 @@ void CuptiCollector::stop() {
   // unified-memory kind loses the window's device-side records (the
   // host-to-device transfers and the GPU page faults).
   const CUptiResult FLUSHED = cuptiActivityFlushAll(1);
-  const CUptiResult DISABLED = cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL);
+  const CUptiResult DISABLED = impl_->kernelRecordsRunning
+                                   ? cuptiActivityDisable(CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL)
+                                   : CUPTI_SUCCESS;
   const CUptiResult UNIFIED_MEMORY_DISABLED =
       impl_->unifiedMemoryRunning ? cuptiActivityDisable(CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER)
                                   : CUPTI_SUCCESS;
@@ -561,6 +579,7 @@ void CuptiCollector::stop() {
     std::lock_guard<std::mutex> guard(aggregator().mtx);
     aggregator().noteDropped(COUNTED, droppedUnbuffered);
     aggregator().enabled = false;
+    aggregator().countsKernels = false;
     aggregator().countsUnifiedMemory = false;
     snapshot = std::move(aggregator().records);
     aggregator().records.clear();
@@ -622,14 +641,16 @@ void CuptiCollector::stop() {
                                 : " unified-memory transfers that end before they start");
   }
   // The counters need complete records, not a launch: a window that launched
-  // nothing has them all.
+  // nothing has them all. A window of the counters alone records no launch
+  // and misses none.
   const bool COMPLETE = impl_->windowProblem.empty();
-  if (COMPLETE && snapshot.empty()) {
+  if (COMPLETE && impl_->kernelRecordsRunning && snapshot.empty()) {
     impl_->windowProblem = "CUPTI recorded no kernel launch";
   }
   if (COMPLETE && impl_->unifiedMemoryRunning) {
     impl_->unifiedMemory = profileOf(unifiedMemory);
   }
+  impl_->kernelRecordsRunning = false;
   impl_->unifiedMemoryRunning = false;
 
   stats_ = {};

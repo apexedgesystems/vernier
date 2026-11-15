@@ -142,7 +142,8 @@ struct Behaviour {
   CUptiResult unifiedMemoryEnableResult = CUPTI_SUCCESS;  ///< ...Enable, the unified-memory kind
   CUptiResult unifiedMemoryDisableResult = CUPTI_SUCCESS; ///< ...Disable, the unified-memory kind
   /// Kernel records one flush delivers, in this order, each with its own
-  /// registers, shared memory and name.
+  /// registers, shared memory and name, whether or not a kernel kind is on:
+  /// the collector must read them only in a window that switched one on.
   std::vector<KernelRecordSpec> kernelRecords;
   /// Unified-memory records one flush delivers after the kernel records,
   /// whether or not their kind is on: the collector must read only its own.

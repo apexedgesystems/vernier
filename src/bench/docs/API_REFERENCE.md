@@ -784,16 +784,19 @@ Source: NVML. Populated on every NVIDIA GPU run.
 
 ### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                      |
-| ----------------------- | ---- | ------------------------------------------------ |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
+| Column                  | Type | Description                                                  |
+| ----------------------- | ---- | ------------------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                |
 
 Source: CUPTI Activity API. Populated when libcupti is linked at build
-time; no `--profile` flag required.
+time; no `--profile` flag required. After a kernel measurement's timed
+repeats, the harness calls the measured callable `cycles` times more, at most
+1000, untimed, with CUPTI recording kernels, and the five cells describe those
+launches; no timed launch runs while CUPTI records kernels.
 
 ### Multi-GPU Columns
 
