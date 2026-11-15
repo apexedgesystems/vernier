@@ -21,6 +21,15 @@ include_guard(GLOBAL)
 # no GoogleTest in it through this same path, and vernier_add_devtest a
 # component test program, placed in bin/dtests.
 #
+# Every registered test carries one class label, unit or component: the
+# program's CLASS (unit unless set; a vernier_add_devtest program's is
+# component), or component where COMPONENT_PATTERNS names the test. rig goes
+# beside the class on the tests RIG_PATTERNS names, or on a whole program
+# through LABELS. The class labels are the helper's, not LABELS', and a
+# pattern that names no test of the program is an error. A coverage run, the
+# whole program, is component when any of its tests is. The lanes select by
+# these labels (mk/test.mk).
+#
 # Arguments:
 #   TARGET          <n>              required
 #   SOURCES         <src...>         required
@@ -29,6 +38,9 @@ include_guard(GLOBAL)
 #   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
 #   INC             <dir>            optional
 #   LABELS          <labels...>      optional
+#   CLASS           <unit|component> optional (the program's class; unit)
+#   COMPONENT_PATTERNS <regex...>    optional (its tests that are component)
+#   RIG_PATTERNS    <regex...>       optional (its tests that need a rig)
 #   WORKING_DIR     <dir>            optional
 #   RESOURCE_LOCK   <n>              optional
 #   NO_COVERAGE                      optional flag (skip coverage)
@@ -48,8 +60,8 @@ function (vernier_add_gtest)
   # _COMPONENT is vernier_add_devtest's: the program goes to bin/dtests.
   cmake_parse_arguments(
     GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
-    "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS"
-    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS" ${ARGN}
+    "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS;CLASS"
+    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS" ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
 
@@ -57,6 +69,9 @@ function (vernier_add_gtest)
     foreach (
       _opt
       LABELS
+      CLASS
+      COMPONENT_PATTERNS
+      RIG_PATTERNS
       WORKING_DIR
       RESOURCE_LOCK
       REQUIRES_THREADS
@@ -71,6 +86,28 @@ function (vernier_add_gtest)
       endif ()
     endforeach ()
   endif ()
+
+  # The program's class; COMPONENT_PATTERNS can make some of its tests
+  # component (Class labels, below).
+  set(_class unit)
+  if (GT__COMPONENT)
+    set(_class component)
+  endif ()
+  if (GT_CLASS)
+    if (NOT GT_CLASS MATCHES "^(unit|component)$" OR (GT__COMPONENT AND GT_CLASS STREQUAL "unit"))
+      message(FATAL_ERROR "${GT_TARGET}: CLASS ${GT_CLASS}: a program's class is unit or "
+                          "component, and a component program's is component"
+      )
+    endif ()
+    set(_class "${GT_CLASS}")
+  endif ()
+  foreach (_label IN ITEMS unit component)
+    if (_label IN_LIST GT_LABELS)
+      message(FATAL_ERROR "${GT_TARGET}: ${_label} is a class, set by CLASS or "
+                          "COMPONENT_PATTERNS, not a label"
+      )
+    endif ()
+  endforeach ()
 
   add_executable(${GT_TARGET})
   target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES})
@@ -208,6 +245,40 @@ function (vernier_add_gtest)
     )
   endif ()
 
+  # Class labels: the program's class, or component where a pattern names the
+  # test; rig beside it where a pattern names the test.
+  set(_component_tests "")
+  set(_rig_tests "")
+  foreach (_kind IN ITEMS component rig)
+    string(TOUPPER "${_kind}" _arg)
+    foreach (_rx IN LISTS GT_${_arg}_PATTERNS)
+      set(_named "")
+      foreach (_name IN LISTS _all_tests)
+        if (_name MATCHES "${_rx}")
+          list(APPEND _named "${_name}")
+        endif ()
+      endforeach ()
+      if (NOT _named)
+        message(FATAL_ERROR "${GT_TARGET}: ${_arg}_PATTERNS '${_rx}' names no test of the program")
+      endif ()
+      list(APPEND _${_kind}_tests ${_named})
+    endforeach ()
+  endforeach ()
+  foreach (_name IN LISTS _all_tests)
+    set(_test_labels "${_class}")
+    if (_name IN_LIST _component_tests)
+      set(_test_labels component)
+    endif ()
+    if (_name IN_LIST _rig_tests)
+      list(APPEND _test_labels rig)
+    endif ()
+    set_property(
+      TEST "${_name}"
+      APPEND
+      PROPERTY LABELS ${_test_labels}
+    )
+  endforeach ()
+
   # Set working directory for all discovered tests
   set_tests_properties(${_all_tests} PROPERTIES WORKING_DIRECTORY "${_working_dir}")
 
@@ -267,11 +338,20 @@ function (vernier_add_gtest)
     endif ()
   endif ()
 
-  # Coverage test (when any coverage libraries detected)
+  # Coverage test (when any coverage libraries detected). It runs the whole
+  # program: component when any of its tests is, rig when any of them is.
   if (_coverage_libs)
     set(_cov_labels "Coverage")
     if (GT_LABELS)
       list(APPEND _cov_labels ${GT_LABELS})
+    endif ()
+    if (_component_tests)
+      list(APPEND _cov_labels component)
+    else ()
+      list(APPEND _cov_labels ${_class})
+    endif ()
+    if (_rig_tests AND NOT "rig" IN_LIST GT_LABELS)
+      list(APPEND _cov_labels rig)
     endif ()
 
     add_test(NAME ${GT_TARGET}_coverage COMMAND $<TARGET_FILE:${GT_TARGET}>)
@@ -289,8 +369,20 @@ function (vernier_add_gtest)
   if (GT_REQUIRES_THREADS)
     set(_req_threads_msg " threads=${GT_REQUIRES_THREADS}")
   endif ()
+  list(REMOVE_DUPLICATES _component_tests)
+  list(REMOVE_DUPLICATES _rig_tests)
+  list(LENGTH _component_tests _component_len)
+  list(LENGTH _rig_tests _rig_len)
+  if (_class STREQUAL "component")
+    set(_component_len ${_disc_len})
+  endif ()
+  if ("rig" IN_LIST GT_LABELS)
+    set(_rig_len ${_disc_len})
+  endif ()
+  math(EXPR _unit_len "${_disc_len} - ${_component_len}")
   message(STATUS "[Test] target=${GT_TARGET} tests=${_disc_len} timed=${_timed_len} "
-                 "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg}"
+                 "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg} unit=${_unit_len} "
+                 "component=${_component_len} rig=${_rig_len}"
   )
 endfunction ()
 

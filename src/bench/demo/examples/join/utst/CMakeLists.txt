@@ -18,6 +18,9 @@ include(vernier/All)
 # ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
+# JoinInstructionTest's case counts retired instructions with the machine's
+# hardware counters, skipping where it cannot: a component test, labelled rig.
+# ------------------------------------------------------------------------------
 
 vernier_add_gtest(
   TARGET
@@ -28,6 +31,10 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^JoinInstructionTest\\.V0RetiresFarMoreThanV1$"
+  RIG_PATTERNS
+  "^JoinInstructionTest\\.V0RetiresFarMoreThanV1$"
 )
 
 # ------------------------------------------------------------------------------
@@ -63,7 +70,8 @@ vernier_add_gtest(
 # nothing themselves. The second program links the startup-fault fixture, so
 # its worker aborts under valgrind before its tests start: the negative
 # control. Both carry the build's sanitizer setting, on which the check skips,
-# since a sanitizer's instrumentation would be counted too.
+# since a sanitizer's instrumentation would be counted too. Both tests run
+# valgrind: component tests.
 # ------------------------------------------------------------------------------
 
 set(JOIN_COUNT_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/JoinInstructionCounts.cpp")
@@ -105,7 +113,7 @@ if (TARGET JoinInstructionCounts)
   # into a skip.
   set_tests_properties(
     CallgrindDemoInstructionCountsTest
-    PROPERTIES LABELS "callgrind;demo" SKIP_REGULAR_EXPRESSION
+    PROPERTIES LABELS "callgrind;demo;component" SKIP_REGULAR_EXPRESSION
                "\\[  SKIPPED \\] JoinInstructionCounts\\.UnderCallgrind"
   )
 endif ()
@@ -141,7 +149,7 @@ if (TARGET JoinInstructionCountsStartupFault)
     CallgrindDemoStartupFaultTest
     PROPERTIES
       LABELS
-      "callgrind"
+      "callgrind;component"
       PASS_REGULAR_EXPRESSION
       "counting worker did not start under callgrind.*StartupFaultUnderValgrind: aborting before the tests start, as intended.*\\[  FAILED  \\] JoinInstructionCounts\\.UnderCallgrind"
       SKIP_REGULAR_EXPRESSION
