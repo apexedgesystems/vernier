@@ -576,15 +576,18 @@ Three things check what this page shows, and all fail loudly:
 
 - `TestDemoComputeSanitizer`, a test program of its own beside the demo
   ([`04_ComputeSanitizerProfiler_uTest.cpp`](../gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp)),
-  runs the demo binary under compute-sanitizer as `bench run` wraps it, with
-  its own exit code for errors. `ComputeSanitizer.FindsTheUnguardedRead` fails
-  unless the unguarded case runs to its end, the report holds exactly one
-  invalid access, a read of four bytes in `saxpyUnguarded` at the line of
-  its statement (found in the source), by thread (255,0,0) in block
-  (4095,0,0), one byte after an allocation of the vectors' size, and the
-  tool exits with the code it was given; a copy given its guard fails it.
-  `ComputeSanitizer.KernelReportsNothing` fails on any access or error for
-  the shared kernel. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
+  runs the demo binary through `bench run --profile compute-sanitizer`, as
+  step 2 does. `ComputeSanitizer.FindsTheUnguardedRead` fails unless the
+  unguarded case runs to its end, `bench run` fails the run (status 1)
+  reporting the report's errors, naming the report and quoting the tool's
+  status for findings, and the report holds exactly one invalid access, a
+  read of four bytes in `saxpyUnguarded` at the line of its statement (found
+  in the source), by thread (255,0,0) in block (4095,0,0), one byte after an
+  allocation of the vectors' size; a copy given its guard fails it.
+  `ComputeSanitizer.KernelReportsNothing` fails on any access in the report
+  or any error `bench run` reports for the shared kernel, and unless
+  `bench run` exits 0. Both skip, saying so, where the `bench` CLI is not
+  built. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
   the plain run to its skip; `ComputeSanitizer.PlainRunIsNotWrapped` the
   binary run by hand with `--profile compute-sanitizer` to its refusal
   (status 4 after its test passed, no wrap reported where there is none, the
