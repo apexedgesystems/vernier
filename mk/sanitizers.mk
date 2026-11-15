@@ -6,11 +6,11 @@
 #
 # Each target configures the debug preset into a tree of its own (build/asan,
 # build/tsan, build/ubsan) with the GPU and the tools off, builds the programs of
-# one named selection, and runs it there. A failing test, a pattern that selects
-# no test, or any sanitizer report, whatever the caller sets in the runtime's
-# options, fails the target; the run's output is kept in the tree's
-# sanitizer.log. The debug tree is not touched. For the whole suite under a
-# sanitizer, build the tree and run ctest in it.
+# one named selection, and runs it there. A failing test, an empty list, a
+# pattern that selects no test, or any sanitizer report, whatever the caller
+# sets in the runtime's options, fails the target; the run's output is kept in
+# the tree's sanitizer.log. The debug tree is not touched. For the whole suite
+# under a sanitizer, build the tree and run ctest in it.
 # ==============================================================================
 
 ifndef SANITIZERS_MK_GUARD
@@ -88,6 +88,7 @@ _sanitizer_selection = $(foreach t,$(SANITIZER_TESTS),$(call _gtest_selection,$(
 # _sanitizer_build: Configure, build, and run the selection with a sanitizer
 # Usage: $(call _sanitizer_build,name,display_name)
 define _sanitizer_build
+	@$(call _require_lists,SANITIZER_TARGETS SANITIZER_TESTS)
 	$(call log,$(1),Configuring build/$(1) with $(2))
 	@cmake --preset $(HOST_DEBUG_PRESET) -B "build/$(1)" --fresh $(CMAKE_VERBOSE_FLAG) \
 	  -DSANITIZER=$(1) -DVERNIER_BUILD_GPU=OFF -DVERNIER_BUILD_TOOLS=OFF

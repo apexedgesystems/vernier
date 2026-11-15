@@ -38,7 +38,7 @@ PY_LIB_DIR   := $(BUILD_DIR)/lib/python
 # same cases without it, and everything else. The selection is space-separated:
 # gtest patterns for TestBench and for the readiness fixture run, then CTest
 # names. Each must select a test, so a renamed suite fails the lane instead of
-# leaving it.
+# leaving it, and none of the three lists may be empty.
 HEAP_BUILD_DIR    ?= build/native-linux-debug-heap
 HEAP_TEST_FILTERS ?= GperfLifecycleTest.* GperfProfileReader.* TcmallocOptInTest.* \
                      TcmallocOptInDeathTest.* GperfCheckTest.* \
@@ -89,6 +89,11 @@ _space := $(_empty) $(_empty)
 # (empty when there are none).
 _gtest_join       = $(subst $(_space),:,$(strip $(1)))
 _gtest_exclusions = $(if $(strip $(1)),-$(call _gtest_join,$(1)))
+
+# Fail, naming the variable, when a selection list is empty: a target would
+# otherwise run nothing from it and pass. Checked before anything is built.
+# Usage: $(call _require_lists,VAR...)
+_require_lists = $(foreach v,$(1),$(if $(strip $($(v))),,printf '%s is empty: the selection names nothing\n' '$(v)' >&2; exit 1;)) true
 
 # Run a GoogleTest program on a named selection, from inside its build tree.
 # Each pattern must select a test once the exclusions are applied, so a renamed
@@ -141,6 +146,7 @@ testp: debug
 # heaptrack fixture runs, in the gtest selections above, and the command-line
 # heap case through CTest. Builds only what they need.
 test-heap:
+	@$(call _require_lists,HEAP_TEST_FILTERS HEAP_RUN_FILTERS HEAP_CTEST_TESTS)
 	$(call log,test,Configuring the heap-profiling tree ($(HEAP_BUILD_DIR)))
 	@cmake --preset $(HOST_DEBUG_PRESET) -B "$(HEAP_BUILD_DIR)" $(CMAKE_VERBOSE_FLAG) \
 	  -DVERNIER_LINK_TCMALLOC=ON -DVERNIER_BUILD_GPU=OFF -DVERNIER_BUILD_TOOLS=OFF
