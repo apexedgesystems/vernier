@@ -2453,9 +2453,10 @@ mod tests {
 
     /// @test The verdict reads the real tool's reports as the tool summarized
     /// them: the unguarded memcheck run's 4 errors and the race's 2 fail the
-    /// run, with the status the tool ended with (the route's
-    /// --error-exitcode, 5), and each clean report, the same-value race
-    /// included, counts none and hands the benchmark's status 0 on.
+    /// run as findings of that count, with the status the tool ended with
+    /// (the route's --error-exitcode, 5), and each clean report, the
+    /// same-value race included, counts none and passes the run, handing the
+    /// benchmark's status 0 on.
     #[test]
     #[cfg(unix)]
     fn sanitizer_verdict_reads_the_real_reports() {
@@ -2477,12 +2478,16 @@ mod tests {
                 ExitStatus::from_raw(status << 8),
                 "compute-sanitizer",
             );
-            match verdict {
-                Ok(()) => assert_eq!(errors, 0, "{file} passed"),
-                Err(Error::Sanitizer(SanitizerFailure::Findings { errors: found, .. })) => {
-                    assert_eq!(found, errors, "{file}")
+            match (errors, verdict) {
+                (0, Ok(())) => {}
+                (0, other) => panic!("{file}: a clean report must pass the run, got {other:?}"),
+                (
+                    expected,
+                    Err(Error::Sanitizer(SanitizerFailure::Findings { errors: found, .. })),
+                ) => assert_eq!(found, expected, "{file}"),
+                (expected, other) => {
+                    panic!("{file}: {expected} errors must fail the run as findings, got {other:?}")
                 }
-                Err(other) => panic!("{file}: {other}"),
             }
         }
     }
