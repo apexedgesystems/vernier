@@ -45,6 +45,7 @@ use std::{path::PathBuf, process::ExitCode, time::Duration};
 
 use clap::{Parser, Subcommand};
 use vernier_rust_tools::bench::{self, Error, SortColumn};
+use vernier_rust_tools::lossy_eprintln;
 
 /* ----------------------------- CLI ----------------------------- */
 
@@ -401,27 +402,17 @@ fn main() -> ExitCode {
     // Before any command starts a child: each stays waitable until the
     // command reaps it, whatever SIGCHLD action this process inherited.
     if let Err(e) = bench::runner::keep_children_waitable() {
-        last_word(&format!(
-            "Error: SIGCHLD could not be given its default action: {e}"
-        ));
+        lossy_eprintln!("Error: SIGCHLD could not be given its default action: {e}");
         return ExitCode::FAILURE;
     }
 
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            last_word(&format!("Error: {e}"));
+            lossy_eprintln!("Error: {e}");
             ExitCode::FAILURE
         }
     }
-}
-
-/// Write @p line, bench's error, to stderr. A stderr that refuses it (a pipe
-/// whose reader is gone, a terminal that hung up) loses it: the exit status
-/// stays the documented one, where `eprintln!` would panic (exit 101).
-fn last_word(line: &str) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stderr(), "{line}");
 }
 
 /// The project's `.bench.yaml`, the first found from the working directory
@@ -578,7 +569,7 @@ fn run(args: Args) -> Result<(), Error> {
                     println!("--- Post-run analysis ---");
                     bench::print_summary_table(&rows, SortColumn::Name);
                 } else {
-                    eprintln!("Warning: --analyze requires --csv to produce output");
+                    lossy_eprintln!("Warning: --analyze requires --csv to produce output");
                 }
             }
         }
@@ -621,7 +612,7 @@ fn run(args: Args) -> Result<(), Error> {
 
                 if let Some(path) = output {
                     bench::gpu_monitor::save_snapshot(&snapshot, &path)?;
-                    eprintln!("Snapshot saved to {}", path.display());
+                    lossy_eprintln!("Snapshot saved to {}", path.display());
                 } else {
                     println!("{json}");
                 }

@@ -198,7 +198,7 @@ pub fn resolve_binary(name: &str, search: &BinSearch) -> Result<PathBuf, Error> 
         )));
     }
     if found.len() > 1 {
-        eprintln!(
+        lossy_eprintln!(
             "[bench] '{}' matched {} binaries; picking '{}'. Pass a full path to disambiguate.",
             name,
             found.len(),
@@ -263,7 +263,7 @@ pub fn doctor(
         let verdict = evaluate_required_backends(&doc.value, require, selected);
         for line in &verdict.lines {
             if json {
-                eprintln!("{line}");
+                lossy_eprintln!("{line}");
             } else {
                 println!("{line}");
             }
@@ -766,7 +766,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
     let mut runs: Vec<ProfileAllRun> = Vec::new();
     for tool in &profilers {
         let out_dir = root.join(tool);
-        eprintln!(
+        lossy_eprintln!(
             "\n=== bench profile-all: tool={} -> {} ===",
             tool,
             out_dir.display()
@@ -800,7 +800,7 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
             .and_then(|()| super::runner::run_benchmark(&run_cfg).map(|_| ()));
         let failure = result.err().map(|e| e.to_string());
         if let Some(ref why) = failure {
-            eprintln!("[bench] --profile {tool} failed: {why}");
+            lossy_eprintln!("[bench] --profile {tool} failed: {why}");
         }
         runs.push(ProfileAllRun {
             tool: tool.to_string(),
@@ -828,15 +828,15 @@ pub fn profile_all(cfg: &ProfileAllConfig) -> Result<(), Error> {
 /// for a failure the reason.
 fn print_profile_all_summary(runs: &[ProfileAllRun]) {
     let width = runs.iter().map(|r| r.tool.len()).max().unwrap_or(0);
-    eprintln!("\n=== bench profile-all: summary ===");
+    lossy_eprintln!("\n=== bench profile-all: summary ===");
     for run in runs {
         match &run.failure {
-            None => eprintln!(
+            None => lossy_eprintln!(
                 "  {:<width$}  completed  {}",
                 run.tool,
                 run.folder.display()
             ),
-            Some(why) => eprintln!(
+            Some(why) => lossy_eprintln!(
                 "  {:<width$}  failed     {} -- {why}",
                 run.tool,
                 run.folder.display()

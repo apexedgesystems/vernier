@@ -1360,7 +1360,7 @@ fn run_owned(
     drop(watch);
     let run = run.map_err(OwnedError::Wait)?;
     if run.left_running > 0 {
-        eprintln!(
+        lossy_eprintln!(
             "[bench] {name} exited and left {} of its own running; bench run ended {}",
             if run.left_running == 1 {
                 "1 process".to_string()

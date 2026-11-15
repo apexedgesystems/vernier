@@ -407,8 +407,8 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   precedence over `GTEST_FILTER`; remove the key to filter through the
   environment.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- `bench` keeps its documented exit status when it cannot write its error
-  line, as to a pipe whose reader is gone, instead of exiting 101.
+- `bench` keeps its documented exit status when it cannot write to stderr,
+  as to a pipe whose reader is gone, instead of exiting 101.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole

@@ -36,6 +36,23 @@ fn output_of(command: &mut Command) -> Output {
     child.wait_with_output().expect("wait for bench")
 }
 
+/// `output_of` with stderr a pipe whose read end is already closed: a stderr
+/// no one reads, where every write fails.
+fn output_with_stderr_no_one_reads(command: &mut Command) -> Output {
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let child = {
+        let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(writer)
+            .spawn()
+            .expect("spawn bench")
+    };
+    child.wait_with_output().expect("wait for bench")
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = output_of(Command::new(bin()).args(args));
     let code = out.status.code().unwrap_or(255);
@@ -275,15 +292,9 @@ fn summary_blank_test_name_is_an_error() {
 /// also with a stderr no one reads (a pipe whose read end is closed).
 #[test]
 fn an_error_keeps_its_status_with_a_stderr_no_one_reads() {
-    let (reader, writer) = std::io::pipe().expect("a pipe");
-    drop(reader);
-    let out = Command::new(bin())
-        .args(["summary", &fixture("compare_name_empty.csv")])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(writer)
-        .output()
-        .expect("run bench summary");
+    let out = output_with_stderr_no_one_reads(
+        Command::new(bin()).args(["summary", &fixture("compare_name_empty.csv")]),
+    );
     assert_eq!(out.status.code(), Some(1), "{:?}", out.status);
     assert!(out.stdout.is_empty(), "printed a summary");
 }
@@ -1518,6 +1529,33 @@ fn gpu_monitor_snapshot_to_stdout() {
     }
 }
 
+/// @test With a stderr no one reads, gpu-monitor snapshot -o loses its
+/// "Snapshot saved" line and nothing else: the snapshot is written and the
+/// run exits 0. A stand-in nvidia-smi, alone on PATH, reports one GPU.
+#[test]
+fn gpu_monitor_snapshot_to_a_file_keeps_its_status_with_a_stderr_no_one_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    write_executable(
+        &tools.join("nvidia-smi"),
+        "#!/bin/sh\ncase \"$1\" in\n  --query-gpu) echo '0, Stand-in GPU, 40, 50.5, 100, 1000, \
+         2000, 1500, 10, 100, 0, 0, N/A, P8' ;;\n  --query-gpu=*) echo 'Not Active' ;;\nesac\n",
+    );
+    let path = dir.path().join("snapshot.json");
+    let out = output_with_stderr_no_one_reads(
+        Command::new(bin())
+            .args(["gpu-monitor", "snapshot", "-o"])
+            .arg(&path)
+            .env("PATH", &tools),
+    );
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the snapshot"))
+            .expect("the snapshot is JSON");
+    assert_eq!(snapshot["devices"][0]["name"], "Stand-in GPU");
+}
+
 #[test]
 fn gpu_monitor_snapshot_to_file_and_diff() {
     // Create a snapshot, save it, then diff it with itself
@@ -2661,6 +2699,68 @@ fn run_nsight_stats_leaving_a_process() {
                     .join(format!("bench-out/fake_bench.nsight/{report}.txt"))
             )
             .unwrap_or_default(),
+            "fake summary\n",
+            "{report}"
+        );
+    }
+}
+
+/// @test With a stderr no one reads, bench run's notes on the way are lost
+/// and nothing else changes: a short name that two builds match runs the
+/// first, `--analyze` without `--csv` still runs the benchmark, and what
+/// `nsys stats` leaves running is still ended, every summary written. Each
+/// run exits 0, as its benchmark does.
+#[test]
+fn run_keeps_its_status_with_a_stderr_no_one_reads() {
+    let rig = route_rig(&["nsys"]);
+    for tree in ["a", "b"] {
+        let dir = rig.dir.path().join(format!("build/{tree}/bin/ptests"));
+        std::fs::create_dir_all(&dir).expect("create a build tree");
+        write_executable(
+            &dir.join("Short_PTEST"),
+            &format!("#!/bin/sh\necho \"{tree} $*\" >> '{}'\n", rig.log.display()),
+        );
+    }
+    let bench = rig.bench.to_string_lossy().into_owned();
+    let start = |args: &[&str]| {
+        let mut command = Command::new(bin());
+        command
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path());
+        command
+    };
+    let mut nsight = start(&["run", &bench, "--profile", "nsight"]);
+    nsight.env("FAKE_NSYS_STATS", "leave");
+    for mut command in [
+        start(&["run", "Short"]),
+        start(&["run", "build/a/bin/ptests/Short_PTEST", "--analyze"]),
+        nsight,
+    ] {
+        let out = output_with_stderr_no_one_reads(&mut command);
+        assert_eq!(out.status.code(), Some(0), "{command:?}: {:?}", out.status);
+    }
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    assert!(log.starts_with("a \na \n"), "{log}");
+    let pids = std::fs::read_to_string(rig.dir.path().join("nsys_left.pids")).unwrap_or_default();
+    assert_eq!(pids.lines().count(), 4, "{pids}");
+    let running: Vec<&str> = pids
+        .lines()
+        .filter(|pid| pid.parse().is_ok_and(still_running))
+        .collect();
+    assert!(running.is_empty(), "still running: {running:?}");
+    for report in [
+        "cuda_gpu_kern_sum",
+        "cuda_api_sum",
+        "cuda_gpu_mem_size_sum",
+        "cuda_gpu_mem_time_sum",
+    ] {
+        let summary = rig
+            .dir
+            .path()
+            .join(format!("bench-out/fake_bench.nsight/{report}.txt"));
+        assert_eq!(
+            std::fs::read_to_string(summary).unwrap_or_default(),
             "fake summary\n",
             "{report}"
         );
@@ -3928,6 +4028,49 @@ fn profile_all_quick_takes_precedence_over_the_files_sizes() {
     );
 }
 
+/// @test With a stderr no one reads, profile-all's progress, failure and
+/// summary lines are lost and nothing else changes: every profiler runs in
+/// turn, and profile-all exits 0 when each completes and 1 when one fails.
+#[test]
+fn profile_all_keeps_its_status_with_a_stderr_no_one_reads() {
+    let rig = profile_all_rig();
+    for (fail, expected) in [("0", 0), ("4", 1)] {
+        let out = output_with_stderr_no_one_reads(
+            Command::new(bin())
+                .arg("profile-all")
+                .arg(&rig.bench)
+                .args(["--profilers", "gperf,perf", "--out", "out"])
+                .env("PATH", rig.dir.path().join("tools"))
+                .env("FAKE_EXIT_perf", fail)
+                .current_dir(rig.dir.path()),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "perf exiting {fail}: {:?}",
+            out.status
+        );
+    }
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    let runs: Vec<&str> = log
+        .lines()
+        .map(|line| {
+            line.split_once(" --profile-output-dir")
+                .map_or(line, |(run, _)| run)
+        })
+        .collect();
+    assert_eq!(
+        runs,
+        [
+            "bench --profile gperf",
+            "bench --profile perf",
+            "bench --profile gperf",
+            "bench --profile perf"
+        ],
+        "{log}"
+    );
+}
+
 /// The lines of profile-all's summary, one per run, as printed.
 fn profile_all_summary(stderr: &str) -> Vec<String> {
     stderr
@@ -4640,6 +4783,34 @@ fn doctor_json_require_is_one_document() {
             serde_json::from_str(&out).expect("stdout parses as one JSON document");
         assert_eq!(parsed["backends"][0]["name"], "perf");
         assert!(err.contains(verdict), "--require {require}: {err}");
+    }
+}
+
+/// @test With a stderr no one reads, doctor --json --require loses its
+/// verdict lines and nothing else: stdout is the binary's document, and the
+/// status is 0 when the requirements are met and 1 when they are not.
+#[test]
+fn doctor_json_require_keeps_its_status_with_a_stderr_no_one_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    for (require, code) in [("perf", 0), ("perf,offcpu", 1)] {
+        let mut command = Command::new(bin());
+        command
+            .arg("doctor")
+            .arg(&bench)
+            .args(["--json", "--require", require]);
+        let out = output_with_stderr_no_one_reads(&mut command);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "--require {require}: {:?}",
+            out.status
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            DOCTOR_DOC,
+            "--require {require}"
+        );
     }
 }
 

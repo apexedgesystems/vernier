@@ -470,6 +470,40 @@ fn summary_without_data_is_a_warning() {
     );
 }
 
+/// @test With a stderr no one reads, the warning and error lines are lost
+/// and nothing else changes: the CSV is written, stdout says so, and the
+/// run exits 0 after a warning and 1 after an error.
+#[test]
+fn lines_no_one_reads_change_nothing_else() {
+    for (report, rows, status) in [
+        ("no_kernels.nsys-rep", 12, 0),
+        ("failing_summary.nsys-rep", 5, 1),
+    ] {
+        let case = Case::new();
+        case.report(report);
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        let out = case
+            .command(&[COMMAND, report, "--csv", "out.csv"])
+            .stdin(Stdio::null())
+            .stderr(writer)
+            .output()
+            .expect("run bench");
+        assert_eq!(
+            out.status.code(),
+            Some(status),
+            "{report}: {:?}",
+            out.status
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("[{COMMAND}] wrote {rows} rows to out.csv\n"),
+            "{report}"
+        );
+        assert!(!case.csv("out.csv").is_empty(), "{report}: no CSV");
+    }
+}
+
 /// @test A failing summary is an error naming it; the other summaries' rows
 /// are written.
 #[test]
@@ -929,16 +963,25 @@ fn timeout_removes_the_private_export() {
 /// Start a run on a slow export with @p signal at its default action, send it
 /// that signal once its tool runs, and check that the tool, the private
 /// export and the CSV are all gone and that the run ended by that signal.
-fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: &str) {
+/// With @p name, stderr is the line naming the signal; without, stderr is a
+/// pipe no one reads (its read end closed).
+fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: Option<&str>) {
     let case = Case::new();
     case.report("slow.nsys-rep");
+    let stderr = if name.is_some() {
+        Stdio::piped()
+    } else {
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        writer.into()
+    };
     let mut child = case
         .command_with(
             Start::Default(signal),
             &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
         )
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(stderr)
         .spawn()
         .expect("spawn bench");
     let tool = case.tool_pid();
@@ -964,10 +1007,12 @@ fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: &str) {
     }
     assert_eq!(status.signal(), Some(number), "{status:?}");
     assert!(stopped, "the tool's own process {tool} still runs");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        format!("[{COMMAND}] stopped by {name}; nothing was written\n")
-    );
+    if let Some(name) = name {
+        assert_eq!(
+            String::from_utf8_lossy(&out.stderr),
+            format!("[{COMMAND}] stopped by {name}; nothing was written\n")
+        );
+    }
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
     assert!(!case.path("work").join("out.csv").exists());
 }
@@ -976,20 +1021,28 @@ fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: &str) {
 /// export, writes nothing, and ends the run by SIGINT.
 #[test]
 fn sigint_cleans_up() {
-    interrupted_run_cleans_up("INT", 2, "SIGINT");
+    interrupted_run_cleans_up("INT", 2, Some("SIGINT"));
 }
 
 /// @test SIGTERM does the same and ends the run by SIGTERM.
 #[test]
 fn sigterm_cleans_up() {
-    interrupted_run_cleans_up("TERM", 15, "SIGTERM");
+    interrupted_run_cleans_up("TERM", 15, Some("SIGTERM"));
 }
 
 /// @test SIGHUP, which a terminal's hangup sends to bench and not to the
 /// tool's own process group, does the same and ends the run by SIGHUP.
 #[test]
 fn sighup_cleans_up() {
-    interrupted_run_cleans_up("HUP", 1, "SIGHUP");
+    interrupted_run_cleans_up("HUP", 1, Some("SIGHUP"));
+}
+
+/// @test With a stderr no one reads, the line naming the signal is lost and
+/// nothing else changes: SIGINT still stops the tool, removes the private
+/// export, writes nothing, and ends the run by SIGINT.
+#[test]
+fn sigint_with_a_stderr_no_one_reads_cleans_up() {
+    interrupted_run_cleans_up("INT", 2, None);
 }
 
 /// Start a run on a slow export with @p signal ignored, send it that signal
