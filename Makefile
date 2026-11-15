@@ -22,6 +22,7 @@ include mk/docker.mk
 include mk/compose.mk
 include mk/clean.mk
 include mk/verify.mk
+include mk/checks.mk
 
 # ==============================================================================
 # Configuration
@@ -142,7 +143,13 @@ help:
 	@printf '  %-28s %s\n' "rig (beside a class)" "Needs hardware, privileges or a device a hosted"
 	@printf '  %-28s %s\n' "" "runner lacks; no lane but make test-rig runs it"
 	@printf '  %s\n' "The times are guidance, never enforced: each lane ends by listing its"
-	@printf '  %s\n' "slowest tests. Pull-request CI and make verify run the unit tests."
+	@printf '  %s\n' "slowest tests. Pull-request CI and make verify run the unit tests;"
+	@printf '  %s\n' "the nightly workflow runs the component tests on main."
+	@printf '\n'
+	@printf '%s\n' "Nightly (.github/workflows/nightly.yml, on main and on demand):"
+	@printf '  %-28s %s\n' "make checks-nightly" "Run every nightly check (mk/checks.mk)"
+	@printf '  %-28s %s\n' "make list-checks" "List the nightly checks"
+	@printf '  %-28s %s\n' "make print-nightly-checks" "The nightly checks as the workflow's JSON"
 	@printf '\n'
 	@printf '%s\n' "Quality:"
 	@printf '  %-28s %s\n' "make format" "Auto-fix formatting issues"

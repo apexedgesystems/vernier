@@ -10,7 +10,8 @@
 #              and so do make verify and CI on every pull request.
 #   component  a component through its real protocol, or an integration (real
 #              tools, consumer builds, a benchmark end to end): about 10 s a
-#              test. make test-component runs them.
+#              test. make test-component runs them, and so does the nightly
+#              workflow on main (mk/checks.mk).
 #   rig        needs hardware, privileges or a device a hosted runner lacks.
 #              make test-rig runs them, on a host that has it; no other lane.
 # The times are guidance for review, never enforced: no test fails for its
@@ -147,7 +148,8 @@ testp: debug
 	@cd "$(BUILD_DIR)" && $(call _test_footer,unit parallel + timing,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
 # Component tests (parallel) - excludes the rig and Coverage labels; ends with
-# the slowest. No pull request runs them.
+# the slowest. The nightly workflow runs them on main (mk/checks.mk); no pull
+# request does.
 test-component: debug
 	$(call log,test,Running the component tests (parallel))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"

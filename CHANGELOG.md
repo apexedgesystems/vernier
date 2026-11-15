@@ -9,6 +9,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Component tests run nightly on main** -- a Nightly workflow runs the checks
+  `mk/checks.mk` registers, `make test-component` among them, on a schedule
+  and on demand.
+  ([#76](https://github.com/apexedgesystems/vernier/pull/76))
 - **`make test` and `make testp` run the unit tests, and
   `make test-component` the component tests** -- pull-request CI and
   `make verify` run the unit tests; `make test-rig` runs the tests that need a

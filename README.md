@@ -335,7 +335,8 @@ lacks:
 - **`component`** -- a component through its real protocol, or an
   integration: a backend started and stopped, a benchmark run end to end, a
   real tool, a consumer or install build. About 10 s a test.
-  `make test-component` runs them.
+  `make test-component` runs them, and so does the nightly workflow on main,
+  off the pull-request path.
 - **`rig`**, beside either class -- needs a GPU, hardware counters, the RAPL
   registers, privileged bpftrace or the like. `make test-rig` runs them, on a
   host that has what they need; no other lane does.
@@ -343,6 +344,11 @@ lacks:
 The times are guidance for review, not limits: no test fails for its time,
 and `make test`, `make testp`, `make test-component` and `make test-rig` end
 by listing their slowest tests. A lane whose selection matches no test fails.
+
+The nightly workflow (`.github/workflows/nightly.yml`) runs every check
+`mk/checks.mk` registers, each in the CPU dev image, on a schedule and from the
+Actions tab; `make list-checks` names them. A check is added by naming its make
+target there, with no change to the workflow.
 
 ```bash
 # Build and run the unit tests (Docker)
