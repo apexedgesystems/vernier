@@ -433,23 +433,31 @@ add_library(
 target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_DIR}")
 
 # ------------------------------------------------------------------------------
-# Callgrind Window Probe (3 tests)
+# Callgrind Window Probe (6 tests)
 # ------------------------------------------------------------------------------
 # A benchmark with work before, inside and after its measured window, run under
 # valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
-# prints must record the window and none of the work around it, the wrap
-# `bench run` uses the whole process, and under that wrap with
-# --profile-analyze the benchmark leaves the annotation to `bench run`, which
-# makes it after valgrind has written the profile. A process fixture with its
-# own PERF_MAIN, run only by these tests; they skip without valgrind, where
-# valgrind cannot read the probe and says so, and in a build with the address
-# sanitizer, which the driver learns from the build's SANITIZER setting.
+# prints must record the window and none of the work around it, also with
+# valgrind's gdbserver off, without --instr-atstart=no and with no
+# callgrind_control on PATH; the wrap `bench run` uses the whole process; and
+# under that wrap with --profile-analyze the benchmark leaves the annotation to
+# `bench run`, which makes it after valgrind has written the profile. A process
+# fixture with its own PERF_MAIN, run only by these tests; they skip without
+# valgrind, where valgrind cannot read the probe and says so, and in a build
+# with the address sanitizer, which the driver learns from the build's
+# SANITIZER setting.
 # ------------------------------------------------------------------------------
 
 set(_probe_sanitizer "")
 if (NOT CMAKE_CROSSCOMPILING)
   set(_probe_sanitizer "${SANITIZER}")
 endif ()
+
+# Whether libbench compiles callgrind's client requests in: it finds valgrind's
+# callgrind.h, as CallgrindRequests.cpp does. The three cases that need them
+# skip in a build that does not.
+include(CheckIncludeFileCXX)
+check_include_file_cxx(valgrind/callgrind.h VERNIER_HAS_CALLGRIND_H)
 
 vernier_add_gtest(
   TARGET
@@ -462,7 +470,7 @@ vernier_add_gtest(
 )
 
 if (TARGET CallgrindWindowProbe)
-  foreach (_case Hint Runner Analyze)
+  foreach (_case Hint HintVgdbOff HintInstrAtStart HintNoControl Runner Analyze)
     string(TOLOWER "${_case}" _mode)
     add_test(
       NAME CallgrindWindow${_case}Test
@@ -470,8 +478,8 @@ if (TARGET CallgrindWindowProbe)
         "${CMAKE_COMMAND}" -DPROBE=$<TARGET_FILE:CallgrindWindowProbe>
         -DREADER=$<TARGET_FILE:ValgrindReaderAssertionCli> -DCASE=${_mode}
         -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_${_mode}
-        -DPROBE_SANITIZER=${_probe_sanitizer} -P
-        "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
+        -DPROBE_SANITIZER=${_probe_sanitizer} -DCLIENT_REQUESTS=$<BOOL:${VERNIER_HAS_CALLGRIND_H}>
+        -P "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
     )
     set_tests_properties(
       CallgrindWindow${_case}Test PROPERTIES LABELS "benchmarking;callgrind"

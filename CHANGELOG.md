@@ -982,6 +982,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - A benchmark's own `alarm()` and SIGALRM handler, and gperftools sampling
   under `CPUPROFILE_REALTIME`, keep working under `--profile`.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A callgrind wrap started by hand records only the measured windows, with or
+  without `--instr-atstart=no` or valgrind's gdbserver, where libbench was
+  built with valgrind's `callgrind.h`.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

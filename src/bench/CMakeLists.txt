@@ -28,6 +28,7 @@ set(CPP_SOURCES
     "${SRC_DIR}/ProfilerBpftrace.cpp"
     "${SRC_DIR}/ProfilerRAPL.cpp"
     "${SRC_DIR}/ProfilerCallgrind.cpp"
+    "${SRC_DIR}/CallgrindRequests.cpp"
     "${SRC_DIR}/ProfilerMassif.cpp"
     "${SRC_DIR}/ProfilerMemcheck.cpp"
     "${SRC_DIR}/ProfilerHelgrind.cpp"

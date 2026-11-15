@@ -2,11 +2,12 @@
  * @file ProfilerCallgrind.cpp
  * @brief Implementation of Valgrind Callgrind profiler backend.
  *
- * Under a manual `valgrind --tool=callgrind --instr-atstart=no` wrap, switches
- * instrumentation on for each measured window and off after it with
- * callgrind_control. A recording made by bench run's wrap covers the whole
- * process and is left alone. Whether valgrind's callgrind runs the process,
- * and how the wrap began, is the readiness check's decision.
+ * Under a wrap started by hand, switches instrumentation on for each measured
+ * window and off after it: with callgrind's client requests, from inside the
+ * process, where this build has them (CallgrindRequests.cpp), and otherwise
+ * with callgrind_control. A recording made by bench run's wrap covers the
+ * whole process and is left alone. Whether valgrind's callgrind runs the
+ * process, and how the wrap began, is the readiness check's decision.
  */
 
 #include "src/bench/inc/ProfilerCallgrind.hpp"
@@ -23,6 +24,7 @@
 
 #include "src/bench/inc/ProfilerEnv.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/src/CallgrindRequests.hpp"
 
 namespace vernier {
 namespace bench {
@@ -47,12 +49,17 @@ ReadinessResult decideCallgrind(const ReadinessRequest& request, const Readiness
   if (auto refused = parseCallgrindMode(request.profileArgs, mode)) {
     return *refused;
   }
-  // Without callgrind_control the window cannot be switched on, so the wrap
-  // command leaves instrumentation on from the start.
+  // The window of a wrap started by hand is switched from inside the process
+  // by callgrind's client requests where this build has them; without them,
+  // by callgrind_control, which reaches the process through valgrind's
+  // gdbserver. Where neither can switch it on, the wrap command leaves
+  // instrumentation on from the start.
+  const bool REQUESTS = callgrind::requestsBuiltIn();
   const auto CONTROL = resolveExecutable("callgrind_control", ctx);
   const bool HAS_CONTROL = CONTROL && CONTROL->executable;
+  const bool CAN_SWITCH = REQUESTS || HAS_CONTROL;
   const std::vector<std::string> WINDOW =
-      HAS_CONTROL ? std::vector<std::string>{"--instr-atstart=no"} : std::vector<std::string>{};
+      CAN_SWITCH ? std::vector<std::string>{"--instr-atstart=no"} : std::vector<std::string>{};
   ReadinessResult result = valgrind_tool::decideCollection(
       "callgrind", mode, request, ctx,
       valgrind_tool::wrapRemedy("callgrind", mode, request.profileArgs, WINDOW), identity);
@@ -62,16 +69,29 @@ ReadinessResult decideCallgrind(const ReadinessRequest& request, const Readiness
   if (RUNTIME && result.collectionReady() && PLAN &&
       PLAN->launch == LaunchContext::MANUALLY_WRAPPED) {
     auto plan = std::make_shared<valgrind_tool::ValgrindPlan>(*PLAN);
-    plan->canToggle = HAS_CONTROL;
+    plan->canToggle = CAN_SWITCH;
     result.plan = plan;
-    if (!HAS_CONTROL && result.report.status == EnvReport::Status::Ok) {
-      ReadinessResult caveat = readinessResult(
-          ReadinessCause::CAVEAT,
-          "valgrind's callgrind runs this process, but callgrind_control is not on PATH: the "
-          "measured window cannot be switched on and off, so the profile holds what the wrap "
-          "records (nothing, for a wrap started with --instr-atstart=no)",
-          "Put valgrind's callgrind_control on PATH, or run it with bench run --profile "
-          "callgrind, which records the whole process.");
+    if (!REQUESTS && result.report.status == EnvReport::Status::Ok) {
+      ReadinessResult caveat =
+          HAS_CONTROL
+              ? readinessResult(
+                    ReadinessCause::CAVEAT,
+                    "valgrind's callgrind runs this process, and this build has no callgrind "
+                    "client requests (valgrind's callgrind.h was not found when it was built): "
+                    "callgrind_control switches the measured window through valgrind's "
+                    "gdbserver, so a wrap started with --vgdb=no records nothing, and each "
+                    "switch runs callgrind_control",
+                    "Keep valgrind's gdbserver on (no --vgdb=no), or run it with bench run "
+                    "--profile callgrind, which records the whole process.")
+              : readinessResult(
+                    ReadinessCause::CAVEAT,
+                    "valgrind's callgrind runs this process, but this build has no callgrind "
+                    "client requests (valgrind's callgrind.h was not found when it was built) "
+                    "and callgrind_control is not on PATH: the measured window cannot be "
+                    "switched on and off, so the profile holds what the wrap records (nothing, "
+                    "for a wrap started with --instr-atstart=no)",
+                    "Put valgrind's callgrind_control on PATH, or run it with bench run "
+                    "--profile callgrind, which records the whole process.");
       caveat.plan = std::move(plan);
       result = std::move(caveat);
     }
@@ -141,12 +161,23 @@ ReadinessResult decideNow(const PerfConfig& cfg) {
 }
 
 #ifdef __linux__
-/// Switch callgrind's instrumentation for this process on or off.
-/// callgrind_control takes the process id as a trailing argument, not as an
-/// option. It exits 0 whether or not the command reached the process, so its
-/// status is not read.
-void switchInstrumentation(const char* state) {
-  const std::string CMD = std::string{"callgrind_control -i "} + state + " " +
+/// Switch callgrind's instrumentation for this process on or off: with the
+/// client requests where this build has them, before the first window
+/// dropping what was counted before it; otherwise with callgrind_control,
+/// which takes the process id as a trailing argument, not as an option, and
+/// exits 0 whether or not the command reached the process, so its status is
+/// not read.
+void switchInstrumentation(bool on) {
+  if (callgrind::requestsBuiltIn()) {
+    if (on) {
+      callgrind::zeroStatsOnce();
+      callgrind::startInstrumentation();
+    } else {
+      callgrind::stopInstrumentation();
+    }
+    return;
+  }
+  const std::string CMD = std::string{"callgrind_control -i "} + (on ? "on" : "off") + " " +
                           std::to_string(::getpid()) + " >/dev/null 2>&1";
   [[maybe_unused]] const int RC = std::system(CMD.c_str());
 }
@@ -186,7 +217,7 @@ void CallgrindProfiler::applyPlan() {
 void CallgrindProfiler::beforeMeasure() {
 #ifdef __linux__
   if (canToggle_) {
-    switchInstrumentation("on");
+    switchInstrumentation(true);
   }
 #endif
 }
@@ -197,7 +228,7 @@ void CallgrindProfiler::afterMeasure(const Stats& /*s*/) {
     return; // Not wrapped at all -- nothing to do.
   }
   if (canToggle_) {
-    switchInstrumentation("off");
+    switchInstrumentation(false);
   }
 
   // Valgrind writes the profile when the process exits, to the file its
