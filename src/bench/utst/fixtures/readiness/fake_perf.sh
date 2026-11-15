@@ -10,6 +10,8 @@
 #                `--control fifo:<ctl>,<ack>`, it reads the ping waiting in
 #                <ctl> and answers "ack" in <ack>, as perf does once it counts
 #   broken       --version fails the way a wrapper without the kernel's build does
+#   signalled    --version ends by SIGUSR1, which it sends itself (a signal
+#                that leaves no core dump)
 #   denied       stat fails with the kernel's counter-access message
 #   unsupported  stat counts, but one event is <not supported>
 #   no-control   --control is an unknown option, as for a perf without it
@@ -42,6 +44,9 @@ fi
 mode=${FAKE_PERF_MODE:-ok}
 
 if [ "${1:-}" = "--version" ]; then
+  if [ "$mode" = "signalled" ]; then
+    kill -USR1 $$
+  fi
   if [ "$mode" = "broken" ]; then
     echo "WARNING: perf not found for kernel 6.8.0-138" >&2
     echo "  You may need to install the following packages for this specific kernel:" >&2
