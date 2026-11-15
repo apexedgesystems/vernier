@@ -140,8 +140,9 @@ const std::string& testName() const noexcept;
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
   `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  its CPU and heap captures there at once, without analysis, and the Nsight
+  profiler pops the NVTX range it pushed, so this case and others can capture
+  again
 
 **`contentionRun(worker, label)`**
 
@@ -542,7 +543,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures, Nsight pops its range)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);

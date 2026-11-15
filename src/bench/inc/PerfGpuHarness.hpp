@@ -348,8 +348,9 @@ MultiGpuKernelBuilder::measureP2PBandwidth(int srcDevice, int dstDevice, size_t 
  * (nsight, compute-sanitizer, future additions) plugs in automatically
  * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here. The
  * profiler lives through the before, after and abort hooks: a measurement
- * that ends by an exception calls its abortMeasure(), which ends its
- * collection in a backend that implements it.
+ * that ends by an exception calls its abortMeasure(), which ends what the
+ * before hook started in a backend that implements it: gperf stops its
+ * capture, Nsight pops the window's NVTX range.
  */
 inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
   auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
