@@ -319,21 +319,20 @@ Measure contention and scalability with multiple threads:
 PERF_CONTENTION(SharedCounter, Increment) {
   PERF_GUARD(perf);
 
-  std::atomic<int64_t> counter{0};
+  std::atomic<std::int64_t> counter{0};
 
-  // Warmup (single-threaded)
+  // Warmup (single-threaded, untimed)
   perf.warmup([&] {
     for (int i = 0; i < perf.cycles(); ++i) {
       counter.fetch_add(1, std::memory_order_relaxed);
     }
   });
+  const std::int64_t AFTER_WARMUP = counter.load();
 
-  // Measure with N threads (from --threads flag)
+  // One operation per call: contentionRun() calls the worker --cycles times
+  // on each of --threads threads, every repeat
   auto result = perf.contentionRun([&] {
-    // Each thread independently runs this code
-    for (int i = 0; i < perf.cycles(); ++i) {
-      counter.fetch_add(1, std::memory_order_relaxed);
-    }
+    counter.fetch_add(1, std::memory_order_relaxed);
   }, "contention");
 
   std::printf("\nScalability Results:\n");
@@ -342,9 +341,10 @@ PERF_CONTENTION(SharedCounter, Increment) {
   std::printf("  Per-thread throughput: %.0f ops/sec\n",
               result.callsPerSecond / perf.threads());
 
-  // Validate
-  EXPECT_EQ(counter.load(),
-            perf.cycles() * perf.threads() * perf.repeats());
+  // Every thread made --cycles calls in every repeat (with a fixed --cycles:
+  // under --target-time the calibration also calls the worker, on this thread)
+  EXPECT_EQ(counter.load() - AFTER_WARMUP,
+            static_cast<std::int64_t>(perf.cycles()) * perf.threads() * perf.repeats());
 }
 ```
 

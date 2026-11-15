@@ -334,6 +334,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 
 ### Fixed
 
+- **The contention examples pass `contentionRun()` one operation per call**,
+  as its header comment states: the harness calls it `--cycles` times on each
+  thread. ([#72](https://github.com/apexedgesystems/vernier/pull/72))
 - **RAPL checks register access and reports failed captures, retaining energy
   in per-case reports** -- its performance sample attaches the profiler. Drop
   RAPL mode words and --profile-analyze.

@@ -145,9 +145,11 @@ const std::string& testName() const noexcept;
 
 **`contentionRun(worker, label)`**
 
-- Framework spawns `threads()` workers, each calling `worker()` in a loop
+- Framework starts `threads()` threads together; each calls `worker()`
+  `cycles()` times per repeat
 - Use for: Multi-threaded scalability testing
-- Each worker performs `cycles()` operations
+- `worker()` is one operation: the framework supplies the loop and the
+  threads
 
 ### PerfResult
 
@@ -980,8 +982,10 @@ auto result = perf.throughputLoop([&] {
 ## Thread Safety
 
 - **PerfCase:** Not thread-safe (create one per test)
-- **GpuPerfCase:** Not thread-safe (create one per test)
-- **contentionRun:** Thread-safe (uses internal synchronization)
+- **PerfGpuCase:** Not thread-safe (create one per test)
+- **contentionRun:** calls `worker` from `threads()` threads at once and
+  synchronizes only their start and their end; the worker keeps its own
+  shared state safe (atomics or locks)
 - **PerfRegistry:** Thread-safe (uses mutex for CSV updates)
 
 **Best practices:**
@@ -1116,21 +1120,18 @@ PERF_TEST(Memory, Bandwidth) {
 ### Multi-threaded Scalability
 
 ```cpp
-PERF_TEST(SharedResource, Scalability) {
+PERF_CONTENTION(SharedResource, Scalability) {
   PERF_GUARD(perf);
 
-  std::atomic<int64_t> counter{0};
+  std::atomic<std::int64_t> counter{0};
 
-  auto result = perf.contentionRun([&](int threadId) {
-    for (int i = 0; i < perf.cycles(); ++i) {
-      counter.fetch_add(1);
-    }
-  }, "contention");
+  // The worker takes no arguments and makes one call; contentionRun()
+  // supplies the loop and the threads
+  auto result = perf.contentionRun([&] { counter.fetch_add(1); }, "contention");
 
-  double efficiency = result.callsPerSecond /
-                     (perf.threads() * expectedSingleThreadThroughput);
-
-  std::printf("Parallel efficiency: %.1f%%\n", efficiency * 100);
+  // Run it with --threads 1 and with --threads N: the ratio of the two
+  // callsPerSecond values is the scaling
+  std::printf("%d threads: %.0f calls/s\n", perf.threads(), result.callsPerSecond);
 }
 ```
 

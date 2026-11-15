@@ -713,8 +713,9 @@ public:
   }
 
   /**
-   * @brief Contention run: start `threads()` workers simultaneously, each doing `cycles()` ops.
-   * The `worker` lambda is invoked in each thread. Caller is free to compute extras (e.g., drop%).
+   * @brief Contention run: start `threads()` threads together; each calls `worker` `cycles()`
+   * times per repeat, so `worker` is one operation, not a loop. The threads call it at the same
+   * time, so it keeps its own shared state safe. Caller is free to compute extras (e.g., drop%).
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
    * Publishes its own row, which records the workers it started, named as measured() names its
    * rows.
