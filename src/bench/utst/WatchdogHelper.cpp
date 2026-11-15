@@ -26,13 +26,19 @@
  *   fork                  the watchdog's thread started here and parked, then
  *                         a child of fork() arms it for 0.1 s as
  *                         Watchdog.Child; exits with the child's status
- *   signals               the watchdog's thread started and parked, then
+ *   signals               the watchdog's thread started and parked, this
+ *                         thread's signal mask checked unchanged, then
  *                         SIGUSR1, at its default action (it ends the
  *                         process) and blocked on this thread, sent to the
  *                         process: exits 0 when it is still pending here
  *   no-thread <flags...>  no thread can be started (RLIMIT_NPROC 0); a case,
  *                         Watchdog.NoThread, measured under <flags>: prints
  *                         which hooks ran and what measured() threw
+ *   no-thread-retry <flags...>
+ *                         as no-thread, then a second case,
+ *                         Watchdog.NoThreadAgain; then, threads allowed
+ *                         again, the watchdog armed for 0.1 s as
+ *                         Watchdog.Retried
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
  * then says it did not and exits 0. Where it waits for the watchdog's thread
@@ -293,8 +299,21 @@ int signals() {
   // is the watchdog's own.
   ::signal(SIGUSR1, SIG_DFL);
   ::pthread_sigmask(SIG_UNBLOCK, &usr1, nullptr);
+  sigset_t before;
+  ::pthread_sigmask(SIG_SETMASK, nullptr, &before);
   perf_watchdog::arm("Watchdog.Signals", "perf", std::chrono::seconds(10));
   perf_watchdog::disarm();
+  // The first arm() blocks every signal while it starts the thread: this
+  // thread's own mask is to be as it was.
+  sigset_t after;
+  ::pthread_sigmask(SIG_SETMASK, nullptr, &after);
+  for (int sig = 1; sig < NSIG; ++sig) {
+    if (::sigismember(&before, sig) != ::sigismember(&after, sig)) {
+      std::printf("arm() left signal %d %s on the thread that armed it\n", sig,
+                  ::sigismember(&after, sig) == 1 ? "blocked" : "unblocked");
+      return 1;
+    }
+  }
   ::pthread_sigmask(SIG_BLOCK, &usr1, nullptr);
   ::kill(::getpid(), SIGUSR1);
   const timespec BOUND{1, 0};
@@ -306,15 +325,10 @@ int signals() {
   return 0;
 }
 
-/// noThread()'s measurement, once no thread can be started.
-int measureWithoutThreads(int argc, char** argv) {
-  try {
-    std::thread([] {}).join();
-    std::puts("a thread started past RLIMIT_NPROC 0 (root, or CAP_SYS_RESOURCE)");
-    return 77;
-  } catch (const std::system_error&) {
-  }
-  PerfCase perf{"Watchdog.NoThread", configFrom(argc, argv)};
+/// A case, @p name, measured under @p cfg with hooks that say they ran: 3
+/// when measured() threw std::system_error (said too), 0 when it returned.
+int measureSaying(const char* name, const PerfConfig& cfg) {
+  PerfCase perf{name, cfg};
   perf.setBeforeMeasureHook([](const PerfCase&) { std::puts("before hook"); });
   perf.setAbortMeasureHook([](const PerfCase&) { std::puts("abort hook"); });
   perf.setAfterMeasureHook(
@@ -330,7 +344,22 @@ int measureWithoutThreads(int argc, char** argv) {
   return 0;
 }
 
-int noThread(int argc, char** argv) {
+/// noThread()'s measurements, once no thread can be started: one case, and
+/// with @p again a second.
+int measureWithoutThreads(int argc, char** argv, bool again) {
+  try {
+    std::thread([] {}).join();
+    std::puts("a thread started past RLIMIT_NPROC 0 (root, or CAP_SYS_RESOURCE)");
+    return 77;
+  } catch (const std::system_error&) {
+  }
+  const PerfConfig CFG = configFrom(argc, argv);
+  const int STATUS = measureSaying("Watchdog.NoThread", CFG);
+  return again && STATUS == 3 ? measureSaying("Watchdog.NoThreadAgain", CFG) : STATUS;
+}
+
+/// The no-thread mode; with @p retry, the no-thread-retry mode.
+int noThread(int argc, char** argv, bool retry) {
   rlimit original{};
   if (::getrlimit(RLIMIT_NPROC, &original) != 0) {
     std::perror("getrlimit");
@@ -342,14 +371,20 @@ int noThread(int argc, char** argv) {
     std::perror("setrlimit");
     return 1;
   }
-  const int STATUS = measureWithoutThreads(argc, argv);
-  // Restored, so the program ends as any other: a leak checker starts a
-  // thread at exit.
+  const int STATUS = measureWithoutThreads(argc, argv, retry);
+  // Restored, so the program ends as any other (a leak checker starts a
+  // thread at exit), and so that the next arming can start the thread.
   if (::setrlimit(RLIMIT_NPROC, &original) != 0) {
     std::perror("setrlimit");
     return 1;
   }
-  return STATUS;
+  if (!retry || STATUS != 3) {
+    return STATUS;
+  }
+  // The lines so far, kept when the watchdog ends the program.
+  std::fflush(stdout);
+  perf_watchdog::arm("Watchdog.Retried", "perf", SHORT);
+  return waitForTheWatchdog();
 }
 
 } // namespace
@@ -384,11 +419,14 @@ int main(int argc, char** argv) {
     return signals();
   }
   if (MODE == "no-thread") {
-    return noThread(argc, argv);
+    return noThread(argc, argv, false);
+  }
+  if (MODE == "no-thread-retry") {
+    return noThread(argc, argv, true);
   }
   std::fprintf(stderr,
                "usage: %s hang <flags>|hang-later <flags>|later|shorten|names <test> <tool>|"
-               "null-names|disarmed|fork|signals|no-thread <flags>\n",
+               "null-names|disarmed|fork|signals|no-thread <flags>|no-thread-retry <flags>\n",
                argv[0]);
   return 64;
 }

@@ -189,7 +189,9 @@ TEST(PerfWatchdogTest, ForkedChildArmsItsOwnWatchdog) {
 /**
  * @test The watchdog's thread takes no signal: SIGUSR1, sent to the process
  * while the program's own thread blocks it, stays pending for that thread
- * instead of ending the process through the watchdog's.
+ * instead of ending the process through the watchdog's. The first arm(),
+ * which starts that thread with every signal blocked, leaves the arming
+ * thread's own mask as it was.
  */
 TEST(PerfWatchdogTest, ItsThreadTakesNoSignal) {
   const ProbeResult RUN = runHelper({"signals"});
@@ -211,6 +213,25 @@ TEST(PerfWatchdogTest, ThreadThatCannotStartEndsTheMeasurement) {
   }
   EXPECT_EQ(RUN.exitCode, 3) << RUN.errorOutput;
   EXPECT_EQ(RUN.output, "before hook\nabort hook\nmeasured() threw std::system_error: EAGAIN\n");
+}
+
+/**
+ * @test A thread that could not start is tried again: a second case whose
+ * thread cannot start either ends as the first did, through the abort hook;
+ * once threads can start, the next arming starts the thread, and it fires,
+ * naming the case armed.
+ */
+TEST(PerfWatchdogTest, ThreadThatCannotStartIsStartedByALaterArming) {
+  const ProbeResult RUN = runHelper({"no-thread-retry", "--profile", "perf"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  if (RUN.exitCode == 77) {
+    GTEST_SKIP() << RUN.output;
+  }
+  const std::string FAILED_CASE =
+      "before hook\nabort hook\nmeasured() threw std::system_error: EAGAIN\n";
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.output, FAILED_CASE + FAILED_CASE);
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Retried", "perf"));
 }
 
 namespace {
