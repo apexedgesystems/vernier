@@ -1,7 +1,7 @@
 # Vernier
 
 **Namespace:** `vernier::bench`
-**Platform:** Linux (full), macOS (core harness)
+**Platform:** Linux (x86_64 and aarch64; RISC-V 64 cross-compiled)
 **C++ Standard:** C++20 (C++23 used when available)
 
 Performance benchmarking framework with profiler integrations, GPU support,
@@ -80,8 +80,9 @@ side, so remove the directory when switching between them.
 ## 2. Key Features
 
 - GoogleTest integration with CSV export and end-of-run summary tables
-- 15 profiler backends covering CPU, heap, off-CPU, energy, thread-safety,
-  and both NVIDIA + AMD GPU stacks (see Section 4 for the list)
+- 15 profiler backends covering CPU, heap, off-CPU, energy, thread safety and
+  NVIDIA GPUs, one of them (`rocprof`, for AMD GPUs) not validated on AMD
+  hardware (Section 4 lists them)
 - Per-backend environment doctor (`--profile-check`) with actionable hints
 - SIGALRM watchdog on the `measured()` and `throughputLoop()` loops under
   `--profile`, so such a loop that hangs while profiled fails loudly (exit
@@ -91,14 +92,17 @@ side, so remove the directory when switching between them.
   metrics (register / smem / launch counts) without spawning ncu, and, under
   `--capture-um`, CUPTI's unified-memory migration and page-fault counters on
   GPUs whose CUPTI records them
-- NVTX timeline annotation API auto-injected into Nsight Systems runs
+- NVTX timeline annotations (`BENCH_NVTX_SCOPE`); under `--profile nsight`
+  each measured window is also a range named after its test
 - Companion `vernier::monitor` library for lightweight runtime
   instrumentation in production runs (lock-free queue, env-var-driven
   configuration, console + file sinks)
 - Statistical analysis: median, percentiles, CV%, adaptive stability detection
 - Memory bandwidth analysis with efficiency calculations
 - Multi-threaded contention benchmarking with synchronized start gates
-- Semantic test macros (PERF_THROUGHPUT, PERF_LATENCY, PERF_MEMORY, etc.)
+- Semantic test macros (PERF_THROUGHPUT, PERF_LATENCY, PERF_CONTENTION,
+  PERF_TAIL, PERF_ALLOC, PERF_IO, PERF_RAMP): aliases of PERF_TEST whose names
+  state a test's intent
 - CLI tools for analysis, comparison, regression detection, visualization,
   doctor / profile-all / profile-summarize orchestration, project-level
   defaults via `.bench.yaml`
@@ -229,26 +233,19 @@ name; `bench doctor` lists them all with their environment readiness
 lane on the backends it needs, `--profile X` with its options to check one
 request).
 
-| Backend             | Layer | Wraps                                         |
-| ------------------- | ----- | --------------------------------------------- |
-| `perf`              | CPU   | Linux perf_events (stat / record / mem / c2c) |
-| `gperf`             | CPU   | gperftools                                    |
-| `callgrind`         | CPU   | valgrind callgrind                            |
-| `bpftrace`          | CPU   | bpftrace scripts                              |
-| `rapl`              | CPU   | Intel RAPL MSRs                               |
-| `massif`            | CPU   | valgrind massif (heap timeline, ~20x)         |
-| `memcheck`          | CPU   | valgrind memcheck (errors / leaks)            |
-| `helgrind`          | CPU   | valgrind helgrind / DRD (data races, locks)   |
-| `offcpu`            | CPU   | bpftrace on the sched tracepoints (off-CPU)   |
-| `heaptrack`         | CPU   | heaptrack (low-overhead heap, ~1.5x)          |
-| `jemalloc`          | CPU   | jemalloc's sampling heap profiler (preloaded) |
-| `nsight`            | GPU   | NVIDIA Nsight Systems (timeline)              |
-| `ncu`               | GPU   | NVIDIA Nsight Compute (per-kernel analysis)   |
-| `compute-sanitizer` | GPU   | NVIDIA Compute Sanitizer (GPU memcheck)       |
-| `rocprof`           | GPU   | AMD ROCm rocprof                              |
+- CPU: `perf`, `gperf`, `callgrind`, `bpftrace`, `rapl`, `massif`,
+  `memcheck`, `helgrind`, `offcpu`, `heaptrack`, `jemalloc`
+- GPU: `nsight` (or `nsys`), `ncu`, `compute-sanitizer`, `rocprof` (not
+  validated on AMD hardware)
 
-CUPTI kernel metrics populate the GPU CSV section automatically on every
-GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
+The advanced guide's
+[Available Profilers](src/bench/docs/ADVANCED_GUIDE.md#available-profilers)
+gives what each records, needs, writes and costs.
+
+CUPTI kernel metrics fill the GPU CSV columns of every GPU benchmark without
+`--profile`, except where CUPTI is unavailable or an nsys or ncu session owns
+it; those cells then stay empty and the run says why. NVTX annotations are
+available via `BENCH_NVTX_SCOPE`.
 
 ```bash
 bench summary results.csv
@@ -264,18 +261,18 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 ## 5. API Reference
 
-| Document                                                 | Purpose                                                                     |
-| -------------------------------------------------------- | --------------------------------------------------------------------------- |
-| [CPU Guide](src/bench/docs/CPU_GUIDE.md)                 | CPU benchmarking patterns and profiler usage                                |
-| [GPU Guide](src/bench/docs/GPU_GUIDE.md)                 | GPU/CUDA benchmarking patterns                                              |
-| [API Reference](src/bench/docs/API_REFERENCE.md)         | Complete API documentation                                                  |
-| [Advanced Guide](src/bench/docs/ADVANCED_GUIDE.md)       | Memory profiling, parameterized tests                                       |
-| [CI/CD Integration](src/bench/docs/CI_CD_INTEGRATION.md) | Automated regression detection                                              |
-| [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup                                         |
-| [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                                                 |
-| [Demo Walkthroughs](src/bench/demo/docs/)                | 22 step-by-step walkthroughs (16 CPU + 4 GPU demos, plus rocprof and CUPTI) |
-| [Reference Rigs](src/bench/docs/rigs/README.md)          | The machines and conditions the walkthrough outputs were captured on        |
-| [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library                                             |
+| Document                                                 | Purpose                                                                  |
+| -------------------------------------------------------- | ------------------------------------------------------------------------ |
+| [CPU Guide](src/bench/docs/CPU_GUIDE.md)                 | CPU benchmarking patterns and profiler usage                             |
+| [GPU Guide](src/bench/docs/GPU_GUIDE.md)                 | GPU/CUDA benchmarking patterns                                           |
+| [API Reference](src/bench/docs/API_REFERENCE.md)         | Complete API documentation                                               |
+| [Advanced Guide](src/bench/docs/ADVANCED_GUIDE.md)       | Memory profiling, parameterized tests                                    |
+| [CI/CD Integration](src/bench/docs/CI_CD_INTEGRATION.md) | Automated regression detection                                           |
+| [Docker Setup](src/bench/docs/DOCKER_SETUP.md)           | Container build and profiling setup                                      |
+| [Troubleshooting](src/bench/docs/TROUBLESHOOTING.md)     | Common issues and solutions                                              |
+| [Demo Walkthroughs](src/bench/demo/docs/)                | 20 step-by-step walkthroughs: 13 on the CPU, 6 on the GPU, and rocprof's |
+| [Reference Rigs](src/bench/docs/rigs/README.md)          | The machines and conditions the walkthrough outputs were captured on     |
+| [Monitor Guide](src/monitor/docs/MONITOR_GUIDE.md)       | Runtime instrumentation library                                          |
 
 ---
 
@@ -287,18 +284,19 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
   when the toolchain supports it (Clang 21 / GCC 13+)
 - CMake 3.24+
 - GoogleTest (auto-fetched via CMake FetchContent)
-- POSIX system (Linux or macOS)
+- Linux
 
 **Optional:**
 
-- CUDA toolkit 12+ (GPU benchmarking, NVTX, CUPTI, Compute Sanitizer)
+- CUDA toolkit 12+ (GPU benchmarking, NVTX ranges with CMake 3.25+, CUPTI,
+  Compute Sanitizer)
 - gperftools (`gperf` backend)
-- valgrind (`callgrind` / `massif` / `memcheck` backends)
+- valgrind (`callgrind` / `massif` / `memcheck` / `helgrind` backends)
 - bpftrace (`bpftrace` and `offcpu` backends; needs root + tracefs)
-- heaptrack (`heaptrack` backend -- low-overhead heap profiler)
+- heaptrack (`heaptrack` backend -- heap allocations and their call stacks)
 - a jemalloc built with profiling (`--enable-prof`), for the `jemalloc` backend,
   which preloads it; `jeprof` reads its dumps
-- ROCm + rocprof (AMD GPU profiling via the `rocprof` backend)
+- ROCm + rocprof (the `rocprof` backend, not validated on AMD hardware)
 - Rust toolchain (for `bench` CLI tool)
 - Python 3.10+ with Poetry (for the `bench-plot` CLI tool)
 
@@ -306,18 +304,34 @@ See [tools/README.md](tools/README.md) for full CLI documentation.
 
 ## 7. Platform Support
 
-| Platform                  | Library | Profilers             | CUDA | Pre-built Artifact              |
-| ------------------------- | ------- | --------------------- | ---- | ------------------------------- |
-| x86_64 Linux              | Full    | All 15                | Yes  | `vernier-*-x86_64-linux[-cuda]` |
-| Jetson (aarch64)          | Full    | All except RAPL       | Yes  | `vernier-*-aarch64-jetson`      |
-| Raspberry Pi (aarch64)    | Full    | CPU backends, no RAPL | No   | `vernier-*-aarch64-rpi`         |
-| RISC-V 64                 | Full    | CPU backends, no RAPL | No   | `vernier-*-riscv64-linux`       |
-| macOS (Apple Silicon/x86) | Full    | No-ops                | No   | Build from source               |
+| Platform               | Library                           | Profilers                   | CUDA | Pre-built Artifact              |
+| ---------------------- | --------------------------------- | --------------------------- | ---- | ------------------------------- |
+| x86_64 Linux           | Full                              | All 15                      | Yes  | `vernier-*-x86_64-linux[-cuda]` |
+| Jetson (aarch64)       | Full                              | All except RAPL and rocprof | Yes  | `vernier-*-aarch64-jetson`      |
+| Raspberry Pi (aarch64) | Full                              | CPU backends except RAPL    | No   | `vernier-*-aarch64-rpi`         |
+| RISC-V 64              | Cross-compiled; not run on RISC-V | CPU backends except RAPL    | No   | `vernier-*-riscv64-linux`       |
 
-`rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only; `nsight` /
-`compute-sanitizer` / `cupti` / `nvtx` are NVIDIA-only. All backends
-degrade gracefully when hardware or tools are unavailable -- the core
-timing harness always works.
+The library is built and tested on x86_64 Linux and on the two reference rigs,
+a Jetson AGX Thor and a Raspberry Pi 4 ([Reference Rigs](src/bench/docs/rigs/README.md));
+the RISC-V package is cross-compiled for the release, and nothing runs on
+RISC-V. macOS and Windows are not supported in this release.
+
+`rapl` is Intel-only (energy via MSRs); `rocprof` is AMD-only and not
+validated on AMD hardware; `nsight`, `ncu` and `compute-sanitizer`, the CUPTI
+columns and `--capture-um` (CUPTI's unified-memory counters) need an NVIDIA
+GPU. NVTX ranges do not. The macros emit them when both hold: vernier was
+configured with the CUDA toolkit and CMake 3.25 or newer, which provides the
+toolkit's `CUDA::nvtx3` target, and `<nvtx3/nvToolsExt.h>` can be included
+where the annotated code compiles. Otherwise they compile to nothing (a build
+configured without the target does so even where the header is installed), so
+annotated code also builds and runs without CUDA
+([GPU Guide](src/bench/docs/GPU_GUIDE.md#nvtx-annotation-api)). A profiler
+that cannot run on the machine fails the run
+that asks for it (exit status 4 when the tests pass) and says why, and
+`bench doctor` lists what works there; `--capture-um` fails a run the same way
+when the counters cannot be recorded. A timing run with neither `--profile`
+nor `--capture-um` needs none of these, though a GPU benchmark still needs its
+NVIDIA GPU.
 
 ---
 
@@ -355,7 +369,7 @@ vernier/
       bpf/                    bpftrace scripts (write / fsync / wakeup latency, CPU migrations)
       utst/                   Unit tests
       ptst/                   Performance tests (CPU + GPU)
-      demo/                   16 CPU + 4 GPU walkthroughs with step-by-step docs
+      demo/                   13 CPU and 5 GPU demo programs, 20 walkthroughs in docs/
       docs/                   Library documentation
     monitor/                  Runtime instrumentation library (vernier::monitor)
       inc/                    Public headers (Monitor.hpp, MonitorConfig.hpp)

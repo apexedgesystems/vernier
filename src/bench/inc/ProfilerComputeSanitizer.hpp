@@ -13,8 +13,10 @@
  *  - Missed __syncthreads barriers (--tool=synccheck)
  *  - Uninitialized device memory reads (--tool=initcheck)
  *
- * Ships with the CUDA toolkit; no special permissions required.
- * Overhead is ~5-10x kernel time, so use low --cycles.
+ * Ships with the CUDA toolkit; no special permissions required. The cost
+ * depends on the tool and the kernel: under memcheck a kernel that takes about
+ * 20 us took about 56 times as long on a Jetson AGX Thor (walkthrough 17), so
+ * use a low --cycles.
  *
  * Tools (selectable via --profile-args):
  *   memcheck   (default)  -- device access errors, leaks

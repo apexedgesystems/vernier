@@ -267,9 +267,8 @@ public:
    * @brief Print a human-readable doctor report to stdout.
    *
    * For every registered backend, prints one line of the form:
-   *   [OK]   perf       perf available, perf_event_paranoid=1
-   *   [WARN] callgrind  valgrind available; running in Docker (PID namespace)
-   *                     Run via 'bench run', which wraps valgrind directly (no attach needed).
+   *   [OK]   perf       perf stat counted <events> on this process (probe with <perf>)
+   *   [OK]   callgrind  valgrind starts callgrind (probe: valgrind --tool=callgrind ... /bin/true)
    *   [FAIL] rapl       denied: cannot open /dev/cpu/0/msr: Permission denied
    *                     RAPL needs access set up beforehand, and Vernier does not raise ...
    * Each row checks the backend's default mode; a footer says what that
@@ -367,18 +366,18 @@ struct ReadinessFallbackRegistrar {
 } // namespace detail
 
 /**
- * @brief Convenience macro for backend self-registration at file scope.
+ * @brief Register a backend whose check reads only the environment, at file scope.
  *
- * Usage at the bottom of a profiler's translation unit:
+ * Every shipped backend registers with VERNIER_REGISTER_READINESS_BACKEND
+ * (below), whose check decides whole requests. This form takes a factory and
+ * an environment check:
  * @code
  * VERNIER_REGISTER_PROFILER_BACKEND(
- *     "perf",
- *     makePerfProfiler,
- *     checkPerfEnvironment,
- *     "Install linux-tools-$(uname -r) or run outside Docker.");
+ *     "my-tool",
+ *     makeMyToolProfiler, // unique_ptr<Profiler>(const PerfConfig&, const std::string& testName)
+ *     checkMyTool,        // EnvReport(): whether my-tool can run here
+ *     "Install my-tool.");
  * @endcode
- *
- * The check function should be a `EnvReport(*)()` (no arguments, returns EnvReport).
  */
 /* Two-level paste so __LINE__ expands before concatenation; a direct
  * NAME##__LINE__ pastes the literal token and collides as soon as one TU

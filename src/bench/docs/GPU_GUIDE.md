@@ -66,6 +66,14 @@ PERF_GPU_TEST(VectorAdd, Basic) {
   dim3 block(THREADS);
   dim3 grid(BLOCKS);
 
+  // Inputs first: the kernel reads both. They are queued on the case's
+  // stream, the one the warmup launches on, so the warmup starts only after
+  // both copies finish. (A plain cudaMemcpy goes to the default stream,
+  // which the case's non-blocking stream does not wait for.) The copies
+  // declared below repeat this in every measured repeat.
+  cudaMemcpyAsync(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
+  cudaMemcpyAsync(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
+
   // Warmup: Critical for GPU (JIT compilation + cache priming)
   perf.cudaWarmup([&](cudaStream_t s) {
     vectorAdd<<<grid, block, 0, s>>>(d_a, d_b, d_c, N);
@@ -78,17 +86,20 @@ PERF_GPU_TEST(VectorAdd, Basic) {
     .withHostToDevice(h_a.data(), d_a, SIZE)
     .withHostToDevice(h_b.data(), d_b, SIZE)
     .withDeviceToHost(d_c, h_c.data(), SIZE)
-    .withLaunchConfig(grid, block)  // Enables occupancy tracking
+    .withLaunchConfig(grid, block)  // Enables the occupancy estimate
     .measure();
 
-  // Results printed automatically
+  // The harness prints its own result line; these pick fields from `result`
   std::printf("Kernel time: %.3f ms\n", result.kernelTimeUs / 1000.0);
   std::printf("Transfer time: %.3f ms\n", result.transferTimeUs / 1000.0);
-  std::printf("Occupancy: %.1f%%\n",
+  std::printf("Occupancy (launch-shape estimate): %.1f%%\n",
               result.stats.occupancy.achievedOccupancy * 100);
 
-  // Validate
-  EXPECT_GT(result.callsPerSecond, 1000);
+  // Validate: the copy back holds a + b, and the repeats agreed. The 12 MiB
+  // of copies dominate this round trip, so a calls-per-second requirement
+  // is one you set for your own machine.
+  EXPECT_FLOAT_EQ(h_c[0], 3.0f);
+  EXPECT_FLOAT_EQ(h_c[N - 1], 3.0f);
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
 
   cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
@@ -118,8 +129,9 @@ cmake --build build
 # Quick mode during development
 ./build/VectorAdd_GPU_PTEST --quick
 
-# With Nsight Systems timeline profiling
-./build/VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+# With an Nsight Systems timeline: nsys records only a process it starts,
+# so bench run starts the benchmark under it
+bench run ./build/VectorAdd_GPU_PTEST --profile nsight -- --gtest_filter="*Basic"
 
 # With Nsight Compute kernel analysis (add --profile-args replay for
 # replay-mode metrics)
@@ -135,25 +147,50 @@ cmake --build build
 
 ### What Gets Measured?
 
-GPU benchmarks measure several key metrics automatically:
+Each repeat runs the declared host-to-device copies, `--cycles` launches of the
+kernel and the declared device-to-host copies, each timed with CUDA events on
+the case's stream. A result holds medians over the repeats, each taken on its
+own:
 
 **Timing:**
 
-- **kernelTimeUs** - Pure kernel execution (CUDA events)
-- **transferTimeUs** - H2D + D2H combined
-- **totalTimeUs** - Kernel + transfers + overhead
+- **kernelTimeUs** - One launch: the median, over the repeats, of the
+  launches' event time divided by their count
+- **transferTimeUs** - The median host-to-device time plus the median
+  device-to-host time
+- **totalTimeUs** - One round trip: the median, over the repeats, of the
+  host-to-device time plus one launch plus the device-to-host time; host work
+  between them is not in it
+
+Because each is a median of its own, `totalTimeUs` is not `kernelTimeUs` plus
+`transferTimeUs`, and when the copy times vary between repeats the copies'
+medians can add up to more than the round trip
+([Transfer Overhead](#transfer-overhead)).
 
 **Performance:**
 
-- **callsPerSecond** - Throughput (1e6 / totalTimeUs)
-- **speedupVsCpu** - GPU vs CPU baseline comparison
-- **memBandwidthGBs** - Achieved memory bandwidth
+- **callsPerSecond** - Round trips per second (1e6 / totalTimeUs)
+- **speedupVsCpu** - The suite's CPU baseline time over totalTimeUs; empty in
+  the CSV when the suite has no baseline
+- **memBandwidthGBs** - The copy rate in GB/s: the declared copies' bytes over
+  `transferTimeUs`, the sum of the two copy medians (see
+  [Memory Bandwidth](#memory-bandwidth)); empty for a test that declares no
+  copies; the kernel's own memory traffic is not measured
 
 **Resource Utilization:**
 
-- **achievedOccupancy** - Fraction of GPU utilized [0-1]
-- **smClockMHz** - GPU frequency during test
-- **throttling** - Whether GPU thermally throttled
+- **achievedOccupancy** (the CSV's `occupancy`) - An estimate of the occupancy
+  the launch shape allows, not a measurement; empty without
+  `.withLaunchConfig()` (see [Occupancy](#occupancy))
+- **smClockMHz** - The SM clock NVML reports at the end of the measured window
+- **throttling** - Whether the SM clock fell by more than 10% between NVML's
+  readings at the window's start and end; empty unless NVML reported both and
+  the maximum SM clock
+
+A value the run could not read stays an empty CSV cell, and the run says why on
+stderr: once per process for what holds for the whole run (no CUPTI in the
+build, NVML not reporting a reading), and for the test when one measured
+window lost it.
 
 ### PerfGpuResult Structure
 
@@ -162,7 +199,7 @@ struct PerfGpuResult {
   GpuStats stats;             // Comprehensive GPU metrics (see below)
   double kernelTimeUs;        // CUDA event kernel time
   double transferTimeUs;      // H2D + D2H transfer time
-  double totalTimeUs;         // Kernel + transfers
+  double totalTimeUs;         // One round trip: copies in, one launch, copies out
   double callsPerSecond;      // 1e6 / totalTimeUs
   double speedupVsCpu;        // Set by cpuBaseline() comparison
   std::string label;          // Kernel label from cudaKernel()
@@ -187,24 +224,30 @@ std::printf("Total: %.2f ms\n", result.totalTimeUs / 1000.0);
 // Throughput
 std::printf("Throughput: %.0f ops/sec\n", result.callsPerSecond);
 
-// GPU metrics (always populated in GpuStats)
-std::printf("Occupancy: %.1f%%\n", result.stats.occupancy.achievedOccupancy * 100);
+// GPU metrics (always present in GpuStats; 0 where the run could not read them)
+std::printf("Occupancy (estimate): %.1f%%\n", result.stats.occupancy.achievedOccupancy * 100);
 std::printf("SM Clock: %d MHz\n", result.stats.clocks.smClockMHzEnd);
-if (result.stats.clocks.isThrottling()) {
-  std::printf("Warning: GPU is thermally throttling!\n");
+// isThrottling() reads 0 for a reading NVML did not report: ask it only
+// when the start, end and maximum SM clocks are all there
+const auto& clocks = result.stats.clocks;
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0 &&
+    clocks.isThrottling()) {
+  std::printf("Warning: the SM clock fell more than 10%% during the measurement\n");
 }
-std::printf("Bandwidth: %.2f GB/s\n", result.stats.transfers.bandwidthGBs());
+std::printf("Copy rate: %.2f GB/s\n", result.stats.transfers.bandwidthGBs());
 ```
 
 ### GpuStats Structure
 
 ```cpp
 struct GpuStats {
-  Stats cpuStats{};                                 // CPU timing stats
+  Stats cpuStats{};                                 // Per-repeat round-trip times
   GpuDeviceInfo deviceInfo{};                       // GPU model, compute capability
   MemoryTransferProfile transfers{};                // H2D/D2H bytes and timing
-  OccupancyMetrics occupancy{};                     // Warps, block size, achieved occupancy
-  ClockSpeedProfile clocks{};                       // SM/memory clocks, throttling detection
+  OccupancyMetrics occupancy{};                     // Launch shape and its occupancy estimate
+  ClockSpeedProfile clocks{};                       // NVML SM/memory clocks at start and end
+  PowerThermalProfile powerThermal{};               // NVML power and temperature at start and end
+  CuptiKernelStats cupti{};                         // CUPTI launch, register and shared-memory counts
   double kernelTimeMedianUs{};                      // Kernel execution time
   double transferTimeMedianUs{};                    // Transfer time
   double totalTimeMedianUs{};                       // Total time
@@ -216,7 +259,9 @@ struct GpuStats {
 
 **Field availability:**
 
-- **transfers, occupancy, clocks**: Always populated (values may be zero/default)
+- **transfers, occupancy, clocks, powerThermal, cupti**: Always present; a
+  value the run could not read is 0 here and an empty cell in the CSV (see
+  [What Gets Measured?](#what-gets-measured))
 - **multiGpu**: Only when using `cudaKernelMultiGpu()`
 - **p2pProfile**: Only when P2P transfers are measured
 - **unifiedMemory**: Only when the measurement asked for unified-memory
@@ -227,34 +272,81 @@ struct GpuStats {
 
 #### Occupancy
 
-**What it is:** Fraction of GPU compute resources actively used.
+**What it is:** An estimate of the share of an SM's warp slots the launch
+shape lets the kernel fill, which the harness computes when a test declares
+`.withLaunchConfig()`: from the block size, the SM's thread and block limits
+and the dynamic shared memory the launch declares.
 
-**Formula:** `Active warps / Max possible warps per SM`
+**Formula:** `min(1, warps per block x blocks per SM / max warps per SM)`,
+with warps per block the block's threads over 32 rounded up, max warps per SM
+the SM's thread limit over 32, and blocks per SM the smallest of the SM's
+thread limit over the block's threads, the SM's block limit, and the SM's
+shared memory over the declared dynamic shared memory, each rounded down (the
+last only when the launch declares some).
 
-**Interpretation:**
+What it leaves out can make it overstate what the launch shape allows:
 
-- **>75%** = Excellent, GPU well-utilized
-- **50-75%** = Good, some optimization possible
-- **25-50%** = Fair, likely resource-constrained
-- **<25%** = Poor, need to investigate
+- The kernel's registers and static shared memory.
+- Partial warps: a block whose size is not a multiple of 32 still takes
+  whole warps, but the thread limit is applied to its threads, so the
+  estimate can count more such blocks than fit; it then reads 1.0. On the
+  laptop's RTX 5000 Ada (1,536 threads, 48 warps per SM), blocks of 129, 200
+  and 300 threads read 1.0 where the CUDA runtime's calculation gives 0.94,
+  0.88 and 0.83 (45, 42 and 40 warps).
+- The shared memory the runtime reserves for each block, 1 KiB there: a
+  256-thread block declaring 33,792 bytes reads 0.5 (3 blocks) where the
+  runtime gives 0.33 (2 blocks).
 
-**Important:** High occupancy doesn't always mean fast!
+Nor does it count the grid: one block and thousands of blocks of the same
+shape get the same figure, although one block runs on a single SM and
+thousands spread over all of them.
 
-- Memory-bound kernels: 25% occupancy can be optimal
-- Compute-bound kernels: aim for >50%
+**Interpretation:** the figure estimates the most the launch shape allows; it
+is not a measure of how busy the GPU was, so it grades neither the kernel nor
+the GPU's use. A low figure says the block size or the declared shared memory
+holds the warps an SM can take below its maximum; a high one does not rule
+out a lower limit, for the reasons above. The CUDA runtime's
+`cudaOccupancyMaxActiveBlocksPerMultiprocessor()` counts those three (see
+[Understanding Occupancy](#understanding-occupancy)); for the occupancy a
+kernel achieves, and whether occupancy is what limits it, measure with a
+kernel profiler ([Profiling GPU Code](#profiling-gpu-code)).
 
 #### Transfer Overhead
 
-**What it is:** Percentage of time spent on memory transfers.
+**What it is:** How the copies compare with the round trip: `transferTimeUs`
+over `totalTimeUs`.
 
-**Formula:** `(transferTime / totalTime) * 100%`
+**Formula:** `(transferTimeUs / totalTimeUs) * 100%`
+
+The two are medians taken separately (see
+[What Gets Measured?](#what-gets-measured)): the two copy medians and the
+round-trip median can each come from a different repeat, so the ratio is not
+the share of any one round trip, and it can pass 100%. A quick-start run on a
+laptop GPU reported
+`transferTimeUs` 2,082.048 against `totalTimeUs` 2,064.5, a ratio of 100.9%.
+`result.stats.transfers.transferOverheadPct(result.kernelTimeUs)` divides the
+copy medians by their sum with the launch median instead, so it stays within
+100% (99.6% for that run); its three medians are taken separately too, so it
+is not the share of one round trip either.
 
 **Interpretation:**
 
-- **<10%** = Excellent, compute-bound kernel
-- **10-30%** = Good, transfers are minor cost
-- **30-50%** = Fair, consider reducing transfers
-- **>50%** = Poor, transfer-bound workload
+- Only while the copy times hold steady from repeat to repeat is the ratio
+  close to the copies' share of a round trip (the median one). Then near 100%
+  says the copies decide `totalTimeUs` and the kernel hardly shows in it, and
+  a small ratio says the launch takes most of it.
+- When the copy times vary, the medians cannot tell which part takes most of
+  a round trip, and the ratio can point the wrong way. Three repeats with
+  host-to-device copies of 100, 1 and 1 us, device-to-host copies of 1, 100
+  and 1 us and launches of 50, 50 and 1 us give a `transferTimeUs` of 2 and a
+  `totalTimeUs` of 151, a ratio of 1.3%, although the copies take two thirds
+  of every round trip.
+- The result keeps no copy time per repeat, and steady round trips do not
+  show steady copies. An Nsight Systems timeline does: it records every copy
+  and launch, and `bench run --profile nsight` writes
+  `cuda_gpu_mem_time_sum.txt` with each copy direction's count, median,
+  minimum, maximum and spread
+  ([walkthrough 11](../demo/docs/11_NSIGHT_PROFILER.md)).
 
 **How to reduce:**
 
@@ -273,16 +365,24 @@ cudaMemcpy(d_data, h_data, 1000 * sizeof(float), cudaMemcpyHostToDevice);
 
 #### Memory Bandwidth
 
-**What it is:** Data transfer rate achieved by kernel.
+**What it is:** The rate of the host-device copies a test declares
+(`memBandwidthGBs`). The kernel's own reads and writes of device memory are
+not measured.
 
-**Formula:** `(bytes_read + bytes_written) / kernel_time`
+**Formula:** `(h2dBytes + d2hBytes) / (h2dTimeUs + d2hTimeUs) / 1000`: the
+bytes the test declares for one repeat over the two copy medians, whose sum is
+`transferTimeUs`, are bytes per microsecond, and 1,000 bytes per microsecond
+are 1 GB/s (10^9 bytes per second). For the quick-start run above, 12,582,912
+bytes over 2,082.048 us are 6,043.5 bytes per microsecond, 6.04 GB/s.
 
 **Interpretation:**
 
-- Compare to theoretical peak (e.g., A100 = 1555 GB/s, RTX 4090 = 1008 GB/s)
-- **>80% of peak** = Memory-bound, excellent utilization
-- **50-80% of peak** = Good bandwidth usage
-- **<50% of peak** = Compute-bound or inefficient access
+- Compare it with the link the copies cross: PCIe on a discrete GPU, the
+  memory a Jetson's CPU and GPU share. The GPU's device-memory peak is not the
+  comparison.
+- Pageable host memory copies more slowly than pinned memory
+  (`cudaMallocHost`)
+- A test that declares no copies has no copy rate: its cell is empty
 
 ---
 
@@ -361,7 +461,7 @@ PERF_GPU_TEST(MyAlgorithm, CompareVersions) {
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Naive:     %.3f ms, Occupancy: %.1f%%\n",
+  std::printf("Naive:     %.3f ms, occupancy estimate: %.1f%%\n",
               baseline.kernelTimeUs / 1000.0,
               baseline.stats.occupancy.achievedOccupancy * 100);
 
@@ -376,7 +476,7 @@ PERF_GPU_TEST(MyAlgorithm, CompareVersions) {
     .withLaunchConfig(grid, block)
     .measure();
 
-  std::printf("Optimized: %.3f ms, Occupancy: %.1f%%\n",
+  std::printf("Optimized: %.3f ms, occupancy estimate: %.1f%%\n",
               optimized.kernelTimeUs / 1000.0,
               optimized.stats.occupancy.achievedOccupancy * 100);
 
@@ -409,9 +509,10 @@ Launch configuration (grid/block dimensions) significantly impacts performance.
 **How to choose:**
 
 1. Start with 256 threads/block
-2. Check occupancy in results
-3. If occupancy <50%, try other sizes
-4. Benchmark multiple configurations
+2. Measure the other sizes on the same workload
+   ([Block Size Sweep](#block-size-sweep))
+3. Keep the size with the shortest measured time: the occupancy estimate in
+   the results says what each launch shape allows, not which one runs fastest
 
 ### Block Size Sweep
 
@@ -424,7 +525,7 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
   cudaMalloc(&d_data, N * sizeof(float));
 
   std::printf("\n%-12s %-12s %-12s %-12s\n",
-              "Threads", "Time(ms)", "Occupancy", "Throughput");
+              "Threads", "Time(ms)", "Occ. est. %", "Throughput");
   std::printf("%s\n", std::string(50, '-').c_str());
 
   for (int threads : {128, 256, 512, 1024}) {
@@ -442,9 +543,10 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
       .withLaunchConfig(grid, block)
       .measure();
 
+    // The launch-shape estimate (see Occupancy), not a measurement
     double occupancy = result.stats.occupancy.achievedOccupancy * 100;
 
-    std::printf("%-12d %-12.3f %-12.1f%% %-12.0f\n",
+    std::printf("%-12d %-12.3f %-12.1f %-12.0f\n",
                 threads,
                 result.kernelTimeUs / 1000.0,
                 occupancy,
@@ -455,16 +557,24 @@ PERF_GPU_TEST(MyKernel, BlockSizeSweep) {
 }
 ```
 
-**Typical output:**
+**Output of one run** on the laptop RTX 5000 Ada (`--cycles 200 --repeats 5`,
+a stand-in `myKernel` doing 256 multiply-adds per element; the harness's own
+result line before each row is left out):
 
 ```
-Threads      Time(ms)     Occupancy    Throughput
+Threads      Time(ms)     Occ. est. %  Throughput
 --------------------------------------------------
-128          15.234       32.5%        65600
-256          12.456       67.8%        80300     <- Best
-512          13.890       45.2%        72000
-1024         18.123       28.9%        55200
+128          0.022        100.0        45716
+256          0.022        100.0        46408
+512          0.021        100.0        46833
+1024         0.024        66.7         41544
 ```
+
+An SM of this GPU holds 1,536 threads (48 warps) and at most 24 blocks:
+blocks of 128, 256 and 512 threads fill it (12, 6 and 3 blocks), so the
+estimate is 100% for each, and one 1024-thread block, 32 of the 48 warps,
+gives 66.7%. The estimate follows from the launch shape alone, whatever the
+kernel, so it does not say which size runs fastest; the times do.
 
 ### Understanding Occupancy
 
@@ -476,27 +586,22 @@ Threads      Time(ms)     Occupancy    Throughput
 - **Shared memory per block** - More shared mem = fewer active blocks
 - **Thread block size** - Too small/large reduces occupancy
 
-**Occupancy targets:**
+The harness's estimate counts the block size and the dynamic shared memory a
+launch declares; it leaves out the kernel's registers and static shared
+memory, among other things (see [Occupancy](#occupancy)). The CSV's CUPTI
+columns give the registers per thread and the static and dynamic shared
+memory of the launches it measured
+([CUPTI in-process kernel metrics](#cupti-in-process-kernel-metrics)), and
+the CUDA runtime's `cudaOccupancyMaxActiveBlocksPerMultiprocessor()` gives
+how many blocks of a kernel an SM can hold at once for a block size and
+dynamic shared memory, counting the kernel's registers and static shared
+memory as well.
 
-- **>66%**: Excellent (compute-bound kernels)
-- **33-66%**: Good (typical)
-- **<33%**: Fair (may be resource-constrained)
-
-**Important notes:**
-
-- High occupancy != always faster
-- Memory-bound kernels: 25-50% occupancy can be optimal
-- Compute-bound kernels: aim for >50% occupancy
-- Focus on wall-clock time, not just occupancy
-
-**Use NVIDIA's occupancy calculator:**
-
-```bash
-# Command-line tool
-occupancy_calculator --sm 80 --threads 256 --registers 32 --shared 4096
-
-# Or use Excel/spreadsheet version from CUDA toolkit
-```
+No occupancy figure is right for every kernel: higher occupancy is not always
+faster, and the launch shape worth keeping is the one with the best measured
+time for the workload. For the occupancy a kernel achieves, and whether
+occupancy limits it, measure with a kernel profiler
+([Profiling GPU Code](#profiling-gpu-code)).
 
 ---
 
@@ -564,13 +669,39 @@ PERF_GPU_TEST(MyAlgorithm, CpuVsGpu) {
 speedupVsCpu = cpuTime / gpuTotalTime
 ```
 
-**CSV output:**
+**In the CSV** (`--csv results.csv`) the two measurements are the test's two
+rows, named by their labels. The columns that compare them, picked by name
+with a CSV reader, which keeps a quoted test name (a label may hold a comma)
+in one column:
+
+```bash
+python3 -c '
+import csv, sys
+path, *cols = sys.argv[1:]
+out = csv.writer(sys.stdout)
+out.writerow(cols)
+for row in csv.DictReader(open(path, newline="")):
+    if None in row or None in row.values():
+        sys.exit(f"{path}: a row whose cells do not match the header")
+    out.writerow([row[c] for c in cols])
+' results.csv test wallMedian kernelTimeUs transferTimeUs speedupVsCpu
+```
+
+From one run on the laptop RTX 5000 Ada (`--cycles 10 --repeats 5`, with
+stand-ins for `processOnCpu()` and `myKernel` that each do 64 multiply-adds
+per element):
 
 ```
-test,cpuMedianUs,gpuTotalUs,speedupVsCpu
-MyAlgorithm.CpuVsGpu/cpu_version,1234.5,,,
-MyAlgorithm.CpuVsGpu/gpu_version,,156.7,7.87
+test,wallMedian,kernelTimeUs,transferTimeUs,speedupVsCpu
+MyAlgorithm.CpuVsGpu/cpu_version,11080.3,,,
+MyAlgorithm.CpuVsGpu/gpu_version,1194.94,12.016000,1186.623991,9.272702
 ```
+
+The CPU row leaves the GPU columns empty. `speedupVsCpu` is the CPU row's
+`wallMedian` over the GPU row's, the round trip with its copies
+(11080.3 / 1194.94 = 9.27); over `kernelTimeUs` alone the ratio would be 922.
+The API reference's [CSV Schema](API_REFERENCE.md#csv-schema) describes every
+column.
 
 **When to use CPU comparison:**
 
@@ -955,44 +1086,65 @@ PERF_GPU_TEST(MyKernel, WithProfiling) {
 
 ### GPU-side backends
 
-| Backend             | Wraps                         | Use it for                                                             |
-| ------------------- | ----------------------------- | ---------------------------------------------------------------------- |
-| `nsight`            | NVIDIA Nsight Systems/Compute | Timeline + kernel deep-dive; auto-extracts kern*sum / api_sum / mem*\* |
-| `compute-sanitizer` | NVIDIA Compute Sanitizer      | GPU memcheck / racecheck / synccheck / initcheck                       |
-| `rocprof`           | AMD ROCm rocprof              | AMD MI / Radeon Instinct profiling (kernel time + Chrome-trace JSON)   |
+The GPU profilers are `nsight` (or `nsys`), `ncu`, `compute-sanitizer` and
+`rocprof`, the legacy integration that is not validated on AMD hardware
+(walkthrough 18). The advanced guide's
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers) gives what each
+records, needs, writes and costs.
 
-Each backend follows the wrap-externally pattern: the binary stays passive
-unless wrapping is detected, in which case the backend records the artifact
-path. When run unwrapped, the backend prints the precise invocation including
-the per-test artifact directory.
+Each of these tools records a process only when it starts it. Under the tool,
+the backend stays passive and reports the tool's output as the artifact; run
+without it, the benchmark runs its tests, fails with exit status 4 when they
+pass, and prints the command that would start it under the tool.
+`bench run --profile <name>` starts it that way (for every name here but
+`rocprof`).
 
 ```bash
-# Timeline profile (auto-stats reports drop next to the .nsys-rep).
-# VERNIER_DISABLE_CUPTI=1 frees the one CUPTI client slot for nsys -- without
-# it the binary's in-process CUPTI collector holds the slot and the trace is
-# empty (see "CUPTI in-process kernel metrics" below). Same for an external ncu.
-VERNIER_DISABLE_CUPTI=1 nsys profile -o run.nsys-rep -t cuda,nvtx \
+# Timeline profile, started by hand: nsys writes run.nsys-rep (bench run
+# --profile nsight also writes the nsys stats summaries beside it). The
+# in-process CUPTI collector stands down inside the session by itself (see
+# "CUPTI in-process kernel metrics" below).
+nsys profile -o run.nsys-rep -t cuda,nvtx \
     ./MyGpuTest --profile nsight --gtest_filter='*'
 
-# GPU memory error detection
-compute-sanitizer --tool=memcheck --log-file=run.sanitizer.log \
+# GPU memory error detection: --error-exitcode makes a run in which the
+# tool finds an error exit 5, so that a job fails on it
+compute-sanitizer --tool=memcheck --error-exitcode 5 --log-file run.sanitizer.log \
     ./MyGpuTest --profile compute-sanitizer --cycles 5
 
-# AMD GPU (HIP-built binary)
+# AMD GPU (HIP-built binary): the legacy rocprof integration, not validated
+# on AMD hardware
 rocprof --stats -o run.csv \
     ./MyHipTest --profile rocprof --profile-args stats
 ```
 
-nsys also needs the application's CUDA toolkit to be no newer than the driver's
-CUDA (`nvidia-smi`): a binary built one minor version ahead runs but is not
-nsys-traceable. `ncu` and the in-process CUPTI columns are unaffected.
+Whether nsys can trace a benchmark depends on the toolkit it was built with,
+the CUDA driver it runs on and the nsys version together. One combination has
+been traced: nsys 2026.3.1 in the CUDA 13.1 dev image recorded every kernel
+launch of a quick-start run built with CUDA 13.1 (25,011: 25,000 measured, 11
+warmup) on a laptop with driver 580.178.04, which reports CUDA 13.0. Inside the
+image the benchmark ran on the image's own CUDA 13.1 user-mode driver (libcuda
+590.44.01, CUDA's forward-compatibility package), and `nvidia-smi` there
+reports CUDA 13.1. The in-process CUPTI columns were filled in the same setup;
+`ncu` was not run in it.
+
+NVIDIA documents what a newer toolkit can do on an older driver:
+[minor-version compatibility](https://docs.nvidia.com/deploy/cuda-compatibility/latest/minor-version-compatibility.html)
+runs a CUDA 13.x application on a driver of 580 or later, without the features
+that need a newer driver and without device code the driver would have to
+compile from PTX, and the
+[Nsight Systems installation guide](https://docs.nvidia.com/nsight-systems/InstallationGuide/index.html)
+gives its CUDA requirements and warns that under forward compatibility some
+profiling features may be unavailable. Other combinations, a CUDA 13.1 binary
+on a 13.0 user-mode driver among them, have not been tried.
 
 ### NVTX annotation API
 
-`BENCH_NVTX_SCOPE("name")` pushes a labeled range that nsys / ncu pick up
-automatically. `NsightProfiler` also auto-emits a range named after the
-test, so even unannotated benchmarks show per-test grouping in the
-nsys timeline.
+`BENCH_NVTX_SCOPE("name")` pushes a labeled range that an Nsight tool records
+with the run. Under `--profile nsight` (the profile `bench run --profile nsight`
+passes the benchmark), the Nsight backend also marks each measured window with
+a range named after the test, so even an unannotated benchmark shows its tests
+on the nsys timeline. A run without an Nsight profile gets no such range.
 
 ```cpp
 #include "Nvtx.hpp"
@@ -1009,13 +1161,32 @@ void processFrame() {
 }
 ```
 
-Compiles to a no-op on CPU-only builds (no nvtx3 headers needed).
+The macros emit ranges only where two conditions hold as the code that uses
+them compiles: `COMPAT_NVTX_AVAILABLE` is nonzero, and `<nvtx3/nvToolsExt.h>`
+can be included (`Nvtx.hpp`). Otherwise they compile to nothing, so the same
+code builds and runs without CUDA. For code that links `vernier::bench`,
+vernier's configuration sets the first. With the CUDA toolkit found (a GPU
+build, the default) and CMake 3.25 or newer, which defines the toolkit's
+`CUDA::nvtx3` target, `vernier::bench` hands `COMPAT_NVTX_AVAILABLE=1` and
+that target, which adds the toolkit's include directories, to the code that
+links it. CMake defines the target without checking that the header is there,
+so the header stays a condition of its own. Without the target (CMake 3.24,
+no toolkit, or `-DVERNIER_BUILD_GPU=OFF`) `vernier::bench` hands on
+`COMPAT_NVTX_AVAILABLE=0`, and the macros compile to nothing even where the
+header can be included. An installed vernier keeps the value of the build it
+came from, which says nothing about whether the code using it can include the
+header. The range `--profile nsight` puts around each test depends on both
+conditions in vernier's own build. Code that includes `Nvtx.hpp` without
+vernier's targets, where `COMPAT_NVTX_AVAILABLE` is undefined, gets ranges
+whenever the header can be included.
 
 ### CUPTI in-process kernel metrics
 
-CUPTI's Activity API populates per-launch register count, static + dynamic
-shared memory, and launch count into the GPU CSV section on every GPU run
--- no `--profile` flag required. New columns:
+CUPTI's Activity API fills per-launch register count, static + dynamic shared
+memory, and launch count into the GPU CSV section on every GPU run, with no
+`--profile` flag, except where the collector cannot or must not run: a build
+without CUPTI, `VERNIER_DISABLE_CUPTI=1`, or an nsys or ncu session (below).
+There the cells stay empty and the run says why. The columns:
 
 | Column                  | Meaning                                                   |
 | ----------------------- | --------------------------------------------------------- |
@@ -1034,8 +1205,10 @@ CUPTI's unified-memory counters over each measured window
 ([Unified-Memory Counters](#unified-memory-counters)).
 
 CUPTI allows a single client per process, so this in-process collector and an
-external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,
-set `VERNIER_DISABLE_CUPTI=1` so the in-process collector releases the slot.
+nsys or ncu session cannot both hold it. The collector stands down by itself
+when one of them started the process (`bench run` says so, and a session typed
+by hand is recognized from the variables each tool exports), and its cells stay
+empty. `VERNIER_DISABLE_CUPTI=1` turns it off in any run.
 
 ---
 
@@ -1058,17 +1231,24 @@ PERF_GPU_TEST(MyKernel, Validated) {
   // 1. Validate result stability
   EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
 
-  // 2. Validate occupancy
-  EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5)
-    << "Low occupancy (<50%) may indicate resource constraints";
+  // 2. No occupancy threshold: the estimate says what the launch shape
+  //    allows, not how busy the GPU was or what limits the kernel (see
+  //    Occupancy). A test tuned for a launch shape can require the estimate
+  //    that shape gave, so that a changed shape shows
 
-  // 3. Validate no thermal throttling
-  EXPECT_FALSE(result.stats.clocks.isThrottling())
-    << "GPU is thermally throttling - results may be unstable";
+  // 3. No SM-clock drop. isThrottling() compares NVML's SM-clock readings
+  //    at the window's start and end: a drop says the run's conditions
+  //    changed, not why (see Troubleshooting). A reading NVML did not
+  //    report is 0, so the check needs the start, end and maximum clocks
+  const auto& clocks = result.stats.clocks;
+  if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+    EXPECT_FALSE(clocks.isThrottling())
+      << "SM clock fell more than 10% during the measurement - find out why";
+  }
 
-  // 4. Validate bandwidth utilization
-  double bw = result.stats.transfers.bandwidthGBs();
-  EXPECT_GT(bw, 100.0) << "Memory bandwidth suspiciously low";
+  // 4. No copy-rate check: this test declares no copies, so bandwidthGBs()
+  //    is 0. A test that declares copies can require a floor measured for
+  //    those copies on its own system's link (see Memory Bandwidth)
 
   // 5. Validate speedup (if CPU baseline measured)
   if (result.speedupVsCpu > 0) {
@@ -1076,23 +1256,23 @@ PERF_GPU_TEST(MyKernel, Validated) {
       << "GPU should be faster than CPU";
   }
 
-  // 6. Validate transfer overhead
-  double transferPct = (result.transferTimeUs / result.totalTimeUs) * 100;
-  EXPECT_LT(transferPct, 50.0)
-    << "Transfer overhead >50% - consider keeping data on GPU";
+  // 6. No transfer check either: with no copies declared, transferTimeUs
+  //    is 0. A test that declares copies can hold transferTimeUs to a
+  //    budget set for its workload; its ratio to totalTimeUs is not a share
+  //    of one round trip (see Transfer Overhead)
 }
 ```
 
 ### Common Validation Patterns
 
-| Check             | Macro                       | Typical Threshold     | Purpose            |
-| ----------------- | --------------------------- | --------------------- | ------------------ |
-| Result stability  | `EXPECT_STABLE_CV_GPU`      | Auto-adaptive         | Detect jitter      |
-| Occupancy         | `EXPECT_GT(occupancy, X)`   | >0.5 compute-bound    | Resource usage     |
-| Bandwidth         | `EXPECT_GT(bandwidth, X)`   | >100 GB/s modern GPUs | Memory efficiency  |
-| No throttling     | `EXPECT_FALSE(throttling)`  | Always                | Thermal stability  |
-| Speedup           | `EXPECT_GT(speedup, X)`     | Problem-dependent     | GPU worthwhile     |
-| Transfer overhead | `EXPECT_LT(transferPct, X)` | <50%                  | Not transfer-bound |
+| Check            | Macro                      | Typical Threshold     | Purpose           |
+| ---------------- | -------------------------- | --------------------- | ----------------- |
+| Result stability | `EXPECT_STABLE_CV_GPU`     | Auto-adaptive         | Detect jitter     |
+| Occupancy est.   | `EXPECT_GE(occupancy, X)`  | Tuned shape's value   | Launch shape kept |
+| Copy rate        | `EXPECT_GT(bandwidth, X)`  | Measured for the link | Declared copies   |
+| No SM-clock drop | `EXPECT_FALSE(throttling)` | With all 3 readings   | Flag a clock drop |
+| Speedup          | `EXPECT_GT(speedup, X)`    | Problem-dependent     | GPU worthwhile    |
+| Copy time        | `EXPECT_LT(transferUs, X)` | Budget for the copies | Copies in budget  |
 
 ---
 
@@ -1125,7 +1305,8 @@ auto optimized = perf.cudaKernel(..., "optimized_v2").measure();
 
 ### 3. Always Specify Launch Configuration
 
-**Why:** Enables occupancy tracking and validation.
+**Why:** The harness computes the occupancy estimate only for a declared
+launch configuration; without one, the CSV's `occupancy` cell stays empty.
 
 ```cpp
 // Missing occupancy data
@@ -1163,8 +1344,10 @@ auto gpuResult = perf.cudaKernel(...).measure();  // Then GPU
 
 ```cpp
 EXPECT_STABLE_CV_GPU(result, perf.cpuConfig());
-EXPECT_GT(result.stats.occupancy.achievedOccupancy, 0.5);
-EXPECT_FALSE(result.stats.clocks.isThrottling());
+const auto& clocks = result.stats.clocks;  // 0 where NVML gave no reading
+if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0) {
+  EXPECT_FALSE(clocks.isThrottling());
+}
 ```
 
 ### 7. Use Quick Mode During Development
@@ -1179,11 +1362,15 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
 ### 8. Profile Selectively
 
-**Why:** Profiling adds overhead - use for specific investigations.
+**Why:** a profiler costs time, from none seen under nsys to about a second
+a launch under ncu (the cost column of
+[Available Profilers](ADVANCED_GUIDE.md#available-profilers)) - use it for
+specific investigations.
 
 ```bash
-# Profile just one test
-./test --profile nsight --gtest_filter="*MyKernel.Optimized"
+# Profile just one test: nsys records only a process it starts, so bench run
+# starts the benchmark under it
+bench run ./test --profile nsight -- --gtest_filter="*MyKernel.Optimized"
 ```
 
 ---
@@ -1215,10 +1402,24 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    bench gpu-lock reset
    ```
 
-2. **Thermal throttling:**
+2. **The SM clock fell during the run:**
+
+   `isThrottling()` (the CSV's `throttling`) compares two SM-clock readings,
+   NVML's at the start and the end of the measured window. It reads no
+   temperature and no reason for the change, so a drop is a signal to
+   investigate, not a diagnosis of heat, and no drop does not show the clock
+   held between the two readings. The CSV cell is filled only when NVML
+   reported the SM clock at both ends and the maximum SM clock; otherwise it
+   stays empty and the run names the readings NVML did not report. The
+   public `isThrottling()` reads `result.stats.clocks`, where such a reading
+   is 0: it returns false when the start or the maximum is missing, and true
+   when only the end is (a fall to 0), so read it only when
+   `smClockMHzStart`, `smClockMHzEnd` and `boostClockMHz` are all above 0.
+   Snapshots before and after the run record the temperature, power, clocks
+   and the clock-event reasons `nvidia-smi` reports at each moment:
 
    ```bash
-   # Snapshot before and after to detect thermal drift
+   # Snapshot before and after: what changed around the run
    bench gpu-monitor snapshot -o before.json
    ./bin/ptests/BenchmarkGPU_PTEST --csv results.csv
    bench gpu-monitor snapshot -o after.json
@@ -1226,8 +1427,12 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    ```
 
    ```cpp
-   if (result.stats.clocks.isThrottling()) {
-     // Improve cooling, reduce load, or increase fan speed
+   const auto& clocks = result.stats.clocks;
+   if (clocks.smClockMHzStart > 0 && clocks.smClockMHzEnd > 0 && clocks.boostClockMHz > 0 &&
+       clocks.isThrottling()) {
+     // The SM clock fell more than 10% over the window: compare the
+     // snapshots and the row's temperature and power cells before trusting
+     // the timing
    }
    ```
 
@@ -1250,8 +1455,16 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
 **Symptoms:**
 
-- Occupancy < 50%
-- Kernel runs slowly
+- A low occupancy estimate (the CSV's `occupancy`)
+- A kernel profiler measures a lower achieved occupancy than the launch shape
+  allows
+
+The estimate counts only the block size and the dynamic shared memory a
+launch declares, so a low estimate comes from one of those (causes 2 and 3);
+registers and static shared memory lower what a kernel can reach without
+changing the estimate. Neither figure is a target of its own: the launch
+shape to keep is the one with the best measured time
+([Understanding Occupancy](#understanding-occupancy)).
 
 **Causes and solutions:**
 
@@ -1259,13 +1472,13 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
    - Simplify kernel logic
    - Use fewer local variables
-   - Check with: `cuobjdump -sass kernel.o | grep regs`
+   - Check with: the CSV's `cuptiRegistersMedian` and `cuptiRegistersMax`
 
 2. **Too much shared memory:**
 
    - Reduce `__shared__` allocations
    - Tile data differently
-   - Check with occupancy calculator
+   - Check with: the CSV's `cuptiStaticSmemBytes` and `cuptiDynamicSmemBytes`
 
 3. **Block size too small:**
    - Try larger block sizes (256, 512)
@@ -1280,16 +1493,17 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
 
 **Causes:**
 
-1. **Transfer overhead dominant:**
+1. **The copies take most of the median round trip:**
 
-   ```cpp
-   double transferPct = (transferTimeUs / totalTimeUs) * 100;
-   if (transferPct > 50%) {
-     // Keep data on GPU longer
-     // Or use Unified Memory
-     // Or overlap transfers with compute
-   }
-   ```
+   `speedupVsCpu` divides by `totalTimeUs`, the median round trip, which
+   includes the declared copies. A `transferTimeUs / totalTimeUs` near 100%
+   shows that the copies take most of the median round trip only while the
+   copy times hold steady; an Nsight Systems timeline shows each copy's time
+   ([Transfer Overhead](#transfer-overhead)). If the copies dominate:
+
+   - Keep data on GPU longer
+   - Or use Unified Memory
+   - Or overlap transfers with compute
 
 2. **Not enough parallelism:**
 
@@ -1297,7 +1511,9 @@ EXPECT_FALSE(result.stats.clocks.isThrottling());
    - Consider if workload is GPU-suitable
 
 3. **Memory-bound kernel:**
-   - Check bandwidth utilization
+   - Measure the kernel's memory throughput with a kernel profiler
+     ([Profiling GPU Code](#profiling-gpu-code)); `memBandwidthGBs` is the
+     host-device copy rate, not the kernel's memory traffic
    - Optimize memory access patterns
 
 ### CUDA Errors

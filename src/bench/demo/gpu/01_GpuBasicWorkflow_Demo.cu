@@ -120,7 +120,7 @@ private:
  * suite and do not filter it out.
  */
 PERF_GPU_COMPARISON(GpuBasicWorkflow, CpuBaseline) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   const std::vector<float> X(N, X_VALUE);
   std::vector<float> y(N, Y_VALUE);
@@ -151,7 +151,7 @@ PERF_GPU_COMPARISON(GpuBasicWorkflow, CpuBaseline) {
  * by more.
  */
 PERF_GPU_COMPARISON(GpuBasicWorkflow, GpuWithTransfers) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   DeviceVectors device;
   ASSERT_TRUE(device.ok()) << "device allocation failed";
@@ -194,7 +194,7 @@ PERF_GPU_COMPARISON(GpuBasicWorkflow, GpuWithTransfers) {
  * time is the kernel time.
  */
 PERF_GPU_COMPARISON(GpuBasicWorkflow, GpuKernelOnly) {
-  UB_PERF_GPU_GUARD(perf);
+  PERF_GPU_GUARD(perf);
 
   DeviceVectors device;
   ASSERT_TRUE(device.ok()) << "device allocation failed";

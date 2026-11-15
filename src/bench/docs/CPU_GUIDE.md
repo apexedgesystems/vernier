@@ -319,21 +319,20 @@ Measure contention and scalability with multiple threads:
 PERF_CONTENTION(SharedCounter, Increment) {
   PERF_GUARD(perf);
 
-  std::atomic<int64_t> counter{0};
+  std::atomic<std::int64_t> counter{0};
 
-  // Warmup (single-threaded)
+  // Warmup (single-threaded, untimed)
   perf.warmup([&] {
     for (int i = 0; i < perf.cycles(); ++i) {
       counter.fetch_add(1, std::memory_order_relaxed);
     }
   });
+  const std::int64_t AFTER_WARMUP = counter.load();
 
-  // Measure with N threads (from --threads flag)
+  // One operation per call: contentionRun() calls the worker --cycles times
+  // on each of --threads threads, every repeat
   auto result = perf.contentionRun([&] {
-    // Each thread independently runs this code
-    for (int i = 0; i < perf.cycles(); ++i) {
-      counter.fetch_add(1, std::memory_order_relaxed);
-    }
+    counter.fetch_add(1, std::memory_order_relaxed);
   }, "contention");
 
   std::printf("\nScalability Results:\n");
@@ -342,9 +341,10 @@ PERF_CONTENTION(SharedCounter, Increment) {
   std::printf("  Per-thread throughput: %.0f ops/sec\n",
               result.callsPerSecond / perf.threads());
 
-  // Validate
-  EXPECT_EQ(counter.load(),
-            perf.cycles() * perf.threads() * perf.repeats());
+  // Every thread made --cycles calls in every repeat (with a fixed --cycles:
+  // under --target-time the calibration also calls the worker, on this thread)
+  EXPECT_EQ(counter.load() - AFTER_WARMUP,
+            static_cast<std::int64_t>(perf.cycles()) * perf.threads() * perf.repeats());
 }
 ```
 
@@ -613,13 +613,17 @@ ten default repeats runs for roughly that long.
 
 ### Heap Profiling with gperftools
 
-Identify memory allocation bottlenecks:
+Identify memory allocation bottlenecks. Heap mode (`heap`, or `both`) needs a
+build configured with `-DVERNIER_LINK_TCMALLOC=ON`: tcmalloc replaces the
+process's allocator, so it is opt-in, and without it a heap request is refused.
+CPU mode needs nothing extra.
 
 ```bash
 # CPU profiling (default) -> MyComponent.Throughput.gperf/cpu.prof
 ./MyComponent_PTEST --profile gperf --gtest_filter="*Throughput"
 
 # Heap profiling -> MyComponent.Throughput.gperf/heap.<N>.heap
+# (a -DVERNIER_LINK_TCMALLOC=ON build)
 ./MyComponent_PTEST --profile gperf --profile-args heap
 
 # Both CPU and heap
@@ -633,9 +637,10 @@ google-pprof --pdf ./MyComponent_PTEST MyComponent.Throughput.gperf/cpu.prof > p
 google-pprof --text ./MyComponent_PTEST MyComponent.Throughput.gperf/heap.0001.heap
 ```
 
-### System-wide Tracing with bpftrace
+### Kernel Tracing of the Benchmark with bpftrace
 
-Trace syscalls and kernel interactions:
+Trace the system calls and kernel events of the benchmark's own process: the
+bundled scripts filter on its PID, which the backend fills in.
 
 ```bash
 # bpftrace runs only as root: run the benchmark as root, or set BENCH_SUDO=1
@@ -650,10 +655,36 @@ BENCH_SUDO=1 ./MyComponent_PTEST --profile bpftrace \
   --bpf /path/to/custom_trace.bt
 ```
 
+**The bundled `fsync_latency.bt`** (`src/bench/bpf/`, its comments left out):
+
+```bpftrace
+tracepoint:syscalls:sys_enter_fsync /pid == {{PID}}/ {
+  @start[tid] = nsecs;
+}
+
+tracepoint:syscalls:sys_exit_fsync /@start[tid]/ {
+  @fsync_latency_us = hist((nsecs - @start[tid]) / 1000);
+  delete(@start[tid]);
+}
+
+tracepoint:sched:sched_process_exit /tid == {{PID}}/ {
+  exit();
+}
+```
+
+The backend puts the benchmark's PID where the script says `{{PID}}`, so only
+its calls are traced, and the last probe ends the trace when its main thread
+exits. The syscalls tracepoint family requires CONFIG_FTRACE_SYSCALLS; some
+vendor kernels (NVIDIA L4T among them) compile it out along with kprobes. The
+shipped sched-family samples (`wakeup_latency`, `cpu_migrations`) run on every
+kernel.
+
 ### Heap Profilers (Massif, Heaptrack, jemalloc prof)
 
-Three heap profilers ship with the harness; pick by your overhead budget.
-Massif and heaptrack record a process only when they start it:
+Three heap profilers ship with the harness, and none costs less for every
+program: massif runs every instruction under valgrind, so its cost follows the
+instructions, while heaptrack's grows with the allocation rate. Massif and
+heaptrack record a process only when they start it:
 `bench run <binary> --profile massif` (or `heaptrack`) starts the binary under
 the tool, or start it yourself as below. A run started without the tool fails
 with exit status 4 and prints that command. jemalloc samples allocations
@@ -664,14 +695,16 @@ with exit status 4 and prints the command. The
 [jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md) shows a run.
 
 ```bash
-# Full timeline, lab use (~20x overhead)
-valgrind --tool=massif --massif-out-file=run.massif \
+# Full timeline, time counted in bytes allocated and freed; the join
+# example's two versions took 2.3 and 6.2 times as long (walkthrough 14, Pi 4)
+valgrind --tool=massif --time-unit=B --massif-out-file=run.massif \
     ./MyComponent_PTEST --profile massif --cycles 1
 ms_print run.massif | head -40
 
-# Lower-overhead alternative (~1.5x)
+# Allocation sites; the same two versions took 4.2 and 1.5 times as long
+# (walkthrough 21's steps, Pi 4). heaptrack writes run.heaptrack.zst or .gz
 heaptrack -o run.heaptrack ./MyComponent_PTEST --profile heaptrack
-heaptrack_print run.heaptrack.zst | head -40
+heaptrack_print run.heaptrack.* | head -40
 
 # Sampled allocations, inside the allocator: a jemalloc built with profiling
 # (configure --enable-prof), its folder first on LD_LIBRARY_PATH unless it is
@@ -691,8 +724,16 @@ uninit reads introduced by the change.
 valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
     --log-file=run.memcheck \
     ./MyComponent_PTEST --profile memcheck --cycles 1
-grep -A2 "LEAK SUMMARY" run.memcheck
+grep "ERROR SUMMARY" run.memcheck
 ```
+
+Every run ends with the `ERROR SUMMARY` line, which counts the errors and,
+with `--leak-check=full`, the leaks; a run that freed every block prints no
+`LEAK SUMMARY` at all ([walkthrough 15](../demo/docs/15_MEMCHECK_PROFILER.md)).
+Where gperftools' profiler library loads libunwind (an x86-64 build, for one),
+memcheck also reports one error from that library's start-up probe, before
+`main`, so `--error-exitcode=1` fails a clean run; walkthrough 15 gives the
+suppression that removes it.
 
 ### Thread-Safety with Helgrind / DRD
 
@@ -700,7 +741,9 @@ Detect data races and lock-order violations in multi-threaded code. Run after
 a concurrency change or when a contention test shows non-deterministic results.
 `--profile helgrind` uses valgrind's helgrind tool; pass `--profile-args drd` to
 switch to DRD, which reports the same race classes with a smaller memory
-footprint. Like the other valgrind tools, run a single cycle (~20x overhead).
+footprint. Run one test with a single cycle: helgrind's slowdown is large and
+changes from run to run (thousands of times, and five times apart between runs
+of one command, in [walkthrough 20](../demo/docs/20_HELGRIND_PROFILER.md)).
 
 ```bash
 valgrind --tool=helgrind --log-file=run.helgrind \
@@ -725,28 +768,6 @@ BENCH_SUDO=1 ./MyComponent_PTEST --profile offcpu \
     --gtest_filter="*Concurrency"
 cat MyComponent.Concurrency.offcpu/offcpu.txt
 ```
-
-**Example bpftrace script (fsync_latency.bt):**
-
-```bpftrace
-#!/usr/bin/env bpftrace
-
-// Track fsync() latency
-tracepoint:syscalls:sys_enter_fsync {
-  @start[tid] = nsecs;
-}
-
-tracepoint:syscalls:sys_exit_fsync {
-  $delta = nsecs - @start[tid];
-  @latency_us = hist($delta / 1000);
-  delete(@start[tid]);
-}
-```
-
-The syscalls tracepoint family requires CONFIG_FTRACE_SYSCALLS; some
-vendor kernels (NVIDIA L4T among them) compile it out along with kprobes.
-The shipped sched-family samples (`wakeup_latency`, `cpu_migrations`) run
-on every kernel.
 
 ### Energy Measurement with RAPL
 
@@ -1171,10 +1192,10 @@ PERF_TEST(MyComponent, Throughput) {
    ```bash
    # Monitor CPU temperature
    watch -n 1 sensors
-
-   # Add cooling time between tests
-   ./MyComponent_PTEST --warmup 10
    ```
+
+   Let the machine cool between runs: `--warmup N` adds no pause, it runs a
+   test's warmup body N times before measuring.
 
 4. **Too few samples:**
 

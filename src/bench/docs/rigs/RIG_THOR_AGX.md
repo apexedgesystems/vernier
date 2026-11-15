@@ -198,7 +198,6 @@ it left out:
   [WARN] nsight     unverified: /usr/local/cuda/bin/nsys runs here (NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0); whether it captures the benchmark's GPU work is not checked before the run
   [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [OK]   perf       perf stat counted cpu-cycles,instructions,branches,branch-misses,cache-misses on this process (probe with /usr/local/bin/perf); kernel.perf_event_paranoid=2 limits this user to user-space events
-  [FAIL] rapl       unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
   [FAIL] rocprof    missing: rocprof not found on PATH
              Install ROCm's rocprofiler (apt install rocprofiler on Debian and Ubuntu).
 
@@ -211,9 +210,14 @@ it left out:
   --require accepts only [OK]; a run may proceed with a [WARN] caveat.
 ```
 
-The `rapl` row in this block was not captured on this rig: it is the row
-the backend prints where `/proc/cpuinfo` names no CPU vendor, as on an
-ARM CPU, and the block is still to be recaptured here.
+The block leaves out the `rapl` row it was captured with, which the
+backend no longer prints; its count still includes it. Where
+`/proc/cpuinfo` names no CPU vendor, as on this ARM CPU, the backend now
+prints the row below, which has not been captured here:
+
+```
+  [FAIL] rapl       unsupported: rapl reads Intel's RAPL energy registers, and /proc/cpuinfo names no CPU vendor here
+```
 
 Four backends fail here. The `bpftrace` row runs the backend's default
 script, `write_latency`, whose `syscalls` tracepoints this rig's kernel does
