@@ -17,6 +17,10 @@ Usage:
     bench-plot report results.csv --output report/
     bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
+A row the benchmark did not time (every timing cell empty, as a run under
+Nsight Compute leaves it) is left out of every plot, and stderr names it; a
+file with no timed row is refused, naming the file.
+
 Dependencies:
     pip install pandas matplotlib seaborn
     Optional: pip install plotly (for interactive dashboards)
@@ -24,6 +28,7 @@ Dependencies:
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import List
 
@@ -72,6 +77,63 @@ def load_csvs_from_list(paths: List[Path]) -> pd.DataFrame:
         df["_source"] = p.stem
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
+
+
+# =============================================================================
+# Rows Without Timing
+# =============================================================================
+
+# A row's timing cells. The benchmark leaves every one of them empty in a row
+# it did not time, as it does under Nsight Compute (ncu), whose instrumentation
+# adds to what the benchmark would measure.
+TIMING_COLUMNS = (
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallP99",
+    "wallP999",
+    "wallMin",
+    "wallMax",
+    "wallMean",
+    "wallStddev",
+    "wallCV",
+    "callsPerSecond",
+    "stable",
+)
+
+UNTIMED_REASON = (
+    "every timing cell is empty, as the benchmark leaves a row it did not time: "
+    "a run under Nsight Compute (ncu) is a profiling capture"
+)
+
+
+def untimed_rows(df: pd.DataFrame) -> pd.Series:
+    """Whether each row is one the benchmark did not time: every timing cell
+    the file has is empty."""
+    columns = [c for c in TIMING_COLUMNS if c in df.columns]
+    return df[columns].isna().all(axis=1)
+
+
+def timed_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    """The rows of @p df that hold their timing, which every plot draws.
+
+    A row the benchmark did not time is left out, and stderr names it; when no
+    row is left, the command stops with a message naming @p source, as `bench
+    summary` refuses such a row.
+    """
+    untimed = untimed_rows(df)
+    if untimed.all():
+        raise SystemExit(
+            f"bench-plot: {source}: no row has timing: {UNTIMED_REASON}; plot a run without ncu"
+        )
+    if untimed.any():
+        names = ", ".join(df.loc[untimed, "test"].astype(str))
+        print(
+            f"bench-plot: {source}: left out {int(untimed.sum())} rows without timing "
+            f"({UNTIMED_REASON}): {names}",
+            file=sys.stderr,
+        )
+    return df[~untimed].copy()
 
 
 # =============================================================================
@@ -656,7 +718,7 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
 
 def cmd_plot(args):
     """Generate standalone plots from CSV."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -673,7 +735,7 @@ def cmd_plot(args):
 
 def cmd_dashboard(args):
     """Generate interactive HTML dashboard."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     create_interactive_dashboard(df, output_path)
@@ -681,14 +743,14 @@ def cmd_dashboard(args):
 
 def cmd_report(args):
     """Generate full analysis report."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     generate_report(df, Path(args.output))
 
 
 def cmd_scaling(args):
     """Generate payload size scaling analysis."""
     csv_paths = [Path(p) for p in args.csvs]
-    df_combined = load_csvs_from_list(csv_paths)
+    df_combined = timed_rows(load_csvs_from_list(csv_paths), ", ".join(args.csvs))
     output_path = Path(args.output)
     interactive = output_path.suffix == ".html" and HAS_PLOTLY
     plot_scaling_analysis(df_combined, output_path, interactive=interactive)

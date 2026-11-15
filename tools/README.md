@@ -871,6 +871,11 @@ clocks, memory usage, GPU/memory utilization, throttle reasons, P-state.
 Visualization tool for generating charts, dashboards, and reports from benchmark CSVs.
 Requires `make tools-py`.
 
+Every command plots the rows that hold their timing. A row the benchmark did
+not time, every timing cell empty as a run under Nsight Compute leaves it, is
+left out, and stderr names it; a file with no timed row is refused, naming the
+file, with exit status 1.
+
 ### plot - Standard Charts
 
 ```bash
