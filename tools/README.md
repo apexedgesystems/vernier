@@ -556,7 +556,10 @@ directory.
 
 `bin_roots` and `bin_subdirs` say where `run` and `profile-all` look for a
 binary given by a short name: under each root (an entry ending in `/*` stands
-for every folder in it), in each subfolder. `VERNIER_BENCH_BIN_ROOTS` and
+for every folder in it), in each subfolder. The roots are tried in the order
+listed, and the first with a match decides; among several matches under one
+root (an entry ending in `/*` is one root) the first in sorted order is taken,
+and `bench` says which. `VERNIER_BENCH_BIN_ROOTS` and
 `VERNIER_BENCH_BIN_SUBDIRS` (colon-separated; a relative root in
 `VERNIER_BENCH_BIN_ROOTS` is relative to the working directory) take
 precedence over the keys, each over its own; without either, the lookup is

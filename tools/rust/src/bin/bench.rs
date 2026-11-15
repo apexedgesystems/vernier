@@ -121,9 +121,9 @@ enum Command {
         /// Benchmark binary: a full path, or a short name that auto-resolves
         /// under build/*/bin/{ptests,tests,examples}, or where .bench.yaml's
         /// bin_roots and bin_subdirs (or VERNIER_BENCH_BIN_ROOTS and
-        /// VERNIER_BENCH_BIN_SUBDIRS) say. The resolver tries the name as
-        /// given, then with `_PTEST` / `_pTest` suffixes, then with a
-        /// `BenchDemo_` prefix.
+        /// VERNIER_BENCH_BIN_SUBDIRS) say, the first root listed with a match
+        /// deciding. The resolver tries the name as given, then with `_PTEST`
+        /// / `_pTest` suffixes, then with a `BenchDemo_` prefix.
         binary: String,
 
         /// CSV output path (passed to binary as --csv)

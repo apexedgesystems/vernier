@@ -46,9 +46,9 @@ const DEFAULT_BIN_ROOTS: [&str; 1] = ["build/*"];
 /// default.
 const DEFAULT_BIN_SUBDIRS: [&str; 3] = ["bin/ptests", "bin/tests", "bin/examples"];
 
-/// Where a short binary name is looked for: under each root (an entry
-/// ending in `/*` stands for every folder in it), in each subfolder. Each
-/// list comes from its environment variable when that is set
+/// Where a short binary name is looked for: under each root, in the order
+/// listed (an entry ending in `/*` stands for every folder in it), in each
+/// subfolder. Each list comes from its environment variable when that is set
 /// (`VERNIER_BENCH_BIN_ROOTS`, `VERNIER_BENCH_BIN_SUBDIRS`, colon-separated,
 /// a relative root relative to the working directory), else from
 /// `.bench.yaml` when it names one (`bin_roots`, `bin_subdirs`, a relative
@@ -133,8 +133,10 @@ impl BinSearch {
 
 /// Find the binary @p name names: the file itself when it is one, else a
 /// file under @p search's roots and subfolders named `name`, `name_PTEST`,
-/// `name_pTest` or `BenchDemo_name` (the first in sorted order when several
-/// match, which is said).
+/// `name_pTest` or `BenchDemo_name`. The roots are tried in the order listed,
+/// and the first with a match decides; among several matches under one root
+/// (an entry ending in `/*` is one root), the first in sorted order is taken,
+/// which is said.
 ///
 /// Example for a project that builds into `out/<preset>/` with `tests/` only:
 ///   VERNIER_BENCH_BIN_ROOTS=out/* VERNIER_BENCH_BIN_SUBDIRS=tests bench run Foo
@@ -156,57 +158,57 @@ pub fn resolve_binary(name: &str, search: &BinSearch) -> Result<PathBuf, Error> 
     }
 
     let candidates = candidate_names(name);
-
-    // An entry ending in "/*" stands for every folder in it (a readdir).
-    let mut roots: Vec<PathBuf> = Vec::new();
     for entry in &search.roots {
-        if let Some(prefix) = entry.strip_suffix("/*") {
-            if let Ok(read) = fs::read_dir(prefix) {
-                for e in read.flatten() {
-                    roots.push(e.path());
+        let mut found: Vec<PathBuf> = Vec::new();
+        for root in entry_folders(entry) {
+            for sub in &search.subdirs {
+                for cand in &candidates {
+                    let p = root.join(sub).join(cand);
+                    if p.is_file() {
+                        found.push(p);
+                    }
                 }
             }
-        } else {
-            let p = PathBuf::from(entry);
-            if p.is_dir() {
-                roots.push(p);
-            }
+        }
+        found.sort();
+        found.dedup();
+        if found.len() > 1 {
+            lossy_eprintln!(
+                "[bench] '{}' matched {} binaries under {}; picking '{}'. Pass a full path to \
+                 disambiguate.",
+                name,
+                found.len(),
+                entry,
+                found[0].display()
+            );
+        }
+        if !found.is_empty() {
+            return Ok(found.remove(0));
         }
     }
+    Err(Error::InvalidArgs(format!(
+        "no binary matching '{name}' under {} ({}), in {} ({}); set .bench.yaml's \
+         bin_roots / bin_subdirs, or VERNIER_BENCH_BIN_ROOTS / VERNIER_BENCH_BIN_SUBDIRS, \
+         which take precedence",
+        search.roots.join(":"),
+        search.roots_from,
+        search.subdirs.join(":"),
+        search.subdirs_from
+    )))
+}
 
-    let mut found: Vec<PathBuf> = Vec::new();
-    for root in &roots {
-        for sub in &search.subdirs {
-            for cand in &candidates {
-                let p = root.join(sub).join(cand);
-                if p.is_file() {
-                    found.push(p);
-                }
-            }
-        }
+/// The folders the root entry @p entry stands for: every folder in it when it
+/// ends in `/*` (a readdir), else itself when it is a folder.
+fn entry_folders(entry: &str) -> Vec<PathBuf> {
+    match entry.strip_suffix("/*") {
+        Some(prefix) => fs::read_dir(prefix)
+            .map(|read| read.flatten().map(|e| e.path()).collect())
+            .unwrap_or_default(),
+        None => Some(PathBuf::from(entry))
+            .filter(|p| p.is_dir())
+            .into_iter()
+            .collect(),
     }
-    found.sort();
-    found.dedup();
-    if found.is_empty() {
-        return Err(Error::InvalidArgs(format!(
-            "no binary matching '{name}' under {} ({}), in {} ({}); set .bench.yaml's \
-             bin_roots / bin_subdirs, or VERNIER_BENCH_BIN_ROOTS / VERNIER_BENCH_BIN_SUBDIRS, \
-             which take precedence",
-            search.roots.join(":"),
-            search.roots_from,
-            search.subdirs.join(":"),
-            search.subdirs_from
-        )));
-    }
-    if found.len() > 1 {
-        lossy_eprintln!(
-            "[bench] '{}' matched {} binaries; picking '{}'. Pass a full path to disambiguate.",
-            name,
-            found.len(),
-            found[0].display()
-        );
-    }
-    Ok(found.remove(0))
 }
 
 /* ----------------------------- doctor ----------------------------- */
@@ -710,6 +712,33 @@ mod binary_tests {
             )),
             "{err}"
         );
+    }
+
+    /// @test The roots are tried in the order listed: the first with a match
+    /// decides, wherever the others sort; under one root (an entry ending in
+    /// `/*` is one) the first match in sorted order is taken.
+    #[test]
+    fn resolve_binary_takes_the_first_listed_root_with_a_match() {
+        let dir = crate::bench::tempfile_dir("resolve_binary_order");
+        for place in ["rel", "dbg", "out/b", "out/a"] {
+            let folder = dir.join(place).join("bin/ptests");
+            fs::create_dir_all(&folder).expect("folders");
+            fs::write(folder.join("Short_PTEST"), "").expect("the binary");
+        }
+        let file = dir.join(".bench.yaml");
+        let pick = |roots: &[&str]| {
+            let search =
+                BinSearch::from_sources(None, None, &config(roots, &["bin/ptests"]), Some(&file));
+            resolve_binary("Short", &search).map_err(|e| e.to_string())
+        };
+        let picked = [
+            pick(&["rel", "dbg"]),
+            pick(&["dbg", "rel"]),
+            pick(&["none", "out/*", "dbg"]),
+        ];
+        let _ = fs::remove_dir_all(&dir);
+        let at = |place: &str| Ok(dir.join(place).join("bin/ptests/Short_PTEST"));
+        assert_eq!(picked, [at("rel"), at("dbg"), at("out/a")]);
     }
 }
 

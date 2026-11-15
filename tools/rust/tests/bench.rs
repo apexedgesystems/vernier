@@ -4185,6 +4185,63 @@ fn run_names_where_it_looked_for_a_short_name() {
     );
 }
 
+/// @test bench run takes a short name from the first root bin_roots lists
+/// with a match, saying nothing of the later roots; among several matches
+/// under one root it takes the first in sorted order, and says so.
+#[test]
+fn run_takes_a_short_name_from_the_first_listed_root_with_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("argv.log");
+    for (place, name) in [
+        ("rel", "Short_PTEST"),
+        ("dbg", "Short_PTEST"),
+        ("dbg", "Twice_PTEST"),
+        ("out/a", "Twice_PTEST"),
+        ("out/b", "Twice_PTEST"),
+    ] {
+        let folder = dir.path().join(place).join("bin/ptests");
+        std::fs::create_dir_all(&folder).expect("the folder");
+        write_executable(
+            &folder.join(name),
+            &format!("#!/bin/sh\necho \"{place} $*\" >> '{}'\n", log.display()),
+        );
+    }
+    std::fs::write(
+        dir.path().join(".bench.yaml"),
+        "bin_roots: [\"rel\", \"out/*\", \"dbg\"]\nbin_subdirs: [\"bin/ptests\"]\n",
+    )
+    .expect("write .bench.yaml");
+    let project = std::fs::canonicalize(dir.path()).expect("the project folder");
+    let mut said = Vec::new();
+    for name in ["Short", "Twice"] {
+        let out = output_of(
+            Command::new(bin())
+                .args(["run", name])
+                .current_dir(dir.path())
+                .env_remove("VERNIER_BENCH_BIN_ROOTS")
+                .env_remove("VERNIER_BENCH_BIN_SUBDIRS"),
+        );
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{name}: {err}");
+        said.push(err);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap_or_default(),
+        "rel \nout/a \n"
+    );
+    assert!(!said[0].contains("matched"), "{}", said[0]);
+    assert!(
+        said[1].contains(&format!(
+            "[bench] 'Twice' matched 2 binaries under {}/out/*; picking '{}/out/a/bin/ptests/\
+             Twice_PTEST'",
+            project.display(),
+            project.display()
+        )),
+        "{}",
+        said[1]
+    );
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
