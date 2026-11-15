@@ -37,6 +37,7 @@
 #include "src/monitor/inc/MonitorSummary.hpp"
 #include "src/monitor/inc/MonitorTag.hpp"
 
+#include <cstdio>
 #include <cstring>
 
 #include <algorithm>
@@ -102,7 +103,10 @@ public:
     if (cfg_.sinks & SINK_CONSOLE) {
       sinks_.push_back(std::make_unique<MonitorConsoleSink>(cfg_.consoleLevel));
     }
-    if ((cfg_.sinks & SINK_FILE) && !cfg_.filePath.empty()) {
+    if ((cfg_.sinks & SINK_FILE) && cfg_.filePath.empty()) {
+      std::fprintf(
+          stderr, "vernier::monitor: SINK_FILE is set and filePath is empty: no file is written\n");
+    } else if (cfg_.sinks & SINK_FILE) {
       auto fs = std::make_unique<MonitorFileSink>(cfg_.filePath, cfg_.fileLevel);
       if (fs->isOpen()) {
         sinks_.push_back(std::move(fs));

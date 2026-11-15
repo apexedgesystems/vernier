@@ -664,7 +664,7 @@ heaptrack` passed. It reports
   check below cannot help there, because a benchmark compiled before it never
   calls it. Both bench libraries now carry SONAME `.so.2`, so that pairing ends
   at `libbench.so.1: cannot open shared object file` before any vernier code
-  runs. `libmonitor` is unchanged at `.so.1`.
+  runs. `libmonitor` moves to `.so.2` for its own reason (below).
   **Action needed:** rebuild benchmarks that link `vernier::bench` or
   `vernier::bench_cuda` against these headers. There is no `.so.1` link to the
   new libraries: an installed 1.0.3 keeps its own `libbench.so.1` and its
@@ -673,6 +673,9 @@ heaptrack` passed. It reports
   consumers from one directory. The number lives in `src/bench/CMakeLists.txt`
   as `BENCH_ABI_SOVERSION` and covers both libraries; `README.md` records the
   policy.
+- `libmonitor` is `libmonitor.so.2`: its file sink's layout changed.
+  **Action needed:** rebuild programs that link `vernier::monitor` against
+  these headers. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - **A benchmark and a bench library from different builds stop with a message**
   -- `libbench` and `libbench_cuda` read `PerfConfig`, `Stats` and
   `PerfGpuConfig` objects laid out by header code compiled into the benchmark,
@@ -986,6 +989,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   without `--instr-atstart=no` or valgrind's gdbserver, where libbench was
   built with valgrind's `callgrind.h`.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A monitor file sink that cannot write, and a file sink with an empty path,
+  say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

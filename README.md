@@ -181,8 +181,10 @@ can be moved.
 #### Library versions
 
 A shared library's SONAME is its ABI identity and is separate from the release
-number. `libmonitor` follows the release major (`libmonitor.so.1`,
-file `libmonitor.so.<release>`). `libbench` and `libbench_cuda` carry their own
+number. `libmonitor` carries its own ABI number, currently 2
+(`libmonitor.so.2`, file `libmonitor.so.2.<minor>.<patch>`): header code
+compiled into the program allocates the file sink that the library constructs.
+`libbench` and `libbench_cuda` carry their own
 ABI number, currently 2 (`libbench.so.2`, file `libbench.so.2.<minor>.<patch>`):
 they exchange `PerfConfig`, `Stats` and `PerfGpuConfig` objects with header code
 compiled into the benchmark, and that layout changed after the `.so.1`
@@ -205,6 +207,8 @@ For a packager this means:
   benchmark code calls), even when no struct's size changes. Both bench
   libraries read that one number; until a release ships it,
   `BENCH_ABI_VERSION` in `src/bench/inc/PerfAbi.hpp` alone moves.
+- Raise `MONITOR_ABI_SOVERSION` in `src/monitor/CMakeLists.txt` for any change
+  to the file sink's layout or to an exported signature of `libmonitor`.
 
 ---
 

@@ -13,9 +13,11 @@
 
 #include <unistd.h>
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include <algorithm>
 #include <atomic>
@@ -456,6 +458,53 @@ TEST(MonitorTest, FileSinkAtWarningWritesOnlyTheBreach) {
   EXPECT_EQ(mon.summary().size(), 4u) << "the summary keeps every kind";
 
   std::filesystem::remove(TMP_PATH);
+}
+
+/**
+ * @test A file sink whose writes fail says so on stderr, naming the file and
+ *       the error once, and at close how many records were not written. On
+ *       /dev/full a buffered record fails at the flush, not at the write.
+ */
+TEST(MonitorTest, FileSinkWriteFailureIsReported) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = "/dev/full";
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      Monitor mon(cfg);
+      mon.start();
+      mon.increment("event", MonitorTag("full", 15), 1.0);
+      mon.stop();
+    }
+    captured = capture.text();
+  }
+
+  EXPECT_EQ(captured,
+            "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
+                "\nvernier::monitor: 1 of 1 records to '/dev/full' were not written\n");
+}
+
+/** @test A file sink asked for with an empty path says so on stderr when the monitor starts */
+TEST(MonitorTest, EmptyFilePathIsReported) {
+  MonitorConfig cfg;
+  cfg.sinks = SINK_FILE;
+  cfg.filePath = "";
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      Monitor mon(cfg);
+      mon.start();
+      mon.increment("event", MonitorTag("empty", 16), 1.0);
+      mon.stop();
+    }
+    captured = capture.text();
+  }
+
+  EXPECT_EQ(captured,
+            "vernier::monitor: SINK_FILE is set and filePath is empty: no file is written\n");
 }
 
 /**
