@@ -14,7 +14,11 @@
  * program gets WORKER_START_SANITIZER, naming that sanitizer, from the build's
  * SANITIZER setting: a definition here would start every thread past the
  * runtime, so the file then defines none and that test skips, naming the
- * sanitizer. Without a device every test skips.
+ * sanitizer. The cases on where CUPTI records note each activity kind the
+ * collector switches on or off, and the measured callable's calls by then,
+ * through the cuptiActivityEnable and cuptiActivityDisable this file defines:
+ * the order shows which launches a window spanned, with no clock. Without a
+ * device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -38,7 +42,9 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -47,6 +53,7 @@
 #include <utility>
 #include <vector>
 
+#include <cupti.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -1128,6 +1135,128 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
   }
 }
 
+/* ----------------------------- CUPTI's Activity Kinds ----------------------------- */
+
+namespace {
+
+/// CUPTI's kernel records, the kind the collector records kernels with.
+constexpr CUpti_ActivityKind KERNEL_RECORDS = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+/// CUPTI's unified-memory counters.
+constexpr CUpti_ActivityKind UM_COUNTERS = CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER;
+
+/** @brief A CUPTI activity kind switched on or off after the measured callable's first calls. */
+struct KindSwitch {
+  bool on{};
+  CUpti_ActivityKind kind{};
+  long afterCalls{}; ///< The measured callable's calls made before the switch
+
+  bool operator==(const KindSwitch&) const = default;
+};
+
+/** @brief "kind 10 on after 30 calls", for a failed comparison. */
+void PrintTo(const KindSwitch& s, std::ostream* os) {
+  *os << "kind " << static_cast<int>(s.kind) << (s.on ? " on" : " off") << " after " << s.afterCalls
+      << " calls";
+}
+
+/**
+ * @brief What the program's cuptiActivityEnable and cuptiActivityDisable
+ *        (below) note while a KindSwitches records. Never destroyed: CUPTI may
+ *        switch a kind until the process exits.
+ */
+struct KindSwitchState {
+  std::mutex mtx;
+  bool recording{false};
+  std::vector<KindSwitch> switches;
+  std::atomic<long> calls{0};
+};
+
+KindSwitchState& kindSwitchState() {
+  static KindSwitchState* const STATE = new KindSwitchState;
+  return *STATE;
+}
+
+/** @brief Notes one switch, while a KindSwitches records. */
+void noteKindSwitch(bool on, CUpti_ActivityKind kind) {
+  KindSwitchState& state = kindSwitchState();
+  const std::lock_guard<std::mutex> GUARD(state.mtx);
+  if (state.recording) {
+    state.switches.push_back({on, kind, state.calls.load()});
+  }
+}
+
+/**
+ * @brief For its scope, the CUPTI activity kinds the process switches on and
+ *        off, in order, each with the count of countCall() calls made by then:
+ *        the measured callable calls countCall() once per call, so a switch's
+ *        count says which launches came before it, without a clock.
+ */
+class KindSwitches {
+public:
+  KindSwitches() {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    state.switches.clear();
+    state.calls.store(0);
+    state.recording = true;
+  }
+
+  ~KindSwitches() {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    state.recording = false;
+  }
+
+  KindSwitches(const KindSwitches&) = delete;
+  KindSwitches& operator=(const KindSwitches&) = delete;
+
+  /** @brief Counts one call of the measured callable. */
+  static void countCall() { kindSwitchState().calls.fetch_add(1); }
+
+  /** @brief The callable's calls so far. */
+  [[nodiscard]] long calls() const { return kindSwitchState().calls.load(); }
+
+  /** @brief The switches so far. */
+  [[nodiscard]] std::vector<KindSwitch> switches() const {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    return state.switches;
+  }
+};
+
+/** @brief libcupti's @p name, the one the program's definition passes on to. */
+template <typename Fn> Fn nextCupti(const char* name) {
+  void* next = dlsym(RTLD_NEXT, name);
+  if (next == nullptr) {
+    std::fprintf(stderr, "PerfGpuHarness_uTest: no %s after the test program's\n", name);
+    std::abort();
+  }
+  return reinterpret_cast<Fn>(next);
+}
+
+} // namespace
+
+// The program's cuptiActivityEnable and cuptiActivityDisable. libbench_cuda
+// imports them from libcupti, and the dynamic linker binds an import to the
+// program's own definition before any library's, so the collector's switches
+// arrive here; each is noted while a KindSwitches records and passed on to
+// libcupti's. The harness has no hook for this.
+extern "C" __attribute__((visibility("default"))) CUptiResult CUPTIAPI
+cuptiActivityEnable(CUpti_ActivityKind kind) {
+  using Fn = CUptiResult(CUPTIAPI*)(CUpti_ActivityKind);
+  static const Fn REAL = nextCupti<Fn>("cuptiActivityEnable");
+  noteKindSwitch(true, kind);
+  return REAL(kind);
+}
+
+extern "C" __attribute__((visibility("default"))) CUptiResult CUPTIAPI
+cuptiActivityDisable(CUpti_ActivityKind kind) {
+  using Fn = CUptiResult(CUPTIAPI*)(CUpti_ActivityKind);
+  static const Fn REAL = nextCupti<Fn>("cuptiActivityDisable");
+  noteKindSwitch(false, kind);
+  return REAL(kind);
+}
+
 /* ----------------------------- CUPTI and Concurrent Kernels ----------------------------- */
 
 namespace {
@@ -1179,14 +1308,15 @@ private:
 } // namespace
 
 /**
- * @test Kernels a launch runs on two streams at once stay concurrent with the
- *       collector on: a fork/join of two 200 us spins reads within 25% of the
- *       same launch measured first with the collector stood down
- *       (VERNIER_DISABLE_CUPTI=1), where kernels run one after the other would
- *       read twice, and the collector's batch records both kernels of each of
- *       its calls. The spins keep both measurements GPU-bound
+ * @test Kernels a launch runs on two streams at once are recorded with CUPTI's
+ *       CONCURRENT_KERNEL kind, under which they still run at the same time
+ *       (the KERNEL kind would serialize them, cupti_activity.h), and only in
+ *       the batch: for a fork/join of two spins the kind is switched on after
+ *       the timed calls and off after the batch, whose records hold both
+ *       kernels of each of its calls. No timed launch runs under kernel
+ *       records, so none is timed one kernel after the other
  */
-TEST_F(PerfGpuHarnessTest, ConcurrentKernelsStayConcurrentWhileCuptiRecords) {
+TEST_F(PerfGpuHarnessTest, AForkJoinIsRecordedWithTheConcurrentKind) {
   const YieldEnvCleared CLEARED;
   if (!ub::CuptiCollector(false).isAvailable()) {
     GTEST_SKIP() << "this build collects no CUPTI records";
@@ -1195,30 +1325,24 @@ TEST_F(PerfGpuHarnessTest, ConcurrentKernelsStayConcurrentWhileCuptiRecords) {
   cfg.cycles = 10;
   cfg.repeats = 5;
   const ForkJoinLaunch FORK_JOIN;
-  const std::string SUITE = uniqueSuite("GpuCuptiConcurrent");
-  const auto MEASURE = [&](const char* caseName) {
-    ub::PerfGpuCase perf{SUITE + "." + caseName, cfg};
-    perf.cudaWarmup(FORK_JOIN.launch());
-    const ub::PerfGpuResult RESULT = perf.cudaKernel(FORK_JOIN.launch(), "fork_join").measure();
-    static_cast<void>(lastRow());
-    return RESULT;
-  };
-  ub::PerfGpuResult off;
-  {
-    const ScopedEnv OFF("VERNIER_DISABLE_CUPTI", "1");
-    off = MEASURE("CollectorOff");
-  }
-  const ub::PerfGpuResult ON = MEASURE("CollectorOn");
-
-  const std::size_t KERNELS = 2 * batchCalls(cfg.cycles);
-  ASSERT_EQ(off.stats.cupti.kernelLaunches, 0U) << "the collector did not stand down";
-  ASSERT_EQ(ON.stats.cupti.kernelLaunches, KERNELS)
+  const ub::PerfGpuCase::KernelFn LAUNCH = FORK_JOIN.launch();
+  ub::PerfGpuCase perf{uniqueSuite("GpuCuptiConcurrent") + ".ForkJoin", cfg};
+  perf.cudaWarmup(LAUNCH);
+  const KindSwitches SWITCHES;
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                           [&LAUNCH](cudaStream_t s) {
+                                             KindSwitches::countCall();
+                                             LAUNCH(s);
+                                           },
+                                           "fork_join")
+                                       .measure();
+  static_cast<void>(lastRow());
+  const long TIMED = static_cast<long>(cfg.cycles) * cfg.repeats;
+  const long BATCH = static_cast<long>(batchCalls(cfg.cycles));
+  EXPECT_EQ(SWITCHES.switches(), (std::vector<KindSwitch>{{true, KERNEL_RECORDS, TIMED},
+                                                          {false, KERNEL_RECORDS, TIMED + BATCH}}));
+  EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, 2 * batchCalls(cfg.cycles))
       << "the collector's batch did not record both kernels of each of its calls";
-  ASSERT_GE(off.kernelTimeUs, 0.9 * static_cast<double>(FORK_SPIN_NS) / 1000.0)
-      << "a launch took less than one spin";
-  EXPECT_LT(ON.kernelTimeUs, 1.25 * off.kernelTimeUs)
-      << "collector on " << ON.kernelTimeUs << " us a launch, off " << off.kernelTimeUs
-      << " us: the collector ran the two kernels one after the other";
 }
 
 /* ----------------------------- CUPTI Statements ----------------------------- */
@@ -2221,8 +2345,11 @@ TEST_F(PerfGpuHarnessDeathTest, AMultiGpuMeasurementUnderCaptureUmIsTimedAsWitho
 /**
  * @test measure() calls the callable cycles x repeats times in its timed
  *       repeats and, with the collector on, min(cycles, 1000) times more in an
- *       untimed batch, whose launches the cupti* cells count; with the
- *       collector stood down there is no batch
+ *       untimed batch, whose launches the cupti* cells count. No timed launch
+ *       runs while CUPTI records kernels: the kernel records are switched on
+ *       after the last timed call and off after the batch, and no other kind
+ *       is switched. With the collector stood down there is no batch and no
+ *       switch
  */
 TEST_F(PerfGpuHarnessTest, TheCuptiCellsComeFromABatchAfterTheRepeats) {
   const YieldEnvCleared CLEARED;
@@ -2236,7 +2363,7 @@ TEST_F(PerfGpuHarnessTest, TheCuptiCellsComeFromABatchAfterTheRepeats) {
     int cycles;
     int repeats;
     bool collectorOff;
-    std::size_t batch;
+    long batch;
   } RUNS[] = {{10, 3, false, 10}, {1200, 2, false, 1000}, {10, 3, true, 0}};
   for (const auto& RUN : RUNS) {
     SCOPED_TRACE("cycles " + std::to_string(RUN.cycles) +
@@ -2249,18 +2376,94 @@ TEST_F(PerfGpuHarnessTest, TheCuptiCellsComeFromABatchAfterTheRepeats) {
       off.emplace("VERNIER_DISABLE_CUPTI", "1");
     }
     ub::PerfGpuCase perf{uniqueSuite("GpuCuptiBatch") + ".Case", cfg};
-    std::size_t calls = 0;
+    const KindSwitches SWITCHES;
     const ub::PerfGpuResult RESULT = perf.cudaKernel(
-                                             [out, &calls](cudaStream_t s) {
-                                               ++calls;
+                                             [out](cudaStream_t s) {
+                                               KindSwitches::countCall();
                                                storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
                                              },
                                              "store")
                                          .measure();
     static_cast<void>(lastRow());
-    EXPECT_EQ(calls, static_cast<std::size_t>(RUN.cycles) * RUN.repeats + RUN.batch);
-    EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, RUN.batch);
+    const long TIMED = static_cast<long>(RUN.cycles) * RUN.repeats;
+    EXPECT_EQ(SWITCHES.calls(), TIMED + RUN.batch);
+    EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, static_cast<std::size_t>(RUN.batch));
+    const std::vector<KindSwitch> BATCH_ONLY{{true, KERNEL_RECORDS, TIMED},
+                                             {false, KERNEL_RECORDS, TIMED + RUN.batch}};
+    EXPECT_EQ(SWITCHES.switches(), RUN.collectorOff ? std::vector<KindSwitch>{} : BATCH_ONLY);
   }
+}
+
+/**
+ * @test Under --capture-um the counters' window spans the timed repeats and
+ *       records no kernel: measure() switches the unified-memory counters on
+ *       before its first timed call and off after its last, and the kernel
+ *       records only over the batch after them
+ */
+TEST_F(PerfGpuHarnessTest, TheCountersWindowOverTheRepeatsRecordsNoKernel) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 3;
+  ub::PerfGpuCase perf{uniqueSuite("GpuCountersWindow") + ".Kernel", cfg};
+  const KindSwitches SWITCHES;
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                           [out](cudaStream_t s) {
+                                             KindSwitches::countCall();
+                                             storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                                           },
+                                           "store")
+                                       .measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(SWITCHES.switches(), (std::vector<KindSwitch>{{true, UM_COUNTERS, 0},
+                                                          {false, UM_COUNTERS, 30},
+                                                          {true, KERNEL_RECORDS, 30},
+                                                          {false, KERNEL_RECORDS, 40}}));
+  EXPECT_TRUE(RESULT.stats.unifiedMemory.has_value()) << "the window recorded no counters";
+  EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, 10U);
+}
+
+/**
+ * @test A multi-GPU measurement under --capture-um records the counters
+ *       alone: it switches the unified-memory counters on before its devices'
+ *       first launch and off after their last, and never switches the kernel
+ *       records on
+ */
+TEST_F(PerfGpuHarnessTest, AMultiGpuCountersWindowRecordsNoKernel) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 3;
+  ub::PerfGpuCase perf{uniqueSuite("GpuCountersWindow") + ".MultiGpu", cfg};
+  const KindSwitches SWITCHES;
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1,
+                              [out](int, cudaStream_t s) {
+                                KindSwitches::countCall();
+                                storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                              })
+          .measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(SWITCHES.switches(),
+            (std::vector<KindSwitch>{{true, UM_COUNTERS, 0}, {false, UM_COUNTERS, 30}}));
+  EXPECT_TRUE(RESULT.aggregatedStats.unifiedMemory.has_value())
+      << "the window recorded no counters";
 }
 
 /* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
