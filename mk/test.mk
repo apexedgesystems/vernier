@@ -27,6 +27,9 @@ TIMING_LABEL   ?= Timing
 # Log files
 TEST_LOG ?= ctest.log
 
+# How many of its slowest tests a lane lists at its end
+TEST_SLOWEST ?= 10
+
 # Python tools directory
 PY_TOOLS_DIR := tools/py
 PY_LIB_DIR   := $(BUILD_DIR)/lib/python
@@ -42,17 +45,20 @@ HEAP_RUN_FILTER  ?= ReadinessFixtureRun.HeaptrackUnwrappedFails
 # ------------------------------------------------------------------------------
 # CTest Command Presets
 # ------------------------------------------------------------------------------
+# A lane whose selection matches no test fails (--no-tests=error: CTest exits
+# 8): a mistyped label or a tree without tests is not a passing run. The timing
+# pass may match none; the lane's selection is both passes.
 
 # All tests except Coverage, serial execution
 # Note: Perf tests are not in CTest (use bin/ptests/* directly)
 CTEST_ALL_SERIAL := ctest \
   -LE "$(COVERAGE_LABEL)" \
-  -j1 --no-tests=ignore --output-on-failure
+  -j1 --no-tests=error --output-on-failure
 
 # All tests except Coverage and Timing, parallel execution
 CTEST_ALL_PARALLEL := ctest \
   -LE "$(COVERAGE_LABEL)|$(TIMING_LABEL)" \
-  -j$(NUM_JOBS) --no-tests=ignore --output-on-failure
+  -j$(NUM_JOBS) --no-tests=error --output-on-failure
 
 # Timing tests only, serial execution
 CTEST_TIMING_SERIAL := ctest \
@@ -75,19 +81,29 @@ define _test_footer
 printf '%s\ndone: %s\nlog: %s\n%s\n' "------------------------------------------------------------" "$(1)" "$(2)" "============================================================"
 endef
 
+# The slowest tests in a lane's log, slowest first, with their times
+# (outputs to stdout, caller handles tee). Information for review only: no
+# time fails a test, and the listing's own status is never the lane's.
+# Usage: $(call _test_slowest,logfile)
+define _test_slowest
+{ printf 'slowest %s tests (information only):\n' "$(TEST_SLOWEST)"; awk '/^ *[0-9]+\/[0-9]+ Test +#[0-9]+: / { printf "  %8.2f s  %s\n", $$(NF-1), $$4 }' "$(1)" | sort -rn | head -n $(TEST_SLOWEST) || true; }
+endef
+
 # ------------------------------------------------------------------------------
 # Targets
 # ------------------------------------------------------------------------------
 
-# All tests (serial) - excludes Coverage and Perf labels
+# All tests (serial) - excludes Coverage and Perf labels; ends with the slowest
 test: debug
 	$(call log,test,Running all tests (serial))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_header,ALL (serial) - excluding: $(COVERAGE_LABEL)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_ALL_SERIAL)) 2>&1 | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_footer,all (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
-# Parallel tests - runs non-timing parallel, then timing serial
+# Parallel tests - runs non-timing parallel, then timing serial; ends with the
+# slowest of both
 testp: debug
 	$(call log,test,Running tests (parallel + timing serial))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
@@ -96,6 +112,7 @@ testp: debug
 	@cd "$(BUILD_DIR)" && printf '\n' | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_header,TIMING (serial)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_TIMING_SERIAL)) 2>&1 | tee -a "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_slowest,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call _test_footer,parallel + timing,$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
 # Heap-profiling tests: gperf's lifecycle and reader cases, the captures of

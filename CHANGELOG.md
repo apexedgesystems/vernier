@@ -9,6 +9,10 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **`make test` and `make testp` fail when they select no test, and end by
+  listing their slowest tests** -- a mistyped label or a tree without tests
+  no longer passes as an empty run; the listing is information only.
+  ([#76](https://github.com/apexedgesystems/vernier/pull/76))
 - **Demo 08 compares the shared join implementations on Intel RAPL** -- its
   test names are now JoinV0/JoinV1, so earlier demo CSVs do not match them.
   ([#67](https://github.com/apexedgesystems/vernier/pull/67))
