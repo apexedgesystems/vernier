@@ -62,9 +62,11 @@ HEAP_RUN_FILTER  ?= ReadinessFixtureRun.HeaptrackUnwrappedFails
 # CTest Command Presets
 # ------------------------------------------------------------------------------
 # A lane whose selection matches no test fails (--no-tests=error: CTest exits
-# 8): a mistyped label or a tree without tests is not a passing run. The timing
-# pass may match none; the lane's selection is both passes. Each label regex is
-# anchored, so a label is matched whole.
+# 8): a mistyped label or a tree without tests is not a passing run. testp's
+# selection is its two passes together, and either pass may match none: it
+# lists the whole unit class first (CTEST_UNIT_LIST) and stops as
+# --no-tests=error does only when that is empty. Each label regex is anchored,
+# so a label is matched whole.
 
 # The unit class leaves out the other classes' labels and the coverage runs, so
 # a test with no class label runs with the unit tests.
@@ -76,15 +78,19 @@ CTEST_ALL_SERIAL := ctest \
   -LE "^($(UNIT_EXCLUDE))$$" \
   -j1 --no-tests=error --output-on-failure
 
-# The unit class except Timing, parallel execution
+# The unit class except Timing, parallel execution (testp's first pass)
 CTEST_ALL_PARALLEL := ctest \
   -LE "^($(UNIT_EXCLUDE)|$(TIMING_LABEL))$$" \
-  -j$(NUM_JOBS) --no-tests=error --output-on-failure
+  -j$(NUM_JOBS) --no-tests=ignore --output-on-failure
 
-# The unit class's Timing tests, serial execution
+# The unit class's Timing tests, serial execution (testp's second pass)
 CTEST_TIMING_SERIAL := ctest \
   -L "^$(TIMING_LABEL)$$" -LE "^($(UNIT_EXCLUDE))$$" \
   -j1 --no-tests=ignore --output-on-failure
+
+# The unit class listed, not run: what testp's two passes select together
+CTEST_UNIT_LIST := ctest -N \
+  -LE "^($(UNIT_EXCLUDE))$$"
 
 # The component class, rig tests aside, parallel execution
 CTEST_COMPONENT := ctest \
@@ -112,6 +118,14 @@ define _test_footer
 printf '%s\ndone: %s\nlog: %s\n%s\n' "------------------------------------------------------------" "$(1)" "$(2)" "============================================================"
 endef
 
+# Stop the lane as --no-tests=error stops CTest (its message, exit 8) when the
+# listing $(1), a ctest -N command, selects no test (outputs to stdout and
+# appends to the log $(2)).
+# Usage: $(call _test_require_any,listing,logfile)
+define _test_require_any
+n=$$($(1) | sed -n 's/^Total Tests: //p'); [ "$${n:-0}" -gt 0 ] || { printf 'No tests were found!!!\n' | tee -a "$(2)"; exit 8; }
+endef
+
 # The slowest tests in a lane's log, slowest first, with their times
 # (outputs to stdout, caller handles tee). Information for review only: no
 # time fails a test, and the listing's own status is never the lane's.
@@ -135,10 +149,12 @@ test: debug
 	@cd "$(BUILD_DIR)" && $(call _test_footer,unit (serial),$(TEST_LOG)) | tee -a "$(TEST_LOG)"
 
 # Unit tests in parallel - runs the non-timing ones parallel, then the timing
-# ones serial; ends with the slowest of both
+# ones serial; either may select none, both may not, and a failed test in the
+# first stops the lane before the second; ends with the slowest of both
 testp: debug
 	$(call log,test,Running the unit tests (parallel + timing serial))
 	@cd "$(BUILD_DIR)" && : > "$(TEST_LOG)"
+	@cd "$(BUILD_DIR)" && $(call _test_require_any,$(CTEST_UNIT_LIST),$(TEST_LOG))
 	@cd "$(BUILD_DIR)" && $(call _test_header,UNIT NON-TIMING (parallel -j$(NUM_JOBS))) | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && $(call with_lib_path,$(CTEST_ALL_PARALLEL)) 2>&1 | tee -a "$(TEST_LOG)"
 	@cd "$(BUILD_DIR)" && printf '\n' | tee -a "$(TEST_LOG)"
