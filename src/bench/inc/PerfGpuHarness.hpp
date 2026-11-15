@@ -105,7 +105,35 @@ public:
                                std::string label);
 
   inline MultiGpuKernelBuilder& withLaunchConfig(dim3 grid, dim3 block, size_t sharedMemBytes = 0);
+
+  /**
+   * @brief Enable peer access, both ways, between every pair of the measured
+   *        devices that supports it when measure() runs, before any copy or
+   *        kernel.
+   *
+   * A pair cudaDeviceCanAccessPeer() reports as unable is skipped, as is one
+   * it cannot answer for (an id that names no device); access an earlier
+   * measurement enabled stays enabled, and a pair whose enable fails stays
+   * without access while the other pairs are still enabled. None of these
+   * answers is left for the caller's next cudaGetLastError(), and nothing
+   * throws. The caller's current device is current again afterwards.
+   */
   inline MultiGpuKernelBuilder& withP2PAccess();
+
+  /**
+   * @brief Time one copy of @p bytes from device @p srcDevice to device
+   *        @p dstDevice when measure() runs, before the devices' kernels.
+   *
+   * The copy is a single cudaMemcpyPeerAsync, with no warmup and no repeats,
+   * between two buffers the harness allocates, one on each device, on a stream
+   * of the source device timed by events of that device. The buffers, stream
+   * and events are released after the copy, also when a CUDA call fails, and
+   * the device current before the copy is current after it. The result is
+   * aggregatedStats.p2pProfile. When the source device cannot access the
+   * destination's memory (cudaDeviceCanAccessPeer()), or the query fails for
+   * an id that names no device, nothing is copied and no error is left:
+   * accessEnabled is false and timeUs stays 0.
+   */
   inline MultiGpuKernelBuilder& measureP2PBandwidth(int srcDevice, int dstDevice, size_t bytes);
 
   MultiGpuResult measure();
