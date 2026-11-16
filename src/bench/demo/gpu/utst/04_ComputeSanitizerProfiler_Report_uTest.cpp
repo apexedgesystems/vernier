@@ -4,9 +4,11 @@
  *        text from real runs, in every build.
  *
  * The check (04_ComputeSanitizerProfiler_uTest.cpp, built where the GPU demos
- * are) runs the demo under the tool and decides on what
- * 04_ComputeSanitizerProfiler_Check.hpp reads from each report. These tests
- * hold that reading to report text from real runs. They need neither the
+ * are) runs the demo through bench run and decides on what
+ * 04_ComputeSanitizerProfiler_Check.hpp reads from each report and from bench
+ * run's verdict; the report's summary is bench run's to read (its own tests
+ * hold that reading to real reports). These tests hold the check's reading to
+ * report text from real runs. They need neither the
  * tool, nor CUDA, nor a device, so every build has them, and ctest runs them
  * under the check's labels, demo and compute-sanitizer.
  *
@@ -78,7 +80,6 @@ TEST(SanitizerReportTest, InvalidAccessReadsItsLines) {
   EXPECT_EQ(ACCESSES[0].address, "Access to 0xd67bffffc is out of bounds");
   EXPECT_EQ(check::bytesAfterAllocation(ACCESSES[0]), 1);
   EXPECT_EQ(check::allocationSize(ACCESSES[0]), 4194300);
-  EXPECT_EQ(check::errorSummary(readSnippet(THOR_ALLOCATION)), 4);
 }
 
 /** @test The allocation's size reads the same with and without thousands separators */
@@ -100,16 +101,27 @@ TEST(SanitizerReportTest, ApiFailuresAndCleanReportsAreNoAccesses) {
   EXPECT_EQ(check::invalidAccesses(readSnippet(THOR_ALLOCATION)).size(), 1u);
   const std::string CLEAN = "========= COMPUTE-SANITIZER\n========= ERROR SUMMARY: 0 errors\n";
   EXPECT_TRUE(check::invalidAccesses(CLEAN).empty());
-  EXPECT_EQ(check::errorSummary(CLEAN), 0);
-  EXPECT_EQ(check::errorSummary(""), -1);
 }
 
-/** @test The first summary is the total; the print-limit line after it is not */
-TEST(SanitizerReportTest, FirstSummaryIsTheTotal) {
-  EXPECT_EQ(check::errorSummary("========= ERROR SUMMARY: 259 errors\n"
-                                "========= ERROR SUMMARY: 159 errors were not printed. Use "
-                                "--print-limit option to adjust the number of printed errors\n"),
-            259);
+/**
+ * @test bench run's verdict is read for its count, one error or more; a run
+ *       that printed none has none to read
+ */
+TEST(SanitizerReportTest, BenchRunsVerdictGivesItsCount) {
+  const std::string FOUR =
+      "[  PASSED  ] 1 test.\n"
+      "Error: compute-sanitizer reported 4 errors in the benchmark; the report is "
+      "out/BenchDemo_Gpu_04_ComputeSanitizerProfiler.compute-sanitizer/sanitizer.log (the tool "
+      "exited with status 5)\n";
+  EXPECT_EQ(check::benchReportedErrors(FOUR), 4);
+  EXPECT_EQ(check::benchReportedErrors("Error: compute-sanitizer reported 1 error in the "
+                                       "benchmark; the report is a/sanitizer.log (the tool exited "
+                                       "with status 5)\n"),
+            1);
+  EXPECT_EQ(check::benchReportedErrors("[bench] compute-sanitizer wrote a/sanitizer.log (62 "
+                                       "bytes)\n"),
+            -1);
+  EXPECT_EQ(check::benchReportedErrors(""), -1);
 }
 
 /** @test A frame needs the kernel and the location; a frame without a location is at none */

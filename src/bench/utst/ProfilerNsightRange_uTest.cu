@@ -12,7 +12,9 @@
  * through the guard's attach path and checks that one range named after the
  * test was pushed after the warmup, held every measured call, and was popped,
  * on the test's thread, before the measurement returned: not when the case or
- * the process ended.
+ * the process ended. A measurement that fails pops its range before its
+ * exception reaches the caller, and the case's next measurement pushes a range
+ * of its own.
  *
  * Notes:
  *  - NSYS_PROFILING_SESSION_ID, which nsys exports to the process it starts,
@@ -48,7 +50,9 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
@@ -159,6 +163,71 @@ void expectOneRangeAround(const std::string& name, const std::vector<std::size_t
   for (std::size_t i = warmupCalls; i < seen.size(); ++i) {
     EXPECT_EQ(seen[i], 1U) << "measured call " << (i - warmupCalls) << " ran outside the range";
   }
+}
+
+/** @brief What a failed measurement left, read where its caller catches the error. */
+struct Failure {
+  std::string what;                   ///< The std::runtime_error's message; empty if none
+  std::vector<NvtxRangeEvent> events; ///< The recorder's events when it was caught
+};
+
+/**
+ * @brief Runs @p measure, which should fail, and reads the error and the
+ *        recorder's events in the catch block: the first place the caller can
+ *        do anything after the failure.
+ */
+template <typename Measure> Failure failureOf(Measure measure) {
+  Failure failure;
+  try {
+    measure();
+  } catch (const std::runtime_error& e) {
+    failure.events = nvtxRangeEvents();
+    failure.what = e.what();
+  }
+  return failure;
+}
+
+/**
+ * @brief The checks on a failed measurement of the case @p name: the error
+ * reached the caller, the range was pushed and popped on this thread before
+ * it did, and no row was published.
+ */
+void expectClosedBeforeTheCaller(const std::string& name, const Failure& failure) {
+  ASSERT_FALSE(failure.what.empty()) << "the measurement did not fail";
+  EXPECT_EQ(describe(failure.events), "push " + name + "; pop")
+      << "the range was still open when the caller caught the error";
+  EXPECT_TRUE(allOnThisThread(failure.events))
+      << "the range was pushed or popped on another thread";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "the failed measurement published a row";
+}
+
+/**
+ * @brief The checks on the measurement a case makes after a failed one: a
+ * range of its own, pushed after the failed window's pop, holding every
+ * measured call and popped before it returned. @p seen and @p atReturn are as
+ * for expectOneRangeAround(), two events later.
+ */
+void expectARangeOfItsOwnAfter(const std::string& name, const std::vector<std::size_t>& seen,
+                               std::size_t warmupCalls, std::size_t measuredCalls,
+                               std::size_t atReturn) {
+  const std::vector<NvtxRangeEvent> EVENTS = nvtxRangeEvents();
+  EXPECT_EQ(describe(EVENTS), "push " + name + "; pop; push " + name + "; pop")
+      << "the measurement after the failed one has no range of its own";
+  EXPECT_TRUE(allOnThisThread(EVENTS)) << "a range was pushed or popped on another thread";
+  EXPECT_EQ(atReturn, 4U) << "the range was still open when the measurement returned";
+  std::vector<std::size_t> inside(warmupCalls, 2U);
+  inside.resize(warmupCalls + measuredCalls, 3U);
+  EXPECT_EQ(seen, inside) << "events seen by each call: 2 before the range, 3 inside it";
+}
+
+/** @brief One launch the runtime refuses: a block of more threads than any device takes. */
+void refusedLaunch(cudaStream_t stream) { scaleKernel<<<1, 2048, 0, stream>>>(1.0F, nullptr, 0); }
+
+/** @brief The runtime's answer to refusedLaunch(), from a launch of the test's own. */
+cudaError_t refusalError() {
+  refusedLaunch(nullptr);
+  return cudaGetLastError();
 }
 
 /**
@@ -395,6 +464,78 @@ TEST_F(NsightRangeGpuTest, EachMeasurementGetsItsOwnRange) {
 }
 
 /**
+ * @test A measurement that fails pops its range before the exception reaches
+ *       the caller, while the case lives on: a refused launch, a refused
+ *       launch on a device's thread, and a baseline whose callable throws
+ *       inside the range. The caller gets the measurement's own error, no row
+ *       is published, and the case's next measurement has a range of its own
+ */
+TEST_F(NsightRangeGpuTest, AFailedMeasurementPopsItsRangeBeforeTheCallerRecovers) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string BASELINE_FAILED = "the baseline's callable threw inside its range";
+  const DeviceVector DATA;
+  ASSERT_TRUE(DATA.ok()) << "device allocation failed";
+  struct Path {
+    const char* name;
+    std::function<void(ub::PerfGpuCase&)> measure;
+    bool refused;          ///< The error names the test and the runtime's refusal
+    const char* alsoNamed; ///< What else the error names
+  };
+  const Path PATHS[] = {
+      {"a refused launch",
+       [](ub::PerfGpuCase& perf) { (void)perf.cudaKernel(refusedLaunch, "refused").measure(); },
+       true, ""},
+      {"a refused launch on a device's thread",
+       [](ub::PerfGpuCase& perf) {
+         (void)perf.cudaKernelMultiGpu(1, [](int, cudaStream_t s) { refusedLaunch(s); }).measure();
+       },
+       true, "device 0"},
+      {"a baseline whose callable throws inside the range",
+       [&BASELINE_FAILED](ub::PerfGpuCase& perf) {
+         // The warmup runs before the push: only a measured call throws.
+         (void)perf.cpuBaseline([&] {
+           if (nvtxRangeEventCount() == 1) {
+             throw std::runtime_error(BASELINE_FAILED);
+           }
+         });
+       },
+       false, ""},
+  };
+  for (const Path& path : PATHS) {
+    SCOPED_TRACE(path.name);
+    clearNvtxRangeEvents();
+    (void)ub::PerfRegistry::instance().take();
+    const std::string NAME = uniqueName("NsightRangeFailed");
+    ub::PerfGpuCase perf{NAME, cfg_};
+    ub::attachGpuProfilerHooks(perf, cfg_);
+
+    const Failure FAILED = failureOf([&] { path.measure(perf); });
+    expectClosedBeforeTheCaller(NAME, FAILED);
+    if (path.refused) {
+      EXPECT_NE(FAILED.what.find(NAME), std::string::npos) << "the caller got: " << FAILED.what;
+      EXPECT_NE(FAILED.what.find(cudaGetErrorName(REFUSAL)), std::string::npos) << FAILED.what;
+      EXPECT_NE(FAILED.what.find(path.alsoNamed), std::string::npos) << FAILED.what;
+    } else {
+      EXPECT_EQ(FAILED.what, BASELINE_FAILED);
+    }
+
+    // The case lives on, and its next measurement is bracketed by its own range.
+    std::vector<std::size_t> seen;
+    const ub::PerfGpuCase::KernelFn LAUNCH = [&](cudaStream_t s) {
+      seen.push_back(nvtxRangeEventCount());
+      DATA.launch(s);
+    };
+    perf.cudaWarmup(LAUNCH);
+    const std::size_t WARMUP_LAUNCHES = seen.size();
+    (void)perf.cudaKernel(LAUNCH, "scale").measure();
+    const std::size_t AT_RETURN = nvtxRangeEventCount();
+
+    expectARangeOfItsOwnAfter(NAME, seen, WARMUP_LAUNCHES, CYCLES * REPEATS, AT_RETURN);
+  }
+}
+
+/**
  * @test A CPU measurement's range is pushed after the warmup, holds every
  *       measured call, and is popped before throughputLoop() returns
  */
@@ -410,4 +551,30 @@ TEST_F(NsightRangeTest, CpuMeasurementIsBracketed) {
   const std::size_t AT_RETURN = nvtxRangeEventCount();
 
   expectOneRangeAround(NAME, seen, WARMUP, CYCLES * REPEATS, AT_RETURN);
+}
+
+/**
+ * @test A CPU measurement whose callback throws pops its range before the
+ *       exception reaches the caller, while the case lives on: the caller
+ *       gets the callback's error, no row is published, and the case's next
+ *       measurement has a range of its own
+ */
+TEST_F(NsightRangeTest, AFailedCpuMeasurementPopsItsRangeBeforeTheCallerRecovers) {
+  const std::string NAME = uniqueName("NsightRangeCpuFailed");
+  const std::string CALLBACK_FAILED = "the callback threw inside its range";
+  ub::PerfCase perf{NAME, cfg_};
+  ub::attachProfilerHooks(perf, cfg_);
+
+  const Failure FAILED = failureOf(
+      [&] { (void)perf.measured([&] { throw std::runtime_error(CALLBACK_FAILED); }, "failing"); });
+  expectClosedBeforeTheCaller(NAME, FAILED);
+  EXPECT_EQ(FAILED.what, CALLBACK_FAILED);
+
+  std::vector<std::size_t> seen;
+  const auto CALL = [&] { seen.push_back(nvtxRangeEventCount()); };
+  perf.warmup(CALL);
+  (void)perf.throughputLoop(CALL, "call");
+  const std::size_t AT_RETURN = nvtxRangeEventCount();
+
+  expectARangeOfItsOwnAfter(NAME, seen, WARMUP, CYCLES * REPEATS, AT_RETURN);
 }

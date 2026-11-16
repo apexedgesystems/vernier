@@ -456,6 +456,9 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     PRIVATE
       VERNIER_DEMO_04_BINARY="$<TARGET_FILE:BenchDemo_Gpu_04_ComputeSanitizerProfiler>"
       VERNIER_DEMO_04_UNGUARDED_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/gpu/04_ComputeSanitizerProfiler_Unguarded.cu"
+      # Where the tools build puts the bench CLI; the checks that run the demo
+      # through bench run skip where it is not built.
+      VERNIER_DEMO_04_BENCH_CLI="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/tools/rust/bench"
   )
   add_dependencies(TestDemoComputeSanitizer BenchDemo_Gpu_04_ComputeSanitizerProfiler)
   foreach (
