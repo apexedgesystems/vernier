@@ -1295,7 +1295,7 @@ pip install pandas matplotlib seaborn scipy
 **Symptoms:**
 
 ```
-Error: invalid arguments: input file not found: MyComponent.Test.perf/perf.data
+Error: invalid arguments: input not found: MyComponent.Test.perf/perf.data (a perf.data file, or the directory perf record --threads writes)
 ```
 
 or, when `perf.data` holds no samples,
