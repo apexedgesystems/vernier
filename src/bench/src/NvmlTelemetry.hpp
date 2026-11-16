@@ -272,7 +272,7 @@ inline std::string shortWindowStatement(const WindowReadings& w) {
     return {};
   }
   return "[gpu] Vernier publishes NVML's endpoint power reading only for a measured window of "
-         "1.5 s or more: a shorter window's powerDrawW stays empty.";
+         "1.5 s or more; this run measured a shorter one, so its powerDrawW stays empty.";
 }
 
 /* ----------------------------- Session ----------------------------- */

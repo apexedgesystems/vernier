@@ -102,7 +102,7 @@ std::string powerStatement(const WindowReadings& w) {
 /// The statement for a window shorter than the 1.5 s powerDrawW needs.
 constexpr const char* SHORT_WINDOW =
     "[gpu] Vernier publishes NVML's endpoint power reading only for a measured window of 1.5 s "
-    "or more: a shorter window's powerDrawW stays empty.";
+    "or more; this run measured a shorter one, so its powerDrawW stays empty.";
 
 /// Every NVML cell stays empty, as a statement's tail names them.
 constexpr const char* ALL_CELLS = "smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC "
