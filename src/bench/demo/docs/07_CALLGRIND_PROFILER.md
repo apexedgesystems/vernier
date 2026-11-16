@@ -8,7 +8,9 @@ the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
 Step 2's console output and the run quoted first under If It Does Not Match
 come from 2026-10-03 (UTC), a later tree at the same version: its run executed
 30,407,155 instructions, where the reference run, whose profile steps 3 and 5
-read, executed 29,908,412.
+read, executed 29,908,412. The count for a wrap started by hand, under If It
+Does Not Match, comes from the [Thor AGX](../../docs/rigs/RIG_THOR_AGX.md) on
+2026-11-16 (UTC), under valgrind 3.22.0.
 
 ## Overview
 
@@ -393,8 +395,9 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
   Under that command the benchmark switches counting on only around each
   measured window, so the profile holds the measured calls and the harness's
   work around them and not the rest of the process: for `JoinV0` alone
-  (`--gtest_filter=CallgrindProfiler.JoinV0`), 21,312,906 instructions for its
-  ten measured calls.
+  (`--gtest_filter=CallgrindProfiler.JoinV0`), 22,008,852 instructions for its
+  ten measured calls, counted on the
+  [Thor AGX](../../docs/rigs/RIG_THOR_AGX.md).
 
 - **Functions named `???` and no source lines.** The binary has no line tables:
   it was stripped, or the example was built without its `-g`.
