@@ -781,9 +781,12 @@ Additional columns for GPU tests:
 | `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  |
 
 Source: NVML, read at the measured window's start and end, each cell where
-NVML reports what it needs. `powerDrawW` also needs a window of at least
-1.5 s: NVML's power reading is an average over the last second, so a shorter
-window's cell is empty and the run says why.
+NVML reports what it needs. `powerDrawW` is the endpoint reading: NVML's power
+reading taken at the window's end, which NVIDIA's NVML reference describes as
+a one-second average on Ampere (except GA100) and newer GPUs and an
+instantaneous reading on GA100 and older; neither is an average over the
+measured window. Vernier publishes it only for a window of at least 1.5 s, a
+rule of its own: a shorter window's cell is empty and the run says why.
 
 ### CUPTI In-Process Kernel Metrics
 

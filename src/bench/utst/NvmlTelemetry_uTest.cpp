@@ -99,10 +99,10 @@ std::string powerStatement(const WindowReadings& w) {
   return vernier::bench::nvml_telemetry::shortWindowStatement(w);
 }
 
-/// The statement for a window too short for NVML's power reading.
+/// The statement for a window shorter than the 1.5 s powerDrawW needs.
 constexpr const char* SHORT_WINDOW =
-    "[gpu] NVML's power reading is an average over the last second, so it is not the power of a "
-    "measured window shorter than 1.5 s: powerDrawW stays empty.";
+    "[gpu] Vernier publishes NVML's endpoint power reading only for a measured window of 1.5 s "
+    "or more: a shorter window's powerDrawW stays empty.";
 
 /// Every NVML cell stays empty, as a statement's tail names them.
 constexpr const char* ALL_CELLS = "smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC "
@@ -121,8 +121,8 @@ protected:
 
 /**
  * @test Every reading reported in a 2 s window fills every cell, and nothing
- *       is stated; the power draw is the end's reading (30 W), not the mean
- *       with the start's (25 W), which describes the second before the window
+ *       is stated; the power draw is the endpoint reading (30 W), not the
+ *       mean with the start's (25 W), which was read before the window
  */
 TEST_F(NvmlTelemetry, EveryReadingReportedFillsEveryCell) {
   const WindowReadings W = windowOf(reportingDevice());
@@ -208,7 +208,7 @@ TEST_F(NvmlTelemetry, AFailedEndSampleEmptiesTheCellsThatNeedIt) {
   const Cells CELLS = cellsOf(W);
   EXPECT_FALSE(CELLS.smClockMHz.has_value());
   EXPECT_FALSE(CELLS.throttling.has_value());
-  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "the cell is the end's reading";
+  EXPECT_FALSE(CELLS.powerDrawW.has_value()) << "the cell is the endpoint reading";
   EXPECT_FALSE(CELLS.temperatureC.has_value());
   EXPECT_FALSE(CELLS.temperatureDeltaC.has_value());
   EXPECT_EQ(CELLS.powerLimitW, 150.0);
