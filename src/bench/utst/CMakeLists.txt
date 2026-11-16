@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (24 files)
+# Sources (25 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -16,6 +16,7 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfMetadata_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfTargetTime_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfMeasuredTime_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PerfContention_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfCsv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfConfig_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfRegistry_uTest.cpp"

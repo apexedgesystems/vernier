@@ -194,8 +194,15 @@ public:
    *
    * Spins until all threads have called start(), then sets go flag.
    */
-  void releaseWhenAllReady() noexcept {
-    while (ready_.load(std::memory_order_acquire) < total_) {
+  void releaseWhenAllReady() noexcept { releaseWhenReady(total_); }
+
+  /**
+   * @brief Main thread calls this to release the workers once @p ready of
+   * them have called start(): for a run that started fewer threads than the
+   * gate was made for, which would otherwise wait for the rest forever.
+   */
+  void releaseWhenReady(int ready) noexcept {
+    while (ready_.load(std::memory_order_acquire) < ready) {
       cpuRelax();
     }
     go_.store(true, std::memory_order_release);

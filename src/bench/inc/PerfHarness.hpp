@@ -18,6 +18,7 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <optional>
@@ -824,6 +825,11 @@ public:
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
    * Publishes its own row, which records the workers it started, named as measured() names its
    * rows.
+   *
+   * An exception from a worker, or a worker thread that cannot be started, ends the run as an
+   * exception from measured()'s callback ends that: the workers started are joined, the abort
+   * hook runs, nothing is summarized or published, the after hook does not run, and the first
+   * exception reaches the caller on the calling thread. The case can then measure again.
    */
   PerfResult contentionRun(const std::function<void()>& worker, std::string label = "contention") {
     // Calibrates from one uncontended call; contention only lengthens the
@@ -841,38 +847,27 @@ public:
     auto lastProgressTime = MEASURE_START;
     bool showedProgress = false;
 
-    for (int r = 0; r < cfg_.repeats; ++r) {
-      StartGate gate(THREAD_COUNT);
-      const auto T0 = std::chrono::steady_clock::now();
+    try {
+      for (int r = 0; r < cfg_.repeats; ++r) {
+        perCall.push_back(contendOnce(worker, THREAD_COUNT));
 
-      std::vector<std::thread> ts;
-      ts.reserve(static_cast<std::size_t>(THREAD_COUNT));
-      for (int t = 0; t < THREAD_COUNT; ++t) {
-        ts.emplace_back([&]() {
-          gate.start();
-          for (int i = 0; i < cfg_.cycles; ++i) {
-            worker();
-          }
-        });
+        // Progress reporting
+        auto now = std::chrono::steady_clock::now();
+        auto sinceLast =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
+        if (sinceLast.count() >= 2000) {
+          printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
+          lastProgressTime = now;
+          showedProgress = true;
+        }
       }
-      gate.releaseWhenAllReady();
-      for (auto& th : ts) {
-        th.join();
+    } catch (...) {
+      if (showedProgress) {
+        clearProgress();
       }
-
-      const auto T1 = std::chrono::steady_clock::now();
-      const double TOTAL_CALLS = static_cast<double>(THREAD_COUNT) * cfg_.cycles;
-      perCall.push_back(std::chrono::duration<double, std::micro>(T1 - T0).count() / TOTAL_CALLS);
-
-      // Progress reporting
-      auto now = std::chrono::steady_clock::now();
-      auto sinceLast =
-          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
-      if (sinceLast.count() >= 2000) {
-        printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
-        lastProgressTime = now;
-        showedProgress = true;
-      }
+      // What the before hook started ends now, as measured() ends it.
+      runAbortHook();
+      throw;
     }
 
     if (showedProgress) {
@@ -909,6 +904,57 @@ public:
   [[nodiscard]] const std::string& testName() const noexcept { return testName_; }
 
 private:
+  /**
+   * @brief One repeat of contentionRun(): @p threadCount workers released at
+   * once, each making cycles() calls of @p worker; the wall microseconds per
+   * call. A worker's exception is taken on its own thread, and the first one
+   * rethrown here once every worker has been joined. A worker thread that
+   * cannot be started ends the repeat once those started have made their
+   * calls and been joined, with its error: none is left joinable, which would
+   * end the process.
+   */
+  double contendOnce(const std::function<void()>& worker, int threadCount) {
+    StartGate gate(threadCount);
+    std::mutex failureMutex;
+    std::exception_ptr workerFailure;
+    std::exception_ptr startFailure;
+    std::vector<std::thread> ts;
+    ts.reserve(static_cast<std::size_t>(threadCount));
+    const auto T0 = std::chrono::steady_clock::now();
+    try {
+      for (int t = 0; t < threadCount; ++t) {
+        ts.emplace_back([&]() {
+          gate.start();
+          try {
+            for (int i = 0; i < cfg_.cycles; ++i) {
+              worker();
+            }
+          } catch (...) {
+            const std::lock_guard<std::mutex> LOCK(failureMutex);
+            if (!workerFailure) {
+              workerFailure = std::current_exception();
+            }
+          }
+        });
+      }
+    } catch (...) {
+      startFailure = std::current_exception();
+    }
+    gate.releaseWhenReady(static_cast<int>(ts.size()));
+    for (auto& th : ts) {
+      th.join();
+    }
+    const auto T1 = std::chrono::steady_clock::now();
+    if (startFailure) {
+      std::rethrow_exception(startFailure);
+    }
+    if (workerFailure) {
+      std::rethrow_exception(workerFailure);
+    }
+    const double TOTAL_CALLS = static_cast<double>(threadCount) * cfg_.cycles;
+    return std::chrono::duration<double, std::micro>(T1 - T0).count() / TOTAL_CALLS;
+  }
+
   /// Run the abort hook, if any. What it throws is dropped, so the exception
   /// that ended the measurement is the one the caller gets.
   void runAbortHook() noexcept {

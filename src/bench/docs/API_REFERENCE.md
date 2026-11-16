@@ -151,6 +151,10 @@ const std::string& testName() const noexcept;
 - Framework spawns `threads()` workers, each calling `worker()` in a loop
 - Use for: Multi-threaded scalability testing
 - Each worker performs `cycles()` operations
+- If a worker throws, or a worker thread cannot be started, the run ends as
+  `measured()` ends when `fn()` throws: the workers started are joined, the
+  abort hook runs, nothing is published, and the first exception reaches you
+  on the calling thread
 
 ### PerfResult
 

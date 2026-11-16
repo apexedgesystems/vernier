@@ -1014,6 +1014,10 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   `perf.data` is. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - `bench flamegraph` reads the directory `perf record --threads` writes, as
   input or baseline. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- A `contentionRun()` worker that throws, or a worker thread that cannot
+  start, ends the run through the profiler's abort hook with the exception at
+  the caller, instead of ending the process or leaving the profiler running.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
   say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark compiled without gperftools' headers lays out `GperfProfiler` as
