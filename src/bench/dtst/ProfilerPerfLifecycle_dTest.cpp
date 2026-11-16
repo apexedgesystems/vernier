@@ -22,7 +22,9 @@
 
 #include <csignal>
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -144,6 +146,32 @@ std::string perfDataBytes(const std::vector<std::uint32_t>& types, const char* m
   return bytes;
 }
 
+/** @brief A field of a byte image: @p value written little-endian over 8 bytes at @p at. */
+struct Field {
+  std::size_t at;
+  std::uint64_t value;
+};
+
+/**
+ * @brief @p size bytes as given, independent of the reader under test:
+ * @p magic at byte 0 (when the size holds it), each of @p fields written
+ * little-endian at its offset, every other byte zero.
+ */
+std::string bytesWith(std::size_t size, const std::vector<Field>& fields,
+                      const char* magic = "PERFILE2") {
+  std::string bytes(size, '\0');
+  bytes.replace(0, std::min<std::size_t>(8, size), magic, std::min<std::size_t>(8, size));
+  for (const Field& F : fields) {
+    for (std::size_t i = 0; i < 8 && F.at + i < size; ++i) {
+      bytes[F.at + i] = static_cast<char>((F.value >> (8 * i)) & 0xFFU);
+    }
+  }
+  return bytes;
+}
+
+/** @brief Feature bit 24 (DIR_FORMAT) in the first word of the feature bits, byte 72. */
+constexpr std::uint64_t DIR_FORMAT_BIT = std::uint64_t{1} << 24;
+
 /** @brief One measured window under a fake perf in a private folder. */
 class PerfLifecycleTest : public ::testing::Test {
 protected:
@@ -245,6 +273,29 @@ protected:
     for (std::size_t i = 0; i < streams.size(); ++i) {
       std::ofstream(PATH + "/data." + std::to_string(i), std::ios::binary)
           << recordBytes(streams[i]);
+    }
+    return PATH;
+  }
+
+  /** @brief Write @p bytes to @p name in the private folder and return its path. */
+  std::string writeBytes(const std::string& name, const std::string& bytes) const {
+    const std::string PATH = dir_.path() + "/" + name;
+    std::ofstream(PATH, std::ios::binary) << bytes;
+    return PATH;
+  }
+
+  /**
+   * @brief Write to @p name in the private folder a directory holding the
+   * header file "data" of @p header and a stream "data.<n>" of each of
+   * @p streams, all as given, and return its path.
+   */
+  std::string writeRawDirectory(const std::string& name, const std::string& header,
+                                const std::vector<std::string>& streams) const {
+    const std::string PATH = dir_.path() + "/" + name;
+    std::filesystem::create_directories(PATH);
+    std::ofstream(PATH + "/data", std::ios::binary) << header;
+    for (std::size_t i = 0; i < streams.size(); ++i) {
+      std::ofstream(PATH + "/data." + std::to_string(i), std::ios::binary) << streams[i];
     }
     return PATH;
   }
@@ -755,6 +806,141 @@ TEST_F(PerfLifecycleTest, AbortSetsADirectoryAsideWhole) {
       << TEXT;
   const std::vector<ProfileFailure> FAILED = ProfilerRegistry::instance().failures();
   EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
+}
+
+/* ----------------------------- Data Extents ----------------------------- */
+
+/**
+ * @test A data file whose header or data section does not lie within the file
+ * is not shown to hold no sample, whatever its records: no caveat, and no
+ * failure (perf confirmed it). The bytes are written as given: a 56-byte file
+ * whose header declares 104 bytes and its data at 104; a 104-byte header
+ * whose empty data section lies at 256, past the end; a 56-byte file whose
+ * header declares 104 bytes and keeps its empty data section within the file;
+ * a 96-byte file whose header declares 104 bytes; a header declaring fewer
+ * bytes than perf writes; a data section starting inside the header; and the
+ * data section's offset and size wrapping past 2^64, each way.
+ */
+TEST_F(PerfLifecycleTest, RecordWhoseExtentsDoNotFitHasNoCaveat) {
+  const std::string COMM_RECORD = recordBytes({COMM});
+  struct Case {
+    const char* what;
+    std::string bytes;
+  };
+  const std::vector<Case> CASES = {
+      {"56 bytes, a 104-byte header declared, data at 104", bytesWith(56, {{8, 104}, {40, 104}})},
+      {"a 104-byte header, its empty data section at 256", bytesWith(104, {{8, 104}, {40, 256}})},
+      {"56 bytes, a 104-byte header declared, data at 56", bytesWith(56, {{8, 104}, {40, 56}})},
+      {"96 bytes, a 104-byte header declared, data at 96", bytesWith(96, {{8, 104}, {40, 96}})},
+      {"a 64-byte header declared", bytesWith(104, {{8, 64}, {40, 104}})},
+      {"a data section starting inside the header", bytesWith(104, {{8, 104}, {40, 56}})},
+      {"data offset 104, size 2^64 - 8",
+       bytesWith(104, {{8, 104}, {40, 104}, {48, ~std::uint64_t{7}}}) + COMM_RECORD},
+      {"data offset 2^64 - 8, size 16",
+       bytesWith(104, {{8, 104}, {40, ~std::uint64_t{7}}, {48, 16}}) + COMM_RECORD},
+  };
+  for (const Case& C : CASES) {
+    ProfilerRegistry::instance().resetFailures();
+    ScopedEnv data("FAKE_PERF_DATA", writeBytes("extent.data", C.bytes));
+    const Window W = window("ok", "record -g");
+    EXPECT_TRUE(W.failures.empty()) << C.what << ": " << W.failures.front().result.report.message;
+    EXPECT_EQ(W.err.find("caveat"), std::string::npos) << C.what << ":\n" << W.err;
+  }
+}
+
+/**
+ * @test The same reading's positive controls, written as given: a whole
+ * 104-byte header with an empty data section is shown to hold no sample (the
+ * caveat); one whose data section holds a sample record is not.
+ */
+TEST_F(PerfLifecycleTest, RecordWhoseExtentsFitIsReadThrough) {
+  ScopedEnv empty("FAKE_PERF_DATA",
+                  writeBytes("empty.data", bytesWith(104, {{8, 104}, {40, 104}})));
+  const Window EMPTY = window("ok", "record -g");
+  EXPECT_TRUE(EMPTY.failures.empty()) << EMPTY.failures.front().result.report.message;
+  EXPECT_NE(EMPTY.err.find("[perf] caveat: " + EMPTY.folder + "/perf.data holds no sample"),
+            std::string::npos)
+      << EMPTY.err;
+  ProfilerRegistry::instance().resetFailures();
+  ScopedEnv sample("FAKE_PERF_DATA",
+                   writeBytes("sample.data", bytesWith(104, {{8, 104}, {40, 104}, {48, 16}}) +
+                                                 recordBytes({SAMPLE})));
+  const Window SAMPLED = window("ok", "record -g");
+  EXPECT_TRUE(SAMPLED.failures.empty()) << SAMPLED.failures.front().result.report.message;
+  EXPECT_EQ(SAMPLED.err.find("caveat"), std::string::npos) << SAMPLED.err;
+}
+
+/**
+ * @test The directory's header file is held to the same extents, and its
+ * feature table and DIR_FORMAT section must lie within it too; a stream
+ * shorter than its own record header says is read through to no conclusion.
+ * Written as given, each with an empty stream unless named: the three files of
+ * RecordWhoseExtentsDoNotFitHasNoCaveat's first three cases as the header
+ * file; a 96-byte header file declaring 104 bytes whose table and section
+ * still read; the feature table past the end; the DIR_FORMAT section past the
+ * end, and at an offset near 2^64; a stream of 12 bytes whose record says 16.
+ * None gets the caveat; none fails.
+ */
+TEST_F(PerfLifecycleTest, DirectoryWhoseExtentsDoNotFitHasNoCaveat) {
+  const std::vector<Field> FORMAT_1 = {{8, 104},   {40, 104}, {72, DIR_FORMAT_BIT},
+                                       {104, 120}, {112, 8},  {120, 1}};
+  struct Case {
+    const char* what;
+    std::string header;
+    std::string stream;
+  };
+  const std::vector<Case> CASES = {
+      {"a 56-byte header file, a 104-byte header declared, data at 104",
+       bytesWith(56, {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}}), ""},
+      {"a 104-byte header file, its empty data section at 256",
+       bytesWith(104, {{8, 104}, {40, 256}, {72, DIR_FORMAT_BIT}}), ""},
+      {"a 56-byte header file, a 104-byte header declared, data at 56",
+       bytesWith(56, {{8, 104}, {40, 56}, {72, DIR_FORMAT_BIT}}), ""},
+      {"a 96-byte header file declaring 104 bytes, its table and section readable",
+       bytesWith(96, {{8, 104}, {40, 80}, {56, 1}, {72, DIR_FORMAT_BIT}, {80, 56}, {88, 8}}), ""},
+      {"the feature table past the end",
+       bytesWith(104, {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}}), ""},
+      {"the DIR_FORMAT section past the end",
+       bytesWith(124, {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}, {104, 120}, {112, 8}}), ""},
+      {"the DIR_FORMAT section at 2^64 - 4",
+       bytesWith(128,
+                 {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}, {104, ~std::uint64_t{3}}, {112, 8}}),
+       ""},
+      {"a 12-byte stream whose record says 16", bytesWith(128, FORMAT_1),
+       recordBytes({COMM}).substr(0, 12)},
+  };
+  for (const Case& C : CASES) {
+    ProfilerRegistry::instance().resetFailures();
+    const std::string DIR = writeRawDirectory("extent_dir", C.header, {C.stream});
+    ScopedEnv data("FAKE_PERF_DATA", DIR);
+    const Window W = window("ok", "record --threads -g");
+    std::filesystem::remove_all(DIR);
+    EXPECT_TRUE(W.failures.empty()) << C.what << ": " << W.failures.front().result.report.message;
+    EXPECT_EQ(W.err.find("caveat"), std::string::npos) << C.what << ":\n" << W.err;
+  }
+}
+
+/**
+ * @test The directory's positive controls, written as given: a 128-byte
+ * header file (a whole header, an empty data section, the feature table's one
+ * entry and the DIR_FORMAT section recording 1) and an empty stream is shown
+ * to hold no sample; the same with a sample record in the stream is not.
+ */
+TEST_F(PerfLifecycleTest, DirectoryWhoseExtentsFitIsReadThrough) {
+  const std::string HEADER =
+      bytesWith(128, {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}, {104, 120}, {112, 8}, {120, 1}});
+  ScopedEnv empty("FAKE_PERF_DATA", writeRawDirectory("empty_dir", HEADER, {""}));
+  const Window EMPTY = window("ok", "record --threads -g");
+  EXPECT_TRUE(EMPTY.failures.empty()) << EMPTY.failures.front().result.report.message;
+  EXPECT_NE(EMPTY.err.find("[perf] caveat: " + EMPTY.folder + "/perf.data holds no sample"),
+            std::string::npos)
+      << EMPTY.err;
+  ProfilerRegistry::instance().resetFailures();
+  ScopedEnv sample("FAKE_PERF_DATA",
+                   writeRawDirectory("sample_dir", HEADER, {recordBytes({SAMPLE})}));
+  const Window SAMPLED = window("ok", "record --threads -g");
+  EXPECT_TRUE(SAMPLED.failures.empty()) << SAMPLED.failures.front().result.report.message;
+  EXPECT_EQ(SAMPLED.err.find("caveat"), std::string::npos) << SAMPLED.err;
 }
 
 /* ----------------------------- Start Handshake ----------------------------- */

@@ -612,26 +612,48 @@ bool recordsCarryNoSample(std::istream& in, std::uint64_t size) {
   return true;
 }
 
-/** @brief Where a perf data file's data section lies, and its feature bits 0 to 63. */
+/**
+ * @brief True when the @p length bytes at @p offset lie within @p fileSize
+ * bytes. No sum is formed, so none can wrap.
+ */
+bool fitsWithin(std::uint64_t offset, std::uint64_t length, std::uint64_t fileSize) {
+  return offset <= fileSize && length <= fileSize - offset;
+}
+
+/**
+ * @brief A perf data file's header as read: where its data section lies, its
+ * feature bits 0 to 63, and the size of the file it was read from.
+ */
 struct DataHeader {
   std::uint64_t dataOffset = 0;
   std::uint64_t dataSize = 0;
   std::uint64_t features = 0;
+  std::uint64_t fileSize = 0;
 };
 
 /**
  * @brief The header @p in starts with, as perf writes it on a little-endian
- * machine: "PERFILE2", the data section's offset and size at bytes 40 and 48,
- * the feature bits from byte 72; nullopt when it is no such header.
+ * machine, read from a file of @p fileSize bytes: "PERFILE2", the header's own
+ * size at byte 8, the data section's offset and size at bytes 40 and 48, the
+ * feature bits from byte 72. nullopt when it is no such header, or when the
+ * header it declares (at least the 104 bytes perf writes) or its data section
+ * does not lie within the file, or the data section starts inside the header.
  */
-std::optional<DataHeader> readDataHeader(std::istream& in) {
+std::optional<DataHeader> readDataHeader(std::istream& in, std::uint64_t fileSize) {
+  constexpr std::uint64_t HEADER_BYTES = 104;
   std::array<unsigned char, 80> header{};
-  if (!in.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+  if (fileSize < HEADER_BYTES || !in.read(reinterpret_cast<char*>(header.data()), header.size()) ||
       std::memcmp(header.data(), "PERFILE2", 8) != 0) {
     return std::nullopt;
   }
-  return DataHeader{littleEndian(header.data() + 40, 8), littleEndian(header.data() + 48, 8),
-                    littleEndian(header.data() + 72, 8)};
+  const std::uint64_t DECLARED = littleEndian(header.data() + 8, 8);
+  const DataHeader READ{littleEndian(header.data() + 40, 8), littleEndian(header.data() + 48, 8),
+                        littleEndian(header.data() + 72, 8), fileSize};
+  if (DECLARED < HEADER_BYTES || DECLARED > fileSize || READ.dataOffset < DECLARED ||
+      !fitsWithin(READ.dataOffset, READ.dataSize, fileSize)) {
+    return std::nullopt;
+  }
+  return READ;
 }
 
 /** @brief True when the data section @p header gives holds no sample (recordsCarryNoSample()). */
@@ -644,21 +666,30 @@ bool dataSectionCarriesNoSample(std::istream& in, const DataHeader& header) {
  * @brief The version of the directory format the header file's DIR_FORMAT
  * feature (bit 24) records, or nullopt without one. The feature sections'
  * table follows the data section: one 16-byte offset and size per feature bit
- * set, in bit order.
+ * set, in bit order. The table's entry and the section it names must lie
+ * within the file; the data section's end, where the table starts, already
+ * does (readDataHeader()), so the table's position is formed without a wrap.
  */
 std::optional<std::uint64_t> directoryFormat(std::istream& in, const DataHeader& header) {
   constexpr unsigned DIR_FORMAT = 24;
+  constexpr std::uint64_t ENTRY_BYTES = 16;
   if (((header.features >> DIR_FORMAT) & 1U) == 0) {
     return std::nullopt;
   }
   const auto BEFORE = static_cast<std::uint64_t>(
       std::popcount(header.features & ((std::uint64_t{1} << DIR_FORMAT) - 1)));
-  std::array<unsigned char, 16> section{};
+  const std::uint64_t TABLE = header.dataOffset + header.dataSize;
+  std::array<unsigned char, ENTRY_BYTES> entry{};
   std::array<unsigned char, 8> version{};
-  if (!in.seekg(static_cast<std::streamoff>(header.dataOffset + header.dataSize + 16 * BEFORE)) ||
-      !in.read(reinterpret_cast<char*>(section.data()), section.size()) ||
-      littleEndian(section.data() + 8, 8) < version.size() ||
-      !in.seekg(static_cast<std::streamoff>(littleEndian(section.data(), 8))) ||
+  if (!fitsWithin(TABLE, ENTRY_BYTES * (BEFORE + 1), header.fileSize) ||
+      !in.seekg(static_cast<std::streamoff>(TABLE + ENTRY_BYTES * BEFORE)) ||
+      !in.read(reinterpret_cast<char*>(entry.data()), entry.size())) {
+    return std::nullopt;
+  }
+  const std::uint64_t SECTION = littleEndian(entry.data(), 8);
+  const std::uint64_t SECTION_BYTES = littleEndian(entry.data() + 8, 8);
+  if (SECTION_BYTES < version.size() || !fitsWithin(SECTION, SECTION_BYTES, header.fileSize) ||
+      !in.seekg(static_cast<std::streamoff>(SECTION)) ||
       !in.read(reinterpret_cast<char*>(version.data()), version.size())) {
     return std::nullopt;
   }
@@ -673,13 +704,17 @@ std::optional<std::uint64_t> directoryFormat(std::istream& in, const DataHeader&
  * none, or the directory holds anything else.
  */
 bool directoryHoldsNoSample(const std::string& dir) {
+  std::error_code ec;
+  const std::uint64_t HEADER_FILE_BYTES = std::filesystem::file_size(dir + "/data", ec);
+  if (ec) {
+    return false;
+  }
   std::ifstream headerFile(dir + "/data", std::ios::binary);
-  const std::optional<DataHeader> HEADER = readDataHeader(headerFile);
+  const std::optional<DataHeader> HEADER = readDataHeader(headerFile, HEADER_FILE_BYTES);
   if (!HEADER || directoryFormat(headerFile, *HEADER) != 1 ||
       !dataSectionCarriesNoSample(headerFile, *HEADER)) {
     return false;
   }
-  std::error_code ec;
   for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
     const std::string NAME = it->path().filename().string();
     if (NAME == "data") {
@@ -703,9 +738,11 @@ bool directoryHoldsNoSample(const std::string& dir) {
  * record --threads writes, is shown to hold no sample: each of its records
  * was read, and none is a sample or a record that can carry samples.
  *
- * False when it is not what perf writes on a little-endian machine, a record
- * does not fit where it lies, or a record may carry samples or trace data
- * this does not read (recordsCarryNoSample()). perf's "Captured and wrote"
+ * False when it is not what perf writes on a little-endian machine, its
+ * header, data section or a feature section read does not lie within the file
+ * (readDataHeader(), directoryFormat()), a record does not fit where it lies,
+ * or a record may carry samples or trace data this does not read
+ * (recordsCarryNoSample()). perf's "Captured and wrote"
  * line is no substitute: it counts the samples only when perf has read them
  * back for build ids and the record traces no AUX area, so perf record -B or
  * --buildid-all omit the count from a file that holds samples.
@@ -715,8 +752,12 @@ bool holdsNoSample(const std::string& path) {
   if (std::filesystem::is_directory(path, ec)) {
     return directoryHoldsNoSample(path);
   }
+  const std::uint64_t FILE_BYTES = std::filesystem::file_size(path, ec);
+  if (ec) {
+    return false;
+  }
   std::ifstream in(path, std::ios::binary);
-  const std::optional<DataHeader> HEADER = readDataHeader(in);
+  const std::optional<DataHeader> HEADER = readDataHeader(in, FILE_BYTES);
   return HEADER && dataSectionCarriesNoSample(in, *HEADER);
 }
 #endif
