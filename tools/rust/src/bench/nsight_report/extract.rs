@@ -542,10 +542,10 @@ pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, 
     }
     let written = write_csv(&extraction.rows, csv);
     for warning in &extraction.warnings {
-        eprintln!("[{COMMAND}] warning: {warning}");
+        lossy_eprintln!("[{COMMAND}] warning: {warning}");
     }
     for error in &extraction.errors {
-        eprintln!("[{COMMAND}] error: {error}");
+        lossy_eprintln!("[{COMMAND}] error: {error}");
     }
     let shown = normalized(csv);
     written.map_err(|e| {
@@ -568,7 +568,7 @@ pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, 
 }
 
 fn stopped(signal: Interrupt) -> RunEnd {
-    eprintln!("[{COMMAND}] stopped by {signal}; nothing was written");
+    lossy_eprintln!("[{COMMAND}] stopped by {signal}; nothing was written");
     RunEnd::Interrupted(signal)
 }
 

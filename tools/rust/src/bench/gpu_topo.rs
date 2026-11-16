@@ -182,7 +182,7 @@ pub fn print_results(report: &TopologyReport) {
 pub fn print_results_json(report: &TopologyReport) {
     match serde_json::to_string_pretty(report) {
         Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("(failed to serialize topology: {e})"),
+        Err(e) => lossy_eprintln!("(failed to serialize topology: {e})"),
     }
 }
 

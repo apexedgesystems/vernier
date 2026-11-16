@@ -130,6 +130,9 @@ pub enum Error {
     Parse(String),
     InvalidArgs(String),
     ToolNotFound(String),
+    /// A `.bench.yaml` that cannot be read or used; names the file and each
+    /// problem.
+    Config(String),
     /// The benchmark ran and did not succeed; how it ended.
     Benchmark(BenchmarkExit),
     /// The benchmark succeeded and its requested profile did not.
@@ -150,6 +153,13 @@ pub enum Error {
         regressions: usize,
         missing: usize,
     },
+    /// `bench gpu-lock`: the clocks were not locked or not reset; the cause
+    /// names itself.
+    GpuLock(String),
+    /// `bench gpu-lock lock -- <command>`: a part of the wrapper's own failed
+    /// (the lock, the command's start, the reset); the cause names itself.
+    /// bench exits `gpu_lock::WRAPPER_FAILED` on it.
+    GpuLockWrap(String),
 }
 
 impl std::error::Error for Error {}
@@ -162,6 +172,7 @@ impl fmt::Display for Error {
             Error::Parse(s) => write!(f, "parse error: {s}"),
             Error::InvalidArgs(s) => write!(f, "invalid arguments: {s}"),
             Error::ToolNotFound(s) => write!(f, "tool not found: {s}"),
+            Error::Config(s) => write!(f, "{s}"),
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
             Error::Sanitizer(failure) => write!(f, "{failure}"),
@@ -180,6 +191,19 @@ impl fmt::Display for Error {
                 "--fail-on-regression: {regressions} regression(s), \
                  {missing} baseline test(s) missing from the candidate"
             ),
+            Error::GpuLock(s) | Error::GpuLockWrap(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl Error {
+    /// The status bench exits with on this error: `gpu_lock::WRAPPER_FAILED`
+    /// for a failure of gpu-lock's wrapper, whose other statuses are its
+    /// command's own; 1 for any other.
+    pub fn exit_status(&self) -> u8 {
+        match self {
+            Error::GpuLockWrap(_) => gpu_lock::WRAPPER_FAILED,
+            _ => 1,
         }
     }
 }
@@ -394,6 +418,71 @@ pub(crate) fn tempfile_dir(name: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the test directory");
     dir
+}
+
+/// A FIFO a test makes in its own folder and opens for reading, without
+/// waiting. The processes a test script starts open it too (`exec 9<>`) and
+/// keep it open while they run, so whether they still run is read from it,
+/// not from their process ids: it reads its end once every process that
+/// opened it has ended. Before any process has opened it, it reads its end as
+/// well, so a test asks only once its script says the FIFO is open.
+#[cfg(all(test, unix))]
+pub(crate) struct HeldFifo {
+    reader: std::fs::File,
+}
+
+#[cfg(all(test, unix))]
+impl HeldFifo {
+    /// Make the FIFO at @p path and open it for reading, without waiting.
+    pub(crate) fn new(path: &Path) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("a path without NUL");
+        // SAFETY: mkfifo(3) only reads the path, a NUL-terminated string that
+        // lives through the call.
+        let made = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
+        assert_eq!(
+            made,
+            0,
+            "mkfifo {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        );
+        let reader = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(path)
+            .expect("open the FIFO");
+        Self { reader }
+    }
+
+    /// Whether a process holds it open now.
+    pub(crate) fn held(&mut self) -> bool {
+        !self.ends_within(std::time::Duration::ZERO)
+    }
+
+    /// Whether every process that opened it has closed it within @p within:
+    /// it then reads its end.
+    pub(crate) fn ends_within(&mut self, within: std::time::Duration) -> bool {
+        use std::io::Read;
+
+        let until = std::time::Instant::now() + within;
+        let mut chunk = [0u8; 64];
+        loop {
+            match self.reader.read(&mut chunk) {
+                Ok(0) => return true,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= until {
+                        return false;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(e) => panic!("read the FIFO: {e}"),
+            }
+        }
+    }
 }
 
 #[cfg(all(test, unix))]

@@ -17,6 +17,11 @@ Usage:
     bench-plot report results.csv --output report/
     bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
+A row whose plotted timing cells do not all hold finite numbers is left out of
+every plot, and stderr names it, saying when its every timing cell is empty, as
+in a run under Nsight Compute; a file with no such row left is refused, naming
+the file.
+
 Dependencies:
     pip install pandas matplotlib seaborn
     Optional: pip install plotly (for interactive dashboards)
@@ -24,6 +29,9 @@ Dependencies:
 
 import argparse
 import json
+import math
+import re
+import sys
 from pathlib import Path
 from typing import List
 
@@ -46,12 +54,26 @@ except ImportError:
 # =============================================================================
 
 
+# The columns besides the timing that the plots read as numbers. Text in one of
+# them reads as no number, as pandas's default missing markers did; an infinity
+# stays one.
+PLOTTED_OTHER_NUMBERS = ("msgBytes", "kernelTimeUs", "transferTimeUs", "speedupVsCpu", "occupancy")
+
+
 def load_csv(path: Path) -> pd.DataFrame:
-    """Load and validate a benchmark CSV file."""
+    """Load and validate a benchmark CSV file.
+
+    Only an empty field is missing, as `bench summary` reads the file: text
+    that pandas takes for a missing value by default (`NA`, `nan`, `NULL`,
+    `None`, ...) stays text, so a test of that name keeps it and a timing cell
+    holding it is damaged, not empty. The columns of `PLOTTED_OTHER_NUMBERS`
+    are made numbers, and `OTHER_NUMBERS_OF_THEIR_KIND` is added for
+    `untimed_rows`.
+    """
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, keep_default_na=False, na_values=[""])
 
     required = {"test", "wallMedian", "wallCV", "callsPerSecond"}
     missing = required - set(df.columns)
@@ -61,6 +83,10 @@ def load_csv(path: Path) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No data rows in {path}")
 
+    for column in PLOTTED_OTHER_NUMBERS:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    df[OTHER_NUMBERS_OF_THEIR_KIND] = other_numbers_of_their_kind(path, df)
     return df
 
 
@@ -72,6 +98,148 @@ def load_csvs_from_list(paths: List[Path]) -> pd.DataFrame:
         df["_source"] = p.stem
         frames.append(df)
     return pd.concat(frames, ignore_index=True)
+
+
+# =============================================================================
+# Rows Without Timing
+# =============================================================================
+
+# A row's timing cells. The benchmark leaves every one of them empty in a row
+# it did not time, as it does under Nsight Compute (ncu), whose instrumentation
+# adds to what the benchmark would measure.
+TIMING_COLUMNS = (
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallP99",
+    "wallP999",
+    "wallMin",
+    "wallMax",
+    "wallMean",
+    "wallStddev",
+    "wallCV",
+    "callsPerSecond",
+    "stable",
+)
+
+# The timing cells the plots and the report's summary read.
+PLOTTED_TIMING = (
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallMin",
+    "wallMax",
+    "wallCV",
+    "callsPerSecond",
+)
+
+# A row's other numbers, which the benchmark writes in every row it times or
+# leaves untimed, and the kind `bench summary` reads each as: the counts as
+# whole numbers from 0 to 4294967295 (u32), cvThreshold as a finite number
+# (f64), each parsed as written, untrimmed.
+COUNTS = ("cycles", "repeats", "warmup", "threads", "msgBytes")
+OTHER_NUMBERS = COUNTS + ("cvThreshold",)
+LARGEST_COUNT = 4294967295
+LARGEST_COUNT_DIGITS = len(str(LARGEST_COUNT))
+# What Rust's str::parse takes for a u32 and for an f64 (its literal grammar).
+WHOLE_NUMBER = re.compile(r"\+?[0-9]+")
+FLOAT_LITERAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+# The column load_csv adds, true where every other number of the row holds a
+# value of its kind; timed_rows leaves it out of the rows it returns.
+OTHER_NUMBERS_OF_THEIR_KIND = "_otherNumbersOfTheirKind"
+
+
+def of_its_kind(column: str, text) -> bool:
+    """Whether @p text, a cell of the other number @p column as written, holds
+    a value of the kind `bench summary` reads that column as. An empty field
+    holds none. A count's digits are read whatever their number: leading zeros
+    do not count, and more significant digits than the largest count has make
+    it too large, so int() is never asked for a longer number than that."""
+    if not isinstance(text, str):
+        return False
+    if column in COUNTS:
+        if WHOLE_NUMBER.fullmatch(text) is None:
+            return False
+        digits = text.lstrip("+").lstrip("0")
+        return len(digits) <= LARGEST_COUNT_DIGITS and int(digits or "0") <= LARGEST_COUNT
+    return FLOAT_LITERAL.fullmatch(text) is not None and math.isfinite(float(text))
+
+
+def other_numbers_of_their_kind(path: Path, df: pd.DataFrame) -> pd.Series:
+    """For each row of @p df, read from @p path, whether every other number
+    the file has holds a value of its kind (`of_its_kind`). The cells are read
+    again as text: pandas's own reading takes `1e3`, `1.0`, ` 5` and `+5` alike
+    for numbers, where `bench summary` takes only some of them."""
+    present = [c for c in OTHER_NUMBERS if c in df.columns]
+    if not present:
+        return pd.Series(True, index=df.index)
+    written = pd.read_csv(path, keep_default_na=False, na_values=[""], dtype=str, usecols=present)
+    return written.apply(lambda cells: cells.map(lambda text: of_its_kind(cells.name, text))).all(
+        axis=1
+    )
+
+
+# What may explain a row of the untimed shape. The file cannot say what ran, so
+# this says what the shape is like, not that the row came from such a run.
+UNTIMED_REASON = (
+    "every timing cell is empty, as in a run under Nsight Compute (ncu), "
+    "which the benchmark does not time"
+)
+
+
+def numbers(df: pd.DataFrame, columns) -> pd.DataFrame:
+    """@p df's @p columns (those it has) as finite numbers: a cell that holds
+    none, or holds an infinity, is NaN."""
+    present = [c for c in columns if c in df.columns]
+    values = df[present].apply(pd.to_numeric, errors="coerce")
+    return values.mask(values.abs() == float("inf"))
+
+
+def untimed_rows(df: pd.DataFrame) -> pd.Series:
+    """Whether each row of @p df, as load_csv gives it, has the shape the
+    benchmark gives a row it did not time: every timing cell the file has is
+    empty, and every other number it has holds a value of its kind."""
+    timing = [c for c in TIMING_COLUMNS if c in df.columns]
+    if not timing:
+        return pd.Series(False, index=df.index)
+    empty = df[timing].isna().all(axis=1)
+    return empty & df[OTHER_NUMBERS_OF_THEIR_KIND]
+
+
+def timed_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
+    """The rows of @p df whose plotted timing cells all hold finite numbers,
+    which every plot draws, those cells as numbers.
+
+    Every other row is left out, and stderr names it: a row of the untimed
+    shape (`untimed_rows`) with what may explain it, any other with an empty
+    or damaged timing cell. When no row is left, the command stops with a
+    message naming @p source, as `bench summary` refuses such a row.
+    """
+    timing = numbers(df, PLOTTED_TIMING)
+    unplottable = timing.isna().any(axis=1)
+    untimed = untimed_rows(df) & unplottable
+    damaged = unplottable & ~untimed
+    if unplottable.all():
+        reason = (
+            f"{UNTIMED_REASON}; if the run was under ncu, plot a run without it"
+            if untimed.all()
+            else "every row has an empty or damaged timing cell"
+        )
+        raise SystemExit(f"bench-plot: {source}: no row has timing: {reason}")
+    for rows, why in (
+        (untimed, f"rows without timing ({UNTIMED_REASON})"),
+        (damaged, "rows with an empty or damaged timing cell"),
+    ):
+        if rows.any():
+            names = ", ".join(df.loc[rows, "test"].astype(str))
+            print(
+                f"bench-plot: {source}: left out {int(rows.sum())} {why}: {names}",
+                file=sys.stderr,
+            )
+    kept = df[~unplottable].drop(columns=OTHER_NUMBERS_OF_THEIR_KIND)
+    kept[timing.columns] = timing[~unplottable]
+    return kept
 
 
 # =============================================================================
@@ -656,7 +824,7 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
 
 def cmd_plot(args):
     """Generate standalone plots from CSV."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -673,7 +841,7 @@ def cmd_plot(args):
 
 def cmd_dashboard(args):
     """Generate interactive HTML dashboard."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     create_interactive_dashboard(df, output_path)
@@ -681,14 +849,14 @@ def cmd_dashboard(args):
 
 def cmd_report(args):
     """Generate full analysis report."""
-    df = load_csv(Path(args.csv))
+    df = timed_rows(load_csv(Path(args.csv)), args.csv)
     generate_report(df, Path(args.output))
 
 
 def cmd_scaling(args):
     """Generate payload size scaling analysis."""
     csv_paths = [Path(p) for p in args.csvs]
-    df_combined = load_csvs_from_list(csv_paths)
+    df_combined = timed_rows(load_csvs_from_list(csv_paths), ", ".join(args.csvs))
     output_path = Path(args.output)
     interactive = output_path.suffix == ".html" and HAS_PLOTLY
     plot_scaling_analysis(df_combined, output_path, interactive=interactive)

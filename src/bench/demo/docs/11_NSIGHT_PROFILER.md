@@ -9,11 +9,13 @@ reported `bench 1.0.3`. Steps 2, 3 and 4 come from one later session,
 2026-09-29 (UTC), of a later development tree at the same version, with the
 clocks locked as in Step 1. The two `bench compare` outputs were produced from
 the saved CSVs of the runs they show, by the CLI of a later development tree,
-which also reports `bench 1.0.3`. The console output of Steps 2 and 4, and the
-two runs quoted first under If It Does Not Match, come from a session of
+which also reports `bench 1.0.3`. The console output of Step 2, and the two
+runs quoted first under If It Does Not Match, come from a session of
 2026-10-03 (UTC) on a later development tree at the same version, with Step 1's
-command run just before them and the clocks locked the same way; the reports
-and summaries those steps show are the 2026-09-29 session's.
+command run just before them and the clocks locked the same way; Step 4's comes
+from a session of 2026-11-16 (UTC), run the same way on a later development
+tree at the same version. The reports and summaries those steps show are the
+2026-09-29 session's.
 
 ## Overview
 
@@ -341,7 +343,7 @@ sudo chown -R "$(id -u):$(id -g)" bench-out
 Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler --cycles 3 --repeats 1 --profile ncu --gtest_filter=NsightProfiler.Kernel*
 ...
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
-==PROF== Connected to process 92733 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
+==PROF== Connected to process 101515 (.../build/bin/ptests/BenchDemo_Gpu_02_NsightProfiler)
 
 [WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
@@ -352,13 +354,22 @@ Running: ncu -o bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile -f 
 ...
 [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
 ...
-[NsightProfiler.KernelOneThreadPerBlock]  912121.826 us/call  CV=0.0%  ~1 calls/s  (p10=912121.826 p90=912121.826 sd=0.000)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (17366 ms)
+[bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+[NsightProfiler.KernelOneThreadPerBlock]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (17705 ms)
 ...
-[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12267 ms)
+[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (12292 ms)
 ...
+=========================================================================================
+Test                                      Median (us)     CV%     Calls/s  Status
+-----------------------------------------------------------------------------------------
+NsightProfiler.KernelOneThreadPerBlock              -       -           -  NOT TIMED
+NsightProfiler.Kernel256ThreadsPerBlock             -       -           -  NOT TIMED
+-----------------------------------------------------------------------------------------
+2 tests | 0 stable | 0 unstable | 2 not timed
+==PROF== Disconnected from process 101515
 ==PROF== Report: .../bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep
-[bench] ncu wrote bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep (1507892 bytes)
+[bench] ncu wrote bench-out/BenchDemo_Gpu_02_NsightProfiler.ncu/kernel_profile.ncu-rep (1508721 bytes)
 ```
 
 The `[WARN]` line is Step 2's readiness report, here for `ncu`, which started
@@ -366,8 +377,10 @@ this process; run as root, it reads the counters, and the line names no
 restriction (see [If It Does Not Match](#if-it-does-not-match)). `bench run`
 checks the report after the process exits and names its size. The run took
 30 seconds for 28 profiled launches, 14 of each
-shape (the harness's warmup launches and the three measured ones). The times it prints
-are `ncu`'s replays, not the kernel's: the timings are Step 1's. The eight
+shape (the harness's warmup launches and the three measured ones). It prints no time:
+under `ncu` the harness times nothing, says why once (the `[bench]` line) and
+prints `not timed` for each test and `NOT TIMED` in its table, since `ncu`'s
+work adds to every measured call; the timings are Step 1's. The eight
 `mcc__` metrics are not readable on this rig; the sections below do not use
 them. Read the report with the same `ncu`:
 

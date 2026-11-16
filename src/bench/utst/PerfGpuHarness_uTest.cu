@@ -808,6 +808,107 @@ TEST_F(PerfGpuHarnessTest, CuptiStandsDownUnderASession) {
   }
 }
 
+/* ----------------------------- Under Nsight Compute ----------------------------- */
+
+namespace {
+
+/** @brief The console line of a kernel row the harness did not time. */
+std::string untimedLine(const std::string& testName) {
+  return "[" + testName + "]  not timed: Nsight Compute (ncu) profiles this process\n";
+}
+
+/**
+ * @brief Measures a transferring kernel, with a launch configuration, in a
+ *        case of @p suite (which has a baseline), under whatever session the
+ *        environment names; returns its row and what it printed to stdout.
+ */
+std::pair<ub::PerfRow, std::string>
+measureUnderSession(const ub::PerfConfig& cfg, const std::string& suite, SaxpyFixtureData& data) {
+  ub::PerfGpuCase perf{suite + ".Kernel", cfg};
+  perf.cudaWarmup(data.launch());
+  ::testing::internal::CaptureStdout();
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy")
+                        .withLaunchConfig(dim3((ELEMENTS + BLOCK - 1) / BLOCK), dim3(BLOCK))
+                        .withHostToDevice(data.hostX(), data.deviceX(), SaxpyFixtureData::bytes())
+                        .withDeviceToHost(data.deviceY(), data.hostY(), SaxpyFixtureData::bytes())
+                        .measure());
+  std::string printed = ::testing::internal::GetCapturedStdout();
+  auto row = ub::PerfRegistry::instance().take();
+  EXPECT_TRUE(row.has_value()) << "the harness published no row";
+  return {row.value_or(ub::PerfRow{}), printed};
+}
+
+} // namespace
+
+/**
+ * @test Under Nsight Compute, bench run's ncu route or an ncu wrap typed by
+ *       hand, a kernel row's timing cells and the values computed from them
+ *       stay empty and its console line says it is not timed, while the cells
+ *       that are no timing stay; under Nsight Systems the row is timed
+ */
+TEST_F(PerfGpuHarnessTest, NsightComputeLeavesTheTimingCellsEmpty) {
+  const YieldEnvCleared CLEARED;
+  SaxpyFixtureData data;
+  const struct {
+    const char* name;
+    const char* value;
+    bool timed;
+  } SESSIONS[] = {{"VERNIER_EXTERNAL_WRAP", "ncu", false},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152", false},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521", true}};
+  for (const auto& session : SESSIONS) {
+    const std::string SUITE = uniqueSuite("GpuUnderSession");
+    static_cast<void>(recordBaseline(SUITE, "CpuBaseline", 4));
+    const ScopedEnv SET(session.name, session.value);
+    const auto [ROW, PRINTED] = measureUnderSession(cfg_, SUITE, data);
+    const std::string WHAT = std::string(session.name) + "=" + session.value;
+    EXPECT_EQ(ROW.timed, session.timed) << WHAT;
+    EXPECT_EQ(ROW.kernelTimeUs.has_value(), session.timed) << WHAT;
+    EXPECT_EQ(ROW.transferTimeUs.has_value(), session.timed) << WHAT;
+    EXPECT_EQ(ROW.speedupVsCpu.has_value(), session.timed) << WHAT;
+    EXPECT_EQ(ROW.memBandwidthGBs.has_value(), session.timed) << WHAT;
+    EXPECT_EQ(PRINTED.find(untimedLine(SUITE + ".Kernel")) == std::string::npos, session.timed)
+        << WHAT << ", stdout said:\n"
+        << PRINTED;
+    EXPECT_EQ(PRINTED.find(" us/call ") != std::string::npos, session.timed) << WHAT;
+    // What is no timing stays.
+    EXPECT_TRUE(ROW.gpuModel.has_value()) << WHAT;
+    EXPECT_TRUE(ROW.occupancy.has_value()) << WHAT;
+    EXPECT_EQ(ROW.h2dBytes, std::optional<std::size_t>(SaxpyFixtureData::bytes())) << WHAT;
+    EXPECT_EQ(ROW.deviceCount, std::optional<int>(1)) << WHAT;
+  }
+}
+
+/**
+ * @test Under Nsight Compute a multi-GPU row leaves its speedup, its scaling
+ *       efficiency and its kernel time empty, and its console block says it
+ *       is not timed
+ */
+TEST_F(PerfGpuHarnessTest, NsightComputeLeavesTheMultiGpuCellsEmpty) {
+  const YieldEnvCleared CLEARED;
+  const ScopedEnv NCU("VERNIER_EXTERNAL_WRAP", "ncu");
+  const std::string SUITE = uniqueSuite("GpuMultiUnderNcu");
+  static_cast<void>(recordBaseline(SUITE, "CpuBaseline", 4));
+  SaxpyFixtureData data;
+  ub::PerfGpuCase gpuCase{SUITE + ".MultiGpu", cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  ::testing::internal::CaptureStdout();
+  static_cast<void>(
+      gpuCase.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure());
+  const std::string PRINTED = ::testing::internal::GetCapturedStdout();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.timed);
+  EXPECT_FALSE(ROW.kernelTimeUs.has_value());
+  EXPECT_FALSE(ROW.speedupVsCpu.has_value());
+  EXPECT_FALSE(ROW.multiGpuEfficiency.has_value());
+  EXPECT_FALSE(ROW.p2pBandwidthGBs.has_value());
+  EXPECT_EQ(ROW.deviceCount, std::optional<int>(1));
+  EXPECT_NE(PRINTED.find("Not timed: Nsight Compute (ncu) profiles this process\n"),
+            std::string::npos)
+      << PRINTED;
+  EXPECT_EQ(PRINTED.find("Scaling efficiency"), std::string::npos) << PRINTED;
+}
+
 /** @test VERNIER_DISABLE_CUPTI set to a false spelling, in any case, or to nothing keeps it on */
 TEST_F(PerfGpuHarnessTest, CuptiDisableZeroFalseOrEmptyKeepsCollecting) {
   const YieldEnvCleared CLEARED;
@@ -1016,6 +1117,53 @@ TEST_F(PerfGpuHarnessDeathTest, ACollectorThatCannotCollectIsStatedOnce) {
   const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
   GTEST_FLAG_SET(death_test_style, "threadsafe");
   EXPECT_EXIT(reportCuptiStatements(cfg_, STATEMENT), ::testing::ExitedWithCode(0), EXPECTED);
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
+namespace {
+
+/**
+ * @brief In a process of its own: two kernel rows under Nsight Compute, and
+ *        how often the run said why their cells stay empty; exits 0.
+ */
+[[noreturn]] void reportUntimedStatements(const ub::PerfConfig& cfg) {
+  std::string captured;
+  {
+    SaxpyFixtureData data;
+    vernier::bench::test::StderrCapture capture;
+    for (int i = 0; i < 2; ++i) {
+      ub::PerfGpuCase perf{uniqueSuite("GpuUntimedStatement") + ".Kernel", cfg};
+      perf.cudaWarmup(data.launch());
+      static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+      static_cast<void>(ub::PerfRegistry::instance().take());
+    }
+    captured = capture.text();
+  }
+  const std::string STATEMENT =
+      "[bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what "
+      "host timers and CUDA events measure, so no measurement is timed: every row's "
+      "wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, "
+      "wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, "
+      "transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. "
+      "ncu's own measurements are in its report.\n";
+  std::size_t statements = 0;
+  for (std::size_t at = captured.find(STATEMENT); at != std::string::npos;
+       at = captured.find(STATEMENT, at + 1)) {
+    ++statements;
+  }
+  std::fprintf(stderr, "untimed statements=%zu\n", statements);
+  std::exit(0);
+}
+
+} // namespace
+
+/** @test Why the cells stay empty under Nsight Compute is said once per process */
+TEST_F(PerfGpuHarnessDeathTest, NsightComputeIsStatedOncePerProcess) {
+  const YieldEnvCleared CLEARED;
+  const ScopedEnv NCU("VERNIER_EXTERNAL_WRAP", "ncu");
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportUntimedStatements(cfg_), ::testing::ExitedWithCode(0), "untimed statements=1");
   GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
 }
 

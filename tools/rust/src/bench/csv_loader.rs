@@ -14,7 +14,9 @@
 //! A caller that computes from or presents a numeric column states how it
 //! needs the column (`Need`) and loads with `load_csv_strict`: a row that
 //! falls short is an error naming the file, line, test, column and value,
-//! rather than a default or a NaN that looks like a measurement.
+//! rather than a default or a NaN that looks like a measurement. A row whose
+//! every timing cell is empty, as a run under Nsight Compute leaves it, says
+//! so.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -181,6 +183,63 @@ fn unmet(column: &str, found: Found<'_>, need: Need, header_len: usize) -> Optio
     }
 }
 
+/// A row's timing cells, of those a `BenchRow` reads: the benchmark leaves
+/// every one of them empty in a row it did not time, as it does in each row
+/// of a run under Nsight Compute (ncu).
+const CAPTURE_EMPTY_COLUMNS: [&str; 12] = [
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallP99",
+    "wallP999",
+    "wallMin",
+    "wallMax",
+    "wallMean",
+    "wallStddev",
+    "wallCV",
+    "callsPerSecond",
+    "stable",
+];
+
+/// Whether the row has the shape the benchmark gives a row it did not time:
+/// every timing cell the header names (`CAPTURE_EMPTY_COLUMNS`, at least one)
+/// is empty, and every other number the row was read for (`found`) is a
+/// number or a column the header lacks. The benchmark writes that shape
+/// only for a run under Nsight Compute, whose instrumentation adds to what
+/// host timers and CUDA events measure, whatever profiled the run and with
+/// or without profile columns (ncu started by hand, without --profile,
+/// writes none). A row that keeps some timing, or holds a damaged cell
+/// besides, does not have it.
+fn untimed(
+    record: &csv::StringRecord,
+    hmap: &HashMap<String, usize>,
+    found: &[(&'static str, Found<'_>)],
+) -> bool {
+    let timing: Vec<usize> = CAPTURE_EMPTY_COLUMNS
+        .iter()
+        .filter_map(|column| hmap.get(*column).copied())
+        .collect();
+    !timing.is_empty()
+        && timing.iter().all(|&i| record.get(i) == Some(""))
+        && found
+            .iter()
+            .filter(|(name, _)| !CAPTURE_EMPTY_COLUMNS.contains(name))
+            .all(|(_, held)| matches!(held, Found::Value | Found::NoColumn))
+}
+
+/// What may explain `column`'s emptiness in a row of the untimed shape
+/// (`untimed`), or None when the column is no timing cell or the row does
+/// not have the shape. The file cannot say what ran, so the note says what
+/// the shape is like, and what to do if the run was such a run, not that
+/// the row came from one.
+fn capture_note(column: &str, untimed: bool) -> Option<&'static str> {
+    (untimed && CAPTURE_EMPTY_COLUMNS.contains(&column)).then_some(
+        "; every timing cell of the row is empty, as in a run under Nsight Compute (ncu), \
+         which the benchmark does not time; if the run was under ncu, time the benchmark in a \
+         run without it",
+    )
+}
+
 /// Why a test name cannot identify a row, or None when it can. The name is
 /// only checked: a name with spaces around it is kept, as a different test
 /// from the same name without them.
@@ -261,7 +320,10 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
 /// default `load_csv` gives an unreadable field, or a NaN, from a measured
 /// value, so it names the column here with how it needs it. A row that falls
 /// short is an error naming the file, the line, the test, the column and
-/// what the field held. Every other column is read as `load_csv` reads it.
+/// what the field held; an empty timing cell in a row whose every timing
+/// cell is empty and whose other numbers are sound, as the benchmark writes
+/// a row it did not time, adds that a run under Nsight Compute leaves such
+/// a row. Every other column is read as `load_csv` reads it.
 pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchRow>, Error> {
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
@@ -306,10 +368,14 @@ pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchR
                     Error::InvalidArgs(format!("no numeric column '{column}' is read into a row"))
                 })?;
             if let Some(problem) = unmet(column, held, need, headers.len()) {
+                // A row of the untimed shape holds no other cause in a timing
+                // cell: the needed cell itself is empty.
+                let note = capture_note(column, untimed(&record, &hmap, &found));
                 return Err(Error::Parse(format!(
-                    "{}: test '{}' {problem}",
+                    "{}: test '{}' {problem}{}",
                     location(path, &record),
-                    row.test
+                    row.test,
+                    note.unwrap_or("")
                 )));
             }
         }
@@ -452,6 +518,133 @@ mod tests {
             err.to_string(),
             format!(
                 "parse error: {}, line 2: test 'A' has no wallCV value: the field is empty",
+                tmp.path().display()
+            )
+        );
+    }
+
+    /// @test An empty timing cell in a row whose every timing cell is empty,
+    /// how the benchmark writes a row it did not time, says what a run
+    /// under Nsight Compute leaves, whatever the row's profileTool, blank
+    /// included, and also in a file without profile columns (ncu started by
+    /// hand, without --profile); an empty cell of any other column, a row
+    /// that keeps some of its timing, and a timing cell holding text keep
+    /// the plain cause.
+    #[test]
+    fn strict_column_empty_in_a_capture_says_why() {
+        const PROFILED: &str =
+            "test,cycles,wallMedian,wallCV,callsPerSecond,profileTool,profileDir";
+        const UNPROFILED: &str = "test,cycles,wallMedian,wallCV,callsPerSecond";
+        const NEEDS: [(&str, Need); 3] = [
+            ("cycles", Need::Required),
+            ("wallMedian", Need::Required),
+            ("wallCV", Need::Required),
+        ];
+        const NOTE: &str = "; every timing cell of the row is empty, as in a run under Nsight \
+                            Compute (ncu), which the benchmark does not time; if the run was \
+                            under ncu, time the benchmark in a run without it";
+        for (header, row, cause, noted) in [
+            (
+                PROFILED,
+                "Saxpy.G1,2,,,,nsight,bench-out/b.ncu",
+                "has no wallMedian value: the field is empty",
+                true,
+            ),
+            (
+                UNPROFILED,
+                "Saxpy.G1,2,,,",
+                "has no wallMedian value: the field is empty",
+                true,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,2,,,,perf,bench-out/b.perf",
+                "has no wallMedian value: the field is empty",
+                true,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,2,,,,,",
+                "has no wallMedian value: the field is empty",
+                true,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,2,1,,,nsight,bench-out/b.ncu",
+                "has no wallCV value: the field is empty",
+                false,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,,1,0.1,1,nsight,bench-out/b.ncu",
+                "has no cycles value: the field is empty",
+                false,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,,,,,nsight,bench-out/b.ncu",
+                "has no cycles value: the field is empty",
+                false,
+            ),
+            (
+                PROFILED,
+                "Saxpy.G1,2,n/a,,,nsight,bench-out/b.ncu",
+                "has wallMedian 'n/a', which is not a number",
+                false,
+            ),
+        ] {
+            let timed = if header == PROFILED {
+                "Cpu.Case,2,1,0.1,1,nsight,bench-out/b.ncu"
+            } else {
+                "Cpu.Case,2,1,0.1,1"
+            };
+            let tmp = csv_with(header, &[timed, row]);
+            let err = load_csv_strict(tmp.path(), &NEEDS).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!(
+                    "parse error: {}, line 3: test 'Saxpy.G1' {cause}{}",
+                    tmp.path().display(),
+                    if noted { NOTE } else { "" }
+                ),
+                "{header}: {row}"
+            );
+        }
+    }
+
+    /// @test A row of the untimed shape whose other numbers are damaged, a
+    /// non-timing cell not a number, empty, not finite or cut off, keeps the
+    /// plain cause, as does a file without timing columns; the same row with
+    /// sound numbers says what a run under Nsight Compute leaves.
+    #[test]
+    fn strict_column_empty_in_a_damaged_row_keeps_the_plain_cause() {
+        const HEADER: &str = "test,cycles,wallMedian,wallCV,callsPerSecond,cvThreshold";
+        const NEEDS: [(&str, Need); 2] =
+            [("wallMedian", Need::Required), ("wallCV", Need::Required)];
+        const CAUSE: &str = "has no wallMedian value: the field is empty";
+        for (row, noted) in [
+            ("Saxpy.G1,2,,,,0.1", true),
+            ("Saxpy.G1,x,,,,0.1", false),
+            ("Saxpy.G1,,,,,0.1", false),
+            ("Saxpy.G1,2,,,,nan", false),
+            ("Saxpy.G1,2,,,", false),
+        ] {
+            let tmp = csv_with(HEADER, &[row]);
+            let err = load_csv_strict(tmp.path(), &NEEDS).unwrap_err().to_string();
+            assert!(
+                err.starts_with(&format!(
+                    "parse error: {}, line 2: test 'Saxpy.G1' {CAUSE}",
+                    tmp.path().display()
+                )),
+                "{row}: {err}"
+            );
+            assert_eq!(err.contains("Nsight Compute"), noted, "{row}: {err}");
+        }
+        let tmp = csv_with("test,cycles,repeats", &["Saxpy.G1,2,2"]);
+        assert_eq!(
+            load_csv_strict(tmp.path(), &NEEDS).unwrap_err().to_string(),
+            format!(
+                "parse error: missing required column 'wallMedian' in {}",
                 tmp.path().display()
             )
         );

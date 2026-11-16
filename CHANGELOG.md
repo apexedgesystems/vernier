@@ -415,6 +415,54 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   binary's document alone, and a document that does not parse is an error.
   **Action needed:** read the `[require]` lines from stderr when `--json` is
   given.
+- `bench gpu-lock lock -- <command>` resets the clocks after the command ends
+  even when SIGINT, SIGTERM or SIGHUP interrupts the run, and a reset that does
+  not happen fails the run and says how to reset the clocks by hand.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` applies `.bench.yaml`'s `gtest_filter` and `target_time`, and
+  `bench run` and `bench profile-all` find short binary names under its
+  `bin_roots` and `bin_subdirs`; a `--quick` on their command line takes
+  precedence over the file's cycles, repeats and target_time.
+  **Action needed:** `bench run` passes a file's `gtest_filter`, which takes
+  precedence over `GTEST_FILTER`; remove the key to filter through the
+  environment.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench` keeps its documented exit status when it cannot write to stderr,
+  as to a pipe whose reader is gone, instead of exiting 101.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` and `bench profile-all` stop before starting anything on a
+  `.bench.yaml` they cannot read or use, naming the file, line and key,
+  instead of running on defaults; `bench config-validate` exits 1 on the same
+  problems. **Action needed:** correct what `bench config-validate` fails.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- A relative `profile_output_dir` in `.bench.yaml` is read from the file's
+  folder, as `bin_roots` is, wherever `bench run` or `bench profile-all` runs
+  below it, instead of from the working directory.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench gpu-lock lock -- <command>` exits with the command's own status,
+  128 + N when signal N ends it, and keeps 125 for its own failures: the lock,
+  the command's start or the reset. **Action needed:** a script that tested
+  for 1 now sees the command's own status.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` and `bench profile-all` take a short binary name from the first
+  root with a match, in the order `bin_roots` or `VERNIER_BENCH_BIN_ROOTS`
+  lists them, where the first match in sorted order across all roots was
+  taken. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run --profile ncu` selects Nsight Compute sections and metrics and
+  runs a kernel replay that collects its whole metric list.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- A run under Nsight Compute leaves timing and every value derived from it
+  empty. **Action needed:** measure performance in a run without ncu, and
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench summary` and `bench compare` say when a row's timing cells are all
+  empty, as a run under Nsight Compute leaves them, and `bench run` refuses
+  `--analyze` under ncu. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench-plot` leaves out and names each row without plottable timing, such
+  as the rows of a run under Nsight Compute, and refuses a file with none.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench doctor`'s row for an Nsight Compute request says that no row of the
+  run is timed. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where
