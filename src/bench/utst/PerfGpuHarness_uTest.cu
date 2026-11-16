@@ -3479,6 +3479,51 @@ TEST_F(PerfGpuHarnessTest, P2PCellIsEmptyWithoutAPeerCopy) {
       << "the cell holds " << ROW.p2pBandwidthGBs.value_or(-1.0);
 }
 
+/* ----------------------------- Multi-GPU Speedup ----------------------------- */
+
+/**
+ * @test On two devices a multi-GPU row's speedupVsCpu is still the baseline
+ *       over the row's own wallMedian, its first device's median, and not
+ *       the devices' speedups summed. Under the emulated second device,
+ *       device 0 spins 20 us a launch and device 1 80 us: wallMedian is
+ *       device 0's median and the row's speedup the baseline over it, while
+ *       totalSpeedupVsCpu sums both devices' quotients; the sum, the mean or
+ *       device 1's quotient in the row's place would each differ
+ */
+TEST_F(PerfGpuHarnessTest, TheRowsSpeedupOnTwoDevicesIsTheBaselineOverItsOwnTime) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string SUITE = uniqueSuite("GpuMultiSpeedup");
+  const double BASELINE_US = recordBaseline(SUITE, "CpuBaseline", 1);
+  ASSERT_GT(BASELINE_US, 0.0);
+  ub::PerfGpuCase perf{SUITE + ".TwoDevices", cfg_};
+  // Device 0 spins 20 us a launch, device 1 80 us.
+  const auto UNEQUAL = [](int deviceId, cudaStream_t s) {
+    spinKernel<<<1, 1, 0, s>>>(deviceId == 0 ? 20'000ULL : 80'000ULL);
+  };
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  const ub::MultiGpuResult RESULT = perf.cudaKernelMultiGpu(2, UNEQUAL).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(recording.stop().refusedCalls, 0);
+
+  ASSERT_EQ(RESULT.perDevice.size(), 2U);
+  const double FIRST = RESULT.perDevice[0].stats.cpuStats.median;
+  const double SECOND = RESULT.perDevice[1].stats.cpuStats.median;
+  ASSERT_GT(FIRST, 0.0);
+  ASSERT_GT(SECOND, 0.0);
+  ASSERT_NE(FIRST, SECOND) << "the two devices' spins measured the same";
+  EXPECT_NEAR(RESULT.totalSpeedupVsCpu, BASELINE_US / FIRST + BASELINE_US / SECOND,
+              1e-9 * RESULT.totalSpeedupVsCpu);
+  EXPECT_EQ(ROW.stats.median, FIRST) << "the row's wallMedian is not its first device's median";
+  ASSERT_TRUE(ROW.speedupVsCpu.has_value());
+  EXPECT_NEAR(*ROW.speedupVsCpu, BASELINE_US / FIRST, 1e-9 * BASELINE_US / FIRST)
+      << "the devices' summed speedups are " << RESULT.totalSpeedupVsCpu;
+  ASSERT_TRUE(ROW.deviceCount.has_value());
+  EXPECT_EQ(*ROW.deviceCount, 2);
+}
+
 /* ----------------------------- Recorder Forwarding ----------------------------- */
 
 namespace {
