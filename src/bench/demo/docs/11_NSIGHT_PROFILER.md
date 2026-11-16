@@ -13,7 +13,13 @@ which also reports `bench 1.0.3`. The console output of Steps 2 and 4, and the
 two runs quoted first under If It Does Not Match, come from a session of
 2026-10-03 (UTC) on a later development tree at the same version, with Step 1's
 command run just before them and the clocks locked the same way; the reports
-and summaries those steps show are the 2026-09-29 session's.
+and summaries those steps show are the 2026-09-29 session's. Step 1's output,
+the reference CSV, the two `bench compare` outputs that close If It Does Not
+Match and the four runs with the clocks as found there come from a session of
+2026-11-16 (UTC) on a later development tree at the same version, whose
+collector records CUPTI's kernels in an untimed batch after the measured
+repeats; the six runs with the clocks locked that What Should Reproduce counts
+are the first session's.
 
 ## Overview
 
@@ -169,28 +175,29 @@ busy for minutes. Captured output (the reference run):
 [----------] Global test environment set-up.
 [----------] 5 tests from NsightProfiler
 [ RUN      ] NsightProfiler.G0
-[NsightProfiler.G0]  3640.375 us/call  CV=2.7%  ~275 calls/s  (p10=3430.315 p90=3696.925 sd=98.536)
-[       OK ] NsightProfiler.G0 (872 ms)
+[NsightProfiler.G0]  3605.825 us/call  CV=3.2%  ~277 calls/s  (p10=3399.210 p90=3652.325 sd=113.943)
+[       OK ] NsightProfiler.G0 (868 ms)
 [ RUN      ] NsightProfiler.G1
-[NsightProfiler.G1]  653.250 us/call  CV=2.1%  ~1.5K calls/s  (p10=650.635 p90=665.635 sd=13.597)
-[       OK ] NsightProfiler.G1 (141 ms)
+[NsightProfiler.G1]  633.850 us/call  CV=2.3%  ~1.6K calls/s  (p10=631.855 p90=646.970 sd=14.521)
+[       OK ] NsightProfiler.G1 (137 ms)
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
-[NsightProfiler.KernelOneThreadPerBlock]  2993.558 us/call  CV=0.0%  ~334 calls/s  (p10=2993.350 p90=2993.813 sd=0.188)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (659 ms)
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[NsightProfiler.KernelOneThreadPerBlock]  2989.757 us/call  CV=0.0%  ~334 calls/s  (p10=2989.286 p90=2990.749 sd=0.809)
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (716 ms)
 [ RUN      ] NsightProfiler.Kernel256ThreadsPerBlock
-[NsightProfiler.Kernel256ThreadsPerBlock]  20.174 us/call  CV=0.7%  ~49.6K calls/s  (p10=20.126 p90=20.296 sd=0.151)
+[NsightProfiler.Kernel256ThreadsPerBlock]  20.654 us/call  CV=2.8%  ~48.4K calls/s  (p10=20.566 p90=22.050 sd=0.594)
 [       OK ] NsightProfiler.Kernel256ThreadsPerBlock (24 ms)
 [ RUN      ] NsightProfiler.LaunchShapeSpeedup
-[NsightProfiler.LaunchShapeSpeedup]  1 thread/block 2993.203 us/launch  256 threads/block 20.922 us/launch  143.1x
-[       OK ] NsightProfiler.LaunchShapeSpeedup (81 ms)
-[----------] 5 tests from NsightProfiler (1779 ms total)
+[NsightProfiler.LaunchShapeSpeedup]  1 thread/block 2990.048 us/launch  256 threads/block 20.870 us/launch  143.3x
+[       OK ] NsightProfiler.LaunchShapeSpeedup (80 ms)
+[----------] 5 tests from NsightProfiler (1828 ms total)
 ...
 [  PASSED  ] 5 tests.
 ```
 
-What to read: `G0` takes 3.64 ms a call and `G1` 0.65 ms, 5.6 times less. The
-kernel alone takes 2,994 us in `G0`'s launch shape and 20.2 us in `G1`'s, and
-`LaunchShapeSpeedup`, timing both shapes the same way, reads 143.1x. So most of
+What to read: `G0` takes 3.61 ms a call and `G1` 0.63 ms, 5.7 times less. The
+kernel alone takes 2,990 us in `G0`'s launch shape and 20.7 us in `G1`'s, and
+`LaunchShapeSpeedup`, timing both shapes the same way, reads 143.3x. So most of
 `G0`'s call is its kernel. The CSV has the harness's view of the two kernel
 rows:
 
@@ -202,16 +209,17 @@ awk -F, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; print "test wallMedian
 
 ```
 test                                     wallMedian  kernelTimeUs  occupancy  cuptiKernelLaunches
-NsightProfiler.G0                        3640.38
-NsightProfiler.G1                        653.25
-NsightProfiler.KernelOneThreadPerBlock   2993.56     2993.557644   0.500000   200
-NsightProfiler.Kernel256ThreadsPerBlock  20.1736     20.173600     1.000000   200
+NsightProfiler.G0                        3605.82
+NsightProfiler.G1                        633.85
+NsightProfiler.KernelOneThreadPerBlock   2989.76     2989.756870   0.500000   20
+NsightProfiler.Kernel256ThreadsPerBlock  20.6544     20.654400     1.000000   20
 ```
 
 `occupancy` is the harness's estimate from the launch shape and the device's
 limits: 0.5 for one thread per block, 1.0 for 256. `G0` and `G1` are timed as
-plain calls, so their GPU cells are empty. The CUPTI collector counted the 200
-measured launches of each kernel row (20 cycles times 10 repeats).
+plain calls, so their GPU cells are empty. The CUPTI collector counted the 20
+launches of the untimed batch the harness runs after each kernel row's measured
+repeats, one for each cycle.
 
 ## Step 2: What Happened, and When (Nsight Systems)
 
@@ -617,9 +625,9 @@ refuse it (`missing required column 'test'`), and `bench-plot` stops with
 | launch shapes (Nsight Compute)                | `(1048576, 1, 1)x(1, 1, 1)` and `(4096, 1, 1)x(256, 1, 1)`                                                   | the same                                                                                                         |
 | theoretical occupancy (ncu; the CSV's column) | 50% and 100% (0.5 and 1.0)                                                                                   | depends on the GPU's limits; both occupancy checks also pass on an RTX 5000 Ada laptop GPU                       |
 | achieved occupancy (ncu)                      | 29.45% to 30.98% and 75.07% to 79.52% over 14 launches each                                                  | depends on the GPU                                                                                               |
-| kernel alone, one thread vs 256 per block     | 143.1x; 141.7x to 143.3x over six runs, clocks locked; 138.7x to 138.9x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
-| `G0` vs `G1` end to end                       | 5.6x; 4.1x to 5.7x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
-| absolute times                                | 3,640 / 653 / 2,994 / 20.2 us                                                                                | will differ                                                                                                      |
+| kernel alone, one thread vs 256 per block     | 143.3x; 141.7x to 143.3x over six runs, clocks locked; 130.0x to 139.0x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
+| `G0` vs `G1` end to end                       | 5.7x; 4.1x to 5.7x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
+| absolute times                                | 3,606 / 634 / 2,990 / 20.7 us                                                                                | will differ                                                                                                      |
 
 The demo fails if one thread per block stops being 30 times slower than 256,
 or if the occupancy estimate stops being at most 0.5 for one thread per block
@@ -715,12 +723,12 @@ conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
   ```
   Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
   ---------------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-  NsightProfiler.G0                          3640.38000    3446.97000  -193.41000     -5.3%      2.7%      0.9%  IMPROVEMENT
-  NsightProfiler.G1                           653.25000     648.10000    -5.15000     -0.8%      2.1%      0.5%  neutral
-  NsightProfiler.Kernel256ThreadsPerBlock      20.17360      20.28960    +0.11600     +0.6%      0.7%      5.9%  neutral
-  NsightProfiler.KernelOneThreadPerBlock     2993.56000    2990.93000    -2.63000     -0.1%      0.0%      0.1%  neutral
+  NsightProfiler.G0                          3605.82000    3831.47000  +225.65000     +6.3%      3.2%      1.8%  REGRESSION
+  NsightProfiler.G1                           633.85000     648.40000   +14.55000     +2.3%      2.3%     13.7%  neutral
+  NsightProfiler.Kernel256ThreadsPerBlock      20.65440      20.82000    +0.16560     +0.8%      2.8%      3.8%  neutral
+  NsightProfiler.KernelOneThreadPerBlock     2989.76000    2989.62000    -0.14000     -0.0%      0.0%      0.0%  neutral
 
-    1 improvement(s)  3 neutral
+    1 regression(s)  3 neutral
 
     Labels compare the median change against the 5.0% threshold.
     They describe the difference between two runs, not a significance test;
@@ -728,16 +736,16 @@ conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
   ```
 
 - **The clocks were not locked.** Over four runs with the clocks as found,
-  `G1` read 782 to 807 us a call with a CV near 10%, and the one-thread kernel
-  2,922 to 2,928 us. One of them against the reference:
+  `G1` read 643 to 894 us a call with a CV of 2.5% to 14.1%, and the one-thread
+  kernel 2,923 to 2,925 us. One of them against the reference:
 
   ```
   Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
   ---------------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-  NsightProfiler.G0                          3640.38000    3710.35000   +69.97000     +1.9%      2.7%      1.8%  neutral
-  NsightProfiler.G1                           653.25000     794.10000  +140.85000    +21.6%      2.1%      9.4%  REGRESSION
-  NsightProfiler.Kernel256ThreadsPerBlock      20.17360      21.04720    +0.87360     +4.3%      0.7%      5.1%  neutral
-  NsightProfiler.KernelOneThreadPerBlock     2993.56000    2927.93000   -65.63000     -2.2%      0.0%      0.0%  neutral
+  NsightProfiler.G0                          3605.82000    3518.20000   -87.62000     -2.4%      3.2%      2.6%  neutral
+  NsightProfiler.G1                           633.85000     703.10000   +69.25000    +10.9%      2.3%      8.8%  REGRESSION
+  NsightProfiler.Kernel256ThreadsPerBlock      20.65440      20.70160    +0.04720     +0.2%      2.8%      0.7%  neutral
+  NsightProfiler.KernelOneThreadPerBlock     2989.76000    2923.32000   -66.44000     -2.2%      0.0%      0.0%  neutral
 
     1 regression(s)  3 neutral
 
