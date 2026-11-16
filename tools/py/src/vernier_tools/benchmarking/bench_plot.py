@@ -32,6 +32,7 @@ import json
 import math
 import re
 import sys
+import unicodedata
 from pathlib import Path
 from typing import List
 
@@ -515,22 +516,42 @@ def plot_gpu_occupancy(df: pd.DataFrame, output_path: Path):
 # =============================================================================
 
 
-def extract_payload_size(test_name: str, msg_bytes: int = 0) -> int:
-    """Extract payload size from test name or msgBytes column."""
-    import re
+# The size a test name ends with: a number, then K, M or G for KiB, MiB or GiB
+# and an optional B, in any case. The number starts where its run of digits
+# does, so a long run is read once, not once from each of its digits.
+PAYLOAD_SIZE = re.compile(r"(?<!\d)(\d+)([KMG]?)B?$", re.IGNORECASE)
+# The largest payload a name's size is read as: the largest byte count a 64-bit
+# size holds.
+LARGEST_PAYLOAD = 2**64 - 1
+LARGEST_PAYLOAD_DIGITS = len(str(LARGEST_PAYLOAD))
 
-    match = re.search(r"(\d+)([KMG]?)B?$", test_name, re.IGNORECASE)
-    if match:
-        size = int(match.group(1))
-        suffix = match.group(2).upper()
-        if suffix == "K":
-            size *= 1024
-        elif suffix == "M":
-            size *= 1024 * 1024
-        elif suffix == "G":
-            size *= 1024 * 1024 * 1024
-        return size
-    return msg_bytes
+
+def extract_payload_size(test_name, msg_bytes=0):
+    """The payload size of a row, for the scaling plots: the size its test
+    name ends with (`PAYLOAD_SIZE`), else @p msg_bytes. A name that is not
+    text (an empty cell, or a file whose names all read as numbers) holds no
+    size, and neither does one whose size would be larger than
+    LARGEST_PAYLOAD bytes: that number is not a byte count. Leading zeros do
+    not count, so int() is never asked for more digits than LARGEST_PAYLOAD
+    has, and no name makes this raise."""
+    if not isinstance(test_name, str):
+        return msg_bytes
+    match = PAYLOAD_SIZE.search(test_name)
+    if match is None:
+        return msg_bytes
+    digits = match.group(1)
+    first = next((i for i, c in enumerate(digits) if unicodedata.decimal(c)), len(digits))
+    if len(digits) - first > LARGEST_PAYLOAD_DIGITS:
+        return msg_bytes
+    size = int(digits[first:] or "0")
+    suffix = match.group(2).upper()
+    if suffix == "K":
+        size *= 1024
+    elif suffix == "M":
+        size *= 1024 * 1024
+    elif suffix == "G":
+        size *= 1024 * 1024 * 1024
+    return size if size <= LARGEST_PAYLOAD else msg_bytes
 
 
 def plot_scaling_analysis(df: pd.DataFrame, output_path: Path, interactive: bool = False):

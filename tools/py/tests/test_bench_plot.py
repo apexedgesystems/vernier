@@ -2,6 +2,7 @@
 
 import sys
 import textwrap
+import time
 
 import pytest
 from vernier_tools.benchmarking import bench_plot
@@ -15,6 +16,9 @@ from vernier_tools.benchmarking.bench_plot import (
 # Fixtures
 # =============================================================================
 
+
+# Long enough that Python's int() refuses the digits (4300 at most).
+LONG = 5000
 
 MINIMAL_CSV = textwrap.dedent(
     """\
@@ -124,6 +128,57 @@ def test_extract_payload_size_fallback_to_msg_bytes():
 def test_extract_payload_size_case_insensitive():
     assert extract_payload_size("send1kb") == 1024
     assert extract_payload_size("SEND1KB") == 1024
+
+
+@pytest.mark.parametrize(
+    "name,expected",
+    [
+        ("Send" + "9" * LONG, 64),
+        ("Send" + "9" * LONG + "KB", 64),
+        ("Send" + "9" * 400, 64),
+        ("Send" + "0" * LONG + "5", 5),
+        ("Send" + "0" * LONG + "1K", 1024),
+        ("Send" + "٠" * LONG + "٥", 5),
+        ("Send18446744073709551615", 2**64 - 1),
+        ("Send18446744073709551616", 64),
+        ("Send17179869183G", (2**34 - 1) * 2**30),
+        ("Send17179869184G", 64),
+    ],
+    ids=[
+        "nines",
+        "nines-kb",
+        "400-nines",
+        "zeros-then-5",
+        "zeros-then-1k",
+        "arabic-indic-zeros-then-5",
+        "largest",
+        "one-past-largest",
+        "largest-whole-g",
+        "one-g-past-largest",
+    ],
+)
+def test_extract_payload_size_of_a_number_too_large_for_a_byte_count(name, expected):
+    """A name whose size would be larger than the largest byte count a 64-bit
+    size holds has none, msgBytes standing in, however many digits it has;
+    leading zeros, in any script, do not count."""
+    assert extract_payload_size(name, msg_bytes=64) == expected
+
+
+@pytest.mark.parametrize(
+    "name", [float("nan"), None, 1024, 1024.0], ids=["nan", "none", "int", "float"]
+)
+def test_extract_payload_size_of_a_name_that_is_not_text(name):
+    """An empty test cell reads as NaN, and names that all read as numbers as
+    numbers: such a name holds no size."""
+    assert extract_payload_size(name, msg_bytes=64) == 64
+
+
+def test_extract_payload_size_reads_a_long_run_of_digits_once():
+    """A name holding a run of 20000 digits that is not its size is read in
+    well under a second."""
+    started = time.perf_counter()
+    assert extract_payload_size("Send" + "1" * 20000 + "X", msg_bytes=64) == 64
+    assert time.perf_counter() - started < 1.0
 
 
 # =============================================================================
@@ -437,10 +492,6 @@ def test_a_file_of_damaged_other_numbers_is_refused_with_the_plain_reason(
     assert recorded_plots == {}
 
 
-# Long enough that Python's int() refuses the digits (4300 at most).
-LONG = 5000
-
-
 def test_other_numbers_of_thousands_of_digits_are_read_as_bench_summary_reads_them(
     tmp_path, monkeypatch, capsys, recorded_plots
 ):
@@ -495,3 +546,16 @@ def test_a_file_of_one_long_count_is_refused_as_bench_summary_reads_it(
         run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
     assert str(stopped.value) == f"bench-plot: {csv}: no row has timing: {reason}"
     assert recorded_plots == {}
+
+
+def test_scaling_places_a_row_whose_name_is_no_size_by_its_msg_bytes(tmp_path, monkeypatch):
+    """bench-plot scaling places a row whose name ends in thousands of digits
+    by its msgBytes, and a row whose name ends in a size by that size."""
+    placed = []
+    monkeypatch.setattr(
+        bench_plot, "_plot_scaling_static", lambda df, path: placed.append(list(df["payloadBytes"]))
+    )
+    first = write_csv(tmp_path / "a.csv", [TIMED_ROW.replace("Saxpy.Plain", "Send" + "9" * LONG)])
+    second = write_csv(tmp_path / "b.csv", [TIMED_ROW.replace("Saxpy.Plain", "Send1KB")])
+    run_main(monkeypatch, ["scaling", str(first), str(second), "--output", str(tmp_path / "s.png")])
+    assert placed == [[64, 1024]]
