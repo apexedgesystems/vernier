@@ -8,7 +8,8 @@
 # what the doctor and a run report for the same request, how the run ends, and
 # what the fakes were asked to do. TestBenchReadinessRun's GoogleTest cases
 # start both fixtures; each ReadinessCli.<Case> runs ReadinessFixtureTarget
-# through ReadinessCli_test.cmake.
+# through ReadinessCli_test.cmake. All are component tests: each runs a
+# benchmark end to end.
 #
 # Targets: ReadinessFixtureTarget, ReadinessCustomMainTarget (process fixtures
 #          with their own main, run only by these tests), TestBenchReadinessRun
@@ -53,6 +54,8 @@ vernier_add_gtest(
   LABELS
   benchmarking
   readiness
+  CLASS
+  component
 )
 target_compile_definitions(
   TestBenchReadinessRun
@@ -101,7 +104,7 @@ foreach (_case IN LISTS _readiness_cli_cases)
       -DHEAP_BUILT=${VERNIER_LINK_TCMALLOC} -P "${CMAKE_CURRENT_LIST_DIR}/ReadinessCli_test.cmake"
   )
   set_tests_properties(
-    ReadinessCli.${_case} PROPERTIES LABELS "benchmarking;readiness" SKIP_REGULAR_EXPRESSION
-                                     "READINESS_CLI_SKIPPED"
+    ReadinessCli.${_case} PROPERTIES LABELS "benchmarking;readiness;component"
+                                     SKIP_REGULAR_EXPRESSION "READINESS_CLI_SKIPPED"
   )
 endforeach ()

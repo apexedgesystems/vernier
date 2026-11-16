@@ -230,8 +230,9 @@ target_include_directories(
 # build collects them) and NVML's readings, every cell the run cannot fill
 # empty and stated. It compiles the SAXPY example's kernel source into itself
 # to read the kernel's compiled resource use, so it links no example library.
-# Built where the GPU demos are, under the demo and gpu labels; it compares no
-# timing. The skip expression names the check, as the memcheck check's does.
+# Built where the GPU demos are, under the demo and gpu labels, a component
+# test labelled rig; it compares no timing. The skip expression names the
+# check, as the memcheck check's does.
 # ------------------------------------------------------------------------------
 
 if (TARGET BenchDemo_Gpu_02_NsightProfiler)
@@ -247,6 +248,9 @@ if (TARGET BenchDemo_Gpu_02_NsightProfiler)
     LABELS
     demo
     gpu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoKernelColumns
@@ -266,8 +270,10 @@ endif ()
 # A check that runs its demo under a tool and reads the tool's report, not a
 # timing, is a test program of its own beside the demo, so the demo's source
 # holds only what it teaches. It runs the demo binary, whose path it is given,
-# under the demo label and the tool's, so ordinary test runs include it and
-# never the demo's timing cases. The skip expression names the check: its
+# under the demo label and the tool's, as a component test (labelled rig too
+# where the tool needs a privilege or a device), so the component lane runs it
+# and never the demo's timing cases; the program's tests of the report
+# reading are unit tests. The skip expression names the check: its
 # failure messages quote the child runs' output, whose own GoogleTest lines
 # must not turn a failure into a skip. A GPU demo's check keeps its report
 # reading, which needs no CUDA, in a second program named after it with
@@ -285,6 +291,8 @@ vernier_add_gtest(
   LABELS
   demo
   memcheck
+  COMPONENT_PATTERNS
+  "^Memcheck\\.FindsTheOffByOne$"
 )
 target_compile_definitions(
   TestDemoMemcheck
@@ -308,6 +316,8 @@ vernier_add_gtest(
   LABELS
   demo
   helgrind
+  COMPONENT_PATTERNS
+  "^Helgrind\\.(FindsTheRace|LockedTotalReportsNothing)$"
 )
 target_compile_definitions(
   TestDemoHelgrind
@@ -335,6 +345,8 @@ vernier_add_gtest(
   LABELS
   demo
   jemalloc
+  CLASS
+  component
 )
 target_compile_definitions(
   TestDemoJemalloc PRIVATE VERNIER_DEMO_16_BINARY="$<TARGET_FILE:BenchDemo_16_JemallocProfiler>"
@@ -364,6 +376,10 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^Bpftrace\\.CountsEveryWrite$"
+  RIG_PATTERNS
+  "^Bpftrace\\.CountsEveryWrite$"
 )
 target_compile_definitions(
   TestDemoBpftrace PRIVATE VERNIER_DEMO_09_BINARY="$<TARGET_FILE:BenchDemo_09_BpftraceProfiler>"
@@ -393,6 +409,11 @@ vernier_add_gtest(
   bench
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^RaplDemoTest\\.MeasuresBothVersions$"
+  "^Rapl\\.EnergyPerCall$"
+  RIG_PATTERNS
+  "^Rapl\\.EnergyPerCall$"
 )
 target_compile_definitions(
   TestDemoRapl PRIVATE VERNIER_DEMO_08_BINARY="$<TARGET_FILE:BenchDemo_08_RaplProfiler>"
@@ -426,6 +447,9 @@ if (TARGET BenchDemo_Gpu_04_ComputeSanitizerProfiler)
     LABELS
     demo
     compute-sanitizer
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoComputeSanitizer
@@ -495,6 +519,9 @@ if (TARGET BenchDemo_Gpu_05_NvtxAnnotation)
     LABELS
     demo
     nsight
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoNvtxRanges
@@ -550,6 +577,10 @@ vernier_add_gtest(
   demo_example_join
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^OffCpu\\.CapturesTheLockWait$"
+  RIG_PATTERNS
+  "^OffCpu\\.CapturesTheLockWait$"
 )
 target_compile_definitions(
   TestDemoOffCpu PRIVATE VERNIER_DEMO_13_BINARY="$<TARGET_FILE:BenchDemo_13_OffCpuProfiler>"
@@ -570,7 +601,9 @@ set_tests_properties(
 # ------------------------------------------------------------------------------
 # The helpers the demos share, under the demo label with the examples' tests.
 # The probe case skips itself in an ordinary run, which is the helper working,
-# so CTest reports it as skipped rather than passed.
+# so CTest reports it as skipped rather than passed. The two cases that run a
+# probe under the real tool are component tests; compute-sanitizer's, which
+# needs a device, is labelled rig too.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -583,6 +616,11 @@ vernier_add_gtest(
   bench
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^SkipUnlessUnderValgrindTest\\.ValgrindRunRunsTheProbe$"
+  "^SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe$"
+  RIG_PATTERNS
+  "^SkipUnlessUnderComputeSanitizerTest\\.ToolRunRunsTheProbe$"
 )
 set_tests_properties(
   SkipUnlessUnderValgrindProbe.RunsOnlyUnderValgrind
@@ -607,9 +645,9 @@ set_tests_properties(
 # reading of ncu's CSV and its verdict to logs as ncu prints them; it needs no
 # GPU, so every configuration runs it, under the check's labels.
 # TestDemoTranspose and the check, TestDemoBankConflicts, need a device (the
-# check also ncu) and are built where the GPU demos are. The check's skip
-# expression names its own case, so the demo's GoogleTest lines in its failure
-# output cannot turn a failure into a skip.
+# check also ncu) and are built where the GPU demos are: component tests,
+# labelled rig. The check's skip expression names its own case, so the demo's
+# GoogleTest lines in its failure output cannot turn a failure into a skip.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -633,6 +671,9 @@ if (TARGET bench_cuda)
     CUDA::cudart
     LABELS
     demo
+    rig
+    CLASS
+    component
   )
   target_include_directories(TestDemoTranspose PRIVATE "${PROJECT_SOURCE_DIR}")
 
@@ -648,6 +689,9 @@ if (TARGET bench_cuda)
     LABELS
     demo
     ncu
+    rig
+    CLASS
+    component
   )
   target_compile_definitions(
     TestDemoBankConflicts

@@ -1,10 +1,11 @@
 # ==============================================================================
-# Unit Tests: bench measurement rows
+# Component Tests: bench measurement rows
 #
 # The rows a benchmark publishes for its completed measurements, checked end to
 # end through a fixture benchmark with its own PERF_MAIN whose tests measure in
 # each shape that decides how rows are named. The checks run the fixture as a
-# child; its own Rows.* cases are never registered.
+# child; its own Rows.* cases are never registered. Both are component tests:
+# a benchmark run end to end, and the CLI's suite built and run by cargo.
 #
 # Targets: MeasurementRowsProbe (fixture), TestMeasurementRows
 # Tests:   MeasurementRows.Publication, MeasurementRows.CliAgreement
@@ -49,6 +50,8 @@ vernier_add_gtest(
   LABELS
   benchmarking
   rows
+  CLASS
+  component
 )
 target_compile_definitions(
   TestMeasurementRows PRIVATE MEASUREMENT_ROWS_PROBE="$<TARGET_FILE:MeasurementRowsProbe>"
@@ -80,7 +83,7 @@ if (VERNIER_BUILD_TOOLS)
     MeasurementRows.CliAgreement
     PROPERTIES
       LABELS
-      "benchmarking;rows"
+      "benchmarking;rows;component"
       ENVIRONMENT
       "MEASUREMENT_ROWS_PROBE=$<TARGET_FILE:MeasurementRowsProbe>;CARGO_CACHE_AUTO_CLEAN_FREQUENCY=never"
       PROCESSORS
