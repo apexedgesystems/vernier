@@ -29,6 +29,8 @@ Dependencies:
 
 import argparse
 import json
+import math
+import re
 import sys
 from pathlib import Path
 from typing import List
@@ -65,7 +67,8 @@ def load_csv(path: Path) -> pd.DataFrame:
     that pandas takes for a missing value by default (`NA`, `nan`, `NULL`,
     `None`, ...) stays text, so a test of that name keeps it and a timing cell
     holding it is damaged, not empty. The columns of `PLOTTED_OTHER_NUMBERS`
-    are made numbers.
+    are made numbers, and `OTHER_NUMBERS_OF_THEIR_KIND` is added for
+    `untimed_rows`.
     """
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
@@ -83,6 +86,7 @@ def load_csv(path: Path) -> pd.DataFrame:
     for column in PLOTTED_OTHER_NUMBERS:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
+    df[OTHER_NUMBERS_OF_THEIR_KIND] = other_numbers_of_their_kind(path, df)
     return df
 
 
@@ -130,8 +134,45 @@ PLOTTED_TIMING = (
 )
 
 # A row's other numbers, which the benchmark writes in every row it times or
-# leaves untimed.
-OTHER_NUMBERS = ("cycles", "repeats", "warmup", "threads", "msgBytes", "cvThreshold")
+# leaves untimed, and the kind `bench summary` reads each as: the counts as
+# whole numbers from 0 to 4294967295 (u32), cvThreshold as a finite number
+# (f64), each parsed as written, untrimmed.
+COUNTS = ("cycles", "repeats", "warmup", "threads", "msgBytes")
+OTHER_NUMBERS = COUNTS + ("cvThreshold",)
+LARGEST_COUNT = 4294967295
+# What Rust's str::parse takes for a u32 and for an f64 (its literal grammar).
+WHOLE_NUMBER = re.compile(r"\+?[0-9]+")
+FLOAT_LITERAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+# The column load_csv adds, true where every other number of the row holds a
+# value of its kind; timed_rows leaves it out of the rows it returns.
+OTHER_NUMBERS_OF_THEIR_KIND = "_otherNumbersOfTheirKind"
+
+
+def of_its_kind(column: str, text) -> bool:
+    """Whether @p text, a cell of the other number @p column as written, holds
+    a value of the kind `bench summary` reads that column as. An empty field
+    holds none."""
+    if not isinstance(text, str):
+        return False
+    if column in COUNTS:
+        return WHOLE_NUMBER.fullmatch(text) is not None and int(text) <= LARGEST_COUNT
+    return FLOAT_LITERAL.fullmatch(text) is not None and math.isfinite(float(text))
+
+
+def other_numbers_of_their_kind(path: Path, df: pd.DataFrame) -> pd.Series:
+    """For each row of @p df, read from @p path, whether every other number
+    the file has holds a value of its kind (`of_its_kind`). The cells are read
+    again as text: pandas's own reading takes `1e3`, `1.0`, ` 5` and `+5` alike
+    for numbers, where `bench summary` takes only some of them."""
+    present = [c for c in OTHER_NUMBERS if c in df.columns]
+    if not present:
+        return pd.Series(True, index=df.index)
+    written = pd.read_csv(path, keep_default_na=False, na_values=[""], dtype=str, usecols=present)
+    return written.apply(lambda cells: cells.map(lambda text: of_its_kind(cells.name, text))).all(
+        axis=1
+    )
+
 
 # What may explain a row of the untimed shape. The file cannot say what ran, so
 # this says what the shape is like, not that the row came from such a run.
@@ -150,14 +191,14 @@ def numbers(df: pd.DataFrame, columns) -> pd.DataFrame:
 
 
 def untimed_rows(df: pd.DataFrame) -> pd.Series:
-    """Whether each row has the shape the benchmark gives a row it did not
-    time: every timing cell the file has is empty, and every other number it
-    has reads as a finite one."""
+    """Whether each row of @p df, as load_csv gives it, has the shape the
+    benchmark gives a row it did not time: every timing cell the file has is
+    empty, and every other number it has holds a value of its kind."""
     timing = [c for c in TIMING_COLUMNS if c in df.columns]
     if not timing:
         return pd.Series(False, index=df.index)
     empty = df[timing].isna().all(axis=1)
-    return empty & numbers(df, OTHER_NUMBERS).notna().all(axis=1)
+    return empty & df[OTHER_NUMBERS_OF_THEIR_KIND]
 
 
 def timed_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
@@ -190,7 +231,7 @@ def timed_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
                 f"bench-plot: {source}: left out {int(rows.sum())} {why}: {names}",
                 file=sys.stderr,
             )
-    kept = df[~unplottable].copy()
+    kept = df[~unplottable].drop(columns=OTHER_NUMBERS_OF_THEIR_KIND)
     kept[timing.columns] = timing[~unplottable]
     return kept
 

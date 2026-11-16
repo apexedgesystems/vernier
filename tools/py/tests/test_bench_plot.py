@@ -358,3 +358,80 @@ def test_the_other_plotted_numbers_read_text_as_no_number(tmp_path):
     assert df["occupancy"].iloc[0] == 0.5
     assert df["occupancy"].iloc[2] == float("inf")
     assert df["gpuModel"].tolist() == ["RTX", "RTX", "RTX"]
+
+
+CAPTURE_COLUMNS = CAPTURE_HEADER.split(",")
+
+
+def untimed_row(test, **cells):
+    """UNTIMED_ROWS[0] (every timing cell empty) named @p test, with @p cells
+    set by column name, as written."""
+    values = UNTIMED_ROWS[0].split(",")
+    values[0] = test
+    for column, text in cells.items():
+        values[CAPTURE_COLUMNS.index(column)] = text
+    return ",".join(values)
+
+
+# Other numbers that `bench summary` does not read as values of their kind:
+# a count is a whole number from 0 to 4294967295 written without spaces, and
+# cvThreshold a finite number written without spaces.
+DAMAGED_OTHER_NUMBERS = [
+    ("cycles", "-1"),
+    ("cycles", "1.5"),
+    ("cycles", "4294967296"),
+    ("warmup", "1e3"),
+    ("threads", " 5"),
+    ("msgBytes", "1.0"),
+    ("cvThreshold", " 5"),
+    ("cvThreshold", "1e400"),
+]
+
+
+def test_an_untimed_row_needs_other_numbers_of_their_kind(
+    tmp_path, monkeypatch, capsys, recorded_plots
+):
+    """A row of empty timing whose counts are whole numbers in range, zero
+    and the largest included, written with a plus sign or leading zeros, and
+    whose cvThreshold is any finite number, keeps the Nsight Compute note; a
+    count that is negative, a fraction, too large, in exponent form, spaced or
+    written with a point, and a spaced or infinite cvThreshold, do not."""
+    good = [
+        untimed_row("Saxpy.Zero", cycles="0"),
+        untimed_row("Saxpy.Largest", msgBytes="4294967295"),
+        untimed_row("Saxpy.Plus", repeats="+5"),
+        untimed_row("Saxpy.Zeros", threads="007"),
+        untimed_row("Saxpy.NegativeThreshold", cvThreshold="-1"),
+        untimed_row("Saxpy.ExponentThreshold", cvThreshold="1e3"),
+    ]
+    damaged = [
+        untimed_row(f"Saxpy.Damaged{i}", **{column: text})
+        for i, (column, text) in enumerate(DAMAGED_OTHER_NUMBERS)
+    ]
+    csv = write_csv(tmp_path / "rows.csv", [TIMED_ROW] + good + damaged)
+    run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain"]]
+    assert capsys.readouterr().err == (
+        f"bench-plot: {csv}: left out 6 rows without timing (every timing cell is empty, as in "
+        "a run under Nsight Compute (ncu), which the benchmark does not time): Saxpy.Zero, "
+        "Saxpy.Largest, Saxpy.Plus, Saxpy.Zeros, Saxpy.NegativeThreshold, "
+        "Saxpy.ExponentThreshold\n"
+        f"bench-plot: {csv}: left out 8 rows with an empty or damaged timing cell: "
+        + ", ".join(f"Saxpy.Damaged{i}" for i in range(len(DAMAGED_OTHER_NUMBERS)))
+        + "\n"
+    )
+
+
+@pytest.mark.parametrize("column,text", DAMAGED_OTHER_NUMBERS)
+def test_a_file_of_damaged_other_numbers_is_refused_with_the_plain_reason(
+    tmp_path, monkeypatch, recorded_plots, column, text
+):
+    """A file whose only row has empty timing and one other number not of its
+    kind is refused as damaged, not as a run under Nsight Compute."""
+    csv = write_csv(tmp_path / "rows.csv", [untimed_row("Saxpy.Damaged", **{column: text})])
+    with pytest.raises(SystemExit) as stopped:
+        run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert str(stopped.value) == (
+        f"bench-plot: {csv}: no row has timing: every row has an empty or damaged timing cell"
+    )
+    assert recorded_plots == {}
