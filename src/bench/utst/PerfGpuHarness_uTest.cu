@@ -318,7 +318,9 @@ namespace {
 /// A spin of this many nanoseconds of the GPU's timer, the known length the time pins measure.
 constexpr unsigned long long PIN_SPIN_NS = 200'000;
 
-/** @brief Pinned host and device buffers of @p h2d and @p d2h bytes, freed however the test leaves.
+/**
+ * @brief Pinned host and device buffers of @p h2d and @p d2h bytes, freed however the test
+ *        leaves, those allocated before a failed one included; ok() once all four are.
  */
 struct CopyBuffers {
   std::size_t h2dBytes;
@@ -327,12 +329,16 @@ struct CopyBuffers {
   void* hostOut = nullptr;
   void* deviceIn = nullptr;
   void* deviceOut = nullptr;
+  bool allocated = false; ///< All four allocations succeeded
   CopyBuffers(std::size_t h2d, std::size_t d2h) : h2dBytes(h2d), d2hBytes(d2h) {
-    if (cudaMallocHost(&hostIn, h2d) != cudaSuccess ||
-        cudaMallocHost(&hostOut, d2h) != cudaSuccess || cudaMalloc(&deviceIn, h2d) != cudaSuccess ||
-        cudaMalloc(&deviceOut, d2h) != cudaSuccess) {
+    // A failed allocation stops the ones after it; each one made before it
+    // stays set, for the destructor to free.
+    allocated = cudaMallocHost(&hostIn, h2d) == cudaSuccess &&
+                cudaMallocHost(&hostOut, d2h) == cudaSuccess &&
+                cudaMalloc(&deviceIn, h2d) == cudaSuccess &&
+                cudaMalloc(&deviceOut, d2h) == cudaSuccess;
+    if (!allocated) {
       static_cast<void>(cudaGetLastError());
-      hostIn = hostOut = deviceIn = deviceOut = nullptr;
     }
   }
   ~CopyBuffers() {
@@ -343,7 +349,7 @@ struct CopyBuffers {
   }
   CopyBuffers(const CopyBuffers&) = delete;
   CopyBuffers& operator=(const CopyBuffers&) = delete;
-  [[nodiscard]] bool ok() const { return deviceOut != nullptr; }
+  [[nodiscard]] bool ok() const { return allocated; }
 };
 
 /** @brief A launch of a 1 us spin: a kernel the copies around it dwarf. */
