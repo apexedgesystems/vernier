@@ -196,9 +196,12 @@ is off, the same table is still available through `monitor.summary()`.
 
 The file sink writes a tab-delimited record per sample, suitable for
 post-run analysis with awk / pandas / `bench` Python tools. A file it cannot
-open or write, and a file sink with an empty path, are reported on stderr
-(a write failure once, then at `stop()` how many records were not written);
-the program goes on.
+open or write, and a file sink with an empty path, are reported on stderr; the
+program goes on. A write failure is reported once, then at `stop()` with an
+upper bound on what is missing: the records given after the last write it
+confirmed and before the failure. The C library may have written some of those
+before the write failed, so up to that many are missing from the file, not
+necessarily all of them.
 
 ## When to reach for monitor vs. bench
 

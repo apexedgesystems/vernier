@@ -8,10 +8,13 @@
  * Format: timestamp_ns \t kind \t tag/id \t scope \t duration_ns \t value
  *
  * A file it cannot open, and the first write, flush or close it cannot make,
- * are reported on stderr with the path and the error; at close, so is how
- * many of the records it was given were lost: those still buffered when a
- * write or flush failed, which the C library drops. The program goes on
- * either way.
+ * are reported on stderr with the path and the error. At close, after a
+ * failure, so is an upper bound on what is missing: the records given after
+ * the last write it confirmed (a flush that succeeded) and before a write
+ * failed. The C library drops what it still buffered when a write failed,
+ * but may already have written some of those records, so up to that many are
+ * missing, not all of them. Without a failure nothing is claimed. The
+ * program goes on either way.
  */
 
 #include "src/monitor/inc/MonitorSink.hpp"
@@ -64,18 +67,18 @@ public:
 private:
   [[nodiscard]] static const char* kindStr(SampleKind k) noexcept;
 
-  /// Settle the records given since the last flush after a write or flush
-  /// that returned @p ok: written, or, on a failure, lost (and the first
-  /// failure reported with @p err).
+  /// Settle the records given since the last settlement after a write or
+  /// flush that returned @p ok: confirmed, or, on a failure, unconfirmed (and
+  /// the first failure reported with @p err).
   void settle(bool ok, int err) noexcept;
 
   FILE* fp_{nullptr};
   AlertLevel minLevel_;
-  std::string path_;         ///< The file, for the reports.
-  std::uint64_t given_{0};   ///< Records handed to the stream.
-  std::uint64_t settled_{0}; ///< Of those, the ones a write or flush has settled.
-  std::uint64_t lost_{0};    ///< Of those, the ones a failed write or flush lost.
-  bool failed_{false};       ///< A write, flush or close failed; reported once.
+  std::string path_;             ///< The file, for the reports.
+  std::uint64_t given_{0};       ///< Records handed to the stream.
+  std::uint64_t settled_{0};     ///< Of those, the ones a write or flush has settled.
+  std::uint64_t unconfirmed_{0}; ///< Of those, settled by a failure: up to this many are missing.
+  bool failed_{false};           ///< A write, flush or close failed; reported once.
 };
 
 } // namespace monitor

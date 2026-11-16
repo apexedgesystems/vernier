@@ -34,17 +34,23 @@ MonitorFileSink::~MonitorFileSink() {
     settle(false, errno);
   }
   fp_ = nullptr;
-  if (lost_ > 0) {
-    std::fprintf(stderr, "vernier::monitor: %llu of %llu records to '%s' were not written\n",
-                 static_cast<unsigned long long>(lost_), static_cast<unsigned long long>(given_),
-                 path_.c_str());
+  if (unconfirmed_ > 0) {
+    // An upper bound: the C library may have written some of these records
+    // before the write that failed.
+    std::fprintf(stderr,
+                 "vernier::monitor: '%s' may be missing up to %llu of the %llu %s given to it "
+                 "(given after the last write it confirmed, before a write failed)\n",
+                 path_.c_str(), static_cast<unsigned long long>(unconfirmed_),
+                 static_cast<unsigned long long>(given_), given_ == 1 ? "record" : "records");
   }
 }
 
 void MonitorFileSink::settle(bool ok, int err) noexcept {
   if (!ok) {
-    // The C library drops what was still buffered when a write failed.
-    lost_ += given_ - settled_;
+    // Given since the last settlement and now unconfirmed: the C library
+    // drops what was still buffered when a write failed, but may already
+    // have written part of it.
+    unconfirmed_ += given_ - settled_;
     if (!failed_) {
       failed_ = true;
       std::fprintf(stderr, "vernier::monitor: cannot write '%s': %s\n", path_.c_str(),

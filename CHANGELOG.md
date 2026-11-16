@@ -1019,7 +1019,8 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   the caller, instead of ending the process or leaving the profiler running.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor file sink that cannot write, and a file sink with an empty path,
-  say so on stderr. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+  say so on stderr; a failed write also gives the most records that can be
+  missing. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark compiled without gperftools' headers lays out `GperfProfiler` as
   libbench does. **Action needed:** rebuild benchmarks against these headers
   (`BENCH_ABI_VERSION` is 7).

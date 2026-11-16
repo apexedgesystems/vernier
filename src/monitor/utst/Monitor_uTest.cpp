@@ -11,9 +11,12 @@
 
 #include <gtest/gtest.h>
 
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <cerrno>
+#include <csignal>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -24,6 +27,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <string>
 #include <thread>
 #include <vector>
@@ -483,7 +487,142 @@ TEST(MonitorTest, FileSinkWriteFailureIsReported) {
 
   EXPECT_EQ(captured,
             "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
-                "\nvernier::monitor: 1 of 1 records to '/dev/full' were not written\n");
+                "\nvernier::monitor: '/dev/full' may be missing up to 1 of the 1 record given to "
+                "it (given after the last write it confirmed, before a write failed)\n");
+}
+
+namespace {
+
+/// The records a file sink test writes: 1000 counter samples, about 35 bytes
+/// each as the sink formats them.
+constexpr int SINK_RECORDS = 1000;
+
+/** @brief Hand @p sink SINK_RECORDS counter samples. */
+void writeSinkRecords(vernier::monitor::MonitorFileSink& sink) {
+  for (int i = 0; i < SINK_RECORDS; ++i) {
+    vernier::monitor::Sample sample;
+    sample.timestampNs = 1000 + static_cast<std::uint64_t>(i);
+    sample.kind = vernier::monitor::SampleKind::COUNTER;
+    sample.tag = MonitorTag("sink", 9);
+    std::strncpy(sample.scope, "loop", sizeof(sample.scope) - 1);
+    sample.value = 1.0;
+    sink.write(sample);
+  }
+}
+
+/** @brief The complete (newline-ended) records in @p text. */
+std::size_t completeRecords(const std::string& text) {
+  return static_cast<std::size_t>(std::count(text.begin(), text.end(), '\n'));
+}
+
+/** @brief The whole of the file at @p path, or "" when it cannot be read. */
+std::string fileText(const std::string& path) {
+  std::ifstream in(path, std::ios::binary);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+} // namespace
+
+/**
+ * @test A file sink that wrote a prefix before a write failed does not call
+ *       the prefix lost. A child process, its file size limited to 8192
+ *       bytes (SIGXFSZ ignored), hands the sink 1000 records: the file holds
+ *       a prefix of complete records and a cut one, counted here from the
+ *       file itself, and the sink's diagnostic gives an upper bound that does
+ *       not contradict them (at least the records not in the file, at most
+ *       all given), never that all of them were not written.
+ */
+TEST(MonitorTest, FileSinkPrefixBeforeAFailureIsNotCalledLost) {
+  const std::string DIR = (std::filesystem::temp_directory_path() /
+                           ("vernier_sink_prefix_" + std::to_string(::getpid())))
+                              .string();
+  std::filesystem::create_directories(DIR);
+  const std::string DATA = DIR + "/records.vmon";
+  const std::string ERR = DIR + "/stderr.txt";
+  const pid_t CHILD = ::fork();
+  ASSERT_GE(CHILD, 0) << std::strerror(errno);
+  if (CHILD == 0) {
+    std::FILE* err = std::fopen(ERR.c_str(), "w");
+    if (err == nullptr || ::dup2(::fileno(err), STDERR_FILENO) < 0) {
+      ::_exit(3);
+    }
+    std::signal(SIGXFSZ, SIG_IGN);
+    struct rlimit limit{8192, 8192};
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    {
+      vernier::monitor::MonitorFileSink sink(DATA);
+      writeSinkRecords(sink);
+    }
+    std::fflush(stderr);
+    ::_exit(0);
+  }
+  int status = 0;
+  ASSERT_EQ(::waitpid(CHILD, &status, 0), CHILD);
+  ASSERT_TRUE(WIFEXITED(status) && WEXITSTATUS(status) == 0) << "child status " << status;
+
+  const std::string WRITTEN = fileText(DATA);
+  const std::string SAID = fileText(ERR);
+  std::filesystem::remove_all(DIR);
+  const std::size_t COMPLETE = completeRecords(WRITTEN);
+  EXPECT_GT(COMPLETE, 0U) << "no prefix reached the file";
+  EXPECT_LT(COMPLETE, static_cast<std::size_t>(SINK_RECORDS)) << "the size limit did not bite";
+  EXPECT_LE(WRITTEN.size(), 8192U);
+
+  const std::string LEAD = "vernier::monitor: '" + DATA + "' may be missing up to ";
+  const std::size_t AT = SAID.find(LEAD);
+  ASSERT_NE(AT, std::string::npos) << SAID;
+  const unsigned long long UP_TO = std::stoull(SAID.substr(AT + LEAD.size()));
+  EXPECT_GE(UP_TO, static_cast<unsigned long long>(SINK_RECORDS) - COMPLETE)
+      << "the bound is below what the file lacks:\n"
+      << SAID;
+  EXPECT_LE(UP_TO, static_cast<unsigned long long>(SINK_RECORDS)) << SAID;
+  EXPECT_NE(SAID.find(" of the 1000 records given to it (given after the last write it "
+                      "confirmed, before a write failed)\n"),
+            std::string::npos)
+      << SAID;
+  EXPECT_EQ(SAID.find("were not written"), std::string::npos) << SAID;
+}
+
+/** @test A file sink whose writes all succeed writes every record and says nothing */
+TEST(MonitorTest, FileSinkWritingEveryRecordClaimsNothing) {
+  const std::string DATA = (std::filesystem::temp_directory_path() /
+                            ("vernier_sink_all_" + std::to_string(::getpid()) + ".vmon"))
+                               .string();
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      vernier::monitor::MonitorFileSink sink(DATA);
+      writeSinkRecords(sink);
+    }
+    captured = capture.text();
+  }
+  const std::string WRITTEN = fileText(DATA);
+  std::filesystem::remove(DATA);
+  EXPECT_EQ(completeRecords(WRITTEN), static_cast<std::size_t>(SINK_RECORDS));
+  EXPECT_EQ(captured, "");
+}
+
+/**
+ * @test A file sink none of whose writes can land (/dev/full) reports the
+ *       failure once and, at close, that up to every record given is missing.
+ */
+TEST(MonitorTest, FileSinkWritingNothingBoundsEveryRecord) {
+  std::string captured;
+  {
+    StderrCapture capture;
+    {
+      vernier::monitor::MonitorFileSink sink("/dev/full");
+      writeSinkRecords(sink);
+    }
+    captured = capture.text();
+  }
+  EXPECT_EQ(captured,
+            "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
+                "\nvernier::monitor: '/dev/full' may be missing up to 1000 of the 1000 records "
+                "given to it (given after the last write it confirmed, before a write failed)\n");
 }
 
 /** @test A file sink asked for with an empty path says so on stderr when the monitor starts */
