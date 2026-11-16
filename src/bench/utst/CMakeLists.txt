@@ -193,9 +193,10 @@ if (TARGET bench_cuda)
   if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
     target_compile_definitions(TestBenchGpu PRIVATE WORKER_START_SANITIZER="${SANITIZER}")
   endif ()
-  # The program's two CUPTI definitions are exported by name: a gold-linked
-  # program leaves them out of its dynamic symbols (mold and lld export them),
-  # and libbench_cuda's calls then reach libcupti's directly, unobserved.
+  # The program's two CUPTI definitions are exported by name: linked with gold
+  # or lld, the program leaves them out of its dynamic symbols (mold and bfd
+  # export them), and libbench_cuda's calls then reach libcupti's directly,
+  # unobserved.
   target_link_options(
     TestBenchGpu PRIVATE "LINKER:--export-dynamic-symbol=cuptiActivityEnable"
     "LINKER:--export-dynamic-symbol=cuptiActivityDisable"
