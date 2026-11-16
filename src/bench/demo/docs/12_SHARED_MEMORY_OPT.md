@@ -9,11 +9,12 @@ no shared example has a bank conflict to show
 captured from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada figures in
 [What Should Reproduce](#what-should-reproduce) come from one run of the same
-tree in the project's `dev-cuda` container on the same day. The output of
-`bench run --profile ncu` in [If It Does Not Match](#if-it-does-not-match) is
-from a later session on 2026-10-10 (UTC), from a later development tree at
-the same version with the same Nsight Compute; the report's sections under it,
-and every other figure, are from the first.
+tree in the project's `dev-cuda` container on the same day. The console
+output of Step 3, and of the run without root and `bench run --profile ncu`
+in [If It Does Not Match](#if-it-does-not-match), is from a later session on
+2026-11-16 (UTC), from a later development tree at the same version with the
+same Nsight Compute; the report's sections, and every other figure, are from
+the first.
 
 ## Overview
 
@@ -65,10 +66,10 @@ them into a sentence naming the conflict's degree.
 wrap collects ncu's default sections (launch statistics, occupancy and
 throughput, as walkthrough 11 reads them) into
 `bench-out/<binary>.ncu/kernel_profile.ncu-rep`, and none of them carries a
-bank-conflict figure; `bench run` passes ncu no option of its own and takes
-no `--profile-args` word for it. So this page types the ncu command
-itself, with the sections and metrics it reads, as walkthrough 14 types
-massif's for `--time-unit`. The CSV's `occupancy` column is the harness's
+bank-conflict figure. `bench run` passes ncu the set, sections and metrics
+named with `--profile-args` (`--set`, `--section`, `--metrics`) and no other
+option; this page types the ncu command itself, with the sections and
+metrics it reads. The CSV's `occupancy` column is the harness's
 estimate from the launch shape, the device's limits and the static shared
 memory the demo hands `withLaunchConfig()`; its `cuptiStaticSmemBytes` column
 is CUPTI's reading of the kernel's static shared memory.
@@ -321,42 +322,51 @@ kernel cut, and the checkout's path shortened to `...` here and below:
 [----------] Global test environment set-up.
 [----------] 3 tests from SharedMemoryOpt
 [ RUN      ] SharedMemoryOpt.NaiveGlobalMemory
-==PROF== Connected to process 85848 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+==PROF== Connected to process 102237 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
 ==PROF== Profiling "transposeNaive" - 0: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.NaiveGlobalMemory]  1089568.359 us/call  CV=0.0%  ~1 calls/s  (p10=1089568.359 p90=1089568.359 sd=0.000)
-[       OK ] SharedMemoryOpt.NaiveGlobalMemory (20342 ms)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+[SharedMemoryOpt.NaiveGlobalMemory]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.NaiveGlobalMemory (20447 ms)
 [ RUN      ] SharedMemoryOpt.SharedWithBankConflicts
 ==PROF== Profiling "transposeSharedConflict" - 14: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.SharedWithBankConflicts]  1083525.065 us/call  CV=0.0%  ~1 calls/s  (p10=1083525.065 p90=1083525.065 sd=0.000)
-[       OK ] SharedMemoryOpt.SharedWithBankConflicts (15265 ms)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[SharedMemoryOpt.SharedWithBankConflicts]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.SharedWithBankConflicts (15645 ms)
 [ RUN      ] SharedMemoryOpt.SharedPadded
 ==PROF== Profiling "transposeSharedPadded" - 28: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.SharedPadded]  1093090.007 us/call  CV=0.0%  ~1 calls/s  (p10=1093090.007 p90=1093090.007 sd=0.000)
-[       OK ] SharedMemoryOpt.SharedPadded (15304 ms)
-[----------] 3 tests from SharedMemoryOpt (50912 ms total)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[SharedMemoryOpt.SharedPadded]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.SharedPadded (15319 ms)
+[----------] 3 tests from SharedMemoryOpt (51411 ms total)
 
 [----------] Global test environment tear-down
-[==========] 3 tests from 1 test suite ran. (50913 ms total)
+[==========] 3 tests from 1 test suite ran. (51411 ms total)
 [  PASSED  ] 3 tests.
 
 =========================================================================================
 Test                                      Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------------------------------
-SharedMemoryOpt.NaiveGlobalMemory         1089568.359    0.0%           1  OK
-SharedMemoryOpt.SharedWithBankConflicts   1083525.065    0.0%           1  OK
-SharedMemoryOpt.SharedPadded              1093090.007    0.0%           1  OK
+SharedMemoryOpt.NaiveGlobalMemory                   -       -           -  NOT TIMED
+SharedMemoryOpt.SharedWithBankConflicts             -       -           -  NOT TIMED
+SharedMemoryOpt.SharedPadded                        -       -           -  NOT TIMED
 -----------------------------------------------------------------------------------------
-3 tests | 3 stable | 0 unstable
-==PROF== Disconnected from process 85848
+3 tests | 0 stable | 0 unstable | 3 not timed
+==PROF== Disconnected from process 102237
 ==PROF== Report: .../shared_memory_opt.ncu-rep
 ```
 
-The run took 51 seconds for 42 launches at 31 passes each. The times the
-harness prints are ncu's replays, about 1.09 s per launch, not the kernel's:
-the timings are Step 1's. The report is `shared_memory_opt.ncu-rep` in the
+The run took 51 seconds for 42 launches at 31 passes each. The harness prints
+no time under ncu, whose work adds to every measured call: it says why once
+(the `[bench]` line) and prints `not timed` for each test and `NOT TIMED` in
+its table; the timings are Step 1's. The report is `shared_memory_opt.ncu-rep` in the
 working directory. Read it with the same `ncu`:
 
 ```bash
@@ -518,7 +528,8 @@ What not to conclude:
   the store side; the tile's store pattern predicts none, and the rule did
   not appear on the tiled kernel's first launch in this session.
 
-- **That the times under ncu mean anything.** They are replays (Step 3).
+- **That a time under ncu means anything.** The harness takes none there
+  (Step 3): ncu's replays add to every measured call.
   ncu also prints, on every launch of the details page, that "Data
   collection happened without fixed GPU frequencies": it did not fix the
   clocks itself. This session had locked them with `jetson_clocks`, and the
@@ -556,13 +567,15 @@ kernel); they are stated for their direction, not their size.
   ```
   ...
   [ RUN      ] SharedMemoryOpt.NaiveGlobalMemory
-  ==PROF== Connected to process 87374 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+  ==PROF== Connected to process 103850 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
   ==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
-  [SharedMemoryOpt.NaiveGlobalMemory]  104.992 us/call  CV=0.0%  ~9.5K calls/s  (p10=104.992 p90=104.992 sd=0.000)
-  [       OK ] SharedMemoryOpt.NaiveGlobalMemory (355 ms)
+  ...
+  [bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+  [SharedMemoryOpt.NaiveGlobalMemory]  not timed: Nsight Compute (ncu) profiles this process
+  [       OK ] SharedMemoryOpt.NaiveGlobalMemory (402 ms)
   ...
   [  PASSED  ] 1 test.
-  ==PROF== Disconnected from process 87374
+  ==PROF== Disconnected from process 103850
   ```
 
   Run it as Step 3 does, with `sudo env PATH="$PATH"`.
@@ -574,7 +587,7 @@ kernel); they are stated for their direction, not their size.
   Running: ncu -o bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt --cycles 1 --repeats 1 --profile ncu --gpu-warmup 1 --gtest_filter=SharedMemoryOpt.SharedPadded
   ...
   [ RUN      ] SharedMemoryOpt.SharedPadded
-  ==PROF== Connected to process 56390 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+  ==PROF== Connected to process 103898 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
 
   [WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
@@ -583,13 +596,14 @@ kernel); they are stated for their direction, not their size.
   ...
   [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
   ...
-  [SharedMemoryOpt.SharedPadded]  876192.139 us/call  CV=0.0%  ~1 calls/s  (p10=876192.139 p90=876192.139 sd=0.000)
-  [       OK ] SharedMemoryOpt.SharedPadded (7292 ms)
+  [SharedMemoryOpt.SharedPadded]  not timed: Nsight Compute (ncu) profiles this process
+  [bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+  [       OK ] SharedMemoryOpt.SharedPadded (7580 ms)
   ...
   [  PASSED  ] 1 test.
   ...
   ==PROF== Report: .../bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep
-  [bench] ncu wrote bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep (207247 bytes)
+  [bench] ncu wrote bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep (206815 bytes)
   ```
 
   The `[WARN]` line is the harness's readiness report for the profiler

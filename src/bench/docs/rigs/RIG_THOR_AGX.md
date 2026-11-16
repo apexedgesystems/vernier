@@ -178,7 +178,8 @@ BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkGPU_PTEST
 
 Expected on this rig, captured 2026-10-24 (UTC) from the development tree at
 project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
-it left out:
+it left out; the `ncu` row is from a session of 2026-11-16 (UTC) on a later
+development tree at the same version:
 
 ```
 === Profiler Backend Doctor (default mode of each backend) ===
@@ -194,7 +195,7 @@ it left out:
              Use a jemalloc built with profiling (configure --enable-prof; Debian's and Ubuntu's libjemalloc2 have it on amd64 and i386, not on arm64), with its library folder first on LD_LIBRARY_PATH when it is not the system's; or profile the heap with --profile heaptrack.
   [OK]   massif     valgrind starts massif (probe: /usr/bin/valgrind --tool=massif --massif-out-file=/dev/null /bin/true)
   [OK]   memcheck   valgrind starts memcheck (probe: /usr/bin/valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=/dev/null /bin/true)
-  [WARN] ncu        unverified: /usr/local/cuda/bin/ncu runs here (Version 2025.3.1.0 (build 36398880) (public-release)); whether it captures the benchmark's GPU work is not checked before the run; the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params), and this process is not root
+  [WARN] ncu        unverified: /usr/local/cuda/bin/ncu runs here (Version 2025.3.1.0 (build 36398880) (public-release)); no row of the run is timed: its timing cells stay empty, as ncu's instrumentation adds to what the benchmark measures; whether it captures the benchmark's GPU work is not checked before the run; the driver gives GPU performance counters to root only (RmProfilingAdminOnly: 1 in /proc/driver/nvidia/params), and this process is not root
   [WARN] nsight     unverified: /usr/local/cuda/bin/nsys runs here (NVIDIA Nsight Systems version 2025.3.2.474-253236389321v0); whether it captures the benchmark's GPU work is not checked before the run
   [OK]   offcpu     the off-CPU script, with a 5 s self-exit added, stayed running for the 1500 ms start grace through sudo -n (BENCH_SUDO=1) and stopped on SIGINT through sudo -n kill (probe with /usr/bin/bpftrace); not checked: the grant for the run's own command (/usr/bin/bpftrace -e <the off-CPU script> <benchmark pid>), SIGTERM and SIGKILL through sudo, and the run's capture
   [OK]   perf       perf stat counted cpu-cycles,instructions,branches,branch-misses,cache-misses on this process (probe with /usr/local/bin/perf); kernel.perf_event_paranoid=2 limits this user to user-space events
@@ -221,8 +222,9 @@ not have. `jemalloc` fails because the distribution's jemalloc is built
 without profiling (see [Rig-Specific Behavior](#5-rig-specific-behavior)).
 `rapl` is Intel-only and `rocprof` is AMD's. The GPU rows are `unverified`:
 the doctor runs each tool's `--version`, and cannot see before a run whether
-the tool captures the benchmark's GPU work; `ncu`'s row also names the
-driver's setting that keeps the counters for root (see
+the tool captures the benchmark's GPU work; `ncu`'s row also says that no
+row of the run is timed, and names the driver's setting that keeps the
+counters for root (see
 [walkthrough 11](../../demo/docs/11_NSIGHT_PROFILER.md#if-it-does-not-match)).
 Without `BENCH_SUDO=1`, `bpftrace` and `offcpu` fail as `denied:`, quoting
 bpftrace: `ERROR: bpftrace currently only supports running as the root
