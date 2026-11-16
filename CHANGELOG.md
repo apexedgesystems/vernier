@@ -448,18 +448,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   root with a match, in the order `bin_roots` or `VERNIER_BENCH_BIN_ROOTS`
   lists them, where the first match in sorted order across all roots was
   taken. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- `bench run --profile ncu` (and nsight's compute route) passes ncu a section
-  set, sections and metrics (`--set`, `--section`, `--metrics`) and runs a
-  kernel replay (`--profile-args replay`), refusing any other ncu option or a
-  malformed list before anything starts; the replay collects warp execution
-  efficiency and the instruction mix, three of whose metric names ncu did not
-  have. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- Under Nsight Compute (`bench run --profile ncu`, nsight's compute route or
-  an ncu command typed by hand) no row is timed: its timing cells, and a GPU
-  row's values computed from them, stay empty, since ncu's instrumentation
-  adds to what host timers and CUDA events measure; the run says why and its
-  table shows `NOT TIMED`. **Action needed:** time code in a run without ncu,
-  and rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
+- `bench run --profile ncu` selects Nsight Compute sections and metrics and
+  runs a kernel replay that collects its whole metric list.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- A run under Nsight Compute leaves timing and every value derived from it
+  empty. **Action needed:** measure performance in a run without ncu, and
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench summary` and `bench compare` say when a row's timing cells are all
   empty, as a run under Nsight Compute leaves them, and `bench run` refuses
