@@ -140,6 +140,7 @@ PLOTTED_TIMING = (
 COUNTS = ("cycles", "repeats", "warmup", "threads", "msgBytes")
 OTHER_NUMBERS = COUNTS + ("cvThreshold",)
 LARGEST_COUNT = 4294967295
+LARGEST_COUNT_DIGITS = len(str(LARGEST_COUNT))
 # What Rust's str::parse takes for a u32 and for an f64 (its literal grammar).
 WHOLE_NUMBER = re.compile(r"\+?[0-9]+")
 FLOAT_LITERAL = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
@@ -152,11 +153,16 @@ OTHER_NUMBERS_OF_THEIR_KIND = "_otherNumbersOfTheirKind"
 def of_its_kind(column: str, text) -> bool:
     """Whether @p text, a cell of the other number @p column as written, holds
     a value of the kind `bench summary` reads that column as. An empty field
-    holds none."""
+    holds none. A count's digits are read whatever their number: leading zeros
+    do not count, and more significant digits than the largest count has make
+    it too large, so int() is never asked for a longer number than that."""
     if not isinstance(text, str):
         return False
     if column in COUNTS:
-        return WHOLE_NUMBER.fullmatch(text) is not None and int(text) <= LARGEST_COUNT
+        if WHOLE_NUMBER.fullmatch(text) is None:
+            return False
+        digits = text.lstrip("+").lstrip("0")
+        return len(digits) <= LARGEST_COUNT_DIGITS and int(digits or "0") <= LARGEST_COUNT
     return FLOAT_LITERAL.fullmatch(text) is not None and math.isfinite(float(text))
 
 

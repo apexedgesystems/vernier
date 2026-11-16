@@ -435,3 +435,63 @@ def test_a_file_of_damaged_other_numbers_is_refused_with_the_plain_reason(
         f"bench-plot: {csv}: no row has timing: every row has an empty or damaged timing cell"
     )
     assert recorded_plots == {}
+
+
+# Long enough that Python's int() refuses the digits (4300 at most).
+LONG = 5000
+
+
+def test_other_numbers_of_thousands_of_digits_are_read_as_bench_summary_reads_them(
+    tmp_path, monkeypatch, capsys, recorded_plots
+):
+    """A count of 5000 zeros then 5, or then the largest count, and a
+    cvThreshold of 1e- then 5000 nines (zero) keep the Nsight Compute note; a
+    count of 5000 nines or of 5000 zeros then one past the largest is too
+    large, and a cvThreshold of 1e then 5000 nines is not finite, so those
+    rows are damaged. None of them makes the check raise."""
+    nines, zeros = "9" * LONG, "0" * LONG
+    noted = [
+        untimed_row("Saxpy.ZerosThenFive", cycles=zeros + "5"),
+        untimed_row("Saxpy.ZerosThenLargest", msgBytes=zeros + "4294967295"),
+        untimed_row("Saxpy.TinyThreshold", cvThreshold="1e-" + nines),
+    ]
+    damaged = [
+        untimed_row("Saxpy.Nines", cycles=nines),
+        untimed_row("Saxpy.ZerosThenTooLarge", repeats=zeros + "4294967296"),
+        untimed_row("Saxpy.HugeThreshold", cvThreshold="1e" + nines),
+    ]
+    csv = write_csv(tmp_path / "rows.csv", [TIMED_ROW] + noted + damaged)
+    run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain"]]
+    assert capsys.readouterr().err == (
+        f"bench-plot: {csv}: left out 3 rows without timing (every timing cell is empty, as in "
+        "a run under Nsight Compute (ncu), which the benchmark does not time): "
+        "Saxpy.ZerosThenFive, Saxpy.ZerosThenLargest, Saxpy.TinyThreshold\n"
+        f"bench-plot: {csv}: left out 3 rows with an empty or damaged timing cell: "
+        "Saxpy.Nines, Saxpy.ZerosThenTooLarge, Saxpy.HugeThreshold\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "count,reason",
+    [
+        ("9" * LONG, "every row has an empty or damaged timing cell"),
+        (
+            "0" * LONG + "5",
+            "every timing cell is empty, as in a run under Nsight Compute (ncu), which the "
+            "benchmark does not time; if the run was under ncu, plot a run without it",
+        ),
+    ],
+    ids=["nines", "zeros-then-five"],
+)
+def test_a_file_of_one_long_count_is_refused_as_bench_summary_reads_it(
+    tmp_path, monkeypatch, recorded_plots, count, reason
+):
+    """A file whose only row has empty timing and a count of thousands of
+    digits is refused, with the plain reason for one too large and the Nsight
+    Compute reason for one whose leading zeros hide a 5."""
+    csv = write_csv(tmp_path / "rows.csv", [untimed_row("Saxpy.Long", cycles=count)])
+    with pytest.raises(SystemExit) as stopped:
+        run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert str(stopped.value) == f"bench-plot: {csv}: no row has timing: {reason}"
+    assert recorded_plots == {}
