@@ -9,7 +9,9 @@ reported `bench 1.0.3`. The run in Check Against the Reference was made later
 the same day, by this page's commands as written. Step 4's console output and
 kernel summaries come from a session of 2026-10-10 (UTC) on a later
 development tree at the same version, with Step 1's command run just before
-them and the clocks locked the same way.
+them and the clocks locked the same way. The RTX 5000 Ada run quoted for the
+NVML cells is from 2026-11-16 (UTC), on a later development tree at the same
+version.
 
 ## Overview
 
@@ -190,7 +192,7 @@ multi-GPU columns, which a single-GPU test leaves empty except `deviceCount`,
 | `cuptiRegistersMedian`, `cuptiRegistersMax`     | the records' registers per thread                                                                                                                 | what each thread was allocated at launch                                                                   | 16; the compiler's count is 10 (Step 3)                    |
 | `cuptiStaticSmemBytes`, `cuptiDynamicSmemBytes` | the records' static and dynamic shared memory per block                                                                                           | the kernel's `__shared__` arrays, and what the launch asked for                                            | 0: the kernel declares none and the launch asks for none   |
 | `smClockMHz`, `throttling`                      | NVML: the SM clock at the end of the measured repeats; whether it fell more than 10% from start to end (only when the maximum clock was read too) | two instants, not the window between them                                                                  | empty: `Not Supported`                                     |
-| `powerDrawW`, `powerLimitW`                     | NVML: the mean of the power draw read at the start and at the end; the power limit                                                                | two instantaneous readings, not the energy the measurement used                                            | empty: `Not Supported`                                     |
+| `powerDrawW`, `powerLimitW`                     | NVML: the power reading at the end of the measured repeats, for a window of 1.5 s or more; the power limit                                        | the endpoint reading, not the energy the measurement used                                                  | empty: `Not Supported`                                     |
 | `temperatureC`, `temperatureDeltaC`             | NVML: the GPU temperature at the end, and end minus start                                                                                         | two instants                                                                                               | empty: `Not Supported`                                     |
 | `speedupVsCpu`                                  | a CPU baseline the test or its suite measured, over `wallMedian` ([walkthrough 10](10_GPU_BASIC_WORKFLOW.md))                                     | tests with a baseline                                                                                      | empty: these tests have none                               |
 | `memBandwidthGBs`                               | the declared copies' bytes over their time                                                                                                        | declared copies only                                                                                       | empty: none declared                                       |
@@ -233,17 +235,27 @@ one-thread kernel read 2,994.4 and 2,993.6 us, against 2,996.6 to 3,000.0 us
 with it on over six locked runs: the reference session's five and the run in
 [Check Against the Reference](#check-against-the-reference).
 
-**The NVML cells are two instants.** NVML is read once at each end of the
-measured repeats: the power cell is the mean of two instantaneous readings, not
-an energy trace, and the clock and temperature are the end's readings. On this
+**The NVML cells are readings at the window's ends.** NVML is read once at
+each end of the measured repeats: the clock and temperature cells are the
+end's readings, and `powerDrawW` is the endpoint reading, NVML's power reading
+taken at the end, not an energy trace or an average over the window. Vernier
+publishes it only for a window of 1.5 s or more, a rule of its own. On this
 rig NVML finds the device, which it looks up by the CUDA device's UUID, and
 answers `Not Supported` to every reading, so all six cells are empty. On a GPU
-whose NVML answers, they are filled. One run of Step 1's command on an NVIDIA
-RTX 5000 Ada laptop GPU (driver 580.178.04, in the project's CUDA development
-container; none of its times are used on this page) read `smClockMHz` 1680,
-`powerDrawW` 28.2 and 29.9 W, `temperatureC` 60, `temperatureDeltaC` 0 and
-`throttling` 0, and named `powerLimitW` empty: that GPU's NVML does not report
-its power limit.
+whose NVML answers, they are filled, the power draw only for a long enough
+window. One run of Step 1's command on an NVIDIA RTX 5000 Ada laptop GPU
+(driver 580.178.04, in the project's CUDA development container, the host
+thread on a performance core, with other builds running at a load average of
+7.6; none of its times are used on this page) read `smClockMHz` 1680,
+`temperatureC` 59, `temperatureDeltaC` 1 and 0 and `throttling` 0. Its windows,
+10 repeats of 20 launches, lasted well under 1.5 s, so `powerDrawW` stayed
+empty, and the run said why, once, after naming `powerLimitW` empty: that
+GPU's NVML does not report its power limit.
+
+```
+[gpu] NVML reported no power limit (Not Supported): powerLimitW stays empty.
+[gpu] Vernier publishes NVML's endpoint power reading only for a measured window of 1.5 s or more; this run measured a shorter one, so its powerDrawW stays empty.
+```
 
 ## Step 3: The Registers as Compiled
 
@@ -355,7 +367,7 @@ against 2,993 us at one. A run under a profiler is a run of its own, so set
 | `cuptiKernelLaunches`                      | 200 in both rows (`--cycles` times `--repeats`)                                              | the same wherever CUPTI collects                                                             |
 | `cuptiRegistersMedian` / compiled          | 16 / 10                                                                                      | the compiled count depends on the compiler and architecture; 16 / 10 on the RTX 5000 Ada too |
 | `occupancy`                                | 0.5 and 1.0                                                                                  | depends on the SM's limits; 0.5 and 1.0 on the RTX 5000 Ada too                              |
-| NVML cells                                 | all six empty, `Not Supported`                                                               | filled where NVML answers; all but `powerLimitW` on the RTX 5000 Ada                         |
+| NVML cells                                 | all six empty, `Not Supported`                                                               | filled where NVML answers; on the RTX 5000 Ada all but `powerLimitW` and `powerDrawW`        |
 | `kernelTimeUs` vs Nsight Systems, same run | 0.02 to 0.1% apart at one thread per block; 2.5 to 2.6 us a launch apart at 256 (three runs) | close for long kernels; the gap between launches shows on short ones                         |
 | absolute times                             | 2,998.6 / 20.11 us                                                                           | will differ                                                                                  |
 
