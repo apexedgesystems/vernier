@@ -139,15 +139,22 @@ const std::string& testName() const noexcept;
 - If `fn()` throws, the abort hook runs in place of the after hook, nothing
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
-  `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  `abortMeasure()`, which ends the collection at once, without analysis, so
+  this case and others can collect again: gperf stops its CPU and heap
+  captures, perf stops and renames its output (`stat.aborted.txt`,
+  `<name>.aborted.data`), bpftrace and offcpu stop their tracers and publish
+  no capture, and callgrind under a wrap started by hand switches its
+  recording off
 
 **`contentionRun(worker, label)`**
 
 - Framework spawns `threads()` workers, each calling `worker()` in a loop
 - Use for: Multi-threaded scalability testing
 - Each worker performs `cycles()` operations
+- If a worker throws, or a worker thread cannot be started, the run ends as
+  `measured()` ends when `fn()` throws: the workers started are joined, the
+  abort hook runs, nothing is published, and the first exception reaches you
+  on the calling thread
 
 ### PerfResult
 
@@ -542,7 +549,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; each collecting backend ends it
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
@@ -587,6 +594,11 @@ samples, which `--target-time` (or more `--cycles`) avoids.
 perf report -i MyComponent.Throughput.perf/perf.data
 perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
+
+With `--threads` in the `record` flags, perf writes `perf.data` as a
+directory: a header file, `data`, and one stream per CPU, `data.<n>`. The
+backend takes it as it takes the file, and perf's own commands, and `bench
+flamegraph`, read it the same way.
 
 ### ProfilerGperf
 
@@ -937,11 +949,15 @@ std::printf("Test run: %s on %s (%s) [%s]\n",
 ### Timing Utilities
 
 ```cpp
-// Get current time in microseconds
+// Get current time in whole microseconds
 double nowUs();
 ```
 
-High-precision wall-clock timing using `std::chrono::high_resolution_clock`.
+Monotonic time from `std::chrono::steady_clock`, cut to whole microseconds,
+so the difference of two readings is off by up to 1 us. The measured loops
+(`measured()`, `throughputLoop()`, `contentionRun()`) and the `--target-time`
+calibration do not use it: they time each repeat with `steady_clock` time
+points, at the clock's own resolution.
 
 ### Statistics
 

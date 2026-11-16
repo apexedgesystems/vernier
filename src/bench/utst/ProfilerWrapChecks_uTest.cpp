@@ -22,6 +22,7 @@
 #include "src/bench/inc/ProfilerRegistry.hpp"
 #include "src/bench/inc/ProfilerRocprof.hpp"
 #include "src/bench/inc/ValgrindTool.hpp"
+#include "src/bench/src/CallgrindRequests.hpp"
 #include "src/bench/utst/ReadinessFixtures.hpp"
 #include "src/bench/utst/StderrCapture.hpp"
 
@@ -632,29 +633,61 @@ TEST(ValgrindAnalysis, CallgrindManualWrapCannotAnnotate) {
 
 /* ----------------------------- Callgrind's Window ----------------------------- */
 
-/** @test A wrap started by hand switches the window when callgrind_control is there. */
+/**
+ * @test Every libbench has callgrind's client requests, from the callgrind.h
+ * it carries, whatever its build machine has installed: only NVALGRIND, the
+ * way to compile them out, leaves the window to callgrind_control.
+ */
+TEST(CallgrindWindowCheck, RequestsBuiltInUnlessBuiltWithNvalgrind) {
+#if defined(NVALGRIND)
+  EXPECT_FALSE(vernier::bench::callgrind::requestsBuiltIn());
+#else
+  EXPECT_TRUE(vernier::bench::callgrind::requestsBuiltIn());
+#endif
+}
+
+/**
+ * @test A wrap started by hand with callgrind_control on PATH switches the
+ * window: ready with callgrind's client requests; a caveat naming valgrind's
+ * gdbserver in a build with NVALGRIND, which switches with callgrind_control.
+ */
 TEST(CallgrindWindowCheck, ManualWrapWithControlToggles) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
   dir.install("fake_helper.sh", "callgrind_control");
   const ReadinessResult RESULT = vernier::bench::checkCallgrindRequestWithIdentity(
       requestFor("callgrind", ReadinessScope::RUNTIME), dir.context(), running("callgrind"));
-  EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  if (vernier::bench::callgrind::requestsBuiltIn()) {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  } else {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT) << RESULT.report.message;
+    EXPECT_NE(RESULT.report.message.find("through valgrind's gdbserver"), std::string::npos)
+        << RESULT.report.message;
+  }
   ASSERT_NE(planOf(RESULT), nullptr);
   EXPECT_TRUE(planOf(RESULT)->canToggle);
   EXPECT_EQ(planOf(RESULT)->launch, LaunchContext::MANUALLY_WRAPPED);
 }
 
-/** @test Without callgrind_control the window cannot be switched: a caveat, and no toggling. */
-TEST(CallgrindWindowCheck, ManualWrapWithoutControlIsACaveat) {
+/**
+ * @test Without callgrind_control a wrap started by hand still has its window
+ * switched with callgrind's client requests; in a build with NVALGRIND it
+ * cannot be: a caveat, and no toggling.
+ */
+TEST(CallgrindWindowCheck, ManualWrapWithoutControlSwitchesWithRequests) {
   const FakeToolDir DIR;
   ASSERT_TRUE(DIR.ok());
   const ReadinessResult RESULT = vernier::bench::checkCallgrindRequestWithIdentity(
       requestFor("callgrind", ReadinessScope::RUNTIME), DIR.context(), running("callgrind"));
-  EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT);
-  EXPECT_NE(RESULT.report.message.find("callgrind_control is not on PATH"), std::string::npos);
   ASSERT_NE(planOf(RESULT), nullptr);
-  EXPECT_FALSE(planOf(RESULT)->canToggle);
+  if (vernier::bench::callgrind::requestsBuiltIn()) {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+    EXPECT_TRUE(planOf(RESULT)->canToggle);
+  } else {
+    EXPECT_EQ(RESULT.cause, ReadinessCause::CAVEAT);
+    EXPECT_NE(RESULT.report.message.find("callgrind_control is not on PATH"), std::string::npos);
+    EXPECT_FALSE(planOf(RESULT)->canToggle);
+  }
 }
 
 /** @test bench run's wrap records the whole process: nothing is switched. */
@@ -670,7 +703,11 @@ TEST(CallgrindWindowCheck, BenchRunsWrapIsLeftAlone) {
   EXPECT_FALSE(planOf(RESULT)->canToggle);
 }
 
-/** @test The printed wrap opens the window with --instr-atstart=no only when it can be switched. */
+/**
+ * @test The printed wrap opens the window with --instr-atstart=no only when it
+ * can be switched: always with callgrind's client requests, and in a build
+ * with NVALGRIND when callgrind_control is on PATH.
+ */
 TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
@@ -679,9 +716,13 @@ TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   const ValgrindIdentity NONE;
   const ReadinessResult WITHOUT =
       vernier::bench::checkCallgrindRequestWithIdentity(REQUEST, dir.context(), NONE);
-  EXPECT_EQ(WITHOUT.report.hint.rfind("Wrap it: valgrind --tool=callgrind "
-                                      "--callgrind-out-file=./callgrind.out <this-binary> "
-                                      "--profile callgrind [...]",
+  EXPECT_EQ(WITHOUT.report.hint.rfind(vernier::bench::callgrind::requestsBuiltIn()
+                                          ? "Wrap it: valgrind --tool=callgrind --instr-atstart=no "
+                                            "--callgrind-out-file=./callgrind.out <this-binary> "
+                                            "--profile callgrind [...]"
+                                          : "Wrap it: valgrind --tool=callgrind "
+                                            "--callgrind-out-file=./callgrind.out <this-binary> "
+                                            "--profile callgrind [...]",
                                       0),
             0U)
       << WITHOUT.report.hint;

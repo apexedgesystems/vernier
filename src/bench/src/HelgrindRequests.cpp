@@ -1,20 +1,15 @@
 /**
  * @file HelgrindRequests.cpp
  * @brief libbench's helgrind client requests: the one place it includes
- *        valgrind's helgrind.h.
+ *        valgrind's helgrind.h, the copy in src/bench/third_party/valgrind.
  */
 
 #include "src/bench/inc/HelgrindRequests.hpp"
 
-// Compiled in where this build finds valgrind's helgrind.h. NVALGRIND, defined
-// by the build or by valgrind.h itself on a platform valgrind does not
-// support, reduces each request to nothing.
-#if defined(__has_include)
-#if __has_include(<valgrind/helgrind.h>)
-#include <valgrind/helgrind.h>
-#define VERNIER_HELGRIND_HEADER_FOUND 1
-#endif
-#endif
+// The copy libbench carries, so every build has the requests whatever its
+// machine has installed. NVALGRIND, defined by the build or by valgrind.h
+// itself on a platform valgrind does not support, compiles them out.
+#include "src/bench/third_party/valgrind/helgrind.h"
 
 namespace vernier {
 namespace bench {
@@ -23,28 +18,31 @@ namespace helgrind {
 /* ----------------------------- API ----------------------------- */
 
 bool requestsBuiltIn() noexcept {
-#if defined(VERNIER_HELGRIND_HEADER_FOUND) && !defined(NVALGRIND)
-  return true;
-#else
+#if defined(NVALGRIND)
   return false;
+#else
+  return true;
 #endif
 }
 
+// Under NVALGRIND the macros would still copy their arguments into locals they
+// then leave unused, so the calls are left out instead.
+
 void disableChecking(void* addr, std::size_t len) noexcept {
-#if defined(VERNIER_HELGRIND_HEADER_FOUND)
-  VALGRIND_HG_DISABLE_CHECKING(addr, len);
-#else
+#if defined(NVALGRIND)
   (void)addr;
   (void)len;
+#else
+  VALGRIND_HG_DISABLE_CHECKING(addr, len);
 #endif
 }
 
 void enableChecking(void* addr, std::size_t len) noexcept {
-#if defined(VERNIER_HELGRIND_HEADER_FOUND)
-  VALGRIND_HG_ENABLE_CHECKING(addr, len);
-#else
+#if defined(NVALGRIND)
   (void)addr;
   (void)len;
+#else
+  VALGRIND_HG_ENABLE_CHECKING(addr, len);
 #endif
 }
 

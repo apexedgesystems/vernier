@@ -21,12 +21,15 @@
 #ifdef __linux__
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <fcntl.h>
 #include <filesystem>
 #include <functional>
+#include <istream>
+#include <optional>
 #include <poll.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -564,6 +567,158 @@ StatReport readStatReport(const std::string& text) {
   }
   return report;
 }
+
+/** @brief The little-endian unsigned integer of @p width bytes at @p at. */
+std::uint64_t littleEndian(const unsigned char* at, std::size_t width) {
+  std::uint64_t value = 0;
+  for (std::size_t i = width; i > 0; --i) {
+    value = (value << 8U) | at[i - 1];
+  }
+  return value;
+}
+
+/**
+ * @brief True when each record in the next @p size bytes of @p in was read and
+ * is one that carries no sample, the last ending at @p size. A record starts
+ * with a 32-bit type and, at byte 6, a 16-bit size that counts the whole
+ * record. The types that carry none are the kernel's but the sample (9), lost
+ * events (2, 13) and AUX area data (11), and perf's own but tracing data
+ * (66), AUX trace data (71) and compressed records (81); any other type may
+ * carry samples or trace data this does not read.
+ */
+bool recordsCarryNoSample(std::istream& in, std::uint64_t size) {
+  const auto CARRIES_NO_SAMPLE = [](std::uint64_t type) {
+    return (type >= 1 && type <= 21 && type != 2 && type != 9 && type != 11 && type != 13) ||
+           (type >= 64 && type <= 82 && type != 66 && type != 71 && type != 81);
+  };
+  constexpr std::size_t RECORD_HEADER = 8;
+  for (std::uint64_t read = 0; read < size;) {
+    std::array<unsigned char, RECORD_HEADER> record{};
+    if (size - read < RECORD_HEADER ||
+        !in.read(reinterpret_cast<char*>(record.data()), record.size())) {
+      return false;
+    }
+    const std::uint64_t BYTES = littleEndian(record.data() + 6, 2);
+    if (!CARRIES_NO_SAMPLE(littleEndian(record.data(), 4)) || BYTES < RECORD_HEADER ||
+        BYTES > size - read) {
+      return false;
+    }
+    in.ignore(static_cast<std::streamsize>(BYTES - RECORD_HEADER));
+    if (in.gcount() != static_cast<std::streamsize>(BYTES - RECORD_HEADER)) {
+      return false;
+    }
+    read += BYTES;
+  }
+  return true;
+}
+
+/** @brief Where a perf data file's data section lies, and its feature bits 0 to 63. */
+struct DataHeader {
+  std::uint64_t dataOffset = 0;
+  std::uint64_t dataSize = 0;
+  std::uint64_t features = 0;
+};
+
+/**
+ * @brief The header @p in starts with, as perf writes it on a little-endian
+ * machine: "PERFILE2", the data section's offset and size at bytes 40 and 48,
+ * the feature bits from byte 72; nullopt when it is no such header.
+ */
+std::optional<DataHeader> readDataHeader(std::istream& in) {
+  std::array<unsigned char, 80> header{};
+  if (!in.read(reinterpret_cast<char*>(header.data()), header.size()) ||
+      std::memcmp(header.data(), "PERFILE2", 8) != 0) {
+    return std::nullopt;
+  }
+  return DataHeader{littleEndian(header.data() + 40, 8), littleEndian(header.data() + 48, 8),
+                    littleEndian(header.data() + 72, 8)};
+}
+
+/** @brief True when the data section @p header gives holds no sample (recordsCarryNoSample()). */
+bool dataSectionCarriesNoSample(std::istream& in, const DataHeader& header) {
+  return static_cast<bool>(in.seekg(static_cast<std::streamoff>(header.dataOffset))) &&
+         recordsCarryNoSample(in, header.dataSize);
+}
+
+/**
+ * @brief The version of the directory format the header file's DIR_FORMAT
+ * feature (bit 24) records, or nullopt without one. The feature sections'
+ * table follows the data section: one 16-byte offset and size per feature bit
+ * set, in bit order.
+ */
+std::optional<std::uint64_t> directoryFormat(std::istream& in, const DataHeader& header) {
+  constexpr unsigned DIR_FORMAT = 24;
+  if (((header.features >> DIR_FORMAT) & 1U) == 0) {
+    return std::nullopt;
+  }
+  const auto BEFORE = static_cast<std::uint64_t>(
+      std::popcount(header.features & ((std::uint64_t{1} << DIR_FORMAT) - 1)));
+  std::array<unsigned char, 16> section{};
+  std::array<unsigned char, 8> version{};
+  if (!in.seekg(static_cast<std::streamoff>(header.dataOffset + header.dataSize + 16 * BEFORE)) ||
+      !in.read(reinterpret_cast<char*>(section.data()), section.size()) ||
+      littleEndian(section.data() + 8, 8) < version.size() ||
+      !in.seekg(static_cast<std::streamoff>(littleEndian(section.data(), 8))) ||
+      !in.read(reinterpret_cast<char*>(version.data()), version.size())) {
+    return std::nullopt;
+  }
+  return littleEndian(version.data(), 8);
+}
+
+/**
+ * @brief holdsNoSample() for the directory perf record --threads writes
+ * (directory format 1): the header file "data", whose data section holds what
+ * perf synthesized, and one stream of records per CPU, "data.<n>", with no
+ * header of its own. False when the header file records another format or
+ * none, or the directory holds anything else.
+ */
+bool directoryHoldsNoSample(const std::string& dir) {
+  std::ifstream headerFile(dir + "/data", std::ios::binary);
+  const std::optional<DataHeader> HEADER = readDataHeader(headerFile);
+  if (!HEADER || directoryFormat(headerFile, *HEADER) != 1 ||
+      !dataSectionCarriesNoSample(headerFile, *HEADER)) {
+    return false;
+  }
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+    const std::string NAME = it->path().filename().string();
+    if (NAME == "data") {
+      continue;
+    }
+    const bool STREAM = NAME.size() > 5 && NAME.compare(0, 5, "data.") == 0 &&
+                        NAME.find_first_not_of("0123456789", 5) == std::string::npos;
+    std::error_code sizeError;
+    const auto SIZE = it->file_size(sizeError);
+    std::ifstream stream(it->path(), std::ios::binary);
+    if (!STREAM || !it->is_regular_file(sizeError) || sizeError ||
+        !recordsCarryNoSample(stream, SIZE)) {
+      return false;
+    }
+  }
+  return !ec;
+}
+
+/**
+ * @brief True when the perf data at @p path, a file or the directory perf
+ * record --threads writes, is shown to hold no sample: each of its records
+ * was read, and none is a sample or a record that can carry samples.
+ *
+ * False when it is not what perf writes on a little-endian machine, a record
+ * does not fit where it lies, or a record may carry samples or trace data
+ * this does not read (recordsCarryNoSample()). perf's "Captured and wrote"
+ * line is no substitute: it counts the samples only when perf has read them
+ * back for build ids and the record traces no AUX area, so perf record -B or
+ * --buildid-all omit the count from a file that holds samples.
+ */
+bool holdsNoSample(const std::string& path) {
+  std::error_code ec;
+  if (std::filesystem::is_directory(path, ec)) {
+    return directoryHoldsNoSample(path);
+  }
+  std::ifstream in(path, std::ios::binary);
+  const std::optional<DataHeader> HEADER = readDataHeader(in);
+  return HEADER && dataSectionCarriesNoSample(in, *HEADER);
+}
 #endif
 
 } // namespace
@@ -739,6 +894,45 @@ void PerfStatProfiler::afterMeasure(const Stats& /*s*/) {
 #endif
 }
 
+void PerfStatProfiler::abortMeasure() noexcept {
+#ifdef __linux__
+  if (!started_) {
+    return;
+  }
+  started_ = false;
+  try {
+    // Stopped as afterMeasure() stops it, and judged by nothing: what perf
+    // wrote covers part of a window that did not complete, so it is set
+    // aside under a name of its own instead of left as the case's output.
+    const HelperStopResult STOP = helper_.stop();
+    const std::filesystem::path OUTPUT{statPath_.empty() ? dataPath_ : statPath_};
+    const std::filesystem::path ASIDE =
+        OUTPUT.parent_path() / (OUTPUT.stem().string() + ".aborted" + OUTPUT.extension().string());
+    std::error_code ec;
+    // What an earlier window set aside under that name is replaced, as a
+    // rename replaces a file; a directory (perf record --threads) cannot be
+    // renamed over another, so the earlier one goes first.
+    if (std::filesystem::exists(OUTPUT, ec)) {
+      std::filesystem::remove_all(ASIDE, ec);
+    }
+    ec.clear();
+    std::filesystem::rename(OUTPUT, ASIDE, ec);
+    const std::string ENDED =
+        STOP.stillAlive ? "perf did not end on SIGINT, SIGTERM or SIGKILL" : "perf was stopped";
+    const std::string LEFT =
+        ec == std::errc::no_such_file_or_directory
+            ? "it left no output"
+            : (ec ? "its output " + OUTPUT.string() + " could not be set aside: " + ec.message()
+                  : "its output was set aside as " + ASIDE.string());
+    std::fprintf(stderr, "[perf] the measured window ended by an exception: %s; %s\n",
+                 ENDED.c_str(), LEFT.c_str());
+  } catch (...) {
+    // Called while an exception is on its way to the caller: nothing here
+    // may replace it.
+  }
+#endif
+}
+
 void PerfStatProfiler::checkOutput() const {
 #ifdef __linux__
   if (!statPath_.empty()) {
@@ -768,12 +962,28 @@ void PerfStatProfiler::checkOutput() const {
     return;
   }
   std::error_code ec;
-  const auto SIZE = std::filesystem::file_size(dataPath_, ec);
-  if (ec || SIZE == 0) {
-    fail(ReadinessCause::MISSING,
-         dataPath_ + (ec ? " was not written: " : " is empty: ") + perfSaid(errPath_),
-         ReadinessStage::COMPLETION);
-    return;
+  if (std::filesystem::is_directory(dataPath_, ec)) {
+    // perf record --threads writes its capture as a directory: a header file
+    // and one stream of records per CPU, which perf reads back with -i.
+    const std::string HEADER = dataPath_ + "/data";
+    const auto SIZE = std::filesystem::file_size(HEADER, ec);
+    if (ec || SIZE == 0) {
+      fail(ReadinessCause::MISSING,
+           dataPath_ +
+               " is a directory, as perf record --threads writes its capture, but its "
+               "header file " +
+               HEADER + (ec ? " was not written: " : " is empty: ") + perfSaid(errPath_),
+           ReadinessStage::COMPLETION);
+      return;
+    }
+  } else {
+    const auto SIZE = std::filesystem::file_size(dataPath_, ec);
+    if (ec || SIZE == 0) {
+      fail(ReadinessCause::MISSING,
+           dataPath_ + (ec ? " was not written: " : " is empty: ") + perfSaid(errPath_),
+           ReadinessStage::COMPLETION);
+      return;
+    }
   }
   // perf record, mem and c2c confirm the finished file on their stderr.
   if (readText(errPath_).find("Captured and wrote") == std::string::npos) {
@@ -781,6 +991,19 @@ void PerfStatProfiler::checkOutput() const {
          dataPath_ + " was not confirmed written (no \"Captured and wrote\" in " + errPath_ +
              "): " + perfSaid(errPath_),
          ReadinessStage::COMPLETION);
+    return;
+  }
+  // A complete capture that holds no sample is no failure: perf's report of
+  // it is empty, and the line says why and what to change.
+  if (holdsNoSample(dataPath_)) {
+    std::fprintf(stderr,
+                 "[perf] caveat: %s holds no sample: perf confirmed it written, and none of its "
+                 "records is a sample. A measured window that runs on the CPU for less than "
+                 "perf's sampling period records none: lengthen it (--target-time 250ms sizes "
+                 "its cycles)%s.\n",
+                 dataPath_.c_str(),
+                 plan_->mode == PerfMode::RECORD ? ", or sample more often (-F in --profile-args)"
+                                                 : "");
   }
 #endif
 }

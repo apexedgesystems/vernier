@@ -6,11 +6,11 @@
  *
  * StartGate synchronises its threads through atomic flags, which helgrind
  * cannot see as synchronisation, so it asks helgrind to leave those flags
- * unchecked while the gate exists. libbench makes the requests: whether they
- * are made is decided once, when libbench is built (valgrind's helgrind.h
- * found, NVALGRIND not defined), and is the same for every benchmark that
- * loads it, whatever that benchmark's own build has. No valgrind macro reaches
- * a benchmark through this header.
+ * unchecked while the gate exists. libbench makes the requests, from the copy
+ * of valgrind's helgrind.h it carries: whether they are made is decided once,
+ * when libbench is built (they are, unless NVALGRIND is defined), and is the
+ * same for every benchmark that loads it, whatever that benchmark's own build
+ * has. No valgrind macro reaches a benchmark through this header.
  */
 
 #include <cstddef>
@@ -22,9 +22,9 @@ namespace helgrind {
 /* ----------------------------- API ----------------------------- */
 
 /**
- * @brief True when this libbench was built with valgrind's helgrind.h and
- *        without NVALGRIND, so disableChecking() and enableChecking() reach
- *        helgrind when the program runs under it.
+ * @brief True unless this libbench was built with NVALGRIND: disableChecking()
+ *        and enableChecking() then reach helgrind when the program runs under
+ *        it.
  * @note RT-safe: returns a constant.
  */
 [[nodiscard]] bool requestsBuiltIn() noexcept;

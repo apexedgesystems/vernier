@@ -3,81 +3,284 @@
  * @brief Unit tests for vernier::bench::perf_watchdog.
  *
  * Notes:
- *  - The handler ends the process, so each test runs it in a death-test child.
- *  - The alarm is raised directly; no test waits for a real timeout.
- *  - A test that arms through a measured case reads and cancels the alarm at
- *    once, so a failing assertion cannot leave it to end the process later.
+ *  - The watchdog ends the process it guards, so each case in which it fires,
+ *    or must not, runs WatchdogHelper as a child and reads how it ended.
+ *  - Those children wait on real timers: 0.1 s for a direct arm, 0.6 s for
+ *    the disarm and re-arm case, and the 1 s of --profile-test-timeout 1 for
+ *    the two hung loops.
+ *  - The cases of a later arming make the helper wait until the watchdog's
+ *    thread is parked, or waiting for a deadline, before it arms again: an
+ *    arming the thread does not see at once is then never seen.
+ *  - The cases in this process arm through a measured loop for 30 s or more
+ *    and read the watchdog's flag; none waits for it.
  */
 
 #include "src/bench/inc/PerfHarness.hpp"
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
+#include "src/bench/inc/ProfilerReadiness.hpp"
 
 #include <gtest/gtest.h>
 
+#include <sys/time.h>
 #include <unistd.h>
 
+#include <atomic>
+#include <chrono>
 #include <csignal>
-
 #include <cstddef>
 #include <string>
 #include <vector>
 
+#ifndef VERNIER_WATCHDOG_HELPER
+#error "VERNIER_WATCHDOG_HELPER must name the WatchdogHelper program"
+#endif
+
 namespace perf_watchdog = vernier::bench::perf_watchdog;
+using vernier::bench::ProbeResult;
+
+namespace {
+
+/// The program the cases in which the watchdog fires, or must not, run.
+constexpr const char* HELPER = VERNIER_WATCHDOG_HELPER;
+
+/// How long a run of the helper may take before it is killed: far past what it waits.
+constexpr int HELPER_BOUND_MS = 20000;
+
+/// The build has the thread sanitizer, which ends a child of a multi-threaded
+/// fork() that starts a thread (its die_after_fork).
+#if defined(__SANITIZE_THREAD__)
+constexpr bool THREAD_SANITIZER = true;
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+constexpr bool THREAD_SANITIZER = true;
+#else
+constexpr bool THREAD_SANITIZER = false;
+#endif
+#else
+constexpr bool THREAD_SANITIZER = false;
+#endif
+
+/// One run of the helper with @p args, its stdout and stderr kept apart.
+ProbeResult runHelper(std::vector<std::string> args) {
+  args.insert(args.begin(), HELPER);
+  return vernier::bench::runBoundedProbe(args, HELPER_BOUND_MS,
+                                         vernier::bench::ReadinessContext::capture(),
+                                         vernier::bench::ProbeStreams::SEPARATE);
+}
+
+/// The watchdog's whole message for @p test under @p tool.
+std::string timeoutMessage(const std::string& test, const std::string& tool) {
+  return "\n[bench] watchdog timeout: test '" + test + "' under --profile " + tool +
+         " exceeded the configured profile-test-timeout.\n"
+         "[bench] Likely cause: drain loop, blocking I/O, or filter that holds the\n"
+         "[bench] measured loop. Identify the test, exclude it via --gtest_filter,\n"
+         "[bench] or raise --profile-test-timeout. Aborting.\n";
+}
+
+} // namespace
 
 /* ----------------------------- API Tests ----------------------------- */
 
-class PerfWatchdogTest : public ::testing::Test {
-protected:
-  std::string savedStyle_;
+/**
+ * @test A measured loop that does not return, under --profile perf with
+ * --profile-test-timeout 1: after the second, the watchdog writes its message
+ * naming the case and the profiler and ends the program with exit status 2.
+ */
+TEST(PerfWatchdogTest, HungLoopEndsWithStatusTwo) {
+  const auto START = std::chrono::steady_clock::now();
+  const ProbeResult RUN = runHelper({"hang", "--profile", "perf", "--profile-test-timeout", "1"});
+  const auto ELAPSED_MS = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now() - START)
+                              .count();
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2);
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Hung", "perf"));
+  EXPECT_EQ(RUN.output, "");
+  EXPECT_GE(ELAPSED_MS, 1000) << "it ended before its timeout";
+}
 
-  // The child re-executes the binary, so threads left behind by other tests
-  // in this process cannot leak into it.
-  void SetUp() override {
-    savedStyle_ = GTEST_FLAG_GET(death_test_style);
-    GTEST_FLAG_SET(death_test_style, "threadsafe");
-  }
+/**
+ * @test A later measured loop that does not return, once the watchdog's
+ * thread has parked after a first case that returned, under --profile perf
+ * with --profile-test-timeout 1: after the second, the watchdog ends the
+ * program with exit status 2, naming the later case.
+ */
+TEST(PerfWatchdogTest, LaterHungLoopEndsWithStatusTwo) {
+  const ProbeResult RUN =
+      runHelper({"hang-later", "--profile", "perf", "--profile-test-timeout", "1"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.HungLater", "perf"));
+  EXPECT_EQ(RUN.output.rfind("[Watchdog.Returns]", 0), 0U)
+      << "the first case's line: " << RUN.output;
+}
 
-  void TearDown() override { GTEST_FLAG_SET(death_test_style, savedStyle_); }
-};
+/**
+ * @test An arming after the watchdog's thread has parked: armed for 10 s,
+ * disarmed once the thread waits for that deadline, armed for 0.1 s once the
+ * thread has parked. It fires, naming the later case.
+ */
+TEST(PerfWatchdogTest, ArmingAfterTheThreadParkedFires) {
+  const ProbeResult RUN = runHelper({"later"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Later", "perf"));
+}
+
+/**
+ * @test A re-arm that shortens the deadline the thread is waiting for: armed
+ * for 10 s, then for 0.1 s. It fires at the new deadline, naming the new
+ * case, before the program's own 5 s wait ends, half the first deadline.
+ */
+TEST(PerfWatchdogTest, ShorterRearmFiresAtTheNewDeadline) {
+  const ProbeResult RUN = runHelper({"shorten"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Shortened", "perf"));
+}
 
 /** @test Reports the test and the profiler by name, in order, then exits with status 2 */
-TEST_F(PerfWatchdogTest, TimeoutNamesTestAndToolThenExits) {
-  EXPECT_EXIT(
-      {
-        perf_watchdog::arm("Suite.SlowCase", "callgrind", 3600);
-        std::raise(SIGALRM);
-      },
-      ::testing::ExitedWithCode(2),
-      "\\[bench\\] watchdog timeout: test 'Suite\\.SlowCase' under --profile callgrind "
-      "exceeded the configured profile-test-timeout\\.\n"
-      "(.|\n)*or raise --profile-test-timeout\\. Aborting\\.\n$");
+TEST(PerfWatchdogTest, TimeoutNamesTestAndToolThenExits) {
+  const ProbeResult RUN = runHelper({"names", "Suite.SlowCase", "callgrind"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2);
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Suite.SlowCase", "callgrind"));
 }
 
 /** @test Substitutes a placeholder for a missing name instead of reading a null pointer */
-TEST_F(PerfWatchdogTest, NullNamesBecomePlaceholders) {
-  EXPECT_EXIT(
-      {
-        perf_watchdog::arm(nullptr, nullptr, 3600);
-        std::raise(SIGALRM);
-      },
-      ::testing::ExitedWithCode(2), "watchdog timeout: test '\\?' under --profile \\? exceeded");
+TEST(PerfWatchdogTest, NullNamesBecomePlaceholders) {
+  const ProbeResult RUN = runHelper({"null-names"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2);
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("?", "?"));
 }
 
-/** @test A disarmed watchdog leaves no pending alarm and reports itself disarmed */
-TEST_F(PerfWatchdogTest, DisarmCancelsPendingAlarm) {
+/**
+ * @test A watchdog disarmed before its deadline does not fire, and a re-arm
+ * replaces the deadline the thread is waiting for: the program runs past
+ * both 0.1 s deadlines and exits 0.
+ */
+TEST(PerfWatchdogTest, DisarmAndRearmReplaceTheDeadline) {
+  const ProbeResult RUN = runHelper({"disarmed"});
+  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "still running\n");
+  EXPECT_EQ(RUN.errorOutput, "");
+}
+
+/**
+ * @test A child of fork(), whose parent's watchdog thread is not copied into
+ * it, arms a watchdog of its own: it fires in the child, naming the child's
+ * case, and the child exits with status 2.
+ */
+TEST(PerfWatchdogTest, ForkedChildArmsItsOwnWatchdog) {
+  if (THREAD_SANITIZER) {
+    GTEST_SKIP() << "the thread sanitizer ends a child of a multi-threaded fork() that starts a "
+                    "thread (die_after_fork), as this child must";
+  }
+  const ProbeResult RUN = runHelper({"fork"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << "the child's exit status, as the helper passes it on\n"
+                             << RUN.errorOutput;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Child", "perf"));
+}
+
+/**
+ * @test The watchdog's thread takes no signal: SIGUSR1, sent to the process
+ * while the program's own thread blocks it, stays pending for that thread
+ * instead of ending the process through the watchdog's. The first arm(),
+ * which starts that thread with every signal blocked, leaves the arming
+ * thread's own mask as it was.
+ */
+TEST(PerfWatchdogTest, ItsThreadTakesNoSignal) {
+  const ProbeResult RUN = runHelper({"signals"});
+  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "SIGUSR1 waited for the thread that blocks it\n");
+}
+
+/**
+ * @test A watchdog thread that cannot be started (RLIMIT_NPROC 0) ends the
+ * measurement as an exception from the body does: the before hook ran, the
+ * body did not, the abort hook ran in place of the after hook, and the
+ * exception reached the caller.
+ */
+TEST(PerfWatchdogTest, ThreadThatCannotStartEndsTheMeasurement) {
+  const ProbeResult RUN = runHelper({"no-thread", "--profile", "perf"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  if (RUN.exitCode == 77) {
+    GTEST_SKIP() << RUN.output;
+  }
+  EXPECT_EQ(RUN.exitCode, 3) << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "before hook\nabort hook\nmeasured() threw std::system_error: EAGAIN\n");
+}
+
+/**
+ * @test A thread that could not start is tried again: a second case whose
+ * thread cannot start either ends as the first did, through the abort hook;
+ * once threads can start, the next arming starts the thread, and it fires,
+ * naming the case armed.
+ */
+TEST(PerfWatchdogTest, ThreadThatCannotStartIsStartedByALaterArming) {
+  const ProbeResult RUN = runHelper({"no-thread-retry", "--profile", "perf"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  if (RUN.exitCode == 77) {
+    GTEST_SKIP() << RUN.output;
+  }
+  const std::string FAILED_CASE =
+      "before hook\nabort hook\nmeasured() threw std::system_error: EAGAIN\n";
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.output, FAILED_CASE + FAILED_CASE);
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Retried", "perf"));
+}
+
+namespace {
+
+/// How many times the program's own SIGALRM handler ran.
+std::atomic<int> g_programAlarms{0};
+
+/// The program's own SIGALRM handler.
+void programAlarm(int /*sig*/) { g_programAlarms.fetch_add(1); }
+
+} // namespace
+
+/**
+ * @test A program's own SIGALRM handler and pending alarm survive a measured
+ * loop under --profile: inside the loop its timer is still the one running,
+ * and afterwards its handler is installed and its alarm still pending.
+ */
+TEST(PerfWatchdogTest, LeavesTheProgramsAlarmAndHandler) {
+  struct sigaction program{};
+  program.sa_handler = programAlarm;
+  ::sigemptyset(&program.sa_mask);
   struct sigaction previous{};
-  ASSERT_EQ(::sigaction(SIGALRM, nullptr, &previous), 0);
+  ASSERT_EQ(::sigaction(SIGALRM, &program, &previous), 0);
+  ::alarm(100);
 
-  perf_watchdog::arm("Suite.Case", "perf", 3600);
-  EXPECT_TRUE(perf_watchdog::g_armed.load());
-  perf_watchdog::disarm();
-  EXPECT_FALSE(perf_watchdog::g_armed.load());
-  EXPECT_EQ(::alarm(0), 0U) << "an alarm was still pending after disarm()";
-
-  // arm() installs a process-wide handler; hand the signal back as found.
-  ASSERT_EQ(::sigaction(SIGALRM, &previous, nullptr), 0);
+  vernier::bench::PerfConfig cfg;
+  cfg.cycles = 1;
+  cfg.repeats = 1;
+  cfg.profileTool = "perf"; // a requested profile arms the watchdog; no profiler is made here
+  cfg.profileTestTimeoutSecs = 30;
+  itimerval inside{};
+  bool armed = false;
+  {
+    vernier::bench::PerfCase perf{"Watchdog.ProgramAlarm", cfg};
+    perf.measured([&] {
+      ::getitimer(ITIMER_REAL, &inside);
+      armed = perf_watchdog::g_armed.load();
+    });
+  }
+  // Read and cancel the alarm at once, and hand the signal back as found: a
+  // pending alarm would end this process.
+  const unsigned int PENDING = ::alarm(0);
+  struct sigaction after{};
+  ASSERT_EQ(::sigaction(SIGALRM, &previous, &after), 0);
+  EXPECT_TRUE(armed) << "the loop ran without the watchdog";
+  EXPECT_GT(inside.it_value.tv_sec, 98) << "inside the loop, the timer was not the program's";
+  EXPECT_EQ(after.sa_handler, &programAlarm) << "the program's SIGALRM handler was replaced";
+  EXPECT_GT(PENDING, 98U) << "the program's alarm was cancelled";
+  EXPECT_EQ(g_programAlarms.load(), 0) << "the program's alarm went off early";
 }
 
 namespace {
@@ -109,17 +312,11 @@ bool armedDuringMeasure(std::vector<const char*> flags) {
  * @test An explicit --profile-test-timeout 0 under --profile arms nothing; the
  * omitted flag (300 s) and a given one arm the watchdog for the measured loop.
  */
-TEST_F(PerfWatchdogTest, ExplicitZeroDoesNotArm) {
-  struct sigaction previous{};
-  ASSERT_EQ(::sigaction(SIGALRM, nullptr, &previous), 0);
-
+TEST(PerfWatchdogTest, ExplicitZeroDoesNotArm) {
   EXPECT_FALSE(armedDuringMeasure({"--profile", "perf", "--profile-test-timeout", "0"}));
   EXPECT_TRUE(armedDuringMeasure({"--profile", "perf"}));
   EXPECT_TRUE(armedDuringMeasure({"--profile", "perf", "--profile-test-timeout", "30"}));
   EXPECT_FALSE(armedDuringMeasure({"--profile-test-timeout", "30"})) << "armed without --profile";
-
-  // arm() installs a process-wide handler; hand the signal back as found.
-  ASSERT_EQ(::sigaction(SIGALRM, &previous, nullptr), 0);
 }
 
 namespace {
@@ -133,15 +330,13 @@ struct WorkloadError {
 
 /**
  * @test A measured callback that throws: its exception reaches the caller
- * unchanged, the watchdog is off with no alarm pending, the after hook does
- * not run and no row is published; the next case of the process measures,
- * publishes and turns its watchdog off as usual.
+ * unchanged, the watchdog is off, the after hook does not run and no row is
+ * published; the next case of the process measures, publishes and turns its
+ * watchdog off as usual.
  */
-TEST_F(PerfWatchdogTest, ThrowingCallbackTurnsTheWatchdogOff) {
+TEST(PerfWatchdogTest, ThrowingCallbackTurnsTheWatchdogOff) {
   using vernier::bench::PerfCase;
   using vernier::bench::PerfRegistry;
-  struct sigaction previous{};
-  ASSERT_EQ(::sigaction(SIGALRM, nullptr, &previous), 0);
 
   vernier::bench::PerfConfig cfg;
   cfg.cycles = 1;
@@ -165,11 +360,8 @@ TEST_F(PerfWatchdogTest, ThrowingCallbackTurnsTheWatchdogOff) {
       code = e.code;
     }
   }
-  // Read (and cancel) at once: an alarm left pending would end this process.
-  const unsigned int PENDING = ::alarm(0);
   const bool ARMED = perf_watchdog::g_armed.load();
-  perf_watchdog::disarm();
-  EXPECT_EQ(PENDING, 0U) << "the watchdog's alarm was still pending after the exception";
+  perf_watchdog::disarm(); // left armed, it would end this process in 30 s
   EXPECT_FALSE(ARMED) << "the watchdog still reports itself armed";
   EXPECT_EQ(code, 7) << "the workload's exception arrived changed";
   EXPECT_EQ(befores, 1);
@@ -183,14 +375,10 @@ TEST_F(PerfWatchdogTest, ThrowingCallbackTurnsTheWatchdogOff) {
     next.setAfterMeasureHook([&](const PerfCase&, const vernier::bench::Stats&) { ++afters; });
     next.measured([&] { armedInside = perf_watchdog::g_armed.load(); });
   }
-  const unsigned int PENDING_AFTER_NEXT = ::alarm(0);
   EXPECT_TRUE(armedInside) << "the next case measured without its watchdog";
-  EXPECT_EQ(PENDING_AFTER_NEXT, 0U);
   EXPECT_FALSE(perf_watchdog::g_armed.load());
   EXPECT_EQ(afters, 1) << "the next case's after hook";
   const auto ROW = PerfRegistry::instance().take();
   ASSERT_TRUE(ROW.has_value()) << "the next case published no row";
   EXPECT_EQ(ROW->testName, "Watchdog.Next");
-
-  ASSERT_EQ(::sigaction(SIGALRM, &previous, nullptr), 0);
 }

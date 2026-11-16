@@ -62,7 +62,7 @@ TEST(PerfCaseTargetTimeTest, FastOperationRoundNearTarget) {
   cfg.repeats = REPEATS;
 
   // Sixteen xorshift steps through a volatile: tens of nanoseconds per call,
-  // far below the microsecond clock one call would be timed with.
+  // about what the two clock reads around a single timed call cost.
   volatile std::uint64_t state = 88172645463325252ULL;
   const auto op = [&] {
     for (int i = 0; i < 16; ++i) {

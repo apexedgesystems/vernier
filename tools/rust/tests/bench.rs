@@ -1537,6 +1537,127 @@ fn gpu_monitor_diff_json_output() {
     assert!(parsed.as_array().unwrap().is_empty()); // No diffs for self-compare
 }
 
+/* ----------------------------- Flamegraph ----------------------------- */
+
+/// Stand-ins in `dir` for the tools `bench flamegraph` runs: perf, which logs
+/// its arguments to `perf.args` and prints a sample line, and the FlameGraph
+/// scripts (run with perl), which read their input and print a folded line or
+/// an SVG.
+fn flamegraph_stand_ins(dir: &Path) {
+    write_executable(
+        &dir.join("perf"),
+        &format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\necho 'main 1 1: cpu-clock:u: work'\n",
+            dir.join("perf.args").display()
+        ),
+    );
+    std::fs::write(
+        dir.join("stackcollapse-perf.pl"),
+        "while (<STDIN>) {}\nprint \"main;work 1\\n\";\n",
+    )
+    .expect("write stackcollapse-perf.pl");
+    std::fs::write(dir.join("difffolded.pl"), "print \"main;work 1 1\\n\";\n")
+        .expect("write difffolded.pl");
+    std::fs::write(
+        dir.join("flamegraph.pl"),
+        "while (<STDIN>) {}\nprint \"<svg/>\\n\";\n",
+    )
+    .expect("write flamegraph.pl");
+}
+
+/// A capture as `perf record --threads` writes one: a directory holding the
+/// header file `data` and a stream per CPU.
+fn threads_capture(dir: &Path, name: &str) -> PathBuf {
+    let capture = dir.join(name);
+    std::fs::create_dir(&capture).expect("create the capture");
+    std::fs::write(capture.join("data"), b"PERFILE2").expect("write the header file");
+    std::fs::write(capture.join("data.0"), b"").expect("write a stream");
+    capture
+}
+
+/// `bench flamegraph <input> --output <svg> [--baseline <baseline>]` with the
+/// stand-ins in `tools` first on PATH and as the FlameGraph scripts.
+fn flamegraph(tools: &Path, input: &Path, svg: &Path, baseline: Option<&Path>) -> Output {
+    let path = format!(
+        "{}:{}",
+        tools.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let mut command = Command::new(bin());
+    command
+        .arg("flamegraph")
+        .arg(input)
+        .arg("--output")
+        .arg(svg)
+        .env("FLAMEGRAPH_DIR", tools)
+        .env("PATH", path);
+    if let Some(baseline) = baseline {
+        command.arg("--baseline").arg(baseline);
+    }
+    output_of(&mut command)
+}
+
+/// @test The directory `perf record --threads` writes is a capture to
+/// `bench flamegraph` as perf.data is, as the input and as the baseline: each
+/// goes to `perf script -i` whole, and the SVG is written.
+#[test]
+fn flamegraph_reads_a_threads_directory() {
+    let tools = tempfile::tempdir().expect("tempdir");
+    flamegraph_stand_ins(tools.path());
+    let captures = tempfile::tempdir().expect("tempdir");
+    let input = threads_capture(captures.path(), "after.data");
+    let baseline = threads_capture(captures.path(), "before.data");
+    for differential in [false, true] {
+        let svg = captures.path().join(format!("flame_{differential}.svg"));
+        let out = flamegraph(
+            tools.path(),
+            &input,
+            &svg,
+            differential.then_some(baseline.as_path()),
+        );
+        assert!(
+            out.status.success(),
+            "differential {differential}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(std::fs::read_to_string(&svg).expect("the SVG"), "<svg/>\n");
+    }
+    assert_eq!(
+        std::fs::read_to_string(tools.path().join("perf.args")).expect("perf's arguments"),
+        format!(
+            "script -i {}\nscript -i {}\nscript -i {}\n",
+            input.display(),
+            baseline.display(),
+            input.display()
+        )
+    );
+}
+
+/// @test A directory without the header file is no capture: `bench
+/// flamegraph` refuses it, naming the two kinds of capture it takes, and runs
+/// no perf.
+#[test]
+fn flamegraph_refuses_a_directory_without_its_header_file() {
+    let tools = tempfile::tempdir().expect("tempdir");
+    flamegraph_stand_ins(tools.path());
+    let captures = tempfile::tempdir().expect("tempdir");
+    let streams = captures.path().join("streams.data");
+    std::fs::create_dir(&streams).expect("create the directory");
+    std::fs::write(streams.join("data.0"), b"").expect("write a stream");
+    let out = flamegraph(tools.path(), &streams, &captures.path().join("x.svg"), None);
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        err.contains(&format!(
+            "input not found: {} (a perf.data file, or the directory perf record --threads \
+             writes)",
+            streams.display()
+        )),
+        "{err}"
+    );
+    assert!(!tools.path().join("perf.args").exists(), "perf ran");
+}
+
 /* ----------------------------- Error Cases ----------------------------- */
 
 #[test]

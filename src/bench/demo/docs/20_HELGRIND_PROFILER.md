@@ -87,9 +87,8 @@ the log carries the finding. To fail a job on one, run valgrind yourself
   [OK]   helgrind   valgrind starts helgrind (probe: /usr/bin/valgrind --tool=helgrind --log-file=/dev/null /bin/true)
 ```
 
-Vernier's own start gate stays out of the report when Vernier's library was
-built where valgrind's header `helgrind.h` is installed, as this rig's was
-([If It Does Not Match](#if-it-does-not-match)).
+Vernier's own start gate stays out of the report unless Vernier's library was
+built with `NVALGRIND` ([If It Does Not Match](#if-it-does-not-match)).
 
 ## The Example
 
@@ -497,14 +496,13 @@ Helgrind did not report Vernier's own start gate either, which
 `contentionRun` uses to release the threads together. The gate spins on two
 atomic flags, which helgrind cannot see as synchronisation, so while it exists
 it asks Vernier's library to have helgrind leave those two flags unchecked.
-The library makes the request when it was built where valgrind's `helgrind.h`
-is installed, as this rig's was, whatever the benchmark's own build has. The
-rest of the program is checked as before: a race between the workers of a
-contention test is still reported
+The library carries valgrind's `helgrind.h` and makes the request in every
+build, whatever the build machine has installed and whatever the benchmark's
+own build has. The rest of the program is checked as before: a race between
+the workers of a contention test is still reported
 ([What Keeps This Page True](#what-keeps-this-page-true)). A library built
-without that header, or with `NVALGRIND`, makes no request, and the same run
-reports five races in `contentionRun`
-([If It Does Not Match](#if-it-does-not-match)).
+with `NVALGRIND` makes no request, and the same run reports five races in
+`contentionRun` ([If It Does Not Match](#if-it-does-not-match)).
 
 ## Failing a Job on a Race
 
@@ -625,12 +623,11 @@ build linked by GNU ld, the container's from a clang 21 Debug build.
   and four `read of size 1` by the workers, in
   `vernier::bench::PerfCase::contentionRun` and in the thread function it
   starts. That is Vernier's start gate, unmarked: Vernier's library was built
-  where valgrind's `helgrind.h` was not found, or with `-DNVALGRIND`. On this
-  rig, a library built with `-DNVALGRIND` gave exactly that for step 4's case.
-  Rebuild Vernier where valgrind's headers are installed, without
-  `NVALGRIND`; how the benchmark itself is built does not matter.
+  with `-DNVALGRIND`. On this rig, a library built with `-DNVALGRIND` gave
+  exactly that for step 4's case. Rebuild Vernier without `NVALGRIND`; how the
+  benchmark itself is built does not matter.
   `Helgrind.LockedTotalReportsNothing` skips with such a library, with
-  `this libbench was built without valgrind's helgrind.h, or with NVALGRIND, so contentionRun's start gate is not marked for helgrind and is reported`.
+  `this libbench was built with NVALGRIND, so contentionRun's start gate is not marked for helgrind and is reported`.
 
 - **`Helgrind.FindsTheRace` reports `SKIPPED`, quoting valgrind.** valgrind
   could not read the demo binary: it gave up reading its debug information
@@ -778,10 +775,10 @@ and the demo's check runs with the example's tests under the `demo` label:
 ctest --test-dir build -L demo
 ```
 
-Every test they select should pass, but the probes that race or make an
-error on purpose, which CTest reports as skipped outside valgrind: this page's
-is `StartGateProbe.RacyWorkers`, the racy probe of the harness's test, and
-its skip is the probe working. The demo's timing test is not registered: what it
+Every test they select should pass. The racy probe of the harness's test,
+`StartGateProbe.RacyWorkers`, is not among them: it is compiled into that
+test's program, which runs it under helgrind, and is not registered, since
+outside valgrind it only skips. The demo's timing test is not registered: what it
 measures belongs to the machine it runs on. This repository has no
 continuous-integration lane on the reference board, so before a release the
 page's commands are run on the rig by hand, and the page and its reference CSV

@@ -326,14 +326,14 @@ enum Command {
 
     /// Generate an SVG flamegraph from perf.data
     Flamegraph {
-        /// Input perf.data file
+        /// Input perf.data: a file, or the directory perf record --threads writes
         input: PathBuf,
 
         /// Output SVG path
         #[arg(long, default_value = "flamegraph.svg")]
         output: PathBuf,
 
-        /// Baseline perf.data for differential flamegraph
+        /// Baseline perf.data (a file or a --threads directory) for a differential flamegraph
         #[arg(long)]
         baseline: Option<PathBuf>,
     },

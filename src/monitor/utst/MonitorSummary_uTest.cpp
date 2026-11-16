@@ -18,6 +18,7 @@ using vernier::monitor::MonitorSummary;
 using vernier::monitor::MonitorTag;
 using vernier::monitor::Sample;
 using vernier::monitor::SampleKind;
+using vernier::monitor::ScopeStats;
 
 /* ----------------------------- Default Construction ----------------------------- */
 
@@ -25,6 +26,34 @@ using vernier::monitor::SampleKind;
 TEST(MonitorSummaryDefaultTest, EmptySummary) {
   const MonitorSummary SUMMARY;
   EXPECT_EQ(SUMMARY.size(), 0u);
+}
+
+/* ----------------------------- ScopeStats Method Tests ----------------------------- */
+
+/** @test Takes an even count's median as the mean of the two middle values */
+TEST(ScopeStatsTest, EvenCountMedianAveragesTheMiddlePair) {
+  ScopeStats stats;
+  for (const double V : {4.0, 1.0, 3.0, 2.0}) {
+    stats.record(V, false);
+  }
+  EXPECT_DOUBLE_EQ(stats.median(), 2.5);
+}
+
+/** @test Takes P99 as the nearest rank: 198 of 1..200, 99 of 1..100, a lone value itself */
+TEST(ScopeStatsTest, P99IsTheNearestRank) {
+  const auto P99_OF_ONE_TO = [](int n) {
+    ScopeStats stats;
+    for (int v = n; v >= 1; --v) {
+      stats.record(static_cast<double>(v), false);
+    }
+    return stats.p99();
+  };
+  EXPECT_DOUBLE_EQ(P99_OF_ONE_TO(200), 198.0);
+  EXPECT_DOUBLE_EQ(P99_OF_ONE_TO(100), 99.0);
+
+  ScopeStats lone;
+  lone.record(7.5, false);
+  EXPECT_DOUBLE_EQ(lone.p99(), 7.5);
 }
 
 /* ----------------------------- MonitorSummary Method Tests ----------------------------- */
@@ -105,7 +134,7 @@ TEST(MonitorSummaryTest, CounterSum) {
   EXPECT_DOUBLE_EQ(IT->second.sum, 6.0);
 }
 
-/** @test Gauge records point-in-time values */
+/** @test Gauge records point-in-time values, its range starting at the first reading */
 TEST(MonitorSummaryTest, GaugeValues) {
   MonitorSummary summary;
 
@@ -114,19 +143,20 @@ TEST(MonitorSummaryTest, GaugeValues) {
   std::strncpy(s.scope, "depth", sizeof(s.scope));
   s.kind = SampleKind::GAUGE;
 
-  s.value = 10.0;
+  // All negative: a maximum that started at 0 would stay 0, above every reading.
+  s.value = -5.0;
   summary.record(s);
-  s.value = 50.0;
+  s.value = -3.0;
   summary.record(s);
-  s.value = 30.0;
+  s.value = -9.0;
   summary.record(s);
 
   const auto& ENTRIES = summary.entries();
   const auto IT = ENTRIES.find("g/3::depth");
   ASSERT_NE(IT, ENTRIES.end());
-  EXPECT_DOUBLE_EQ(IT->second.median(), 30.0);
-  EXPECT_DOUBLE_EQ(IT->second.maxVal, 50.0);
-  EXPECT_DOUBLE_EQ(IT->second.minVal, 10.0);
+  EXPECT_DOUBLE_EQ(IT->second.median(), -5.0);
+  EXPECT_DOUBLE_EQ(IT->second.maxVal, -3.0);
+  EXPECT_DOUBLE_EQ(IT->second.minVal, -9.0);
 }
 
 /** @test Multiple tags create separate entries */

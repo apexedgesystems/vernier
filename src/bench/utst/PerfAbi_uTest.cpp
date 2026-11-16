@@ -25,6 +25,7 @@
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/ProfilerGperf.hpp"
 #include "src/bench/inc/ProfilerJemalloc.hpp"
 #include "src/bench/inc/ProfilerRAPL.hpp"
 
@@ -40,6 +41,7 @@
 using vernier::bench::BENCH_ABI_MISMATCH_EXIT_CODE;
 using vernier::bench::BENCH_ABI_VERSION;
 using vernier::bench::checkBenchAbi;
+using vernier::bench::GperfProfiler;
 using vernier::bench::JemallocProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
@@ -48,6 +50,7 @@ using vernier::bench::Stats;
 using vernier::bench::UnifiedMemoryProfile;
 using vernier::bench::detail::AbiField;
 using vernier::bench::detail::abiMismatchMessage;
+using vernier::bench::detail::gperfProfilerSize;
 
 // offsetof on a struct with std::string members is conditionally supported;
 // every toolchain this project builds with supports it, and the alternative
@@ -102,7 +105,9 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 // Stats and PerfGpuConfig keep version 2's layout.
 // Version 6 changed RAPLProfiler's members. No table here describes those
 // profilers' members; RAPLProfiler's size is pinned with the structs' sizes.
-static_assert(BENCH_ABI_VERSION == 6,
+// Version 7 made GperfProfiler's members the same whatever headers a
+// benchmark is compiled with; its size is pinned with the others.
+static_assert(BENCH_ABI_VERSION == 7,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 
@@ -171,8 +176,8 @@ TEST(PerfConfigLayoutTest, NewMembersAreAppended) {
 }
 
 #if defined(__GLIBCXX__) && defined(__LP64__)
-/** @test On 64-bit libstdc++ the shared structs, JemallocProfiler and RAPLProfiler have this
- * version's sizes */
+/** @test On 64-bit libstdc++ the shared structs, JemallocProfiler, RAPLProfiler and
+ * GperfProfiler have this version's sizes */
 TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   EXPECT_EQ(sizeof(PerfConfig), 240U);
   EXPECT_EQ(sizeof(Stats), 80U);
@@ -191,6 +196,13 @@ TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   // size. A member that fits into padding leaves the size alone; only the
   // version shows that.
   EXPECT_EQ(sizeof(RAPLProfiler), 120U);
+  // A benchmark can construct a GperfProfiler itself, as it can the two
+  // above. Its members are the same whatever headers the benchmark is
+  // compiled with (AbiGperfLayoutTest compiles one without gperftools'). A
+  // change that moves its size fails here: raise BENCH_ABI_VERSION, then pin
+  // the new size.
+  EXPECT_EQ(sizeof(GperfProfiler), 400U);
+  EXPECT_EQ(gperfProfilerSize(), sizeof(GperfProfiler));
 }
 
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */

@@ -50,9 +50,10 @@ public:
   /**
    * Called in place of afterMeasure() when the measured window ends by an
    * exception: end what beforeMeasure() started, with no analysis and nothing
-   * published. The default does nothing; a backend whose collection would
-   * otherwise stay on (gperftools runs one capture of each kind per process)
-   * ends it here, so the case can measure again and another case can collect.
+   * published or recorded, so the collection does not run on past the window
+   * and the case can measure again and another case can collect. gperf,
+   * perf, bpftrace, offcpu, and callgrind under a wrap started by hand
+   * override it; the default does nothing.
    */
   virtual void abortMeasure() noexcept {}
 

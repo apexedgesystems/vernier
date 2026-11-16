@@ -2,7 +2,7 @@
 # CallgrindWindowProbe_test.cmake - Runs CallgrindWindowProbe under callgrind
 # and checks which of its phases the profile holds
 #
-# Run with: cmake -DPROBE=<exe> -DREADER=<exe> -DCASE=hint|runner -DWORK_DIR=<dir>
+# Run with: cmake -DPROBE=<exe> -DREADER=<exe> -DCASE=<case> -DWORK_DIR=<dir>
 #                 [-DPROBE_SANITIZER=asan|tsan|ubsan]
 #                 -P CallgrindWindowProbe_test.cmake
 #
@@ -10,10 +10,22 @@
 # the probe was compiled. READER is ValgrindReaderAssertionCli, which reads
 # valgrind's text for an assertion of its reader before the probe started,
 # with the evidence every check asks of it (ValgrindReaderAssertion.hpp).
+# libbench switches the window with callgrind's client requests, which every
+# build has unless it was built with NVALGRIND; the probe's ClientRequests
+# test prints which, and the three cases that need the requests skip without
+# them.
 #
 # hint:   run the probe without valgrind, then under the valgrind command the
 #         callgrind backend printed, and expect the profile to hold the
-#         measured window and nothing that ran before or after it.
+#         measured windows and nothing that ran before, between or after them:
+#         the work after the window that ended by an exception neither.
+# hintvgdboff: the hint case with valgrind's gdbserver off
+#         (VALGRIND_OPTS=--vgdb=no): the same profile.
+# hintinstratstart: the hint case with the printed command's
+#         --instr-atstart=no left out, so callgrind counts from the start:
+#         the same profile.
+# hintnocontrol: the hint case with no callgrind_control on PATH (PATH holds
+#         valgrind's own programs alone): the same profile.
 # runner: run the probe the way `bench run --profile callgrind` does: the whole
 #         process under callgrind, with VERNIER_EXTERNAL_WRAP and
 #         VERNIER_EXTERNAL_WRAP_DIR set as tools/rust/src/bench/runner.rs sets
@@ -24,14 +36,15 @@
 #         valgrind exits, so the benchmark must not annotate it itself (bench
 #         run does, after the exit): the stand-in must never run.
 #
-# Prints "SKIPPED: <reason>", the tests' skip expression, in four cases only,
+# Prints "SKIPPED: <reason>", the tests' skip expression, in five cases only,
 # each with valgrind's own words where it has them: the probe is built with the
-# address sanitizer (PROBE_SANITIZER=asan); valgrind is not installed;
-# valgrind stopped reading debug information before the probe ran (its reader
-# gave up, or failed an assertion before the probe started, as READER reads
-# it); or valgrind ran the probe without reading
-# its symbols, so the profile names none of the probe's functions and valgrind
-# warned about the probe's debug information. Anything else that keeps the
+# address sanitizer (PROBE_SANITIZER=asan); valgrind is not installed; the
+# case needs the client requests and the probe says libbench has none (built
+# with NVALGRIND); valgrind stopped reading debug information before the probe
+# ran (its reader gave up, or failed an assertion before the probe started, as
+# READER reads it); or valgrind ran the probe without reading its symbols, so
+# the profile names none of the probe's functions and valgrind warned about the
+# probe's debug information. Anything else that keeps the
 # probe's tests from starting under valgrind fails with the run's output: a
 # failed launch, a signal, an early exit, no output. So does a profile that
 # names none of the probe's functions without that warning, and a profile
@@ -67,6 +80,28 @@ if (NOT _valgrind)
   return()
 endif ()
 
+# A libbench built with NVALGRIND has no client requests and switches the
+# window with callgrind_control, which needs valgrind's gdbserver, the wrap's
+# --instr-atstart=no and itself on PATH: the backend says so as a caveat. The
+# probe prints which libbench it runs with.
+if (CASE MATCHES "^hint(vgdboff|instratstart|nocontrol)$")
+  execute_process(
+    COMMAND "${PROBE}" --gtest_filter=CallgrindWindow.ClientRequests
+    OUTPUT_VARIABLE _requests
+    ERROR_VARIABLE _requests
+  )
+  if (_requests MATCHES "callgrind client requests: compiled out")
+    message(STATUS "SKIPPED: this libbench was built with NVALGRIND, so it has no callgrind "
+                   "client requests and switches the window with callgrind_control"
+    )
+    return()
+  elseif (NOT _requests MATCHES "callgrind client requests: built in")
+    message(FATAL_ERROR "the probe did not say whether libbench has callgrind's client "
+                        "requests:\n${_requests}"
+    )
+  endif ()
+endif ()
+
 file(REMOVE_RECURSE "${WORK_DIR}")
 file(MAKE_DIRECTORY "${WORK_DIR}")
 # The runs go through env, which runs the command in its own place, so how the
@@ -74,7 +109,7 @@ file(MAKE_DIRECTORY "${WORK_DIR}")
 # -E env reports a child's signal as exit status 1 and a line of its own.)
 set(_clean_env -u VERNIER_EXTERNAL_WRAP -u VERNIER_EXTERNAL_WRAP_DIR)
 
-if (CASE STREQUAL "hint")
+if (CASE MATCHES "^hint")
   # The plain run prints the command, continued over lines ending in '\':
   #   [callgrind]   valgrind --tool=callgrind ... \
   #   [callgrind]     --callgrind-out-file=<file> \
@@ -97,8 +132,33 @@ if (CASE STREQUAL "hint")
   string(REPLACE "\n" " " _hint "${_hint}")
   separate_arguments(_wrap UNIX_COMMAND "${_hint}")
   set(_env ${_clean_env})
+  if (CASE STREQUAL "hintvgdboff")
+    list(APPEND _env VALGRIND_OPTS=--vgdb=no)
+  elseif (CASE STREQUAL "hintinstratstart")
+    list(FIND _wrap --instr-atstart=no _at)
+    if (_at EQUAL -1)
+      message(FATAL_ERROR "the printed command has no --instr-atstart=no to leave out: ${_wrap}")
+    endif ()
+    list(REMOVE_ITEM _wrap --instr-atstart=no)
+  elseif (CASE STREQUAL "hintnocontrol")
+    # valgrind and the files beside it named valgrind* (a distribution's
+    # valgrind may be a script that runs valgrind.bin beside it), and nothing
+    # else: callgrind_control is not among them.
+    get_filename_component(_valgrind_dir "${_valgrind}" DIRECTORY)
+    file(GLOB _valgrind_files "${_valgrind_dir}/valgrind*")
+    file(MAKE_DIRECTORY "${WORK_DIR}/valgrind-only")
+    foreach (_file IN LISTS _valgrind_files)
+      get_filename_component(_name "${_file}" NAME)
+      file(CREATE_LINK "${_file}" "${WORK_DIR}/valgrind-only/${_name}" SYMBOLIC)
+    endforeach ()
+    list(APPEND _env "PATH=${WORK_DIR}/valgrind-only")
+  elseif (NOT CASE STREQUAL "hint")
+    message(FATAL_ERROR "CASE must be hint, hintvgdboff, hintinstratstart, hintnocontrol, "
+                        "runner or analyze"
+    )
+  endif ()
   set(_present workInsideWindow)
-  set(_absent workBeforeWindow workAfterWindow)
+  set(_absent workBeforeWindow workBetweenWindows workAfterWindow)
 elseif (CASE STREQUAL "runner" OR CASE STREQUAL "analyze")
   set(_wrap_dir "${WORK_DIR}/wrap")
   file(MAKE_DIRECTORY "${_wrap_dir}")
@@ -119,7 +179,9 @@ elseif (CASE STREQUAL "runner" OR CASE STREQUAL "analyze")
     list(APPEND _probe_args --profile-analyze)
   endif ()
 else ()
-  message(FATAL_ERROR "CASE must be hint, runner or analyze")
+  message(FATAL_ERROR "CASE must be hint, hintvgdboff, hintinstratstart, hintnocontrol, runner "
+                      "or analyze"
+  )
 endif ()
 
 set(_profile "")

@@ -195,7 +195,10 @@ and the `Calls` column adds up to the difference. When the console sink
 is off, the same table is still available through `monitor.summary()`.
 
 The file sink writes a tab-delimited record per sample, suitable for
-post-run analysis with awk / pandas / `bench` Python tools.
+post-run analysis with awk / pandas / `bench` Python tools. A file it cannot
+open or write, and a file sink with an empty path, are reported on stderr
+(a write failure once, then at `stop()` how many records were not written);
+the program goes on.
 
 ## When to reach for monitor vs. bench
 

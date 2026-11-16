@@ -12,18 +12,22 @@
 #include <atomic>
 #include <cerrno>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <exception>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 #include <thread>
 
-#include <unistd.h> // gethostname, _exit, write
+#include <unistd.h> // gethostname, getpid, _exit, write
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
@@ -134,18 +138,24 @@ inline void clearProgress() { std::fprintf(stderr, "\r%*s\r", 80, ""); }
 
 /* ----------------------------- Watchdog ----------------------------- */
 
+/**
+ * The per-test watchdog under --profile, armed by measured() around its
+ * repeats. One thread per process, started by the first arm() and parked on a
+ * condition variable between arms, writes a message naming the case and the
+ * profiler and ends the process with exit status 2 when a deadline passes
+ * while still armed. It touches no signal disposition and no timer, so a
+ * benchmark's own alarm() and SIGALRM handler, and a profiler that samples on
+ * SIGALRM, work under it.
+ */
 namespace perf_watchdog {
 
-// Async-signal-safe state: SIGALRM handler can read these.
-// Buffers are bounded so the handler never allocates.
+/// Whether a measured loop is under the watchdog: set by arm(), cleared by disarm().
 inline std::atomic<bool> g_armed{false};
-inline char g_testName[160] = {0};
-inline char g_profileTool[32] = {0};
-inline unsigned int g_timeoutSecs = 0;
 
 // Writes the whole buffer to stderr, resuming after a short write or EINTR.
 // Any other failure ends the attempt: the caller is about to _exit and has no
-// other channel to report on. Async-signal-safe: write(2) and errno only.
+// other channel to report on. write(2) alone, without stdio or the allocator,
+// whose locks the hung thread may hold.
 inline void writeStderr(const char* data, std::size_t len) noexcept {
   while (len > 0) {
     const ssize_t WRITTEN = ::write(STDERR_FILENO, data, len);
@@ -160,9 +170,29 @@ inline void writeStderr(const char* data, std::size_t len) noexcept {
   }
 }
 
-// SIGALRM handler. Prints a diagnostic and exits hard.
-// Must be async-signal-safe -- only write(2) + _exit(2) here.
-inline void handler(int /*sig*/) {
+/**
+ * @brief The watchdog's state in one process, made by its first arm() and
+ * never destroyed, so the detached thread waiting on it never sees it go at
+ * exit. A child of fork() makes its own and leaves the copied one as it is:
+ * the parent's thread is not copied, and the copied lock may be held.
+ */
+struct State {
+  std::mutex mutex;
+  std::condition_variable changed; ///< Notified by arm() and disarm().
+  bool watching = false;           ///< The thread is started.
+  bool armed = false;
+  std::uint64_t arming = 0; ///< Counts arm() calls: a re-arm restarts the wait.
+  std::chrono::steady_clock::time_point deadline{};
+  char testName[160] = {0};   ///< A fixed buffer, so the expiry does not allocate.
+  char profileTool[32] = {0}; ///< Likewise.
+  pid_t pid = 0;              ///< The process this state belongs to.
+};
+
+/// This process's state: none before its first arm(), the parent's in a child of fork().
+inline std::atomic<State*> g_state{nullptr};
+
+// Writes the message for the armed case and ends the process with exit status 2.
+[[noreturn]] inline void expire(const State& state) noexcept {
   static const char kPrefix[] = "\n[bench] watchdog timeout: test '";
   static const char kMid[] = "' under --profile ";
   static const char kSuffix[] =
@@ -171,34 +201,106 @@ inline void handler(int /*sig*/) {
       "[bench] measured loop. Identify the test, exclude it via --gtest_filter,\n"
       "[bench] or raise --profile-test-timeout. Aborting.\n";
   writeStderr(kPrefix, sizeof(kPrefix) - 1);
-  writeStderr(g_testName, std::strlen(g_testName));
+  writeStderr(state.testName, std::strlen(state.testName));
   writeStderr(kMid, sizeof(kMid) - 1);
-  writeStderr(g_profileTool, std::strlen(g_profileTool));
+  writeStderr(state.profileTool, std::strlen(state.profileTool));
   writeStderr(kSuffix, sizeof(kSuffix) - 1);
   ::_exit(2);
 }
 
-inline void arm(const char* testName, const char* profileTool, unsigned int timeoutSecs) {
-  // Copy to async-signal-safe buffers (no allocation in the handler path).
-  std::strncpy(g_testName, testName ? testName : "?", sizeof(g_testName) - 1);
-  g_testName[sizeof(g_testName) - 1] = '\0';
-  std::strncpy(g_profileTool, profileTool ? profileTool : "?", sizeof(g_profileTool) - 1);
-  g_profileTool[sizeof(g_profileTool) - 1] = '\0';
-  g_timeoutSecs = timeoutSecs;
-
-  struct sigaction sa{};
-  sa.sa_handler = handler;
-  ::sigemptyset(&sa.sa_mask);
-  // No SA_RESTART: we want syscalls to return on signal, allowing prompt exit.
-  sa.sa_flags = 0;
-  ::sigaction(SIGALRM, &sa, nullptr);
-  ::alarm(timeoutSecs);
-  g_armed.store(true, std::memory_order_relaxed);
+// The watchdog's thread: parked until armed, then waiting for the deadline, a
+// disarm or a re-arm. A deadline that passes while still armed ends the process.
+inline void watch(State* state) {
+  std::unique_lock<std::mutex> lock(state->mutex);
+  for (;;) {
+    state->changed.wait(lock, [state] { return state->armed; });
+    const std::uint64_t ARMING = state->arming;
+    const auto DEADLINE = state->deadline;
+    const bool ENDED = state->changed.wait_until(
+        lock, DEADLINE, [state, ARMING] { return !state->armed || state->arming != ARMING; });
+    if (!ENDED) {
+      expire(*state);
+    }
+  }
 }
 
+// Starts the thread for @p state with every signal blocked on it (a thread
+// takes the mask of the thread that starts it), so a signal meant for the
+// benchmark, one its own threads block among them, is never delivered to it.
+inline void startWatching(State* state) {
+  sigset_t all;
+  sigset_t previous;
+  ::sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, &previous);
+  struct Restore {
+    const sigset_t& mask;
+    ~Restore() { ::pthread_sigmask(SIG_SETMASK, &mask, nullptr); }
+  } const RESTORE{previous};
+  std::thread(watch, state).detach();
+}
+
+// This process's state, made on the first call in it.
+inline State* processState() {
+  const pid_t SELF = ::getpid();
+  State* current = g_state.load(std::memory_order_acquire);
+  while (current == nullptr || current->pid != SELF) {
+    auto* made = new State;
+    made->pid = SELF;
+    if (g_state.compare_exchange_strong(current, made, std::memory_order_acq_rel,
+                                        std::memory_order_acquire)) {
+      return made;
+    }
+    delete made; // another thread of this process made it first
+  }
+  return current;
+}
+
+/**
+ * @brief Arm the watchdog: unless disarm() comes first, @p timeout from now
+ * it writes its message naming @p testName and @p profileTool ("?" for a null
+ * name) and ends the process with exit status 2. A later arm() replaces the
+ * deadline and the names. The first arm() in a process starts the thread,
+ * which throws std::system_error when the thread cannot be started; nothing
+ * is armed then.
+ */
+inline void arm(const char* testName, const char* profileTool,
+                std::chrono::steady_clock::duration timeout) {
+  State* state = processState();
+  {
+    const std::lock_guard<std::mutex> LOCK(state->mutex);
+    if (!state->watching) {
+      startWatching(state);
+      state->watching = true;
+    }
+    std::strncpy(state->testName, testName != nullptr ? testName : "?",
+                 sizeof(state->testName) - 1);
+    std::strncpy(state->profileTool, profileTool != nullptr ? profileTool : "?",
+                 sizeof(state->profileTool) - 1);
+    state->deadline = std::chrono::steady_clock::now() + timeout;
+    ++state->arming;
+    state->armed = true;
+  }
+  g_armed.store(true, std::memory_order_relaxed);
+  state->changed.notify_one();
+}
+
+/** @brief arm() for @p timeoutSecs whole seconds, as --profile-test-timeout gives them. */
+inline void arm(const char* testName, const char* profileTool, unsigned int timeoutSecs) {
+  arm(testName, profileTool, std::chrono::seconds(timeoutSecs));
+}
+
+/** @brief Disarm the watchdog; its thread parks until the next arm(). */
 inline void disarm() {
-  ::alarm(0);
   g_armed.store(false, std::memory_order_relaxed);
+  State* state = g_state.load(std::memory_order_acquire);
+  if (state == nullptr || state->pid != ::getpid()) {
+    return; // never armed in this process
+  }
+  {
+    const std::lock_guard<std::mutex> LOCK(state->mutex);
+    state->armed = false;
+  }
+  state->changed.notify_one();
 }
 
 } // namespace perf_watchdog
@@ -531,11 +633,12 @@ public:
    *
    * Progress is printed to stderr every ~2 seconds for long-running measurements.
    *
-   * An exception from @p fn ends the measurement: the watchdog is turned off,
-   * the abort hook runs (attachProfilerHooks(): the profiler ends what its
-   * before hook started, without analysis), nothing is summarized or
-   * published, the after hook does not run, and the exception reaches the
-   * caller unchanged. The case can then measure again.
+   * An exception from @p fn, or from starting the watchdog's thread under
+   * --profile, ends the measurement: the watchdog is turned off, the abort
+   * hook runs (attachProfilerHooks(): the profiler ends what its before hook
+   * started, without analysis), nothing is summarized or published, the after
+   * hook does not run, and the exception reaches the caller unchanged. The
+   * case can then measure again.
    */
   PerfResult measured(Fn fn, std::string label = "measured") {
     if (beforeHook_) {
@@ -547,23 +650,27 @@ public:
     bool showedProgress = false;
 
     // Arm the per-test watchdog only when profiling AND the timeout is above
-    // zero (0 turns it off). SIGALRM is the cleanest way to abort a hung fn():
-    // drain-loop / blocking-recv tests cannot be interrupted from the
-    // measured() thread itself because fn() holds the CPU.
+    // zero (0 turns it off). Its own thread ends a hung fn(): a drain loop or
+    // a blocking recv cannot be interrupted from the thread that runs it.
     const bool watchdogActive = (cfg_.profileTestTimeoutSecs > 0) && !cfg_.profileTool.empty();
-    if (watchdogActive) {
-      perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
-                         static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
-    }
 
     std::vector<double> perCall;
     try {
+      // Inside the try: a watchdog thread that cannot be started ends the
+      // measurement as an exception from fn() does.
+      if (watchdogActive) {
+        perf_watchdog::arm(testName_.c_str(), cfg_.profileTool.c_str(),
+                           static_cast<unsigned int>(cfg_.profileTestTimeoutSecs));
+      }
       perCall.reserve(static_cast<std::size_t>(cfg_.repeats));
       for (int r = 0; r < cfg_.repeats; ++r) {
-        const double T0 = nowUs();
+        // Time points, not nowUs(), so the repeat keeps the clock's own
+        // resolution instead of two readings cut to whole microseconds.
+        const auto T0 = std::chrono::steady_clock::now();
         fn();
-        const double T1 = nowUs();
-        perCall.push_back((T1 - T0) / static_cast<double>(cfg_.cycles));
+        const auto T1 = std::chrono::steady_clock::now();
+        perCall.push_back(std::chrono::duration<double, std::micro>(T1 - T0).count() /
+                          static_cast<double>(cfg_.cycles));
 
         // Progress reporting: print every ~2 seconds for long runs
         auto now = std::chrono::steady_clock::now();
@@ -576,7 +683,7 @@ public:
         }
       }
     } catch (...) {
-      // Left armed, the alarm would end a later case of this process.
+      // Left armed, the watchdog would end the process during a later case.
       if (showedProgress) {
         clearProgress();
       }
@@ -718,6 +825,11 @@ public:
    * This returns only timing stats (per-call across all operations). For drop%, derive externally.
    * Publishes its own row, which records the workers it started, named as measured() names its
    * rows.
+   *
+   * An exception from a worker, or a worker thread that cannot be started, ends the run as an
+   * exception from measured()'s callback ends that: the workers started are joined, the abort
+   * hook runs, nothing is summarized or published, the after hook does not run, and the first
+   * exception reaches the caller on the calling thread. The case can then measure again.
    */
   PerfResult contentionRun(const std::function<void()>& worker, std::string label = "contention") {
     // Calibrates from one uncontended call; contention only lengthens the
@@ -735,38 +847,27 @@ public:
     auto lastProgressTime = MEASURE_START;
     bool showedProgress = false;
 
-    for (int r = 0; r < cfg_.repeats; ++r) {
-      StartGate gate(THREAD_COUNT);
-      const double T0 = nowUs();
+    try {
+      for (int r = 0; r < cfg_.repeats; ++r) {
+        perCall.push_back(contendOnce(worker, THREAD_COUNT));
 
-      std::vector<std::thread> ts;
-      ts.reserve(static_cast<std::size_t>(THREAD_COUNT));
-      for (int t = 0; t < THREAD_COUNT; ++t) {
-        ts.emplace_back([&]() {
-          gate.start();
-          for (int i = 0; i < cfg_.cycles; ++i) {
-            worker();
-          }
-        });
+        // Progress reporting
+        auto now = std::chrono::steady_clock::now();
+        auto sinceLast =
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
+        if (sinceLast.count() >= 2000) {
+          printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
+          lastProgressTime = now;
+          showedProgress = true;
+        }
       }
-      gate.releaseWhenAllReady();
-      for (auto& th : ts) {
-        th.join();
+    } catch (...) {
+      if (showedProgress) {
+        clearProgress();
       }
-
-      const double T1 = nowUs();
-      const double TOTAL_CALLS = static_cast<double>(THREAD_COUNT) * cfg_.cycles;
-      perCall.push_back((T1 - T0) / TOTAL_CALLS);
-
-      // Progress reporting
-      auto now = std::chrono::steady_clock::now();
-      auto sinceLast =
-          std::chrono::duration_cast<std::chrono::milliseconds>(now - lastProgressTime);
-      if (sinceLast.count() >= 2000) {
-        printProgress(testName_.c_str(), r, cfg_.repeats, MEASURE_START);
-        lastProgressTime = now;
-        showedProgress = true;
-      }
+      // What the before hook started ends now, as measured() ends it.
+      runAbortHook();
+      throw;
     }
 
     if (showedProgress) {
@@ -803,6 +904,57 @@ public:
   [[nodiscard]] const std::string& testName() const noexcept { return testName_; }
 
 private:
+  /**
+   * @brief One repeat of contentionRun(): @p threadCount workers released at
+   * once, each making cycles() calls of @p worker; the wall microseconds per
+   * call. A worker's exception is taken on its own thread, and the first one
+   * rethrown here once every worker has been joined. A worker thread that
+   * cannot be started ends the repeat once those started have made their
+   * calls and been joined, with its error: none is left joinable, which would
+   * end the process.
+   */
+  double contendOnce(const std::function<void()>& worker, int threadCount) {
+    StartGate gate(threadCount);
+    std::mutex failureMutex;
+    std::exception_ptr workerFailure;
+    std::exception_ptr startFailure;
+    std::vector<std::thread> ts;
+    ts.reserve(static_cast<std::size_t>(threadCount));
+    const auto T0 = std::chrono::steady_clock::now();
+    try {
+      for (int t = 0; t < threadCount; ++t) {
+        ts.emplace_back([&]() {
+          gate.start();
+          try {
+            for (int i = 0; i < cfg_.cycles; ++i) {
+              worker();
+            }
+          } catch (...) {
+            const std::lock_guard<std::mutex> LOCK(failureMutex);
+            if (!workerFailure) {
+              workerFailure = std::current_exception();
+            }
+          }
+        });
+      }
+    } catch (...) {
+      startFailure = std::current_exception();
+    }
+    gate.releaseWhenReady(static_cast<int>(ts.size()));
+    for (auto& th : ts) {
+      th.join();
+    }
+    const auto T1 = std::chrono::steady_clock::now();
+    if (startFailure) {
+      std::rethrow_exception(startFailure);
+    }
+    if (workerFailure) {
+      std::rethrow_exception(workerFailure);
+    }
+    const double TOTAL_CALLS = static_cast<double>(threadCount) * cfg_.cycles;
+    return std::chrono::duration<double, std::micro>(T1 - T0).count() / TOTAL_CALLS;
+  }
+
   /// Run the abort hook, if any. What it throws is dropped, so the exception
   /// that ended the measurement is the one the caller gets.
   void runAbortHook() noexcept {
@@ -820,8 +972,9 @@ private:
    * @brief --target-time auto-sizing: estimate one call's cost, then set
    * this instance's cycle count so a repeat targets the requested wall time.
    *
-   * The clock resolves microseconds, so a single call of a sub-microsecond
-   * operation reads as zero or one. The estimate instead times batches of
+   * A single call of a sub-microsecond operation costs little more than the
+   * two clock reads around it, and a call of a few nanoseconds can be
+   * shorter than the clock's tick. The estimate instead times batches of
    * calls, doubling the batch until a sample spans CALIBRATION_SAMPLE_US, and
    * divides. Calibration finishes before the measured phase starts, so none
    * of it is inside a timed window.
@@ -851,10 +1004,11 @@ private:
     }
     calibrated_ = true;
 
-    // 1 ms sample: 1000 clock ticks.
+    // 1 ms sample.
     constexpr double CALIBRATION_SAMPLE_US = 1000.0;
-    // A quarter of the sample: timestamp quantization is then at most 0.4%
-    // of the per-call time, apart from scheduling and workload variation.
+    // A quarter of the sample: the two clock reads and the clock's tick are
+    // then a negligible share of the sample, apart from scheduling and
+    // workload variation.
     constexpr double CALIBRATION_RESOLVED_US = CALIBRATION_SAMPLE_US / 4.0;
     // Bounds the doubling when the operation costs next to nothing.
     constexpr long long CALIBRATION_MAX_BATCH = 1LL << 26;
@@ -865,11 +1019,12 @@ private:
     bool resolved = false;
     double leastPerCallUs = 0.0;
     for (;;) {
-      const double T0 = nowUs();
+      const auto T0 = std::chrono::steady_clock::now();
       for (long long i = 0; i < batch; ++i) {
         op();
       }
-      elapsedUs = nowUs() - T0;
+      elapsedUs =
+          std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - T0).count();
       if (elapsedUs >= CALIBRATION_RESOLVED_US) {
         const double PER_CALL_US = elapsedUs / static_cast<double>(batch);
         if (!resolved || PER_CALL_US < leastPerCallUs) {

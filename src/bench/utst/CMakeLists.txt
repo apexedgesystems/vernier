@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (23 files)
+# Sources (25 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -15,6 +15,8 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfAbi_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfMetadata_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfTargetTime_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PerfMeasuredTime_uTest.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/PerfContention_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfCsv_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfConfig_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/PerfRegistry_uTest.cpp"
@@ -43,7 +45,9 @@ set(UNIT_TEST_SOURCES
 # bench_test_support (Readiness Fixtures, below) is a test-only interface
 # target with no library of its own. RaplRunTest's cases are component: the
 # registry, the profiler and its factory decide on this machine's
-# /proc/cpuinfo and msr device, which no context can replace.
+# /proc/cpuinfo and msr device, which no context can replace. So are the two
+# watchdog cases that run the helper program end to end under the whole-second
+# --profile-test-timeout flag and wait that second out.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -60,8 +64,10 @@ vernier_add_gtest(
   benchmarking
   COMPONENT_PATTERNS
   "^RaplRunTest\\."
+  "^PerfWatchdogTest\\.(Later)?HungLoopEndsWithStatusTwo$"
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
+  "^PerfCaseTimingTest\\."
 )
 
 # ------------------------------------------------------------------------------
@@ -291,13 +297,16 @@ target_compile_options(
 )
 
 # ------------------------------------------------------------------------------
-# Build Logic Tests (2)
+# Build Logic Tests (3)
 # ------------------------------------------------------------------------------
 # Script-mode tests of configure logic; they need no toolkit and no GPU, so
 # every configuration has them, CPU-only ones included: the CUDA architecture
-# rules (unit), and what vernier_add_gtest's NO_REGISTER registers (component:
-# a scratch project is configured with this build's generator and compiler,
-# once per case, and one plain program in it is built and run).
+# rules (unit); what vernier_add_gtest's NO_REGISTER and WORKER_SOURCES
+# register and the class labels it gives (component: a scratch project is
+# configured with this build's generator and compiler, once per case, and one
+# plain program in it is built and run); and the skip expression it gives each
+# case (component: a scratch project with GoogleTest, built from the source
+# this build fetched, is built and its cases run through CTest).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
@@ -315,6 +324,16 @@ add_test(
     "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/AddGtestNoRegister_test.cmake"
 )
 set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake;component")
+
+add_test(
+  NAME SkipPatternNamesTheCaseTest
+  COMMAND
+    "${CMAKE_COMMAND}" -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/skip_pattern_names_the_case
+    "-DGENERATOR=${CMAKE_GENERATOR}" -DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -DGOOGLETEST_DIR=${googletest_SOURCE_DIR} -P
+    "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/SkipPatternNamesTheCase_test.cmake"
+)
+set_tests_properties(SkipPatternNamesTheCaseTest PROPERTIES LABELS "benchmarking;cmake;component")
 
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
@@ -380,6 +399,15 @@ include("${CMAKE_CURRENT_LIST_DIR}/ReadinessCli.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/AbiConsumers.cmake")
 
 # ------------------------------------------------------------------------------
+# GperfProfiler Layout Consumers (2)
+# ------------------------------------------------------------------------------
+# A benchmark compiled with and without gperftools' headers on its include
+# path lays GperfProfiler out as libbench does.
+# ------------------------------------------------------------------------------
+
+include("${CMAKE_CURRENT_LIST_DIR}/AbiGperfLayout.cmake")
+
+# ------------------------------------------------------------------------------
 # Virtual Interface Check (2)
 # ------------------------------------------------------------------------------
 # A benchmark built from these headers against a library built before
@@ -412,6 +440,24 @@ vernier_add_test_program(
 )
 
 # ------------------------------------------------------------------------------
+# Watchdog Helper Program (1)
+# ------------------------------------------------------------------------------
+# The program TestBench's watchdog cases run as a child: the watchdog ends the
+# process it guards, so each case in which it fires, or must not, runs there
+# and the test reads how it ended. A test fixture, never installed.
+# ------------------------------------------------------------------------------
+
+vernier_add_test_program(
+  TARGET WatchdogHelper SOURCES "${CMAKE_CURRENT_LIST_DIR}/WatchdogHelper.cpp" LINK bench
+)
+if (TARGET TestBench AND TARGET WatchdogHelper)
+  target_compile_definitions(
+    TestBench PRIVATE VERNIER_WATCHDOG_HELPER="$<TARGET_FILE:WatchdogHelper>"
+  )
+  add_dependencies(TestBench WatchdogHelper)
+endif ()
+
+# ------------------------------------------------------------------------------
 # Startup-Fault Fixture
 # ------------------------------------------------------------------------------
 # StartupFaultUnderValgrind.cpp aborts during static initialization when its
@@ -428,17 +474,21 @@ add_library(
 target_include_directories(StartupFaultUnderValgrind PRIVATE "${PROJECT_SOURCE_DIR}")
 
 # ------------------------------------------------------------------------------
-# Callgrind Window Probe (3 tests)
+# Callgrind Window Probe (6 tests)
 # ------------------------------------------------------------------------------
-# A benchmark with work before, inside and after its measured window, run under
-# valgrind by CallgrindWindowProbe_test.cmake: the wrap the callgrind backend
-# prints must record the window and none of the work around it, the wrap
-# `bench run` uses the whole process, and under that wrap with
-# --profile-analyze the benchmark leaves the annotation to `bench run`, which
-# makes it after valgrind has written the profile. A process fixture with its
-# own PERF_MAIN, run only by these tests; they skip without valgrind, where
-# valgrind cannot read the probe and says so, and in a build with the address
-# sanitizer, which the driver learns from the build's SANITIZER setting.
+# A benchmark with work before, inside and after its measured windows, one of
+# which ends by an exception, run under valgrind by
+# CallgrindWindowProbe_test.cmake: the wrap the callgrind backend prints must
+# record the windows and none of the work around them, also with
+# valgrind's gdbserver off, without --instr-atstart=no and with no
+# callgrind_control on PATH; the wrap `bench run` uses the whole process; and
+# under that wrap with --profile-analyze the benchmark leaves the annotation to
+# `bench run`, which makes it after valgrind has written the profile. A process
+# fixture with its own PERF_MAIN, run only by these tests; they skip without
+# valgrind, where valgrind cannot read the probe and says so, and in a build
+# with the address sanitizer, which the driver learns from the build's
+# SANITIZER setting. The three that need callgrind's client requests also skip
+# where the probe says libbench was built with NVALGRIND.
 # ------------------------------------------------------------------------------
 
 set(_probe_sanitizer "")
@@ -457,7 +507,7 @@ vernier_add_gtest(
 )
 
 if (TARGET CallgrindWindowProbe)
-  foreach (_case Hint Runner Analyze)
+  foreach (_case Hint HintVgdbOff HintInstrAtStart HintNoControl Runner Analyze)
     string(TOLOWER "${_case}" _mode)
     add_test(
       NAME CallgrindWindow${_case}Test
@@ -586,13 +636,15 @@ endif ()
 # Start Gate Under Helgrind (1 program)
 # ------------------------------------------------------------------------------
 # contentionRun's start gate spins on two atomic flags, which helgrind cannot
-# see as synchronisation; the gate marks them unchecked where valgrind's
-# helgrind.h is available. The program runs itself under helgrind on two probe
+# see as synchronisation; the gate marks them unchecked in every libbench but
+# one built with NVALGRIND. The program runs itself under helgrind on two probe
 # cases: workers that add under a mutex must report no error, workers that add
 # without one must still report their race. It learns a build it cannot run
 # under valgrind from the build's SANITIZER setting. The racy probe skips
-# itself outside valgrind, and CTest reports that as skipped; each skip
-# expression names its own test, whose failure messages quote the probe runs.
+# itself outside valgrind, so it is a worker source, compiled in and not
+# registered. The two helgrind runs and the locked probe they run are
+# component tests; the check that libbench marks the gate unless built with
+# NVALGRIND runs no tool and is a unit test.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -600,28 +652,21 @@ vernier_add_gtest(
   TestStartGateHelgrind
   SOURCES
   "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_uTest.cpp"
+  WORKER_SOURCES
+  "${CMAKE_CURRENT_SOURCE_DIR}/StartGateHelgrind_Probe.cpp"
   LINK
   bench
   LABELS
   benchmarking
   helgrind
-  CLASS
-  component
+  COMPONENT_PATTERNS
+  "^StartGateHelgrindTest\\.(GateReportsNothing|WorkerRaceIsStillReported)$"
+  "^StartGateProbe\\.LockedWorkers$"
 )
 
 if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
   target_compile_definitions(TestStartGateHelgrind PRIVATE START_GATE_SANITIZER="${SANITIZER}")
 endif ()
-
-foreach (_start_gate_test StartGateProbe.RacyWorkers StartGateHelgrindTest.GateReportsNothing
-                          StartGateHelgrindTest.WorkerRaceIsStillReported
-)
-  string(REPLACE "." "\\." _start_gate_pattern "${_start_gate_test}")
-  set_tests_properties(
-    ${_start_gate_test} PROPERTIES SKIP_REGULAR_EXPRESSION
-                                   "\\[  SKIPPED \\] ${_start_gate_pattern}"
-  )
-endforeach ()
 
 # ------------------------------------------------------------------------------
 # Subdirectories

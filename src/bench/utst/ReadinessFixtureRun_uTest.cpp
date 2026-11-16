@@ -99,10 +99,10 @@ const std::vector<std::string> QUICK = {"--cycles", "50", "--repeats", "2", "--w
 
 /// Settings removed from a run's environment, so the test alone decides.
 const std::vector<std::string> UNSET = {
-    "BENCH_SUDO",     "PERF_BPF",     "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
-    "PERF_BPF_FMT",   "PERF_BPF_OUT", "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
-    "FAKE_SUDO_DENY", "LD_PRELOAD",   "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
-    "CPUPROFILE"};
+    "BENCH_SUDO",     "PERF_BPF",           "PERF_BPF_SUDO",         "PERF_BPF_SCRIPTS",
+    "PERF_BPF_FMT",   "PERF_BPF_OUT",       "VERNIER_EXTERNAL_WRAP", "VERNIER_EXTERNAL_WRAP_DIR",
+    "FAKE_SUDO_DENY", "LD_PRELOAD",         "MALLOC_CONF",           "CPUPROFILE_FREQUENCY",
+    "CPUPROFILE",     "CPUPROFILE_REALTIME"};
 
 /// @p args followed by QUICK.
 std::vector<std::string> quick(std::vector<std::string> args) {
@@ -788,6 +788,26 @@ TEST_F(ReadinessFixtureRun, GperfUnknownModeFailsTheRun) {
                                  MESSAGE))
       << "run-end report";
   EXPECT_THAT(namesEndingWith(work_, ".gperf"), IsEmpty()) << "a folder for a refused request";
+}
+
+/**
+ * @test gperftools sampling on the real-time timer (CPUPROFILE_REALTIME=1,
+ * SIGALRM), with the watchdog at its default, over a window of about 0.15 s:
+ * the run exits 0 and gperftools reports samples taken.
+ */
+TEST_F(ReadinessFixtureRun, GperfRealtimeProfileHasSamples) {
+  if (const std::string WHY = gperfUnusable(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  env_ = {"CPUPROFILE_REALTIME=1"};
+  const RunResult RUN = run({"--profile", "gperf", "--gtest_filter=ReadinessFixture.First",
+                             "--target-time", "50ms", "--repeats", "3", "--warmup", "0"});
+  EXPECT_EQ(RUN.status, 0) << "run exit status";
+  std::smatch summary;
+  ASSERT_TRUE(std::regex_search(RUN.err, summary,
+                                std::regex{"PROFILE: interrupts/evictions/bytes = ([0-9]+)/"}))
+      << "gperftools' summary line";
+  EXPECT_GT(std::stoll(summary[1].str()), 0) << "samples taken in the window";
 }
 
 /* --------------------------------- jemalloc --------------------------------- */

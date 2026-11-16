@@ -30,9 +30,14 @@ include_guard(GLOBAL)
 # whole program, is component when any of its tests is. The lanes select by
 # these labels (mk/test.mk).
 #
+# WORKER_SOURCES are compiled into the program as SOURCES are, but not read for
+# cases: a case defined in one is not registered. It is for a probe case that
+# the program's own tests run as a child, which run alone would only skip.
+#
 # Arguments:
 #   TARGET          <n>              required
 #   SOURCES         <src...>         required
+#   WORKER_SOURCES  <src...>         optional (compiled in, cases not registered)
 #   CUDA            <cu...>          optional
 #   LINK            <libs...>        optional
 #   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
@@ -59,9 +64,11 @@ function (vernier_add_gtest)
   # _PLAIN_PROGRAM is vernier_add_test_program's: no GoogleTest is linked.
   # _COMPONENT is vernier_add_devtest's: the program goes to bin/dtests.
   cmake_parse_arguments(
-    GT "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
+    GT
+    "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS;CLASS"
-    "SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS" ${ARGN}
+    "SOURCES;WORKER_SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS"
+    ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
 
@@ -110,7 +117,7 @@ function (vernier_add_gtest)
   endforeach ()
 
   add_executable(${GT_TARGET})
-  target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES})
+  target_sources(${GT_TARGET} PRIVATE ${GT_SOURCES} ${GT_WORKER_SOURCES})
 
   if (GT_INC)
     target_include_directories(${GT_TARGET} PRIVATE "${GT_INC}")
@@ -235,6 +242,7 @@ function (vernier_add_gtest)
     WORKING_DIRECTORY "${_working_dir}"
     TEST_LIST _all_tests
   )
+  _vernier_gtest_skip_patterns(${_all_tests})
 
   # Base labels
   if (GT_LABELS)
@@ -384,6 +392,30 @@ function (vernier_add_gtest)
                  "lock='${GT_RESOURCE_LOCK}'${_req_threads_msg} unit=${_unit_len} "
                  "component=${_component_len} rig=${_rig_len}"
   )
+endfunction ()
+
+# ------------------------------------------------------------------------------
+# _vernier_gtest_skip_patterns(<test>...)
+#
+# Give each GoogleTest case gtest_add_tests registered the skip expression that
+# names it, in place of the "\[  SKIPPED \]" gtest_add_tests sets: any skip line
+# matches that one, so a case whose failure message quotes a child's output,
+# skip line and all, would be reported Skipped and pass the run. The expression
+# is the two lines GoogleTest prints for that case alone when it skips, with
+# the time ("[  SKIPPED ] Suite.Case (0 ms)") and at a line's end (without the
+# time, as under --gtest_print_time=0, and in the run's list of skipped
+# cases). The name's regex characters are escaped, and each * of a
+# parameterized name matches one part of the name.
+# ------------------------------------------------------------------------------
+function (_vernier_gtest_skip_patterns)
+  foreach (_test IN LISTS ARGN)
+    string(REGEX REPLACE "([][+.?()^$\\|])" "\\\\\\1" _name "${_test}")
+    string(REPLACE "*" "[^ \n]*" _name "${_name}")
+    set_tests_properties(
+      "${_test}" PROPERTIES SKIP_REGULAR_EXPRESSION
+                            "\\[  SKIPPED \\] ${_name} \\(;\\[  SKIPPED \\] ${_name}\n"
+    )
+  endforeach ()
 endfunction ()
 
 # ------------------------------------------------------------------------------
