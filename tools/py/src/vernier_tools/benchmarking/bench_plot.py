@@ -17,9 +17,10 @@ Usage:
     bench-plot report results.csv --output report/
     bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
-A row the benchmark did not time (every timing cell empty, as a run under
-Nsight Compute leaves it) is left out of every plot, and stderr names it; a
-file with no timed row is refused, naming the file.
+A row whose plotted timing cells do not all hold finite numbers is left out of
+every plot, and stderr names it, saying when its every timing cell is empty, as
+in a run under Nsight Compute; a file with no such row left is refused, naming
+the file.
 
 Dependencies:
     pip install pandas matplotlib seaborn
@@ -101,39 +102,81 @@ TIMING_COLUMNS = (
     "stable",
 )
 
+# The timing cells the plots and the report's summary read.
+PLOTTED_TIMING = (
+    "wallMedian",
+    "wallP10",
+    "wallP90",
+    "wallMin",
+    "wallMax",
+    "wallCV",
+    "callsPerSecond",
+)
+
+# A row's other numbers, which the benchmark writes in every row it times or
+# leaves untimed.
+OTHER_NUMBERS = ("cycles", "repeats", "warmup", "threads", "msgBytes", "cvThreshold")
+
+# What may explain a row of the untimed shape. The file cannot say what ran, so
+# this says what the shape is like, not that the row came from such a run.
 UNTIMED_REASON = (
-    "every timing cell is empty, as the benchmark leaves a row it did not time: "
-    "a run under Nsight Compute (ncu) is a profiling capture"
+    "every timing cell is empty, as in a run under Nsight Compute (ncu), "
+    "which the benchmark does not time"
 )
 
 
+def numbers(df: pd.DataFrame, columns) -> pd.DataFrame:
+    """@p df's @p columns (those it has) as finite numbers: a cell that holds
+    none, or holds an infinity, is NaN."""
+    present = [c for c in columns if c in df.columns]
+    values = df[present].apply(pd.to_numeric, errors="coerce")
+    return values.mask(values.abs() == float("inf"))
+
+
 def untimed_rows(df: pd.DataFrame) -> pd.Series:
-    """Whether each row is one the benchmark did not time: every timing cell
-    the file has is empty."""
-    columns = [c for c in TIMING_COLUMNS if c in df.columns]
-    return df[columns].isna().all(axis=1)
+    """Whether each row has the shape the benchmark gives a row it did not
+    time: every timing cell the file has is empty, and every other number it
+    has reads as a finite one."""
+    timing = [c for c in TIMING_COLUMNS if c in df.columns]
+    if not timing:
+        return pd.Series(False, index=df.index)
+    empty = df[timing].isna().all(axis=1)
+    return empty & numbers(df, OTHER_NUMBERS).notna().all(axis=1)
 
 
 def timed_rows(df: pd.DataFrame, source: str) -> pd.DataFrame:
-    """The rows of @p df that hold their timing, which every plot draws.
+    """The rows of @p df whose plotted timing cells all hold finite numbers,
+    which every plot draws, those cells as numbers.
 
-    A row the benchmark did not time is left out, and stderr names it; when no
-    row is left, the command stops with a message naming @p source, as `bench
-    summary` refuses such a row.
+    Every other row is left out, and stderr names it: a row of the untimed
+    shape (`untimed_rows`) with what may explain it, any other with an empty
+    or damaged timing cell. When no row is left, the command stops with a
+    message naming @p source, as `bench summary` refuses such a row.
     """
-    untimed = untimed_rows(df)
-    if untimed.all():
-        raise SystemExit(
-            f"bench-plot: {source}: no row has timing: {UNTIMED_REASON}; plot a run without ncu"
+    timing = numbers(df, PLOTTED_TIMING)
+    unplottable = timing.isna().any(axis=1)
+    untimed = untimed_rows(df) & unplottable
+    damaged = unplottable & ~untimed
+    if unplottable.all():
+        reason = (
+            f"{UNTIMED_REASON}; if the run was under ncu, plot a run without it"
+            if untimed.all()
+            else "every row has an empty or damaged timing cell"
         )
-    if untimed.any():
-        names = ", ".join(df.loc[untimed, "test"].astype(str))
-        print(
-            f"bench-plot: {source}: left out {int(untimed.sum())} rows without timing "
-            f"({UNTIMED_REASON}): {names}",
-            file=sys.stderr,
-        )
-    return df[~untimed].copy()
+        raise SystemExit(f"bench-plot: {source}: no row has timing: {reason}")
+    for rows, why in (
+        (untimed, f"rows without timing ({UNTIMED_REASON})"),
+        (damaged, "rows with an empty or damaged timing cell"),
+    ):
+        if rows.any():
+            names = ", ".join(df.loc[rows, "test"].astype(str))
+            print(
+                f"bench-plot: {source}: left out {int(rows.sum())} {why}: {names}",
+                file=sys.stderr,
+            )
+    kept = df[~unplottable].copy()
+    kept[timing.columns] = timing[~unplottable]
+    return kept
 
 
 # =============================================================================

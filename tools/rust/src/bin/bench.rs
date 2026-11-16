@@ -39,10 +39,10 @@
 //! is missing, or any shown value that is not a finite number of its kind
 //! exits 1 with the cause on stderr and no summary output; `bench summary`
 //! leaves stdout empty, while `run --analyze` preserves run output already
-//! emitted. An empty timing cell in a row whose every timing cell is empty is
-//! named as a profiling capture's: the benchmark leaves a row so under Nsight
-//! Compute, which times nothing, so `run --analyze` is refused before a run
-//! under ncu starts.
+//! emitted. An empty timing cell in a row whose every timing cell is empty,
+//! and whose other numbers are sound, adds that a run under Nsight Compute
+//! leaves a row so, as the benchmark times nothing under it; `run --analyze`
+//! is refused before a run under ncu starts.
 
 use std::{
     path::{Path, PathBuf},

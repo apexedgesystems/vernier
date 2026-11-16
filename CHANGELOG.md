@@ -461,13 +461,12 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   table shows `NOT TIMED`. **Action needed:** time code in a run without ncu,
   and rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- `bench summary` and `bench compare` say that a timing cell left empty
-  under Nsight Compute is a profiling capture's, and `bench run` refuses
-  `--analyze` for a run under ncu before it starts.
+- `bench summary` and `bench compare` say when a row's timing cells are all
+  empty, as a run under Nsight Compute leaves them, and `bench run` refuses
+  `--analyze` under ncu. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench-plot` leaves out and names each row without plottable timing, such
+  as the rows of a run under Nsight Compute, and refuses a file with none.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- `bench-plot` leaves the rows a run under Nsight Compute did not time out of
-  its plots and names them, and refuses a file with no timed row instead of
-  drawing its empty cells. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench doctor`'s row for an Nsight Compute request says that no row of the
   run is timed. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,

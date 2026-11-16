@@ -195,9 +195,9 @@ def test_a_capture_is_refused_naming_the_file(tmp_path, monkeypatch, recorded_pl
     with pytest.raises(SystemExit) as stopped:
         run_main(monkeypatch, [command, str(csv), "--output", str(output)])
     assert str(stopped.value) == (
-        f"bench-plot: {csv}: no row has timing: every timing cell is empty, as the benchmark "
-        "leaves a row it did not time: a run under Nsight Compute (ncu) is a profiling "
-        "capture; plot a run without ncu"
+        f"bench-plot: {csv}: no row has timing: every timing cell is empty, as in a run under "
+        "Nsight Compute (ncu), which the benchmark does not time; if the run was under ncu, "
+        "plot a run without it"
     )
     assert recorded_plots == {}
     assert not (tmp_path / "out" / "summary_stats.csv").exists()
@@ -226,18 +226,54 @@ def test_untimed_rows_are_left_out_and_named(
     assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain"]]
     assert recorded_plots["plot_cv_analysis"] == [["Saxpy.Plain"]]
     assert capsys.readouterr().err == (
-        f"bench-plot: {csv}: left out 2 rows without timing (every timing cell is empty, as "
-        "the benchmark leaves a row it did not time: a run under Nsight Compute (ncu) is a "
-        "profiling capture): Saxpy.EndToEnd, Saxpy.Kernel\n"
+        f"bench-plot: {csv}: left out 2 rows without timing (every timing cell is empty, as in "
+        "a run under Nsight Compute (ncu), which the benchmark does not time): Saxpy.EndToEnd, "
+        "Saxpy.Kernel\n"
     )
     if command != "plot":
         summary = (tmp_path / "out" / "summary_stats.csv").read_text().splitlines()
         assert [line.split(",")[0] for line in summary] == ["test", "Saxpy.Plain"]
 
 
-def test_a_partly_empty_row_is_not_taken_for_untimed(tmp_path, monkeypatch, recorded_plots):
-    """Only a row whose every timing cell is empty is left out."""
-    partly = TIMED_ROW.replace(",0.0002,", ",,")
-    csv = write_csv(tmp_path / "partly.csv", [partly])
+def test_rows_that_cannot_be_plotted_are_left_out_without_the_ncu_note(
+    tmp_path, monkeypatch, capsys, recorded_plots
+):
+    """A row with some timing cells empty, rows whose timing is all empty but
+    whose cycles cell is damaged or whose cvThreshold is infinite, and rows
+    whose median is text or infinite are left out too, and named without the
+    Nsight Compute note: their shape is not the one the benchmark writes for
+    a row it did not time."""
+    partly = TIMED_ROW.replace("Saxpy.Plain", "Saxpy.Partly").replace(",0.0002,", ",,")
+    damaged = UNTIMED_ROWS[0].replace("Saxpy.EndToEnd,2,", "Saxpy.Damaged,x,")
+    unbounded = (
+        UNTIMED_ROWS[0].replace("Saxpy.EndToEnd", "Saxpy.Unbounded").replace(",0.1,", ",inf,")
+    )
+    malformed = TIMED_ROW.replace("Saxpy.Plain", "Saxpy.Malformed").replace(
+        ",3082.75,3082.15,", ",garbage,3082.15,"
+    )
+    infinite = TIMED_ROW.replace("Saxpy.Plain", "Saxpy.Infinite").replace(
+        ",3082.75,3082.15,", ",inf,3082.15,"
+    )
+    rows = [TIMED_ROW, partly, damaged, unbounded, malformed, infinite]
+    csv = write_csv(tmp_path / "rows.csv", rows)
     run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
     assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain"]]
+    assert capsys.readouterr().err == (
+        f"bench-plot: {csv}: left out 5 rows with an empty or damaged timing cell: "
+        "Saxpy.Partly, Saxpy.Damaged, Saxpy.Unbounded, Saxpy.Malformed, Saxpy.Infinite\n"
+    )
+
+
+def test_a_file_of_unplottable_rows_is_refused_without_the_ncu_note(
+    tmp_path, monkeypatch, recorded_plots
+):
+    """A file whose rows all lack timing, some not in the untimed shape, is
+    refused with the plain reason."""
+    partly = TIMED_ROW.replace(",0.0002,", ",,")
+    csv = write_csv(tmp_path / "rows.csv", [partly, UNTIMED_ROWS[0]])
+    with pytest.raises(SystemExit) as stopped:
+        run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert str(stopped.value) == (
+        f"bench-plot: {csv}: no row has timing: every row has an empty or damaged timing cell"
+    )
+    assert recorded_plots == {}

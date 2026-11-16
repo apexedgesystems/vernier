@@ -277,9 +277,9 @@ command.
 Under ncu no row is timed: the timing cells stay empty, since ncu's
 instrumentation adds to what the benchmark would measure, and the run says
 why ([GPU guide](../src/bench/docs/GPU_GUIDE.md#using-nsight-compute)).
-`bench summary` and `bench compare` refuse such a row, saying that the run
-was a profiling capture, and `bench run` refuses `--analyze` for a run under
-ncu before anything starts.
+`bench summary` and `bench compare` refuse such a row, saying that its
+timing cells are empty as in a run under ncu, and `bench run` refuses
+`--analyze` for a run under ncu before anything starts.
 
 In-process backends (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the
 binary directly, which reads `--profile-args` itself, and the C++ harness
@@ -871,10 +871,10 @@ clocks, memory usage, GPU/memory utilization, throttle reasons, P-state.
 Visualization tool for generating charts, dashboards, and reports from benchmark CSVs.
 Requires `make tools-py`.
 
-Every command plots the rows that hold their timing. A row the benchmark did
-not time, every timing cell empty as a run under Nsight Compute leaves it, is
-left out, and stderr names it; a file with no timed row is refused, naming the
-file, with exit status 1.
+Every command plots the rows whose timing cells hold finite numbers. Any other row
+is left out, and stderr names it, saying when its every timing cell is empty,
+as in a run under Nsight Compute; a file with no row left is refused, naming
+the file, with exit status 1.
 
 ### plot - Standard Charts
 

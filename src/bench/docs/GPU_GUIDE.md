@@ -967,8 +967,8 @@ are in its report. Time the code in a run without ncu. A run under Nsight
 Systems (nsys) is not an ncu session: its rows stay timed. `bench doctor
 <binary> --profile ncu` says before the run that no row of it is timed.
 `bench summary` and `bench compare` refuse a row left untimed under ncu,
-saying that the run was a profiling capture, and `bench run` refuses
-`--analyze` for a run under ncu before it starts.
+saying that its timing cells are empty as in a run under ncu, and `bench run`
+refuses `--analyze` for a run under ncu before it starts.
 
 ### GPU Profiler Integration
 

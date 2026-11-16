@@ -386,20 +386,24 @@ fn missing_test_column_is_an_error() {
 }
 
 /// @test summary and compare refuse the rows of a run under Nsight Compute,
-/// as text and as JSON, saying that the run was a profiling capture: by
-/// bench run's route, whose file has profile columns, and by ncu started
-/// by hand without --profile, whose file has none.
+/// as text and as JSON, saying what such a run leaves: from bench run's
+/// route, whose file has profile columns, and from ncu started by hand
+/// without --profile, whose file has none (rows such a run wrote on a
+/// GPU).
 #[test]
 fn summary_and_compare_name_an_ncu_capture() {
     let good = fixture("sample_bench.csv");
-    for file in ["summary_ncu_capture.csv", "summary_ncu_capture_typed.csv"] {
+    for (file, test) in [
+        ("summary_ncu_capture.csv", "Saxpy.EndToEnd"),
+        ("summary_ncu_capture_typed.csv", "NsightProfiler.G1"),
+    ] {
         let csv = fixture(file);
         let (csv, good) = (csv.as_str(), good.as_str());
         let expected = format!(
-            "{csv}, line 2: test 'Saxpy.EndToEnd' has no wallMedian value: the field is empty; \
-             every timing cell of the row is empty, as the benchmark leaves a row it did not \
-             time: a run under Nsight Compute (ncu) is a profiling capture; time the benchmark \
-             in a run without ncu"
+            "{csv}, line 2: test '{test}' has no wallMedian value: the field is empty; every \
+             timing cell of the row is empty, as in a run under Nsight Compute (ncu), which the \
+             benchmark does not time; if the run was under ncu, time the benchmark in a run \
+             without it"
         );
         for args in [
             vec!["summary", csv],
