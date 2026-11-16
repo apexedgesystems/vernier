@@ -88,37 +88,58 @@ constexpr std::uint32_t FINISHED_ROUND = 68;
 constexpr std::uint32_t AUXTRACE = 71;
 constexpr std::uint32_t COMPRESSED = 81;
 
-/** @brief The size of each record perfDataBytes() writes: its 8-byte header and 8 bytes. */
+/** @brief The size of each record recordBytes() writes: its 8-byte header and 8 bytes. */
 constexpr std::uint64_t PERF_RECORD_BYTES = 16;
+
+/** @brief Append @p value to @p bytes as @p width little-endian bytes. */
+void putLittleEndian(std::string& bytes, std::uint64_t value, int width) {
+  for (int i = 0; i < width; ++i) {
+    bytes.push_back(static_cast<char>((value >> (8 * i)) & 0xFFU));
+  }
+}
+
+/** @brief One record of each of @p types, as a data section or a stream holds them. */
+std::string recordBytes(const std::vector<std::uint32_t>& types) {
+  std::string bytes;
+  for (const std::uint32_t TYPE : types) {
+    putLittleEndian(bytes, TYPE, 4);
+    putLittleEndian(bytes, 0, 2); // misc
+    putLittleEndian(bytes, PERF_RECORD_BYTES, 2);
+    putLittleEndian(bytes, 0, 8); // the record's body
+  }
+  return bytes;
+}
 
 /**
  * @brief The bytes of a perf data file as perf writes one on a little-endian
- * machine, starting with @p magic: the 104-byte header (no attributes, no
- * feature sections), then a data section of one record of each of @p types,
- * whose size the header gives as @p dataSize (by default the records' own).
+ * machine, starting with @p magic: the 104-byte header (no attributes), then a
+ * data section of recordBytes() of @p types, whose size the header gives as
+ * @p dataSize (by default the records' own). With @p dirFormat, the header
+ * file of the directory perf record --threads writes: the DIR_FORMAT feature
+ * (bit 24) set, and after the data section the feature sections' table (one
+ * offset and size) and the section, which holds that version.
  */
 std::string perfDataBytes(const std::vector<std::uint32_t>& types, const char* magic,
-                          std::uint64_t dataSize) {
+                          std::uint64_t dataSize, std::uint64_t dirFormat = 0) {
   constexpr std::uint64_t HEADER_BYTES = 104;
+  constexpr std::size_t DIR_FORMAT_BYTE = 72 + 3; // feature bit 24
   std::string bytes;
-  const auto PUT = [&bytes](std::uint64_t value, int width) {
-    for (int i = 0; i < width; ++i) {
-      bytes.push_back(static_cast<char>((value >> (8 * i)) & 0xFFU));
-    }
-  };
   bytes.append(magic, 8);
-  PUT(HEADER_BYTES, 8); // the header's size
-  PUT(0, 8);            // the size of an attribute
-  PUT(HEADER_BYTES, 8); // the attributes: offset, size
-  PUT(0, 8);
-  PUT(HEADER_BYTES, 8); // the data section: offset, size
-  PUT(dataSize, 8);
-  bytes.resize(HEADER_BYTES, '\0'); // no event types, no feature sections
-  for (const std::uint32_t TYPE : types) {
-    PUT(TYPE, 4);
-    PUT(0, 2); // misc
-    PUT(PERF_RECORD_BYTES, 2);
-    PUT(0, 8); // the record's body
+  putLittleEndian(bytes, HEADER_BYTES, 8); // the header's size
+  putLittleEndian(bytes, 0, 8);            // the size of an attribute
+  putLittleEndian(bytes, HEADER_BYTES, 8); // the attributes: offset, size
+  putLittleEndian(bytes, 0, 8);
+  putLittleEndian(bytes, HEADER_BYTES, 8); // the data section: offset, size
+  putLittleEndian(bytes, dataSize, 8);
+  bytes.resize(HEADER_BYTES, '\0'); // no event types; feature bits below
+  if (dirFormat != 0) {
+    bytes[DIR_FORMAT_BYTE] = 0x01;
+  }
+  bytes += recordBytes(types);
+  if (dirFormat != 0) {
+    putLittleEndian(bytes, bytes.size() + 16, 8); // the section's offset and size
+    putLittleEndian(bytes, 8, 8);
+    putLittleEndian(bytes, dirFormat, 8);
   }
   return bytes;
 }
@@ -205,6 +226,26 @@ protected:
     const std::string PATH = dir_.path() + "/" + name;
     std::ofstream(PATH, std::ios::binary)
         << perfDataBytes(types, magic, dataSize != 0 ? dataSize : types.size() * PERF_RECORD_BYTES);
+    return PATH;
+  }
+
+  /**
+   * @brief Write to @p name in the private folder a directory as perf record
+   * --threads writes its capture, and return its path: the header file "data"
+   * (perfDataBytes() of @p header, recording directory format @p dirFormat)
+   * and a stream "data.<n>" of recordBytes() for each of @p streams.
+   */
+  std::string writePerfDirectory(const std::string& name, const std::vector<std::uint32_t>& header,
+                                 const std::vector<std::vector<std::uint32_t>>& streams,
+                                 std::uint64_t dirFormat = 1) const {
+    const std::string PATH = dir_.path() + "/" + name;
+    std::filesystem::create_directories(PATH);
+    std::ofstream(PATH + "/data", std::ios::binary)
+        << perfDataBytes(header, "PERFILE2", header.size() * PERF_RECORD_BYTES, dirFormat);
+    for (std::size_t i = 0; i < streams.size(); ++i) {
+      std::ofstream(PATH + "/data." + std::to_string(i), std::ios::binary)
+          << recordBytes(streams[i]);
+    }
     return PATH;
   }
 
@@ -578,6 +619,142 @@ TEST_F(PerfLifecycleTest, RecordNotShownEmptyHasNoCaveat) {
     EXPECT_TRUE(W.failures.empty()) << C.what << ": " << W.failures.front().result.report.message;
     EXPECT_EQ(W.err.find("caveat"), std::string::npos) << C.what << ":\n" << W.err;
   }
+}
+
+/**
+ * @test A record perf writes as a directory (--threads among the arguments),
+ * confirmed, is a capture as a file is, its samples in the per-CPU streams: no
+ * failure, no caveat, and the directory left as perf wrote it.
+ */
+TEST_F(PerfLifecycleTest, RecordIntoADirectoryIsACapture) {
+  ScopedEnv data("FAKE_PERF_DATA", writePerfDirectory("threads_samples", {COMM, FINISHED_ROUND},
+                                                      {{}, {MMAP2, SAMPLE, SAMPLE}}));
+  const Window W = window("ok", "record --threads -g");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_EQ(W.err.find("caveat"), std::string::npos) << W.err;
+  EXPECT_TRUE(std::filesystem::is_directory(W.folder + "/perf.data"));
+  EXPECT_TRUE(std::filesystem::is_regular_file(W.folder + "/perf.data/data.1"));
+}
+
+/**
+ * @test A directory record whose header file and streams hold no sample, as
+ * perf leaves a window too short for its sampling period, is complete but
+ * empty: no failure, and the caveat names the directory.
+ */
+TEST_F(PerfLifecycleTest, RecordIntoADirectoryOfNoSampleIsACaveat) {
+  ScopedEnv data("FAKE_PERF_DATA", writePerfDirectory("threads_none", {COMM, FINISHED_ROUND},
+                                                      {{}, {MMAP2, COMM}, {}}));
+  const Window W = window("ok", "record --threads -g");
+  EXPECT_TRUE(W.failures.empty()) << W.failures.front().result.report.message;
+  EXPECT_NE(W.err.find("[perf] caveat: " + W.folder +
+                       "/perf.data holds no sample: perf confirmed it written, and none of its "
+                       "records is a sample."),
+            std::string::npos)
+      << W.err;
+}
+
+/**
+ * @test No caveat for a directory record not shown to hold no sample: its
+ * header file records no directory format, or another than 1; a stream holds
+ * a type the reader does not know, or ends inside a record; the directory
+ * holds a file perf does not write. None of them fails.
+ */
+TEST_F(PerfLifecycleTest, RecordIntoADirectoryNotShownEmptyHasNoCaveat) {
+  struct Case {
+    const char* what;
+    std::string dir;
+  };
+  std::vector<Case> cases = {
+      {"no directory format", writePerfDirectory("no_format", {COMM}, {{MMAP2}}, 0)},
+      {"directory format 2", writePerfDirectory("format_2", {COMM}, {{MMAP2}}, 2)},
+      {"a type the reader does not know", writePerfDirectory("unknown", {COMM}, {{MMAP2, 99}})},
+  };
+  const std::string CUT = writePerfDirectory("cut_stream", {COMM}, {{MMAP2}});
+  std::ofstream(CUT + "/data.0", std::ios::binary | std::ios::app)
+      << recordBytes({COMM}).substr(0, 12);
+  cases.push_back({"a stream that ends inside a record", CUT});
+  const std::string EXTRA = writePerfDirectory("extra_file", {COMM}, {{MMAP2}});
+  std::ofstream(EXTRA + "/data.0.copy", std::ios::binary) << recordBytes({COMM});
+  cases.push_back({"a file perf does not write, records and all", EXTRA});
+  for (const Case& C : cases) {
+    ProfilerRegistry::instance().resetFailures();
+    ScopedEnv data("FAKE_PERF_DATA", C.dir);
+    const Window W = window("ok", "record --threads -g");
+    EXPECT_TRUE(W.failures.empty()) << C.what << ": " << W.failures.front().result.report.message;
+    EXPECT_EQ(W.err.find("caveat"), std::string::npos) << C.what << ":\n" << W.err;
+  }
+}
+
+/**
+ * @test A directory record without its header file is no capture: one
+ * failure, at the completion stage, naming the directory, the mode that
+ * writes one and the header file it lacks.
+ */
+TEST_F(PerfLifecycleTest, RecordIntoADirectoryWithoutItsHeaderFails) {
+  const std::string NO_HEADER = dir_.path() + "/threads_no_header";
+  std::filesystem::create_directories(NO_HEADER);
+  std::ofstream(NO_HEADER + "/data.0", std::ios::binary) << recordBytes({MMAP2, SAMPLE});
+  ScopedEnv data("FAKE_PERF_DATA", NO_HEADER);
+  const Window W = window("ok", "record --threads -g");
+  ASSERT_EQ(W.failures.size(), 1U);
+  EXPECT_EQ(W.failures[0].result.stage, ReadinessStage::COMPLETION);
+  EXPECT_EQ(W.failures[0].result.report.message,
+            "completion: missing: " + W.folder +
+                "/perf.data is a directory, as perf record --threads writes its capture, but its "
+                "header file " +
+                W.folder +
+                "/perf.data/data was not written: perf: [ perf record: Woken up 1 times to write "
+                "data ] | [ perf record: Captured and wrote 0.001 MB " +
+                W.folder + "/perf.data ]");
+}
+
+/**
+ * @test A measured window that throws while perf records into a directory
+ * sets the directory aside whole, and the next such window's replaces it:
+ * each time perf.data is gone, perf.aborted.data is a directory holding the
+ * header file, and the line names it; nothing fails.
+ */
+TEST_F(PerfLifecycleTest, AbortSetsADirectoryAsideWhole) {
+  const char* INHERITED = std::getenv("PATH");
+  const ScopedEnv PATH_ENV("PATH", dir_.path() + ":" +
+                                       (INHERITED != nullptr ? INHERITED : "/usr/bin:/bin"));
+  const ScopedEnv MODE("FAKE_PERF_MODE", "ok");
+  const ScopedEnv LOG("FAKE_LOG", dir_.logPath());
+  PerfConfig cfg;
+  cfg.profileTool = "perf";
+  cfg.profileArgs = "record --threads -g";
+  cfg.artifactRoot = dir_.path();
+  ProfilerRegistry::instance().resetFailures();
+  (void)vernier::bench::PerfRegistry::instance().takeAll();
+  const std::string FOLDER = dir_.path() + "/Perf.AbortedThreads.perf";
+  StderrCapture err;
+  {
+    vernier::bench::PerfCase pc =
+        vernier::bench::makePerfCaseWithProfiler("Perf.AbortedThreads", cfg);
+    for (int mark = 1; mark <= 2; ++mark) {
+      try {
+        pc.measured([mark] { throw WindowFailed{mark}; });
+        ADD_FAILURE() << "window " << mark << ": the exception did not reach the caller";
+      } catch (const WindowFailed& failed) {
+        EXPECT_EQ(failed.mark, mark) << "another exception reached the caller";
+      }
+      EXPECT_FALSE(std::filesystem::exists(FOLDER + "/perf.data")) << "window " << mark;
+      EXPECT_TRUE(std::filesystem::is_regular_file(FOLDER + "/perf.aborted.data/data"))
+          << "window " << mark;
+    }
+  }
+  const std::string LINE =
+      "[perf] the measured window ended by an exception: perf was stopped; its output was set "
+      "aside as " +
+      FOLDER + "/perf.aborted.data\n";
+  const std::string TEXT = err.text();
+  const std::size_t FIRST = TEXT.find(LINE);
+  ASSERT_NE(FIRST, std::string::npos) << TEXT;
+  EXPECT_NE(TEXT.find(LINE, FIRST + LINE.size()), std::string::npos)
+      << "the second window's directory was not set aside:\n"
+      << TEXT;
+  const std::vector<ProfileFailure> FAILED = ProfilerRegistry::instance().failures();
+  EXPECT_TRUE(FAILED.empty()) << FAILED.front().result.report.message;
 }
 
 /* ----------------------------- Start Handshake ----------------------------- */

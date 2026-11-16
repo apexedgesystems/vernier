@@ -9,7 +9,9 @@
  *             Output is written to `<artifactDir>/stat.txt` (perf writes to stderr; we redirect).
  *  - If `cfg.profileArgs` begins with "record", we run `perf record <args> -p <PID>` instead and
  *    write `<artifactDir>/perf.data` (+ `record.err.txt`); "mem" and "c2c" select
- *    `perf mem record` and `perf c2c record`.
+ *    `perf mem record` and `perf c2c record`. With `--threads` among the arguments perf
+ *    writes `perf.data` as a directory (a header file `data` and one stream per CPU),
+ *    which perf reads back with `-i` as it reads the file.
  *  - Only the measured window is profiled: perf starts in beforeMeasure() and is
  *    stopped in afterMeasure(), which returns once perf has finished writing.
  *  - The measured phase starts once perf answers a `ping` on its `--control`
@@ -23,9 +25,10 @@
  *    sets SA_NOCLDWAIT: never taken for a clean end), or leaves no counts
  *    (stat) or no data (record, mem, c2c) is reported through
  *    ProfilerRegistry::reportFailure(), which fails the run.
- *  - A data file perf confirmed whose records hold no sample (a window that
- *    runs for less than perf's sampling period records none) does not fail
- *    the run: one caveat line on stderr names it and how to get samples.
+ *  - A capture perf confirmed (a file, or the directory --threads writes)
+ *    whose records hold no sample (a window that runs for less than perf's
+ *    sampling period records none) does not fail the run: one caveat line on
+ *    stderr names it and how to get samples.
  *
  * Readiness (checkPerfRequest): perf is resolved on PATH, `perf --version`
  * must run, and a bounded `perf stat` on this process must open the counters
@@ -91,7 +94,8 @@ ReadinessResult checkPerfRequest(const ReadinessRequest& request, const Readines
  * PERF_WRITE_WAIT_MS for perf to write, then SIGTERM, then SIGKILL. When the
  * measured window ends by an exception, abortMeasure() stops perf the same
  * way, judges nothing and sets what it wrote aside: stat.txt becomes
- * stat.aborted.txt, a data file <name>.aborted.data, and one line says so.
+ * stat.aborted.txt, a data file or directory <name>.aborted.data, replacing
+ * what an earlier window set aside there, and one line says so.
  */
 class PerfStatProfiler final : public Profiler {
 public:

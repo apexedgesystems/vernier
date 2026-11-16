@@ -591,6 +591,11 @@ perf report -i MyComponent.Throughput.perf/perf.data
 perf annotate -i MyComponent.Throughput.perf/perf.data
 ```
 
+With `--threads` in the `record` flags, perf writes `perf.data` as a
+directory: a header file, `data`, and one stream per CPU, `data.<n>`. The
+backend takes it as it takes the file, and perf's own commands read it with
+`-i` the same way.
+
 ### ProfilerGperf
 
 Google Performance Tools integration.

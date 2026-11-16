@@ -38,7 +38,11 @@
 #   unconfirmed  answers SIGINT in record mode by writing its data file, but
 #                not perf's "Captured and wrote" line that confirms it
 # In record mode the data file holds the bytes of the file FAKE_PERF_DATA
-# names, when it is set, and a line of text otherwise.
+# names, when it is set, and a line of text otherwise. With --threads among
+# its arguments it writes the output as perf 6.8 does in that mode, a
+# directory: a copy of the directory FAKE_PERF_DATA names, when it is set,
+# and otherwise a header file "data" holding a line of text and an empty
+# stream "data.0".
 
 PATH=/usr/bin:/bin
 export PATH
@@ -132,13 +136,42 @@ if [ "$mode" = "exit-early" ]; then
   exit 1
 fi
 out=""
+threads=no
 prev=""
 for arg in "$@"; do
   if [ "$prev" = "-o" ]; then
     out=$arg
   fi
+  case "$arg" in
+  --threads | --threads=*) threads=yes ;;
+  esac
   prev=$arg
 done
+
+# What perf record writes for -o: a file, or with --threads a directory. An
+# output of the other kind left by an earlier run is removed first (perf
+# renames it to <name>.old).
+write_data() {
+  if [ "$threads" = "yes" ]; then
+    rm -rf "$out"
+    mkdir -p "$out"
+    if [ -n "${FAKE_PERF_DATA:-}" ]; then
+      cp -R "$FAKE_PERF_DATA/." "$out/"
+    else
+      printf 'fake perf data\n' >"$out/data"
+      : >"$out/data.0"
+    fi
+    return
+  fi
+  if [ -d "$out" ]; then
+    rm -rf "$out"
+  fi
+  if [ -n "${FAKE_PERF_DATA:-}" ]; then
+    cat "$FAKE_PERF_DATA" >"$out"
+  else
+    printf 'fake perf data\n' >"$out"
+  fi
+}
 
 finish() {
   case "$mode" in
@@ -165,11 +198,7 @@ finish() {
     ;;
   *)
     if [ -n "$out" ]; then
-      if [ -n "${FAKE_PERF_DATA:-}" ]; then
-        cat "$FAKE_PERF_DATA" >"$out"
-      else
-        printf 'fake perf data\n' >"$out"
-      fi
+      write_data
       echo "[ perf record: Woken up 1 times to write data ]" >&2
       echo "[ perf record: Captured and wrote 0.001 MB $out ]" >&2
     else
