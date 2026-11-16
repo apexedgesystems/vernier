@@ -45,9 +45,10 @@ set(UNIT_TEST_SOURCES
 # bench_test_support (Readiness Fixtures, below) is a test-only interface
 # target with no library of its own. RaplRunTest's cases are component: the
 # registry, the profiler and its factory decide on this machine's
-# /proc/cpuinfo and msr device, which no context can replace. So are the two
-# watchdog cases that run the helper program end to end under the whole-second
-# --profile-test-timeout flag and wait that second out.
+# /proc/cpuinfo and msr device, which no context can replace. So are the
+# watchdog cases that start the helper program and check its protocol end to
+# end (a deadline, a re-arm, a fork, the signal mask, a thread that cannot
+# start), whatever they take; the three that check it in-process are unit.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -65,6 +66,15 @@ vernier_add_gtest(
   COMPONENT_PATTERNS
   "^RaplRunTest\\."
   "^PerfWatchdogTest\\.(Later)?HungLoopEndsWithStatusTwo$"
+  "^PerfWatchdogTest\\.ArmingAfterTheThreadParkedFires$"
+  "^PerfWatchdogTest\\.ShorterRearmFiresAtTheNewDeadline$"
+  "^PerfWatchdogTest\\.TimeoutNamesTestAndToolThenExits$"
+  "^PerfWatchdogTest\\.NullNamesBecomePlaceholders$"
+  "^PerfWatchdogTest\\.DisarmAndRearmReplaceTheDeadline$"
+  "^PerfWatchdogTest\\.ForkedChildArmsItsOwnWatchdog$"
+  "^PerfWatchdogTest\\.ItsThreadTakesNoSignal$"
+  "^PerfWatchdogTest\\.ThreadThatCannotStartEndsTheMeasurement$"
+  "^PerfWatchdogTest\\.ThreadThatCannotStartIsStartedByALaterArming$"
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
   "^PerfCaseTimingTest\\."
