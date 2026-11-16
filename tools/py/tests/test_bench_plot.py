@@ -277,3 +277,84 @@ def test_a_file_of_unplottable_rows_is_refused_without_the_ncu_note(
         f"bench-plot: {csv}: no row has timing: every row has an empty or damaged timing cell"
     )
     assert recorded_plots == {}
+
+
+# The texts pandas reads as a missing value unless told otherwise.
+MISSING_MARKERS = ("n/a", "nan", "NULL", "NA", "None")
+
+
+def every_timing_cell(test, text):
+    """A row whose twelve timing cells each hold @p text, its other numbers sound."""
+    return f"{test},2,2,1,1,64,0,0,INFO," + ",".join([text] * 12) + ",0.1,,,"
+
+
+def test_text_in_every_timing_cell_is_damage_not_emptiness(
+    tmp_path, monkeypatch, capsys, recorded_plots
+):
+    """A row whose timing cells all hold text that pandas would take for a
+    missing value is left out as damaged, without the Nsight Compute note,
+    while a row whose cells are empty fields keeps it."""
+    texts = [every_timing_cell(f"Saxpy.Text{i}", text) for i, text in enumerate(MISSING_MARKERS)]
+    csv = write_csv(tmp_path / "rows.csv", [TIMED_ROW, UNTIMED_ROWS[0]] + texts)
+    run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain"]]
+    assert capsys.readouterr().err == (
+        f"bench-plot: {csv}: left out 1 rows without timing (every timing cell is empty, as in "
+        "a run under Nsight Compute (ncu), which the benchmark does not time): Saxpy.EndToEnd\n"
+        f"bench-plot: {csv}: left out 5 rows with an empty or damaged timing cell: "
+        "Saxpy.Text0, Saxpy.Text1, Saxpy.Text2, Saxpy.Text3, Saxpy.Text4\n"
+    )
+
+
+@pytest.mark.parametrize("text", MISSING_MARKERS)
+def test_a_file_of_text_timing_is_refused_with_the_plain_reason(
+    tmp_path, monkeypatch, recorded_plots, text
+):
+    """A file whose only row holds text in every timing cell is refused as
+    damaged, not as a run under Nsight Compute."""
+    csv = write_csv(tmp_path / "rows.csv", [every_timing_cell("Saxpy.Text", text)])
+    with pytest.raises(SystemExit) as stopped:
+        run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert str(stopped.value) == (
+        f"bench-plot: {csv}: no row has timing: every row has an empty or damaged timing cell"
+    )
+    assert recorded_plots == {}
+
+
+def test_a_test_named_as_a_missing_marker_keeps_its_name(
+    tmp_path, monkeypatch, capsys, recorded_plots
+):
+    """Tests named NA and None are plotted by those names, and an untimed test
+    named null is named so, as bench summary names them."""
+    rows = [
+        TIMED_ROW,
+        TIMED_ROW.replace("Saxpy.Plain", "NA"),
+        TIMED_ROW.replace("Saxpy.Plain", "None"),
+        UNTIMED_ROWS[0].replace("Saxpy.EndToEnd", "null"),
+    ]
+    csv = write_csv(tmp_path / "names.csv", rows)
+    run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert recorded_plots["plot_throughput_bars"] == [["Saxpy.Plain", "NA", "None"]]
+    assert capsys.readouterr().err == (
+        f"bench-plot: {csv}: left out 1 rows without timing (every timing cell is empty, as in "
+        "a run under Nsight Compute (ncu), which the benchmark does not time): null\n"
+    )
+
+
+def test_the_other_plotted_numbers_read_text_as_no_number(tmp_path):
+    """msgBytes and the GPU columns hold numbers after loading: an empty field
+    or any text in one is no number, and a number stays one, an infinity
+    included, as pandas's default reading gave them."""
+    rows = [
+        TIMED_ROW.replace(",64,", ",n/a,").replace(",0.1,,,", ",0.1,RTX,NULL,0.5"),
+        TIMED_ROW.replace(",0.1,,,", ",0.1,RTX,12.5,garbage"),
+        TIMED_ROW.replace(",0.1,,,", ",0.1,RTX,,inf"),
+    ]
+    df = load_csv(write_csv(tmp_path / "gpu.csv", rows))
+    assert df["msgBytes"].isna().tolist() == [True, False, False]
+    assert df["kernelTimeUs"].isna().tolist() == [True, False, True]
+    assert df["kernelTimeUs"].iloc[1] == 12.5
+    assert df["occupancy"].isna().tolist() == [False, True, False]
+    assert df["occupancy"].iloc[0] == 0.5
+    assert df["occupancy"].iloc[2] == float("inf")
+    assert df["gpuModel"].tolist() == ["RTX", "RTX", "RTX"]

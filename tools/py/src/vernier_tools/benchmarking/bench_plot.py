@@ -52,12 +52,25 @@ except ImportError:
 # =============================================================================
 
 
+# The columns besides the timing that the plots read as numbers. Text in one of
+# them reads as no number, as pandas's default missing markers did; an infinity
+# stays one.
+PLOTTED_OTHER_NUMBERS = ("msgBytes", "kernelTimeUs", "transferTimeUs", "speedupVsCpu", "occupancy")
+
+
 def load_csv(path: Path) -> pd.DataFrame:
-    """Load and validate a benchmark CSV file."""
+    """Load and validate a benchmark CSV file.
+
+    Only an empty field is missing, as `bench summary` reads the file: text
+    that pandas takes for a missing value by default (`NA`, `nan`, `NULL`,
+    `None`, ...) stays text, so a test of that name keeps it and a timing cell
+    holding it is damaged, not empty. The columns of `PLOTTED_OTHER_NUMBERS`
+    are made numbers.
+    """
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, keep_default_na=False, na_values=[""])
 
     required = {"test", "wallMedian", "wallCV", "callsPerSecond"}
     missing = required - set(df.columns)
@@ -67,6 +80,9 @@ def load_csv(path: Path) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"No data rows in {path}")
 
+    for column in PLOTTED_OTHER_NUMBERS:
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
     return df
 
 
