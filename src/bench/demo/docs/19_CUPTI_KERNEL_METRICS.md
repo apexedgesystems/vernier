@@ -5,13 +5,15 @@
 **Example:** `saxpy`, through demo 02's two kernel tests (see [Shared Examples](../README.md#shared-examples))
 **Captured:** 2026-10-03 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`. The run in Check Against the Reference was made later
-the same day, by this page's commands as written. Step 4's console output and
-kernel summaries come from a session of 2026-10-10 (UTC) on a later
-development tree at the same version, with Step 1's command run just before
-them and the clocks locked the same way. The RTX 5000 Ada run quoted for the
-NVML cells is from 2026-11-16 (UTC), on a later development tree at the same
-version.
+reported `bench 1.0.3`. Steps 1 and 2, the reference CSV, the run in Check
+Against the Reference and the eight runs What Should Reproduce describes come
+from a session of 2026-11-16 (UTC) on a later development tree at the same
+version, whose collector records CUPTI's kernels in an untimed batch after the
+measured repeats. Step 4's console output and kernel summaries come from a
+session of 2026-10-10 (UTC) on a later development tree at the same version,
+with Step 1's command run just before them and the clocks locked the same way.
+The RTX 5000 Ada run quoted for the NVML cells is from 2026-11-16 (UTC), on a
+later development tree at the same version.
 
 ## Overview
 
@@ -113,22 +115,22 @@ Note: Google Test filter = NsightProfiler.Kernel*
 [----------] 2 tests from NsightProfiler
 [ RUN      ] NsightProfiler.KernelOneThreadPerBlock
 [gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
-[NsightProfiler.KernelOneThreadPerBlock]  2998.613 us/call  CV=0.0%  ~333 calls/s  (p10=2998.119 p90=2999.197 sd=0.405)
-[       OK ] NsightProfiler.KernelOneThreadPerBlock (813 ms)
+[NsightProfiler.KernelOneThreadPerBlock]  2994.904 us/call  CV=0.0%  ~334 calls/s  (p10=2994.564 p90=2995.290 sd=0.322)
+[       OK ] NsightProfiler.KernelOneThreadPerBlock (875 ms)
 [ RUN      ] NsightProfiler.Kernel256ThreadsPerBlock
-[NsightProfiler.Kernel256ThreadsPerBlock]  20.109 us/call  CV=0.5%  ~49.7K calls/s  (p10=20.073 p90=20.359 sd=0.110)
-[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (25 ms)
-[----------] 2 tests from NsightProfiler (839 ms total)
+[NsightProfiler.Kernel256ThreadsPerBlock]  20.619 us/call  CV=2.7%  ~48.5K calls/s  (p10=20.582 p90=20.823 sd=0.569)
+[       OK ] NsightProfiler.Kernel256ThreadsPerBlock (26 ms)
+[----------] 2 tests from NsightProfiler (902 ms total)
 
 [----------] Global test environment tear-down
-[==========] 2 tests from 1 test suite ran. (839 ms total)
+[==========] 2 tests from 1 test suite ran. (902 ms total)
 [  PASSED  ] 2 tests.
 
 =========================================================================================
 Test                                      Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------------------------------
-NsightProfiler.KernelOneThreadPerBlock       2998.613    0.0%         333  OK
-NsightProfiler.Kernel256ThreadsPerBlock        20.109    0.5%       49.7K  OK
+NsightProfiler.KernelOneThreadPerBlock       2994.904    0.0%         334  OK
+NsightProfiler.Kernel256ThreadsPerBlock        20.619    2.7%       48.5K  OK
 -----------------------------------------------------------------------------------------
 2 tests | 2 stable | 0 unstable
 ```
@@ -136,8 +138,8 @@ NsightProfiler.Kernel256ThreadsPerBlock        20.109    0.5%       49.7K  OK
 What to read: the `[gpu]` line first. It holds for the whole run, so it is
 printed once, at the first measurement, and it names the six NVML cells that
 stay empty in both rows and why: NVML on this rig answers `Not Supported` to
-each reading. Then the medians: 2,998.6 us per launch at one thread per block,
-20.11 us at 256, 149.1 times as long.
+each reading. Then the medians: 2,994.9 us per launch at one thread per block,
+20.62 us at 256, 145.2 times as long.
 
 ## Step 2: Read the GPU Columns
 
@@ -155,13 +157,13 @@ awk -F, -v cols=test,wallMedian,kernelTimeUs,transferTimeUs,h2dBytes,d2hBytes,oc
 
 ```
 test                   NsightProfiler.KernelOneThreadPerBlock  NsightProfiler.Kernel256ThreadsPerBlock
-wallMedian             2998.61                                 20.1088
-kernelTimeUs           2998.612785                             20.108800
+wallMedian             2994.9                                  20.6192
+kernelTimeUs           2994.904041                             20.619200
 transferTimeUs         0.000000                                0.000000
 h2dBytes               0                                       0
 d2hBytes               0                                       0
 occupancy              0.500000                                1.000000
-cuptiKernelLaunches    200                                     200
+cuptiKernelLaunches    20                                      20
 cuptiRegistersMedian   16                                      16
 cuptiRegistersMax      16                                      16
 cuptiStaticSmemBytes   0                                       0
@@ -184,11 +186,11 @@ multi-GPU columns, which a single-GPU test leaves empty except `deviceCount`,
 
 | Column                                          | Source                                                                                                                                            | What it covers                                                                                             | Here                                                       |
 | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| `kernelTimeUs`                                  | CUDA events before the first and after the last of `--cycles` launches, divided by the cycle count; the median of the `--repeats` samples         | the stream from the first launch to the end of the last, per launch: the kernels and any time between them | 2,998.6 and 20.11 us                                       |
+| `kernelTimeUs`                                  | CUDA events before the first and after the last of `--cycles` launches, divided by the cycle count; the median of the `--repeats` samples         | the stream from the first launch to the end of the last, per launch: the kernels and any time between them | 2,994.9 and 20.62 us                                       |
 | `wallMedian`                                    | the same samples, plus each repeat's copy legs                                                                                                    | one call: the copies in, one launch, the copies out                                                        | the kernel time, to the printed digits: no copies declared |
 | `transferTimeUs`, `h2dBytes`, `d2hBytes`        | event pairs around the copies the test declares, and their bytes                                                                                  | declared copies only                                                                                       | 0: none declared, so none timed; a measured zero           |
 | `occupancy`                                     | the harness's estimate (below)                                                                                                                    | the launch configuration and the device's limits, not the run                                              | 0.5 and 1.0                                                |
-| `cuptiKernelLaunches`                           | CUPTI's records of the kernels the GPU ran while the measured repeats ran                                                                         | the measured launches; not the warmup                                                                      | 200: 20 cycles times 10 repeats                            |
+| `cuptiKernelLaunches`                           | CUPTI's records of an untimed batch the harness launches after the measured repeats                                                               | one call per cycle, at most 1,000; not the timed launches or the warmup                                    | 20: one call for each of the 20 cycles                     |
 | `cuptiRegistersMedian`, `cuptiRegistersMax`     | the records' registers per thread                                                                                                                 | what each thread was allocated at launch                                                                   | 16; the compiler's count is 10 (Step 3)                    |
 | `cuptiStaticSmemBytes`, `cuptiDynamicSmemBytes` | the records' static and dynamic shared memory per block                                                                                           | the kernel's `__shared__` arrays, and what the launch asked for                                            | 0: the kernel declares none and the launch asks for none   |
 | `smClockMHz`, `throttling`                      | NVML: the SM clock at the end of the measured repeats; whether it fell more than 10% from start to end (only when the maximum clock was read too) | two instants, not the window between them                                                                  | empty: `Not Supported`                                     |
@@ -225,14 +227,16 @@ occupancy a kernel achieves; walkthrough 11 reads it for these two shapes
 below the estimate in both. In code the estimate is
 `OccupancyMetrics::achievedOccupancy`; despite the name, it is this estimate.
 
-**The `cupti*` cells are records of the measured launches.** CUPTI records
-every kernel the GPU ran while the measured repeats ran: 200 launches here,
-the warmup excluded. The registers are what each thread was given at launch:
-16 per thread, where the kernel compiles to 10 (Step 3). Turning the
-collector off changes the times by little here: with it off (the override and
-the build without CUPTI in [If It Does Not Match](#if-it-does-not-match)), the
-one-thread kernel read 2,994.4 and 2,993.6 us, against 2,996.6 to 3,000.0 us
-with it on over six locked runs: the reference session's five and the run in
+**The `cupti*` cells are records of an untimed batch.** After the measured
+repeats the harness calls the test's launch once more for each cycle, at most
+1,000 times, and CUPTI records the kernels of that batch: 20 launches here,
+the timed launches and the warmup excluded. The registers are what each thread
+was given at launch: 16 per thread, where the kernel compiles to 10 (Step 3).
+Turning the collector off changes the times by little here: with it off (the
+override and the build without CUPTI in
+[If It Does Not Match](#if-it-does-not-match)), the one-thread kernel read
+2,994.4 and 2,993.6 us, against 2,994.5 to 2,994.9 us with it on over six
+locked runs: the reference session's five and the run in
 [Check Against the Reference](#check-against-the-reference).
 
 **The NVML cells are readings at the window's ends.** NVML is read once at
@@ -363,18 +367,18 @@ against 2,993 us at one. A run under a profiler is a run of its own, so set
 
 | Reading                                    | On this rig                                                                                  | Elsewhere                                                                                    |
 | ------------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| one thread vs 256 per block, per launch    | 149.1x; 146.9x to 149.4x over five runs, clocks locked; 147.3x to 149.3x over three as found | one thread per block stays far slower; the size depends on the GPU                           |
-| `cuptiKernelLaunches`                      | 200 in both rows (`--cycles` times `--repeats`)                                              | the same wherever CUPTI collects                                                             |
+| one thread vs 256 per block, per launch    | 145.2x; 145.1x to 145.4x over five runs, clocks locked; 144.9x to 145.2x over three as found | one thread per block stays far slower; the size depends on the GPU                           |
+| `cuptiKernelLaunches`                      | 20 in both rows (`--cycles`, at most 1,000)                                                  | the same wherever CUPTI collects                                                             |
 | `cuptiRegistersMedian` / compiled          | 16 / 10                                                                                      | the compiled count depends on the compiler and architecture; 16 / 10 on the RTX 5000 Ada too |
 | `occupancy`                                | 0.5 and 1.0                                                                                  | depends on the SM's limits; 0.5 and 1.0 on the RTX 5000 Ada too                              |
 | NVML cells                                 | all six empty, `Not Supported`                                                               | filled where NVML answers; on the RTX 5000 Ada all but `powerLimitW` and `powerDrawW`        |
 | `kernelTimeUs` vs Nsight Systems, same run | 0.02 to 0.1% apart at one thread per block; 2.5 to 2.6 us a launch apart at 256 (three runs) | close for long kernels; the gap between launches shows on short ones                         |
-| absolute times                             | 2,998.6 / 20.11 us                                                                           | will differ                                                                                  |
+| absolute times                             | 2,994.9 / 20.62 us                                                                           | will differ                                                                                  |
 
 The non-timing cells were the same in all eight runs. The ranges describe
 those runs; another run can land outside them. The 256-thread kernel is the
-noisiest reading on the page: its within-run CV ran from 0.2% to 6.2% over the
-locked runs and up to 7.2% as found, against 0.0% for the one-thread kernel.
+noisiest reading on the page: its within-run CV ran from 0.2% to 2.7% over the
+locked runs and up to 1.3% as found, against 0.0% for the one-thread kernel.
 
 ## If It Does Not Match
 
@@ -424,8 +428,8 @@ A later run on the same rig, clocks locked:
 ```
 Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 ---------------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-NsightProfiler.Kernel256ThreadsPerBlock      20.10880      20.20720    +0.09840     +0.5%      0.5%      5.7%  neutral
-NsightProfiler.KernelOneThreadPerBlock     2998.61000    2996.55000    -2.06000     -0.1%      0.0%      0.0%  neutral
+NsightProfiler.Kernel256ThreadsPerBlock      20.61920      20.62480    +0.00560     +0.0%      2.7%      0.3%  neutral
+NsightProfiler.KernelOneThreadPerBlock     2994.90000    2994.67000    -0.23000     -0.0%      0.0%      0.0%  neutral
 
   2 neutral
 
@@ -447,7 +451,7 @@ reported, `kalex`.
   built as `TestDemoKernelColumns`), runs demo 02's two kernel tests with
   `--csv` and holds each row to this page: `kernelTimeUs` equal to
   `wallMedian`; the copy columns 0; `occupancy` equal to the harness's estimate
-  for the row's block; one CUPTI record per measured launch, a median and a
+  for the row's block; one CUPTI record per call of the batch, a median and a
   maximum register count equal to each other and to one of the two forms Step 3
   records, the compiled count or that count rounded up to a multiple of 8 (any
   other value fails, one between the two included), the kernel's static shared
