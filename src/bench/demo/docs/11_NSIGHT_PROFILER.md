@@ -625,7 +625,7 @@ refuse it (`missing required column 'test'`), and `bench-plot` stops with
 | launch shapes (Nsight Compute)                | `(1048576, 1, 1)x(1, 1, 1)` and `(4096, 1, 1)x(256, 1, 1)`                                                   | the same                                                                                                         |
 | theoretical occupancy (ncu; the CSV's column) | 50% and 100% (0.5 and 1.0)                                                                                   | depends on the GPU's limits; both occupancy checks also pass on an RTX 5000 Ada laptop GPU                       |
 | achieved occupancy (ncu)                      | 29.45% to 30.98% and 75.07% to 79.52% over 14 launches each                                                  | depends on the GPU                                                                                               |
-| kernel alone, one thread vs 256 per block     | 143.3x; 141.6x to 143.4x over six runs, clocks locked; 135.2x to 139.2x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
+| kernel alone, one thread vs 256 per block     | 143.3x; 141.6x to 143.4x over six runs, clocks locked; 135.2x to 139.2x over four as found                   | one thread per block stays far slower: 98.8x to 99.3x on the RTX 5000 Ada (three runs)                           |
 | `G0` vs `G1` end to end                       | 5.7x; 5.0x to 5.9x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
 | absolute times                                | 3,606 / 634 / 2,990 / 20.7 us                                                                                | will differ                                                                                                      |
 
@@ -648,12 +648,12 @@ in Step 5. The two bands are this rig's; a discrete GPU was not checked for
 them.
 
 The RTX 5000 Ada figures come from three runs of the demo with Step 1's
-settings (`--cycles 20 --repeats 10`) in the project's `dev-cuda` container,
-with the clocks as found and the laptop running other work. They are what
-those runs measured: the kernel took 622 us per launch in one-thread blocks and
-6.5 us in 256-thread ones, timed with CUDA events on the device, which run
-conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
-2.34 ms end to end.
+settings (`--cycles 20 --repeats 10`) in the project's `dev-cuda` container on
+2026-11-17 (UTC), with the clocks as found and the laptop running other work
+(a load average of 4 to 8). They are what those runs measured: the kernel took
+681 us per launch in one-thread blocks and 6.5 us in 256-thread ones, timed with
+CUDA events on the device, which run conditions still affect; `G0` took 2.74
+to 2.93 ms a call and `G1` 2.41 to 2.83 ms end to end.
 
 ## If It Does Not Match
 
