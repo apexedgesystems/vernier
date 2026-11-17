@@ -51,9 +51,23 @@ TEST(ScopeStatsTest, P99IsTheNearestRank) {
   EXPECT_DOUBLE_EQ(P99_OF_ONE_TO(200), 198.0);
   EXPECT_DOUBLE_EQ(P99_OF_ONE_TO(100), 99.0);
 
+  // p99() copies and sorts this one value. Inlined here, g++ 13 and 14 at
+  // -O3 report the memmove libstdc++ uses for more than one element as past
+  // the end (-Warray-bounds, and with that off -Wstringop-overflow and
+  // -Wstringop-overread); one element never takes that path. The three are
+  // off for these three lines only.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 11
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#pragma GCC diagnostic ignored "-Wstringop-overflow"
+#pragma GCC diagnostic ignored "-Wstringop-overread"
+#endif
   ScopeStats lone;
   lone.record(7.5, false);
   EXPECT_DOUBLE_EQ(lone.p99(), 7.5);
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 11
+#pragma GCC diagnostic pop
+#endif
 }
 
 /* ----------------------------- MonitorSummary Method Tests ----------------------------- */
