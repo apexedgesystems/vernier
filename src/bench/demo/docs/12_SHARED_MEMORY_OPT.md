@@ -7,9 +7,11 @@
 no shared example has a bank conflict to show
 **Captured:** 2026-09-30 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada figures in
-[What Should Reproduce](#what-should-reproduce) come from one run of the same
-tree in the project's `dev-cuda` container on the same day. The output of
+reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada counts and
+occupancy in [What Should Reproduce](#what-should-reproduce) come from one
+run of the same tree in the project's `dev-cuda` container on the same day,
+and its time ratios from three runs there on 2026-11-17 (UTC), on a later
+development tree at the same version. The output of
 `bench run --profile ncu` in [If It Does Not Match](#if-it-does-not-match) is
 from a later session on 2026-10-10 (UTC), from a later development tree at
 the same version with the same Nsight Compute; the report's sections under it
@@ -538,9 +540,9 @@ What not to conclude:
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | wavefronts per shared-load request, tiled / padded | 32 / 1, on every one of 14 launches each                                                                   | should match on a GPU with 32 four-byte banks: 32 / 1 on an RTX 5000 Ada laptop GPU                                                |
 | ncu's bank-conflict counter per launch             | 1,016,796 to 1,016,893 / 314 to 375 over 14 launches each; 1,016,826 to 1,016,973 with the clocks as found | the same shape, with a larger extra on the padded kernel: 1,017,170 to 1,017,223 / 3,375 to 3,626 on the RTX 5000 Ada (ncu 2026.2) |
-| padded against tiled, time                         | 1.86x (75.9 against 40.8 us); 1.86x to 1.88x over five locked runs                                         | the padded kernel should be faster; 1.6x on the RTX 5000 Ada                                                                       |
-| tiled against naive                                | 1.35x; 1.35x in all five                                                                                   | depends on the memory system: 2.4x on the RTX 5000 Ada                                                                             |
-| padded against naive                               | 2.51x; 2.50x to 2.53x                                                                                      | 3.9x on the RTX 5000 Ada                                                                                                           |
+| padded against tiled, time                         | 1.86x (75.9 against 40.8 us); 1.86x to 1.88x over five locked runs                                         | the padded kernel should be faster; 1.8x on the RTX 5000 Ada                                                                       |
+| tiled against naive                                | 1.35x; 1.35x in all five                                                                                   | depends on the memory system: 2.5x on the RTX 5000 Ada                                                                             |
+| padded against naive                               | 2.51x; 2.50x to 2.53x                                                                                      | 4.7x on the RTX 5000 Ada                                                                                                           |
 | `occupancy` column                                 | 0.667 for all three                                                                                        | depends on the GPU's block and warp limits; 0.667 for all three on the RTX 5000 Ada                                                |
 | absolute times                                     | 102.6 / 75.9 / 40.8 us                                                                                     | will differ                                                                                                                        |
 
@@ -550,10 +552,11 @@ are Step 1's command run five times in one session, the reference among
 them; a range describes those runs, not a bound, and another run of the same
 command can land outside it. The naive kernel is the noisiest measurement on
 this page: CV under 0.1% with the clocks locked, 0.9% to 1.0% as found. The RTX
-5000 Ada figures are what one run of Step 1's command measured in the
+5000 Ada ratios are what three runs of Step 1's command measured in the
 project's `dev-cuda` container, with the clocks as found and other work
-running on the laptop, and what the check read there (six launches per
-kernel); they are stated for their direction, not their size.
+running on the laptop (a load average of 4 to 14), and its counts what the
+check read there (six launches per kernel); they are stated for their
+direction, not their size.
 
 ## If It Does Not Match
 
