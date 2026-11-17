@@ -2086,7 +2086,13 @@ fn run_and_doctor_started_with_sigchld_ignored_read_the_status() {
 /// in `nsys_stats.pid` and `nsys_started.pid`). valgrind reads its output option's value as valgrind does
 /// (valgrind 3.18.1, recorded runs): `%%` is one `%`, `%p` its process id,
 /// and any other `%` is refused with status 1. compute-sanitizer is
-/// `SANITIZER_STAND_IN`.
+/// `SANITIZER_STAND_IN`. ncu's report holds the list its `--metrics` was
+/// given, and `ncu --import` prints the per-kernel summary in ncu's columns,
+/// a row for each name of that list but those `FAKE_NCU_LACKS` names (a comma
+/// list), which ncu leaves out without a word; `FAKE_NCU_IMPORT=fail` fails
+/// as ncu does for a file it cannot open, `no-summary` prints nothing,
+/// `garbled` a record longer than its header, and `gone` has the capture
+/// remove ncu, so the import cannot start.
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
@@ -2187,15 +2193,35 @@ if [ "{name}" = callgrind_annotate ]; then
   echo "fake annotation of $2"
   exit 0
 fi
+if [ "{name}" = ncu ] && [ "$1" = --import ]; then
+  case "$FAKE_NCU_IMPORT" in
+    fail) echo "==ERROR== The file does not exist or is not a regular file." >&2; exit 1 ;;
+    no-summary) exit 0 ;;
+    garbled) printf '"ID","Kernel Name","Metric Name"\n"0","k","m","extra"\n'; exit 0 ;;
+  esac
+  echo '"ID","Kernel Name","Section Name","Metric Name","Metric Unit","Minimum","Maximum","Average"'
+  list=""
+  while IFS= read -r line; do
+    case "$line" in metrics=*) list="${{line#metrics=}}" ;; esac
+  done < "$2"
+  IFS=,
+  for m in $list; do
+    case ",$FAKE_NCU_LACKS," in *",$m,"*) continue ;; esac
+    echo "\"0\",\"k(int)\",\"Command line profiler metrics\",\"$m\",\"%\",\"1.00\",\"1.00\",\"1.00\""
+  done
+  exit 0
+fi
 [ "$FAKE_WRITE" = none ] && exit 0
 out=""
 prev=""
+metrics=""
 for a in "$@"; do
   case "$a" in
     --callgrind-out-file=*|--massif-out-file=*|--log-file=*) out="${{a#*=}}" ;;
   esac
   case "$prev" in
     --log-file) out="$a" ;;
+    --metrics) metrics="$a" ;;
     -o) case "{name}" in nsys) out="$a.nsys-rep" ;; ncu) out="$a.ncu-rep" ;; heaptrack) out="$a.gz" ;; esac ;;
   esac
   prev="$a"
@@ -2249,8 +2275,10 @@ if [ "{name}" = heaptrack ] && [ -n "$out" ]; then
   /bin/mkdir -p "${{out%/*}}"
 fi
 if [ -n "$out" ]; then
-  if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
+  if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi || exit
+  if [ -n "$metrics" ] && [ "$FAKE_WRITE" != empty ]; then echo "metrics=$metrics" >> "$out"; fi
 fi
+if [ "{name}" = ncu ] && [ "$FAKE_NCU_IMPORT" = gone ]; then /bin/rm -f "$0"; fi
 "#,
             log = log.display()
         );
@@ -2550,10 +2578,13 @@ const REPLAY_METRICS: &str = "sm__throughput.avg.pct_of_peak_sustained_elapsed,\
 /// options (the set, each section, then one --metrics with every name), and
 /// the benchmark the request as given; a selection under nsight runs ncu
 /// into nsight's folder; a kernel replay runs ncu with the replay metrics
-/// into kernel_replay, whose report bench run checks and names.
+/// into kernel_replay, whose report bench run checks and names. A request
+/// that names metrics then has its report read back once, with the summary
+/// bench nsight-parse reads, and without the wrap's variable; one that names
+/// none (sections alone) has not.
 #[test]
 fn run_ncu_passes_the_selection_and_runs_a_replay() {
-    for (profile, args, folder, report, options) in [
+    for (profile, args, folder, report, options, reads_back) in [
         (
             "ncu",
             "--metrics dram__bytes.sum,lts__t_bytes.sum --section LaunchStats --set full",
@@ -2561,6 +2592,7 @@ fn run_ncu_passes_the_selection_and_runs_a_replay() {
             "kernel_profile",
             "--set full --section LaunchStats --metrics dram__bytes.sum,lts__t_bytes.sum"
                 .to_string(),
+            true,
         ),
         (
             "nsight",
@@ -2568,6 +2600,7 @@ fn run_ncu_passes_the_selection_and_runs_a_replay() {
             "nsight",
             "kernel_profile",
             "--section Occupancy".to_string(),
+            false,
         ),
         (
             "ncu",
@@ -2575,6 +2608,7 @@ fn run_ncu_passes_the_selection_and_runs_a_replay() {
             "ncu",
             "kernel_replay",
             format!("--metrics {REPLAY_METRICS}"),
+            true,
         ),
         (
             "nsight",
@@ -2582,26 +2616,139 @@ fn run_ncu_passes_the_selection_and_runs_a_replay() {
             "nsight",
             "kernel_replay",
             format!("--metrics {REPLAY_METRICS}"),
+            true,
         ),
     ] {
         let rig = route_rig(&["nsys", "ncu"]);
         let (code, stdout, err, log) =
             run_rig_env(&rig, &["--profile", profile, "--profile-args", args], &[]);
         assert_eq!(code, 0, "{profile} {args}: {err}");
-        assert_eq!(
-            log,
-            format!(
-                "ncu wrap={profile} -o bench-out/fake_bench.{folder}/{report} -f \
-                 --target-processes all {options} {} --profile {profile} --profile-args {args}\n",
-                rig.bench.display(),
-            ),
-            "{profile} {args}"
+        let rep = format!("bench-out/fake_bench.{folder}/{report}");
+        let mut expected = format!(
+            "ncu wrap={profile} -o {rep} -f --target-processes all {options} {} --profile \
+             {profile} --profile-args {args}\n",
+            rig.bench.display(),
+        );
+        if reads_back {
+            expected +=
+                &format!("ncu wrap= --import {rep}.ncu-rep --csv --print-summary per-kernel\n");
+        }
+        assert_eq!(log, expected, "{profile} {args}");
+        assert!(
+            stdout.contains(&format!("[bench] {profile} wrote {rep}.ncu-rep (")),
+            "{profile} {args}: {stdout}"
         );
         assert!(
-            stdout.contains(&format!(
-                "[bench] {profile} wrote bench-out/fake_bench.{folder}/{report}.ncu-rep ("
+            !stdout.contains("[bench] the report"),
+            "{profile} {args}: the report holds every metric: {stdout}"
+        );
+    }
+}
+
+/// The lines of @p stdout after the one naming the report @p profile's wrap
+/// wrote.
+fn lines_after_the_report(stdout: &str, profile: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip_while(|line| !line.starts_with(&format!("[bench] {profile} wrote ")))
+        .skip(1)
+        .map(str::to_string)
+        .collect()
+}
+
+/// @test After a run under ncu that names metrics, bench run names each one
+/// asked for that the report holds nothing for, one line each after the line
+/// naming the report, in the order asked and each once: one the GPU does not
+/// report (the replay's DRAM throughput, as on the Jetson AGX Thor), two, a
+/// name of the user's own --metrics that ncu does not know, which reads the
+/// same, and the only name asked for, which leaves the summary no row; none
+/// when the report holds every one. The check reads the report, not a list of
+/// the chip's metrics: the launch attribute among the replay's metrics is not
+/// named while the report holds it.
+#[test]
+fn run_names_each_metric_the_report_holds_nothing_for() {
+    let dram = "dram__throughput.avg.pct_of_peak_sustained_elapsed";
+    let lsu = "smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed";
+    let made_up = "vernier__no_such_metric.sum";
+    let own = format!("--metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,{made_up}");
+    let alone = format!("--metrics {made_up},{made_up}");
+    for (profile, args, lacks, named) in [
+        ("ncu", "replay", dram.to_string(), vec![dram]),
+        ("nsight", "replay", format!("{lsu},{dram}"), vec![dram, lsu]),
+        ("ncu", own.as_str(), made_up.to_string(), vec![made_up]),
+        ("ncu", alone.as_str(), made_up.to_string(), vec![made_up]),
+        ("ncu", "replay", String::new(), vec![]),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, _) = run_rig_env(
+            &rig,
+            &["--profile", profile, "--profile-args", args],
+            &[("FAKE_NCU_LACKS", &lacks)],
+        );
+        assert_eq!(code, 0, "{args} lacking {lacks}: {err}");
+        let expected: Vec<String> = named
+            .iter()
+            .map(|metric| {
+                format!(
+                    "[bench] the report holds nothing for {metric}: ncu reported nothing for it \
+                     on this GPU"
+                )
+            })
+            .collect();
+        let after = lines_after_the_report(&stdout, profile);
+        assert_eq!(after, expected, "{args} lacking {lacks}: {stdout}");
+        assert!(
+            !after
+                .iter()
+                .any(|line| line.contains("launch__registers_per_thread")),
+            "{args} lacking {lacks}: {stdout}"
+        );
+    }
+}
+
+/// @test A report bench run cannot read back gets one line saying that the
+/// metrics asked for were not checked, and why: ncu failing to read it, ncu
+/// gone, no summary, a summary that cannot be read. The run ends with the
+/// status it ends with when the check is made (0), and the report stays.
+#[test]
+fn run_says_when_the_report_was_not_checked() {
+    for (how, why) in [
+        (
+            "fail",
+            "ncu --import exited with status 1: ==ERROR== The file does not exist or is not a \
+             regular file.",
+        ),
+        ("gone", "ncu could not be started: "),
+        (
+            "no-summary",
+            "ncu printed no per-kernel summary (no output)",
+        ),
+        (
+            "garbled",
+            "its summary cannot be read: line 2 of its output has 4 fields for 3 columns",
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, _) = run_rig_env(
+            &rig,
+            &["--profile", "ncu", "--profile-args", "replay"],
+            &[("FAKE_NCU_IMPORT", how)],
+        );
+        assert_eq!(code, 0, "{how}: {err}");
+        let after = lines_after_the_report(&stdout, "ncu");
+        assert_eq!(after.len(), 1, "{how}: {stdout}");
+        assert!(
+            after[0].starts_with(&format!(
+                "[bench] the report was not checked for the metrics asked for: {why}"
             )),
-            "{profile} {args}: {stdout}"
+            "{how}: {stdout}"
+        );
+        assert!(
+            rig.dir
+                .path()
+                .join("bench-out/fake_bench.ncu/kernel_replay.ncu-rep")
+                .is_file(),
+            "{how}"
         );
     }
 }

@@ -451,6 +451,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - `bench run --profile ncu` selects Nsight Compute sections and metrics and
   runs a kernel replay that collects its whole metric list.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- After a run under Nsight Compute, `bench run` names each metric asked for
+  that the report holds nothing for, such as DRAM throughput on a GPU that
+  does not report it. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - A run under Nsight Compute leaves timing and every value derived from it
   empty. **Action needed:** measure performance in a run without ncu, and
   rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).

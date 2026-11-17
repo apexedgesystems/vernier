@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use super::exec::{run_tool, Interrupt, Interrupts, ToolRun, DRAIN};
 use super::parse::{self, Row};
-use super::{COMMAND, NSYS_SUMMARIES};
+use super::{ncu_summary_args, COMMAND, NSYS_SUMMARIES};
 use crate::bench::Error;
 
 /* ----------------------------- Constants ----------------------------- */
@@ -407,14 +407,7 @@ fn read_compute(
     interrupts: &Interrupts<'_>,
     out: &mut Extraction,
 ) -> Result<(), Interrupt> {
-    let args = [
-        OsStr::new("--import"),
-        report.as_os_str(),
-        OsStr::new("--csv"),
-        OsStr::new("--print-summary"),
-        OsStr::new("per-kernel"),
-    ];
-    match run_tool("ncu", &args, timeout, interrupts) {
+    match run_tool("ncu", &ncu_summary_args(report), timeout, interrupts) {
         ToolRun::Finished {
             status,
             stdout,

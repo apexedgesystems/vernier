@@ -932,7 +932,8 @@ ncu --csv --print-summary per-kernel bench-out/MyKernel_GPU_PTEST.nsight/kernel_
 
 **What the replay collects:**
 
-- Throughput of the SMs, DRAM, L1 and L2 (memory throughput breakdown)
+- Throughput of the SMs, L1 and L2, and of DRAM where the GPU reports it (the
+  Jetson AGX Thor does not)
 - Achieved occupancy
 - Warp execution efficiency and branch efficiency
 - Registers per thread

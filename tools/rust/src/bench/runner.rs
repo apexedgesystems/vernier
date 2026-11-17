@@ -12,8 +12,11 @@
 //! passive instead of re-attaching or printing manual-wrap hints; for
 //! nsight's nsys route the runner also extracts the canonical `nsys stats`
 //! reports after the run (the .nsys-rep only exists once the wrapped process
-//! exits), and for compute-sanitizer it reads the tool's report to tell the
-//! errors the tool found from the benchmark's own status. jemalloc is wrapped
+//! exits), for an ncu route that names metrics it reads the report back and
+//! names each metric the report holds nothing for (ncu itself says nothing of
+//! a metric the GPU does not report), and for compute-sanitizer it reads the
+//! tool's report to tell the errors the tool found from the benchmark's own
+//! status. jemalloc is wrapped
 //! through the environment instead (`env_wrap_for`): the library preloaded
 //! and its profiling options set, refused before anything starts when the
 //! loader cannot preload it, and its exit dump checked after the run.
@@ -230,7 +233,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     if let Some(ref r) = route {
         let request = request_text(&r.tool, cfg.profile_args.as_deref());
         for alternatives in r.outputs {
-            require_output(&r.tool, &request, &r.dir, alternatives)?;
+            let output = require_output(&r.tool, &request, &r.dir, alternatives)?;
+            if !r.metrics.is_empty() {
+                name_missing_metrics(&output, &r.metrics);
+            }
         }
         if r.program == "nsys" {
             extract_nsys_stats(&r.dir, &request)?;
@@ -499,13 +505,13 @@ fn profile_failure(request: &str, stage: &'static str, message: String) -> Error
 }
 
 /// Require one of @p alternatives (file names in @p dir) to exist and hold
-/// something, and print which, with its size.
+/// something, print which, with its size, and return its path.
 fn require_output(
     tool: &str,
     request: &str,
     dir: &Path,
     alternatives: &[&str],
-) -> Result<(), Error> {
+) -> Result<PathBuf, Error> {
     let found = alternatives
         .iter()
         .map(|name| dir.join(name))
@@ -531,7 +537,7 @@ fn require_output(
         ));
     }
     println!("[bench] {tool} wrote {} ({size} bytes)", path.display());
-    Ok(())
+    Ok(path)
 }
 
 /// jemalloc's dumps, `jeprof.<pid>.<n>.<kind>.heap` under the prefix the
@@ -912,6 +918,10 @@ struct Route {
     outputs: &'static [&'static [&'static str]],
     /// Files the runner derives from the output after the run.
     derived: &'static [&'static str],
+    /// The metric names ncu is given (`NcuRequest::asked_metrics`), which the
+    /// output is read back for after the run (`name_missing_metrics`); none
+    /// for every other route.
+    metrics: Vec<String>,
 }
 
 impl Route {
@@ -1001,12 +1011,9 @@ struct NcuRequest {
 
 impl NcuRequest {
     /// The options ncu is given for it, after bench run's own: the set, each
-    /// section, then one `--metrics` with every name; for `replay`, the
-    /// replay metric list.
+    /// section, then one `--metrics` with every name it asks for
+    /// (`asked_metrics`).
     fn options(&self) -> Vec<String> {
-        if self.replay {
-            return vec!["--metrics".into(), REPLAY_METRICS.join(",")];
-        }
         let mut out = Vec::new();
         if let Some(set) = &self.set {
             out.extend(["--set".to_string(), set.clone()]);
@@ -1014,10 +1021,22 @@ impl NcuRequest {
         for section in &self.sections {
             out.extend(["--section".to_string(), section.clone()]);
         }
-        if !self.metrics.is_empty() {
-            out.extend(["--metrics".to_string(), self.metrics.join(",")]);
+        let metrics = self.asked_metrics();
+        if !metrics.is_empty() {
+            out.extend(["--metrics".to_string(), metrics.join(",")]);
         }
         out
+    }
+
+    /// The metric names ncu is asked for: for `replay`, the replay metric
+    /// list (which takes no set or section); otherwise every name of every
+    /// `--metrics`, in order.
+    fn asked_metrics(&self) -> Vec<String> {
+        if self.replay {
+            REPLAY_METRICS.iter().map(|name| name.to_string()).collect()
+        } else {
+            self.metrics.clone()
+        }
     }
 }
 
@@ -1396,6 +1415,10 @@ fn route_for(
         _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
     args.push(bin);
+    let metrics = match &compute {
+        Some(request) if program == "ncu" => request.asked_metrics(),
+        _ => Vec::new(),
+    };
     Ok(Some(Route {
         tool: tool.to_string(),
         program,
@@ -1407,6 +1430,7 @@ fn route_for(
         } else {
             &[]
         },
+        metrics,
     }))
 }
 
@@ -1762,6 +1786,57 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
         dir.display()
     );
     Ok(())
+}
+
+/// How long reading back an Nsight Compute report may take.
+const METRIC_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Name each metric of @p asked that @p report, the Nsight Compute report
+/// this run wrote, holds nothing for, one line each; nothing when it holds
+/// them all. ncu says nothing of such a metric, whether the GPU does not
+/// report it or ncu does not know the name, so the report is read back with
+/// the per-kernel summary `bench nsight-parse` reads, as an owned run
+/// (`run_owned`) bounded by `METRIC_CHECK_TIMEOUT`, after the benchmark has
+/// exited. A report that cannot be read back is one line saying that the
+/// metrics were not checked, and why. Either way the run ends as it would
+/// have, and the report is left as it is.
+fn name_missing_metrics(report: &Path, asked: &[String]) {
+    let mut command = Command::new("ncu");
+    command.args(super::nsight_report::ncu_summary_args(report));
+    let checked = match run_owned(&mut command, "ncu --import", METRIC_CHECK_TIMEOUT) {
+        Ok(OwnedEnd::Exited(status, out, err)) if status.success() => {
+            super::nsight_report::metrics_not_in_summary(&out, &err, asked)
+        }
+        Ok(OwnedEnd::Exited(status, out, err)) => {
+            let tail = [&err, &out]
+                .iter()
+                .find_map(|text| text.lines().rev().map(str::trim).find(|l| !l.is_empty()))
+                .unwrap_or("");
+            Err(format!(
+                "ncu --import {}{}{}",
+                describe_status(status),
+                if tail.is_empty() { "" } else { ": " },
+                tail
+            ))
+        }
+        Ok(OwnedEnd::TimedOut) => Err(format!(
+            "ncu --import did not finish within {} s and was stopped",
+            METRIC_CHECK_TIMEOUT.as_secs()
+        )),
+        Err(OwnedError::Start(e)) => Err(format!("ncu could not be started: {e}")),
+        Err(OwnedError::Wait(e)) => Err(format!("ncu could not be waited for: {e}")),
+    };
+    match checked {
+        Ok(missing) => {
+            for metric in missing {
+                println!(
+                    "[bench] the report holds nothing for {metric}: ncu reported nothing for it \
+                     on this GPU"
+                );
+            }
+        }
+        Err(why) => println!("[bench] the report was not checked for the metrics asked for: {why}"),
+    }
 }
 
 /// @p path as an output option of valgrind (`--log-file=`,

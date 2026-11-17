@@ -253,9 +253,13 @@ selects Nsight Compute, take Vernier's supported subset of ncu's own options:
   load/store pipes), written to `kernel_replay.ncu-rep`.
 
 Each option may also be given as `--option=VALUE`. NAME is letters, digits
-and `_`, and a metric name may also hold `.`; ncu itself checks that the set,
-section or metric exists. Under `nsight`, any of these selects Nsight Compute,
-as `compute` does; `replay` takes no other selection. `bench run` starts
+and `_`, and a metric name may also hold `.`. ncu itself refuses a section it
+does not know and warns of a set it does not know
+(`No metrics to collect found in sections`), but says nothing of a metric the
+GPU does not report or of a name it does not know, so `bench run` names each
+metric asked for that the report holds nothing for (see below). Under
+`nsight`, any of these selects Nsight Compute, as `compute` does; `replay`
+takes no other selection. `bench run` starts
 `ncu -o <folder>/kernel_profile -f --target-processes all`, then the set,
 each section and one `--metrics` with every name, in that order:
 
@@ -272,7 +276,10 @@ metric group), an option without its value and a second set are refused
 before anything starts, naming what is accepted: the report, its overwrite
 and `--target-processes` are `bench run`'s own. For any other option, start
 the binary under ncu yourself; `bench doctor` and the binary print the
-command.
+command. ncu itself says nothing of a metric the GPU does not report, and
+that run's report is not read back:
+`bench nsight-parse <report> --csv <file>` writes what a report holds, a row
+for each launch shape, section and metric.
 
 Under ncu no row is timed: the timing cells stay empty, since ncu's
 instrumentation adds to what the benchmark would measure, and the run says
@@ -324,6 +331,19 @@ folder holding either before anything starts; any other `%` reaches
 heaptrack as it is. After the benchmark exits 0, the file must exist and hold
 something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
+When the run under ncu named metrics (a replay, or `--metrics`), `bench run`
+then reads the report back with the summary `bench nsight-parse` reads,
+`ncu --import <report> --csv --print-summary per-kernel`, and names each
+metric asked for that the report holds nothing for, one line each, whether
+the GPU does not report that metric or ncu does not know the name:
+
+```text
+[bench] the report holds nothing for dram__throughput.avg.pct_of_peak_sustained_elapsed: ncu reported nothing for it on this GPU
+```
+
+A report that cannot be read back that way, or within 300 s, gets one line
+saying that the metrics were not checked, and why. Neither changes the run's
+exit status.
 For nsight, a `nsys stats` summary that fails, or still runs after 300 s,
 fails the run as `analysis:`, and the report is kept. With
 `--profile-analyze` (given to `bench run`, or forwarded after `--`), a
