@@ -14,13 +14,12 @@ two runs quoted first under If It Does Not Match, come from a session of
 2026-10-03 (UTC) on a later development tree at the same version, with Step 1's
 command run just before them and the clocks locked the same way; the reports
 and summaries those steps show are the 2026-09-29 session's. Step 1's output,
-the reference CSV and the first `bench compare` output that closes If It Does
-Not Match come from a session of 2026-11-16 (UTC), and the four runs with the
+the reference CSV, the first `bench compare` output that closes If It Does
+Not Match and the six runs with the clocks locked that What Should Reproduce
+counts come from a session of 2026-11-16 (UTC), and the four runs with the
 clocks as found there, with the second output, from a later session that day,
 both on a later development tree at the same version, whose collector records
-CUPTI's kernels in an untimed batch after the measured repeats; the six runs
-with the clocks locked that What Should Reproduce counts are the 2026-09-24
-session's.
+CUPTI's kernels in an untimed batch after the measured repeats.
 
 ## Overview
 
@@ -626,8 +625,8 @@ refuse it (`missing required column 'test'`), and `bench-plot` stops with
 | launch shapes (Nsight Compute)                | `(1048576, 1, 1)x(1, 1, 1)` and `(4096, 1, 1)x(256, 1, 1)`                                                   | the same                                                                                                         |
 | theoretical occupancy (ncu; the CSV's column) | 50% and 100% (0.5 and 1.0)                                                                                   | depends on the GPU's limits; both occupancy checks also pass on an RTX 5000 Ada laptop GPU                       |
 | achieved occupancy (ncu)                      | 29.45% to 30.98% and 75.07% to 79.52% over 14 launches each                                                  | depends on the GPU                                                                                               |
-| kernel alone, one thread vs 256 per block     | 143.3x; 141.7x to 143.3x over six runs, clocks locked; 135.2x to 139.2x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
-| `G0` vs `G1` end to end                       | 5.7x; 4.1x to 5.7x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
+| kernel alone, one thread vs 256 per block     | 143.3x; 141.6x to 143.4x over six runs, clocks locked; 135.2x to 139.2x over four as found                   | one thread per block stays far slower: 94.9x to 96.0x on the RTX 5000 Ada (three runs)                           |
+| `G0` vs `G1` end to end                       | 5.7x; 5.0x to 5.9x over six runs, clocks locked (below)                                                      | depends on what the copies cost: 1.1x on the RTX 5000 Ada, where copies over PCIe dominate both (walkthrough 10) |
 | absolute times                                | 3,606 / 634 / 2,990 / 20.7 us                                                                                | will differ                                                                                                      |
 
 The demo fails if one thread per block stops being 30 times slower than 256,
@@ -636,9 +635,9 @@ and at least 0.75 for 256.
 
 **The end-to-end times sit in two bands on this rig.** Over the six runs of
 Step 1's command with the clocks locked, `G0` read about 3.44 ms twice
-(3,438 and 3,447 us) and 3.64 to 3.66 ms four times; `G1` read 634 to 653 us
-four times and 876 to 888 us twice; the kernel rows did not move. In 40 more
-runs of `G0` and `G1`, 3 s apart with the clocks read between runs, `G1`'s
+(3,433 and 3,440 us) and 3.61 to 3.83 ms four times; `G1` read 634 to 680 us
+in all six; the kernel rows did not move. In 40 more runs of `G0` and `G1` in
+the earlier sessions, 3 s apart with the clocks read between runs, `G1`'s
 median was 629 to 654 us in 33, 875 to 929 us in 6 and 695 us in one; in six of
 the 40 it changed band part-way through, which shows as a CV above 10%. Core
 13's clock, the GPU clocks and the memory clock read the same before every one
@@ -717,9 +716,9 @@ conditions still affect; `G0` took 2.62 to 2.63 ms a call and `G1` 2.32 to
   `VERNIER_DISABLE_CUPTI=1`.
 
 - **`G0` or `G1` moved by 5% or more with the clocks locked.** They sit in two
-  bands on this rig (above). A run that lands in the other band from the
-  reference's is flagged; the kernel rows are not. With the clocks locked, a
-  later run against the reference:
+  bands on this rig (above), and a run in the other band from the reference's,
+  or at the far end of `G0`'s slower band, can be flagged; the kernel rows are
+  not. With the clocks locked, a later run against the reference:
 
   ```
   Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
