@@ -39,6 +39,11 @@
  *                         Watchdog.NoThreadAgain; then, threads allowed
  *                         again, the watchdog armed for 0.1 s as
  *                         Watchdog.Retried
+ *   threads <flags...>    a case, Watchdog.Threads, with its profiler
+ *                         attached as a benchmark's is, measured under
+ *                         <flags>: prints how many threads the process has
+ *                         when the body first runs, and glibc's
+ *                         __libc_single_threaded then (-1 without it)
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
  * then says it did not and exits 0. Where it waits for the watchdog's thread
@@ -50,9 +55,13 @@
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfHarness.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/Profiler.hpp"
 
 #include <linux/futex.h>
 #include <sys/resource.h>
+#if __has_include(<sys/single_threaded.h>)
+#include <sys/single_threaded.h>
+#endif
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -383,6 +392,24 @@ int noThread(int argc, char** argv, bool retry) {
   return waitForTheWatchdog();
 }
 
+/// The threads mode: the process's threads when the measured body first runs.
+int threadsInBody(int argc, char** argv) {
+  PerfCase perf =
+      vernier::bench::makePerfCaseWithProfiler("Watchdog.Threads", configFrom(argc, argv));
+  std::size_t count = 0;
+  int single = -1;
+  perf.measured([&] {
+    if (count == 0) {
+      count = threads().size();
+#if __has_include(<sys/single_threaded.h>)
+      single = __libc_single_threaded ? 1 : 0;
+#endif
+    }
+  });
+  std::printf("threads=%zu single_threaded=%d\n", count, single);
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -420,9 +447,13 @@ int main(int argc, char** argv) {
   if (MODE == "no-thread-retry") {
     return noThread(argc, argv, true);
   }
+  if (MODE == "threads") {
+    return threadsInBody(argc, argv);
+  }
   std::fprintf(stderr,
                "usage: %s hang <flags>|hang-later <flags>|later|shorten|names <test> <tool>|"
-               "null-names|disarmed|fork|signals|no-thread <flags>|no-thread-retry <flags>\n",
+               "null-names|disarmed|fork|signals|no-thread <flags>|no-thread-retry <flags>|"
+               "threads <flags>\n",
                argv[0]);
   return 64;
 }

@@ -13,6 +13,9 @@
  *    arming the thread does not see at once is then never seen.
  *  - The cases in this process arm through a measured loop for 30 s or more
  *    and read the watchdog's flag; none waits for it.
+ *  - One case runs the helper twice under valgrind's callgrind, about half a
+ *    second each; it skips where valgrind is not installed and in an address
+ *    or thread sanitizer build, which valgrind cannot run.
  */
 
 #include "src/bench/inc/PerfHarness.hpp"
@@ -30,6 +33,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -60,6 +64,19 @@ constexpr bool THREAD_SANITIZER = false;
 #endif
 #else
 constexpr bool THREAD_SANITIZER = false;
+#endif
+
+/// The build has the address sanitizer, whose program valgrind cannot run.
+#if defined(__SANITIZE_ADDRESS__)
+constexpr bool ADDRESS_SANITIZER = true;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr bool ADDRESS_SANITIZER = true;
+#else
+constexpr bool ADDRESS_SANITIZER = false;
+#endif
+#else
+constexpr bool ADDRESS_SANITIZER = false;
 #endif
 
 /// One run of the helper with @p args, its stdout and stderr kept apart.
@@ -232,6 +249,56 @@ TEST(PerfWatchdogTest, ThreadThatCannotStartIsStartedByALaterArming) {
   EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
   EXPECT_EQ(RUN.output, FAILED_CASE + FAILED_CASE);
   EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Retried", "perf"));
+}
+
+/**
+ * @test Under --profile with a tool that starts no thread in the process,
+ * callgrind (the helper run by valgrind as a wrap started by hand, its
+ * profiler attached as a benchmark's is), the measured body first runs in a
+ * process of one thread with --profile-test-timeout 0, and of two at the
+ * watchdog's default: the second is the watchdog's. glibc then no longer
+ * counts the process as single-threaded.
+ */
+TEST(PerfWatchdogTest, OnlyTheWatchdogAddsAThreadUnderCallgrind) {
+  if (ADDRESS_SANITIZER || THREAD_SANITIZER) {
+    GTEST_SKIP() << "valgrind does not run a sanitizer build";
+  }
+  const vernier::bench::ReadinessContext CONTEXT = vernier::bench::ReadinessContext::capture();
+  const auto VALGRIND = vernier::bench::resolveExecutable("valgrind", CONTEXT);
+  if (!VALGRIND || !VALGRIND->executable) {
+    GTEST_SKIP() << "valgrind is not installed; this test runs the helper under callgrind";
+  }
+  const auto UNDER_CALLGRIND = [&](const std::vector<std::string>& timeout) {
+    std::vector<std::string> args = {
+        VALGRIND->path, "--tool=callgrind", "--instr-atstart=no", "--callgrind-out-file=/dev/null",
+        HELPER,         "threads",          "--profile",          "callgrind"};
+    args.insert(args.end(), timeout.begin(), timeout.end());
+    return vernier::bench::runBoundedProbe(args, HELPER_BOUND_MS, CONTEXT,
+                                           vernier::bench::ProbeStreams::SEPARATE);
+  };
+  const ProbeResult OFF = UNDER_CALLGRIND({"--profile-test-timeout", "0"});
+  const ProbeResult ON = UNDER_CALLGRIND({});
+  ASSERT_TRUE(OFF.succeeded()) << OFF.describe() << "\n" << OFF.output << OFF.errorOutput;
+  ASSERT_TRUE(ON.succeeded()) << ON.describe() << "\n" << ON.output << ON.errorOutput;
+  // The helper's line, after what the callgrind backend prints for the case.
+  const auto READ = [](const std::string& output, int& threads, int& single) {
+    const std::size_t AT = output.find("threads=");
+    return AT != std::string::npos &&
+           std::sscanf(output.c_str() + AT, "threads=%d single_threaded=%d", &threads, &single) ==
+               2;
+  };
+  int offThreads = -1;
+  int offSingle = -2;
+  int onThreads = -1;
+  int onSingle = -2;
+  ASSERT_TRUE(READ(OFF.output, offThreads, offSingle)) << OFF.output;
+  ASSERT_TRUE(READ(ON.output, onThreads, onSingle)) << ON.output;
+  EXPECT_EQ(offThreads, 1) << "a thread with the watchdog off:\n" << OFF.errorOutput;
+  EXPECT_EQ(onThreads, 2) << "not one more thread with the watchdog on:\n" << ON.errorOutput;
+  if (offSingle != -1) { // glibc 2.32 and later say whether a thread was ever started
+    EXPECT_EQ(offSingle, 1);
+    EXPECT_EQ(onSingle, 0);
+  }
 }
 
 namespace {
