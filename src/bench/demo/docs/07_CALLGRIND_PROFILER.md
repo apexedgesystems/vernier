@@ -384,8 +384,8 @@ differs counts the same in both runs and names another source file or library
 for it: some of the allocator's functions appear with `malloc.c` in one run and
 `???` in the other, and `index` and `__aarch64_swp4_rel`, which the dynamic
 linker and the C library each have a copy of, under one library and then the
-other. Two runs with `--profile-test-timeout 0`, which start no watchdog
-thread, list such lines as well. Compared by function name over the whole of
+other. Two runs with `--profile-test-timeout 0` list such lines as well.
+Compared by function name over the whole of
 both profiles, eleven
 functions differ: four of glibc's number-formatting functions, `rindex`, five
 atomic operations and one function of gperftools' library that callgrind could
@@ -446,12 +446,7 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
   measured window, so the profile holds the measured calls and the harness's
   work around them and not the rest of the process: for `JoinV0` alone
   (`--gtest_filter=CallgrindProfiler.JoinV0`), 22,413,522 instructions for its
-  ten measured calls, and 21,309,616 with `--profile-test-timeout 0`. The
-  difference is the watchdog's thread, which runs in the benchmark's process
-  under `--profile`: with it, glibc's `malloc` and `free` take their locks
-  (see
-  [Troubleshooting](../../docs/TROUBLESHOOTING.md#test-hangs--never-completes)).
-  Steps 2, 3 and 5 count those locks too.
+  ten measured calls.
 
 - **Functions named `???` and no source lines.** The binary has no line tables:
   it was stripped, or the example was built without its `-g`.

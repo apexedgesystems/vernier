@@ -577,28 +577,38 @@ whole number of seconds from 0 (a negative number, `30s`, text) stops the run
 before any test with exit status 2 and the accepted range. It is not armed
 without `--profile`, and it does not cover warmup, `--target-time`
 calibration, the profiler's own start and stop, `contentionRun()` or GPU
-measurements; an external `timeout` bounds those. The watchdog waits on a
-thread of its own and uses no signal or timer, so a benchmark's own `alarm()`
+measurements; an external `timeout` bounds those. The watchdog uses no
+`alarm()`, no SIGALRM and no interval timer, so a benchmark's own `alarm()`
 and SIGALRM handler, and gperftools sampling on the real-time timer
 (`CPUPROFILE_REALTIME`), work under `--profile`.
 
-That thread is the benchmark's: it starts with the first measured loop under
-`--profile` and stays until the process ends. A benchmark that starts no
-thread of its own, built without tcmalloc and profiled with a tool that starts
-none in its process and leaves the C library's allocator in place (`gperf`'s
-CPU profile, `perf`, `callgrind`, `rapl`), therefore runs its measured loops
-with that allocator on its multi-threaded path: `malloc` and `free` take their
-locks, so instruction counts and timings of code that allocates differ from
-those an earlier release gave. Under `memcheck`, `massif`, `helgrind` and
-`jemalloc`, and in a build linked with tcmalloc (which `gperf`'s heap profile
-needs), the process gains the thread too but allocates through another
-allocator, and `memcheck`'s leak check reports one block possibly lost,
-allocated as the thread started.
-`--profile-test-timeout 0` profiles without the thread and without
-the watchdog. Nothing changes where the process has already started another
-thread: under `heaptrack`, `bpftrace` and `offcpu`, which start one, in a CUDA
+A benchmark that has started no thread of its own is measured
+single-threaded: on Linux with glibc 2.34 or later the watchdog is a POSIX
+timer that signals the measuring thread with a real-time signal it takes
+while that signal's disposition is the default (the first free one from
+`SIGRTMIN` + 4). It starts no thread, so the C library and libstdc++ keep
+their single-threaded paths, as with `--profile-test-timeout 0`. One gap the
+watchdog's thread does not have: a single-threaded benchmark that blocks the
+watchdog's signal, or takes its disposition, inside its measured loop is not
+ended.
+
+A benchmark that has started threads of its own gains one more, the
+watchdog's: started by the first measured loop under `--profile`, parked
+between loops, kept until the process ends. Its allocator and atomic
+operations are on their multi-threaded paths with or without it: under
+`heaptrack`, `bpftrace` and `offcpu`, which start a thread, in a CUDA
 benchmark, whose runtime starts its own (`nsight`, `ncu`,
 `compute-sanitizer`), and in `contentionRun()`, whose workers are threads.
+`memcheck`'s leak check reports one block possibly lost, allocated as the
+watchdog's thread started. Under valgrind, start such a benchmark with
+`--fair-sched=yes`: valgrind runs one thread at a time, and by default a
+thread that computes can keep the watchdog's from running until it stops
+computing. A benchmark that starts no thread of its own gets the thread
+too where its measuring thread blocks the timer's signal when the loop
+starts, and on another C library or an older glibc; it then leaves the C
+library's single-threaded paths (glibc's `malloc` and `free` take their
+locks). `--profile-test-timeout 0` arms nothing: no timer, no signal
+handler, no thread.
 
 **Debug:**
 
