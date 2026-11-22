@@ -344,11 +344,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   (a summary with no data is a warning; `--timeout` bounds each tool command).
   Scripts put `bench` in front and drop the word `parse`; one that relied on
   exit 0 after a failed read now sees 1.
-- Under `--profile` the watchdog runs on a thread of the benchmark's process,
-  so a benchmark that starts no thread, profiled with `gperf`, `perf`,
-  `callgrind` or `rapl`, allocates on the C library's multi-threaded path and
-  counts and times differently from earlier releases;
-  `--profile-test-timeout 0` profiles without that thread.
+- Under `--profile` the watchdog adds a thread to the benchmark's process,
+  which can change the allocator's behavior, instruction counts and timings
+  of a benchmark that starts no thread of its own; `--profile-test-timeout 0`
+  profiles without it.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ### Fixed

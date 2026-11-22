@@ -584,15 +584,16 @@ and SIGALRM handler, and gperftools sampling on the real-time timer
 
 That thread is the benchmark's: it starts with the first measured loop under
 `--profile` and stays until the process ends. A benchmark that starts no
-thread of its own, profiled with a tool that starts none in its process and
-leaves the C library's allocator in place (`gperf`'s CPU profile, `perf`,
-`callgrind`, `rapl`), therefore runs its measured loops with that allocator on
-its multi-threaded path: `malloc` and `free` take their locks, so instruction
-counts and timings of code that allocates differ from those an earlier
-release gave. Under `memcheck`, `massif`, `helgrind`, `jemalloc`, and
-`gperf`'s heap profile (a build linked with tcmalloc), the process gains the
-thread too but allocates through another allocator, and `memcheck`'s leak
-check reports one block possibly lost, allocated as the thread started.
+thread of its own, built without tcmalloc and profiled with a tool that starts
+none in its process and leaves the C library's allocator in place (`gperf`'s
+CPU profile, `perf`, `callgrind`, `rapl`), therefore runs its measured loops
+with that allocator on its multi-threaded path: `malloc` and `free` take their
+locks, so instruction counts and timings of code that allocates differ from
+those an earlier release gave. Under `memcheck`, `massif`, `helgrind` and
+`jemalloc`, and in a build linked with tcmalloc (which `gperf`'s heap profile
+needs), the process gains the thread too but allocates through another
+allocator, and `memcheck`'s leak check reports one block possibly lost,
+allocated as the thread started.
 `--profile-test-timeout 0` profiles without the thread and without
 the watchdog. Nothing changes where the process has already started another
 thread: under `heaptrack`, `bpftrace` and `offcpu`, which start one, in a CUDA
