@@ -18,13 +18,14 @@ later development tree at the same version.
 ## Overview
 
 A GPU kernel test writes one CSV row, and its GPU columns come from four
-places: CUDA events around the launches, CUPTI's record of each launch, an
-estimate the harness makes from the launch shape, and NVML's readings of the
-device. They cover different things, and each can be missing for its own
-reason. This walkthrough reads the rows of the SAXPY kernel at one and at 256
-threads per block, column by column: where each value comes from, what it
-covers, and what an empty cell means. On this rig NVML answers none of the
-readings the harness asks for, so its cells are empty, and the run says so.
+places: CUDA events around the launches, CUPTI's records of an untimed batch
+of the same launch, an estimate the harness makes from the launch shape, and
+NVML's readings of the device. They cover different things, and each can be
+missing for its own reason. This walkthrough reads the rows of the SAXPY
+kernel at one and at 256 threads per block, column by column: where each value
+comes from, what it covers, and what an empty cell means. On this rig NVML
+answers none of the readings the harness asks for, so its cells are empty, and
+the run says so.
 
 ## What a GPU Kernel Test Records
 
@@ -35,9 +36,10 @@ A kernel test hands the harness a launch, and measures it with
   event on the test's stream, makes `--cycles` launches, and records a second
   event. The time between the two, divided by the cycle count, is one sample
   of the time per launch.
-- **CUPTI**, the profiling interface NVIDIA's tools use, records every kernel
-  the GPU runs while the measured repeats run, with the registers and shared
-  memory the launch was given.
+- **CUPTI**, the profiling interface NVIDIA's tools use, records the kernels of
+  an untimed batch the harness launches after the measured repeats, one call
+  per cycle and at most 1,000, with the registers and shared memory each launch
+  was given; it records none of the measured launches.
 - **NVML**, the driver's management library, is read once just before the
   measured repeats and once just after them: clocks, power and temperature.
 - **The occupancy estimate**, computed by the harness from the launch
@@ -283,7 +285,7 @@ The compiler gave the kernel 10 registers per thread and no shared memory
 places, and neither API says how one follows from the other. CUDA documents
 the compiled count, which a program reads as `cudaFuncAttributes::numRegs`, as
 the registers each thread of the function uses; CUPTI documents its record's
-`registersPerThread`, whose median and maximum over the measured launches are
+`registersPerThread`, whose median and maximum over the batch's launches are
 `cuptiRegistersMedian` and `cuptiRegistersMax`, as the registers each thread
 executing the kernel requires. What runs have shown: in Release builds, on
 this GPU and on the RTX 5000 Ada, the 10 compiled registers read 16, the count
