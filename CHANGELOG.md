@@ -992,7 +992,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
 - Recording while a monitor starts or restarts no longer races on its
   threshold table or reads one that `start()` freed. Each record reads the
   table through one acquire load: an ordinary load on x86-64, and on a Jetson
-  AGX Thor's Arm cores 10 to 25 ns a record in a loop that only records
+  AGX Thor's Arm cores 10.3 to 29.4 ns a record in a loop that only records
   ([monitor guide](src/monitor/docs/MONITOR_GUIDE.md#at-a-glance)).
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A monitor gauge whose readings are all negative reports its real maximum in

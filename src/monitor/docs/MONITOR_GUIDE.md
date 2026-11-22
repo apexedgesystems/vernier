@@ -33,10 +33,11 @@ A scope's record also reads the threshold table that `start()` published,
 through one acquire load, so that a producer recording while `start()`
 publishes a table reads it whole. On x86-64 that load is an ordinary `mov`.
 On Arm cores it is a load-acquire instruction (`ldar`): on a Jetson AGX
-Thor, in a loop that did nothing but record scopes, it made each record 10
-to 12 ns slower with one threshold set and 19 to 25 ns slower with eight,
-13 to 22% of a record, over three sessions of nine rounds. A record among
-other work pays at most that. This guide quotes no other per-sample time,
+Thor, in a loop that did nothing but record scopes, it made each record
+10.3 to 12.3 ns slower with one threshold set and 18.9 to 29.4 ns slower
+with eight, 12.6 to 26.2% of a record, over every session to date, five
+of nine rounds each. That is a tight-loop bound: a record among other work
+pays at most that. This guide quotes no other per-sample time,
 and the repository's tests measure none.
 
 ## Lifecycle
