@@ -52,19 +52,29 @@
  *                         engine took (SigCgt, /proc/self/status) then given
  *                         a handler of the program's own; armed for 0.1 s as
  *                         Watchdog.AfterTakeover
+ *   stale thread|hang|timer
+ *                         (the timer engine's builds) armed for 0.1 s as
+ *                         Watchdog.Overrun, its signal blocked here and the
+ *                         deadline overrun, so the signal stays pending (exits
+ *                         4 if it does not), disarmed; then armed as
+ *                         Watchdog.Second: thread, for 10 s with the signal
+ *                         still blocked (on the watchdog's thread), the signal
+ *                         unblocked, disarmed: prints "still running"; hang,
+ *                         the same armed for 0.1 s and left to the watchdog;
+ *                         timer, the signal unblocked before that arming,
+ *                         which takes the timer again for 10 s, disarmed:
+ *                         prints "still running"
  *   foreign               (the timer engine's builds) armed for 10 s; the
  *                         signal it took sent to the process by kill(), and
  *                         by sigqueue() with the value its own timer carries,
  *                         and raised by a timer of the program's own; then
  *                         disarmed: prints "still running"
- *   switch between|during|rearm
- *                         between: armed for 10 s and disarmed, a thread of
- *                         the program's own started, armed for 0.1 s as
- *                         Watchdog.Switched; during: armed for 0.1 s as
- *                         Watchdog.Switched, then the thread started; rearm:
- *                         armed for 0.1 s, the thread started, armed again
- *                         for 10 s, a wait past 0.1 s, disarmed: prints
- *                         "still running"
+ *   switch between|during
+ *                         between: armed for 0.1 s as Watchdog.First, a thread
+ *                         of the program's own started, armed again for 10 s
+ *                         as Watchdog.Rearmed, a wait past 0.1 s, then armed
+ *                         for 0.1 s as Watchdog.Switched; during: armed for
+ *                         0.1 s as Watchdog.Switched, then the thread started
  *   no-thread <flags...>  no thread can be started (RLIMIT_NPROC 0), one asked
  *                         for and refused, and every signal is blocked on this
  *                         thread, so the watchdog takes its thread; a case,
@@ -315,27 +325,59 @@ int foreign() {
   std::puts("still running");
   return 0;
 }
+
+int stale(std::string_view second) {
+  const std::uint64_t CAUGHT = caughtSignals();
+  perf_watchdog::arm("Watchdog.Overrun", "perf", SHORT);
+  const int TAKEN = takenSignal(CAUGHT);
+  if (TAKEN == 0) {
+    std::puts("the watchdog took no signal");
+    return 4;
+  }
+  // The first loop blocks the timer's signal and overruns its deadline.
+  sigset_t timerSignal;
+  ::sigemptyset(&timerSignal);
+  ::sigaddset(&timerSignal, TAKEN);
+  ::pthread_sigmask(SIG_BLOCK, &timerSignal, nullptr);
+  std::this_thread::sleep_for(PAST_SHORT);
+  perf_watchdog::disarm();
+  sigset_t pending;
+  ::sigpending(&pending);
+  if (::sigismember(&pending, TAKEN) != 1) {
+    std::puts("the overrun left no signal pending");
+    return 4;
+  }
+  if (second == "timer") {
+    ::pthread_sigmask(SIG_UNBLOCK, &timerSignal, nullptr);
+    perf_watchdog::arm("Watchdog.Second", "perf", LONG);
+  } else {
+    // Armed with the signal still blocked: the watchdog's thread. The second
+    // loop unblocks the signal well inside its own deadline.
+    perf_watchdog::arm("Watchdog.Second", "perf", second == "hang" ? SHORT : LONG);
+    ::pthread_sigmask(SIG_UNBLOCK, &timerSignal, nullptr);
+    if (second == "hang") {
+      return waitForTheWatchdog();
+    }
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  perf_watchdog::disarm();
+  std::puts("still running");
+  return 0;
+}
 #endif
 
 int switched(std::string_view when) {
   if (when == "between") {
-    perf_watchdog::arm("Watchdog.First", "perf", LONG);
-    perf_watchdog::disarm();
-    startOwnThread();
-    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
-  } else if (when == "during") {
-    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
-    startOwnThread();
-  } else if (when == "rearm") {
     perf_watchdog::arm("Watchdog.First", "perf", SHORT);
     startOwnThread();
     perf_watchdog::arm("Watchdog.Rearmed", "perf", LONG);
     std::this_thread::sleep_for(PAST_SHORT);
-    perf_watchdog::disarm();
-    std::puts("still running");
-    return 0;
+    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
+  } else if (when == "during") {
+    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
+    startOwnThread();
   } else {
-    std::fputs("switch takes between, during or rearm\n", stderr);
+    std::fputs("switch takes between or during\n", stderr);
     return 64;
   }
   return waitForTheWatchdog();
@@ -736,6 +778,11 @@ int main(int argc, char** argv) {
   if (MODE == "foreign") {
     return foreign();
   }
+  if (MODE == "stale" && argc == 3 &&
+      (std::string_view(argv[2]) == "thread" || std::string_view(argv[2]) == "hang" ||
+       std::string_view(argv[2]) == "timer")) {
+    return stale(argv[2]);
+  }
 #endif
   if (MODE == "switch" && argc == 3) {
     return switched(argv[2]);
@@ -780,7 +827,8 @@ int main(int argc, char** argv) {
                "usage: %s [--threaded] hang <flags>|hang-blocked <flags>|hang-later <flags>|later|"
                "shorten|names <test> <tool>|null-names|disarmed|fork|signals|first-signal|takeover|"
                "foreign|"
-               "switch between|during|rearm|no-thread <flags>|no-thread-retry <flags>|"
+               "switch between|during|stale thread|hang|timer|no-thread <flags>|"
+               "no-thread-retry <flags>|"
                "threads <flags>|"
                "rearm <flags>\n",
                argv[0]);

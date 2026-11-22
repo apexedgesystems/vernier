@@ -399,11 +399,61 @@ TEST(PerfWatchdogTest, ItsSignalFromElsewhereEndsNothing) {
 }
 
 /**
- * @test A process that starts a thread between two armings: the first armed
- * and disarmed single-threaded, the second armed for 0.1 s with the thread
- * running. The watchdog fires, naming the second case.
+ * @test A timer signal left pending by an overrun does not end a later loop:
+ * the timer armed for 0.1 s, its signal blocked and the deadline overrun, so
+ * the signal stays pending; disarmed; armed for 10 s with the signal still
+ * blocked (on the watchdog's thread), and the signal unblocked inside that
+ * loop. The pending signal arrives and ends nothing; the program disarms and
+ * exits 0.
  */
-TEST(PerfWatchdogTest, BecomingThreadedBetweenArmingsStillFires) {
+TEST(PerfWatchdogTest, StaleTimerSignalEndsNoLaterLoop) {
+  if (const std::string WHY = withoutTheTimer(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const ProbeResult RUN = runHelper({"stale", "thread"});
+  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "still running\n");
+  EXPECT_EQ(RUN.errorOutput, "");
+}
+
+/**
+ * @test The same, the later loop armed for 0.1 s on the thread and hung: the
+ * watchdog ends it with exit status 2, naming the later case, not the one
+ * whose signal was left pending.
+ */
+TEST(PerfWatchdogTest, LoopHungAfterAStaleTimerSignalEndsUnderItsOwnName) {
+  if (const std::string WHY = withoutTheTimer(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const ProbeResult RUN = runHelper({"stale", "hang"});
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
+  EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Second", "perf"));
+}
+
+/**
+ * @test The same overrun, the signal unblocked before the later arming, which
+ * takes the timer again for 10 s: the pending signal arrives while nothing is
+ * armed and ends nothing; the program disarms and exits 0.
+ */
+TEST(PerfWatchdogTest, StaleTimerSignalBeforeATimerArmingEndsNothing) {
+  if (const std::string WHY = withoutTheTimer(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const ProbeResult RUN = runHelper({"stale", "timer"});
+  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "still running\n");
+  EXPECT_EQ(RUN.errorOutput, "");
+}
+
+/**
+ * @test A process that starts a thread between two armings moves to the
+ * watchdog's thread: armed for 0.1 s single-threaded (the timer), the thread
+ * started, armed again for 10 s (the watchdog's thread, the timer stopped):
+ * the first deadline passes and nothing fires; armed again for 0.1 s: the
+ * watchdog fires, naming that case.
+ */
+TEST(PerfWatchdogTest, BecomingThreadedBetweenArmingsMovesToTheThread) {
   const ProbeResult RUN = runHelper({"switch", "between"});
   ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
   EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
@@ -419,19 +469,6 @@ TEST(PerfWatchdogTest, BecomingThreadedWhileArmedStillFires) {
   ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
   EXPECT_EQ(RUN.exitCode, 2) << RUN.output;
   EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Switched", "perf"));
-}
-
-/**
- * @test A re-arm after the process started a thread replaces the deadline of
- * the arming before it: armed for 0.1 s single-threaded, the thread started,
- * armed again for 10 s (on the watchdog's thread). Nothing fires at 0.1 s; the
- * program disarms and exits 0.
- */
-TEST(PerfWatchdogTest, BecomingThreadedThenRearmingReplacesTheDeadline) {
-  const ProbeResult RUN = runHelper({"switch", "rearm"});
-  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
-  EXPECT_EQ(RUN.output, "still running\n");
-  EXPECT_EQ(RUN.errorOutput, "");
 }
 
 /**

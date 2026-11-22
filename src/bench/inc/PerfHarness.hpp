@@ -342,17 +342,22 @@ struct TimerState {
   pid_t tid = 0;              ///< The thread the timer signals: the last arming thread.
   char testName[160] = {0};   ///< Fixed buffers, read by the signal handler.
   char profileTool[32] = {0}; ///< Likewise.
+  /// The timer is the engine armed now: set by armTimer(), cleared by
+  /// disarmTimer(). Not g_armed, which an arming on the thread sets too, so a
+  /// signal an overrun left pending ends no later loop armed on the thread.
+  std::atomic<bool> armed{false};
 };
 
 /// This process's timer state, touched by arm() and disarm() and read by the handler.
 inline TimerState g_timer;
 
-// The timer's signal: the watchdog's expiry ends the process when it is still
-// armed; anything else (a disarm that raced the expiry, the signal sent by
-// someone else or raised by another timer) returns at once, touching nothing.
+// The timer's signal: the watchdog's expiry ends the process when the timer is
+// the engine armed; anything else (a disarm that raced the expiry, a signal an
+// earlier overrun left pending, the signal sent by someone else or raised by
+// another timer) returns at once, touching nothing.
 inline void onTimer(int /*signo*/, siginfo_t* info, void* /*context*/) {
   if (info != nullptr && info->si_code == SI_TIMER && info->si_value.sival_ptr == &g_timer &&
-      g_armed.load(std::memory_order_relaxed)) {
+      g_timer.armed.load(std::memory_order_relaxed)) {
     expire(g_timer.testName, g_timer.profileTool);
   }
 }
@@ -428,13 +433,13 @@ inline bool armTimer(const char* testName, const char* profileTool,
   // The names are copied disarmed, so the signal of an earlier arming that
   // arrives meanwhile reads no half-copied name; the fences keep the copy
   // between the two stores for the handler, which runs on this thread.
-  g_armed.store(false, std::memory_order_relaxed);
+  state.armed.store(false, std::memory_order_relaxed);
   std::atomic_signal_fence(std::memory_order_seq_cst);
   std::strncpy(state.testName, testName != nullptr ? testName : "?", sizeof(state.testName) - 1);
   std::strncpy(state.profileTool, profileTool != nullptr ? profileTool : "?",
                sizeof(state.profileTool) - 1);
   std::atomic_signal_fence(std::memory_order_seq_cst);
-  g_armed.store(true, std::memory_order_relaxed); // before the timer can fire
+  state.armed.store(true, std::memory_order_relaxed); // before the timer can fire
   const long long NS = std::chrono::duration_cast<std::chrono::nanoseconds>(timeout).count();
   struct itimerspec when{};
   when.it_value.tv_sec = static_cast<time_t>(NS / 1000000000LL);
@@ -443,16 +448,18 @@ inline bool armTimer(const char* testName, const char* profileTool,
     when.it_value.tv_nsec = 1; // a zero value would disarm the timer
   }
   if (::timer_settime(state.timer, 0, &when, nullptr) != 0) {
-    g_armed.store(false, std::memory_order_relaxed);
+    state.armed.store(false, std::memory_order_relaxed);
     return false;
   }
   return true;
 }
 
-// Disarms the timer engine, if this process made its timer: the timer stops,
-// and a signal it raised before stopping finds the watchdog disarmed.
+// Disarms the timer engine: the timer is no longer the engine armed, so a
+// signal it raised before stopping, or one still pending from an overrun,
+// ends nothing; and the timer stops, if this process made it.
 inline void disarmTimer() {
   TimerState& state = g_timer;
+  state.armed.store(false, std::memory_order_relaxed);
   if (!state.created || state.pid != ::getpid()) {
     return;
   }
@@ -474,9 +481,10 @@ inline void arm(const char* testName, const char* profileTool,
                 std::chrono::steady_clock::duration timeout) {
 #if VERNIER_WATCHDOG_TIMER
   if (__libc_single_threaded != 0 && armTimer(testName, profileTool, timeout)) {
+    g_armed.store(true, std::memory_order_relaxed);
     return;
   }
-  disarmTimer(); // a timer an earlier arming set is not left running
+  disarmTimer(); // a timer an earlier arming set is not left running, nor armed
 #endif
   armThread(testName, profileTool, timeout);
   g_armed.store(true, std::memory_order_relaxed);

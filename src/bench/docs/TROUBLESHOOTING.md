@@ -586,11 +586,13 @@ A benchmark that has started no thread of its own is measured
 single-threaded: on Linux with glibc 2.34 or later the watchdog is a POSIX
 timer that signals the measuring thread with a real-time signal it takes
 while that signal's disposition is the default (the first free one from
-`SIGRTMIN` + 4). It starts no thread, so the C library and libstdc++ keep
-their single-threaded paths, as with `--profile-test-timeout 0`. One gap the
-watchdog's thread does not have: a single-threaded benchmark that blocks the
-watchdog's signal, or takes its disposition, inside its measured loop is not
-ended.
+`SIGRTMIN` + 4); the signal stays the watchdog's for the life of the
+process, so after the first arming, sending it to the process, which its
+default action would end, does nothing. It starts no thread, so the C
+library and libstdc++ keep their single-threaded paths, as with
+`--profile-test-timeout 0`. One gap the watchdog's thread does not have: a
+single-threaded benchmark that blocks the watchdog's signal, or takes its
+disposition, inside its measured loop is not ended.
 
 A benchmark that has started threads of its own gains one more, the
 watchdog's: started by the first measured loop under `--profile`, parked
