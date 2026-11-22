@@ -677,7 +677,7 @@ def test_the_report_copies_text_columns_as_written(tmp_path, monkeypatch, record
             "20261115,0123456,101",
             {"timestamp": "20261115", "gitHash": "0123456", "hostname": "101"},
         ),
-        (",12e4567,", {"timestamp": None, "gitHash": "12e4567", "hostname": None}),
+        (",1234e56,", {"timestamp": None, "gitHash": "1234e56", "hostname": None}),
     ]:
         csv = tmp_path / "meta.csv"
         csv.write_text(f"{header},timestamp,gitHash,hostname\nSend1KB,1,0.1,10,1,1,1,1,{cells}\n")

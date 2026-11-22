@@ -69,7 +69,7 @@ PLOTTED_OTHER_NUMBERS = ("msgBytes", "kernelTimeUs", "transferTimeUs", "speedupV
 # The columns bench-plot shows or copies as text: the test names label the
 # plots, and the report copies the first row's timestamp, git hash and host
 # name into metadata.json. Each is read as written, whatever it looks like:
-# `007` stays `007`, not 7, and `12e4567` stays `12e4567`, not infinity.
+# `007` stays `007`, not 7, and `1234e56` stays `1234e56`, not 1.234e+59.
 TEXT_COLUMNS = ("test", "timestamp", "gitHash", "hostname")
 
 # What Rust's str::trim takes for whitespace (Unicode's White_Space property):
