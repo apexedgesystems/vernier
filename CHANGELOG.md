@@ -422,13 +422,14 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   status when it cannot write to stderr. **Action needed:** a script that
   tested for 1 now sees the command's own status.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
-- `bench run` and `bench profile-all` apply `.bench.yaml`: its `gtest_filter`
-  and `target_time`, its binary roots in the order listed, and a relative
-  `profile_output_dir` read from the file's folder, with `--quick` taking
-  precedence over its sizes; a file they cannot read or use stops them before
-  anything starts, naming the line and key. **Action needed:** fix what
-  `bench config-validate` reports; the file's `gtest_filter` takes precedence
-  over `GTEST_FILTER`, so remove it to filter through the environment.
+- `bench run` and `bench profile-all` apply `.bench.yaml`: its `gtest_filter`,
+  its binary roots in the order listed, and a relative `profile_output_dir`
+  read from the file's folder, with `--quick` taking precedence over its
+  sizes; `bench run` also applies its `target_time`. A file they cannot read
+  or use stops them before anything starts, naming the file and the line of
+  each problem. **Action needed:** fix what `bench config-validate` reports;
+  the file's `gtest_filter` takes precedence over `GTEST_FILTER`, so remove it
+  to filter through the environment.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench run --profile ncu` passes Nsight Compute the set, sections and
   metrics asked for; a replay asks for its metric list, and the run names each

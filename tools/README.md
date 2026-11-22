@@ -635,7 +635,8 @@ subfolders searched and where each came from.
 
 `run` and `profile-all` read the whole file before they start anything, and
 stop on one they cannot read or use, with an error naming the file and, for
-each problem, its line, the key and what the key takes. A problem is a line
+each problem, its line and what was expected there (for a value of the wrong
+kind, the key and what it takes). A problem is a line
 that is not a top-level `key: value`, a `- item` below a `key:` line or a
 comment; a quote left open; a key given twice; or a value of the wrong kind:
 `cycles` and `repeats` take a whole number above 0, `target_time` a duration
