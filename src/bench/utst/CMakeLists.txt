@@ -49,7 +49,9 @@ set(UNIT_TEST_SOURCES
 # watchdog cases that start the helper program and check its protocol end to
 # end (a deadline, a re-arm, a fork, the signal mask, a thread that cannot
 # start, the threads of a run under callgrind, a run under helgrind), whatever
-# they take; the three that check it in-process are unit.
+# they take; the three that check it in-process are unit. PerfContentionTest's
+# cases are component too: they start real workers and take a run through a
+# worker that throws or cannot start (under a resource limit) to the abort hook.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -78,6 +80,9 @@ vernier_add_gtest(
   "^PerfWatchdogTest\\.ThreadThatCannotStartIsStartedByALaterArming$"
   "^PerfWatchdogTest\\.OnlyTheWatchdogAddsAThreadUnderCallgrind$"
   "^PerfWatchdogTest\\.HelgrindReportsNothingOfTheWatchdog$"
+  "^PerfContentionTest\\.WorkerThatThrowsEndsTheRunThroughTheAbortHook$"
+  "^PerfContentionTest\\.WorkerThatCannotStartEndsTheRunThroughTheAbortHook$"
+  "^PerfContentionTest\\.WorkerThatCannotStartAfterOthersEndsTheRunThroughTheAbortHook$"
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
   "^PerfCaseTimingTest\\."
