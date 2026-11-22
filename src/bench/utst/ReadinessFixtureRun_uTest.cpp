@@ -378,8 +378,9 @@ TEST_F(ReadinessFixtureRun, MassifUnwrappedFails) {
   const std::string MESSAGE = "missing: massif collects only when valgrind's massif runs the "
                               "process, and valgrind does not run this one";
   const std::string HINT =
-      "Wrap it: valgrind --tool=massif --pages-as-heap=yes --massif-out-file=./massif.out "
-      "<this-binary> --profile massif --profile-args pages [...]; or run it with bench run "
+      "Wrap it: valgrind --tool=massif --fair-sched=try --pages-as-heap=yes "
+      "--massif-out-file=./massif.out <this-binary> --profile massif --profile-args pages [...]; "
+      "or run it with bench run "
       "--profile massif --profile-args pages, which wraps it.";
   EXPECT_THAT(RUN.err, HasSubstr("[FAIL] Profiler 'massif': " + MESSAGE + "\n   " + HINT +
                                  "\n   Nothing is collected for this request"))

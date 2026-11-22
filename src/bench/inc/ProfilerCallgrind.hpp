@@ -33,7 +33,7 @@
  *   bench run ./MyTest --profile callgrind                    # Whole-process counts
  *   bench run ./MyTest --profile callgrind --profile-analyze  # Then callgrind_annotate
  *   # Cache simulation: wrap with valgrind directly:
- *   #   valgrind --tool=callgrind --instr-atstart=no --cache-sim=yes \
+ *   #   valgrind --tool=callgrind --fair-sched=try --instr-atstart=no --cache-sim=yes \
  *   #     ./MyTest --profile callgrind
  *
  * The profile is complete when valgrind exits: bench run checks it and runs
@@ -73,7 +73,7 @@ namespace bench {
  * normally.
  *
  * Recommended invocation:
- *   valgrind --tool=callgrind --instr-atstart=no ./MyTest --profile callgrind
+ *   valgrind --tool=callgrind --fair-sched=try --instr-atstart=no ./MyTest --profile callgrind
  */
 class CallgrindProfiler final : public Profiler {
 public:

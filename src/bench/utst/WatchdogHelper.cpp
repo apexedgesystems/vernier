@@ -15,6 +15,13 @@
  *   hang-blocked <flags...>
  *                         as hang, with every signal blocked on this thread
  *                         before the case
+ *   hang-timed <flags...> as hang, the body first printing "loop started at
+ *                         <ns>" (CLOCK_MONOTONIC), so the test can time how
+ *                         long after it the program ended
+ *   hang-joined <flags...>
+ *                         as hang-timed, the body then starting a thread that
+ *                         spins and joining it: the measuring thread waits
+ *                         while a thread computes
  *   hang-later <flags...> a case, Watchdog.Returns, measured under <flags> and
  *                         returning; once the watchdog's thread has parked
  *                         (the timer stops at once), a second,
@@ -191,6 +198,40 @@ void spin() {
 int hang(int argc, char** argv) {
   PerfCase perf{"Watchdog.Hung", configFrom(argc, argv)};
   perf.measured(spin);
+  std::puts("the watchdog did not end the program");
+  return 0;
+}
+
+/// Prints when the measured loop starts, once: "loop started at <ns>", on
+/// CLOCK_MONOTONIC, the clock the test reads when the program has ended.
+void printLoopStart() {
+  static bool printed = false;
+  if (printed) {
+    return;
+  }
+  printed = true;
+  timespec now{};
+  ::clock_gettime(CLOCK_MONOTONIC, &now);
+  std::printf("loop started at %lld\n",
+              static_cast<long long>(now.tv_sec) * 1000000000LL + now.tv_nsec);
+  std::fflush(stdout);
+}
+
+/// The hang-timed mode, and with @p joined the hang-joined mode.
+int hangTimed(int argc, char** argv, bool joined) {
+  PerfCase perf{"Watchdog.Hung", configFrom(argc, argv)};
+  if (joined) {
+    perf.measured([] {
+      printLoopStart();
+      std::thread worker(spin);
+      worker.join();
+    });
+  } else {
+    perf.measured([] {
+      printLoopStart();
+      spin();
+    });
+  }
   std::puts("the watchdog did not end the program");
   return 0;
 }
@@ -768,6 +809,12 @@ int main(int argc, char** argv) {
   if (MODE == "hang-blocked") {
     return hangBlocked(argc, argv);
   }
+  if (MODE == "hang-timed") {
+    return hangTimed(argc, argv, false);
+  }
+  if (MODE == "hang-joined") {
+    return hangTimed(argc, argv, true);
+  }
   if (MODE == "first-signal") {
     return firstSignal();
   }
@@ -824,7 +871,8 @@ int main(int argc, char** argv) {
     return rearm(argc, argv);
   }
   std::fprintf(stderr,
-               "usage: %s [--threaded] hang <flags>|hang-blocked <flags>|hang-later <flags>|later|"
+               "usage: %s [--threaded] hang <flags>|hang-blocked <flags>|hang-timed <flags>|"
+               "hang-joined <flags>|hang-later <flags>|later|"
                "shorten|names <test> <tool>|null-names|disarmed|fork|signals|first-signal|takeover|"
                "foreign|"
                "switch between|during|stale thread|hang|timer|no-thread <flags>|"

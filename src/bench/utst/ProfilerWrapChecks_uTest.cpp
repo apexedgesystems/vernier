@@ -409,8 +409,9 @@ TEST(ValgrindRuntime, UnwrappedRequestFailsWithTheWrapCommand) {
   EXPECT_EQ(RESULT.report.message, "missing: massif collects only when valgrind's massif runs "
                                    "the process, and valgrind does not run this one");
   EXPECT_EQ(RESULT.report.hint,
-            "Wrap it: valgrind --tool=massif --pages-as-heap=yes --massif-out-file=./massif.out "
-            "<this-binary> --profile massif --profile-args pages [...]; or run it with bench run "
+            "Wrap it: valgrind --tool=massif --fair-sched=try --pages-as-heap=yes "
+            "--massif-out-file=./massif.out <this-binary> --profile massif --profile-args pages "
+            "[...]; or run it with bench run "
             "--profile massif --profile-args pages, which wraps it.");
   ASSERT_NE(planOf(RESULT), nullptr);
   EXPECT_EQ(planOf(RESULT)->launch, LaunchContext::NOT_WRAPPED);
@@ -717,10 +718,11 @@ TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   const ReadinessResult WITHOUT =
       vernier::bench::checkCallgrindRequestWithIdentity(REQUEST, dir.context(), NONE);
   EXPECT_EQ(WITHOUT.report.hint.rfind(vernier::bench::callgrind::requestsBuiltIn()
-                                          ? "Wrap it: valgrind --tool=callgrind --instr-atstart=no "
+                                          ? "Wrap it: valgrind --tool=callgrind --fair-sched=try "
+                                            "--instr-atstart=no "
                                             "--callgrind-out-file=./callgrind.out <this-binary> "
                                             "--profile callgrind [...]"
-                                          : "Wrap it: valgrind --tool=callgrind "
+                                          : "Wrap it: valgrind --tool=callgrind --fair-sched=try "
                                             "--callgrind-out-file=./callgrind.out <this-binary> "
                                             "--profile callgrind [...]",
                                       0),
@@ -729,8 +731,9 @@ TEST(CallgrindWindowCheck, WrapCommandOpensTheWindowWhenItCan) {
   dir.install("fake_helper.sh", "callgrind_control");
   const ReadinessResult WITH =
       vernier::bench::checkCallgrindRequestWithIdentity(REQUEST, dir.context(), NONE);
-  EXPECT_EQ(WITH.report.hint.rfind("Wrap it: valgrind --tool=callgrind --instr-atstart=no "
-                                   "--callgrind-out-file=./callgrind.out <this-binary>",
+  EXPECT_EQ(WITH.report.hint.rfind("Wrap it: valgrind --tool=callgrind --fair-sched=try "
+                                   "--instr-atstart=no --callgrind-out-file=./callgrind.out "
+                                   "<this-binary>",
                                    0),
             0U)
       << WITH.report.hint;

@@ -92,6 +92,7 @@ vernier_add_gtest(
   "^PerfWatchdogTest\\.ThreadedRunGainsTheWatchdogsThread$"
   "^PerfWatchdogTest\\.CallgrindRunGainsAThreadOnlyWhenThreaded$"
   "^PerfWatchdogTest\\.HelgrindReportsNothingOfTheWatchdog$"
+  "^PerfWatchdogTest\\.(HungThreadedLoop|LoopJoiningABusyThread)Under(Callgrind|Memcheck)EndsOnTime$"
   "^PerfContentionTest\\.WorkerThatThrowsEndsTheRunThroughTheAbortHook$"
   "^PerfContentionTest\\.WorkerThatCannotStartEndsTheRunThroughTheAbortHook$"
   "^PerfContentionTest\\.WorkerThatCannotStartAfterOthersEndsTheRunThroughTheAbortHook$"

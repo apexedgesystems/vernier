@@ -17,17 +17,23 @@
  *    again: an arming the thread does not see at once is then never seen.
  *  - The cases in this process arm through a measured loop for 30 s or more
  *    and read the watchdog's flag; none waits for it.
- *  - One case runs the helper four times under valgrind's callgrind, about
- *    half a second each, and one four times under helgrind, about a second
- *    and a half each; they skip where valgrind is not installed and in an
- *    address or thread sanitizer build, which valgrind cannot run.
+ *  - The valgrind cases run the helper through the line `bench run` writes:
+ *    one four times under callgrind, under a second each; four once each,
+ *    a hung loop with a thread of its own under callgrind or memcheck, about
+ *    two seconds each; one four times under helgrind, about a second and a
+ *    half each. They skip where valgrind is not installed and in an address
+ *    or thread sanitizer build, which valgrind cannot run.
  */
 
 #include "src/bench/inc/PerfHarness.hpp"
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfRegistry.hpp"
+#include "src/bench/inc/ProfilerCallgrind.hpp"
+#include "src/bench/inc/ProfilerHelgrind.hpp"
+#include "src/bench/inc/ProfilerMemcheck.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
+#include "src/bench/inc/ValgrindTool.hpp"
 
 #include <gtest/gtest.h>
 
@@ -38,8 +44,15 @@
 #include <chrono>
 #include <csignal>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -546,26 +559,97 @@ TEST(PerfWatchdogTest, ThreadThatCannotStartIsStartedByALaterArming) {
   EXPECT_EQ(RUN.errorOutput, timeoutMessage("Watchdog.Retried", "perf"));
 }
 
+namespace {
+
+/// valgrind's path for a case that runs the helper under it; empty, with
+/// @p why saying so, where valgrind is not installed or cannot run this build.
+std::string valgrindForTheHelper(std::string& why) {
+  if (ADDRESS_SANITIZER || THREAD_SANITIZER) {
+    why = "valgrind does not run a sanitizer build";
+    return {};
+  }
+  const auto VALGRIND =
+      vernier::bench::resolveExecutable("valgrind", vernier::bench::ReadinessContext::capture());
+  if (!VALGRIND || !VALGRIND->executable) {
+    why = "valgrind is not installed; this test runs the helper under it";
+    return {};
+  }
+  return VALGRIND->path;
+}
+
+/// The mode valgrind's @p tool runs in for a request without --profile-args,
+/// as its backend reads it.
+vernier::bench::valgrind_tool::ValgrindMode modeOf(const std::string& tool) {
+  vernier::bench::valgrind_tool::ValgrindMode mode;
+  const auto REFUSED = tool == "callgrind"  ? vernier::bench::parseCallgrindMode("", mode)
+                       : tool == "memcheck" ? vernier::bench::parseMemcheckMode("", mode)
+                                            : vernier::bench::parseHelgrindMode("", mode);
+  EXPECT_FALSE(REFUSED.has_value()) << tool;
+  return mode;
+}
+
+/// A directory of its own for one wrapped run's output, removed with it.
+class WrapDir {
+public:
+  WrapDir() {
+    std::string pattern =
+        (std::filesystem::temp_directory_path() / "vernier-watchdog-wrap-XXXXXX").string();
+    if (::mkdtemp(pattern.data()) != nullptr) {
+      path_ = pattern;
+    }
+  }
+  WrapDir(const WrapDir&) = delete;
+  WrapDir& operator=(const WrapDir&) = delete;
+  ~WrapDir() {
+    std::error_code ec;
+    std::filesystem::remove_all(path_, ec);
+  }
+  const std::string& path() const { return path_; }
+
+private:
+  std::string path_;
+};
+
+/// The text of the file at @p path; empty when it cannot be read.
+std::string fileText(const std::string& path) {
+  std::ifstream in(path);
+  return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+/// The helper with @p args, run by valgrind (@p valgrind) through the line
+/// `bench run` writes for @p tool, writing into @p dir: wrapArguments(), which
+/// the shared route table holds equal to the runner's route.
+ProbeResult underWrap(const std::string& valgrind, const std::string& tool, const std::string& dir,
+                      const std::vector<std::string>& args) {
+  std::vector<std::string> command{valgrind};
+  const std::vector<std::string> WRAP =
+      vernier::bench::valgrind_tool::wrapArguments(tool, modeOf(tool), dir);
+  command.insert(command.end(), WRAP.begin(), WRAP.end());
+  command.emplace_back(HELPER);
+  command.insert(command.end(), args.begin(), args.end());
+  return vernier::bench::runBoundedProbe(command, HELPER_BOUND_MS,
+                                         vernier::bench::ReadinessContext::capture(),
+                                         vernier::bench::ProbeStreams::SEPARATE);
+}
+
+} // namespace
+
 /**
  * @test Under --profile with a tool that starts no thread in the process,
- * callgrind (the helper run by valgrind as a wrap started by hand, its
- * profiler attached as a benchmark's is): a benchmark that starts no thread
- * gains none at the watchdog's default, when the body runs or after the case,
- * and glibc still counts it single-threaded; one with a thread of its own
- * gains exactly the watchdog's, against --profile-test-timeout 0.
+ * callgrind (the helper run through the line `bench run` writes, its profiler
+ * attached as a benchmark's is): a benchmark that starts no thread gains none
+ * at the watchdog's default, when the body runs or after the case, and glibc
+ * still counts it single-threaded; one with a thread of its own gains exactly
+ * the watchdog's, against --profile-test-timeout 0.
  */
 TEST(PerfWatchdogTest, CallgrindRunGainsAThreadOnlyWhenThreaded) {
-  if (ADDRESS_SANITIZER || THREAD_SANITIZER) {
-    GTEST_SKIP() << "valgrind does not run a sanitizer build";
-  }
-  const vernier::bench::ReadinessContext CONTEXT = vernier::bench::ReadinessContext::capture();
-  const auto VALGRIND = vernier::bench::resolveExecutable("valgrind", CONTEXT);
-  if (!VALGRIND || !VALGRIND->executable) {
-    GTEST_SKIP() << "valgrind is not installed; this test runs the helper under callgrind";
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
   }
   const auto UNDER_CALLGRIND = [&](bool threaded, bool watchdog, ThreadsLine& line) {
-    std::vector<std::string> args = {VALGRIND->path, "--tool=callgrind", "--instr-atstart=no",
-                                     "--callgrind-out-file=/dev/null", HELPER};
+    std::vector<std::string> args;
     if (threaded) {
       args.emplace_back("--threaded");
     }
@@ -576,8 +660,8 @@ TEST(PerfWatchdogTest, CallgrindRunGainsAThreadOnlyWhenThreaded) {
       args.emplace_back("--profile-test-timeout");
       args.emplace_back("0");
     }
-    const ProbeResult RUN = vernier::bench::runBoundedProbe(args, HELPER_BOUND_MS, CONTEXT,
-                                                            vernier::bench::ProbeStreams::SEPARATE);
+    const WrapDir DIR;
+    const ProbeResult RUN = underWrap(VALGRIND, "callgrind", DIR.path(), args);
     EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
     EXPECT_TRUE(readThreads(RUN.output, line)) << RUN.output;
   };
@@ -602,46 +686,117 @@ TEST(PerfWatchdogTest, CallgrindRunGainsAThreadOnlyWhenThreaded) {
 
 namespace {
 
-/// One run of the helper under helgrind with @p args, any error helgrind
-/// reports giving exit status 97, a status the helper does not give. With
-/// @p fair, valgrind's --fair-sched=yes: valgrind runs one thread at a time,
-/// and by default a thread that computes keeps the others from running, the
-/// watchdog's among them, until it makes a blocking call.
-ProbeResult underHelgrind(const std::string& valgrind, bool fair,
-                          const std::vector<std::string>& args) {
-  std::vector<std::string> command = {valgrind, "--tool=helgrind", "--error-exitcode=97"};
-  if (fair) {
-    command.emplace_back("--fair-sched=yes");
-  }
-  command.emplace_back(HELPER);
-  command.insert(command.end(), args.begin(), args.end());
-  return vernier::bench::runBoundedProbe(command, HELPER_BOUND_MS,
-                                         vernier::bench::ReadinessContext::capture(),
-                                         vernier::bench::ProbeStreams::SEPARATE);
+/// How long after its loop started a hung case under a valgrind tool may end:
+/// the second of --profile-test-timeout 1, and one more for valgrind to run
+/// the watchdog and end the process.
+constexpr std::int64_t ON_TIME_NS = 2000000000;
+
+/// CLOCK_MONOTONIC now, in nanoseconds: the clock the helper prints its
+/// loop's start on.
+std::int64_t monotonicNs() {
+  timespec now{};
+  ::clock_gettime(CLOCK_MONOTONIC, &now);
+  return static_cast<std::int64_t>(now.tv_sec) * 1000000000 + now.tv_nsec;
+}
+
+/// The helper with a thread of its own, its case hung in @p mode under
+/// --profile <tool> --profile-test-timeout 1, run by @p tool through the line
+/// `bench run` writes: it ends with the watchdog's status 2 and message within
+/// ON_TIME_NS of the loop's start.
+void expectHungUnderToolEndsOnTime(const std::string& valgrind, const std::string& tool,
+                                   const char* mode) {
+  const WrapDir DIR;
+  const ProbeResult RUN =
+      underWrap(valgrind, tool, DIR.path(),
+                {"--threaded", mode, "--profile", tool, "--profile-test-timeout", "1"});
+  const std::int64_t ENDED = monotonicNs();
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 2) << RUN.output << RUN.errorOutput;
+  EXPECT_NE(RUN.errorOutput.find(timeoutMessage("Watchdog.Hung", tool)), std::string::npos)
+      << RUN.errorOutput;
+  const std::size_t AT = RUN.output.find("loop started at ");
+  ASSERT_NE(AT, std::string::npos) << RUN.output;
+  const std::int64_t STARTED = std::stoll(RUN.output.substr(AT + 16));
+  EXPECT_LE(ENDED - STARTED, ON_TIME_NS)
+      << "it ended " << (ENDED - STARTED) / 1000000 << " ms after its loop started";
 }
 
 } // namespace
 
 /**
+ * @test Under callgrind, through the line `bench run` writes: a hung loop in
+ * a process with a thread of its own (idle), so on the watchdog's thread, is
+ * ended at its timeout, status 2 within two seconds of the loop's start.
+ * valgrind runs one thread at a time; with its default scheduler a thread
+ * that computes keeps the others from running, the watchdog's among them,
+ * and the wrap asks for valgrind's fair scheduler.
+ */
+TEST(PerfWatchdogTest, HungThreadedLoopUnderCallgrindEndsOnTime) {
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
+  }
+  expectHungUnderToolEndsOnTime(VALGRIND, "callgrind", "hang-timed");
+}
+
+/**
+ * @test Under callgrind, through the line `bench run` writes: a measured loop
+ * waiting to join a thread that computes, in a process with a thread of its
+ * own, is ended at its timeout, status 2 within two seconds of the loop's
+ * start.
+ */
+TEST(PerfWatchdogTest, LoopJoiningABusyThreadUnderCallgrindEndsOnTime) {
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
+  }
+  expectHungUnderToolEndsOnTime(VALGRIND, "callgrind", "hang-joined");
+}
+
+/**
+ * @test Under memcheck, through the line `bench run` writes: a hung loop in a
+ * process with a thread of its own is ended at its timeout, status 2 within
+ * two seconds of the loop's start.
+ */
+TEST(PerfWatchdogTest, HungThreadedLoopUnderMemcheckEndsOnTime) {
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
+  }
+  expectHungUnderToolEndsOnTime(VALGRIND, "memcheck", "hang-timed");
+}
+
+/**
+ * @test Under memcheck, through the line `bench run` writes: a measured loop
+ * waiting to join a thread that computes is ended at its timeout, status 2
+ * within two seconds of the loop's start.
+ */
+TEST(PerfWatchdogTest, LoopJoiningABusyThreadUnderMemcheckEndsOnTime) {
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
+  }
+  expectHungUnderToolEndsOnTime(VALGRIND, "memcheck", "hang-joined");
+}
+
+/**
  * @test Under helgrind, the watchdog gives no report in either engine: the
- * helper, run by valgrind's helgrind with an exit status for any error,
- * measures two cases under --profile helgrind (armed, a loop measured,
- * disarmed, armed again), single-threaded and with a thread of its own; and a
- * hung loop is ended by the watchdog in each while it still spins (its repeat
- * never completes, so no progress line), the process ending with the
- * watchdog's status 2. helgrind counts no error in any of the four. The
- * single-threaded runs take valgrind's default scheduling; the threaded ones
- * --fair-sched=yes, without which the watchdog's thread does not run until
- * the hung loop's thread stops computing.
+ * helper, run by helgrind through the line `bench run` writes, measures two
+ * cases under --profile helgrind (armed, a loop measured, disarmed, armed
+ * again), single-threaded and with a thread of its own; and a hung loop is
+ * ended by the watchdog in each while it still spins (its repeat never
+ * completes, so no progress line), the process ending with the watchdog's
+ * status 2. helgrind's log counts no error in any of the four.
  */
 TEST(PerfWatchdogTest, HelgrindReportsNothingOfTheWatchdog) {
-  if (ADDRESS_SANITIZER || THREAD_SANITIZER) {
-    GTEST_SKIP() << "valgrind does not run a sanitizer build";
-  }
-  const vernier::bench::ReadinessContext CONTEXT = vernier::bench::ReadinessContext::capture();
-  const auto VALGRIND = vernier::bench::resolveExecutable("valgrind", CONTEXT);
-  if (!VALGRIND || !VALGRIND->executable) {
-    GTEST_SKIP() << "valgrind is not installed; this test runs the helper under helgrind";
+  std::string why;
+  const std::string VALGRIND = valgrindForTheHelper(why);
+  if (VALGRIND.empty()) {
+    GTEST_SKIP() << why;
   }
   for (const bool THREADED : {false, true}) {
     std::vector<std::string> prefix;
@@ -656,22 +811,26 @@ TEST(PerfWatchdogTest, HelgrindReportsNothingOfTheWatchdog) {
     for (const char* arg : {"hang", "--profile", "helgrind", "--profile-test-timeout", "1"}) {
       hangArgs.emplace_back(arg);
     }
-    const ProbeResult REARM = underHelgrind(VALGRIND->path, THREADED, rearmArgs);
+    const WrapDir REARM_DIR;
+    const ProbeResult REARM = underWrap(VALGRIND, "helgrind", REARM_DIR.path(), rearmArgs);
+    const std::string REARM_LOG = fileText(REARM_DIR.path() + "/helgrind.log");
     ASSERT_TRUE(REARM.exited) << REARM.describe() << "\n" << REARM.output << REARM.errorOutput;
     EXPECT_EQ(REARM.exitCode, 0) << (THREADED ? "threaded: " : "single: ") << REARM.output
                                  << REARM.errorOutput;
     EXPECT_NE(REARM.output.find("measured twice\n"), std::string::npos) << REARM.output;
-    EXPECT_NE(REARM.errorOutput.find("ERROR SUMMARY: 0 errors from 0 contexts"), std::string::npos)
-        << REARM.errorOutput;
-    const ProbeResult HANG = underHelgrind(VALGRIND->path, THREADED, hangArgs);
+    EXPECT_NE(REARM_LOG.find("ERROR SUMMARY: 0 errors from 0 contexts"), std::string::npos)
+        << REARM_LOG;
+    const WrapDir HANG_DIR;
+    const ProbeResult HANG = underWrap(VALGRIND, "helgrind", HANG_DIR.path(), hangArgs);
+    const std::string HANG_LOG = fileText(HANG_DIR.path() + "/helgrind.log");
     ASSERT_TRUE(HANG.exited) << HANG.describe() << "\n" << HANG.output << HANG.errorOutput;
     EXPECT_EQ(HANG.exitCode, 2) << (THREADED ? "threaded: " : "single: ") << HANG.output
                                 << HANG.errorOutput;
     EXPECT_EQ(HANG.errorOutput.find("[Watchdog.Hung] repeat"), std::string::npos)
         << "the hung loop's repeat completed before the watchdog fired\n"
         << HANG.errorOutput;
-    EXPECT_NE(HANG.errorOutput.find("ERROR SUMMARY: 0 errors from 0 contexts"), std::string::npos)
-        << HANG.errorOutput;
+    EXPECT_NE(HANG_LOG.find("ERROR SUMMARY: 0 errors from 0 contexts"), std::string::npos)
+        << HANG_LOG;
     EXPECT_NE(HANG.errorOutput.find(timeoutMessage("Watchdog.Hung", "helgrind")), std::string::npos)
         << HANG.errorOutput;
   }

@@ -162,7 +162,9 @@ if (CASE MATCHES "^hint")
 elseif (CASE STREQUAL "runner" OR CASE STREQUAL "analyze")
   set(_wrap_dir "${WORK_DIR}/wrap")
   file(MAKE_DIRECTORY "${_wrap_dir}")
-  set(_wrap valgrind --tool=callgrind "--callgrind-out-file=${_wrap_dir}/callgrind.out")
+  set(_wrap valgrind --tool=callgrind --fair-sched=try
+            "--callgrind-out-file=${_wrap_dir}/callgrind.out"
+  )
   set(_env VERNIER_EXTERNAL_WRAP=callgrind "VERNIER_EXTERNAL_WRAP_DIR=${_wrap_dir}")
   set(_present workBeforeWindow workInsideWindow workAfterWindow)
   set(_absent "")

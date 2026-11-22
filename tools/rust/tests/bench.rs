@@ -2332,7 +2332,7 @@ fn run_massif_modes_reach_valgrind() {
         assert_eq!(
             log,
             format!(
-                "valgrind wrap=massif --tool=massif {flag} \
+                "valgrind wrap=massif --tool=massif --fair-sched=try {flag} \
                  --massif-out-file=bench-out/fake_bench.massif/massif.out {} --profile massif \
                  --profile-args {mode}\n",
                 rig.bench.display()
@@ -2353,7 +2353,8 @@ fn run_memcheck_track_origins() {
     assert_eq!(
         log,
         format!(
-            "valgrind wrap=memcheck --tool=memcheck --leak-check=full --error-exitcode=0 \
+            "valgrind wrap=memcheck --tool=memcheck --fair-sched=try --leak-check=full \
+             --error-exitcode=0 \
              --track-origins=yes --log-file=bench-out/fake_bench.memcheck/memcheck.log {} \
              --profile memcheck --profile-args track-origins\n",
             rig.bench.display()
@@ -2370,7 +2371,8 @@ fn run_helgrind_drd() {
     assert_eq!(
         log,
         format!(
-            "valgrind wrap=helgrind --tool=drd --log-file=bench-out/fake_bench.helgrind/helgrind.log \
+            "valgrind wrap=helgrind --tool=drd --fair-sched=try \
+             --log-file=bench-out/fake_bench.helgrind/helgrind.log \
              {} --profile helgrind --profile-args drd\n",
             rig.bench.display()
         )
@@ -2390,7 +2392,8 @@ fn run_forwarded_mode_selects_the_wrap() {
     assert_eq!(
         log,
         format!(
-            "valgrind wrap=helgrind --tool=drd --log-file=bench-out/fake_bench.helgrind/helgrind.log \
+            "valgrind wrap=helgrind --tool=drd --fair-sched=try \
+             --log-file=bench-out/fake_bench.helgrind/helgrind.log \
              {} --profile helgrind --profile-args drd\n",
             rig.bench.display()
         )
@@ -2421,7 +2424,7 @@ fn run_forwarded_request_is_routed() {
     assert_eq!(
         log,
         format!(
-            "valgrind wrap=massif --tool=massif --pages-as-heap=yes \
+            "valgrind wrap=massif --tool=massif --fair-sched=try --pages-as-heap=yes \
              --massif-out-file=out/fake_bench.massif/massif.out {} --profile massif \
              --profile-args pages --profile-output-dir out --repeats 2\n",
             rig.bench.display()

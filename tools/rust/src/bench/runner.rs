@@ -870,6 +870,15 @@ const NSYS_DERIVED: [&str; 5] = [
     "cuda_gpu_mem_time_sum.txt",
 ];
 
+/// The scheduler option every valgrind route passes after `--tool`:
+/// valgrind's fair scheduler. valgrind runs one thread at a time, and its
+/// default lets a thread that computes keep the others from running, the
+/// benchmark watchdog's thread among them. `try` falls back to the default
+/// where the platform lacks it; `yes` would refuse to start there. The C++
+/// side's is `valgrind_tool::FAIR_SCHEDULER`; the shared route table pins
+/// the two together.
+const VALGRIND_FAIR_SCHEDULER: &str = "--fair-sched=try";
+
 /// The words of a `--profile-args` value, split on whitespace and commas:
 /// for a wrapped profile, the modes it selects.
 fn mode_words(profile_args: Option<&str>) -> Vec<&str> {
@@ -1083,6 +1092,9 @@ fn route_for(
         "ncu" => ("ncu", ncu(&escaped), &[&["kernel_profile.ncu-rep"]]),
         _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
+    if program == "valgrind" {
+        args.insert(1, VALGRIND_FAIR_SCHEDULER.to_string());
+    }
     args.push(bin);
     Ok(Some(Route {
         tool: tool.to_string(),
