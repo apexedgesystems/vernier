@@ -927,7 +927,7 @@ bench run ./MyKernel_GPU_PTEST --profile nsight --profile-args replay \
 ncu-ui bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 
 # Or command-line report
-ncu --csv --print-summary per-kernel bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
+ncu --import bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep --csv --print-summary per-kernel
 ```
 
 **What the replay collects:**
