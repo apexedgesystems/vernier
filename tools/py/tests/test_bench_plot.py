@@ -1,10 +1,12 @@
 """Tests for bench_plot data loading and parsing functions."""
 
 import json
+import os
 import sys
 import textwrap
 import time
 
+import pandas as pd
 import pytest
 from vernier_tools.benchmarking import bench_plot
 from vernier_tools.benchmarking.bench_plot import (
@@ -12,6 +14,8 @@ from vernier_tools.benchmarking.bench_plot import (
     load_csv,
     load_csvs_from_list,
 )
+
+from .malformed_csv import CORPUS, write
 
 # =============================================================================
 # Fixtures
@@ -65,22 +69,26 @@ def test_load_csv_valid(csv_file):
 
 
 def test_load_csv_file_not_found(tmp_path):
-    with pytest.raises(FileNotFoundError):
-        load_csv(tmp_path / "nonexistent.csv")
+    p = tmp_path / "nonexistent.csv"
+    with pytest.raises(SystemExit) as stopped:
+        load_csv(p)
+    assert str(stopped.value) == f"bench-plot: {p}: No such file or directory"
 
 
 def test_load_csv_missing_columns(tmp_path):
     p = tmp_path / "bad.csv"
     p.write_text("test,wallMedian\nFoo,1.0\n")
-    with pytest.raises(ValueError, match="Missing required columns"):
+    with pytest.raises(SystemExit) as stopped:
         load_csv(p)
+    assert str(stopped.value) == f"bench-plot: {p}: missing required column 'wallCV'"
 
 
 def test_load_csv_empty_data(tmp_path):
     p = tmp_path / "empty.csv"
     p.write_text("test,wallMedian,wallCV,callsPerSecond\n")
-    with pytest.raises(ValueError, match="No data rows"):
+    with pytest.raises(SystemExit) as stopped:
         load_csv(p)
+    assert str(stopped.value) == f"bench-plot: {p}: no data rows"
 
 
 # =============================================================================
@@ -551,14 +559,18 @@ def test_a_file_of_one_long_count_is_refused_as_bench_summary_reads_it(
 
 def test_scaling_places_a_row_whose_name_is_no_size_by_its_msg_bytes(tmp_path, monkeypatch):
     """bench-plot scaling places a row whose name ends in thousands of digits
-    by its msgBytes, and a row whose name ends in a size by that size."""
+    by its msgBytes, and a row whose name ends in a size by that size, in its
+    plotly page, which draws a name of any length."""
     placed = []
+    monkeypatch.setattr(bench_plot, "HAS_PLOTLY", True)
     monkeypatch.setattr(
-        bench_plot, "_plot_scaling_static", lambda df, path: placed.append(list(df["payloadBytes"]))
+        bench_plot, "_plot_scaling_plotly", lambda df, path: placed.append(list(df["payloadBytes"]))
     )
     first = write_csv(tmp_path / "a.csv", [TIMED_ROW.replace("Saxpy.Plain", "Send" + "9" * LONG)])
     second = write_csv(tmp_path / "b.csv", [TIMED_ROW.replace("Saxpy.Plain", "Send1KB")])
-    run_main(monkeypatch, ["scaling", str(first), str(second), "--output", str(tmp_path / "s.png")])
+    run_main(
+        monkeypatch, ["scaling", str(first), str(second), "--output", str(tmp_path / "s.html")]
+    )
     assert placed == [[64, 1024]]
 
 
@@ -702,3 +714,127 @@ def test_scaling_without_plotly_writes_its_static_plot_beside_the_page(
     assert (tmp_path / "s.png").stat().st_size > 0
     assert not (tmp_path / "s.html").exists()
     assert f"Falling back to a static plot: {tmp_path / 's.png'}" in capsys.readouterr().out
+
+
+# =============================================================================
+# The malformed corpus (malformed_csv.py)
+# =============================================================================
+
+# Each command, drawing with matplotlib or with plotly, and the output it is
+# given.
+COMMANDS = [
+    ("plot", False, ""),
+    ("report", False, ""),
+    ("dashboard", False, "d.html"),
+    ("dashboard", True, "d.html"),
+    ("scaling", False, "s.png"),
+    ("scaling", True, "s.html"),
+]
+
+
+def message(path, reason):
+    """bench-plot's one line for @p reason about the file at @p path."""
+    return f"bench-plot: {path}{', ' if reason.startswith('line ') else ': '}{reason}"
+
+
+@pytest.mark.parametrize(
+    "command,plotly,output",
+    COMMANDS,
+    ids=[f"{command}-{'plotly' if plotly else 'matplotlib'}" for command, plotly, _ in COMMANDS],
+)
+@pytest.mark.parametrize("case", CORPUS, ids=[case.name for case in CORPUS])
+def test_every_command_draws_a_malformed_file_or_refuses_it_in_one_line(
+    tmp_path, monkeypatch, capsys, recorded_plots, case, command, plotly, output
+):
+    """Every command draws each file of the corpus or stops, before drawing,
+    with one line naming the file and the reason, and never raises: the
+    reason `bench summary` refuses the file with, or the column or the name
+    the command cannot draw. A row whose timing `bench summary` refuses is
+    left out, and stderr names it."""
+    path = write(case, str(tmp_path))
+    reason = case.refusal(command, plotly)
+    if reason == "Permission denied" and os.access(path, os.R_OK):
+        reason = None  # as root, who reads a file of mode 000
+    monkeypatch.setattr(bench_plot, "HAS_PLOTLY", plotly)
+    if plotly:
+        monkeypatch.setattr(
+            bench_plot,
+            "create_interactive_dashboard",
+            lambda df, output_path: recorded_plots.setdefault("dashboard", []).append(
+                list(df["test"])
+            ),
+        )
+    argv = [command, path, "--output", str(tmp_path / "out" / output)]
+    if reason is None:
+        run_main(monkeypatch, argv)
+        assert recorded_plots
+    else:
+        with pytest.raises(SystemExit) as stopped:
+            run_main(monkeypatch, argv)
+        assert stopped.value.code == message(path, reason)
+        assert recorded_plots == {}
+    left_out = case.left_out and (
+        f"bench-plot: {path}: left out 1 rows with an empty or damaged timing cell: "
+        f"{case.left_out}\n"
+    )
+    assert capsys.readouterr().err == (left_out or "")
+
+
+@pytest.mark.parametrize("command", ["report", "scaling"])
+def test_test_names_holding_a_dollar_are_drawn_as_written(
+    tmp_path, monkeypatch, quick_savefig, command
+):
+    """Names such as `$$` and `$\\frac{$` label the report's plots, and
+    scaling's lines, as written: a '$' starts no mathtext, which would make
+    matplotlib refuse to draw them."""
+    path = write(next(case for case in CORPUS if case.name == "dollar_name"), str(tmp_path))
+    # Scaling draws a test as a line, with its name, when two files hold it.
+    files = [path, path] if command == "scaling" else [path]
+    output = tmp_path / ("s.png" if command == "scaling" else "report")
+    run_main(monkeypatch, [command, *files, "--output", str(output)])
+    drawn = [output] if command == "scaling" else sorted(output.glob("*.png"))
+    assert len(drawn) == (1 if command == "scaling" else 3)
+    assert all(png.stat().st_size > 0 for png in drawn)
+
+
+def test_a_test_name_is_drawn_up_to_the_longest_label():
+    """A name of LONGEST_LABEL characters is drawn, and a longer one stops
+    the command, naming its start and its length."""
+    longest = "x" * bench_plot.LONGEST_LABEL
+    bench_plot.drawable_names(pd.DataFrame({"test": ["Short", longest]}), "f.csv", "plot")
+    with pytest.raises(SystemExit) as stopped:
+        bench_plot.drawable_names(pd.DataFrame({"test": [longest + "y"]}), "f.csv", "plot")
+    assert stopped.value.code == (
+        "bench-plot: f.csv: plot draws a test name of at most 1000 characters, and the one "
+        f"starting '{longest[:40]}' has 1001"
+    )
+
+
+def test_a_column_named_twice_is_read_from_its_last_place(tmp_path):
+    """A column the header names twice is read from its last place, once, as
+    bench summary reads it: the later wallMedian, and the later test name."""
+    cases = {case.name: case for case in CORPUS}
+    df = load_csv(write(cases["duplicate_wallMedian"], str(tmp_path)))
+    assert df["wallMedian"].tolist() == [20.0, 20.0]
+    assert list(df.columns).count("wallMedian") == 1 and "wallMedian.1" not in df.columns
+    df = load_csv(write(cases["duplicate_test"], str(tmp_path)))
+    assert df["test"].tolist() == ["Corpus.Other", "Corpus.Other"]
+
+
+def test_a_nul_is_kept_as_written_and_in_a_number_is_no_number(tmp_path):
+    """A NUL in a test name and in the host name the report copies is kept,
+    where pandas would end the field at it, and a timing cell holding one
+    holds no number, where pandas would read `10.0<NUL>x` as 10.0."""
+    csv = tmp_path / "nul.csv"
+    damaged = TIMED_ROW.replace(",3082.75,", ",3082.75\x00x,", 1)
+    csv.write_text(
+        f"{CAPTURE_HEADER},hostname\n"
+        + TIMED_ROW.replace("Saxpy.Plain", "Saxpy.\x00A")
+        + ",ho\x00st\n"
+        + damaged.replace("Saxpy.Plain", "Saxpy.\x00B")
+        + ",host\n"
+    )
+    df = load_csv(csv)
+    assert df["test"].tolist() == ["Saxpy.\x00A", "Saxpy.\x00B"]
+    assert df["hostname"].tolist() == ["ho\x00st", "host"]
+    assert bench_plot.timed_rows(df, str(csv))["test"].tolist() == ["Saxpy.\x00A"]

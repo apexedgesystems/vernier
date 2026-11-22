@@ -476,6 +476,16 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   name as written, refuses a row without a test name as `bench summary` does,
   and `bench-plot scaling` without plotly writes a PNG for an `.html` output.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench-plot` reads a file as `bench summary` reads it, and refuses what
+  `bench summary` refuses for the same reason, in one line naming the file.
+  An unreadable, empty or non-UTF-8 file, one without a required column or
+  a row, and one with a field over 128 KiB, a row longer than the header or
+  a quote left open stopped it with a traceback; a NUL did too on Python
+  3.10, and on 3.12 ended a name or a cell early. A file without a column a
+  command plots is refused, naming both, as is a test name over 1000
+  characters for a matplotlib plot; a column named twice is read from its
+  last place, and a `$` in a name is drawn as written.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench doctor`'s row for an Nsight Compute request says that no row of the
   run is timed. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,

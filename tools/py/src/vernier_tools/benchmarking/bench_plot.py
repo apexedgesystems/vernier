@@ -17,13 +17,17 @@ Usage:
     bench-plot report results.csv --output report/
     bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
-A test name is text, whatever it looks like, as `bench summary` reads it; a
-file with a row whose test name is empty or only whitespace is refused, naming
-the file and the line, as `bench summary` and `bench compare` refuse it. A row
-whose plotted timing cells do not all hold finite numbers is left out of every
-plot, and stderr names it, saying when its every timing cell is empty, as in a
-run under Nsight Compute; a file with no such row left is refused, naming the
-file.
+A file is read as `bench summary` reads it, and refused for the same reasons:
+the command stops with one line naming the file and the reason, exit status
+1, for a file that cannot be read or is not UTF-8, lacks a required column,
+has no row, or has a row whose test name is empty or only whitespace (naming
+the line the row starts on). A test name is text, whatever it looks like. A
+row whose plotted timing cells do not all hold finite numbers is left out of
+every plot, and stderr names it, saying when its every timing cell is empty,
+as in a run under Nsight Compute; a file with no such row left is refused,
+naming the file. A file without a column a command plots is refused, naming
+the command and the column, and so is a test name longer than LONGEST_LABEL
+characters, for a plot matplotlib draws; a '$' in a name is drawn as written.
 
 Dependencies:
     pip install pandas matplotlib seaborn
@@ -34,6 +38,7 @@ Dependencies:
 
 import argparse
 import csv
+import io
 import json
 import math
 import re
@@ -97,65 +102,129 @@ def unusable_test_name(name: str):
     return None
 
 
-def first_unusable_test_name(path: Path):
-    """The line of @p path at which its first record with an unusable test
-    name (`unusable_test_name`) starts, and why, or None. Blank lines are no
-    records, as neither pandas nor `bench summary` takes them for rows, but
-    they count as lines, as does each line of a record that spans several."""
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        header = next(reader, [])
-        if "test" not in header:
-            return None
-        column = header.index("test")
-        while True:
-            start = reader.line_num + 1
-            record = next(reader, None)
-            if record is None:
-                return None
-            if not record:
-                continue
-            why = unusable_test_name(record[column] if column < len(record) else "")
-            if why is not None:
-                return start, why
+# The columns every file must have, in the order `bench summary` checks them:
+# the first one a file lacks is the one named.
+REQUIRED_COLUMNS = ("test", "wallMedian", "wallCV", "callsPerSecond")
+
+
+def refuse(path, why, line=None):
+    """Stop the command with one line naming @p path, and @p line when given,
+    and @p why: exit status 1."""
+    where = f"{path}, line {line}" if line is not None else f"{path}"
+    raise SystemExit(f"bench-plot: {where}: {why}")
+
+
+def line_at(data: bytes, offset: int) -> int:
+    """The line of @p data that byte @p offset is on, counting from 1, as an
+    editor counts lines: each CRLF, lone CR and lone LF before it ends one."""
+    before = data[:offset]
+    return before.count(b"\n") + before.count(b"\r") - before.count(b"\r\n") + 1
+
+
+def read_text(path: Path) -> str:
+    """The text of the file at @p path, its bytes as UTF-8 without a byte
+    order mark. A file that cannot be read stops the command with the
+    system's reason, and one that is not UTF-8 with the line of its first
+    byte that is not, as `bench summary` stops."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as error:
+        refuse(path, error.strerror)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        refuse(path, "not valid UTF-8", line_at(data, error.start))
+    return text[1:] if text.startswith("\ufeff") else text
+
+
+def absent_character(text: str) -> str:
+    """A character @p text does not hold, from Unicode's private use area."""
+    return next(chr(c) for c in range(0xE000, 0x110000) if chr(c) not in text)
+
+
+def records_of(text: str):
+    """The header of @p text and each record after it with the line it
+    starts on, as `bench summary`'s reader takes them: a quoted field runs to
+    its closing quote or to the end of the file, a blank line is no record
+    but counts as a line, as does each line of a record that spans several,
+    the header is the first record, after any blank line, and a NUL is a
+    character like any other. The fields of both hold `stand_in` for each
+    NUL, which the reader of Python before 3.11 refuses; the third value is
+    that character, one the text does not hold."""
+    stand_in = absent_character(text)
+    # A field may be as long as the file.
+    csv.field_size_limit(max(csv.field_size_limit(), len(text) + 1))
+    reader = csv.reader(io.StringIO(text.replace("\x00", stand_in), newline=""))
+    header = next((record for record in reader if record), [])
+    records = []
+    while True:
+        start = reader.line_num + 1
+        record = next(reader, None)
+        if record is None:
+            return header, records, stand_in
+        if record:
+            records.append((start, record))
 
 
 def load_csv(path: Path) -> pd.DataFrame:
-    """Load and validate a benchmark CSV file.
+    """Load and validate a benchmark CSV file, read as `bench summary` reads
+    it, refusing it as `bench summary` refuses it.
 
-    Only an empty field is missing, as `bench summary` reads the file: text
-    that pandas takes for a missing value by default (`NA`, `nan`, `NULL`,
-    `None`, ...) stays text, so a test of that name keeps it and a timing cell
-    holding it is damaged, not empty. The columns of `TEXT_COLUMNS` are read
-    as text. A file with a row whose test name is empty or only whitespace is
-    refused, naming the file and the line, as `bench summary` refuses it. The
-    columns of `PLOTTED_OTHER_NUMBERS` are made numbers, and
+    A file that cannot be read or is not UTF-8 (`read_text`), lacks a column
+    of `REQUIRED_COLUMNS`, has a row whose test name is empty or only
+    whitespace (naming the line the row starts on), or has no row, stops the
+    command with one line naming the file and the reason. A column the header
+    names twice is read from its last place; a row with more fields than the
+    header has the rest left unread, and one with fewer, the columns it lacks
+    empty. Only an empty field is missing: text that pandas takes for a
+    missing value by default (`NA`, `nan`, `NULL`, `None`, ...) stays text, so
+    a test of that name keeps it and a timing cell holding it is damaged, not
+    empty. A NUL is kept in a name and in the text of `TEXT_COLUMNS`, and a
+    number's cell holding one holds no number. The columns of `TEXT_COLUMNS`
+    are read as text, those of `PLOTTED_OTHER_NUMBERS` as numbers, and
     `OTHER_NUMBERS_OF_THEIR_KIND` is added for `untimed_rows`.
     """
-    if not path.exists():
-        raise FileNotFoundError(f"CSV file not found: {path}")
+    header, records, stand_in = records_of(read_text(path))
+    for column in REQUIRED_COLUMNS:
+        if column not in header:
+            refuse(path, f"missing required column '{column}'")
+    place = {name: index for index, name in enumerate(header)}
+    test = place["test"]
+    for line, fields in records:
+        why = unusable_test_name(fields[test] if test < len(fields) else "")
+        if why is not None:
+            refuse(path, why.replace(stand_in, "\x00"), line)
+    if not records:
+        refuse(path, "no data rows")
 
+    # The records again as CSV text that pandas reads, each column once, the
+    # stand-in kept: pandas ends a field at a NUL, which would read the name
+    # `A<NUL>B` as `A` and the cell `10.0<NUL>x` as the number 10.0.
+    kept = sorted(place.values())
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow([header[i] for i in kept])
+    for _, fields in records:
+        writer.writerow([fields[i] for i in kept if i < len(fields)])
+    text = out.getvalue()
     df = pd.read_csv(
-        path, keep_default_na=False, na_values=[""], dtype=dict.fromkeys(TEXT_COLUMNS, str)
+        io.StringIO(text),
+        keep_default_na=False,
+        na_values=[""],
+        dtype=dict.fromkeys(TEXT_COLUMNS, str),
     )
-
-    required = {"test", "wallMedian", "wallCV", "callsPerSecond"}
-    missing = required - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns: {missing}")
-
-    unusable = first_unusable_test_name(path)
-    if unusable is not None:
-        line, why = unusable
-        raise SystemExit(f"bench-plot: {path}, line {line}: {why}")
-
-    if df.empty:
-        raise ValueError(f"No data rows in {path}")
-
     for column in PLOTTED_OTHER_NUMBERS:
         if column in df.columns:
             df[column] = pd.to_numeric(df[column], errors="coerce")
-    df[OTHER_NUMBERS_OF_THEIR_KIND] = other_numbers_of_their_kind(path, df)
+    df[OTHER_NUMBERS_OF_THEIR_KIND] = other_numbers_of_their_kind(text, df)
+    # The column names and the text bench-plot shows hold their NULs again; in
+    # a number's cell the stand-in stays, so that cell holds no number.
+    if stand_in in text:
+        df.columns = [name.replace(stand_in, "\x00") for name in df.columns]
+        for column in TEXT_COLUMNS:
+            if column in df.columns:
+                df[column] = df[column].str.replace(stand_in, "\x00", regex=False)
     return df
 
 
@@ -235,15 +304,17 @@ def of_its_kind(column: str, text) -> bool:
     return FLOAT_LITERAL.fullmatch(text) is not None and math.isfinite(float(text))
 
 
-def other_numbers_of_their_kind(path: Path, df: pd.DataFrame) -> pd.Series:
-    """For each row of @p df, read from @p path, whether every other number
+def other_numbers_of_their_kind(text: str, df: pd.DataFrame) -> pd.Series:
+    """For each row of @p df, read from @p text, whether every other number
     the file has holds a value of its kind (`of_its_kind`). The cells are read
     again as text: pandas's own reading takes `1e3`, `1.0`, ` 5` and `+5` alike
     for numbers, where `bench summary` takes only some of them."""
     present = [c for c in OTHER_NUMBERS if c in df.columns]
     if not present:
         return pd.Series(True, index=df.index)
-    written = pd.read_csv(path, keep_default_na=False, na_values=[""], dtype=str, usecols=present)
+    written = pd.read_csv(
+        io.StringIO(text), keep_default_na=False, na_values=[""], dtype=str, usecols=present
+    )
     return written.apply(lambda cells: cells.map(lambda text: of_its_kind(cells.name, text))).all(
         axis=1
     )
@@ -326,6 +397,9 @@ def setup_plot_style():
     plt.rcParams["xtick.labelsize"] = 9
     plt.rcParams["ytick.labelsize"] = 9
     plt.rcParams["legend.fontsize"] = 9
+    # A test name is drawn as written: a '$' in it starts no mathtext, which a
+    # name such as `$$` would make matplotlib refuse to draw.
+    plt.rcParams["text.parse_math"] = False
 
 
 # =============================================================================
@@ -780,7 +854,7 @@ def create_interactive_dashboard(df: pd.DataFrame, output_path: Path):
         generate_report(df, output_path.parent)
         return
 
-    has_gpu = "gpuModel" in df.columns and df["gpuModel"].notna().any()
+    has_gpu = has_gpu_rows(df)
 
     if has_gpu:
         fig = make_subplots(
@@ -879,14 +953,18 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
     plot_cv_analysis(df, output_dir / "jitter_analysis.png")
 
     # GPU plots if data present
-    if "gpuModel" in df.columns and df["gpuModel"].notna().any():
+    if has_gpu_rows(df):
         plot_gpu_breakdown(df, output_dir / "gpu_breakdown.png")
         plot_gpu_speedup(df, output_dir / "gpu_speedup.png")
         plot_gpu_occupancy(df, output_dir / "gpu_occupancy.png")
 
-    # Summary stats CSV
+    # Summary stats CSV. Python before 3.11 writes a NUL, which a test name may
+    # hold, only when an escape character is set; one no name holds is never
+    # written.
     summary = df[["test", "wallMedian", "wallP10", "wallP90", "wallCV", "callsPerSecond"]].copy()
-    summary.to_csv(output_dir / "summary_stats.csv", index=False)
+    names = "".join(summary["test"])
+    escape = absent_character(names) if "\x00" in names else None
+    summary.to_csv(output_dir / "summary_stats.csv", index=False, escapechar=escape)
 
     # Metadata JSON
     metadata = {
@@ -911,9 +989,67 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
 # =============================================================================
 
 
+# The columns the plots read beyond REQUIRED_COLUMNS: the latency
+# distribution's (the report's summary reads two of them), and, for rows with a
+# GPU model, the GPU plots'.
+LATENCY_COLUMNS = ("wallMin", "wallP10", "wallP90", "wallMax")
+GPU_COLUMNS = ("kernelTimeUs", "speedupVsCpu", "occupancy")
+
+
+def has_gpu_rows(df: pd.DataFrame) -> bool:
+    """Whether a row of @p df names a GPU model, which draws the GPU plots."""
+    return "gpuModel" in df.columns and df["gpuModel"].notna().any()
+
+
+def needs(df: pd.DataFrame, path, command: str, columns, what: str):
+    """Stop @p command, naming the first of @p columns @p df lacks and @p
+    what reads it, when it lacks one: a file `bench summary` reads can lack a
+    column only a plot reads."""
+    for column in columns:
+        if column not in df.columns:
+            refuse(path, f"{command} needs the {column} column, for {what}")
+
+
+# The longest test name a matplotlib plot draws: a much longer label makes a
+# figure wider or taller than the 2^16 pixels matplotlib can write.
+LONGEST_LABEL = 1000
+
+
+def drawable_names(df: pd.DataFrame, source, command: str):
+    """Stop @p command when a test name of @p df, the rows it draws with
+    matplotlib from @p source, is longer than LONGEST_LABEL characters,
+    naming the start of the first such name and its length."""
+    lengths = df["test"].str.len()
+    if (lengths > LONGEST_LABEL).any():
+        name = df["test"][lengths > LONGEST_LABEL].iloc[0]
+        refuse(
+            source,
+            f"{command} draws a test name of at most {LONGEST_LABEL} characters, and the one "
+            f"starting '{name[:40]}' has {len(name)}",
+        )
+
+
+def rows_to_draw(args, command: str, matplotlib_plots: bool = True) -> pd.DataFrame:
+    """The timed rows of the file @p args names (`timed_rows`), after the
+    columns @p command draws are found: the latency distribution's, the GPU
+    plots' when a timed row names a GPU model, and test names short enough to
+    draw, when it draws @p matplotlib_plots; otherwise (the plotly dashboard)
+    the latency bars' p10 and p90."""
+    path = Path(args.csv)
+    df = load_csv(path)
+    columns = LATENCY_COLUMNS if matplotlib_plots else ("wallP10", "wallP90")
+    needs(df, path, command, columns, "the latency plot")
+    df = timed_rows(df, args.csv)
+    if matplotlib_plots:
+        if has_gpu_rows(df):
+            needs(df, path, command, GPU_COLUMNS, "the GPU plots of its rows with a gpuModel")
+        drawable_names(df, path, command)
+    return df
+
+
 def cmd_plot(args):
     """Generate standalone plots from CSV."""
-    df = timed_rows(load_csv(Path(args.csv)), args.csv)
+    df = rows_to_draw(args, "plot")
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -922,7 +1058,7 @@ def cmd_plot(args):
     plot_cv_analysis(df, output_dir / "jitter_analysis.png")
 
     # GPU plots if data present
-    if "gpuModel" in df.columns and df["gpuModel"].notna().any():
+    if has_gpu_rows(df):
         plot_gpu_breakdown(df, output_dir / "gpu_breakdown.png")
         plot_gpu_speedup(df, output_dir / "gpu_speedup.png")
         plot_gpu_occupancy(df, output_dir / "gpu_occupancy.png")
@@ -930,7 +1066,8 @@ def cmd_plot(args):
 
 def cmd_dashboard(args):
     """Generate interactive HTML dashboard."""
-    df = timed_rows(load_csv(Path(args.csv)), args.csv)
+    # Without plotly the dashboard is the report's plots.
+    df = rows_to_draw(args, "dashboard", matplotlib_plots=not HAS_PLOTLY)
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     create_interactive_dashboard(df, output_path)
@@ -938,16 +1075,19 @@ def cmd_dashboard(args):
 
 def cmd_report(args):
     """Generate full analysis report."""
-    df = timed_rows(load_csv(Path(args.csv)), args.csv)
+    df = rows_to_draw(args, "report")
     generate_report(df, Path(args.output))
 
 
 def cmd_scaling(args):
     """Generate payload size scaling analysis."""
     csv_paths = [Path(p) for p in args.csvs]
-    df_combined = timed_rows(load_csvs_from_list(csv_paths), ", ".join(args.csvs))
+    source = ", ".join(args.csvs)
+    df_combined = timed_rows(load_csvs_from_list(csv_paths), source)
     output_path = Path(args.output)
     interactive = output_path.suffix == ".html" and HAS_PLOTLY
+    if not interactive:
+        drawable_names(df_combined, source, "scaling")
     if output_path.suffix == ".html" and not HAS_PLOTLY:
         # matplotlib writes no HTML: the static plot goes beside the page.
         output_path = output_path.with_suffix(".png")

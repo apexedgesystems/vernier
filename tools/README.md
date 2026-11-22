@@ -891,16 +891,31 @@ clocks, memory usage, GPU/memory utilization, throttle reasons, P-state.
 Visualization tool for generating charts, dashboards, and reports from benchmark CSVs.
 Requires `make tools-py`.
 
+A file is read as `bench summary` reads it, and refused for the same reasons,
+each command stopping with one line that names the file and the reason, exit
+status 1: a file that cannot be read, or is not UTF-8 (naming the line of the
+first byte that is not); one without a `test`, `wallMedian`, `wallCV` or
+`callsPerSecond` column; one with no row; one with a row whose test name is
+empty or only whitespace (in `bench summary`'s words, naming the line the row
+starts on). A column the header names twice is read from its last place.
+
 Every command plots the rows whose timing cells hold finite numbers. Any other row
 is left out, and stderr names it, saying when its every timing cell is empty,
 as in a run under Nsight Compute; a file with no row left is refused, naming
 the file, with exit status 1.
 
+A file `bench summary` reads can lack a column a plot needs, and is refused,
+naming the command and the column. `plot`, `report`, and `dashboard` without
+plotly need `wallMin`, `wallP10`, `wallP90` and `wallMax`, and, when a row
+they plot names a `gpuModel`, `kernelTimeUs`, `speedupVsCpu` and
+`occupancy`; plotly's dashboard needs `wallP10` and `wallP90`. A plot
+matplotlib draws takes a test name of at most 1000 characters: a file with a
+longer one is refused, naming the start of the name and its length.
+
 A test name is read as written, whatever it looks like (`007` stays `007`), as
 `bench summary` reads it, and so are the timestamp, git hash and host name the
-report copies into `metadata.json`. A file with a row whose test name is empty
-or only whitespace is refused, in `bench summary`'s words and naming the file
-and the line, with exit status 1.
+report copies into `metadata.json`. A `$` in a test name is drawn as written,
+not as the start of a formula.
 
 ### plot - Standard Charts
 
