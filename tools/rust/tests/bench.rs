@@ -522,6 +522,48 @@ fn tables_print_a_test_name_of_any_length() {
     }
 }
 
+/// @test summary reads a quoted name holding a CR, an LF, a CRLF, a doubled
+/// quote, a comma, a NUL or spaces at both edges as written, each row with
+/// its own median: the bytes bench-plot's tests read (test_bench_plot.py).
+#[test]
+fn summary_reads_a_quoted_name_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("names.csv");
+    let path_text = path.to_string_lossy().into_owned();
+    for name in [
+        "Two\rLines",
+        "Two\nLines",
+        "Two\r\nLines",
+        "say \"x\"",
+        "a,b",
+        "a\0b",
+        " Padded ",
+    ] {
+        let field = format!("\"{}\"", name.replace('"', "\"\""));
+        std::fs::write(
+            &path,
+            format!(
+                "test,wallMedian,wallCV,callsPerSecond,wallMin,wallP10,wallP90,wallMax\r\n\
+                 {field},10,0.1,100000,8,9,11,12\r\nOther,20,0.1,50000,18,19,21,22\r\n"
+            ),
+        )
+        .expect("write the file");
+        let (code, out, err) = run(&["summary", &path_text, "--json"]);
+        assert_eq!(code, 0, "{name:?}: {err}");
+        let rows: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let read: Vec<(&str, f64)> = rows
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|row| {
+                let test = row["test"].as_str().expect("a name");
+                (test, row["wall_median"].as_f64().expect("a median"))
+            })
+            .collect();
+        assert_eq!(read, [(name, 10.0), ("Other", 20.0)], "{name:?}");
+    }
+}
+
 /// @test A test name with spaces around it is kept as written in summary.
 #[test]
 fn summary_keeps_a_padded_test_name() {

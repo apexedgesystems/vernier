@@ -108,6 +108,10 @@ bench compare baseline.csv candidate.csv --markdown
 | `--json`               | Machine-readable JSON output                           | --      |
 | `--markdown`           | Markdown table output (for PR comments)                | --      |
 
+In the Markdown table each test name keeps its own cell on its row's line: a
+`|` in it is escaped, and a backslash, a CR and an LF are written `\\`, `\r`
+and `\n`, as `--json` writes them.
+
 **What the labels mean.** A test is `REGRESSION` when the candidate's median
 is more than `--threshold` percent above the baseline's, `IMPROVEMENT` when
 it is more than that below it, and `neutral` otherwise, including at exactly
@@ -914,8 +918,10 @@ longer one is refused, naming the start of the name and its length.
 
 A test name is read as written, whatever it looks like (`007` stays `007`), as
 `bench summary` reads it, and so are the timestamp, git hash and host name the
-report copies into `metadata.json`. A `$` in a test name is drawn as written,
-not as the start of a formula.
+report copies into `metadata.json`. The report's `summary_stats.csv` writes
+each name so it reads back as written: one holding a quote, a comma, a CR or
+an LF is quoted. A `$` in a test name is drawn as written, not as the start of
+a formula.
 
 ### plot - Standard Charts
 

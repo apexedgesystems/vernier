@@ -1,10 +1,12 @@
 """Tests for bench_plot data loading and parsing functions."""
 
+import io
 import json
 import os
 import sys
 import textwrap
 import time
+from csv import reader as csv_records
 
 import pandas as pd
 import pytest
@@ -838,3 +840,112 @@ def test_a_nul_is_kept_as_written_and_in_a_number_is_no_number(tmp_path):
     assert df["test"].tolist() == ["Saxpy.\x00A", "Saxpy.\x00B"]
     assert df["hostname"].tolist() == ["ho\x00st", "host"]
     assert bench_plot.timed_rows(df, str(csv))["test"].tolist() == ["Saxpy.\x00A"]
+
+
+# =============================================================================
+# Quoted names, through both of bench-plot's CSV writes
+# =============================================================================
+
+# Names valid CSV holds in a quoted field: a CR, an LF and a CRLF, a doubled
+# quote, a comma, a NUL, and spaces at both edges. bench summary reads each as
+# written from the same bytes (tests/bench.rs).
+QUOTED_NAMES = [
+    ("cr", "Two\rLines"),
+    ("lf", "Two\nLines"),
+    ("crlf", "Two\r\nLines"),
+    ("quote", 'say "x"'),
+    ("comma", "a,b"),
+    ("nul", "a\x00b"),
+    ("edge_spaces", " Padded "),
+]
+
+
+def quoted(name):
+    """@p name as a quoted CSV field, its quotes doubled."""
+    return '"' + name.replace('"', '""') + '"'
+
+
+def quoted_name_file(path, name):
+    """A file, written byte for byte, of two timed rows: @p name, quoted, with
+    a median of 10, then Other, with 20; return @p path."""
+    path.write_bytes(
+        (
+            "test,wallMedian,wallCV,callsPerSecond,wallMin,wallP10,wallP90,wallMax\r\n"
+            + quoted(name)
+            + ",10,0.1,100000,8,9,11,12\r\nOther,20,0.1,50000,18,19,21,22\r\n"
+        ).encode("utf-8")
+    )
+    return path
+
+
+def read_back(data):
+    """The records Python's csv module reads from the bytes @p data
+    (newline=""), a NUL read through a stand-in, which the module of Python
+    before 3.11 needs."""
+    text = data.decode("utf-8")
+    stand_in = bench_plot.absent_character(text)
+    records = csv_records(io.StringIO(text.replace("\x00", stand_in), newline=""))
+    return [[field.replace(stand_in, "\x00") for field in record] for record in records]
+
+
+def written_as_csv_needs(data, name):
+    """Whether the bytes @p data hold @p name's row with the name as CSV must
+    write it: quoted when it holds a CR, an LF, a quote or a comma, as it is
+    when it holds only a NUL or spaces, which need no quotes."""
+    field = quoted(name) if any(c in name for c in '\r\n",') else name
+    return ("\n" + field + ",10").encode("utf-8") in data
+
+
+@pytest.mark.parametrize(
+    "name", [name for _, name in QUOTED_NAMES], ids=[case for case, _ in QUOTED_NAMES]
+)
+def test_a_quoted_name_is_read_as_written_with_its_own_timing(tmp_path, name):
+    """A valid file whose quoted name holds a line end, a quote, a comma, a
+    NUL or edge spaces is read as its two rows, that name and Other, each
+    with its own median, and the rows the plots draw keep both."""
+    csv = quoted_name_file(tmp_path / "names.csv", name)
+    df = load_csv(csv)
+    assert df["test"].tolist() == [name, "Other"]
+    assert df["wallMedian"].tolist() == [10.0, 20.0]
+    kept = bench_plot.timed_rows(df, str(csv))
+    assert kept["test"].tolist() == [name, "Other"]
+    assert kept["wallMedian"].tolist() == [10.0, 20.0]
+
+
+@pytest.mark.parametrize(
+    "name", [name for _, name in QUOTED_NAMES], ids=[case for case, _ in QUOTED_NAMES]
+)
+def test_the_report_of_a_quoted_name_reads_back_as_written(
+    tmp_path, monkeypatch, recorded_plots, name
+):
+    """The report's summary_stats.csv of that file, read back by Python's csv
+    module, holds the header and the same two rows, and its bytes quote the
+    name when CSV must."""
+    csv = quoted_name_file(tmp_path / "names.csv", name)
+    output = tmp_path / "report"
+    run_main(monkeypatch, ["report", str(csv), "--output", str(output)])
+    data = (output / "summary_stats.csv").read_bytes()
+    assert [record[0] for record in read_back(data)] == ["test", name, "Other"]
+    assert written_as_csv_needs(data, name), data
+
+
+@pytest.mark.parametrize(
+    "name", [name for _, name in QUOTED_NAMES], ids=[case for case, _ in QUOTED_NAMES]
+)
+def test_the_report_writer_keeps_a_quoted_name_in_its_record(tmp_path, recorded_plots, name):
+    """summary_stats.csv written from rows that hold that name reads back as
+    those rows, however the file they came from was read."""
+    rows = pd.DataFrame(
+        {
+            "test": [name, "Other"],
+            "wallMedian": [10.0, 20.0],
+            "wallP10": [9.0, 19.0],
+            "wallP90": [11.0, 21.0],
+            "wallCV": [0.1, 0.1],
+            "callsPerSecond": [100000.0, 50000.0],
+        }
+    )
+    bench_plot.generate_report(rows, tmp_path / "report")
+    data = (tmp_path / "report" / "summary_stats.csv").read_bytes()
+    assert [record[0] for record in read_back(data)] == ["test", name, "Other"]
+    assert written_as_csv_needs(data, name), data

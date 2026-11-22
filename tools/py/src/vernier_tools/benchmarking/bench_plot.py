@@ -200,10 +200,12 @@ def load_csv(path: Path) -> pd.DataFrame:
 
     # The records again as CSV text that pandas reads, each column once, the
     # stand-in kept: pandas ends a field at a NUL, which would read the name
-    # `A<NUL>B` as `A` and the cell `10.0<NUL>x` as the number 10.0.
+    # `A<NUL>B` as `A` and the cell `10.0<NUL>x` as the number 10.0. Each line
+    # ends in CRLF: Python before 3.12 quotes a field holding a CR only when
+    # the line end holds one, and pandas ends a record at an unquoted CR.
     kept = sorted(place.values())
     out = io.StringIO()
-    writer = csv.writer(out, lineterminator="\n")
+    writer = csv.writer(out, lineterminator="\r\n")
     writer.writerow([header[i] for i in kept])
     for _, fields in records:
         writer.writerow([fields[i] for i in kept if i < len(fields)])
@@ -960,11 +962,18 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
 
     # Summary stats CSV. Python before 3.11 writes a NUL, which a test name may
     # hold, only when an escape character is set; one no name holds is never
-    # written.
+    # written. Python before 3.12 quotes a name holding a CR only when the line
+    # end holds one: such a file's lines end in CRLF, every other file's as
+    # before.
     summary = df[["test", "wallMedian", "wallP10", "wallP90", "wallCV", "callsPerSecond"]].copy()
     names = "".join(summary["test"])
     escape = absent_character(names) if "\x00" in names else None
-    summary.to_csv(output_dir / "summary_stats.csv", index=False, escapechar=escape)
+    summary.to_csv(
+        output_dir / "summary_stats.csv",
+        index=False,
+        escapechar=escape,
+        lineterminator="\r\n" if "\r" in names else None,
+    )
 
     # Metadata JSON
     metadata = {

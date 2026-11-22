@@ -636,6 +636,43 @@ mod tests {
         );
     }
 
+    /// @test Every field reads back as written: one holding a CR, an LF or a
+    /// CRLF, a quote or a comma is quoted; one holding a NUL or edge spaces
+    /// needs no quotes and gets none.
+    #[test]
+    fn csv_reads_back_every_field_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let fields = [
+            "Two\rLines",
+            "Two\nLines",
+            "Two\r\nLines",
+            "say \"x\"",
+            "a,b",
+            "a\0b",
+            " Padded ",
+        ];
+        let rows: Vec<Row> = fields
+            .iter()
+            .map(|&field| row(&[("source", "ncu"), ("kernel", field)]))
+            .collect();
+        write_csv(&rows, &path).unwrap();
+        let mut reader = csv::Reader::from_path(&path).unwrap();
+        let kernels: Vec<String> = reader
+            .records()
+            .map(|record| record.unwrap()[2].to_string())
+            .collect();
+        assert_eq!(kernels, fields);
+        let text = fs::read_to_string(&path).unwrap();
+        for quoted in ["\"Two\rLines\"", "\"Two\nLines\"", "\"Two\r\nLines\""] {
+            assert!(text.contains(quoted), "{text:?}");
+        }
+        assert!(
+            text.contains(",a\0b,") && text.contains(", Padded ,"),
+            "{text:?}"
+        );
+    }
+
     /// @test Paths are shown without `.` components or a trailing `/`.
     #[test]
     fn paths_are_normalized() {
