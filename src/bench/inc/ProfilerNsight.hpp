@@ -67,11 +67,16 @@ enum class NsightMode {
 /* ----------------------------- Replay Metrics ----------------------------- */
 
 /**
- * @brief The metrics the replay mode's ncu command collects: the
+ * @brief The metrics the replay mode's ncu command asks for: the
  * throughputs, achieved occupancy, warp execution and branch efficiency,
  * registers per thread and the instruction mix (the ALU, FMA and load/store
- * pipes). Every name is one ncu lists; the shared route table's replay rows
- * pin the list, which bench run's route gives too.
+ * pipes). Not every name is one `ncu --query-metrics` lists:
+ * launch__registers_per_thread is a launch attribute, which the query lists
+ * on neither the RTX 5000 Ada nor the Jetson AGX Thor and ncu collects all
+ * the same; and a GPU without a metric gets nothing for it, without a word
+ * from ncu, as the Jetson AGX Thor, which has no dram__ metric, gets no DRAM
+ * throughput. bench run names such a metric after the run. The shared route
+ * table's replay rows pin the list, which bench run's route gives too.
  */
 inline constexpr std::array<const char*, 11> REPLAY_METRICS = {
     "sm__throughput.avg.pct_of_peak_sustained_elapsed",
