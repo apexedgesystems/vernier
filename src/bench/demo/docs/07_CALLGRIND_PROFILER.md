@@ -384,7 +384,9 @@ differs counts the same in both runs and names another source file or library
 for it: some of the allocator's functions appear with `malloc.c` in one run and
 `???` in the other, and `index` and `__aarch64_swp4_rel`, which the dynamic
 linker and the C library each have a copy of, under one library and then the
-other. Compared by function name over the whole of both profiles, eleven
+other. Two runs with `--profile-test-timeout 0`, which start no watchdog
+thread, list such lines as well. Compared by function name over the whole of
+both profiles, eleven
 functions differ: four of glibc's number-formatting functions, `rindex`, five
 atomic operations and one function of gperftools' library that callgrind could
 not name, 1,060 instructions of 32.2 million between them. `memcpy`, the
