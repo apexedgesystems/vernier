@@ -459,6 +459,29 @@ fn a_needed_value_names_the_line_its_row_starts_on() {
     }
 }
 
+/// @test summary's and compare's tables print a test name longer than the
+/// widest a format width may be (65535), where they stopped with a panic.
+#[test]
+fn tables_print_a_test_name_of_any_length() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("long.csv");
+    let name = "T".repeat(70_000);
+    std::fs::write(
+        &path,
+        format!("test,wallMedian,wallCV,callsPerSecond\n{name},0.5,0.1,2\nShort,0.5,0.1,2\n"),
+    )
+    .expect("write the file");
+    let path = path.to_string_lossy().into_owned();
+    for args in [
+        vec!["summary", path.as_str()],
+        vec!["compare", path.as_str(), path.as_str()],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.contains(&name), "{args:?}: the name is printed whole");
+    }
+}
+
 /// @test A test name with spaces around it is kept as written in summary.
 #[test]
 fn summary_keeps_a_padded_test_name() {

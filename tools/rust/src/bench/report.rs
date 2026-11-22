@@ -12,6 +12,19 @@ const YELLOW: &str = "\x1b[93m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
+/* ----------------------------- Tables ----------------------------- */
+
+/// The width of a table's test column: its longest name's, at least the
+/// heading's, and at most the widest a format width may be (65535), past
+/// which a longer name runs on beyond its column.
+fn name_column_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names
+        .map(str::len)
+        .max()
+        .unwrap_or(4)
+        .clamp(4, usize::from(u16::MAX))
+}
+
 /* ----------------------------- Comparison Table ----------------------------- */
 
 /// What the labels mean, in the lines a terminal shows them on.
@@ -28,12 +41,7 @@ pub fn print_comparison_table(comparison: &Comparison) {
     let results = &comparison.results;
 
     // Calculate column widths
-    let name_width = results
-        .iter()
-        .map(|r| r.test.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    let name_width = name_column_width(results.iter().map(|r| r.test.as_str()));
 
     // Header
     println!();
@@ -172,12 +180,7 @@ pub fn print_summary_table(rows: &[BenchRow], sort: SortColumn) {
         }),
     }
 
-    let name_width = sorted
-        .iter()
-        .map(|r| r.test.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    let name_width = name_column_width(sorted.iter().map(|r| r.test.as_str()));
 
     println!();
     println!(
