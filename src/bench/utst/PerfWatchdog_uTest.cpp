@@ -14,8 +14,9 @@
  *  - The cases in this process arm through a measured loop for 30 s or more
  *    and read the watchdog's flag; none waits for it.
  *  - One case runs the helper twice under valgrind's callgrind, about half a
- *    second each; it skips where valgrind is not installed and in an address
- *    or thread sanitizer build, which valgrind cannot run.
+ *    second each, and one once under helgrind; they skip where valgrind is
+ *    not installed and in an address or thread sanitizer build, which
+ *    valgrind cannot run.
  */
 
 #include "src/bench/inc/PerfHarness.hpp"
@@ -299,6 +300,38 @@ TEST(PerfWatchdogTest, OnlyTheWatchdogAddsAThreadUnderCallgrind) {
     EXPECT_EQ(offSingle, 1);
     EXPECT_EQ(onSingle, 0);
   }
+}
+
+/**
+ * @test Under helgrind, a benchmark that starts no thread of its own gets no
+ * report from the watchdog: the helper, run by valgrind's helgrind with an
+ * exit status for any error, measures two cases under --profile helgrind with
+ * the watchdog at its default, so the watchdog is armed, a loop measured, the
+ * watchdog disarmed and armed again, its thread then parked; helgrind counts
+ * no error.
+ */
+TEST(PerfWatchdogTest, HelgrindReportsNothingOfTheWatchdog) {
+  if (ADDRESS_SANITIZER || THREAD_SANITIZER) {
+    GTEST_SKIP() << "valgrind does not run a sanitizer build";
+  }
+  const vernier::bench::ReadinessContext CONTEXT = vernier::bench::ReadinessContext::capture();
+  const auto VALGRIND = vernier::bench::resolveExecutable("valgrind", CONTEXT);
+  if (!VALGRIND || !VALGRIND->executable) {
+    GTEST_SKIP() << "valgrind is not installed; this test runs the helper under helgrind";
+  }
+  // Any exit status the helper does not give.
+  constexpr int HELGRIND_ERRORS = 97;
+  const ProbeResult RUN = vernier::bench::runBoundedProbe(
+      {VALGRIND->path, "--tool=helgrind", "--error-exitcode=" + std::to_string(HELGRIND_ERRORS),
+       HELPER, "rearm", "--profile", "helgrind"},
+      HELPER_BOUND_MS, CONTEXT, vernier::bench::ProbeStreams::SEPARATE);
+  ASSERT_TRUE(RUN.exited) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_NE(RUN.exitCode, HELGRIND_ERRORS) << "helgrind reported the watchdog:\n"
+                                           << RUN.errorOutput;
+  EXPECT_EQ(RUN.exitCode, 0) << RUN.output << RUN.errorOutput;
+  EXPECT_NE(RUN.output.find("measured twice\n"), std::string::npos) << RUN.output;
+  EXPECT_NE(RUN.errorOutput.find("ERROR SUMMARY: 0 errors from 0 contexts"), std::string::npos)
+      << RUN.errorOutput;
 }
 
 namespace {

@@ -44,6 +44,13 @@
  *                         <flags>: prints how many threads the process has
  *                         when the body first runs, and glibc's
  *                         __libc_single_threaded then (-1 without it)
+ *   rearm <flags...>      two cases, Watchdog.First and Watchdog.Second, each
+ *                         with its profiler attached as a benchmark's is and
+ *                         measured under <flags>: the watchdog armed, a
+ *                         measured loop, the watchdog disarmed, armed again;
+ *                         each body waits for the thread to wait for its
+ *                         deadline, and the second arming for it to park;
+ *                         prints "measured twice"
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
  * then says it did not and exits 0. Where it waits for the watchdog's thread
@@ -410,6 +417,38 @@ int threadsInBody(int argc, char** argv) {
   return 0;
 }
 
+/// The rearm mode: two measured loops, so the watchdog is armed, disarmed and
+/// armed again. Each body waits until the watchdog's thread waits for its
+/// deadline, and the second arming comes once it is parked, so every
+/// notification after the first arming finds the thread waiting.
+int rearm(int argc, char** argv) {
+  const PerfConfig CFG = configFrom(argc, argv);
+  const std::vector<pid_t> BEFORE = threads();
+  std::vector<pid_t> started;
+  bool seen = true;
+  {
+    PerfCase perf = vernier::bench::makePerfCaseWithProfiler("Watchdog.First", CFG);
+    perf.measured([&] {
+      started = startedThreads(BEFORE, threads());
+      seen =
+          waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen;
+    });
+  }
+  seen = waitUntilBlocked(started, Blocked::PARKED, "park") >= 0 && seen;
+  {
+    PerfCase perf = vernier::bench::makePerfCaseWithProfiler("Watchdog.Second", CFG);
+    perf.measured([&] {
+      seen =
+          waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen;
+    });
+  }
+  if (!seen) {
+    return 4;
+  }
+  std::puts("measured twice");
+  return 0;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -450,10 +489,13 @@ int main(int argc, char** argv) {
   if (MODE == "threads") {
     return threadsInBody(argc, argv);
   }
+  if (MODE == "rearm") {
+    return rearm(argc, argv);
+  }
   std::fprintf(stderr,
                "usage: %s hang <flags>|hang-later <flags>|later|shorten|names <test> <tool>|"
                "null-names|disarmed|fork|signals|no-thread <flags>|no-thread-retry <flags>|"
-               "threads <flags>\n",
+               "threads <flags>|rearm <flags>\n",
                argv[0]);
   return 64;
 }

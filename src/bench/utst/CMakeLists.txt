@@ -48,8 +48,8 @@ set(UNIT_TEST_SOURCES
 # /proc/cpuinfo and msr device, which no context can replace. So are the
 # watchdog cases that start the helper program and check its protocol end to
 # end (a deadline, a re-arm, a fork, the signal mask, a thread that cannot
-# start, the threads of a run under callgrind), whatever they take; the three
-# that check it in-process are unit.
+# start, the threads of a run under callgrind, a run under helgrind), whatever
+# they take; the three that check it in-process are unit.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -77,6 +77,7 @@ vernier_add_gtest(
   "^PerfWatchdogTest\\.ThreadThatCannotStartEndsTheMeasurement$"
   "^PerfWatchdogTest\\.ThreadThatCannotStartIsStartedByALaterArming$"
   "^PerfWatchdogTest\\.OnlyTheWatchdogAddsAThreadUnderCallgrind$"
+  "^PerfWatchdogTest\\.HelgrindReportsNothingOfTheWatchdog$"
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
   "^PerfCaseTimingTest\\."

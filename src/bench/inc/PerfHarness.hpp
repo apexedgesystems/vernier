@@ -279,9 +279,12 @@ inline void arm(const char* testName, const char* profileTool,
     state->deadline = std::chrono::steady_clock::now() + timeout;
     ++state->arming;
     state->armed = true;
+    // Signalled with the lock held, as disarm() does: a race checker the
+    // benchmark runs under (helgrind) then has nothing of the watchdog's to
+    // report.
+    state->changed.notify_one();
   }
   g_armed.store(true, std::memory_order_relaxed);
-  state->changed.notify_one();
 }
 
 /** @brief arm() for @p timeoutSecs whole seconds, as --profile-test-timeout gives them. */
@@ -299,8 +302,8 @@ inline void disarm() {
   {
     const std::lock_guard<std::mutex> LOCK(state->mutex);
     state->armed = false;
+    state->changed.notify_one();
   }
-  state->changed.notify_one();
 }
 
 } // namespace perf_watchdog

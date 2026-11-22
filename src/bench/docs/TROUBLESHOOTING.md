@@ -591,10 +591,9 @@ its multi-threaded path: `malloc` and `free` take their locks, so instruction
 counts and timings of code that allocates differ from those an earlier
 release gave. Under `memcheck`, `massif`, `helgrind`, `jemalloc`, and
 `gperf`'s heap profile (a build linked with tcmalloc), the process gains the
-thread too but allocates through another allocator; `helgrind` then reports
-one `pthread_cond_signal` without its lock held, in `measured()`, and
-`memcheck`'s leak check one block possibly lost, allocated as the thread
-started. `--profile-test-timeout 0` profiles without the thread and without
+thread too but allocates through another allocator, and `memcheck`'s leak
+check reports one block possibly lost, allocated as the thread started.
+`--profile-test-timeout 0` profiles without the thread and without
 the watchdog. Nothing changes where the process has already started another
 thread: under `heaptrack`, `bpftrace` and `offcpu`, which start one, in a CUDA
 benchmark, whose runtime starts its own (`nsight`, `ncu`,
