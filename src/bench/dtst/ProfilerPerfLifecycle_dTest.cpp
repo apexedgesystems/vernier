@@ -878,8 +878,10 @@ TEST_F(PerfLifecycleTest, RecordWhoseExtentsFitIsReadThrough) {
  * RecordWhoseExtentsDoNotFitHasNoCaveat's first three cases as the header
  * file; a 96-byte header file declaring 104 bytes whose table and section
  * still read; the feature table past the end; the DIR_FORMAT section past the
- * end, and at an offset near 2^64; a stream of 12 bytes whose record says 16.
- * None gets the caveat; none fails.
+ * end, at an offset near 2^64, and declaring more bytes than the file holds
+ * (4096 or 2^64 - 1 at offset 120 of 128, its version still readable there);
+ * a stream of 12 bytes whose record says 16. None gets the caveat; none
+ * fails.
  */
 TEST_F(PerfLifecycleTest, DirectoryWhoseExtentsDoNotFitHasNoCaveat) {
   const std::vector<Field> FORMAT_1 = {{8, 104},   {40, 104}, {72, DIR_FORMAT_BIT},
@@ -905,6 +907,18 @@ TEST_F(PerfLifecycleTest, DirectoryWhoseExtentsDoNotFitHasNoCaveat) {
       {"the DIR_FORMAT section at 2^64 - 4",
        bytesWith(128,
                  {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}, {104, ~std::uint64_t{3}}, {112, 8}}),
+       ""},
+      {"the DIR_FORMAT section at 120 declaring 4096 bytes in a 128-byte file",
+       bytesWith(128,
+                 {{8, 104}, {40, 104}, {72, DIR_FORMAT_BIT}, {104, 120}, {112, 4096}, {120, 1}}),
+       ""},
+      {"the DIR_FORMAT section at 120 declaring 2^64 - 1 bytes",
+       bytesWith(128, {{8, 104},
+                       {40, 104},
+                       {72, DIR_FORMAT_BIT},
+                       {104, 120},
+                       {112, ~std::uint64_t{0}},
+                       {120, 1}}),
        ""},
       {"a 12-byte stream whose record says 16", bytesWith(128, FORMAT_1),
        recordBytes({COMM}).substr(0, 12)},
