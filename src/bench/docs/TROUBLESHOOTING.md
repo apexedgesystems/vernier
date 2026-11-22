@@ -582,6 +582,24 @@ thread of its own and uses no signal or timer, so a benchmark's own `alarm()`
 and SIGALRM handler, and gperftools sampling on the real-time timer
 (`CPUPROFILE_REALTIME`), work under `--profile`.
 
+That thread is the benchmark's: it starts with the first measured loop under
+`--profile` and stays until the process ends. A benchmark that starts no
+thread of its own, profiled with a tool that starts none in its process and
+leaves the C library's allocator in place (`gperf`'s CPU profile, `perf`,
+`callgrind`, `rapl`), therefore runs its measured loops with that allocator on
+its multi-threaded path: `malloc` and `free` take their locks, so instruction
+counts and timings of code that allocates differ from those an earlier
+release gave. Under `memcheck`, `massif`, `helgrind`, `jemalloc`, and
+`gperf`'s heap profile (a build linked with tcmalloc), the process gains the
+thread too but allocates through another allocator; `helgrind` then reports
+one `pthread_cond_signal` without its lock held, in `measured()`, and
+`memcheck`'s leak check one block possibly lost, allocated as the thread
+started. `--profile-test-timeout 0` profiles without the thread and without
+the watchdog. Nothing changes where the process has already started another
+thread: under `heaptrack`, `bpftrace` and `offcpu`, which start one, in a CUDA
+benchmark, whose runtime starts its own (`nsight`, `ncu`,
+`compute-sanitizer`), and in `contentionRun()`, whose workers are threads.
+
 **Debug:**
 
 ```bash
