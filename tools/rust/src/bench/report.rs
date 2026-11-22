@@ -494,7 +494,8 @@ mod tests {
 
     /// @test A test name holding a CR, an LF, a CRLF, a pipe or a backslash
     /// stays one cell on its row's line: the pipe escaped, the others written
-    /// as `\\`, `\r` and `\n`; so does such a name among the unmatched tests.
+    /// as `\\`, `\r` and `\n`; so does such a name in either list of
+    /// unmatched tests.
     #[test]
     fn markdown_keeps_each_name_in_its_cell() {
         let names = [
@@ -514,6 +515,7 @@ mod tests {
         let mut comparison =
             make_comparison(names.iter().map(|n| make_result(n, 1.0, 1.0)).collect());
         comparison.baseline_only = vec!["Gone\nAway".to_string(), "x|y".to_string()];
+        comparison.candidate_only = vec!["New\r\nOne".to_string(), "p|q".to_string()];
         let md = to_markdown(&comparison);
         let rows: Vec<&str> = md
             .split('\n')
@@ -528,6 +530,10 @@ mod tests {
         }
         assert!(
             md.contains("\nMissing from the candidate (2): Gone\\nAway, x\\|y\n"),
+            "{md:?}"
+        );
+        assert!(
+            md.contains("\nNew in the candidate (2): New\\r\\nOne, p\\|q\n"),
             "{md:?}"
         );
     }
