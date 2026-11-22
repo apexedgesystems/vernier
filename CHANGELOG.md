@@ -461,6 +461,11 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - `bench summary` and `bench compare` say when a row's timing cells are all
   empty, as a run under Nsight Compute leaves them, and `bench run` refuses
   `--analyze` under ncu. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench summary` and `bench compare` name the line a row starts on, as an
+  editor counts lines, where CRLF line ends or blank lines before the row
+  made them name an earlier one, and the line of a byte that is not UTF-8;
+  a `.bench.yaml` of lone CR line ends is read line by line.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench-plot` leaves out and names each row without plottable timing, such
   as the rows of a run under Nsight Compute, and refuses a file with none.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))

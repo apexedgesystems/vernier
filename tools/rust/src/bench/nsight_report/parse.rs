@@ -13,6 +13,8 @@
 use std::collections::BTreeSet;
 use std::fmt;
 
+use crate::bench::csv_loader::record_line;
+
 /* ----------------------------- Types ----------------------------- */
 
 /// One CSV row: column names with their values, in the order first set.
@@ -138,7 +140,11 @@ fn table(text: &str) -> Result<Option<(Vec<String>, Vec<Row>)>, Malformed> {
         // cannot fail to read.
         let Ok(record) = record else { continue };
         if record.len() > header.len() {
-            let line = record.position().map_or(0, |p| p.line()) + start as u64;
+            // The line the record starts on, blank lines before it counted.
+            let line = record
+                .position()
+                .map_or(0, |p| record_line(csv_text.as_bytes(), p))
+                + start as u64;
             return Err(Malformed {
                 line,
                 fields: record.len(),
@@ -313,6 +319,18 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(cells(&rows[0]), [("a", "1"), ("b", ""), ("c", "")]);
         assert_eq!(cells(&rows[1]), [("a", "x, y"), ("b", "5"), ("c", "4")]);
+    }
+
+    /// @test The line named is the one the long record starts on, blank lines
+    /// before it counted.
+    #[test]
+    fn long_record_after_a_blank_line_names_its_own_line() {
+        let text = "Processing...\nTime (%),Total Time (ns),Name\n1.0,2,a\n\n\n1.0,2,b,EXTRA\n";
+        let err = records(text).expect_err("longer than its header");
+        assert_eq!(
+            err.to_string(),
+            "line 6 of its output has 4 fields for 3 columns"
+        );
     }
 
     /// @test A record longer than its header is refused, naming its line.

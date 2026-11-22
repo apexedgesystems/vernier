@@ -259,6 +259,8 @@ struct Reader {
 /// field, kept in `extras` (`validate` warns about it).
 fn parse(text: &str) -> (Config, Vec<String>) {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // A line ends at CRLF, a lone CR or LF, as YAML reads line breaks.
+    let text = text.replace("\r\n", "\n").replace('\r', "\n");
     let mut reader = Reader::default();
     for (index, raw) in text.lines().enumerate() {
         reader.line(index + 1, strip_comment(raw));
@@ -842,6 +844,24 @@ mod tests {
         );
         // The first of a key given twice is the one read.
         assert_eq!(parse("repeats: 9\nrepeats: 10\n").0.repeats, Some(9));
+    }
+
+    /// @test A line ends at CRLF, a lone CR or LF, as YAML reads line breaks:
+    /// a file of lone CR line ends is read line by line, and each problem
+    /// names its line.
+    #[test]
+    fn every_line_end_yaml_takes_ends_a_line() {
+        for end in ["\n", "\r\n", "\r"] {
+            let text = ["cycles: 100", "", "repeats: many", "gtest_filter: A*"].join(end) + end;
+            let (config, found) = parse(&text);
+            assert_eq!(config.cycles, Some(100), "{end:?}");
+            assert_eq!(config.gtest_filter.as_deref(), Some("A*"), "{end:?}");
+            assert_eq!(found.len(), 1, "{end:?}: {found:?}");
+            assert!(
+                found[0].starts_with("line 3: repeats: expected "),
+                "{end:?}: {found:?}"
+            );
+        }
     }
 
     /// @test A `#` starts a comment at the start of a line or after a blank,

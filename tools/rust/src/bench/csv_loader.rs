@@ -253,10 +253,36 @@ fn unusable_test_name(test: &str) -> Option<String> {
     }
 }
 
-/// Where a record is, for a message: the file and, when known, the line.
-fn location(path: &Path, record: &csv::StringRecord) -> String {
+/// The line of @p bytes that byte @p offset is on, counting from 1, as an
+/// editor counts lines: each "\r\n", lone "\r" and lone "\n" before it ends
+/// one.
+pub(crate) fn line_at(bytes: &[u8], offset: usize) -> u64 {
+    let before = &bytes[..offset.min(bytes.len())];
+    let crlf = before.windows(2).filter(|pair| pair == b"\r\n").count();
+    let ends = before.iter().filter(|&&b| b == b'\r' || b == b'\n').count();
+    (ends - crlf) as u64 + 1
+}
+
+/// The line a record read from @p bytes starts on. The reader's position for
+/// a record is where it stood when the record before it ended, so the line
+/// ends it skipped next (the LF of a CRLF, blank lines) come before the
+/// record's first byte.
+pub(crate) fn record_line(bytes: &[u8], position: &csv::Position) -> u64 {
+    let start = position.byte() as usize;
+    let skipped = bytes
+        .get(start..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|&&b| b == b'\r' || b == b'\n')
+        .count();
+    line_at(bytes, start + skipped)
+}
+
+/// Where a record of @p bytes, the file at @p path, is, for a message: the
+/// file and, when known, the line the record starts on.
+fn location(path: &Path, bytes: &[u8], record: &csv::StringRecord) -> String {
     match record.position() {
-        Some(pos) => format!("{}, line {}", path.display(), pos.line()),
+        Some(pos) => format!("{}, line {}", path.display(), record_line(bytes, pos)),
         None => path.display().to_string(),
     }
 }
@@ -313,22 +339,34 @@ pub fn load_csv(path: &Path) -> Result<Vec<BenchRow>, Error> {
 
 /// Load benchmark rows, checking every row against the caller's `needs`.
 ///
-/// Every row, whatever the needs, must have a test name that is not empty or
-/// only whitespace.
+/// A file that is not UTF-8 is an error naming the line of its first byte
+/// that is not. Every row, whatever the needs, must have a test name that is
+/// not empty or only whitespace.
 ///
 /// A caller that computes from or presents a numeric column cannot tell the
 /// default `load_csv` gives an unreadable field, or a NaN, from a measured
 /// value, so it names the column here with how it needs it. A row that falls
-/// short is an error naming the file, the line, the test, the column and
-/// what the field held; an empty timing cell in a row whose every timing
-/// cell is empty and whose other numbers are sound, as the benchmark writes
-/// a row it did not time, adds that a run under Nsight Compute leaves such
-/// a row. Every other column is read as `load_csv` reads it.
+/// short is an error naming the file, the line the row starts on, the test,
+/// the column and what the field held; an empty timing cell in a row whose
+/// every timing cell is empty and whose other numbers are sound, as the
+/// benchmark writes a row it did not time, adds that a run under Nsight
+/// Compute leaves such a row. Every other column is read as `load_csv` reads
+/// it. A line, in a message, is counted as an editor counts it: each CRLF,
+/// lone CR or LF ends one, and blank lines count.
 pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchRow>, Error> {
+    let bytes = std::fs::read(path).map_err(csv::Error::from)?;
+    // Before any field is read: a byte that is not UTF-8 is named by its line.
+    if let Err(e) = std::str::from_utf8(&bytes) {
+        return Err(Error::Parse(format!(
+            "{}, line {}: not valid UTF-8",
+            path.display(),
+            line_at(&bytes, e.valid_up_to())
+        )));
+    }
     let mut rdr = csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(true)
-        .from_path(path)?;
+        .from_reader(bytes.as_slice());
 
     let headers = rdr.headers()?.clone();
     let hmap = header_map(&headers);
@@ -355,7 +393,7 @@ pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchR
         if let Some(problem) = unusable_test_name(get_str(&record, &hmap, "test")) {
             return Err(Error::Parse(format!(
                 "{}: {problem}",
-                location(path, &record)
+                location(path, &bytes, &record)
             )));
         }
         let (row, found) = parse_row(&record, &hmap);
@@ -373,7 +411,7 @@ pub fn load_csv_strict(path: &Path, needs: &[(&str, Need)]) -> Result<Vec<BenchR
                 let note = capture_note(column, untimed(&record, &hmap, &found));
                 return Err(Error::Parse(format!(
                     "{}: test '{}' {problem}{}",
-                    location(path, &record),
+                    location(path, &bytes, &record),
                     row.test,
                     note.unwrap_or("")
                 )));

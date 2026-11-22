@@ -355,6 +355,110 @@ fn an_error_keeps_its_status_with_a_stderr_no_one_reads() {
     assert!(out.stdout.is_empty(), "printed a summary");
 }
 
+/// A header and three rows as summary reads them, the third row's test name
+/// empty and the second's wallMedian empty when @p hollow says so, each line
+/// ended by @p end, with @p blanks blank lines before the third row.
+fn rows_text(end: &str, blanks: usize, hollow: bool) -> String {
+    let median = if hollow { "" } else { "0.5" };
+    [
+        "test,wallMedian,wallCV,callsPerSecond".to_string(),
+        "A,0.5,0.1,2".to_string(),
+        format!("B,{median},0.1,2"),
+    ]
+    .into_iter()
+    .chain(std::iter::repeat_n(String::new(), blanks))
+    .chain([",0.5,0.1,2".to_string()])
+    .map(|line| line + end)
+    .collect()
+}
+
+/// @test summary and compare, on either side, name the line a row starts on,
+/// as an editor counts lines: in a file of CRLF line ends, after blank lines
+/// before the row, after a record that spans two lines, and for a byte that
+/// is not UTF-8, whose line is the line it is on.
+#[test]
+fn readers_name_the_line_a_row_starts_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let good = fixture("sample_bench.csv");
+    let two_lines = "test,wallMedian,wallCV,callsPerSecond\n\"Two\nLines\",0.5,0.1,2\n,0.5,0.1,2\n";
+    let mut not_utf8 = b"test,wallMedian,wallCV,callsPerSecond\r\nA,0.5,0.1,2\r\n\r\n".to_vec();
+    not_utf8.extend_from_slice(b"B\xff,0.5,0.1,2\r\n");
+    let files: [(&str, Vec<u8>, &str); 7] = [
+        (
+            "lf.csv",
+            rows_text("\n", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "crlf.csv",
+            rows_text("\r\n", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "cr.csv",
+            rows_text("\r", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "blank.csv",
+            rows_text("\n", 2, false).into(),
+            "line 6: the row has no test name",
+        ),
+        (
+            "blank_crlf.csv",
+            rows_text("\r\n", 2, false).into(),
+            "line 6: the row has no test name",
+        ),
+        (
+            "two_lines.csv",
+            two_lines.into(),
+            "line 4: the row has no test name",
+        ),
+        ("not_utf8.csv", not_utf8, "line 4: not valid UTF-8"),
+    ];
+    for (name, bytes, said) in files {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let expected = format!("{path}, {said}");
+        for args in [
+            vec!["summary", path.as_str()],
+            vec!["compare", good.as_str(), path.as_str()],
+            vec!["compare", path.as_str(), good.as_str()],
+        ] {
+            let (code, _, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test A row a caller needs a value of names the line it starts on, after
+/// blank lines and in a file of CRLF line ends.
+#[test]
+fn a_needed_value_names_the_line_its_row_starts_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, end) in [("blank.csv", "\n"), ("crlf.csv", "\r\n")] {
+        // B, the row with no wallMedian, on line 4: a blank line before it.
+        let text = rows_text(end, 0, true).replacen(
+            &format!("A,0.5,0.1,2{end}"),
+            &format!("A,0.5,0.1,2{end}{end}"),
+            1,
+        );
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let (code, _, err) = run(&["summary", &path]);
+        assert_eq!(code, 1, "{name}: {err}");
+        assert!(
+            err.contains(&format!(
+                "{path}, line 4: test 'B' has no wallMedian value: the field is empty"
+            )),
+            "{name}: {err}"
+        );
+    }
+}
+
 /// @test A test name with spaces around it is kept as written in summary.
 #[test]
 fn summary_keeps_a_padded_test_name() {

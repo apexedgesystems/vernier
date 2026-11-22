@@ -1347,7 +1347,7 @@ perf report -i artifacts/MyComponent.Test.perf/perf.data --stdio
 that names the file, the test and the column it could not read, and exits 1:
 
 ```
-Error: parse error: bad.csv, line 1: test 'ReadinessFixture.First' has wallCV 'garbage', which is not a number
+Error: parse error: bad.csv, line 2: test 'ReadinessFixture.First' has wallCV 'garbage', which is not a number
 ```
 
 **Solutions:**
