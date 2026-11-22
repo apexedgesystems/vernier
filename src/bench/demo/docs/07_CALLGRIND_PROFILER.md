@@ -7,7 +7,7 @@
 the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
 The run quoted first under If It Does Not Match comes from 2026-10-03 (UTC), a
 later tree at the same version. Steps 2, 3 and 5 and the count for a wrap
-started by hand, under If It Does Not Match, come from 2026-11-16 (UTC), a
+started by hand, under If It Does Not Match, come from 2026-11-22 (UTC), a
 later tree at the same version.
 
 ## Overview
@@ -28,7 +28,7 @@ counts every instruction it executes, and charges each one to the function and
 the source line it came from. It also reconstructs which function called which,
 to add up what a call costs including everything it calls. The counts do not
 depend on how busy the machine is or which core the program runs on. The price
-is speed: on this rig the profiled calls ran about 58 and 94 times slower than
+is speed: on this rig the profiled calls ran about 51 and 93 times slower than
 natively (step 2). And an instruction count is not a time: it says nothing about
 waiting for memory, which a timing includes.
 
@@ -121,35 +121,35 @@ Captured output, trimmed where marked:
 Running: valgrind --tool=callgrind --callgrind-out-file=bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind
 ...
 [ RUN      ] CallgrindProfiler.JoinV0
-[CallgrindProfiler.JoinV0]  59224.981 us/call  CV=0.0%  ~17 calls/s  (p10=59224.981 p90=59224.981 sd=0.000)
+[CallgrindProfiler.JoinV0]  52131.118 us/call  CV=0.0%  ~19 calls/s  (p10=52131.118 p90=52131.118 sd=0.000)
 
 === Callgrind Profile ===
 Output: bench-out/BenchDemo_07_CallgrindProfiler.callgrind
    bench run checks the profile after valgrind has written it
 
-[       OK ] CallgrindProfiler.JoinV0 (1200 ms)
+[       OK ] CallgrindProfiler.JoinV0 (1067 ms)
 [ RUN      ] CallgrindProfiler.JoinV1
-[CallgrindProfiler.JoinV1]  1779.761 us/call  CV=0.0%  ~562 calls/s  (p10=1779.761 p90=1779.761 sd=0.000)
+[CallgrindProfiler.JoinV1]  1766.866 us/call  CV=0.0%  ~566 calls/s  (p10=1766.866 p90=1766.866 sd=0.000)
 ...
-==12013== Events    : Ir
-==12013== Collected : 32173433
-==12013==
-==12013== I   refs:      32,173,433
-[bench] callgrind wrote bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out (516601 bytes)
+==66360== Events    : Ir
+==66360== Collected : 31041723
+==66360==
+==66360== I   refs:      31,041,723
+[bench] callgrind wrote bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out (498064 bytes)
 ```
 
 `bench run` put `valgrind --tool=callgrind` in front of the binary and told the
 benchmark where the profile goes, so the backend reports that folder after each
 measured test: one file for the whole run, written when the process exits.
-valgrind's own lines follow: this run executed 32,173,433 instructions. The
+valgrind's own lines follow: this run executed 31,041,723 instructions. The
 last line is `bench run`'s, after valgrind exited: it checks that the profile
 was written and names its size, and fails the run when it was not.
 
 `--cycles 10 --repeats 1` because a count needs no repeats to average: the same
 work counts the same when you run it again (step 5). It also keeps the run
-short. Under callgrind V0 took 59,225.0 us per call against 1017.2 us natively,
-58 times slower, and V1 94 times slower; at that speed the default of 10,000
-calls per repeat would take almost ten minutes per repeat of V0. Each test
+short. Under callgrind V0 took 52,131.1 us per call against 1017.2 us natively,
+51 times slower, and V1 93 times slower; at that speed the default of 10,000
+calls per repeat would take almost nine minutes per repeat of V0. Each test
 calls its version twelve times: once to check the answer, once to warm up
 (`--warmup` defaults to 1) and the ten measured calls.
 
@@ -164,30 +164,29 @@ instructions each executed itself (its self count, callees excluded). Captured
 output, the first lines of that list, trimmed where marked:
 
 ```
-32,173,433 (100.0%)  PROGRAM TOTALS
+31,041,723 (100.0%)  PROGRAM TOTALS
 
 --------------------------------------------------------------------------------
 Ir                   file:function
 --------------------------------------------------------------------------------
-11,828,747 (36.77%)  ./string/../sysdeps/aarch64/multiarch/../memcpy.S:__GI_memcpy [/usr/lib/aarch64-linux-gnu/libc.so.6]
- 2,790,828 ( 8.67%)  ./malloc/./malloc/malloc.c:_int_malloc'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
- 2,265,264 ( 7.04%)  ./malloc/./malloc/malloc.c:_int_malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
- 1,168,623 ( 3.63%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
- 1,133,775 ( 3.52%)  ???:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
-   831,447 ( 2.58%)  ???:_int_free_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
-   799,856 ( 2.49%)  ./malloc/./malloc/malloc.c:free'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-   787,391 ( 2.45%)  ???:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-   784,438 ( 2.44%)  ./elf/./elf/dl-lookup.c:do_lookup_x'2 [/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1]
-   768,756 ( 2.39%)  ???:free'2
-   734,556 ( 2.28%)  ./malloc/./malloc/malloc.c:_int_free_create_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
-   695,758 ( 2.16%)  /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...)'2 [...]
+11,828,281 (38.10%)  ./string/../sysdeps/aarch64/multiarch/../memcpy.S:__GI_memcpy [/usr/lib/aarch64-linux-gnu/libc.so.6]
+ 2,787,104 ( 8.98%)  ./malloc/./malloc/malloc.c:_int_malloc'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+ 2,329,664 ( 7.50%)  ./malloc/./malloc/malloc.c:_int_malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
+ 1,133,755 ( 3.65%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
+ 1,047,335 ( 3.37%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
+   799,745 ( 2.58%)  ./malloc/./malloc/malloc.c:free'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+   787,014 ( 2.54%)  ./malloc/./malloc/malloc.c:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+   784,139 ( 2.53%)  ./elf/./elf/dl-lookup.c:do_lookup_x'2 [/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1]
+   768,258 ( 2.47%)  ???:free'2
+   734,556 ( 2.37%)  ./malloc/./malloc/malloc.c:_int_free_create_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
+   695,758 ( 2.24%)  /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...)'2 [...]
 ...
 ```
 
-The run's instructions are copying and allocating: `memcpy` executed 36.77% of
-them, and the functions of glibc's allocator together 38.3% (the list continues
+The run's instructions are copying and allocating: `memcpy` executed 38.10% of
+them, and the functions of glibc's allocator together 38.2% (the list continues
 past the lines shown). That is V0's work: its twelve calls, at step 4's count
-per call, come to 79% of the run, and each one copies the string joined so far
+per call, come to 82% of the run, and each one copies the string joined so far
 once per part, allocating a new one each time. The column is `Ir`, instructions
 executed; percentages are of the program total.
 
@@ -220,10 +219,10 @@ line of `char_traits.h`:
 ```
 -- Auto-annotated source: /usr/include/c++/14/bits/char_traits.h
 ...
-1,236,228 ( 3.84%)      return static_cast<char_type*>(__builtin_memcpy(__s1, __s2, __n));
-15,576,389,630 (48413.8%)  => /usr/include/c++/14/bits/new_allocator.h:vernier::bench::demo::joinV0(...)'2 (11,964x)
-53,267,586 (165.6%)  => /usr/include/c++/14/bits/basic_string.h:vernier::bench::demo::joinV0(...)'2 (24x)
-5,889,612 (18.31%)  => ./string/../sysdeps/aarch64/multiarch/../memcpy.S:__GI_memcpy (24,000x)
+1,236,228 ( 3.98%)      return static_cast<char_type*>(__builtin_memcpy(__s1, __s2, __n));
+14,976,853,315 (48247.5%)  => /usr/include/c++/14/bits/new_allocator.h:vernier::bench::demo::joinV0(...)'2 (11,964x)
+51,085,420 (164.6%)  => /usr/include/c++/14/bits/basic_string.h:vernier::bench::demo::joinV0(...)'2 (24x)
+5,889,612 (18.97%)  => ./string/../sysdeps/aarch64/multiarch/../memcpy.S:__GI_memcpy (24,000x)
 ```
 
 The first number is the line's own count. The lines starting with `=>` are calls
@@ -241,11 +240,11 @@ report, it has the last line of the string's `_M_mutate` calling `joinV0`
      .                        size_type __len2)
 ...
 11,964 ( 0.04%)      }
-15,537,679,696 (48293.5%)  => /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...)'2 (11,952x)
-26,627,409 (82.76%)  => /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...) (12x)
+14,939,781,386 (48128.1%)  => /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...)'2 (11,952x)
+25,536,326 (82.26%)  => /usr/include/c++/14/bits/char_traits.h:vernier::bench::demo::joinV0(...) (12x)
 ```
 
-A call cannot cost 48293.5% of the program it is part of, and the run called
+A call cannot cost 48128.1% of the program it is part of, and the run called
 `joinV0` twelve times; summed over the whole profile, `joinV0` is credited with
 47,952 calls. The profile also shows functions as `free'2` and
 `operator new'2` (`'2` is callgrind's mark for a function it believes is
@@ -317,80 +316,54 @@ Captured output of the `diff`:
 ---
 > Profile data file 'bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out' (creator: callgrind-3.24.0)
 7c7
-< Timerange: Basic block 0 - 6414194
+< Timerange: Basic block 0 - 5918813
 ---
-> Timerange: Basic block 0 - 6414086
+> Timerange: Basic block 0 - 5918806
 9c9
-< Profiled target:  ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind (PID 12013, part 1)
+< Profiled target:  ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind (PID 66360, part 1)
 ---
-> Profiled target:  ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind (PID 12022, part 1)
+> Profiled target:  ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind (PID 66368, part 1)
 21c21
-< 32,173,433 (100.0%)  PROGRAM TOTALS
+< 31,041,723 (100.0%)  PROGRAM TOTALS
 ---
-> 32,172,795 (100.0%)  PROGRAM TOTALS
-29,31c29,31
-<  1,168,623 ( 3.63%)  ./malloc/./malloc/malloc.c:malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
-<  1,133,775 ( 3.52%)  ???:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
-<    831,447 ( 2.58%)  ???:_int_free_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
+> 31,041,660 (100.0%)  PROGRAM TOTALS
+29c29
+<  1,133,755 ( 3.65%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ---
->  1,168,623 ( 3.63%)  ./malloc/./malloc/malloc.c:malloc
->  1,133,775 ( 3.52%)  ./malloc/./malloc/malloc.c:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
->    831,447 ( 2.58%)  ./malloc/./malloc/malloc.c:_int_free_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
-33c33
-<    787,391 ( 2.45%)  ???:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+>  1,133,755 ( 3.65%)  ???:_int_free_merge_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
+32c32
+<    787,014 ( 2.54%)  ./malloc/./malloc/malloc.c:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ---
->    787,391 ( 2.45%)  ./malloc/./malloc/malloc.c:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-41c41
-<    365,090 ( 1.13%)  ???:__aarch64_cas4_acq [/usr/lib/aarch64-linux-gnu/libc.so.6]
+>    787,014 ( 2.54%)  ???:unlink_chunk.isra.0 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+37c37
+<    633,607 ( 2.04%)  ./malloc/./malloc/malloc.c:_int_free_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ---
->    364,950 ( 1.13%)  ???:__aarch64_cas4_acq [/usr/lib/aarch64-linux-gnu/libc.so.6]
-43c43
-<    292,440 ( 0.91%)  ???:__aarch64_swp4_rel [/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1]
+>    633,607 ( 2.04%)  ???:_int_free_chunk [/usr/lib/aarch64-linux-gnu/libc.so.6]
+77c77
+<     32,488 ( 0.10%)  ./string/../sysdeps/aarch64/strrchr.S:rindex [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ---
->    292,443 ( 0.91%)  ???:__aarch64_swp4_rel [/usr/lib/aarch64-linux-gnu/libc.so.6]
-59c59
-<    107,710 ( 0.33%)  ???:malloc
+>     32,473 ( 0.10%)  ./string/../sysdeps/aarch64/strrchr.S:rindex [/usr/lib/aarch64-linux-gnu/libc.so.6]
+137c137
+<      6,334 ( 0.02%)  ./stdio-common/./stdio-common/printf_fp.c:__printf_fp_buffer_1.isra.0'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ---
->    107,710 ( 0.33%)  ???:malloc [/usr/lib/aarch64-linux-gnu/libc.so.6]
-78c78
-<     37,816 ( 0.12%)  ???:alloc_perturb [/usr/lib/aarch64-linux-gnu/libc.so.6]
----
->     37,816 ( 0.12%)  ./malloc/./malloc/malloc.c:alloc_perturb [/usr/lib/aarch64-linux-gnu/libc.so.6]
-81c81
-<     31,792 ( 0.10%)  ./string/../sysdeps/aarch64/strrchr.S:rindex [/usr/lib/aarch64-linux-gnu/libc.so.6]
----
->     31,803 ( 0.10%)  ./string/../sysdeps/aarch64/strrchr.S:rindex [/usr/lib/aarch64-linux-gnu/libc.so.6]
-137a138
->      6,428 ( 0.02%)  ./stdio-common/./stdio-common/printf_fp.c:__printf_fp_buffer_1.isra.0'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-140d140
-<      6,360 ( 0.02%)  ./stdio-common/./stdio-common/printf_fp.c:__printf_fp_buffer_1.isra.0'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-170c170
-<      4,062 ( 0.01%)  ./string/../sysdeps/aarch64/strchr.S:index [/usr/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1]
----
->      4,062 ( 0.01%)  ./string/../sysdeps/aarch64/strchr.S:index [/usr/lib/aarch64-linux-gnu/libc.so.6]
-175a176
->      3,914 ( 0.01%)  ./stdio-common/./stdio-common/printf_fp.c:hack_digit'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
-177d177
-<      3,796 ( 0.01%)  ./stdio-common/./stdio-common/printf_fp.c:hack_digit'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+>      6,424 ( 0.02%)  ./stdio-common/./stdio-common/printf_fp.c:__printf_fp_buffer_1.isra.0'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+166a167
+>      3,884 ( 0.01%)  ./stdio-common/./stdio-common/printf_fp.c:hack_digit'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
+169d169
+<      3,826 ( 0.01%)  ./stdio-common/./stdio-common/printf_fp.c:hack_digit'2 [/usr/lib/aarch64-linux-gnu/libc.so.6]
 ```
 
-Five functions in the two lists counted different numbers of instructions (the
+Three functions in the two lists counted different numbers of instructions (the
 lists stop at 99% of the total, the report's `Thresholds` line):
 `__printf_fp_buffer_1` and `hack_digit`, glibc formatting a floating-point
-number; `rindex`, by 11; and two atomic operations, `__aarch64_cas4_acq` by 140
-and `__aarch64_swp4_rel` by 3. The harness prints the times it measured, and
+number, and `rindex`, by 15. The harness prints the times it measured, and
 different times take different arithmetic to print. Every other line that
-differs counts the same in both runs and names another source file or library
-for it: some of the allocator's functions appear with `malloc.c` in one run and
-`???` in the other, and `index` and `__aarch64_swp4_rel`, which the dynamic
-linker and the C library each have a copy of, under one library and then the
-other. Two runs with `--profile-test-timeout 0` list such lines as well.
-Compared by function name over the whole of
-both profiles, eleven
-functions differ: four of glibc's number-formatting functions, `rindex`, five
-atomic operations and one function of gperftools' library that callgrind could
-not name, 1,060 instructions of 32.2 million between them. `memcpy`, the
-allocator and the join functions count the same.
+differs counts the same in both runs and names another source file for it:
+three of the allocator's functions appear with `malloc.c` in one run and `???`
+in the other. Compared by function name over the whole of both profiles, five
+functions differ: four of glibc's number-formatting functions and `rindex`, 367
+instructions of 31.0 million between them. `memcpy`, the allocator and the join
+functions count the same.
 
 That is why step 4's check counts a worker that measures and prints no time,
 and why it can require identical totals. It also runs valgrind with
@@ -406,10 +379,10 @@ nothing.
 | ----------------------------------------- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
 | V0 / V1 instructions per call (step 4)    | 33.5x: 2,128,633 against 63,576                                | same direction; 29.2x on an x86 laptop (Release), 6.9x in an unoptimized x86 build |
 | the same count, run again                 | identical                                                      | identical for the same binary, machine, environment and working directory          |
-| where V0's instructions go (step 3)       | `memcpy` 37%, glibc's allocator 38%                            | the same functions; the shares depend on the C library and CPU                     |
+| where V0's instructions go (step 3)       | `memcpy` 38%, glibc's allocator 38%                            | the same functions; the shares depend on the C library and CPU                     |
 | a profile run again (step 5)              | join functions and allocator: identical; setup and probes vary | the same                                                                           |
 | V0 / V1 time (step 1)                     | 54x here; 44.4x to 53.7x over seven runs                       | tens of times in an optimized build                                                |
-| slowdown under callgrind                  | 58x (V0) and 94x (V1)                                          | tens of times                                                                      |
+| slowdown under callgrind                  | 51x (V0) and 93x (V1)                                          | tens of times                                                                      |
 | call graph (`=>` lines, inclusive, calls) | wrong for this program                                         | consistent on x86                                                                  |
 
 The counts are exact for this binary: a different compiler, C library or CPU
@@ -445,8 +418,10 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
   Under that command the benchmark switches counting on only around each
   measured window, so the profile holds the measured calls and the harness's
   work around them and not the rest of the process: for `JoinV0` alone
-  (`--gtest_filter=CallgrindProfiler.JoinV0`), 22,413,522 instructions for its
-  ten measured calls.
+  (`--gtest_filter=CallgrindProfiler.JoinV0`), 21,319,343 instructions for its
+  ten measured calls, and 10,111 fewer with `--profile-test-timeout 0`: the
+  watchdog's arming falls inside the window, most of it the dynamic linker
+  binding the functions it calls for the first time.
 
 - **Functions named `???` and no source lines.** The binary has no line tables:
   it was stripped, or the example was built without its `-g`.
@@ -456,8 +431,8 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
 - **The counts differ from this page.** Expected on another compiler, C library
   or CPU; only the ratio carries over. On this rig and build, a difference of a
   few hundred or a few thousand instructions in a program total comes from
-  formatting measured times, from atomic operations and from the probes'
-  reading of `/proc` (step 5 and [What Should Reproduce](#what-should-reproduce)).
+  formatting measured times and from the probes' reading of `/proc` (step 5
+  and [What Should Reproduce](#what-should-reproduce)).
 - **valgrind stops with `Possibly corrupted debuginfo file`, or on an
   assertion in `m_debuginfo`.** valgrind cannot read the program's debug
   information: seen with valgrind 3.18 and a binary built by clang 21 with `-g`
