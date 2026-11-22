@@ -47,11 +47,13 @@ set(UNIT_TEST_SOURCES
 # registry, the profiler and its factory decide on this machine's
 # /proc/cpuinfo and msr device, which no context can replace. So are the
 # watchdog cases that start the helper program and check its protocol end to
-# end (a deadline, a re-arm, a fork, the signal mask, a thread that cannot
-# start, the threads of a run under callgrind, a run under helgrind), whatever
-# they take; the three that check it in-process are unit. PerfContentionTest's
-# cases are component too: they start real workers and take a run through a
-# worker that throws or cannot start (under a resource limit) to the abort hook.
+# end in either engine (a deadline, a re-arm, a fork, the signal mask, a
+# blocked, taken or foreign signal, a process that starts a thread, a thread
+# that cannot start, the threads of a run, under callgrind and helgrind),
+# whatever they take; the three that check it in-process are unit.
+# PerfContentionTest's cases are component too: they start real workers and
+# take a run through a worker that throws or cannot start (under a resource
+# limit) to the abort hook.
 # ------------------------------------------------------------------------------
 
 vernier_add_gtest(
@@ -68,17 +70,25 @@ vernier_add_gtest(
   benchmarking
   COMPONENT_PATTERNS
   "^RaplRunTest\\."
-  "^PerfWatchdogTest\\.(Later)?HungLoopEndsWithStatusTwo$"
-  "^PerfWatchdogTest\\.ArmingAfterTheThreadParkedFires$"
-  "^PerfWatchdogTest\\.ShorterRearmFiresAtTheNewDeadline$"
+  "^PerfWatchdogTest\\.(Later)?HungLoop(OnTheThread|WithTheSignalBlocked)?EndsWithStatusTwo$"
+  "^PerfWatchdogTest\\.ArmingAfter(TheThreadParked|ADisarm)Fires$"
+  "^PerfWatchdogTest\\.ShorterRearm(OnTheThread)?FiresAtTheNewDeadline$"
   "^PerfWatchdogTest\\.TimeoutNamesTestAndToolThenExits$"
   "^PerfWatchdogTest\\.NullNamesBecomePlaceholders$"
   "^PerfWatchdogTest\\.DisarmAndRearmReplaceTheDeadline$"
-  "^PerfWatchdogTest\\.ForkedChildArmsItsOwnWatchdog$"
+  "^PerfWatchdogTest\\.ForkedChild(OfAThreadedProcess)?ArmsItsOwnWatchdog$"
   "^PerfWatchdogTest\\.ItsThreadTakesNoSignal$"
+  "^PerfWatchdogTest\\.TimerArmingLeavesTheSignalMaskAlone$"
+  "^PerfWatchdogTest\\.TimerTakesAFreeRealTimeSignal$"
+  "^PerfWatchdogTest\\.SignalTakenOverBetweenArmingsStillEndsTheRun$"
+  "^PerfWatchdogTest\\.ItsSignalFromElsewhereEndsNothing$"
+  "^PerfWatchdogTest\\.BecomingThreaded(BetweenArmings|WhileArmed)StillFires$"
+  "^PerfWatchdogTest\\.BecomingThreadedThenRearmingReplacesTheDeadline$"
   "^PerfWatchdogTest\\.ThreadThatCannotStartEndsTheMeasurement$"
   "^PerfWatchdogTest\\.ThreadThatCannotStartIsStartedByALaterArming$"
-  "^PerfWatchdogTest\\.OnlyTheWatchdogAddsAThreadUnderCallgrind$"
+  "^PerfWatchdogTest\\.SingleThreadedRunStaysSingleThreaded$"
+  "^PerfWatchdogTest\\.ThreadedRunGainsTheWatchdogsThread$"
+  "^PerfWatchdogTest\\.CallgrindRunGainsAThreadOnlyWhenThreaded$"
   "^PerfWatchdogTest\\.HelgrindReportsNothingOfTheWatchdog$"
   "^PerfContentionTest\\.WorkerThatThrowsEndsTheRunThroughTheAbortHook$"
   "^PerfContentionTest\\.WorkerThatCannotStartEndsTheRunThroughTheAbortHook$"

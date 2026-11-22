@@ -4,14 +4,21 @@
  *
  * The watchdog ends the process it guards, so each case in which it fires, or
  * must not, runs here and the test reads how the program ended. A test
- * fixture, never installed. One mode per run:
+ * fixture, never installed. The program is single-threaded, so the watchdog
+ * takes its timer engine where it is built; "--threaded" before the mode
+ * first starts a thread of the program's own (every signal blocked, waiting
+ * forever), so it takes its thread. One mode per run:
  *
  *   hang <flags...>       a case, Watchdog.Hung, measured under <flags> (the
  *                         test gives --profile perf --profile-test-timeout 1)
  *                         whose body spins and does not return
+ *   hang-blocked <flags...>
+ *                         as hang, with every signal blocked on this thread
+ *                         before the case
  *   hang-later <flags...> a case, Watchdog.Returns, measured under <flags> and
- *                         returning; once the watchdog's thread has parked, a
- *                         second, Watchdog.HungLater, whose body spins
+ *                         returning; once the watchdog's thread has parked
+ *                         (the timer stops at once), a second,
+ *                         Watchdog.HungLater, whose body spins
  *   later                 armed for 10 s as Watchdog.First, the thread seen
  *                         waiting for that deadline, disarmed, the thread
  *                         seen parked, then armed for 0.1 s as Watchdog.Later
@@ -22,16 +29,45 @@
  *   null-names            the watchdog armed for 0.1 s with no names
  *   disarmed              armed for 0.1 s and disarmed; then armed for 0.1 s
  *                         and, before that passes, armed again for 10 s; a
- *                         wait past 0.1 s after each; prints "still running"
- *   fork                  the watchdog's thread started here and parked, then
- *                         a child of fork() arms it for 0.1 s as
- *                         Watchdog.Child; exits with the child's status
- *   signals               the watchdog's thread started and parked, this
- *                         thread's signal mask checked unchanged, then
- *                         SIGUSR1, at its default action (it ends the
- *                         process) and blocked on this thread, sent to the
- *                         process: exits 0 when it is still pending here
- *   no-thread <flags...>  no thread can be started (RLIMIT_NPROC 0); a case,
+ *                         wait past 0.1 s after each, with the timer's
+ *                         signal blocked after a disarm so one it raised
+ *                         stays pending and is named; prints "still running"
+ *   fork                  the watchdog armed and disarmed here, then a child
+ *                         of fork() makes a timer of its own (the timer
+ *                         engine's builds) and arms the watchdog for 0.1 s
+ *                         as Watchdog.Child: the child prints its threads
+ *                         and whether its own timer is kept, deleted or not
+ *                         made; exits with the child's status
+ *   signals               the watchdog armed and disarmed, this thread's
+ *                         signal mask checked unchanged, then SIGUSR1, at its
+ *                         default action (it ends the process) and blocked on
+ *                         this thread, sent to the process: exits 0 when it
+ *                         is still pending here
+ *   first-signal          SIGRTMIN + 4 given a handler of the program's own;
+ *                         armed for 10 s and disarmed: prints the signals the
+ *                         process catches since (SigCgt, /proc/self/status),
+ *                         from SIGRTMIN up as SIGRTMIN+n, and whether
+ *                         SIGRTMIN + 4 kept the program's handler
+ *   takeover              armed for 10 s and disarmed; the signal the timer
+ *                         engine took (SigCgt, /proc/self/status) then given
+ *                         a handler of the program's own; armed for 0.1 s as
+ *                         Watchdog.AfterTakeover
+ *   foreign               (the timer engine's builds) armed for 10 s; the
+ *                         signal it took sent to the process by kill(), and
+ *                         by sigqueue() with the value its own timer carries,
+ *                         and raised by a timer of the program's own; then
+ *                         disarmed: prints "still running"
+ *   switch between|during|rearm
+ *                         between: armed for 10 s and disarmed, a thread of
+ *                         the program's own started, armed for 0.1 s as
+ *                         Watchdog.Switched; during: armed for 0.1 s as
+ *                         Watchdog.Switched, then the thread started; rearm:
+ *                         armed for 0.1 s, the thread started, armed again
+ *                         for 10 s, a wait past 0.1 s, disarmed: prints
+ *                         "still running"
+ *   no-thread <flags...>  no thread can be started (RLIMIT_NPROC 0), one asked
+ *                         for and refused, and every signal is blocked on this
+ *                         thread, so the watchdog takes its thread; a case,
  *                         Watchdog.NoThread, measured under <flags>: prints
  *                         which hooks ran and what measured() threw
  *   no-thread-retry <flags...>
@@ -42,21 +78,23 @@
  *   threads <flags...>    a case, Watchdog.Threads, with its profiler
  *                         attached as a benchmark's is, measured under
  *                         <flags>: prints how many threads the process has
- *                         when the body first runs, and glibc's
- *                         __libc_single_threaded then (-1 without it)
+ *                         and glibc's __libc_single_threaded (-1 without it)
+ *                         when the body first runs and after the case
  *   rearm <flags...>      two cases, Watchdog.First and Watchdog.Second, each
  *                         with its profiler attached as a benchmark's is and
  *                         measured under <flags>: the watchdog armed, a
  *                         measured loop, the watchdog disarmed, armed again;
- *                         each body waits for the thread to wait for its
- *                         deadline, and the second arming for it to park;
+ *                         with the thread, each body waits for it to wait for
+ *                         its deadline, and the second arming for it to park;
  *                         prints "measured twice"
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
  * then says it did not and exits 0. Where it waits for the watchdog's thread
  * to park or to wait for a deadline (Linux: /proc/self/task/<tid>/syscall
  * shows the system call a blocked thread is in), it waits 2 s at most, then
- * says what it saw and exits 4.
+ * says what it saw and exits 4; with the timer engine no thread starts, and
+ * arm() and disarm() are complete when they return, so there is nothing to
+ * wait for.
  */
 
 #include "src/bench/inc/PerfConfig.hpp"
@@ -76,6 +114,7 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <cstdint>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
@@ -146,6 +185,162 @@ int hang(int argc, char** argv) {
   return 0;
 }
 
+/// The hang-blocked mode: every signal blocked on this thread, then hang.
+int hangBlocked(int argc, char** argv) {
+  sigset_t all;
+  ::sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, nullptr);
+  return hang(argc, argv);
+}
+
+/// Starts a thread of the program's own that blocks every signal and waits
+/// forever: the process is then multi-threaded, as a benchmark with threads
+/// of its own is.
+void startOwnThread() {
+  sigset_t all;
+  sigset_t previous;
+  ::sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, &previous);
+  std::thread([] {
+    for (;;) {
+      ::pause();
+    }
+  }).detach();
+  ::pthread_sigmask(SIG_SETMASK, &previous, nullptr);
+}
+
+/// The signals this process catches (SigCgt in /proc/self/status): bit n - 1
+/// set for signal n.
+std::uint64_t caughtSignals() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.rfind("SigCgt:", 0) == 0) {
+      return std::stoull(line.substr(7), nullptr, 16);
+    }
+  }
+  return 0;
+}
+
+/// The lowest real-time signal (SIGRTMIN or above, past the ones glibc
+/// reserves) this process catches now and did not in @p before: the one the
+/// timer engine took; 0 when there is none. (The first thread a process starts
+/// gives glibc's SIGSETXID, below SIGRTMIN, a handler.)
+int takenSignal(std::uint64_t before) {
+  const std::uint64_t NEW = caughtSignals() & ~before;
+  for (int sig = SIGRTMIN; sig <= SIGRTMAX && sig <= 64; ++sig) {
+    if ((NEW >> (sig - 1)) & 1U) {
+      return sig;
+    }
+  }
+  return 0;
+}
+
+/// The program's own handler for the signals the first-signal and takeover
+/// modes give it: says it ran, with write(2) alone.
+void programHandler(int /*sig*/) {
+  static const char kRan[] = "the program's handler ran\n";
+  const ssize_t WRITTEN = ::write(STDOUT_FILENO, kRan, sizeof(kRan) - 1);
+  (void)WRITTEN;
+}
+
+int firstSignal() {
+  struct sigaction program{};
+  program.sa_handler = programHandler;
+  ::sigemptyset(&program.sa_mask);
+  ::sigaction(SIGRTMIN + 4, &program, nullptr);
+  const std::uint64_t CAUGHT = caughtSignals();
+  perf_watchdog::arm("Watchdog.First", "perf", LONG);
+  perf_watchdog::disarm();
+  const std::uint64_t NEW = caughtSignals() & ~CAUGHT;
+  std::string taken;
+  for (int sig = 1; sig <= 64; ++sig) {
+    if ((NEW >> (sig - 1)) & 1U) {
+      taken += taken.empty() ? "" : " ";
+      taken += sig >= SIGRTMIN ? "SIGRTMIN+" + std::to_string(sig - SIGRTMIN) : std::to_string(sig);
+    }
+  }
+  struct sigaction now{};
+  ::sigaction(SIGRTMIN + 4, nullptr, &now);
+  std::printf("taken: %s; SIGRTMIN+4 %s\n", taken.empty() ? "none" : taken.c_str(),
+              now.sa_handler == programHandler ? "kept" : "replaced");
+  return 0;
+}
+
+int takeover() {
+  const std::uint64_t CAUGHT = caughtSignals();
+  perf_watchdog::arm("Watchdog.First", "perf", LONG);
+  perf_watchdog::disarm();
+  const int TAKEN = takenSignal(CAUGHT);
+  if (TAKEN == 0) {
+    std::puts("the watchdog took no signal");
+    return 4;
+  }
+  struct sigaction program{};
+  program.sa_handler = programHandler;
+  ::sigemptyset(&program.sa_mask);
+  ::sigaction(TAKEN, &program, nullptr);
+  perf_watchdog::arm("Watchdog.AfterTakeover", "perf", SHORT);
+  return waitForTheWatchdog();
+}
+
+#if VERNIER_WATCHDOG_TIMER
+int foreign() {
+  const std::uint64_t CAUGHT = caughtSignals();
+  perf_watchdog::arm("Watchdog.Foreign", "perf", LONG);
+  const int TAKEN = takenSignal(CAUGHT);
+  if (TAKEN == 0) {
+    std::puts("the watchdog took no signal");
+    return 4;
+  }
+  ::kill(::getpid(), TAKEN);
+  // Queued with the value the watchdog's own timer carries: still not its timer.
+  sigval forged{};
+  forged.sival_ptr = &perf_watchdog::g_timer;
+  ::sigqueue(::getpid(), TAKEN, forged);
+  sigevent event{};
+  event.sigev_notify = SIGEV_SIGNAL;
+  event.sigev_signo = TAKEN;
+  timer_t own{};
+  if (::timer_create(CLOCK_MONOTONIC, &event, &own) != 0) {
+    std::perror("timer_create");
+    return 1;
+  }
+  itimerspec when{};
+  when.it_value.tv_nsec = 10'000'000;
+  ::timer_settime(own, 0, &when, nullptr);
+  std::this_thread::sleep_for(PAST_SHORT);
+  ::timer_delete(own);
+  perf_watchdog::disarm();
+  std::puts("still running");
+  return 0;
+}
+#endif
+
+int switched(std::string_view when) {
+  if (when == "between") {
+    perf_watchdog::arm("Watchdog.First", "perf", LONG);
+    perf_watchdog::disarm();
+    startOwnThread();
+    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
+  } else if (when == "during") {
+    perf_watchdog::arm("Watchdog.Switched", "perf", SHORT);
+    startOwnThread();
+  } else if (when == "rearm") {
+    perf_watchdog::arm("Watchdog.First", "perf", SHORT);
+    startOwnThread();
+    perf_watchdog::arm("Watchdog.Rearmed", "perf", LONG);
+    std::this_thread::sleep_for(PAST_SHORT);
+    perf_watchdog::disarm();
+    std::puts("still running");
+    return 0;
+  } else {
+    std::fputs("switch takes between, during or rearm\n", stderr);
+    return 64;
+  }
+  return waitForTheWatchdog();
+}
+
 /// The threads of this process, by id, in order.
 std::vector<pid_t> threads() {
   std::vector<pid_t> ids;
@@ -212,13 +407,17 @@ pid_t waitUntilBlocked(const std::vector<pid_t>& candidates, Blocked wanted, con
 }
 
 /// The watchdog armed for LONG as @p first, the first arming of this
-/// process, and its thread seen waiting for that deadline: the thread, or -1
+/// process, and its thread seen waiting for that deadline: the thread; 0 when
+/// no thread started (the timer engine, armed when arm() returns); or -1
 /// after saying why not.
 pid_t armAndWatch(const char* first) {
   const std::vector<pid_t> BEFORE = threads();
   perf_watchdog::arm(first, "perf", LONG);
-  return waitUntilBlocked(startedThreads(BEFORE, threads()), Blocked::ON_A_DEADLINE,
-                          "wait for the deadline");
+  const std::vector<pid_t> STARTED = startedThreads(BEFORE, threads());
+  if (STARTED.empty()) {
+    return 0;
+  }
+  return waitUntilBlocked(STARTED, Blocked::ON_A_DEADLINE, "wait for the deadline");
 }
 
 int hangLater(int argc, char** argv) {
@@ -230,8 +429,9 @@ int hangLater(int argc, char** argv) {
   }
   // The first case's line, kept when the watchdog ends the program.
   std::fflush(stdout);
-  if (waitUntilBlocked(startedThreads(BEFORE, threads()), Blocked::PARKED,
-                       "park after the first case") < 0) {
+  const std::vector<pid_t> STARTED = startedThreads(BEFORE, threads());
+  if (!STARTED.empty() &&
+      waitUntilBlocked(STARTED, Blocked::PARKED, "park after the first case") < 0) {
     return 4;
   }
   PerfCase second{"Watchdog.HungLater", CFG};
@@ -246,7 +446,7 @@ int later() {
     return 4;
   }
   perf_watchdog::disarm();
-  if (waitUntilBlocked({WATCHDOG}, Blocked::PARKED, "park after disarm()") < 0) {
+  if (WATCHDOG > 0 && waitUntilBlocked({WATCHDOG}, Blocked::PARKED, "park after disarm()") < 0) {
     return 4;
   }
   perf_watchdog::arm("Watchdog.Later", "perf", SHORT);
@@ -267,9 +467,30 @@ int names(const char* test, const char* tool) {
 }
 
 int disarmed() {
+  const std::uint64_t CAUGHT = caughtSignals();
   perf_watchdog::arm("Watchdog.Disarmed", "perf", SHORT);
   perf_watchdog::disarm();
+  // The timer engine's signal, blocked past the deadline: a timer left
+  // running raises it, and it stays pending here.
+  const int TAKEN = takenSignal(CAUGHT);
+  sigset_t timerSignal;
+  ::sigemptyset(&timerSignal);
+  if (TAKEN > 0) {
+    ::sigaddset(&timerSignal, TAKEN);
+    ::pthread_sigmask(SIG_BLOCK, &timerSignal, nullptr);
+  }
   std::this_thread::sleep_for(PAST_SHORT);
+  if (TAKEN > 0) {
+    sigset_t pending;
+    ::sigpending(&pending);
+    if (::sigismember(&pending, TAKEN) == 1) {
+      std::printf("signal %d pending after disarm()\n", TAKEN);
+    }
+    const timespec NONE{0, 0};
+    while (::sigtimedwait(&timerSignal, nullptr, &NONE) == TAKEN) {
+    }
+    ::pthread_sigmask(SIG_UNBLOCK, &timerSignal, nullptr);
+  }
   perf_watchdog::arm("Watchdog.Rearmed", "perf", SHORT);
   // Long enough for the thread to start waiting for the first deadline.
   std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -281,6 +502,8 @@ int disarmed() {
 }
 
 int forked() {
+  // Armed and disarmed here: the parent's timer, or its thread, is not the
+  // child's.
   perf_watchdog::arm("Watchdog.Parent", "perf", std::chrono::seconds(10));
   perf_watchdog::disarm();
   const pid_t CHILD = ::fork();
@@ -289,7 +512,25 @@ int forked() {
     return 1;
   }
   if (CHILD == 0) {
+    const char* own = "not made";
+#if VERNIER_WATCHDOG_TIMER
+    // A timer of the child's own, made before it arms: the first of this
+    // process, so it has the handle the parent's first timer had, which the
+    // child's arming must not take for its own and delete.
+    sigevent none{};
+    none.sigev_notify = SIGEV_NONE;
+    timer_t timer{};
+    const bool MADE = ::timer_create(CLOCK_MONOTONIC, &none, &timer) == 0;
+#endif
     perf_watchdog::arm("Watchdog.Child", "perf", SHORT);
+#if VERNIER_WATCHDOG_TIMER
+    itimerspec left{};
+    if (MADE) {
+      own = ::timer_gettime(timer, &left) == 0 ? "kept" : "deleted";
+    }
+#endif
+    std::printf("child threads=%zu, own timer %s\n", threads().size(), own);
+    std::fflush(stdout);
     std::this_thread::sleep_for(FIRE_WAIT);
     ::_exit(0);
   }
@@ -315,8 +556,8 @@ int signals() {
   ::pthread_sigmask(SIG_SETMASK, nullptr, &before);
   perf_watchdog::arm("Watchdog.Signals", "perf", std::chrono::seconds(10));
   perf_watchdog::disarm();
-  // The first arm() blocks every signal while it starts the thread: this
-  // thread's own mask is to be as it was.
+  // The first arm() blocks every signal while it starts the thread, and the
+  // timer engine reads the mask: this thread's own mask is to be as it was.
   sigset_t after;
   ::pthread_sigmask(SIG_SETMASK, nullptr, &after);
   for (int sig = 1; sig < NSIG; ++sig) {
@@ -383,6 +624,13 @@ int noThread(int argc, char** argv, bool retry) {
     std::perror("setrlimit");
     return 1;
   }
+  // The watchdog takes its thread, which cannot start, for two reasons:
+  // measureWithoutThreads() first asks for a thread, and the refused
+  // pthread_create() still clears glibc's __libc_single_threaded; and every
+  // signal is blocked on this thread, so the timer's could not reach it.
+  sigset_t all;
+  ::sigfillset(&all);
+  ::pthread_sigmask(SIG_SETMASK, &all, nullptr);
   const int STATUS = measureWithoutThreads(argc, argv, retry);
   // Restored, so the program ends as any other (a leak checker starts a
   // thread at exit), and so that the next arming can start the thread.
@@ -399,21 +647,33 @@ int noThread(int argc, char** argv, bool retry) {
   return waitForTheWatchdog();
 }
 
-/// The threads mode: the process's threads when the measured body first runs.
+/// glibc's word on whether this process ever started a second thread: 1 or
+/// 0, -1 without it.
+int singleThreaded() {
+#if __has_include(<sys/single_threaded.h>)
+  return __libc_single_threaded ? 1 : 0;
+#else
+  return -1;
+#endif
+}
+
+/// The threads mode: the process's threads when the measured body first runs
+/// and after the case.
 int threadsInBody(int argc, char** argv) {
-  PerfCase perf =
-      vernier::bench::makePerfCaseWithProfiler("Watchdog.Threads", configFrom(argc, argv));
   std::size_t count = 0;
   int single = -1;
-  perf.measured([&] {
-    if (count == 0) {
-      count = threads().size();
-#if __has_include(<sys/single_threaded.h>)
-      single = __libc_single_threaded ? 1 : 0;
-#endif
-    }
-  });
-  std::printf("threads=%zu single_threaded=%d\n", count, single);
+  {
+    PerfCase perf =
+        vernier::bench::makePerfCaseWithProfiler("Watchdog.Threads", configFrom(argc, argv));
+    perf.measured([&] {
+      if (count == 0) {
+        count = threads().size();
+        single = singleThreaded();
+      }
+    });
+  }
+  std::printf("threads=%zu single_threaded=%d after_threads=%zu after_single_threaded=%d\n", count,
+              single, threads().size(), singleThreaded());
   return 0;
 }
 
@@ -431,15 +691,17 @@ int rearm(int argc, char** argv) {
     perf.measured([&] {
       started = startedThreads(BEFORE, threads());
       seen =
-          waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen;
+          started.empty() ||
+          (waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen);
     });
   }
-  seen = waitUntilBlocked(started, Blocked::PARKED, "park") >= 0 && seen;
+  seen = started.empty() || (waitUntilBlocked(started, Blocked::PARKED, "park") >= 0 && seen);
   {
     PerfCase perf = vernier::bench::makePerfCaseWithProfiler("Watchdog.Second", CFG);
     perf.measured([&] {
       seen =
-          waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen;
+          started.empty() ||
+          (waitUntilBlocked(started, Blocked::ON_A_DEADLINE, "wait for its deadline") >= 0 && seen);
     });
   }
   if (!seen) {
@@ -452,9 +714,31 @@ int rearm(int argc, char** argv) {
 } // namespace
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string_view(argv[1]) == "--threaded") {
+    startOwnThread();
+    --argc;
+    ++argv;
+  }
   const std::string_view MODE = argc > 1 ? argv[1] : "";
   if (MODE == "hang") {
     return hang(argc, argv);
+  }
+  if (MODE == "hang-blocked") {
+    return hangBlocked(argc, argv);
+  }
+  if (MODE == "first-signal") {
+    return firstSignal();
+  }
+  if (MODE == "takeover") {
+    return takeover();
+  }
+#if VERNIER_WATCHDOG_TIMER
+  if (MODE == "foreign") {
+    return foreign();
+  }
+#endif
+  if (MODE == "switch" && argc == 3) {
+    return switched(argv[2]);
   }
   if (MODE == "hang-later") {
     return hangLater(argc, argv);
@@ -493,9 +777,12 @@ int main(int argc, char** argv) {
     return rearm(argc, argv);
   }
   std::fprintf(stderr,
-               "usage: %s hang <flags>|hang-later <flags>|later|shorten|names <test> <tool>|"
-               "null-names|disarmed|fork|signals|no-thread <flags>|no-thread-retry <flags>|"
-               "threads <flags>|rearm <flags>\n",
+               "usage: %s [--threaded] hang <flags>|hang-blocked <flags>|hang-later <flags>|later|"
+               "shorten|names <test> <tool>|null-names|disarmed|fork|signals|first-signal|takeover|"
+               "foreign|"
+               "switch between|during|rearm|no-thread <flags>|no-thread-retry <flags>|"
+               "threads <flags>|"
+               "rearm <flags>\n",
                argv[0]);
   return 64;
 }
