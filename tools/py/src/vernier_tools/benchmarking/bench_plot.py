@@ -17,17 +17,23 @@ Usage:
     bench-plot report results.csv --output report/
     bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 
-A row whose plotted timing cells do not all hold finite numbers is left out of
-every plot, and stderr names it, saying when its every timing cell is empty, as
-in a run under Nsight Compute; a file with no such row left is refused, naming
-the file.
+A test name is text, whatever it looks like, as `bench summary` reads it; a
+file with a row whose test name is empty or only whitespace is refused, naming
+the file and the line, as `bench summary` and `bench compare` refuse it. A row
+whose plotted timing cells do not all hold finite numbers is left out of every
+plot, and stderr names it, saying when its every timing cell is empty, as in a
+run under Nsight Compute; a file with no such row left is refused, naming the
+file.
 
 Dependencies:
     pip install pandas matplotlib seaborn
-    Optional: pip install plotly (for interactive dashboards)
+    Optional: pip install plotly (for interactive dashboards; without it,
+    dashboard falls back to the report's plots and scaling's .html output to a
+    .png beside it)
 """
 
 import argparse
+import csv
 import json
 import math
 import re
@@ -60,6 +66,59 @@ except ImportError:
 # stays one.
 PLOTTED_OTHER_NUMBERS = ("msgBytes", "kernelTimeUs", "transferTimeUs", "speedupVsCpu", "occupancy")
 
+# The columns bench-plot shows or copies as text: the test names label the
+# plots, and the report copies the first row's timestamp, git hash and host
+# name into metadata.json. Each is read as written, whatever it looks like:
+# `007` stays `007`, not 7, and `12e4567` stays `12e4567`, not infinity.
+TEXT_COLUMNS = ("test", "timestamp", "gitHash", "hostname")
+
+# What Rust's str::trim takes for whitespace (Unicode's White_Space property):
+# `bench summary` refuses a test name made only of these characters.
+WHITE_SPACE = frozenset(
+    "\t\n\x0b\x0c\r \x85\xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008"
+    "\u2009\u200a\u2028\u2029\u202f\u205f\u3000"
+)
+
+
+def unusable_test_name(name: str):
+    """Why a test name, as written, cannot name a row, in `bench summary`'s
+    words, or None when it can: an empty name, or one only of whitespace,
+    which is shown as Rust's Debug form shows it (`"\\t"`, `"\\u{a0}"`). A
+    name with spaces around it can name a row, as a different test from the
+    same name without them."""
+    if name == "":
+        return "the row has no test name"
+    if all(c in WHITE_SPACE for c in name):
+        shown = "".join(
+            {" ": " ", "\t": "\\t", "\n": "\\n", "\r": "\\r"}.get(c, f"\\u{{{ord(c):x}}}")
+            for c in name
+        )
+        return f'test name "{shown}" is only whitespace'
+    return None
+
+
+def first_unusable_test_name(path: Path):
+    """The line of @p path at which its first record with an unusable test
+    name (`unusable_test_name`) starts, and why, or None. Blank lines are no
+    records, as neither pandas nor `bench summary` takes them for rows, but
+    they count as lines, as does each line of a record that spans several."""
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        header = next(reader, [])
+        if "test" not in header:
+            return None
+        column = header.index("test")
+        while True:
+            start = reader.line_num + 1
+            record = next(reader, None)
+            if record is None:
+                return None
+            if not record:
+                continue
+            why = unusable_test_name(record[column] if column < len(record) else "")
+            if why is not None:
+                return start, why
+
 
 def load_csv(path: Path) -> pd.DataFrame:
     """Load and validate a benchmark CSV file.
@@ -67,19 +126,28 @@ def load_csv(path: Path) -> pd.DataFrame:
     Only an empty field is missing, as `bench summary` reads the file: text
     that pandas takes for a missing value by default (`NA`, `nan`, `NULL`,
     `None`, ...) stays text, so a test of that name keeps it and a timing cell
-    holding it is damaged, not empty. The columns of `PLOTTED_OTHER_NUMBERS`
-    are made numbers, and `OTHER_NUMBERS_OF_THEIR_KIND` is added for
-    `untimed_rows`.
+    holding it is damaged, not empty. The columns of `TEXT_COLUMNS` are read
+    as text. A file with a row whose test name is empty or only whitespace is
+    refused, naming the file and the line, as `bench summary` refuses it. The
+    columns of `PLOTTED_OTHER_NUMBERS` are made numbers, and
+    `OTHER_NUMBERS_OF_THEIR_KIND` is added for `untimed_rows`.
     """
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
 
-    df = pd.read_csv(path, keep_default_na=False, na_values=[""])
+    df = pd.read_csv(
+        path, keep_default_na=False, na_values=[""], dtype=dict.fromkeys(TEXT_COLUMNS, str)
+    )
 
     required = {"test", "wallMedian", "wallCV", "callsPerSecond"}
     missing = required - set(df.columns)
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
+
+    unusable = first_unusable_test_name(path)
+    if unusable is not None:
+        line, why = unusable
+        raise SystemExit(f"bench-plot: {path}, line {line}: {why}")
 
     if df.empty:
         raise ValueError(f"No data rows in {path}")
@@ -529,11 +597,11 @@ LARGEST_PAYLOAD_DIGITS = len(str(LARGEST_PAYLOAD))
 def extract_payload_size(test_name, msg_bytes=0):
     """The payload size of a row, for the scaling plots: the size its test
     name ends with (`PAYLOAD_SIZE`), else @p msg_bytes. A name that is not
-    text (an empty cell, or a file whose names all read as numbers) holds no
-    size, and neither does one whose size would be larger than
-    LARGEST_PAYLOAD bytes: that number is not a byte count. Leading zeros do
-    not count, so int() is never asked for more digits than LARGEST_PAYLOAD
-    has, and no name makes this raise."""
+    text holds no size (load_csv gives every name as text and refuses a file
+    with an empty one; another caller may pass anything), and neither does
+    one whose size would be larger than LARGEST_PAYLOAD bytes: that number is
+    not a byte count. Leading zeros do not count, so int() is never asked for
+    more digits than LARGEST_PAYLOAD has, and no name makes this raise."""
     if not isinstance(test_name, str):
         return msg_bytes
     match = PAYLOAD_SIZE.search(test_name)
@@ -825,12 +893,12 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
         "tests": len(df),
         "columns": list(df.columns),
     }
-    if "timestamp" in df.columns:
-        metadata["timestamp"] = df["timestamp"].iloc[0]
-    if "gitHash" in df.columns:
-        metadata["gitHash"] = df["gitHash"].iloc[0]
-    if "hostname" in df.columns:
-        metadata["hostname"] = df["hostname"].iloc[0]
+    # The first row's text as written (TEXT_COLUMNS); an empty cell is null,
+    # where NaN would not be JSON.
+    for column in ("timestamp", "gitHash", "hostname"):
+        if column in df.columns:
+            value = df[column].iloc[0]
+            metadata[column] = value if isinstance(value, str) else None
 
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2, default=str)
@@ -880,6 +948,11 @@ def cmd_scaling(args):
     df_combined = timed_rows(load_csvs_from_list(csv_paths), ", ".join(args.csvs))
     output_path = Path(args.output)
     interactive = output_path.suffix == ".html" and HAS_PLOTLY
+    if output_path.suffix == ".html" and not HAS_PLOTLY:
+        # matplotlib writes no HTML: the static plot goes beside the page.
+        output_path = output_path.with_suffix(".png")
+        print("  plotly not installed. Install with: pip install plotly")
+        print(f"  Falling back to a static plot: {output_path}")
     plot_scaling_analysis(df_combined, output_path, interactive=interactive)
 
 

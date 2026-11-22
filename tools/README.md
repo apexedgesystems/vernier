@@ -896,6 +896,12 @@ is left out, and stderr names it, saying when its every timing cell is empty,
 as in a run under Nsight Compute; a file with no row left is refused, naming
 the file, with exit status 1.
 
+A test name is read as written, whatever it looks like (`007` stays `007`), as
+`bench summary` reads it, and so are the timestamp, git hash and host name the
+report copies into `metadata.json`. A file with a row whose test name is empty
+or only whitespace is refused, in `bench summary`'s words and naming the file
+and the line, with exit status 1.
+
 ### plot - Standard Charts
 
 ```bash
@@ -923,6 +929,10 @@ bench-plot report results.csv --output analysis/
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 ```
+
+Without plotly, an `.html` output (the default is `scaling_dashboard.html`) is
+drawn as a static `.png` of the same name, and the command says so, as
+`dashboard` falls back to the report's plots.
 
 ---
 

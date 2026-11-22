@@ -1,5 +1,6 @@
 """Tests for bench_plot data loading and parsing functions."""
 
+import json
 import sys
 import textwrap
 import time
@@ -138,7 +139,7 @@ def test_extract_payload_size_case_insensitive():
         ("Send" + "9" * 400, 64),
         ("Send" + "0" * LONG + "5", 5),
         ("Send" + "0" * LONG + "1K", 1024),
-        ("Send" + "٠" * LONG + "٥", 5),
+        ("Send" + "\u0660" * LONG + "\u0665", 5),
         ("Send18446744073709551615", 2**64 - 1),
         ("Send18446744073709551616", 64),
         ("Send17179869183G", (2**34 - 1) * 2**30),
@@ -559,3 +560,145 @@ def test_scaling_places_a_row_whose_name_is_no_size_by_its_msg_bytes(tmp_path, m
     second = write_csv(tmp_path / "b.csv", [TIMED_ROW.replace("Saxpy.Plain", "Send1KB")])
     run_main(monkeypatch, ["scaling", str(first), str(second), "--output", str(tmp_path / "s.png")])
     assert placed == [[64, 1024]]
+
+
+# =============================================================================
+# Test names and the other text bench-plot shows, read as written
+# =============================================================================
+
+
+def named(*names):
+    """TIMED_ROW once for each of @p names, as written into the test cell."""
+    return [TIMED_ROW.replace("Saxpy.Plain", name, 1) for name in names]
+
+
+@pytest.fixture()
+def quick_savefig(monkeypatch):
+    """matplotlib's own savefig, which checks the file's format, at a low
+    resolution, so a test that draws a real plot stays fast."""
+    save = bench_plot.plt.savefig
+    monkeypatch.setattr(
+        bench_plot.plt, "savefig", lambda path, **kwargs: save(path, **{**kwargs, "dpi": 10})
+    )
+
+
+@pytest.mark.parametrize("command", ["plot", "report", "dashboard"])
+def test_test_names_that_look_like_numbers_stay_text(
+    tmp_path, monkeypatch, recorded_plots, command
+):
+    """Names that all look like numbers label the plots as written, as text,
+    as bench summary names them: 007 is not 7 and 1e3 is not 1000."""
+    csv = write_csv(tmp_path / "numbers.csv", named("64", "007", "1e3"))
+    output = tmp_path / "out" / ("d.html" if command == "dashboard" else "")
+    run_main(monkeypatch, [command, str(csv), "--output", str(output)])
+    assert recorded_plots["plot_throughput_bars"] == [["64", "007", "1e3"]]
+
+
+def test_scaling_plots_names_that_look_like_numbers_by_those_names(
+    tmp_path, monkeypatch, quick_savefig
+):
+    """bench-plot scaling draws files whose names are all numbers, each test
+    by its name as written."""
+    placed = []
+    draw = bench_plot._plot_scaling_static
+
+    def drawn(df, path):
+        placed.append(sorted(df["test"].unique()))
+        draw(df, path)
+
+    monkeypatch.setattr(bench_plot, "_plot_scaling_static", drawn)
+    # Each test in two files, so each is drawn as a line.
+    first = write_csv(tmp_path / "a.csv", named("64", "128", "256"))
+    second = write_csv(tmp_path / "b.csv", named("64", "128", "256"))
+    output = tmp_path / "s.png"
+    run_main(monkeypatch, ["scaling", str(first), str(second), "--output", str(output)])
+    assert placed == [["128", "256", "64"]]
+    assert output.stat().st_size > 0
+
+
+def test_names_with_spaces_or_unusual_characters_are_kept_as_written(
+    tmp_path, monkeypatch, recorded_plots
+):
+    """A name with spaces around it is its own name, as bench summary keeps
+    it, and a name of a character Rust does not call whitespace (the file
+    separator, which Python's isspace() does) names its row."""
+    csv = write_csv(tmp_path / "names.csv", named(" Saxpy.Padded ", "\x1c", "Saxpy.Plain"))
+    run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+    assert recorded_plots["plot_throughput_bars"] == [[" Saxpy.Padded ", "\x1c", "Saxpy.Plain"]]
+
+
+@pytest.mark.parametrize(
+    "name,why",
+    [("", "the row has no test name"), ("   ", 'test name "   " is only whitespace')],
+    ids=["empty", "spaces"],
+)
+@pytest.mark.parametrize("command", ["plot", "report", "dashboard", "scaling"])
+def test_a_row_without_a_test_name_stops_the_command_naming_the_line(
+    tmp_path, monkeypatch, command, name, why
+):
+    """A file with a row whose test name is empty or only whitespace is
+    refused, in bench summary's words, naming the file and the line, before
+    anything is drawn, as bench summary and bench compare refuse it."""
+    csv = write_csv(tmp_path / "rows.csv", named("Saxpy.Plain", name, "Saxpy.Other"))
+    output = tmp_path / "out" / {"dashboard": "d.html", "scaling": "s.png"}.get(command, "")
+    with pytest.raises(SystemExit) as stopped:
+        run_main(monkeypatch, [command, str(csv), "--output", str(output)])
+    assert str(stopped.value) == f"bench-plot: {csv}, line 3: {why}"
+    assert not (tmp_path / "out").exists() or not any((tmp_path / "out").iterdir())
+
+
+def test_each_unusable_test_name_is_refused_as_bench_summary_words_it(tmp_path, monkeypatch):
+    """A quoted empty name, a tab, a no-break space (Unicode whitespace, shown
+    as Rust shows it) and a name that is only a newline are refused; the line
+    named is the one the row starts on, counting each line of a row that spans
+    two and a blank line, which is no row."""
+    two_lines = TIMED_ROW.replace("Saxpy.Plain", '"Saxpy.Two\nLines"', 1)
+    for rows, why, line in [
+        (named("Saxpy.Plain", '""'), "the row has no test name", 3),
+        (named("Saxpy.Plain", "\t"), 'test name "\\t" is only whitespace', 3),
+        (named("Saxpy.Plain", "\xa0"), 'test name "\\u{a0}" is only whitespace', 3),
+        (named("Saxpy.Plain", '"\n"'), 'test name "\\n" is only whitespace', 3),
+        ([two_lines] + named("Saxpy.Plain", ""), "the row has no test name", 5),
+        (named("Saxpy.Plain") + [""] + named(""), "the row has no test name", 4),
+    ]:
+        csv = write_csv(tmp_path / "rows.csv", rows)
+        with pytest.raises(SystemExit) as stopped:
+            run_main(monkeypatch, ["plot", str(csv), "--output", str(tmp_path / "out")])
+        assert str(stopped.value) == f"bench-plot: {csv}, line {line}: {why}"
+
+
+def test_the_report_copies_text_columns_as_written(tmp_path, monkeypatch, recorded_plots):
+    """The report's metadata.json holds the first row's timestamp, git hash
+    and host name as written, whatever they look like, and null for an empty
+    one, which NaN would not be in JSON."""
+    header = "test,wallMedian,wallCV,callsPerSecond,wallMin,wallP10,wallP90,wallMax"
+    for cells, held in [
+        (
+            "20261115,0123456,101",
+            {"timestamp": "20261115", "gitHash": "0123456", "hostname": "101"},
+        ),
+        (",12e4567,", {"timestamp": None, "gitHash": "12e4567", "hostname": None}),
+    ]:
+        csv = tmp_path / "meta.csv"
+        csv.write_text(f"{header},timestamp,gitHash,hostname\nSend1KB,1,0.1,10,1,1,1,1,{cells}\n")
+        out = tmp_path / "report"
+        run_main(monkeypatch, ["report", str(csv), "--output", str(out)])
+        metadata = json.loads((out / "metadata.json").read_text())
+        assert {k: metadata[k] for k in held} == held
+
+
+def test_scaling_without_plotly_writes_its_static_plot_beside_the_page(
+    tmp_path, monkeypatch, capsys, quick_savefig
+):
+    """Without plotly, bench-plot scaling given an .html output draws its
+    static plot as a .png of the same name and says so, as dashboard falls
+    back to the report's plots."""
+    monkeypatch.setattr(bench_plot, "HAS_PLOTLY", False)
+    first = write_csv(tmp_path / "a.csv", named("Send.A", "Send.B"))
+    second = write_csv(tmp_path / "b.csv", named("Send.A", "Send.B"))
+    run_main(
+        monkeypatch, ["scaling", str(first), str(second), "--output", str(tmp_path / "s.html")]
+    )
+    assert (tmp_path / "s.png").stat().st_size > 0
+    assert not (tmp_path / "s.html").exists()
+    assert f"Falling back to a static plot: {tmp_path / 's.png'}" in capsys.readouterr().out

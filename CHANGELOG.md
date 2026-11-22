@@ -464,6 +464,10 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - `bench-plot` leaves out and names each row without plottable timing, such
   as the rows of a run under Nsight Compute, and refuses a file with none.
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench-plot` reads test names and the report's timestamp, git hash and host
+  name as written, refuses a row without a test name as `bench summary` does,
+  and `bench-plot scaling` without plotly writes a PNG for an `.html` output.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - `bench doctor`'s row for an Nsight Compute request says that no row of the
   run is timed. ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
