@@ -521,6 +521,145 @@ std::string fileText(const std::string& path) {
   return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
 }
 
+/// The file size limit of the sink children below: about 227 records.
+constexpr rlim_t SINK_LIMIT = 8192;
+
+/// One step of a sink child: write records [first, first + count), flush,
+/// or lift the file size limit.
+struct SinkStep {
+  enum Kind { WRITE, FLUSH, LIFT_LIMIT } kind;
+  int first = 0;
+  int count = 0;
+};
+
+/**
+ * @brief Hand @p sink the counter records @p first to @p first + @p count - 1,
+ *        each stamped 1000 + its index.
+ */
+void writeRecordRange(vernier::monitor::MonitorFileSink& sink, int first, int count) {
+  for (int i = first; i < first + count; ++i) {
+    vernier::monitor::Sample sample;
+    sample.timestampNs = 1000 + static_cast<std::uint64_t>(i);
+    sample.kind = vernier::monitor::SampleKind::COUNTER;
+    sample.tag = MonitorTag("sink", 9);
+    std::strncpy(sample.scope, "loop", sizeof(sample.scope) - 1);
+    sample.value = 1.0;
+    sink.write(sample);
+  }
+}
+
+/** @brief Whether record @p index is in @p text whole, as the sink writes it. */
+bool hasRecord(const std::string& text, int index) {
+  const std::string RECORD =
+      std::to_string(1000 + index) + "\tCOUNTER\tsink/9\tloop\t0\t1.000000\n";
+  return text.compare(0, RECORD.size(), RECORD) == 0 ||
+         text.find("\n" + RECORD) != std::string::npos;
+}
+
+/** @brief How many of records @p first to @p first + @p count - 1 @p text lacks. */
+int missingRecords(const std::string& text, int first, int count) {
+  int missing = 0;
+  for (int i = first; i < first + count; ++i) {
+    missing += hasRecord(text, i) ? 0 : 1;
+  }
+  return missing;
+}
+
+/**
+ * @brief How many of records @p first to @p first + @p count - 1 @p text
+ *        holds whole at or after byte @p from, a record directly after a cut
+ *        one included.
+ */
+int recordsFrom(const std::string& text, int first, int count, std::size_t from) {
+  int found = 0;
+  for (int i = first; i < first + count; ++i) {
+    const std::string RECORD = std::to_string(1000 + i) + "\tCOUNTER\tsink/9\tloop\t0\t1.000000\n";
+    found += text.find(RECORD, from) != std::string::npos ? 1 : 0;
+  }
+  return found;
+}
+
+/** @brief What a sink child left: its file, its stderr, its wait status. */
+struct SinkChildRun {
+  std::string written;
+  std::string said;
+  int status = -1;
+  std::string path;
+};
+
+/**
+ * @brief Run @p steps against a MonitorFileSink in a forked child whose file
+ *        size limit is SINK_LIMIT bytes (the soft limit; SIGXFSZ ignored),
+ *        close the sink, and return the file and what the child wrote on
+ *        stderr. @p name keeps each test's folder its own.
+ */
+SinkChildRun runSinkChild(const std::string& name, const std::vector<SinkStep>& steps) {
+  const std::string DIR = (std::filesystem::temp_directory_path() /
+                           ("vernier_sink_" + name + "_" + std::to_string(::getpid())))
+                              .string();
+  std::filesystem::create_directories(DIR);
+  SinkChildRun run;
+  run.path = DIR + "/records.vmon";
+  const std::string ERR = DIR + "/stderr.txt";
+  const pid_t CHILD = ::fork();
+  if (CHILD == 0) {
+    std::FILE* err = std::fopen(ERR.c_str(), "w");
+    if (err == nullptr || ::dup2(::fileno(err), STDERR_FILENO) < 0) {
+      ::_exit(3);
+    }
+    std::signal(SIGXFSZ, SIG_IGN);
+    struct rlimit limit{};
+    if (::getrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    const rlim_t ORIGINAL = limit.rlim_cur;
+    limit.rlim_cur = SINK_LIMIT;
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      ::_exit(4);
+    }
+    {
+      vernier::monitor::MonitorFileSink sink(run.path);
+      for (const SinkStep& S : steps) {
+        if (S.kind == SinkStep::WRITE) {
+          writeRecordRange(sink, S.first, S.count);
+        } else if (S.kind == SinkStep::FLUSH) {
+          sink.flush();
+        } else {
+          limit.rlim_cur = ORIGINAL;
+          if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+            ::_exit(5);
+          }
+        }
+      }
+    }
+    std::fflush(stderr);
+    ::_exit(0);
+  }
+  if (CHILD > 0 && ::waitpid(CHILD, &run.status, 0) != CHILD) {
+    run.status = -1;
+  }
+  run.written = fileText(run.path);
+  run.said = fileText(ERR);
+  std::filesystem::remove_all(DIR);
+  return run;
+}
+
+/** @brief The bound @p run's diagnostic gives, or -1 when it gives none. */
+long long boundIn(const SinkChildRun& run) {
+  const std::string LEAD = "vernier::monitor: '" + run.path + "' may be missing up to ";
+  const std::size_t AT = run.said.find(LEAD);
+  return AT == std::string::npos ? -1 : std::stoll(run.said.substr(AT + LEAD.size()));
+}
+
+/** @brief How many times @p text holds @p part. */
+std::size_t occurrences(const std::string& text, const std::string& part) {
+  std::size_t n = 0;
+  for (std::size_t at = text.find(part); at != std::string::npos; at = text.find(part, at + 1)) {
+    ++n;
+  }
+  return n;
+}
+
 } // namespace
 
 /**
@@ -623,6 +762,83 @@ TEST(MonitorTest, FileSinkWritingNothingBoundsEveryRecord) {
             "vernier::monitor: cannot write '/dev/full': " + std::string(std::strerror(ENOSPC)) +
                 "\nvernier::monitor: '/dev/full' may be missing up to 1000 of the 1000 records "
                 "given to it (given after the last write it confirmed, before a write failed)\n");
+}
+
+/**
+ * @test A file sink leaves out of its bound the records a flush confirmed. In
+ *       a child whose file size limit holds about 227 records, 100 records
+ *       are written and flushed, then 300 more overrun the limit: the bound is
+ *       at most the 300 given after the flush and at least the records the
+ *       file lacks, counted from the file, and the failure is reported once.
+ */
+TEST(MonitorTest, FileSinkBoundLeavesOutWhatAFlushConfirmed) {
+  const SinkChildRun RUN = runSinkChild(
+      "flushed", {{SinkStep::WRITE, 0, 100}, {SinkStep::FLUSH}, {SinkStep::WRITE, 100, 300}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 100), 0) << "a confirmed record is missing";
+  const int MISSING = missingRecords(RUN.written, 100, 300);
+  EXPECT_GT(MISSING, 0) << "the size limit did not bite";
+  const long long BOUND = boundIn(RUN);
+  EXPECT_LE(BOUND, 300) << "the bound counts records the flush confirmed:\n" << RUN.said;
+  EXPECT_GE(BOUND, MISSING) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, " of the 400 records given to it (given after the last write "
+                                  "it confirmed, before a write failed)\n"),
+            1U)
+      << RUN.said;
+}
+
+/**
+ * @test The same with two confirmed flushes: 100 records flushed, 50 more
+ *       flushed, then 300 that overrun the limit. The bound is at most the
+ *       300 given after the second flush, and at least what the file lacks.
+ */
+TEST(MonitorTest, FileSinkBoundStartsAfterTheLastConfirmedFlush) {
+  const SinkChildRun RUN = runSinkChild("flushed_twice", {{SinkStep::WRITE, 0, 100},
+                                                          {SinkStep::FLUSH},
+                                                          {SinkStep::WRITE, 100, 50},
+                                                          {SinkStep::FLUSH},
+                                                          {SinkStep::WRITE, 150, 300}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 150), 0) << "a confirmed record is missing";
+  const int MISSING = missingRecords(RUN.written, 150, 300);
+  EXPECT_GT(MISSING, 0) << "the size limit did not bite";
+  const long long BOUND = boundIn(RUN);
+  EXPECT_LE(BOUND, 300) << "the bound counts records the second flush confirmed:\n" << RUN.said;
+  EXPECT_GE(BOUND, MISSING) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+}
+
+/**
+ * @test A flush that succeeds after a failure neither hides nor lowers the
+ *       bound. 100 records are flushed, 300 overrun the limit, the limit is
+ *       lifted, and 50 more are written and flushed. What reached the file
+ *       after the cut was written after the lift, so of the 300 only those
+ *       can have been given after the last failure: the bound, still
+ *       reported, is at least the 300 less those, and at most the 300.
+ */
+TEST(MonitorTest, FileSinkLaterSuccessKeepsTheBound) {
+  const SinkChildRun RUN = runSinkChild("recovered", {{SinkStep::WRITE, 0, 100},
+                                                      {SinkStep::FLUSH},
+                                                      {SinkStep::WRITE, 100, 300},
+                                                      {SinkStep::LIFT_LIMIT},
+                                                      {SinkStep::WRITE, 400, 50},
+                                                      {SinkStep::FLUSH}});
+  ASSERT_TRUE(WIFEXITED(RUN.status) && WEXITSTATUS(RUN.status) == 0) << "status " << RUN.status;
+  EXPECT_EQ(missingRecords(RUN.written, 0, 100), 0) << "a confirmed record is missing";
+  EXPECT_EQ(recordsFrom(RUN.written, 400, 50, SINK_LIMIT), 50)
+      << "the flush after the lift did not write";
+  EXPECT_GT(missingRecords(RUN.written, 100, 300), 0) << "the size limit did not bite";
+  const int WRITTEN_AFTER_THE_LIFT = recordsFrom(RUN.written, 100, 300, SINK_LIMIT);
+  const long long BOUND = boundIn(RUN);
+  EXPECT_GE(BOUND, 300 - WRITTEN_AFTER_THE_LIFT) << "the later success hid or lowered the bound:\n"
+                                                 << RUN.said;
+  EXPECT_LE(BOUND, 300) << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, "vernier::monitor: cannot write '" + RUN.path + "'"), 1U)
+      << RUN.said;
+  EXPECT_EQ(occurrences(RUN.said, " of the 450 records given to it"), 1U) << RUN.said;
 }
 
 /** @test A file sink asked for with an empty path says so on stderr when the monitor starts */
