@@ -407,7 +407,7 @@ nothing.
 | V0 / V1 instructions per call (step 4)    | 33.5x: 2,128,633 against 63,576                                | same direction; 29.2x on an x86 laptop (Release), 6.9x in an unoptimized x86 build |
 | the same count, run again                 | identical                                                      | identical for the same binary, machine, environment and working directory          |
 | where V0's instructions go (step 3)       | `memcpy` 37%, glibc's allocator 38%                            | the same functions; the shares depend on the C library and CPU                     |
-| a profile run again (step 5)              | identical but for number formatting, `rindex` and five atomics | the same                                                                           |
+| a profile run again (step 5)              | join functions and allocator: identical; setup and probes vary | the same                                                                           |
 | V0 / V1 time (step 1)                     | 54x here; 44.4x to 53.7x over seven runs                       | tens of times in an optimized build                                                |
 | slowdown under callgrind                  | 58x (V0) and 94x (V1)                                          | tens of times                                                                      |
 | call graph (`=>` lines, inclusive, calls) | wrong for this program                                         | consistent on x86                                                                  |
@@ -423,6 +423,12 @@ directory: profiles taken from directories 7 and 15 characters longer changed
 and 4 instructions. Step 4 printed the same counts from five directories of
 different lengths on this rig; on an x86 laptop, V0's count per call moved by
 up to 830 instructions (0.04%) with the length of the directory it ran from.
+What else runs on the machine moves the whole profile too, but not the join
+functions or the allocator: libbench's readiness probes scan the `/proc`
+entries of the running processes (`readdir`, `open`, `read`, `sscanf` and the
+like), so that work's counts follow the number of processes. The differences
+step 5 lists are its own pair's; a later pair here, whose second run saw one
+process fewer, differed in 39 functions.
 
 ## If It Does Not Match
 
@@ -454,8 +460,9 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
   explains.
 - **The counts differ from this page.** Expected on another compiler, C library
   or CPU; only the ratio carries over. On this rig and build, a difference of a
-  few hundred instructions in a program total comes from formatting measured
-  times and from atomic operations, as in step 5.
+  few hundred or a few thousand instructions in a program total comes from
+  formatting measured times, from atomic operations and from the probes'
+  reading of `/proc` (step 5 and [What Should Reproduce](#what-should-reproduce)).
 - **valgrind stops with `Possibly corrupted debuginfo file`, or on an
   assertion in `m_debuginfo`.** valgrind cannot read the program's debug
   information: seen with valgrind 3.18 and a binary built by clang 21 with `-g`
@@ -509,8 +516,8 @@ binary on the same board, about a minute apart. Both rows moved by more than
 their own spread (the `Base CV` and `Cand CV` columns, 0.1% to 2.1%): a fresh
 process measures a little differently, and over the seven runs V0's median
 moved by 10.4% and V1's by 10.4%, as walkthrough 01 shows at length for its own
-runs. A timing moves between runs; the instruction counts of steps 4 and 5 do
-not.
+runs. A timing moves between runs; step 4's instruction counts do not, and
+neither do step 5's for the join functions and the allocator.
 
 ## What Keeps This Page True
 
