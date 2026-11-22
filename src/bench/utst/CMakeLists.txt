@@ -172,6 +172,9 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
+  # Its two CUPTI definitions are exported by name: linked with gold or lld,
+  # the program leaves them out of its dynamic symbols (mold and bfd export
+  # them), and libbench_cuda's calls then reach libcupti's, unobserved.
   vernier_add_gtest(
     TARGET
     TestBenchGpu
@@ -182,6 +185,9 @@ if (TARGET bench_cuda)
     bench
     bench_cuda
     ${CMAKE_DL_LIBS}
+    EXPORT_SYMBOLS
+    cuptiActivityEnable
+    cuptiActivityDisable
     LABELS
     benchmarking
     gpu
@@ -193,14 +199,6 @@ if (TARGET bench_cuda)
   if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
     target_compile_definitions(TestBenchGpu PRIVATE WORKER_START_SANITIZER="${SANITIZER}")
   endif ()
-  # The program's two CUPTI definitions are exported by name: linked with gold
-  # or lld, the program leaves them out of its dynamic symbols (mold and bfd
-  # export them), and libbench_cuda's calls then reach libcupti's directly,
-  # unobserved.
-  target_link_options(
-    TestBenchGpu PRIVATE "LINKER:--export-dynamic-symbol=cuptiActivityEnable"
-    "LINKER:--export-dynamic-symbol=cuptiActivityDisable"
-  )
   vernier_add_gtest(
     TARGET
     TestBenchNsight
