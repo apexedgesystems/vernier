@@ -433,6 +433,46 @@ fn readers_name_the_line_a_row_starts_on() {
     }
 }
 
+/// @test summary and compare, on either side, name the line of a byte that
+/// is not UTF-8 as an editor counts it, after lone CR line ends and after
+/// blank lines (a file of CRLF line ends is in the test above). Every file
+/// is run before the test fails, so each one's line is shown.
+#[test]
+fn a_byte_not_utf8_is_named_on_its_line_after_lone_crs_and_blank_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let good = fixture("sample_bench.csv");
+    let files: [(&str, &[u8], &str); 2] = [
+        (
+            "not_utf8_cr.csv",
+            b"test,wallMedian,wallCV,callsPerSecond\rA,0.5,0.1,2\rB\xff,0.5,0.1,2\r",
+            "line 3: not valid UTF-8",
+        ),
+        (
+            "not_utf8_blank.csv",
+            b"test,wallMedian,wallCV,callsPerSecond\nA,0.5,0.1,2\n\n\nB\xff,0.5,0.1,2\n",
+            "line 5: not valid UTF-8",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, bytes, said) in files {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let expected = format!("{path}, {said}");
+        for args in [
+            vec!["summary", path.as_str()],
+            vec!["compare", good.as_str(), path.as_str()],
+            vec!["compare", path.as_str(), good.as_str()],
+        ] {
+            let (code, _, err) = run(&args);
+            if code != 1 || !err.contains(&expected) {
+                wrong.push(format!("{args:?}: exit {code}: {err}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
 /// @test A row a caller needs a value of names the line it starts on, after
 /// blank lines and in a file of CRLF line ends.
 #[test]

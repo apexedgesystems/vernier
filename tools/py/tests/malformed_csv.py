@@ -104,6 +104,12 @@ def without(column, cells=None):
     return text(header, rows(header, cells))
 
 
+def with_ff_fe(data, name):
+    """@p data, the test named @p name renamed to one holding the bytes FF FE,
+    which are not UTF-8, as bytes."""
+    return data.replace(name, "Corpus.\udcff\udcfe").encode("utf-8", "surrogateescape")
+
+
 def directory(path):
     os.mkdir(path)
 
@@ -242,6 +248,24 @@ CORPUS = [
         "the whole file in UTF-16, with its byte order mark",
         writes(GOOD.encode("utf-16")),
         "line 1: not valid UTF-8",
+    ),
+    refused(
+        "not_utf8_crlf",
+        "CRLF line ends, and the bytes FF FE in the second row's test name",
+        writes(with_ff_fe(text(HEADER, rows(), end="\r\n"), NAMES[1])),
+        "line 3: not valid UTF-8",
+    ),
+    refused(
+        "not_utf8_cr",
+        "lone CR line ends, and the bytes FF FE in the second row's test name",
+        writes(with_ff_fe(text(HEADER, rows(), end="\r"), NAMES[1])),
+        "line 3: not valid UTF-8",
+    ),
+    refused(
+        "not_utf8_after_blank_lines",
+        "two blank lines before the second row, whose test name holds the bytes FF FE",
+        writes(with_ff_fe(HEAD + "\n" + FIRST + "\n\n\n" + SECOND + "\n", NAMES[1])),
+        "line 5: not valid UTF-8",
     ),
     Case(
         "nul",
