@@ -78,8 +78,11 @@ TEST(PerfCaseTimingTest, MeasuredPerCallTimeMatchesASleep) {
  * about 20 sleeps and holds 80 calls: a quarter of the sleep a call. The timed
  * region also holds the workers' start and join, which 20 calls a repeat keep
  * small beside the sleeps. The case waits for its 5 repeats (about 0.2 s) and
- * nothing else. A divisor without the workers reads at least a whole sleep a
- * call, above the band under any load.
+ * nothing else. A sleep lasts at least its duration, so a repeat lasts at
+ * least 20 sleeps: the lower edge holds under any load. A divisor without the
+ * workers reads that repeat over 20 calls, at least a whole sleep a call under
+ * any load, and the upper edge is just below it; the divisor that counts every
+ * worker reaches it only if a repeat takes four times its sleeps.
  */
 TEST(PerfCaseTimingTest, ContentionPerCallTimeCountsEveryWorker) {
   constexpr int THREADS = 4;
@@ -95,5 +98,5 @@ TEST(PerfCaseTimingTest, ContentionPerCallTimeCountsEveryWorker) {
 
   const double PER_CALL_US = SLEEP_US / THREADS;
   EXPECT_GE(RESULT.stats.median, 0.9 * PER_CALL_US);
-  EXPECT_LE(RESULT.stats.median, 1.5 * PER_CALL_US);
+  EXPECT_LT(RESULT.stats.median, SLEEP_US);
 }
