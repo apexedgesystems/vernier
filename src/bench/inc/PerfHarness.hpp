@@ -348,16 +348,23 @@ struct TimerState {
   std::atomic<bool> armed{false};
 };
 
+// The handler loads the flag: a signal handler may perform only lock-free
+// atomic operations on it.
+static_assert(std::atomic<bool>::is_always_lock_free,
+              "the timer engine needs a lock-free std::atomic<bool>");
+
 /// This process's timer state, touched by arm() and disarm() and read by the handler.
 inline TimerState g_timer;
 
 // The timer's signal: the watchdog's expiry ends the process when the timer is
 // the engine armed; anything else (a disarm that raced the expiry, a signal an
 // earlier overrun left pending, the signal sent by someone else or raised by
-// another timer) returns at once, touching nothing.
+// another timer) returns at once, touching nothing. The flag is loaded with
+// acquire: the arming's release fence after its copy of the names then
+// synchronizes with it, so the names are read after they were written.
 inline void onTimer(int /*signo*/, siginfo_t* info, void* /*context*/) {
   if (info != nullptr && info->si_code == SI_TIMER && info->si_value.sival_ptr == &g_timer &&
-      g_timer.armed.load(std::memory_order_relaxed)) {
+      g_timer.armed.load(std::memory_order_acquire)) {
     expire(g_timer.testName, g_timer.profileTool);
   }
 }
@@ -430,9 +437,18 @@ inline bool armTimer(const char* testName, const char* profileTool,
     state.created = true;
     state.tid = TID;
   }
-  // The names are copied disarmed, so the signal of an earlier arming that
-  // arrives meanwhile reads no half-copied name; the fences keep the copy
-  // between the two stores for the handler, which runs on this thread.
+  if (state.armed.load(std::memory_order_relaxed)) {
+    // A re-arm before a disarm stops the earlier deadline first: a signal it
+    // raised is handled as this call returns, naming the earlier arming, and
+    // the timer raises nothing more until its new deadline is set, so no
+    // expiry meets the copy below or names this arming for the earlier one.
+    struct itimerspec stopped{};
+    ::timer_settime(state.timer, 0, &stopped, nullptr);
+  }
+  // The names are copied disarmed, and with the timer stopped (by disarm() or
+  // above) no signal of it is handled meanwhile; the fences keep the copy
+  // between the two stores, and the second is the release half of the
+  // handler's acquire load. The handler runs on this thread.
   state.armed.store(false, std::memory_order_relaxed);
   std::atomic_signal_fence(std::memory_order_seq_cst);
   std::strncpy(state.testName, testName != nullptr ? testName : "?", sizeof(state.testName) - 1);
