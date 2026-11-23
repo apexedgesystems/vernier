@@ -999,18 +999,11 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   the summary instead of 0.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark's own `alarm()` and SIGALRM handler, and gperftools sampling
-  under `CPUPROFILE_REALTIME`, keep working under `--profile`. On glibc 2.34
-  or later a benchmark that starts no thread of its own is still measured
-  single-threaded under the watchdog; one with threads of its own gains one
-  parked thread
-  ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#test-hangs--never-completes)).
-  Under a valgrind tool a hung benchmark with threads is ended at its
-  timeout: every wrap `bench run` writes, and the one a benchmark prints, asks
-  for valgrind's fair scheduler (`--fair-sched=try`). A threaded benchmark's
-  callgrind counts then repeat from run to run (two four-thread contention
-  cases on a Jetson AGX Thor counted 0.9 to 2.5 billion instructions a run
-  without it and 4.9 to 5.1 million with it); a single-threaded benchmark's
-  counts and time do not move.
+  under `CPUPROFILE_REALTIME`, keep working under `--profile`. The profile
+  watchdog uses a timer when eligible and a parked thread otherwise. Valgrind
+  wraps request fair scheduling where supported; see
+  [troubleshooting](src/bench/docs/TROUBLESHOOTING.md#test-hangs--never-completes)
+  for the signal, fallback and timing limits.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A callgrind wrap started by hand records only the measured windows, with or
   without `--instr-atstart=no` or valgrind's gdbserver, also with a libbench

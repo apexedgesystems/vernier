@@ -607,17 +607,24 @@ for valgrind's fair scheduler (`--fair-sched=try`), and so does the wrap a
 benchmark prints when nothing wraps it; a wrap written by hand should too.
 valgrind runs one thread at a time, and its default scheduler lets a thread
 that computes keep the others from running, the watchdog's among them, so a
-hung loop would be ended late or not at all; under the fair scheduler the
-threads take turns and the watchdog ends it at its timeout. `try` keeps the
-default where valgrind has no fair scheduler for the platform, where `yes`
+hung loop can be ended late or not at all; the fair scheduler takes the
+threads in turn. On a Jetson AGX Thor, a hung loop beside a thread of its own,
+so on the watchdog's thread, was ended 1.05 to 1.29 s after it started, with a
+1 s timeout, in all 36 runs under callgrind and memcheck with the fair
+scheduler, and late or not at all in all 36 with the default one. Two
+four-thread contention cases there counted 0.9 to 2.5 billion instructions a
+run under callgrind with the default scheduler, varying from run to run, and
+4.9 to 5.1 million with the fair one; a single-threaded benchmark's counts and
+time were the same with either. These are those runs, not limits. `try` keeps
+the default where valgrind has no fair scheduler for the platform, where `yes`
 would refuse to start. valgrind reads `VALGRIND_OPTS` and its `.valgrindrc`
-files before the command line, so a `--fair-sched` given there does not
-change the wrap's. A benchmark that starts no thread of its own gets the
-thread too where its measuring thread blocks the timer's signal when the
-loop starts, and on another C library or an older glibc; it then leaves the
-C library's single-threaded paths (glibc's `malloc` and `free` take their
-locks). `--profile-test-timeout 0` arms nothing: no timer, no signal
-handler, no thread.
+files before the command line, so a `--fair-sched` given there does not change
+the wrap's. A benchmark that starts no thread of its own gets the thread too
+where its measuring thread blocks the timer's signal when the loop starts, and
+on another C library or an older glibc; it then leaves the C library's
+single-threaded paths (glibc's `malloc` and `free` take their locks).
+`--profile-test-timeout 0` arms nothing: no timer, no signal handler, no
+thread.
 
 **Debug:**
 

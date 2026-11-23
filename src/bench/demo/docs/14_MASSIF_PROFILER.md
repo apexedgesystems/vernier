@@ -174,7 +174,7 @@ outlasts the target, and V1 108 times.
 ## Step 2: Profile V0
 
 ```bash
-valgrind --tool=massif --time-unit=B --massif-out-file=massif.v0.out \
+valgrind --tool=massif --fair-sched=try --time-unit=B --massif-out-file=massif.v0.out \
   ./build/bin/ptests/BenchDemo_11_MassifProfiler --profile massif \
   --cycles 1 --repeats 1 --gtest_filter=Massif.JoinV0
 ms_print massif.v0.out
@@ -333,7 +333,7 @@ What not to conclude:
 ## Step 4: Confirm the Fix
 
 ```bash
-valgrind --tool=massif --time-unit=B --massif-out-file=massif.v1.out \
+valgrind --tool=massif --fair-sched=try --time-unit=B --massif-out-file=massif.v1.out \
   ./build/bin/ptests/BenchDemo_11_MassifProfiler --profile massif \
   --cycles 1 --repeats 1 --gtest_filter=Massif.JoinV1
 ms_print massif.v1.out
@@ -424,7 +424,7 @@ The same steps work on any function you can call from a test:
 2. Run that test under massif for one measured call, and print the file:
 
    ```bash
-   valgrind --tool=massif --time-unit=B --massif-out-file=massif.out \
+   valgrind --tool=massif --fair-sched=try --time-unit=B --massif-out-file=massif.out \
      ./build/bin/ptests/<YourBenchmark> --profile massif \
      --cycles 1 --repeats 1 --gtest_filter=<Suite.Case>
    ms_print massif.out
@@ -448,7 +448,7 @@ places each snapshot at its time. By default that time is instructions
 executed. Step 4 without `--time-unit=B`:
 
 ```bash
-valgrind --tool=massif --massif-out-file=massif.v1.default.out \
+valgrind --tool=massif --fair-sched=try --massif-out-file=massif.v1.default.out \
   ./build/bin/ptests/BenchDemo_11_MassifProfiler --profile massif \
   --cycles 1 --repeats 1 --gtest_filter=Massif.JoinV1
 ms_print massif.v1.default.out
