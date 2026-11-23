@@ -668,8 +668,9 @@ with exit status 4 and prints the command. The
 [jemalloc walkthrough](../demo/docs/22_JEMALLOC_PROFILER.md) shows a run.
 
 ```bash
-# Full timeline, lab use (~20x overhead)
-valgrind --tool=massif --massif-out-file=run.massif \
+# Full timeline, lab use (~20x overhead); --fair-sched=try, as bench run
+# passes it, lets a benchmark's threads take turns under valgrind
+valgrind --tool=massif --fair-sched=try --massif-out-file=run.massif \
     ./MyComponent_PTEST --profile massif --cycles 1
 ms_print run.massif | head -40
 
@@ -692,7 +693,7 @@ Run alongside benchmarks after an optimization pass to catch leaks / UAF /
 uninit reads introduced by the change.
 
 ```bash
-valgrind --tool=memcheck --leak-check=full --error-exitcode=1 \
+valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=1 \
     --log-file=run.memcheck \
     ./MyComponent_PTEST --profile memcheck --cycles 1
 grep -A2 "LEAK SUMMARY" run.memcheck
@@ -707,12 +708,12 @@ switch to DRD, which reports the same race classes with a smaller memory
 footprint. Like the other valgrind tools, run a single cycle (~20x overhead).
 
 ```bash
-valgrind --tool=helgrind --log-file=run.helgrind \
+valgrind --tool=helgrind --fair-sched=try --log-file=run.helgrind \
     ./MyComponent_PTEST --profile helgrind --cycles 1
 grep -E "data race|lock order" run.helgrind
 
 # DRD variant (lighter on memory):
-valgrind --tool=drd --log-file=run.drd \
+valgrind --tool=drd --fair-sched=try --log-file=run.drd \
     ./MyComponent_PTEST --profile helgrind --profile-args drd --cycles 1
 ```
 

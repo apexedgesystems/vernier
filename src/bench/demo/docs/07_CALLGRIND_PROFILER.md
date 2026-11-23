@@ -118,7 +118,7 @@ bench run ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --profile callgrind 
 Captured output, trimmed where marked:
 
 ```
-Running: valgrind --tool=callgrind --callgrind-out-file=bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind
+Running: valgrind --tool=callgrind --fair-sched=try --callgrind-out-file=bench-out/BenchDemo_07_CallgrindProfiler.callgrind/callgrind.out ./build/bin/ptests/BenchDemo_07_CallgrindProfiler --cycles 10 --repeats 1 --profile callgrind
 ...
 [ RUN      ] CallgrindProfiler.JoinV0
 [CallgrindProfiler.JoinV0]  52131.118 us/call  CV=0.0%  ~19 calls/s  (p10=52131.118 p90=52131.118 sd=0.000)
@@ -412,7 +412,7 @@ valgrind's callgrind runs the process, and valgrind does not run this one`,
   `bench run`, or run the valgrind command that line prints:
 
   ```
-     Wrap it: valgrind --tool=callgrind --instr-atstart=no --callgrind-out-file=./callgrind.out <this-binary> --profile callgrind [...]; or run it with bench run --profile callgrind, which wraps it.
+     Wrap it: valgrind --tool=callgrind --fair-sched=try --instr-atstart=no --callgrind-out-file=./callgrind.out <this-binary> --profile callgrind [...]; or run it with bench run --profile callgrind, which wraps it.
   ```
 
   Under that command the benchmark switches counting on only around each

@@ -49,7 +49,7 @@ what the program still held and whether anything still pointed at it.
 **In Vernier:** `--profile memcheck` selects the memcheck backend, which does
 not start valgrind itself. `bench run <binary> --profile memcheck` builds the
 wrap and prints it on its first line:
-`valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=<dir>/<binary>.memcheck/memcheck.log <binary> --profile memcheck ...`,
+`valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=<dir>/<binary>.memcheck/memcheck.log <binary> --profile memcheck ...`,
 where `<dir>` is `--profile-output-dir` (`bench-out` when you give none).
 Memcheck writes one log for the whole process, so profile one test per run
 with `--gtest_filter`; no per-test folder is created. Run by hand instead,
@@ -59,7 +59,7 @@ measures (`Memcheck.JoinV1` here) creates the folder
 unless `--log-file` points into it. Run without valgrind, the request fails:
 the test measures, no folder is created, the run prints the command that
 starts it under memcheck
-(`valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=./memcheck.log <this-binary> --profile memcheck [...]`)
+(`valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=./memcheck.log <this-binary> --profile memcheck [...]`)
 and exits with status 4. `Memcheck.JoinOffByOne` measures nothing and
 creates no folder. Because the wrap passes `--error-exitcode=0`, a
 `bench run` with memory errors still exits 0: the log carries the finding.
@@ -231,7 +231,7 @@ bench run ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck \
 Captured output:
 
 ```
-Running: valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
+Running: valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
 Note: Google Test filter = Memcheck.JoinOffByOne
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
@@ -370,7 +370,7 @@ cat memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log
 Captured output of the run:
 
 ```
-Running: valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
+Running: valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
 Note: Google Test filter = Memcheck.JoinV1
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.

@@ -54,7 +54,7 @@ test it runs in the working directory, `Massif.JoinV0.massif/` in step 2, which
 massif writes into only if `--massif-out-file` points there; with the commands
 on this page the folder stays empty. Run without valgrind, the binary measures
 as usual but creates no folder, prints the command that runs it under massif
-(`valgrind --tool=massif --massif-out-file=./massif.out <this-binary> --profile massif [...]`)
+(`valgrind --tool=massif --fair-sched=try --massif-out-file=./massif.out <this-binary> --profile massif [...]`)
 and exits with status 4. `bench run` creates no per-test folder.
 
 **Needs:** valgrind, from the rig document's
@@ -516,7 +516,7 @@ ms_print bench-out/BenchDemo_11_MassifProfiler.massif/massif.out
 Captured output of the first command:
 
 ```
-Running: valgrind --tool=massif --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
+Running: valgrind --tool=massif --fair-sched=try --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
 ==156225== Massif, a heap profiler
 ==156225== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
 ==156225== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info

@@ -1004,6 +1004,13 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   single-threaded under the watchdog; one with threads of its own gains one
   parked thread
   ([troubleshooting](src/bench/docs/TROUBLESHOOTING.md#test-hangs--never-completes)).
+  Under a valgrind tool a hung benchmark with threads is ended at its
+  timeout: every wrap `bench run` writes, and the one a benchmark prints, asks
+  for valgrind's fair scheduler (`--fair-sched=try`). A threaded benchmark's
+  callgrind counts then repeat from run to run (two four-thread contention
+  cases on a Jetson AGX Thor counted 0.9 to 2.5 billion instructions a run
+  without it and 4.9 to 5.1 million with it); a single-threaded benchmark's
+  counts and time do not move.
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A callgrind wrap started by hand records only the measured windows, with or
   without `--instr-atstart=no` or valgrind's gdbserver, also with a libbench
