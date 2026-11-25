@@ -76,6 +76,7 @@ vernier_add_gtest(
   "^PerfWatchdogTest\\.TimeoutNamesTestAndToolThenExits$"
   "^PerfWatchdogTest\\.NullNamesBecomePlaceholders$"
   "^PerfWatchdogTest\\.DisarmAndRearmReplaceTheDeadline$"
+  "^PerfWatchdogTest\\.RearmBeforeADisarmStopsTheTimerFirst$"
   "^PerfWatchdogTest\\.ForkedChild(OfAThreadedProcess)?ArmsItsOwnWatchdog$"
   "^PerfWatchdogTest\\.ItsThreadTakesNoSignal$"
   "^PerfWatchdogTest\\.TimerArmingLeavesTheSignalMaskAlone$"

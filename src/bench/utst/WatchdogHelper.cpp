@@ -104,6 +104,17 @@
  *                         with the thread, each body waits for it to wait for
  *                         its deadline, and the second arming for it to park;
  *                         prints "measured twice"
+ *   settime               (the timer engine's builds) armed for 10 s, armed
+ *                         again for 10 s, disarmed; then armed, disarmed,
+ *                         armed, disarmed: prints each order's
+ *                         timer_settime() calls, "armed twice: ..." and
+ *                         "disarmed between: ...", "set" for a deadline and
+ *                         "stop" for a zero value
+ *
+ * The program defines timer_settime() itself, where the timer engine is
+ * built: each call is recorded and forwarded to the C library's, so every
+ * mode runs as with the library's alone and the settime mode can print the
+ * order of the calls.
  *
  * Where the watchdog should end the program, the program waits 5 s for it,
  * then says it did not and exits 0. Where it waits for the watchdog's thread
@@ -130,11 +141,14 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
+#include <cstddef>
 #include <cstdint>
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
@@ -146,7 +160,53 @@
 #include <thread>
 #include <vector>
 
+#if VERNIER_WATCHDOG_TIMER
+#include <dlfcn.h>
+#endif
+
 namespace perf_watchdog = vernier::bench::perf_watchdog;
+
+#if VERNIER_WATCHDOG_TIMER
+namespace {
+
+/// This process's timer_settime() calls in order: 's' for a value that sets
+/// a deadline, 'z' for a zero value, which stops the timer.
+char g_settimeCalls[64];
+std::atomic<std::size_t> g_settimeCount{0};
+
+} // namespace
+
+/**
+ * The program's own timer_settime(): records the call, then passes it on to
+ * the C library's. The watchdog's calls are the header's inline code compiled
+ * into this program, and the linker binds a call in a program to the
+ * program's own definition of the function it calls; a sanitizer runtime
+ * linked into the program defines the name weakly, for its interceptor, and
+ * this definition takes its place. dlsym(RTLD_NEXT) looks past this program,
+ * and of the libraries the program loads only the C library defines the call
+ * (glibc 2.34 or later, where the timer engine is built and dlsym is in the C
+ * library too); a lookup that names no version returns the default one, the
+ * version a program linked against the library calls.
+ */
+extern "C" int timer_settime(timer_t timer, int flags, const struct itimerspec* value,
+                             struct itimerspec* old) noexcept {
+  static const auto LIBRARY = [] {
+    void* const FOUND = ::dlsym(RTLD_NEXT, "timer_settime");
+    if (FOUND == nullptr) {
+      std::fprintf(stderr, "WatchdogHelper: no timer_settime after the program's\n");
+      std::abort();
+    }
+    return reinterpret_cast<decltype(&::timer_settime)>(FOUND);
+  }();
+  const bool STOP = value != nullptr && value->it_value.tv_sec == 0 && value->it_value.tv_nsec == 0;
+  const std::size_t AT = g_settimeCount.fetch_add(1);
+  if (AT < sizeof(g_settimeCalls)) {
+    g_settimeCalls[AT] = STOP ? 'z' : 's';
+  }
+  return LIBRARY(timer, flags, value, old);
+}
+#endif
+
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 
@@ -336,6 +396,32 @@ int takeover() {
 }
 
 #if VERNIER_WATCHDOG_TIMER
+/// The timer_settime() calls recorded from @p from to @p to, as words.
+std::string settimeCalls(std::size_t from, std::size_t to) {
+  std::string words;
+  for (std::size_t i = from; i < to && i < sizeof(g_settimeCalls); ++i) {
+    words += words.empty() ? "" : " ";
+    words += g_settimeCalls[i] == 'z' ? "stop" : "set";
+  }
+  return words;
+}
+
+/// The settime mode: each order's timer_settime() calls, printed.
+int settimeOrder() {
+  const std::size_t START = g_settimeCount.load();
+  perf_watchdog::arm("Watchdog.First", "perf", LONG);
+  perf_watchdog::arm("Watchdog.Second", "perf", LONG);
+  perf_watchdog::disarm();
+  const std::size_t REARMED = g_settimeCount.load();
+  perf_watchdog::arm("Watchdog.First", "perf", LONG);
+  perf_watchdog::disarm();
+  perf_watchdog::arm("Watchdog.Second", "perf", LONG);
+  perf_watchdog::disarm();
+  std::printf("armed twice: %s\ndisarmed between: %s\n", settimeCalls(START, REARMED).c_str(),
+              settimeCalls(REARMED, g_settimeCount.load()).c_str());
+  return 0;
+}
+
 int foreign() {
   const std::uint64_t CAUGHT = caughtSignals();
   perf_watchdog::arm("Watchdog.Foreign", "perf", LONG);
@@ -825,6 +911,9 @@ int main(int argc, char** argv) {
   if (MODE == "foreign") {
     return foreign();
   }
+  if (MODE == "settime") {
+    return settimeOrder();
+  }
   if (MODE == "stale" && argc == 3 &&
       (std::string_view(argv[2]) == "thread" || std::string_view(argv[2]) == "hang" ||
        std::string_view(argv[2]) == "timer")) {
@@ -878,7 +967,7 @@ int main(int argc, char** argv) {
                "switch between|during|stale thread|hang|timer|no-thread <flags>|"
                "no-thread-retry <flags>|"
                "threads <flags>|"
-               "rearm <flags>\n",
+               "rearm <flags>|settime\n",
                argv[0]);
   return 64;
 }

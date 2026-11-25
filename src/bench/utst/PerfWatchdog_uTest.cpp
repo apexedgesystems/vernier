@@ -15,6 +15,9 @@
  *  - The cases of a later arming on the thread make the helper wait until the
  *    watchdog's thread is parked, or waiting for a deadline, before it arms
  *    again: an arming the thread does not see at once is then never seen.
+ *  - The helper defines timer_settime() itself, recording each call and
+ *    passing it on to the C library's; one case reads the order of the timer
+ *    engine's calls from it.
  *  - The cases in this process arm through a measured loop for 30 s or more
  *    and read the watchdog's flag; none waits for it.
  *  - The valgrind cases run the helper through the line `bench run` writes:
@@ -291,6 +294,24 @@ TEST(PerfWatchdogTest, DisarmAndRearmReplaceTheDeadline) {
   const ProbeResult RUN = runHelper({"disarmed"});
   EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
   EXPECT_EQ(RUN.output, "still running\n");
+  EXPECT_EQ(RUN.errorOutput, "");
+}
+
+/**
+ * @test The timer engine's timer_settime() calls, as the helper records them
+ * ("set" a deadline, "stop" a zero value): a re-arm before a disarm stops the
+ * timer before it sets the new deadline (armed for 10 s, armed again, disarmed:
+ * set, stop, set, stop), and an arming after a disarm stops nothing first
+ * (armed, disarmed, armed, disarmed: set, stop, set, stop).
+ */
+TEST(PerfWatchdogTest, RearmBeforeADisarmStopsTheTimerFirst) {
+  if (const std::string WHY = withoutTheTimer(); !WHY.empty()) {
+    GTEST_SKIP() << WHY;
+  }
+  const ProbeResult RUN = runHelper({"settime"});
+  EXPECT_TRUE(RUN.succeeded()) << RUN.describe() << "\n" << RUN.output << RUN.errorOutput;
+  EXPECT_EQ(RUN.output, "armed twice: set stop set stop\n"
+                        "disarmed between: set stop set stop\n");
   EXPECT_EQ(RUN.errorOutput, "");
 }
 
