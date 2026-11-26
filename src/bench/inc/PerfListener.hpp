@@ -123,6 +123,14 @@ private:
  * 3 rows from 2 tests | 2 stable | 1 unstable
  * @endcode
  *
+ * A row the harness did not time (PerfSummaryEntry::timed: a row measured
+ * under Nsight Compute) shows no numbers, and the footer counts it:
+ * @code
+ * Saxpy.G1                                     -       -           -  NOT TIMED
+ * ...
+ * 2 tests | 1 stable | 0 unstable | 1 not timed
+ * @endcode
+ *
  * @param entries One entry per published row.
  * @param tests   Tests that published the entries. When it is at least 1 and
  *                smaller than the number of entries the footer names both
@@ -161,11 +169,20 @@ inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries, std:
   // Rows
   int stableCount = 0;
   int unstableCount = 0;
+  int untimedCount = 0;
   for (const auto& e : entries) {
     // Truncate long names
     std::string displayName = e.testName;
     if (displayName.size() > maxNameLen) {
       displayName = displayName.substr(0, maxNameLen - 2) + "..";
+    }
+
+    // A measurement the harness did not time has no numbers to show.
+    if (!e.timed) {
+      ++untimedCount;
+      std::fprintf(stdout, "%-*s  %12s  %6s  %10s  %s\n", static_cast<int>(maxNameLen),
+                   displayName.c_str(), "-", "-", "-", "NOT TIMED");
+      continue;
     }
 
     // Format calls/s compactly
@@ -196,13 +213,17 @@ inline void printSummaryTable(const std::vector<PerfSummaryEntry>& entries, std:
     std::fputc('-', stdout);
   }
   if (tests > 0 && tests < entries.size()) {
-    std::fprintf(stdout, "\n%d rows from %d test%s | %d stable | %d unstable\n",
+    std::fprintf(stdout, "\n%d rows from %d test%s | %d stable | %d unstable",
                  static_cast<int>(entries.size()), static_cast<int>(tests), (tests == 1) ? "" : "s",
                  stableCount, unstableCount);
   } else {
-    std::fprintf(stdout, "\n%d tests | %d stable | %d unstable\n", static_cast<int>(entries.size()),
+    std::fprintf(stdout, "\n%d tests | %d stable | %d unstable", static_cast<int>(entries.size()),
                  stableCount, unstableCount);
   }
+  if (untimedCount > 0) {
+    std::fprintf(stdout, " | %d not timed", untimedCount);
+  }
+  std::fprintf(stdout, "\n");
 }
 
 /* ----------------------------- SummaryListener ----------------------------- */

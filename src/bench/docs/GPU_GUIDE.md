@@ -118,12 +118,13 @@ cmake --build build
 # Quick mode during development
 ./build/VectorAdd_GPU_PTEST --quick
 
-# With Nsight Systems timeline profiling
-./build/VectorAdd_GPU_PTEST --profile nsight --gtest_filter="*Basic"
+# With Nsight Systems timeline profiling: bench run starts the binary under nsys
+bench run ./build/VectorAdd_GPU_PTEST --profile nsight -- --gtest_filter="*Basic"
 
-# With Nsight Compute kernel analysis (add --profile-args replay for
-# replay-mode metrics)
-./build/VectorAdd_GPU_PTEST --profile ncu --gtest_filter="*Basic"
+# With Nsight Compute kernel analysis, under ncu (--profile-args replay for the
+# replay metrics, or a set, sections and metrics: --profile-args '--set full')
+bench run ./build/VectorAdd_GPU_PTEST --profile ncu --cycles 3 --repeats 1 \
+  -- --gtest_filter="*Basic"
 
 # Specific GPU device
 ./build/VectorAdd_GPU_PTEST --gpu-device 1 --csv results.csv
@@ -934,29 +935,64 @@ managed buffer.
 NVIDIA Nsight Compute provides detailed kernel profiling:
 
 ```bash
-# Profile specific kernel (default Systems mode -> nsys timeline)
-./MyKernel_GPU_PTEST --profile nsight --gtest_filter="*MyKernel"
+# Profile a kernel's run (default Systems mode -> nsys timeline): bench run
+# starts the binary under nsys
+bench run ./MyKernel_GPU_PTEST --profile nsight -- --gtest_filter="*MyKernel"
+# Generates: bench-out/MyKernel_GPU_PTEST.nsight/profile.nsys-rep (+ the
+# nsys stats summaries)
 
-# Generates: MyKernel.MyKernel.nsight/profile.nsys-rep (+ auto stats reports)
-
-# Kernel deep-dive (Compute replay) -> .ncu-rep instead
-./MyKernel_GPU_PTEST --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# Generates: MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+# Kernel deep-dive (Compute replay) -> .ncu-rep instead, under ncu
+bench run ./MyKernel_GPU_PTEST --profile nsight --profile-args replay \
+  --cycles 3 --repeats 1 -- --gtest_filter="*MyKernel"
+# Generates: bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu-ui bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep
 
 # Or command-line report
-ncu --csv --print-summary per-kernel MyKernel.MyKernel.nsight/kernel_replay.ncu-rep
+ncu --import bench-out/MyKernel_GPU_PTEST.nsight/kernel_replay.ncu-rep --csv --print-summary per-kernel
 ```
 
-**What Nsight shows:**
+**What the replay collects:**
 
-- Roofline analysis (compute vs memory bound)
-- Warp execution efficiency
-- Memory throughput breakdown
-- Instruction mix
-- Occupancy limiters
+- Throughput of the SMs, L1 and L2, and of DRAM where the GPU reports it (the
+  Jetson AGX Thor does not)
+- Achieved occupancy
+- Warp execution efficiency and branch efficiency
+- Registers per thread
+- Instruction mix (ALU, FMA and load/store pipe utilization)
+
+For roofline analysis and occupancy limiters, name ncu's sections instead:
+`--profile-args '--section SpeedOfLight_RooflineChart --section Occupancy'`,
+or a set such as `--profile-args '--set full'` (see
+[tools/README.md](../../../tools/README.md#run---execute-benchmark-binary)).
+
+**No timing under Nsight Compute.** A process ncu profiles, under
+`bench run --profile ncu`, nsight's compute route or an ncu command typed by
+hand, is instrumented: ncu's work adds to what host timers and CUDA events
+measure, whatever metrics it collects (whether it also replays a launch
+depends on those metrics). A `PERF_TEST` case whose work launches kernels is
+slowed as a `PERF_GPU_TEST` case is, so under ncu neither harness times a
+measurement:
+
+- every row leaves its timing cells empty: `wallMedian` through `wallCV`,
+  `callsPerSecond` and `stable`; a GPU row also leaves the values computed
+  from them empty: `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`,
+  `memBandwidthGBs`, `multiGpuEfficiency` and `p2pBandwidthGBs`;
+- the run says why once on stderr, each test's console line reads
+  `[Suite.Case]  not timed: Nsight Compute (ncu) profiles this process`, and
+  the end-of-run table shows `NOT TIMED` for such a row;
+- the other cells stay: the configuration, the metadata, `gpuModel`,
+  `computeCapability`, the bytes moved, the occupancy estimate, the NVML
+  readings and the device columns.
+
+The result a test reads in its own code is unchanged. ncu's own measurements
+are in its report. Time the code in a run without ncu. A run under Nsight
+Systems (nsys) is not an ncu session: its rows stay timed. `bench doctor
+<binary> --profile ncu` says before the run that no row of it is timed.
+`bench summary` and `bench compare` refuse a row left untimed under ncu,
+saying that its timing cells are empty as in a run under ncu, and `bench run`
+refuses `--analyze` for a run under ncu before it starts.
 
 ### GPU Profiler Integration
 
@@ -1103,8 +1139,8 @@ the same way, on the same kind of core, or set `VERNIER_DISABLE_CUPTI=1`.
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
-cache hit rates), keep `--profile nsight --profile-args replay` or wrap
-externally with `ncu`. Under `--capture-um` the same collector also records
+cache hit rates), use `bench run --profile ncu --profile-args replay`, or name
+the sections and metrics ncu collects (`--profile-args '--set full'`). Under `--capture-um` the same collector also records
 CUPTI's unified-memory counters over each measured window, in a window of the
 counters alone ([Unified-Memory Counters](#unified-memory-counters)).
 

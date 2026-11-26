@@ -656,9 +656,10 @@ the case's CSV rows:
 - `Energy consumed` - energy over the window (J): the counter's delta in units
 - `Duration` - the window's wall-clock duration (s)
 - `Average power` - energy over duration (W)
-- `Energy per operation` - average power x median time per call (mJ/call)
-- `Median time per call`, `Energy unit`, `Start counter`, `End counter`,
-  `Delta counter`
+- `Energy per operation` - average power x median time per call (mJ/call);
+  not computed under Nsight Compute, whose calls are not timed
+- `Median time per call` (not under Nsight Compute)
+- `Energy unit`, `Start counter`, `End counter`, `Delta counter`
 
 The counter is the whole package's, whatever runs on it. Energy stays in this
 file, not in CSV columns: the row's `profileDir` names the folder.
@@ -1150,11 +1151,11 @@ exits with status 4. See
 
 GPU-specific profilers:
 
-| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                        |
-| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute`), `kernel_replay.ncu-rep` (the printed replay command) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                               |
-| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                               |
+| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute` or a selection), `kernel_replay.ncu-rep` (`--profile-args replay`) |
+| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                                           |
+| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                                           |
 
 "Under it" means the process must be started by the tool, as for the CPU
 tools in [Available Profilers](#available-profilers).
@@ -1166,13 +1167,14 @@ tools in [Available Profilers](#available-profilers).
 bench run ./test --profile nsight -- --gtest_filter="*MyKernel"
 # Generates: bench-out/test.nsight/profile.nsys-rep and the nsys stats summaries
 
-# Kernel deep-dive (Compute replay): bench run does not wrap a replay. Run the
-# benchmark directly: it fails, printing the ncu --metrics command to run
-./test --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# That command writes ./kernel_replay.ncu-rep
+# Kernel deep-dive (Compute replay): bench run starts it under ncu with the
+# replay metric list
+bench run ./test --profile nsight --profile-args replay --cycles 3 --repeats 1 \
+  -- --gtest_filter="*MyKernel"
+# Generates: bench-out/test.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui kernel_replay.ncu-rep
+ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
 ```
 
 ### GPU Best Practices

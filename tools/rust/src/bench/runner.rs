@@ -4,14 +4,19 @@
 //! the `--profile` the benchmark receives. When it names a wrap-externally
 //! backend (valgrind tools, heaptrack, compute-sanitizer, nsys, ncu), the
 //! runner starts the benchmark under the route that request selects: the
-//! tool, and the mode its `--profile-args` words name, or it refuses a word
-//! the tool does not take before anything is created or started. Wrapped
+//! tool, and the mode its `--profile-args` words name (for Nsight Compute,
+//! also the set, sections and metrics of Vernier's supported subset of ncu's
+//! options), or it refuses a word the tool does not take before anything is
+//! created or started. Wrapped
 //! children get `VERNIER_EXTERNAL_WRAP=<tool>` so in-process backends stay
 //! passive instead of re-attaching or printing manual-wrap hints; for
 //! nsight's nsys route the runner also extracts the canonical `nsys stats`
 //! reports after the run (the .nsys-rep only exists once the wrapped process
-//! exits), and for compute-sanitizer it reads the tool's report to tell the
-//! errors the tool found from the benchmark's own status. jemalloc is wrapped
+//! exits), for an ncu route that names metrics it reads the report back and
+//! names each metric the report holds nothing for (ncu itself says nothing of
+//! a metric the GPU does not report), and for compute-sanitizer it reads the
+//! tool's report to tell the errors the tool found from the benchmark's own
+//! status. jemalloc is wrapped
 //! through the environment instead (`env_wrap_for`): the library preloaded
 //! and its profiling options set, refused before anything starts when the
 //! loader cannot preload it, and its exit dump checked after the run.
@@ -55,10 +60,18 @@ pub struct RunConfig {
     pub profile_frequency: Option<String>,
     pub profile_test_timeout: Option<u32>,
     pub profile_output_dir: Option<PathBuf>,
+    /// The project's default output folder (`.bench.yaml`'s
+    /// `profile_output_dir`): taken when neither the command nor the
+    /// arguments after `--` give one (`effective_request`).
+    pub default_profile_output_dir: Option<PathBuf>,
     /// `--profile-analyze`: the requested profile's analysis (forwarded to
     /// the binary; for callgrind, run by the runner after the exit).
     pub profile_analyze: bool,
     pub taskset: Option<String>,
+    /// The project's default test filter (`.bench.yaml`'s `gtest_filter`):
+    /// given to the benchmark as `--gtest_filter=<it>`, before the arguments
+    /// after `--`, unless one of those starts with `--gtest_filter=`.
+    pub gtest_filter: Option<String>,
     pub extra_args: Vec<String>,
 }
 
@@ -105,6 +118,7 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     }
     let tool = cfg.profile.as_deref().map(canonical_backend);
     args.extend(profile_request_args(cfg));
+    args.extend(configured_filter(cfg));
     // --profile-analyze given to bench run, or forwarded after `--`: one
     // request either way.
     let analyze = cfg.profile_analyze || cfg.extra_args.iter().any(|a| a == "--profile-analyze");
@@ -219,7 +233,10 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     if let Some(ref r) = route {
         let request = request_text(&r.tool, cfg.profile_args.as_deref());
         for alternatives in r.outputs {
-            require_output(&r.tool, &request, &r.dir, alternatives)?;
+            let output = require_output(&r.tool, &request, &r.dir, alternatives)?;
+            if !r.metrics.is_empty() {
+                name_missing_metrics(&output, &r.metrics);
+            }
         }
         if r.program == "nsys" {
             extract_nsys_stats(&r.dir, &request)?;
@@ -245,6 +262,36 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
     Ok(cfg.csv.clone())
 }
 
+/// Refuse `bench run --analyze` for a run that is a profiling capture under
+/// Nsight Compute (ncu), before anything is created or started: the
+/// benchmark leaves the timing cells empty under ncu, so there is no timing
+/// to summarise. The route is the one `run_benchmark` takes for
+/// the request (`effective_request`, then `route_for`); a request it refuses
+/// is left for it to refuse.
+pub fn refuse_analysis_of_capture(cfg: &RunConfig) -> Result<(), Error> {
+    let Ok(cfg) = effective_request(cfg, "bench run") else {
+        return Ok(());
+    };
+    let Some(tool) = cfg.profile.as_deref().map(canonical_backend) else {
+        return Ok(());
+    };
+    let route = route_for(
+        tool,
+        cfg.profile_args.as_deref(),
+        &cfg.binary,
+        cfg.profile_output_dir.as_deref(),
+    );
+    match route {
+        Ok(Some(route)) if route.program == "ncu" => Err(Error::InvalidArgs(format!(
+            "--analyze summarises the run's timing, and {} runs the benchmark under Nsight \
+             Compute (ncu), a profiling capture that leaves the timing cells empty; drop \
+             --analyze, or time the benchmark in a run without ncu",
+            request_text(tool, cfg.profile_args.as_deref())
+        ))),
+        _ => Ok(()),
+    }
+}
+
 /// The fields of a profile request that `bench run` routes on, as the
 /// benchmark spells them after `--`: each takes the word after it, and
 /// `--artifact-root` is the benchmark's other name for the output folder.
@@ -267,8 +314,10 @@ const ROUTED_FIELDS: [&str; 5] = [
 /// refused, as is one after `--` without its value, and a rate written
 /// `--profile-frequency=N` after `--`, which the benchmark does not read,
 /// before anything is created or started; the same value twice is one
-/// request (`nsys` is `nsight`, `0250` is 250). Every other argument after
-/// `--`, `--profile-analyze` among them, stays as it is, in its place.
+/// request (`nsys` is `nsight`, `0250` is 250). The project's folder
+/// (`default_profile_output_dir`) is taken when neither the command nor the
+/// arguments after `--` give one. Every other argument after `--`,
+/// `--profile-analyze` among them, stays as it is, in its place.
 pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Error> {
     let mut forwarded: Vec<(&str, &str)> = Vec::new();
     let mut rest = Vec::with_capacity(cfg.extra_args.len());
@@ -342,6 +391,8 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
                     .is_some_and(|hz| Some(hz) == parse_profile_frequency(b))
         },
     )?;
+    // The project's folder is a default: one given to the command, or
+    // after `--`, takes precedence over it, and only those can conflict.
     out.profile_output_dir = one(
         "--profile-output-dir",
         cfg.profile_output_dir
@@ -349,7 +400,8 @@ pub fn effective_request(cfg: &RunConfig, command: &str) -> Result<RunConfig, Er
             .map(|d| d.display().to_string()),
         &exact,
     )?
-    .map(PathBuf::from);
+    .map(PathBuf::from)
+    .or_else(|| cfg.default_profile_output_dir.clone());
     out.extra_args = rest;
     Ok(out)
 }
@@ -387,6 +439,25 @@ pub fn profile_request_args(cfg: &RunConfig) -> Vec<String> {
         args.push("--profile-analyze".to_string());
     }
     args
+}
+
+/// The one spelling of an argument GoogleTest reads its test filter from,
+/// up to the filter.
+const GTEST_FILTER_FLAG: &str = "--gtest_filter=";
+
+/// What the benchmark is given for the project's default test filter
+/// (`RunConfig::gtest_filter`): `--gtest_filter=<it>`, unless an argument
+/// after `--` starts with `--gtest_filter=`, which is then the only filter
+/// the benchmark gets; nothing without a default. A filter the benchmark is
+/// given takes precedence over `GTEST_FILTER` in its environment, which
+/// GoogleTest reads only when no flag gives one.
+fn configured_filter(cfg: &RunConfig) -> Option<String> {
+    let filter = cfg.gtest_filter.as_deref()?;
+    let given = cfg
+        .extra_args
+        .iter()
+        .any(|arg| arg.starts_with(GTEST_FILTER_FLAG));
+    (!given).then(|| format!("{GTEST_FILTER_FLAG}{filter}"))
 }
 
 /// Create a wrap's folder and remove from it the previous run's copies of the
@@ -434,13 +505,13 @@ fn profile_failure(request: &str, stage: &'static str, message: String) -> Error
 }
 
 /// Require one of @p alternatives (file names in @p dir) to exist and hold
-/// something, and print which, with its size.
+/// something, print which, with its size, and return its path.
 fn require_output(
     tool: &str,
     request: &str,
     dir: &Path,
     alternatives: &[&str],
-) -> Result<(), Error> {
+) -> Result<PathBuf, Error> {
     let found = alternatives
         .iter()
         .map(|name| dir.join(name))
@@ -466,7 +537,7 @@ fn require_output(
         ));
     }
     println!("[bench] {tool} wrote {} ({size} bytes)", path.display());
-    Ok(())
+    Ok(path)
 }
 
 /// jemalloc's dumps, `jeprof.<pid>.<n>.<kind>.heap` under the prefix the
@@ -630,8 +701,9 @@ fn jeprof_hint(binary: &Path, dump: &Path, lookup: impl Fn(&str) -> InPath) -> V
     lines
 }
 
-/// How a helper program ended, for messages.
-fn describe_status(status: ExitStatus) -> String {
+/// How a program ended, for messages ("exited with status 3", "was ended by
+/// signal 9"): a helper's here, the wrapped command's in `gpu_lock`.
+pub(crate) fn describe_status(status: ExitStatus) -> String {
     if let Some(code) = status.code() {
         return format!("exited with status {code}");
     }
@@ -846,6 +918,10 @@ struct Route {
     outputs: &'static [&'static [&'static str]],
     /// Files the runner derives from the output after the run.
     derived: &'static [&'static str],
+    /// The metric names ncu is given (`NcuRequest::asked_metrics`), which the
+    /// output is read back for after the run (`name_missing_metrics`); none
+    /// for every other route.
+    metrics: Vec<String>,
 }
 
 impl Route {
@@ -881,26 +957,262 @@ fn mode_words(profile_args: Option<&str>) -> Vec<&str> {
 }
 
 /// The modes a wrap-externally backend takes, as its header advertises them;
-/// `None` for every profile `bench run` does not wrap in argv.
+/// `None` for every profile `bench run` does not wrap in argv. ncu and
+/// nsight read their words by Nsight Compute's grammar (`ncu_request`).
 fn wrapped_modes(tool: &str) -> Option<&'static [&'static str]> {
     Some(match tool {
-        "callgrind" | "heaptrack" | "ncu" => &[],
+        "callgrind" | "heaptrack" => &[],
         "massif" => &["pages", "stacks"],
         "memcheck" => &["leak-full", "track-origins"],
         "helgrind" => &["drd"],
         "compute-sanitizer" => &["memcheck", "racecheck", "synccheck", "initcheck"],
-        "nsight" => &["compute", "ncu"],
+        "ncu" => &["replay"],
+        "nsight" => &["compute", "ncu", "replay"],
         _ => return None,
     })
+}
+
+/// The metrics a kernel replay collects (`--profile-args replay`), as ncu's
+/// `--metrics`: the throughputs, achieved occupancy, warp execution and
+/// branch efficiency, registers per thread and the instruction mix (the ALU,
+/// FMA and load/store pipes), which the GPU guide says a replay shows. The
+/// C++ backend prints the same list (`REPLAY_METRICS`); the shared table's
+/// replay routes pin both.
+const REPLAY_METRICS: [&str; 11] = [
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    "sm__warps_active.avg.pct_of_peak_sustained_active",
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+    "l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed",
+    "smsp__thread_inst_executed_per_inst_executed.pct",
+    "smsp__sass_average_branch_targets_threads_uniform.pct",
+    "launch__registers_per_thread",
+    "smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed",
+    "smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed",
+    "smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed",
+];
+
+/// What a request for Nsight Compute collects: `--profile ncu`, or
+/// `--profile nsight` with `compute`, `ncu`, `replay` or a selection.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct NcuRequest {
+    /// Nsight Compute is asked for: always under ncu; under nsight by a mode
+    /// word or a selection.
+    compute: bool,
+    /// `replay`: the replay metric list, written to `kernel_replay`.
+    replay: bool,
+    /// `--set NAME`.
+    set: Option<String>,
+    /// Each `--section NAME`, in order.
+    sections: Vec<String>,
+    /// Every name of every `--metrics`, in order.
+    metrics: Vec<String>,
+}
+
+impl NcuRequest {
+    /// The options ncu is given for it, after bench run's own: the set, each
+    /// section, then one `--metrics` with every name it asks for
+    /// (`asked_metrics`).
+    fn options(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(set) = &self.set {
+            out.extend(["--set".to_string(), set.clone()]);
+        }
+        for section in &self.sections {
+            out.extend(["--section".to_string(), section.clone()]);
+        }
+        let metrics = self.asked_metrics();
+        if !metrics.is_empty() {
+            out.extend(["--metrics".to_string(), metrics.join(",")]);
+        }
+        out
+    }
+
+    /// The metric names ncu is asked for: for `replay`, the replay metric
+    /// list (which takes no set or section); otherwise every name of every
+    /// `--metrics`, in order.
+    fn asked_metrics(&self) -> Vec<String> {
+        if self.replay {
+            REPLAY_METRICS.iter().map(|name| name.to_string()).collect()
+        } else {
+            self.metrics.clone()
+        }
+    }
+}
+
+/// An ncu option `bench run` passes on: what its value names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NcuOption {
+    Set,
+    Section,
+    Metrics,
+}
+
+impl NcuOption {
+    /// The option @p word spells, `--set` or `--set=VALUE` (and the same for
+    /// the others), with the value given after '='.
+    fn of(word: &str) -> Option<(Self, Option<&str>)> {
+        let (name, value) = match word.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (word, None),
+        };
+        let option = match name {
+            "--set" => NcuOption::Set,
+            "--section" => NcuOption::Section,
+            "--metrics" => NcuOption::Metrics,
+            _ => return None,
+        };
+        Some((option, value))
+    }
+
+    /// The refusal of the option given without its value.
+    fn takes(self) -> &'static str {
+        match self {
+            NcuOption::Set => "--set takes one section set's name",
+            NcuOption::Section => "--section takes one section's identifier",
+            NcuOption::Metrics => "--metrics takes one or more metric names",
+        }
+    }
+}
+
+/// Read @p words, the `--profile-args` of a request for @p tool ("ncu" or
+/// "nsight"), as Vernier's supported subset of Nsight Compute's options:
+/// `replay`; `--set NAME`, once; `--section NAME` and `--metrics NAME`, each
+/// as often as needed, a metric list running to the next option or mode
+/// word; each option also as `--option=VALUE`; and under nsight the words
+/// `compute` and `ncu`. NAME is letters, digits and '_'; a metric name may
+/// also hold '.'. A mode word is never a value. A selection asks for Nsight
+/// Compute, and replay takes none (it collects its own list). The first
+/// problem is the refusal; the C++ parser (`parseNsightRequest`) gives the
+/// same text, which the shared table's refuse rows hold both to.
+fn ncu_request(tool: &str, words: &[&str]) -> Result<NcuRequest, String> {
+    let nsight = tool == "nsight";
+    let mut request = NcuRequest {
+        compute: !nsight,
+        ..NcuRequest::default()
+    };
+    // The option whose value comes next, and whether a metric list is open.
+    let mut awaiting: Option<NcuOption> = None;
+    let mut listing = false;
+    for &word in words {
+        let mode = word == "replay" || (nsight && (word == "compute" || word == "ncu"));
+        if mode || word.starts_with('-') {
+            if let Some(option) = awaiting {
+                return Err(option.takes().to_string());
+            }
+            listing = false;
+        }
+        if mode {
+            request.compute = true;
+            request.replay |= word == "replay";
+        } else if word.starts_with('-') {
+            let Some((option, value)) = NcuOption::of(word) else {
+                return Err(format!(
+                    "'{word}' is not an option bench run passes to ncu; it passes --set, \
+                     --section and --metrics (the report, its overwrite and \
+                     --target-processes are bench run's own)"
+                ));
+            };
+            request.compute = true;
+            match value {
+                None => awaiting = Some(option),
+                Some(value) => {
+                    take_ncu_value(&mut request, option, value)?;
+                    listing = option == NcuOption::Metrics;
+                }
+            }
+        } else if let Some(option) = awaiting.take() {
+            take_ncu_value(&mut request, option, word)?;
+            listing = option == NcuOption::Metrics;
+        } else if listing {
+            take_ncu_value(&mut request, NcuOption::Metrics, word)?;
+        } else {
+            let takes = if nsight {
+                "compute, ncu, replay, --set NAME, --section NAME and --metrics NAMES"
+            } else {
+                "replay, --set NAME, --section NAME and --metrics NAMES"
+            };
+            return Err(format!(
+                "'{word}' is not a mode of {tool}; it takes {takes}"
+            ));
+        }
+    }
+    if let Some(option) = awaiting {
+        return Err(option.takes().to_string());
+    }
+    let selects =
+        request.set.is_some() || !request.sections.is_empty() || !request.metrics.is_empty();
+    if request.replay && selects {
+        return Err(
+            "replay collects its own metric list; give replay alone, or name what to collect \
+             without it"
+                .to_string(),
+        );
+    }
+    Ok(request)
+}
+
+/// Add @p value, given to @p option, to @p request, or the refusal of a value
+/// outside its form or of a second set.
+fn take_ncu_value(request: &mut NcuRequest, option: NcuOption, value: &str) -> Result<(), String> {
+    let name = |extra: char| {
+        !value.is_empty()
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == extra)
+    };
+    let no_pattern = "bench run passes ncu no regular expression or metric group";
+    match option {
+        NcuOption::Set => {
+            if value.is_empty() {
+                return Err(option.takes().to_string());
+            }
+            if !name('_') {
+                return Err(format!(
+                    "'{value}' is not a section set's name (letters, digits and '_')"
+                ));
+            }
+            if let Some(first) = &request.set {
+                return Err(format!(
+                    "--set is given twice ('{first}', '{value}'); ncu takes one set"
+                ));
+            }
+            request.set = Some(value.to_string());
+        }
+        NcuOption::Section => {
+            if value.is_empty() {
+                return Err(option.takes().to_string());
+            }
+            if !name('_') {
+                return Err(format!(
+                    "'{value}' is not a section's identifier (letters, digits and '_'); \
+                     {no_pattern}"
+                ));
+            }
+            request.sections.push(value.to_string());
+        }
+        NcuOption::Metrics => {
+            if value.is_empty() {
+                return Err(option.takes().to_string());
+            }
+            if !name('.') {
+                return Err(format!(
+                    "'{value}' is not a metric name (letters, digits, '_' and '.'); {no_pattern}"
+                ));
+            }
+            request.metrics.push(value.to_string());
+        }
+    }
+    Ok(())
 }
 
 /// The route of a request for canonical backend @p tool with its
 /// `--profile-args`, or `None` for the profiles the benchmark runs itself
 /// (perf, gperf, rapl, bpftrace, offcpu), jemalloc's environment wrap and
-/// rocprof. A word the tool does not take, a combination it cannot run, a
-/// mode `bench run` does not wrap and an output folder the tool would
-/// rewrite (heaptrack's %h and %p) or misread (jemalloc's ',') are refused,
-/// naming what is accepted. Creates nothing.
+/// rocprof. A word the tool does not take, a combination it cannot run, an
+/// ncu option outside the supported subset (`ncu_request`) and an output
+/// folder the tool would rewrite (heaptrack's %h and %p) or misread
+/// (jemalloc's ',') are refused, naming what is accepted. Creates nothing.
 fn route_for(
     tool: &str,
     profile_args: Option<&str>,
@@ -917,14 +1229,18 @@ fn route_for(
     let request = request_text(tool, profile_args);
     let refuse = |why: String| Err(Error::InvalidArgs(format!("{request}: {why}")));
     let words = mode_words(profile_args);
-    if (tool == "nsight" || tool == "ncu") && words.contains(&"replay") {
-        return refuse(
-            "bench run does not wrap a kernel replay; run the benchmark directly with \
-             these flags, and it prints the ncu command that replays its kernels"
-                .to_string(),
-        );
-    }
-    if let Some(word) = words.iter().find(|w| !accepted.contains(w)) {
+    let compute = if tool == "nsight" || tool == "ncu" {
+        match ncu_request(tool, &words) {
+            Ok(compute) => Some(compute),
+            Err(why) => return refuse(why),
+        }
+    } else {
+        None
+    };
+    if let Some(word) = words
+        .iter()
+        .find(|w| compute.is_none() && !accepted.contains(w))
+    {
         return refuse(if accepted.is_empty() {
             format!("'{word}' is not a mode of {tool}, which takes none")
         } else {
@@ -950,14 +1266,28 @@ fn route_for(
     // read it: each '%' doubled. compute-sanitizer's log escapes the folder
     // made absolute, and heaptrack's -o takes it unescaped (both below).
     let escaped = escape_percent(&d);
-    let ncu = |d: &str| -> Vec<String> {
-        vec![
-            "-o".into(),
-            format!("{d}/kernel_profile"),
+    // ncu's report, its overwrite and every process of the run, then what the
+    // request selects (`NcuRequest::options`).
+    let ncu = |request: &NcuRequest| -> Routed {
+        let report = if request.replay {
+            "kernel_replay"
+        } else {
+            "kernel_profile"
+        };
+        let mut a = vec![
+            "-o".to_string(),
+            format!("{escaped}/{report}"),
             "-f".into(),
             "--target-processes".into(),
             "all".into(),
-        ]
+        ];
+        a.extend(request.options());
+        let outputs: &'static [&'static [&'static str]] = if request.replay {
+            &[&["kernel_replay.ncu-rep"]]
+        } else {
+            &[&["kernel_profile.ncu-rep"]]
+        };
+        ("ncu", a, outputs)
     };
     let (program, mut args, outputs): Routed = match tool {
         // The whole process is recorded: under the runner's wrap the
@@ -1059,9 +1389,10 @@ fn route_for(
                 &[&["sanitizer.log"]],
             )
         }
-        // nsight's compute mode is ncu's route, into nsight's folder.
-        "nsight" if has("compute") || has("ncu") => {
-            ("ncu", ncu(&escaped), &[&["kernel_profile.ncu-rep"]])
+        // nsight's compute modes and selections are ncu's route, into
+        // nsight's folder.
+        "nsight" if compute.as_ref().is_some_and(|c| c.compute) => {
+            ncu(compute.as_ref().expect("nsight's request is read"))
         }
         // nsys records the whole process; the benchmark's backend stays
         // passive (VERNIER_EXTERNAL_WRAP) and the summaries are extracted
@@ -1080,10 +1411,14 @@ fn route_for(
             ],
             &[&["profile.nsys-rep"]],
         ),
-        "ncu" => ("ncu", ncu(&escaped), &[&["kernel_profile.ncu-rep"]]),
+        "ncu" => ncu(compute.as_ref().expect("ncu's request is read")),
         _ => unreachable!("wrapped_modes() admits only the tools matched above"),
     };
     args.push(bin);
+    let metrics = match &compute {
+        Some(request) if program == "ncu" => request.asked_metrics(),
+        _ => Vec::new(),
+    };
     Ok(Some(Route {
         tool: tool.to_string(),
         program,
@@ -1095,6 +1430,7 @@ fn route_for(
         } else {
             &[]
         },
+        metrics,
     }))
 }
 
@@ -1326,7 +1662,7 @@ fn run_owned(
     drop(watch);
     let run = run.map_err(OwnedError::Wait)?;
     if run.left_running > 0 {
-        eprintln!(
+        lossy_eprintln!(
             "[bench] {name} exited and left {} of its own running; bench run ended {}",
             if run.left_running == 1 {
                 "1 process".to_string()
@@ -1450,6 +1786,57 @@ fn extract_nsys_stats(dir: &Path, request: &str) -> Result<(), Error> {
         dir.display()
     );
     Ok(())
+}
+
+/// How long reading back an Nsight Compute report may take.
+const METRIC_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Name each metric of @p asked that @p report, the Nsight Compute report
+/// this run wrote, holds nothing for, one line each; nothing when it holds
+/// them all. ncu says nothing of such a metric, whether the GPU does not
+/// report it or ncu does not know the name, so the report is read back with
+/// the per-kernel summary `bench nsight-parse` reads, as an owned run
+/// (`run_owned`) bounded by `METRIC_CHECK_TIMEOUT`, after the benchmark has
+/// exited. A report that cannot be read back is one line saying that the
+/// metrics were not checked, and why. Either way the run ends as it would
+/// have, and the report is left as it is.
+fn name_missing_metrics(report: &Path, asked: &[String]) {
+    let mut command = Command::new("ncu");
+    command.args(super::nsight_report::ncu_summary_args(report));
+    let checked = match run_owned(&mut command, "ncu --import", METRIC_CHECK_TIMEOUT) {
+        Ok(OwnedEnd::Exited(status, out, err)) if status.success() => {
+            super::nsight_report::metrics_not_in_summary(&out, &err, asked)
+        }
+        Ok(OwnedEnd::Exited(status, out, err)) => {
+            let tail = [&err, &out]
+                .iter()
+                .find_map(|text| text.lines().rev().map(str::trim).find(|l| !l.is_empty()))
+                .unwrap_or("");
+            Err(format!(
+                "ncu --import {}{}{}",
+                describe_status(status),
+                if tail.is_empty() { "" } else { ": " },
+                tail
+            ))
+        }
+        Ok(OwnedEnd::TimedOut) => Err(format!(
+            "ncu --import did not finish within {} s and was stopped",
+            METRIC_CHECK_TIMEOUT.as_secs()
+        )),
+        Err(OwnedError::Start(e)) => Err(format!("ncu could not be started: {e}")),
+        Err(OwnedError::Wait(e)) => Err(format!("ncu could not be waited for: {e}")),
+    };
+    match checked {
+        Ok(missing) => {
+            for metric in missing {
+                println!(
+                    "[bench] the report holds nothing for {metric}: ncu reported nothing for it \
+                     on this GPU"
+                );
+            }
+        }
+        Err(why) => println!("[bench] the report was not checked for the metrics asked for: {why}"),
+    }
 }
 
 /// @p path as an output option of valgrind (`--log-file=`,
@@ -2003,6 +2390,40 @@ mod tests {
         assert!(r.extra_args.is_empty());
     }
 
+    /// @test The project's output folder is a default: taken when neither
+    /// the command nor the arguments after `--` give one, and set aside by
+    /// either; the command's own and one after `--` still conflict, each named
+    /// where it was given.
+    #[test]
+    fn effective_request_takes_the_projects_output_folder_last() {
+        let with = |own: Option<&str>, extra: &[&str]| RunConfig {
+            profile_output_dir: own.map(PathBuf::from),
+            default_profile_output_dir: Some(PathBuf::from("from-yaml")),
+            ..request(Some("perf"), None, extra)
+        };
+        let folder = |cfg: RunConfig| {
+            effective_request(&cfg, "bench run")
+                .expect("one request")
+                .profile_output_dir
+        };
+        assert_eq!(folder(with(None, &[])), Some(PathBuf::from("from-yaml")));
+        assert_eq!(
+            folder(with(None, &["--artifact-root", "other"])),
+            Some(PathBuf::from("other"))
+        );
+        assert_eq!(folder(with(Some("own"), &[])), Some(PathBuf::from("own")));
+        let err = effective_request(
+            &with(Some("own"), &["--profile-output-dir", "other"]),
+            "bench run",
+        )
+        .expect_err("two folders");
+        assert_eq!(
+            err.to_string(),
+            "invalid arguments: --profile-output-dir is given more than once with different \
+             values ('own' to bench run, 'other' after --); give it once"
+        );
+    }
+
     /// A request for @p profile with the rate @p hz given to the command.
     fn rate_request(profile: Option<&str>, hz: &str) -> RunConfig {
         RunConfig {
@@ -2210,6 +2631,49 @@ mod tests {
         );
     }
 
+    /// @test The project's default filter is given when no argument after
+    /// `--` starts with `--gtest_filter=`, and not when one does, which is
+    /// then the benchmark's only filter (an empty one too); arguments that
+    /// only look like a filter flag, which GoogleTest does not read as one,
+    /// do not count; without a default nothing is given.
+    #[test]
+    fn configured_filter_gives_way_to_the_command_lines() {
+        let cfg = |filter: Option<&str>, extra: &[&str]| RunConfig {
+            gtest_filter: filter.map(str::to_string),
+            ..request(None, None, extra)
+        };
+        let configured = Some("--gtest_filter=Join.*".to_string());
+        assert_eq!(configured_filter(&cfg(Some("Join.*"), &[])), configured);
+        assert_eq!(
+            configured_filter(&cfg(Some("Join.*"), &["--cycles", "5"])),
+            configured
+        );
+        for given in ["--gtest_filter=Other.*", "--gtest_filter="] {
+            assert_eq!(
+                configured_filter(&cfg(Some("Join.*"), &["--cycles", "5", given])),
+                None,
+                "{given}"
+            );
+        }
+        for similar in [
+            "--gtest_filter",
+            "-gtest_filter=Other.*",
+            "--gtest_filters=Other.*",
+            "gtest_filter=Other.*",
+        ] {
+            assert_eq!(
+                configured_filter(&cfg(Some("Join.*"), &[similar])),
+                configured,
+                "{similar}"
+            );
+        }
+        assert_eq!(configured_filter(&cfg(None, &[])), None);
+        assert_eq!(
+            configured_filter(&cfg(None, &["--gtest_filter=Other.*"])),
+            None
+        );
+    }
+
     /// @test The benchmark is given the rate once, by its canonical value,
     /// after the profile's mode.
     #[test]
@@ -2241,6 +2705,101 @@ mod tests {
             .expect("massif has a route");
         assert!(!route.dir.exists(), "{} was created", route.dir.display());
         assert!(!root.exists());
+    }
+
+    /// @test Nsight Compute's grammar: plain nsight is Systems; a selection
+    /// or a mode word asks for Compute; a metric list runs on through
+    /// further words, to the next option or mode word, and its '=' form
+    /// takes a comma list; anything after a closed list is a mode word or
+    /// nothing.
+    #[test]
+    fn ncu_request_reads_the_supported_subset() {
+        let read = |tool: &str, args: &str| ncu_request(tool, &mode_words(Some(args)));
+        assert_eq!(read("nsight", ""), Ok(NcuRequest::default()));
+        let listed = read("nsight", "--metrics=a.sum,b.avg c ncu --section X").expect("read");
+        assert!(listed.compute && !listed.replay);
+        assert_eq!(listed.metrics, ["a.sum", "b.avg", "c"]);
+        assert_eq!(listed.sections, ["X"]);
+        assert_eq!(
+            listed.options(),
+            ["--section", "X", "--metrics", "a.sum,b.avg,c"]
+        );
+        let ended = read("nsight", "--metrics a replay");
+        assert_eq!(
+            ended.expect_err("replay ends the list and conflicts with it"),
+            "replay collects its own metric list; give replay alone, or name what to collect \
+             without it"
+        );
+        assert_eq!(
+            read("ncu", "--section A b").expect_err("b is no value"),
+            "'b' is not a mode of ncu; it takes replay, --set NAME, --section NAME and --metrics \
+             NAMES"
+        );
+        let replay = read("ncu", "replay").expect("read");
+        assert!(replay.compute && replay.replay);
+        assert_eq!(replay.options()[1], REPLAY_METRICS.join(","));
+    }
+
+    /// @test --analyze is refused for a run under Nsight Compute, whichever
+    /// way the request reaches ncu (after `--` too), and taken for a run
+    /// under any other route or none; a request bench run refuses for itself
+    /// is left to it.
+    #[test]
+    fn analysis_of_an_ncu_capture_is_refused() {
+        for (profile, args, extra, text) in [
+            (Some("ncu"), None, &[][..], "--profile ncu"),
+            (
+                Some("ncu"),
+                Some("replay"),
+                &[],
+                "--profile ncu --profile-args 'replay'",
+            ),
+            (
+                Some("nsight"),
+                Some("compute"),
+                &[],
+                "--profile nsight --profile-args 'compute'",
+            ),
+            (
+                Some("nsys"),
+                Some("--section Occupancy"),
+                &[],
+                "--profile nsight --profile-args '--section Occupancy'",
+            ),
+            (
+                None,
+                None,
+                &["--profile", "ncu", "--profile-args", "--set full"],
+                "--profile ncu --profile-args '--set full'",
+            ),
+        ] {
+            assert_eq!(
+                refuse_analysis_of_capture(&request(profile, args, extra))
+                    .expect_err("refused")
+                    .to_string(),
+                format!(
+                    "invalid arguments: --analyze summarises the run's timing, and {text} runs \
+                     the benchmark under Nsight Compute (ncu), a profiling capture that leaves \
+                     the timing cells empty; drop --analyze, or time the benchmark in a run \
+                     without ncu"
+                ),
+                "{profile:?} {args:?} {extra:?}"
+            );
+        }
+        for (profile, args, extra) in [
+            (None, None, &[][..]),
+            (Some("nsight"), None, &[]),
+            (Some("nsys"), None, &[]),
+            (Some("perf"), None, &[]),
+            (Some("massif"), Some("pages"), &[]),
+            (Some("ncu"), Some("--kernel-name k"), &[]),
+            (Some("ncu"), None, &["--profile", "perf"]),
+        ] {
+            assert!(
+                refuse_analysis_of_capture(&request(profile, args, extra)).is_ok(),
+                "{profile:?} {args:?} {extra:?}"
+            );
+        }
     }
 
     /// One row of the shared route table, split on tabs, with `-` read as empty.

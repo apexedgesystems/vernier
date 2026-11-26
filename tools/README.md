@@ -108,6 +108,10 @@ bench compare baseline.csv candidate.csv --markdown
 | `--json`               | Machine-readable JSON output                           | --      |
 | `--markdown`           | Markdown table output (for PR comments)                | --      |
 
+In the Markdown table each test name keeps its own cell on its row's line: a
+`|` in it is escaped, and a backslash, a CR and an LF are written `\\`, `\r`
+and `\n`, as `--json` writes them.
+
 **What the labels mean.** A test is `REGRESSION` when the candidate's median
 is more than `--threshold` percent above the baseline's, `IMPROVEMENT` when
 it is more than that below it, and `neutral` otherwise, including at exactly
@@ -187,9 +191,10 @@ on stderr, nothing on stdout).
 
 Run a benchmark binary with optional CPU pinning and profiling. The binary
 argument can be a full path OR a short name -- the latter auto-resolves
-under `build/*/bin/{ptests,tests,examples}` (override with
-`VERNIER_BENCH_BIN_ROOTS` / `VERNIER_BENCH_BIN_SUBDIRS` for non-CMake
-layouts). A name that is a file in the working directory is that file, as
+under `build/*/bin/{ptests,tests,examples}` (for non-CMake layouts, set
+`.bench.yaml`'s `bin_roots` / `bin_subdirs`, or `VERNIER_BENCH_BIN_ROOTS` /
+`VERNIER_BENCH_BIN_SUBDIRS`, which take precedence; see `init`). A name that
+is a file in the working directory is that file, as
 `bench doctor` reads it: it starts as `./<name>`, never as a program of that
 name on PATH, and must be executable.
 
@@ -227,21 +232,69 @@ writes the artifacts to `<--profile-output-dir>/<binary-stem>.<tool>/`, where
 `--profile-args` select the tool's mode, and any other word is refused before
 anything starts:
 
-| `--profile`         | `--profile-args` words                                   | Selects                                                  |
-| ------------------- | -------------------------------------------------------- | -------------------------------------------------------- |
-| `massif`            | `pages` or `stacks`                                      | `--pages-as-heap=yes` or `--stacks=yes`                  |
-| `memcheck`          | `leak-full`, `track-origins`                             | the full leak check (the default), `--track-origins=yes` |
-| `helgrind`          | `drd`                                                    | valgrind's DRD instead of Helgrind                       |
-| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck` | that `--tool` (default `memcheck`)                       |
-| `nsight`            | `compute` (or `ncu`)                                     | Nsight Compute (`ncu`) instead of Nsight Systems         |
+| `--profile`         | `--profile-args` words                                      | Selects                                                  |
+| ------------------- | ----------------------------------------------------------- | -------------------------------------------------------- |
+| `massif`            | `pages` or `stacks`                                         | `--pages-as-heap=yes` or `--stacks=yes`                  |
+| `memcheck`          | `leak-full`, `track-origins`                                | the full leak check (the default), `--track-origins=yes` |
+| `helgrind`          | `drd`                                                       | valgrind's DRD instead of Helgrind                       |
+| `compute-sanitizer` | one of `memcheck`, `racecheck`, `synccheck`, `initcheck`    | that `--tool` (default `memcheck`)                       |
+| `nsight`            | `compute` (or `ncu`)                                        | Nsight Compute (`ncu`) instead of Nsight Systems         |
+| `ncu`, or `nsight`  | `replay`, `--set NAME`, `--section NAME`, `--metrics NAMES` | what Nsight Compute collects (below)                     |
 
-`callgrind`, `heaptrack`, `jemalloc` and `ncu` take no mode. A kernel replay
-(`--profile-args replay`) is refused: its metrics are the benchmark's own, so
-run the benchmark directly, and it prints the `ncu` command that replays its
-kernels. In-process backends
-(`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the binary directly, which
-reads `--profile-args` itself, and the C++ harness manages its own per-test
-artifact subdirs.
+`callgrind`, `heaptrack` and `jemalloc` take no mode.
+
+**Nsight Compute's options.** `--profile ncu`, and `--profile nsight` when it
+selects Nsight Compute, take Vernier's supported subset of ncu's own options:
+
+- `--set NAME`, once: a section set (`ncu --list-sets`: `basic`, `detailed`,
+  `full`, ...);
+- `--section NAME`, as often as needed: a section by its identifier
+  (`ncu --list-sections`: `LaunchStats`, `Occupancy`, ...);
+- `--metrics NAME[,NAME...]`, as often as needed: metrics by name, the list
+  running on through further words to the next option or mode word;
+- `replay`: the replay metric list (throughputs, achieved occupancy, warp
+  execution and branch efficiency, registers per thread, the ALU, FMA and
+  load/store pipes), written to `kernel_replay.ncu-rep`.
+
+Each option may also be given as `--option=VALUE`. NAME is letters, digits
+and `_`, and a metric name may also hold `.`. ncu itself refuses a section it
+does not know and warns of a set it does not know
+(`No metrics to collect found in sections`), but says nothing of a metric the
+GPU does not report or of a name it does not know, so `bench run` names each
+metric asked for that the report holds nothing for (see below). Under
+`nsight`, any of these selects Nsight Compute, as `compute` does; `replay`
+takes no other selection. `bench run` starts
+`ncu -o <folder>/kernel_profile -f --target-processes all`, then the set,
+each section and one `--metrics` with every name, in that order:
+
+```bash
+bench run MyKernel_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
+bench run MyKernel_PTEST --profile ncu --profile-args \
+  '--section LaunchStats --section Occupancy --metrics smsp__inst_executed_op_shared_ld.sum'
+bench run MyKernel_PTEST --profile nsight --profile-args replay --cycles 3 --repeats 1
+```
+
+Any other ncu option (`--kernel-name`, `--launch-count`, `--replay-mode`,
+`--nvtx`, `-o`, ...), a value outside its form (a regular expression, a
+metric group), an option without its value and a second set are refused
+before anything starts, naming what is accepted: the report, its overwrite
+and `--target-processes` are `bench run`'s own. For any other option, start
+the binary under ncu yourself; `bench doctor` and the binary print the
+command. ncu itself says nothing of a metric the GPU does not report, and
+that run's report is not read back:
+`bench nsight-parse <report> --csv <file>` writes what a report holds, a row
+for each launch shape, section and metric.
+
+Under ncu no row is timed: the timing cells stay empty, since ncu's
+instrumentation adds to what the benchmark would measure, and the run says
+why ([GPU guide](../src/bench/docs/GPU_GUIDE.md#using-nsight-compute)).
+`bench summary` and `bench compare` refuse such a row, saying that its
+timing cells are empty as in a run under ncu, and `bench run` refuses
+`--analyze` for a run under ncu before anything starts.
+
+In-process backends (`perf`, `gperf`, `rapl`, `bpftrace`, `offcpu`) run the
+binary directly, which reads `--profile-args` itself, and the C++ harness
+manages its own per-test artifact subdirs.
 
 With `--profile gperf`, `--profile-frequency HZ` starts the binary with
 `CPUPROFILE_FREQUENCY=HZ`, the variable gperftools reads its sampling rate
@@ -267,7 +320,8 @@ anything starts) and removes from that folder the files a previous run of
 the same wrap left: `callgrind.out`, `massif.out`, `memcheck.log`,
 `helgrind.log`, `run.zst` and `run.gz` (heaptrack), `sanitizer.log`,
 `profile.nsys-rep` with `profile.sqlite` and the four summaries (nsight),
-`kernel_profile.ncu-rep` (ncu, and nsight's compute mode) and
+`kernel_profile.ncu-rep` (ncu, and nsight's compute mode),
+`kernel_replay.ncu-rep` (a replay) and
 `jeprof.*.heap` (jemalloc), each removal printed as `[bench] removed <file>
 from a previous run`. Nothing else in the folder, and nothing outside it, is
 removed. valgrind, compute-sanitizer, nsys and ncu read a `%` in an output
@@ -281,6 +335,19 @@ folder holding either before anything starts; any other `%` reaches
 heaptrack as it is. After the benchmark exits 0, the file must exist and hold
 something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
+When the run under ncu named metrics (a replay, or `--metrics`), `bench run`
+then reads the report back with the summary `bench nsight-parse` reads,
+`ncu --import <report> --csv --print-summary per-kernel`, and names each
+metric asked for that the report holds nothing for, one line each, whether
+the GPU does not report that metric or ncu does not know the name:
+
+```text
+[bench] the report holds nothing for dram__throughput.avg.pct_of_peak_sustained_elapsed: ncu reported nothing for it on this GPU
+```
+
+A report that cannot be read back that way, or within 300 s, gets one line
+saying that the metrics were not checked, and why. Neither changes the run's
+exit status.
 For nsight, a `nsys stats` summary that fails, or still runs after 300 s,
 fails the run as `analysis:`, and the report is kept. With
 `--profile-analyze` (given to `bench run`, or forwarded after `--`), a
@@ -335,6 +402,10 @@ line), and as `completion:` otherwise, as a missing report does; nothing is
 counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
+Its `gtest_filter` is passed to the binary as `--gtest_filter=<filter>`,
+before the arguments after `--`, unless one of those starts with
+`--gtest_filter=`: a filter given on the command line is the only one the
+binary gets.
 
 **How a run ends.** `bench run` exits 0 when the benchmark does and 1
 otherwise, and its last line names how the benchmark ended:
@@ -413,7 +484,9 @@ bench profile-all MyComponent --quick --filter '*Hot*'
 ```
 
 Each profiler runs as `bench run --profile <name>` does, into
-`<out>/<name>/`, whatever the others did. The run ends with one line per
+`<out>/<name>/`, whatever the others did. Each is given `--filter` as
+`--gtest_filter`, or without it `.bench.yaml`'s `gtest_filter`, as `bench run`
+gives it. The run ends with one line per
 profiler, `completed` or `failed` with the reason, and exits 1 when any of them
 failed:
 
@@ -529,8 +602,53 @@ bench nsight-parse mixed/ --csv mixed.csv   # exits 1
 ### init / config-validate - Project Defaults
 
 `bench init` scaffolds a `.bench.yaml` at the project root (cycles, repeats,
-profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read by `run` and
-`profile-all` when the corresponding CLI flag is omitted.
+target_time, profile_output_dir, gtest_filter, bin_roots, bin_subdirs). Read
+by `run` and `profile-all` when the corresponding CLI flag is omitted;
+`target_time` (`--target-time`) by `run` alone, passed as written for the
+binary to read. A `--quick` on the command line takes precedence over the
+file's cycles, repeats and target_time: the binary sizes the run as
+`--quick` says, and a `--cycles` or `--repeats` given beside it is passed
+too. `gtest_filter` is
+the default test filter: `run` passes it unless a `--gtest_filter=` follows
+`--`, and `profile-all` unless `--filter` is given. A filter passed this way,
+or typed, takes precedence over `GTEST_FILTER` in the environment, which
+GoogleTest reads only when no `--gtest_filter` is given: to filter with
+`GTEST_FILTER`, remove the key. In a filter, everything after the first `-`
+excludes: `-*Large*:*PayloadScaling*` runs every test but those two kinds.
+
+A relative path in the file, `profile_output_dir` or a `bin_roots` entry, is
+read from the folder of the `.bench.yaml` that names it, wherever the command
+runs from below it; `bin_subdirs` are below each root. A path given on the
+command line (`--profile-output-dir`, `--out`) is read from the working
+directory.
+
+`bin_roots` and `bin_subdirs` say where `run` and `profile-all` look for a
+binary given by a short name: under each root (an entry ending in `/*` stands
+for every folder in it), in each subfolder. The roots are tried in the order
+listed, and the first with a match decides; among several matches under one
+root (an entry ending in `/*` is one root) the first in sorted order is taken,
+and `bench` says which. `VERNIER_BENCH_BIN_ROOTS` and
+`VERNIER_BENCH_BIN_SUBDIRS` (colon-separated; a relative root in
+`VERNIER_BENCH_BIN_ROOTS` is relative to the working directory) take
+precedence over the keys, each over its own; without either, the lookup is
+`build/*`, from the working directory, and `bin/ptests`, `bin/tests`,
+`bin/examples`. A name found nowhere is an error naming the roots and
+subfolders searched and where each came from.
+
+`run` and `profile-all` read the whole file before they start anything, and
+stop on one they cannot read or use, with an error naming the file and, for
+each problem, its line and what was expected there (for a value of the wrong
+kind, the key and what it takes). A problem is a line
+that is not a top-level `key: value`, a `- item` below a `key:` line or a
+comment; a quote left open; a key given twice; or a value of the wrong kind:
+`cycles` and `repeats` take a whole number above 0, `target_time` a duration
+the binary reads (at least `1us`), `profile_output_dir` a path, `gtest_filter`
+one value, `bin_roots` and `bin_subdirs` a list. `config-validate` checks the
+file the same way: it lists each problem as `[FAIL]` and exits 1 with the
+error `run` would print. Its warnings do not stop a run: a key it does not
+know is the project's own (kept, read by nothing in bench; a misspelt key
+shows here), and fewer than 5 repeats or an absolute `profile_output_dir` are
+allowed.
 
 ```bash
 bench init                              # writes .bench.yaml in CWD
@@ -645,7 +763,7 @@ clock boost/throttle variance that inflates CV%.
 bench gpu-lock lock
 bench gpu-lock lock --freq 1500
 
-# Lock clocks, run a benchmark, then auto-reset on exit
+# Lock clocks, run a benchmark, then reset them once it has ended
 bench gpu-lock lock -- ./bin/ptests/BenchmarkGPU_PTEST --quick --csv results.csv
 
 # Reset clocks to driver-managed default
@@ -654,10 +772,10 @@ bench gpu-lock reset
 
 **Subcommands:**
 
-| Subcommand | Description                                       |
-| ---------- | ------------------------------------------------- |
-| `lock`     | Lock clocks (reset on exit if wrapping a command) |
-| `reset`    | Reset clocks to driver-managed default            |
+| Subcommand | Description                                     |
+| ---------- | ----------------------------------------------- |
+| `lock`     | Lock clocks (reset when a wrapped command ends) |
+| `reset`    | Reset clocks to driver-managed default          |
 
 **Lock options:**
 
@@ -667,8 +785,76 @@ bench gpu-lock reset
 | `--freq MHz` | Target frequency in MHz                | max clock |
 | `-- CMD...`  | Command to run while clocks are locked | --        |
 
-The wrapper mode (`lock -- <command>`) uses a drop guard to guarantee clock
-reset even if the wrapped command fails or is interrupted with Ctrl-C.
+**The wrapper mode** (`lock -- <command>`) locks the clocks, runs the
+command, and resets the clocks after the command has ended, however it ends:
+
+| The run ends with                                                      | The clocks                                                       | `bench`                                                                                                           |
+| ---------------------------------------------------------------------- | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| the command exiting 0                                                  | reset                                                            | exits 0                                                                                                           |
+| the command exiting with another status N                              | reset                                                            | exits N, saying so                                                                                                |
+| the command ended by a signal N of its own                             | reset                                                            | exits 128 + N, saying so (137 for SIGKILL), as a shell reports it                                                 |
+| a lock that `nvidia-smi` refuses, or that does not finish within 30 s  | not locked (one past 30 s is reset, as it may have taken effect) | exits 125, naming why, and starts no command                                                                      |
+| a command that cannot start                                            | reset                                                            | exits 125, naming the command                                                                                     |
+| SIGINT (Ctrl-C), SIGTERM or SIGHUP sent to `bench`                     | reset after the command has ended                                | ends by the first of them it received (130, 143 or 129 in a shell)                                                |
+| a reset that `nvidia-smi` refuses, or that does not finish within 30 s | not reset                                                        | names the commands that reset them and the command's status if not 0, and exits 125 unless a signal above ends it |
+
+Status 125 is `bench`'s own: a failure of the lock, the command's start or
+the reset, which an `Error:` line on stderr names. Every other status is the
+command's, passed through, so a script reads the command's own result; a
+command that itself exits 125 is passed through as 125, without that line.
+
+The clocks are reset only after the command has ended: whatever `bench`
+receives, it waits for the command, so the clocks stay locked exactly as long
+as the command runs. A command that does not end on the signal keeps
+`bench` waiting. End the command yourself with a stronger signal,
+`kill -KILL <pid>` with the command's process id, which `bench` prints when
+it receives a signal; the reset follows at once, and `bench` then ends by
+the first signal it received.
+
+The command runs in `bench`'s own process group, with its terminal, as it
+would without the wrapper: Ctrl-C, Ctrl-Z and a hangup reach the command and
+`bench` together. `bench` passes a SIGTERM on to the command, since a
+terminal never sends one; SIGINT and SIGHUP reach the command from the
+terminal. Two consequences: a SIGTERM sent to the whole process group (as
+`kill %1` sends it) reaches the command twice, from the sender and from
+`bench`; and a SIGINT sent to `bench` alone (`kill -INT <pid>`) is not passed
+on, so `bench` waits for the command to end by itself. A signal `bench`
+receives while the command is being started, before the command exists,
+ends the command as it starts. A signal ignored when
+`bench` started (under `nohup`, or in a background job of a shell without job
+control) stays ignored, for `bench` and the command. Each `nvidia-smi` call
+runs in a process group of its own, which no signal sent to `bench` reaches,
+so a lock or a reset is never stopped halfway; a signal received meanwhile
+is acted on once the call has finished. The lines `bench` prints about the
+lock, the reset and each signal, and the error it reports before it ends by
+a signal, hold up neither the reset nor that end: each waits for stderr only
+while stderr has room, a second at the most, so a stderr that takes nothing
+more (a full pipe nobody reads, a terminal that hung up) loses them instead.
+Two writes are ordinary ones that a full pipe nobody reads can hold up: the
+error line of a run that fails with no signal received, which comes after
+the reset, and Rust's own message if `bench` panics.
+
+The SIGTERM `bench` passes on reaches the command it started, the process
+named after `--`, and no process that command starts. A shell script that
+runs its benchmark as a child is ended by the signal (a shell without a trap
+for it ends at once) while the benchmark goes on: `bench` then resets the
+clocks under the running benchmark and ends by the signal. So a wrapper
+script should `exec` its benchmark (`exec ./MyBench_PTEST "$@"` as its last
+line), which makes the benchmark the command `bench` started, or forward the
+signal to it: start it in the background, `trap` SIGTERM to `kill` it, and
+`wait` for it. To end a whole job, `bench` and every process the command
+started, send the signal to the job's process group (`kill -TERM -- -<pgid>`,
+as a shell's `kill %1` does): each process in it receives the signal, and
+`bench` still waits for the command to end before it resets the clocks.
+
+Not covered: SIGKILL sent to `bench`, SIGQUIT (Ctrl-\, which also dumps
+core), a crash of `bench` and a power loss end it without the reset. Reset
+the clocks by hand:
+
+```bash
+bench gpu-lock reset --device N      # or, as root: nvidia-smi -i N -rgc
+```
+
 Persistence mode is auto-enabled if needed.
 
 ### gpu-monitor - GPU State Snapshots
@@ -712,6 +898,34 @@ clocks, memory usage, GPU/memory utilization, throttle reasons, P-state.
 Visualization tool for generating charts, dashboards, and reports from benchmark CSVs.
 Requires `make tools-py`.
 
+A file is read as `bench summary` reads it, and refused for the same reasons,
+each command stopping with one line that names the file and the reason, exit
+status 1: a file that cannot be read, or is not UTF-8 (naming the line of the
+first byte that is not); one without a `test`, `wallMedian`, `wallCV` or
+`callsPerSecond` column; one with no row; one with a row whose test name is
+empty or only whitespace (in `bench summary`'s words, naming the line the row
+starts on). A column the header names twice is read from its last place.
+
+Every command plots the rows whose timing cells hold finite numbers. Any other row
+is left out, and stderr names it, saying when its every timing cell is empty,
+as in a run under Nsight Compute; a file with no row left is refused, naming
+the file, with exit status 1.
+
+A file `bench summary` reads can lack a column a plot needs, and is refused,
+naming the command and the column. `plot`, `report`, and `dashboard` without
+plotly need `wallMin`, `wallP10`, `wallP90` and `wallMax`, and, when a row
+they plot names a `gpuModel`, `kernelTimeUs`, `speedupVsCpu` and
+`occupancy`; plotly's dashboard needs `wallP10` and `wallP90`. A plot
+matplotlib draws takes a test name of at most 1000 characters: a file with a
+longer one is refused, naming the start of the name and its length.
+
+A test name is read as written, whatever it looks like (`007` stays `007`), as
+`bench summary` reads it, and so are the timestamp, git hash and host name the
+report copies into `metadata.json`. The report's `summary_stats.csv` writes
+each name so it reads back as written: one holding a quote, a comma, a CR or
+an LF is quoted. A `$` in a test name is drawn as written, not as the start of
+a formula.
+
 ### plot - Standard Charts
 
 ```bash
@@ -739,6 +953,10 @@ bench-plot report results.csv --output analysis/
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv
 bench-plot scaling 1kb.csv 64kb.csv 1mb.csv --output scaling.html
 ```
+
+Without plotly, an `.html` output (the default is `scaling_dashboard.html`) is
+drawn as a static `.png` of the same name, and the command says so, as
+`dashboard` falls back to the report's plots.
 
 ---
 

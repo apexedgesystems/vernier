@@ -19,6 +19,8 @@
 #include "src/bench/inc/Profiler.hpp"
 #include "src/bench/inc/ProfilerReadiness.hpp"
 #include "src/bench/inc/ProfilerRegistry.hpp"
+#include "src/bench/utst/ScopedEnv.hpp"
+#include "src/bench/utst/StderrCapture.hpp"
 
 #include <gtest/gtest.h>
 
@@ -34,8 +36,10 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -45,9 +49,11 @@
 using vernier::bench::buildPerfRow;
 using vernier::bench::installPerfEventListener;
 using vernier::bench::makePerfCaseWithProfiler;
+using vernier::bench::MemoryProfile;
 using vernier::bench::PerfCase;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfRegistry;
+using vernier::bench::PerfResult;
 using vernier::bench::PerfRow;
 using vernier::bench::PerfSummaryEntry;
 using vernier::bench::printSummaryTable;
@@ -61,6 +67,7 @@ using vernier::bench::readinessResult;
 using vernier::bench::setGlobalPerfConfig;
 using vernier::bench::Stats;
 using vernier::bench::detail::CsvListener;
+using vernier::bench::test::ScopedEnv;
 
 namespace {
 
@@ -494,6 +501,216 @@ TEST(PrintSummaryTableTest, FooterNamesRowsAndTestsWhenATestPublishedSeveral) {
   EXPECT_EQ(lastLine(summaryTable(entries, 1)), "5 rows from 1 test | 4 stable | 1 unstable");
 }
 
+/** @test A row the harness did not time shows no numbers, and the footer counts it */
+TEST(PrintSummaryTableTest, UntimedRowShowsNoNumbersAndIsCounted) {
+  PerfSummaryEntry untimed = summaryEntry("Saxpy.G1", true);
+  untimed.timed = false;
+  const std::vector<PerfSummaryEntry> entries = {summaryEntry("Saxpy.CpuBaseline", true), untimed};
+
+  const std::string TABLE = summaryTable(entries, 2);
+
+  EXPECT_NE(TABLE.find("\nSaxpy.G1                      -       -           -  NOT TIMED\n"),
+            std::string::npos)
+      << TABLE;
+  EXPECT_EQ(lastLine(TABLE), "2 tests | 1 stable | 0 unstable | 1 not timed");
+}
+
+/* ----------------------------- Under Nsight Compute ----------------------------- */
+
+namespace {
+
+/** @brief Clears the variables that name an Nsight session, for a scope. */
+struct NoNsightSession {
+  ScopedEnv wrap{"VERNIER_EXTERNAL_WRAP", nullptr};
+  ScopedEnv nsysSession{"NSYS_PROFILING_SESSION_ID", nullptr};
+  ScopedEnv ncuSession{"NV_NSIGHT_INJECTION_PORT_BASE", nullptr};
+};
+
+/** @brief The timing cells a run under Nsight Compute leaves empty in every row. */
+constexpr std::array<const char*, 12> TIMING_COLUMNS = {
+    "wallMedian", "wallP10",  "wallP90",    "wallP99", "wallP999",       "wallMin",
+    "wallMax",    "wallMean", "wallStddev", "wallCV",  "callsPerSecond", "stable"};
+
+/** @brief Why a run under Nsight Compute times nothing, as it says once on stderr. */
+constexpr const char* NOT_TIMED_STATEMENT =
+    "[bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what "
+    "host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, "
+    "wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, "
+    "callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, "
+    "transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. "
+    "ncu's own measurements are in its report.\n";
+
+} // namespace
+
+/**
+ * @test Under Nsight Compute, bench run's ncu route or an ncu wrap typed by
+ *       hand, a case's rows leave their timing cells empty, whichever way it
+ *       measures, its console lines say it is not timed and the end-of-run
+ *       table shows NOT TIMED; under Nsight Systems the rows are timed. A CPU
+ *       case may launch GPU work, which ncu slows as it slows a GPU case.
+ */
+TEST_F(CsvListenerTest, NsightComputeLeavesACasesTimingCellsEmpty) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  const struct {
+    const char* name;
+    const char* value;
+    bool timed;
+  } SESSIONS[] = {{"VERNIER_EXTERNAL_WRAP", "ncu", false},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152", false},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521", true}};
+  const std::array<std::string, 3> TESTS = {"Listener.SessionLoop", "Listener.SessionMeasured",
+                                            "Listener.SessionContention"};
+  for (const auto& session : SESSIONS) {
+    const NoNsightSession CLEARED;
+    const ScopedEnv SET(session.name, session.value);
+    const std::string WHAT = std::string(session.name) + "=" + session.value;
+    const std::size_t PUBLISHED = PerfRegistry::instance().summary().size();
+
+    ::testing::internal::CaptureStdout();
+    PerfCase loop{TESTS[0], caseCfg};
+    (void)loop.throughputLoop([] { spin(10); });
+    PerfCase body{TESTS[1], caseCfg};
+    (void)body.measured([&] { spin(10 * caseCfg.cycles); });
+    PerfCase workers{TESTS[2], caseCfg};
+    (void)workers.contentionRun([] { spin(10); });
+    const std::string PRINTED = ::testing::internal::GetCapturedStdout();
+
+    const std::vector<std::map<std::string, std::string>> ROWS = emitAndReadAll();
+    ASSERT_EQ(ROWS.size(), 3U) << WHAT;
+    for (const auto& row : ROWS) {
+      for (const char* COLUMN : TIMING_COLUMNS) {
+        EXPECT_EQ(row.at(COLUMN).empty(), !session.timed)
+            << WHAT << ": " << row.at("test") << " " << COLUMN;
+      }
+      EXPECT_EQ(row.at("cycles"), "10") << WHAT << ": " << row.at("test");
+      EXPECT_FALSE(row.at("cvThreshold").empty()) << WHAT << ": " << row.at("test");
+    }
+    for (const std::string& TEST : TESTS) {
+      const std::string NOT_TIMED =
+          "[" + TEST + "]  not timed: Nsight Compute (ncu) profiles this process\n";
+      EXPECT_EQ(PRINTED.find(NOT_TIMED) == std::string::npos, session.timed)
+          << WHAT << ", stdout said:\n"
+          << PRINTED;
+    }
+    EXPECT_EQ(PRINTED.find(" us/call ") != std::string::npos, session.timed) << WHAT;
+
+    const std::vector<PerfSummaryEntry>& SUMMARY = PerfRegistry::instance().summary();
+    ASSERT_EQ(SUMMARY.size(), PUBLISHED + 3) << WHAT;
+    const std::string TABLE =
+        summaryTable(std::vector<PerfSummaryEntry>(SUMMARY.begin() + PUBLISHED, SUMMARY.end()), 3);
+    EXPECT_EQ(TABLE.find("NOT TIMED") == std::string::npos, session.timed) << WHAT << "\n" << TABLE;
+    if (!session.timed) {
+      EXPECT_EQ(lastLine(TABLE), "3 tests | 0 stable | 0 unstable | 3 not timed") << TABLE;
+    }
+  }
+}
+
+/**
+ * @test The memory-profile throughput loop, through each public overload,
+ *       prints its bandwidth, efficiency and hint from the timing only where
+ *       the run is timed: under Nsight Compute none of them, the result it
+ *       returns holding its numbers; without a session and under Nsight
+ *       Systems all of them.
+ */
+TEST_F(CsvListenerTest, NsightComputeLeavesTheMemoryBandwidthUnprinted) {
+  PerfConfig caseCfg = global_;
+  caseCfg.cycles = 10;
+  caseCfg.repeats = 2;
+  const struct {
+    const char* name;
+    const char* value;
+    bool timed;
+  } SESSIONS[] = {{nullptr, nullptr, true},
+                  {"NSYS_PROFILING_SESSION_ID", "1017521", true},
+                  {"VERNIER_EXTERNAL_WRAP", "ncu", false},
+                  {"NV_NSIGHT_INJECTION_PORT_BASE", "49152", false}};
+  // Few bytes against microseconds a call: the bandwidth is far below the
+  // estimated peak, so the timed run always prints the low-utilization hint.
+  const std::function<PerfResult(PerfCase&)> OVERLOADS[] = {
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "profile", MemoryProfile{32, 16, 0});
+      },
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "read", std::size_t{32});
+      },
+      [](PerfCase& perf) {
+        return perf.throughputLoop([] { spin(2000); }, "read_write", std::size_t{32},
+                                   std::size_t{16});
+      }};
+  for (const auto& session : SESSIONS) {
+    const NoNsightSession CLEARED;
+    std::optional<ScopedEnv> set;
+    if (session.name != nullptr) {
+      set.emplace(session.name, session.value);
+    }
+    const std::string WHAT = session.name != nullptr
+                                 ? std::string(session.name) + "=" + session.value
+                                 : std::string("no session");
+    for (const auto& run : OVERLOADS) {
+      PerfCase perf{"Listener.MemoryProfile", caseCfg};
+      ::testing::internal::CaptureStdout();
+      const PerfResult RESULT = run(perf);
+      const std::string PRINTED = ::testing::internal::GetCapturedStdout();
+      (void)PerfRegistry::instance().take();
+      for (const char* FIGURE : {"  Memory bandwidth: ", "  Estimated efficiency: ", "  Hint: "}) {
+        EXPECT_EQ(PRINTED.find(FIGURE) != std::string::npos, session.timed)
+            << WHAT << ": " << FIGURE << " in:\n"
+            << PRINTED;
+      }
+      ASSERT_TRUE(RESULT.memoryProfile.has_value()) << WHAT;
+      EXPECT_EQ(RESULT.memoryProfile->bytesRead, 32U) << WHAT;
+      EXPECT_GT(RESULT.stats.median, 0.0) << WHAT;
+    }
+  }
+}
+
+namespace {
+
+/**
+ * @brief In a process of its own: three case rows under Nsight Compute, and
+ *        how often the run said why their cells stay empty; exits 0.
+ */
+[[noreturn]] void reportNotTimedStatements(const PerfConfig& cfg) {
+  std::string captured;
+  {
+    vernier::bench::test::StderrCapture capture;
+    for (int i = 0; i < 3; ++i) {
+      PerfCase perf{"Listener.NotTimedStatement" + std::to_string(i), cfg};
+      ::testing::internal::CaptureStdout();
+      (void)perf.throughputLoop([] { spin(10); });
+      (void)::testing::internal::GetCapturedStdout();
+      (void)PerfRegistry::instance().take();
+    }
+    captured = capture.text();
+  }
+  std::size_t statements = 0;
+  const std::string STATEMENT = NOT_TIMED_STATEMENT;
+  for (std::size_t at = captured.find(STATEMENT); at != std::string::npos;
+       at = captured.find(STATEMENT, at + 1)) {
+    ++statements;
+  }
+  std::fprintf(stderr, "not-timed statements=%zu\n", statements);
+  std::exit(0);
+}
+
+} // namespace
+
+/** @test Why the cells stay empty under Nsight Compute is said once per process */
+TEST(NsightComputeDeathTest, ACaseStatesWhyItIsNotTimedOncePerProcess) {
+  const NoNsightSession CLEARED;
+  const ScopedEnv NCU("VERNIER_EXTERNAL_WRAP", "ncu");
+  PerfConfig cfg{};
+  cfg.cycles = 10;
+  cfg.repeats = 2;
+  const std::string SAVED_STYLE = GTEST_FLAG_GET(death_test_style);
+  GTEST_FLAG_SET(death_test_style, "threadsafe");
+  EXPECT_EXIT(reportNotTimedStatements(cfg), ::testing::ExitedWithCode(0),
+              "not-timed statements=1");
+  GTEST_FLAG_SET(death_test_style, SAVED_STYLE);
+}
+
 /* ----------------------------- Row Width Tests ----------------------------- */
 
 /**
@@ -631,6 +848,43 @@ TEST_F(GpuCsvListenerTest, ProfiledFileRowsMatchHeaderColumns) {
   EXPECT_EQ(CSV.at(1, "gpuModel"), "");
   EXPECT_EQ(CSV.at(1, "kernelTimeUs"), "");
   EXPECT_EQ(CSV.at(1, "deviceCount"), "");
+}
+
+/**
+ * @test A GPU row the harness did not time (under Nsight Compute) leaves its
+ * wall*, callsPerSecond and stable cells empty and keeps every other cell
+ * under its own header; a timed row beside it keeps its timing
+ */
+TEST_F(GpuCsvListenerTest, UntimedRowLeavesItsTimingCellsEmpty) {
+  PerfRow untimed = gpuRow();
+  untimed.timed = false;
+  untimed.kernelTimeUs.reset();
+  untimed.transferTimeUs.reset();
+  untimed.memBandwidthGBs.reset();
+  const Csv CSV = emit(/*includeProfile=*/true, {untimed, cpuRow()});
+
+  ASSERT_EQ(CSV.rows.size(), 2U);
+  EXPECT_EQ(CSV.rows[0].size(), CSV.names.size());
+  for (const char* COLUMN : {"wallMedian", "wallP10", "wallP90", "wallP99", "wallP999", "wallMin",
+                             "wallMax", "wallMean", "wallStddev", "wallCV", "callsPerSecond",
+                             "stable", "kernelTimeUs", "transferTimeUs", "memBandwidthGBs"}) {
+    EXPECT_EQ(CSV.at(0, COLUMN), "") << COLUMN;
+  }
+  EXPECT_EQ(CSV.at(0, "test"), "GpuSuite.GpuKernelOnly");
+  EXPECT_EQ(CSV.at(0, "cycles"), "1000");
+  EXPECT_EQ(CSV.at(0, "cvThreshold"), "0.1");
+  EXPECT_EQ(CSV.at(0, "gpuModel"), "Test Device");
+  EXPECT_EQ(CSV.at(0, "occupancy"), "0.667000");
+  EXPECT_EQ(CSV.at(0, "smClockMHz"), "1400");
+  EXPECT_EQ(CSV.at(0, "deviceCount"), "1");
+  EXPECT_EQ(CSV.at(1, "wallMedian"), "166");
+  EXPECT_EQ(CSV.at(1, "callsPerSecond"), "6024");
+  EXPECT_EQ(CSV.at(1, "stable"), "1");
+  // The end-of-run table's entries, published with the rows, say the same.
+  const std::vector<PerfSummaryEntry>& SUMMARY = PerfRegistry::instance().summary();
+  ASSERT_GE(SUMMARY.size(), 2U);
+  EXPECT_FALSE(SUMMARY[SUMMARY.size() - 2].timed);
+  EXPECT_TRUE(SUMMARY.back().timed);
 }
 
 /** @test Without a profile, a GPU row and a CPU row both fill the header's columns */

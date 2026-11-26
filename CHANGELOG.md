@@ -415,6 +415,38 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   binary's document alone, and a document that does not parse is an error.
   **Action needed:** read the `[require]` lines from stderr when `--json` is
   given.
+- `bench gpu-lock lock -- <command>` resets the clocks when the command ends,
+  also after SIGINT, SIGTERM or SIGHUP, fails the run when the reset does not
+  happen, and exits with the command's own status (128 + N when signal N ends
+  it, 125 for its own failures); every `bench` command keeps its documented
+  status when it cannot write to stderr. **Action needed:** a script that
+  tested for 1 now sees the command's own status.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run` and `bench profile-all` apply `.bench.yaml`: its `gtest_filter`,
+  its binary roots in the order listed, and a relative `profile_output_dir`
+  read from the file's folder, with `--quick` taking precedence over its
+  sizes; `bench run` also applies its `target_time`. A file they cannot read
+  or use stops them before anything starts, naming the file and the line of
+  each problem. **Action needed:** fix what `bench config-validate` reports;
+  the file's `gtest_filter` takes precedence over `GTEST_FILTER`, so remove it
+  to filter through the environment.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- `bench run --profile ncu` passes Nsight Compute the set, sections and
+  metrics asked for; a replay asks for its metric list, and the run names each
+  asked metric its report does not hold. A run under ncu publishes no timing:
+  `bench summary`, `bench compare` and `bench doctor` say so, and `--analyze`
+  is refused under ncu. **Action needed:** measure performance in a run
+  without ncu, and rebuild benchmarks against these headers
+  (`BENCH_ABI_VERSION` is 7).
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
+- The CSV tools keep test names as written: `bench summary` and
+  `bench compare` name the line a refused row starts on, as an editor counts
+  lines, and print a name of any length, `bench compare --markdown` keeps each
+  name in its cell, and `bench-plot` reads, plots and writes back names and
+  copied text unchanged. `bench-plot` stops with one line naming the file and
+  the reason on input it cannot use, leaves out and names rows without
+  plottable timing, and without plotly `bench-plot scaling` writes a PNG.
+  ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - **`--profile-test-timeout 0` turns the watchdog off** -- under `--profile`,
   an omitted value is 300 s, `0` is off, and a value that is not a whole
   number of seconds stops the run before any test with exit status 2, where

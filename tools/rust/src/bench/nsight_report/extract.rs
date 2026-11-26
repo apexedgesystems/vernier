@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use super::exec::{run_tool, Interrupt, Interrupts, ToolRun, DRAIN};
 use super::parse::{self, Row};
-use super::{COMMAND, NSYS_SUMMARIES};
+use super::{ncu_summary_args, COMMAND, NSYS_SUMMARIES};
 use crate::bench::Error;
 
 /* ----------------------------- Constants ----------------------------- */
@@ -407,14 +407,7 @@ fn read_compute(
     interrupts: &Interrupts<'_>,
     out: &mut Extraction,
 ) -> Result<(), Interrupt> {
-    let args = [
-        OsStr::new("--import"),
-        report.as_os_str(),
-        OsStr::new("--csv"),
-        OsStr::new("--print-summary"),
-        OsStr::new("per-kernel"),
-    ];
-    match run_tool("ncu", &args, timeout, interrupts) {
+    match run_tool("ncu", &ncu_summary_args(report), timeout, interrupts) {
         ToolRun::Finished {
             status,
             stdout,
@@ -542,10 +535,10 @@ pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, 
     }
     let written = write_csv(&extraction.rows, csv);
     for warning in &extraction.warnings {
-        eprintln!("[{COMMAND}] warning: {warning}");
+        lossy_eprintln!("[{COMMAND}] warning: {warning}");
     }
     for error in &extraction.errors {
-        eprintln!("[{COMMAND}] error: {error}");
+        lossy_eprintln!("[{COMMAND}] error: {error}");
     }
     let shown = normalized(csv);
     written.map_err(|e| {
@@ -568,7 +561,7 @@ pub fn run(inputs: &[PathBuf], csv: &Path, timeout: Duration) -> Result<RunEnd, 
 }
 
 fn stopped(signal: Interrupt) -> RunEnd {
-    eprintln!("[{COMMAND}] stopped by {signal}; nothing was written");
+    lossy_eprintln!("[{COMMAND}] stopped by {signal}; nothing was written");
     RunEnd::Interrupted(signal)
 }
 
@@ -640,6 +633,43 @@ mod tests {
             "source,report,kernel,instances,time_total_ns,time_avg_ns,time_pct,a,b\r\n\
              ncu,,\"f(int, float)\",,,,,,\"say \"\"x\"\"\"\r\n\
              nsys,,,,,,,\"two\nlines\", spaced \r\n"
+        );
+    }
+
+    /// @test Every field reads back as written: one holding a CR, an LF or a
+    /// CRLF, a quote or a comma is quoted; one holding a NUL or edge spaces
+    /// needs no quotes and gets none.
+    #[test]
+    fn csv_reads_back_every_field_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.csv");
+        let fields = [
+            "Two\rLines",
+            "Two\nLines",
+            "Two\r\nLines",
+            "say \"x\"",
+            "a,b",
+            "a\0b",
+            " Padded ",
+        ];
+        let rows: Vec<Row> = fields
+            .iter()
+            .map(|&field| row(&[("source", "ncu"), ("kernel", field)]))
+            .collect();
+        write_csv(&rows, &path).unwrap();
+        let mut reader = csv::Reader::from_path(&path).unwrap();
+        let kernels: Vec<String> = reader
+            .records()
+            .map(|record| record.unwrap()[2].to_string())
+            .collect();
+        assert_eq!(kernels, fields);
+        let text = fs::read_to_string(&path).unwrap();
+        for quoted in ["\"Two\rLines\"", "\"Two\nLines\"", "\"Two\r\nLines\""] {
+            assert!(text.contains(quoted), "{text:?}");
+        }
+        assert!(
+            text.contains(",a\0b,") && text.contains(", Padded ,"),
+            "{text:?}"
         );
     }
 

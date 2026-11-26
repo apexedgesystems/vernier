@@ -426,10 +426,13 @@ void RAPLProfiler::afterMeasure(const Stats& s) {
                                   : 0.0;
   // Energy per call: the window's average package power times the median
   // call time (W x us = uJ, so 1e-3 for mJ). The hook is given the window's
-  // statistics, not its count of calls.
-  measurement.energyPerOpMillijoules = measurement.avgPowerWatts * s.median * 1e-3;
+  // statistics, not its count of calls. Under Nsight Compute the harness
+  // leaves its calls untimed (its untimeUnderNcu()), so there is no median to
+  // multiply by: NaN marks the per-call figure and the median as not computed.
+  const double MEDIAN_US = profiler_env::nsightSessionTool() == "ncu" ? std::nan("") : s.median;
+  measurement.energyPerOpMillijoules = measurement.avgPowerWatts * MEDIAN_US * 1e-3;
 
-  if (!writeWindow(WINDOW, START, END, DELTA, measurement, s.median)) {
+  if (!writeWindow(WINDOW, START, END, DELTA, measurement, MEDIAN_US)) {
     return;
   }
   printSummary(WINDOW, measurement, DELTA);
@@ -469,11 +472,16 @@ bool RAPLProfiler::writeWindow(int window, const Reading& start, const Reading& 
   text += line;
   std::snprintf(line, sizeof(line), "Average power: %.6f W\n", measurement.avgPowerWatts);
   text += line;
-  std::snprintf(line, sizeof(line), "Energy per operation: %.6f mJ/call\n",
-                measurement.energyPerOpMillijoules);
-  text += line;
-  std::snprintf(line, sizeof(line), "Median time per call: %.3f us\n", medianUs);
-  text += line;
+  if (std::isnan(medianUs)) {
+    text += "Energy per operation: not computed: Nsight Compute (ncu) profiles this process, "
+            "so its calls are not timed\n";
+  } else {
+    std::snprintf(line, sizeof(line), "Energy per operation: %.6f mJ/call\n",
+                  measurement.energyPerOpMillijoules);
+    text += line;
+    std::snprintf(line, sizeof(line), "Median time per call: %.3f us\n", medianUs);
+    text += line;
+  }
   std::snprintf(line, sizeof(line), "Energy unit: %.4f uJ\n", plan_->energyUnitJoules * 1e6);
   text += line;
   text += "Start counter: " + std::to_string(start.counter) + "\n";
@@ -523,8 +531,12 @@ void RAPLProfiler::printSummary(int window, const RAPLMeasurement& measurement,
   std::printf("Window:              %d\n", window);
   std::printf("Energy consumed:     %.3f Joules\n", measurement.energyJoules);
   std::printf("Average power:       %.2f Watts\n", measurement.avgPowerWatts);
-  std::printf("Energy per op:       %.3f mJ/call (average power x median call time)\n",
-              measurement.energyPerOpMillijoules);
+  if (std::isnan(measurement.energyPerOpMillijoules)) {
+    std::printf("Energy per op:       not computed (Nsight Compute profiles this process)\n");
+  } else {
+    std::printf("Energy per op:       %.3f mJ/call (average power x median call time)\n",
+                measurement.energyPerOpMillijoules);
+  }
   std::printf("Duration:            %.3f seconds\n", measurement.durationSeconds);
   if (delta == 0) {
     std::printf("Counter:             did not advance during the window\n");

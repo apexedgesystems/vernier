@@ -260,6 +260,10 @@ Estimated efficiency: 78.4% of theoretical peak (~12000 MB/s)
 Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 ```
 
+Each line divides by the median call time, so a run under Nsight Compute,
+which is not timed, prints none of them; the returned result keeps its
+`memoryProfile`.
+
 **Interpretation:**
 
 - **Efficiency < 10%:** CPU-bound (algorithm optimization needed)
@@ -713,7 +717,17 @@ NVIDIA Nsight Compute integration.
 # nsys and ncu record a process only when they start it: bench run starts the
 # benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
 bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
+# Under ncu, with a section set, sections or metrics, or the replay list
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args replay --cycles 3 --repeats 1
 ```
+
+`--profile ncu` (and nsight's compute route) takes Vernier's supported subset
+of ncu's options, `replay`, `--set NAME`, `--section NAME` and
+`--metrics NAMES`
+([tools/README.md](../../../tools/README.md#run---execute-benchmark-binary));
+the benchmark's readiness check reads the same grammar
+(`parseNsightRequest`, `ProfilerNsightChecks.hpp`).
 
 Run directly with `--profile nsight`, without a tool around it, the run fails
 (exit status 4 when the tests pass) and prints the command that captures it.
@@ -753,9 +767,16 @@ Run directly with `--profile nsight`, without a tool around it, the run fails
 | `hostname`       | string | Machine hostname             |
 | `platform`       | string | Architecture (x86_64, arm64) |
 
+Under Nsight Compute (ncu) no row is timed: every row leaves the `wall*`
+columns, `callsPerSecond` and `stable` empty, since ncu's instrumentation adds
+to what the harness would measure
+([GPU guide](GPU_GUIDE.md#using-nsight-compute)).
+
 ### GPU Columns
 
-Additional columns for GPU tests:
+Additional columns for GPU tests. Under Nsight Compute (ncu) a GPU row also
+leaves `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`,
+`multiGpuEfficiency` and `p2pBandwidthGBs` empty (see CPU Columns).
 
 | Column              | Type   | Description                 |
 | ------------------- | ------ | --------------------------- |
