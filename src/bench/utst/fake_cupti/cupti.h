@@ -8,17 +8,20 @@
  * compiled and run on a machine without CUPTI. It counts every call that
  * registers with or drives CUPTI, logs them in order, so a test can show what
  * a decision did, and answers each call with the result a test sets. A flush
- * delivers the kernel records, the unified-memory counter records and the
- * dropped-record count a test sets, through the buffer callbacks the
- * collector registered, as CUPTI does; dropped records can also be left to
+ * delivers the kernel records (of the kernel kind last switched on), the
+ * unified-memory counter records and the dropped-record count a test sets,
+ * through the buffer callbacks the collector registered, as CUPTI does;
+ * dropped records can also be left to
  * reach no buffer, as when CUPTI had none to hand over. A walk of a buffer's
  * records ends at the buffer's end, or with the error a test sets after the
- * records it lets through.
+ * records it lets through. A failed flush can keep the buffer it filled, which
+ * the next flush, or the test, then hands over late.
  */
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -111,7 +114,6 @@ namespace fake_cupti {
 struct Calls {
   int registrations = 0;                    ///< cuptiActivityRegisterCallbacks
   int enables = 0;                          ///< cuptiActivityEnable
-  int disables = 0;                         ///< cuptiActivityDisable
   int flushes = 0;                          ///< cuptiActivityFlushAll
   int configures = 0;                       ///< cuptiActivityConfigureUnifiedMemoryCounter
   std::vector<CUpti_ActivityKind> enabled;  ///< Kinds asked of cuptiActivityEnable, in order
@@ -119,6 +121,14 @@ struct Calls {
   std::vector<CUpti_ActivityUnifiedMemoryCounterConfig> configuration; ///< The last one asked for
   std::vector<CUptiResult> walkEnds; ///< cuptiActivityGetNextRecord answers with no record
   std::vector<std::string> log;      ///< "enable 3", "configure", "flush", "disable 25", ...
+};
+
+/** @brief What one delivered kernel record holds of what the collector reads. */
+struct KernelRecordSpec {
+  uint16_t registersPerThread = 0;
+  int32_t staticSharedMemory = 0;
+  int32_t dynamicSharedMemory = 0;
+  const char* name = "fakeKernel"; ///< Must outlive the flush: the record points at it
 };
 
 /** @brief How the stand-in answers; every call succeeds and delivers nothing by default. */
@@ -131,9 +141,10 @@ struct Behaviour {
   CUptiResult configureResult = CUPTI_SUCCESS;    ///< cuptiActivityConfigureUnifiedMemoryCounter
   CUptiResult unifiedMemoryEnableResult = CUPTI_SUCCESS;  ///< ...Enable, the unified-memory kind
   CUptiResult unifiedMemoryDisableResult = CUPTI_SUCCESS; ///< ...Disable, the unified-memory kind
-  size_t recordsPerFlush = 0;                             ///< Kernel records one flush delivers
-  uint16_t registersPerThread = 0;                        ///< Every delivered record's registers
-  int32_t staticSharedMemory = 0;                         ///< Every delivered record's static bytes
+  /// Kernel records one flush delivers, in this order, each with its own
+  /// registers, shared memory and name, whether or not a kernel kind is on:
+  /// the collector must read them only in a window that switched one on.
+  std::vector<KernelRecordSpec> kernelRecords;
   /// Unified-memory records one flush delivers after the kernel records,
   /// whether or not their kind is on: the collector must read only its own.
   std::vector<CUpti_ActivityUnifiedMemoryCounter2> unifiedMemoryRecords;
@@ -141,6 +152,18 @@ struct Behaviour {
   bool dropsReachABuffer = true;                ///< false: dropped records come with no buffer
   CUptiResult nextRecordResult = CUPTI_SUCCESS; ///< A walk's error after readableRecords, if set
   size_t readableRecords = 0;                   ///< Records a walk hands over before that error
+  /// A failed flush keeps the buffer it filled instead of handing it over, as
+  /// CUPTI holding a buffer it could not deliver would; the next flush hands
+  /// it over first, or handOverHeldBuffer() does.
+  bool failedFlushHoldsItsBuffer = false;
+};
+
+/** @brief A buffer a failed flush kept, with where each of its records starts. */
+struct HeldBuffer {
+  uint8_t* buffer = nullptr;
+  size_t size = 0;
+  size_t valid = 0;
+  std::vector<size_t> offsets;
 };
 
 /** @brief The buffer callbacks the collector registered. */
@@ -179,13 +202,48 @@ inline std::vector<size_t>& recordOffsets() {
   return offsets;
 }
 
-/** @brief No call counted, the default behaviour, no callbacks and nothing dropped. */
+/**
+ * @brief The kind a flush's kernel records carry: the kernel kind last
+ *        switched on, as CUPTI records the kind that is on.
+ */
+inline CUpti_ActivityKind& kernelRecordKind() {
+  static CUpti_ActivityKind kind = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+  return kind;
+}
+
+/** @brief The buffer a failed flush kept (failedFlushHoldsItsBuffer), if any. */
+inline HeldBuffer& heldBuffer() {
+  static HeldBuffer held;
+  return held;
+}
+
+/**
+ * @brief Hands the buffer a failed flush kept to the registered completion
+ *        callback, as CUPTI delivering it late would; nothing when none is
+ *        held. The callback owns it from here.
+ * @return Whether a buffer was handed over.
+ */
+inline bool handOverHeldBuffer() {
+  HeldBuffer held = heldBuffer();
+  if (held.buffer == nullptr || callbacks().completed == nullptr) {
+    return false;
+  }
+  heldBuffer() = {};
+  recordOffsets() = held.offsets;
+  callbacks().completed(nullptr, 0, held.buffer, held.size, held.valid);
+  return true;
+}
+
+/** @brief No call counted, the default behaviour, no callbacks and nothing dropped or held. */
 inline void reset() {
   calls() = {};
   behaviour() = {};
   callbacks() = {};
   pendingDropped() = 0;
   recordOffsets().clear();
+  kernelRecordKind() = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+  std::free(heldBuffer().buffer);
+  heldBuffer() = {};
 }
 
 /** @brief A unified-memory record of @p kind with @p value, from @p start to @p end ns. */
@@ -217,12 +275,14 @@ inline CUptiResult cuptiActivityEnable(CUpti_ActivityKind kind) {
   ++fake_cupti::calls().enables;
   fake_cupti::calls().enabled.push_back(kind);
   fake_cupti::calls().log.push_back("enable " + std::to_string(static_cast<int>(kind)));
+  if (kind == CUPTI_ACTIVITY_KIND_KERNEL || kind == CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL) {
+    fake_cupti::kernelRecordKind() = kind;
+  }
   return kind == CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER
              ? fake_cupti::behaviour().unifiedMemoryEnableResult
              : fake_cupti::behaviour().enableResult;
 }
 inline CUptiResult cuptiActivityDisable(CUpti_ActivityKind kind) {
-  ++fake_cupti::calls().disables;
   fake_cupti::calls().disabled.push_back(kind);
   fake_cupti::calls().log.push_back("disable " + std::to_string(static_cast<int>(kind)));
   return kind == CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER
@@ -238,20 +298,23 @@ cuptiActivityConfigureUnifiedMemoryCounter(CUpti_ActivityUnifiedMemoryCounterCon
   return fake_cupti::behaviour().configureResult;
 }
 /**
- * @brief Delivers the behaviour's records in one buffer (the kernel records,
- *        then the unified-memory ones, each at its own size) and counts its
- *        dropped records, then answers with its flush result (a failed flush
- *        has still handed over what it delivered).
+ * @brief Hands over a buffer an earlier failed flush kept, then delivers the
+ *        behaviour's records in one buffer (the kernel records, then the
+ *        unified-memory ones, each at its own size) and counts its dropped
+ *        records, then answers with its flush result. A failed flush has still
+ *        handed over what it delivered, unless failedFlushHoldsItsBuffer keeps
+ *        that buffer back.
  */
 inline CUptiResult cuptiActivityFlushAll(uint32_t) {
   ++fake_cupti::calls().flushes;
   fake_cupti::calls().log.push_back("flush");
+  static_cast<void>(fake_cupti::handOverHeldBuffer());
   const fake_cupti::Behaviour& b = fake_cupti::behaviour();
   if (b.dropsReachABuffer) {
     fake_cupti::pendingDropped() += b.droppedPerFlush;
   }
   const fake_cupti::Callbacks& cb = fake_cupti::callbacks();
-  const bool BUFFER = b.recordsPerFlush > 0 || !b.unifiedMemoryRecords.empty() ||
+  const bool BUFFER = !b.kernelRecords.empty() || !b.unifiedMemoryRecords.empty() ||
                       (b.droppedPerFlush > 0 && b.dropsReachABuffer);
   if (BUFFER && cb.requested != nullptr && cb.completed != nullptr) {
     uint8_t* buffer = nullptr;
@@ -269,18 +332,23 @@ inline CUptiResult cuptiActivityFlushAll(uint32_t) {
       offsets.push_back(valid);
       valid += bytes;
     };
-    for (size_t i = 0; i < b.recordsPerFlush; ++i) {
+    for (const fake_cupti::KernelRecordSpec& spec : b.kernelRecords) {
       CUpti_ActivityKernel9 record{};
-      record.kind = CUPTI_ACTIVITY_KIND_KERNEL;
-      record.registersPerThread = b.registersPerThread;
-      record.staticSharedMemory = b.staticSharedMemory;
-      record.name = "fakeKernel";
+      record.kind = fake_cupti::kernelRecordKind();
+      record.registersPerThread = spec.registersPerThread;
+      record.staticSharedMemory = spec.staticSharedMemory;
+      record.dynamicSharedMemory = spec.dynamicSharedMemory;
+      record.name = spec.name;
       PUT(&record, sizeof(record));
     }
     for (const CUpti_ActivityUnifiedMemoryCounter2& record : b.unifiedMemoryRecords) {
       PUT(&record, sizeof(record));
     }
-    cb.completed(nullptr, 0, buffer, size, valid);
+    if (b.flushResult != CUPTI_SUCCESS && b.failedFlushHoldsItsBuffer) {
+      fake_cupti::heldBuffer() = {buffer, size, valid, offsets};
+    } else {
+      cb.completed(nullptr, 0, buffer, size, valid);
+    }
   }
   if (!b.dropsReachABuffer) {
     fake_cupti::pendingDropped() += b.droppedPerFlush;

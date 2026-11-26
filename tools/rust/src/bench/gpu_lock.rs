@@ -1,33 +1,111 @@
-//! GPU clock management: lock/reset GPU clocks for reproducible benchmarks.
+//! GPU clock management: lock and reset GPU clocks for reproducible
+//! benchmarks, through `nvidia-smi -lgc` and `nvidia-smi -rgc`. Three modes:
 //!
-//! Wraps `nvidia-smi -lgc` / `-rgc` to eliminate clock frequency variance
-//! during benchmark runs. Supports three modes:
+//!   1. `bench gpu-lock lock`              -- lock the clocks and exit
+//!   2. `bench gpu-lock reset`             -- reset them and exit
+//!   3. `bench gpu-lock lock -- <command>` -- lock, run the command, reset
 //!
-//!   1. `bench gpu-lock lock`   -- lock clocks and exit
-//!   2. `bench gpu-lock reset`  -- reset clocks and exit
-//!   3. `bench gpu-lock lock -- <command>` -- lock, run command, reset on exit
+//! In the wrapper mode the command runs in bench's own process group, with
+//! bench's terminal, as it would without the wrapper: a terminal's Ctrl-C,
+//! Ctrl-Z and hangup reach the command and bench together. While the command
+//! runs, bench records SIGINT, SIGTERM and SIGHUP (`owned_run::Watch`; a
+//! signal ignored when bench started stays ignored, for bench and for the
+//! command) and passes a SIGTERM on to the command, since no terminal sends
+//! one; SIGTERMs that arrive between two looks, a tenth of a second apart,
+//! are passed on once. A signal recorded while the command is being started,
+//! before it exists, ends it as it starts. Bench waits for the command to
+//! end, however it ends and however long it takes, so the clocks stay locked
+//! exactly as long as the command runs; then it resets them once and ends by
+//! the first signal it recorded, which no later signal replaces. With no
+//! signal recorded, bench exits with the command's own status (128 + N when
+//! signal N ended it), or with 125 (`WRAPPER_FAILED`) when a part of its own
+//! failed: the lock, the command's start or the reset. A command
+//! that does not end keeps bench waiting: the user ends it (kill -KILL), and
+//! the reset follows. SIGKILL and SIGQUIT end bench itself at once, without
+//! the reset: `bench gpu-lock reset` resets the clocks by hand.
 //!
-//! The wrapper mode resets clocks via an RAII drop guard, so clocks are
-//! restored even if the wrapped command fails or the runner panics.
+//! Every nvidia-smi call is an owned run (`owned_run`): it runs in a process
+//! group of its own, which no terminal signal reaches, so a lock or a reset
+//! is never stopped halfway, and a call still running at its bound is ended.
+//!
+//! Messages are written to stderr by a thread of their own (`say`): the
+//! thread that locks, waits and resets hands each one over and waits for it
+//! only while stderr has room, a second at the most. A stderr that takes
+//! nothing more (a full pipe nobody drains, a pipe whose reader is gone, a
+//! terminal that hung up) therefore holds up neither the reset nor the end
+//! by a signal; what it cannot take is lost.
 
-use std::process::Command;
+use std::collections::VecDeque;
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Child, Command, ExitStatus};
+use std::sync::atomic::AtomicI32;
+use std::sync::{Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
-use super::Error;
+use super::{owned_run, Error};
 
-/* ----------------------------- Public Types ----------------------------- */
+/* ----------------------------- Constants ----------------------------- */
+
+/// How long one nvidia-smi call may run before it, and every process of its
+/// group, is ended.
+const TOOL_BOUND: Duration = Duration::from_secs(30);
+
+/// How often the wrapper looks at its command and at the signals recorded:
+/// it runs beside the measured command, so it wakes rarely.
+const WAIT_POLL: Duration = Duration::from_millis(100);
+
+/// How long a message waits, at the most, to be written while stderr says
+/// it has room: one that says so and still does not take the message (a
+/// stalled file system) delays the wrapper by no more than this.
+const SAY_BOUND: Duration = Duration::from_secs(1);
+
+/// How often a message that waits looks again at whether stderr has room.
+const SAY_POLL: Duration = Duration::from_millis(10);
+
+/// The status `bench gpu-lock lock -- <command>` exits with when a part of
+/// its own fails: the lock refused or past its bound, the command that
+/// cannot start, the reset refused or past its bound. Any other status is
+/// the command's own, passed through.
+pub const WRAPPER_FAILED: u8 = 125;
+
+/* ----------------------------- Types ----------------------------- */
+
+/// nvidia-smi as gpu-lock runs it.
+#[derive(Debug, Clone)]
+pub struct Tool {
+    /// The program; a bare name is looked up on PATH.
+    pub program: PathBuf,
+
+    /// How long one call may run before it and its process group are ended.
+    pub bound: Duration,
+}
+
+impl Default for Tool {
+    /// `nvidia-smi` on PATH, with a bound of 30 s.
+    fn default() -> Self {
+        Self {
+            program: PathBuf::from("nvidia-smi"),
+            bound: TOOL_BOUND,
+        }
+    }
+}
 
 /// Configuration for a gpu-lock operation.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LockConfig {
     /// GPU device index (nvidia-smi -i).
     pub device: u32,
 
     /// Target frequency in MHz. If None, locks to max reported clock.
     pub freq: Option<u32>,
+
+    /// The nvidia-smi that locks and resets the clocks.
+    pub tool: Tool,
 }
 
 /// Configuration for the wrapper mode (lock --> run --> reset).
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WrapConfig {
     pub lock: LockConfig,
 
@@ -35,180 +113,515 @@ pub struct WrapConfig {
     pub command: Vec<String>,
 }
 
-/* ----------------------------- API ----------------------------- */
-
-/// Lock GPU clocks to a fixed frequency.
-pub fn lock_clocks(cfg: &LockConfig) -> Result<(), Error> {
-    let freq = match cfg.freq {
-        Some(f) => f,
-        None => query_max_graphics_clock(cfg.device)?,
-    };
-
-    // Ensure persistence mode is on (required for clock locking)
-    ensure_persistence_mode(cfg.device)?;
-
-    let freq_str = freq.to_string();
-    let device_str = cfg.device.to_string();
-
-    let output = Command::new("nvidia-smi")
-        .args(["-i", &device_str, "-lgc", &format!("{freq_str},{freq_str}")])
-        .output()
-        .map_err(Error::Io)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let msg = if !stderr.is_empty() {
-            stderr.trim().to_string()
-        } else {
-            stdout.trim().to_string()
-        };
-        return Err(Error::InvalidArgs(format!(
-            "failed to lock clocks on GPU {}: {msg}",
-            cfg.device
-        )));
-    }
-
-    eprintln!("GPU {}: clocks locked to {freq} MHz", cfg.device);
-    Ok(())
+/// How one nvidia-smi call ended.
+enum Call {
+    /// It exited 0, with this output.
+    Done(String),
+    /// It exited otherwise: why, in its own words where it gave some.
+    Failed(String),
+    /// It was still running at its bound and was ended.
+    TimedOut,
 }
 
-/// Reset GPU clocks to default (driver-managed) state.
-pub fn reset_clocks(device: u32) -> Result<(), Error> {
-    let device_str = device.to_string();
-
-    let output = Command::new("nvidia-smi")
-        .args(["-i", &device_str, "-rgc"])
-        .output()
-        .map_err(Error::Io)?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let msg = if !stderr.is_empty() {
-            stderr.trim().to_string()
-        } else {
-            stdout.trim().to_string()
-        };
-        return Err(Error::InvalidArgs(format!(
-            "failed to reset clocks on GPU {device}: {msg}"
-        )));
-    }
-
-    eprintln!("GPU {device}: clocks reset to default");
-    Ok(())
+/// Resets the clocks if it is dropped while armed: on a panic between the
+/// lock and the wrapper's own reset.
+struct ResetOnUnwind<'a> {
+    lock: &'a LockConfig,
+    armed: bool,
 }
 
-/// Lock clocks, run a child command, then reset clocks on exit (even on failure).
-pub fn wrap_command(cfg: &WrapConfig) -> Result<i32, Error> {
-    if cfg.command.is_empty() {
-        return Err(Error::InvalidArgs(
-            "no command provided after '--'".to_string(),
-        ));
+/// The messages handed to the writer thread and not yet taken by it, and
+/// how many it has been handed and has finished with (written, or let go
+/// when stderr refused them).
+struct Pending {
+    lines: VecDeque<String>,
+    handed: u64,
+    finished: u64,
+}
+
+/* ----------------------------- Messages ----------------------------- */
+
+/// The writer thread's messages, and the condition it and `say` wait on.
+static PENDING: Mutex<Pending> = Mutex::new(Pending {
+    lines: VecDeque::new(),
+    handed: 0,
+    finished: 0,
+});
+static PENDING_CHANGED: Condvar = Condvar::new();
+
+fn pending() -> MutexGuard<'static, Pending> {
+    PENDING.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Hand @p line to the writer thread, and wait until it is written while
+/// stderr has room, `SAY_BOUND` at the most. A stderr without room (a full
+/// pipe nobody drains) holds up nothing: the message stays queued for when
+/// it has room, so no message can stop a reset or the end by a signal.
+fn say(line: &str) {
+    if !writer() {
+        return;
     }
-
-    // Lock clocks
-    lock_clocks(&cfg.lock)?;
-
-    // Guard ensures clocks are reset even if the command fails or we panic
-    let _guard = ClockResetGuard {
-        device: cfg.lock.device,
+    let mine = {
+        let mut pending = pending();
+        pending.lines.push_back(format!("{line}\n"));
+        pending.handed += 1;
+        pending.handed
     };
+    PENDING_CHANGED.notify_all();
+    let until = Instant::now() + SAY_BOUND;
+    let mut pending = pending();
+    while pending.finished < mine {
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() || stderr_is_full() {
+            return;
+        }
+        pending = PENDING_CHANGED
+            .wait_timeout(pending, left.min(SAY_POLL))
+            .unwrap_or_else(PoisonError::into_inner)
+            .0;
+    }
+}
 
-    // Run the child command
-    let program = &cfg.command[0];
-    let args = &cfg.command[1..];
+/// Start the writer thread, once, with SIGINT, SIGTERM and SIGHUP blocked
+/// for good, so that they reach the thread that records and acts on them.
+/// False when stderr is not open or no thread could be started; messages
+/// are then let go.
+fn writer() -> bool {
+    static RUNNING: OnceLock<bool> = OnceLock::new();
+    *RUNNING.get_or_init(|| {
+        let Some(out) = stderr_copy() else {
+            return false;
+        };
+        owned_run::with_watched_blocked(|| {
+            std::thread::Builder::new()
+                .name("gpu-lock stderr".to_string())
+                .spawn(move || write_pending(out))
+                .is_ok()
+        })
+    })
+}
 
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .map_err(|e| Error::InvalidArgs(format!("failed to execute '{}': {e}", program)))?;
+/// The writer thread: write each message handed to it, in order, through
+/// @p out, waiting as long as a write takes. A write that fails lets its
+/// message go.
+fn write_pending(mut out: impl Write) {
+    loop {
+        let line = {
+            let mut pending = pending();
+            loop {
+                if let Some(line) = pending.lines.pop_front() {
+                    break line;
+                }
+                pending = PENDING_CHANGED
+                    .wait(pending)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        };
+        let _ = out.write_all(line.as_bytes());
+        pending().finished += 1;
+        PENDING_CHANGED.notify_all();
+    }
+}
 
-    // Guard will reset clocks on drop
-    Ok(status.code().unwrap_or(255))
+/// A second descriptor of stderr's open file, closed on exec: the writer
+/// thread writes through it as through stderr itself, with the file's flags
+/// as inherited (a blocking write stays blocking, for bench and the
+/// command), and without holding the lock of `std::io::stderr`. None when
+/// stderr is not open.
+#[cfg(unix)]
+fn stderr_copy() -> Option<std::fs::File> {
+    use std::os::fd::AsFd;
+    std::io::stderr()
+        .as_fd()
+        .try_clone_to_owned()
+        .ok()
+        .map(std::fs::File::from)
+}
+
+#[cfg(not(unix))]
+fn stderr_copy() -> Option<std::io::Stderr> {
+    Some(std::io::stderr())
+}
+
+/// Whether a write to stderr would wait for room: poll(2) reports nothing
+/// for it, neither room (POLLOUT) nor a hangup or an error, on which a write
+/// fails at once.
+#[cfg(unix)]
+fn stderr_is_full() -> bool {
+    let mut stderr = libc::pollfd {
+        fd: libc::STDERR_FILENO,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: poll only reads the descriptor and events of `stderr`, owned
+    // here, and writes its revents; with a timeout of 0 it returns at once.
+    unsafe { libc::poll(&mut stderr, 1, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn stderr_is_full() -> bool {
+    false
 }
 
 /* ----------------------------- Helpers ----------------------------- */
 
-/// Query the max graphics clock for a device via nvidia-smi.
-fn query_max_graphics_clock(device: u32) -> Result<u32, Error> {
-    let device_str = device.to_string();
-    let output = Command::new("nvidia-smi")
-        .args([
-            "-i",
-            &device_str,
-            "--query-gpu=clocks.max.graphics",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .map_err(Error::Io)?;
+/// @p bound as messages state it: "30 s", "0.2 s".
+fn seconds(bound: Duration) -> String {
+    format!("{} s", bound.as_secs_f64())
+}
 
-    if !output.status.success() {
-        return Err(Error::InvalidArgs(format!(
-            "cannot query max clock for GPU {device}"
-        )));
-    }
+/// What a failed call says: its stderr, else its stdout, else how it ended.
+fn failure(stdout: &str, stderr: &str, status: ExitStatus) -> String {
+    [stderr, stdout]
+        .iter()
+        .map(|text| text.trim())
+        .find(|text| !text.is_empty())
+        .map_or_else(|| super::runner::describe_status(status), str::to_string)
+}
 
-    let text = String::from_utf8_lossy(&output.stdout);
-    let freq: u32 = text.trim().parse().map_err(|_| {
-        Error::InvalidArgs(format!(
-            "unexpected max clock value '{}' for GPU {device}",
-            text.trim()
-        ))
+/// Run @p tool with @p args as an owned run: in a process group of its own,
+/// ended at the tool's bound. A tool that cannot start is an error naming it.
+fn call(tool: &Tool, args: &[&str]) -> Result<Call, Error> {
+    let mut command = Command::new(&tool.program);
+    command.args(args);
+    let child = owned_run::spawn(&mut command).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::ToolNotFound(format!(
+                "'{}' is not on PATH; gpu-lock locks and resets the clocks with it",
+                tool.program.display()
+            ))
+        } else {
+            Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("{} could not be started: {e}", tool.program.display()),
+            ))
+        }
     })?;
+    // A flag no signal sets: a signal bench records is acted on once the call
+    // has finished, so that no lock or reset stops halfway.
+    let unset = AtomicI32::new(0);
+    let run = owned_run::finish(child, tool.bound, &unset).map_err(Error::Io)?;
+    Ok(match run.ending {
+        owned_run::Ending::Exited(status) if status.success() => Call::Done(run.stdout),
+        owned_run::Ending::Exited(status) => {
+            Call::Failed(failure(&run.stdout, &run.stderr, status))
+        }
+        // The flag is never set, so the call cannot end interrupted.
+        owned_run::Ending::TimedOut | owned_run::Ending::Interrupted(_) => Call::TimedOut,
+    })
+}
 
-    Ok(freq)
+/// Query the max graphics clock for a device via nvidia-smi.
+fn query_max_graphics_clock(device: u32, tool: &Tool) -> Result<u32, Error> {
+    let device_str = device.to_string();
+    let args = [
+        "-i",
+        &device_str,
+        "--query-gpu=clocks.max.graphics",
+        "--format=csv,noheader,nounits",
+    ];
+    match call(tool, &args)? {
+        Call::Done(text) => text.trim().parse().map_err(|_| {
+            Error::GpuLock(format!(
+                "unexpected max clock value '{}' for GPU {device}",
+                text.trim()
+            ))
+        }),
+        Call::Failed(why) => Err(Error::GpuLock(format!(
+            "cannot query the max clock of GPU {device}: {why}"
+        ))),
+        Call::TimedOut => Err(Error::GpuLock(format!(
+            "nvidia-smi did not report the max clock of GPU {device} within {} and was ended",
+            seconds(tool.bound)
+        ))),
+    }
 }
 
 /// Enable persistence mode if it's not already on.
-fn ensure_persistence_mode(device: u32) -> Result<(), Error> {
+fn ensure_persistence_mode(device: u32, tool: &Tool) -> Result<(), Error> {
     let device_str = device.to_string();
-
-    // Check current state
-    let output = Command::new("nvidia-smi")
-        .args([
-            "-i",
-            &device_str,
-            "--query-gpu=persistence_mode",
-            "--format=csv,noheader",
-        ])
-        .output()
-        .map_err(Error::Io)?;
-
-    if output.status.success() {
-        let mode = String::from_utf8_lossy(&output.stdout);
+    let query = [
+        "-i",
+        &device_str,
+        "--query-gpu=persistence_mode",
+        "--format=csv,noheader",
+    ];
+    if let Call::Done(mode) = call(tool, &query)? {
         if mode.trim().eq_ignore_ascii_case("enabled") {
             return Ok(());
         }
     }
-
-    // Try to enable it
-    let enable = Command::new("nvidia-smi")
-        .args(["-i", &device_str, "-pm", "1"])
-        .output()
-        .map_err(Error::Io)?;
-
-    if enable.status.success() {
-        eprintln!("GPU {device}: enabled persistence mode");
-        Ok(())
-    } else {
-        // Non-fatal: clock locking might still work without persistence mode
-        eprintln!("GPU {device}: warning: could not enable persistence mode (may need root)");
-        Ok(())
+    match call(tool, &["-i", &device_str, "-pm", "1"])? {
+        Call::Done(_) => say(&format!("GPU {device}: enabled persistence mode")),
+        // Not fatal: clock locking might still work without persistence mode.
+        Call::Failed(_) | Call::TimedOut => say(&format!(
+            "GPU {device}: warning: could not enable persistence mode (may need root)"
+        )),
     }
+    Ok(())
 }
 
-/// RAII guard that resets clocks on drop.
-struct ClockResetGuard {
-    device: u32,
-}
-
-impl Drop for ClockResetGuard {
-    fn drop(&mut self) {
-        if let Err(e) = reset_clocks(self.device) {
-            eprintln!("warning: failed to reset GPU clocks: {e}");
+/// The name of @p signal, for messages.
+fn signal_name(signal: i32) -> String {
+    #[cfg(unix)]
+    {
+        match signal {
+            libc::SIGHUP => return "SIGHUP".to_string(),
+            libc::SIGINT => return "SIGINT".to_string(),
+            libc::SIGTERM => return "SIGTERM".to_string(),
+            _ => {}
         }
     }
+    format!("signal {signal}")
+}
+
+/// Pass @p signal on to @p child when no terminal sends it to the command
+/// itself: a SIGTERM. True when it was passed on.
+#[cfg(unix)]
+fn pass_on(child: &Child, signal: i32) -> bool {
+    if signal != libc::SIGTERM {
+        return false;
+    }
+    let Ok(pid) = libc::pid_t::try_from(child.id()) else {
+        return false;
+    };
+    // SAFETY: kill(2) only sends a signal. @p child is the command this
+    // wrapper started and has not reaped, so its process id cannot have
+    // passed to another process.
+    unsafe { libc::kill(pid, libc::SIGTERM) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pass_on(_child: &Child, _signal: i32) -> bool {
+    false
+}
+
+impl Drop for ResetOnUnwind<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            if let Err(e) = reset_clocks(self.lock.device, &self.lock.tool) {
+                say(&format!("Error: {e}"));
+            }
+        }
+    }
+}
+
+/// Start @p program with @p args in bench's own process group, and wait for
+/// it to end, however long it takes, passing on to it each SIGTERM @p watch
+/// records meanwhile. A signal @p watch recorded before the command was
+/// created ends the command as it starts, as a terminal's signal that
+/// reaches bench's group a moment later reaches the command itself
+/// (`owned_run::end_if_already_signalled`). @p before_spawn runs right
+/// before the start: nothing, in `wrap_command`; a signal, in a test of that
+/// moment. Returns how the command ended, or why it could not start.
+fn run_command(
+    program: &str,
+    args: &[String],
+    watch: &owned_run::Watch,
+    before_spawn: impl FnOnce(),
+) -> Result<ExitStatus, Error> {
+    let mut command = Command::new(program);
+    command.args(args);
+    owned_run::end_if_already_signalled(&mut command);
+    before_spawn();
+    let mut child = command
+        .spawn()
+        .map_err(|e| Error::GpuLock(format!("failed to start '{program}': {e}")))?;
+    let pid = child.id();
+    loop {
+        // The command has not been reaped yet: its process id is still its
+        // own when a signal is passed on.
+        for signal in watch.arrivals() {
+            let name = signal_name(signal);
+            let what = if pass_on(&child, signal) {
+                format!("passed to the command (process {pid}); the clocks are reset once it ends")
+            } else {
+                format!("the clocks are reset once the command (process {pid}) ends")
+            };
+            say(&format!(
+                "[bench] gpu-lock: {name}: {what}; if it does not end, end it with kill -KILL {pid}"
+            ));
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => std::thread::sleep(WAIT_POLL),
+            Err(e) => return Err(Error::Io(e)),
+        }
+    }
+}
+
+/* ----------------------------- API ----------------------------- */
+
+/// Lock GPU clocks to a fixed frequency. A lock nvidia-smi refuses leaves
+/// nothing to reset; one still running at the tool's bound may have taken
+/// effect before it was ended, so the clocks are then reset.
+pub fn lock_clocks(cfg: &LockConfig) -> Result<(), Error> {
+    let freq = match cfg.freq {
+        Some(f) => f,
+        None => query_max_graphics_clock(cfg.device, &cfg.tool)?,
+    };
+
+    // Ensure persistence mode is on (required for clock locking)
+    ensure_persistence_mode(cfg.device, &cfg.tool)?;
+
+    let device_str = cfg.device.to_string();
+    let pair = format!("{freq},{freq}");
+    match call(&cfg.tool, &["-i", &device_str, "-lgc", &pair])? {
+        Call::Done(_) => {
+            say(&format!("GPU {}: clocks locked to {freq} MHz", cfg.device));
+            Ok(())
+        }
+        Call::Failed(why) => Err(Error::GpuLock(format!(
+            "failed to lock clocks on GPU {}: {why}",
+            cfg.device
+        ))),
+        Call::TimedOut => {
+            let reset = match reset_clocks(cfg.device, &cfg.tool) {
+                Ok(()) => "the clocks were reset, since it may have taken effect".to_string(),
+                Err(e) => e.to_string(),
+            };
+            Err(Error::GpuLock(format!(
+                "nvidia-smi -lgc did not finish within {} and was ended; {reset}",
+                seconds(cfg.tool.bound)
+            )))
+        }
+    }
+}
+
+/// Reset GPU clocks to default (driver-managed) state. A reset that does not
+/// happen names the commands that reset the clocks by hand.
+pub fn reset_clocks(device: u32, tool: &Tool) -> Result<(), Error> {
+    let device_str = device.to_string();
+    let why = match call(tool, &["-i", &device_str, "-rgc"]) {
+        Ok(Call::Done(_)) => {
+            say(&format!("GPU {device}: clocks reset to default"));
+            return Ok(());
+        }
+        Ok(Call::Failed(why)) => why,
+        Ok(Call::TimedOut) => format!(
+            "nvidia-smi -rgc did not finish within {} and was ended",
+            seconds(tool.bound)
+        ),
+        Err(e) => e.to_string(),
+    };
+    Err(Error::GpuLock(format!(
+        "the clocks of GPU {device} were not reset: {why}; reset them with \
+         `bench gpu-lock reset --device {device}`, or as root with \
+         `nvidia-smi -i {device} -rgc`"
+    )))
+}
+
+/// Lock the clocks, run the command, and reset the clocks once the command
+/// has ended, however it ends and however long it takes.
+///
+/// SIGINT, SIGTERM and SIGHUP are recorded from before the lock until after
+/// the reset (each one whose action is the default; one ignored stays
+/// ignored). A SIGTERM is passed on to the command; SIGINT and SIGHUP reach
+/// it from the terminal. Any of them recorded while the command is being
+/// started ends it as it starts. No signal stops the wait or the reset: the
+/// clocks are reset after the command ends, and bench then ends by the first
+/// signal recorded, which a later one cannot replace; this function does not
+/// return then. A signal that arrives while the clocks are being locked lets
+/// the lock finish, starts no command and resets the clocks.
+///
+/// Otherwise, once the clocks are reset, the status to exit with: the
+/// command's own, or 128 + N when signal N ended it, which is said when it is
+/// not 0. A part of bench's own that failed (the lock refused, the command
+/// that did not start, the reset that did not happen) is an error naming
+/// each problem, the command's status among them when it is not 0, which
+/// bench ends with status `WRAPPER_FAILED`.
+pub fn wrap_command(cfg: &WrapConfig) -> Result<u8, Error> {
+    let Some((program, args)) = cfg.command.split_first() else {
+        return Err(Error::InvalidArgs(
+            "no command provided after '--'".to_string(),
+        ));
+    };
+
+    // Recording from before the lock: a signal that arrives while the clocks
+    // are being locked is acted on as soon as the lock is in place.
+    let watch = owned_run::Watch::start();
+
+    let outcome = match lock_clocks(&cfg.lock) {
+        Err(e) => Err(Error::GpuLockWrap(e.to_string())),
+        Ok(()) => {
+            let mut guard = ResetOnUnwind {
+                lock: &cfg.lock,
+                armed: true,
+            };
+            let ran = if watch.first().is_some() {
+                for signal in watch.arrivals() {
+                    say(&format!(
+                        "[bench] gpu-lock: {}: arrived while the clocks were being locked; the \
+                         command is not started",
+                        signal_name(signal)
+                    ));
+                }
+                None
+            } else {
+                Some(run_command(program, args, &watch, || {}))
+            };
+            guard.armed = false;
+            let reset = reset_clocks(cfg.lock.device, &cfg.lock.tool);
+            let mut problems = Vec::new();
+            let mut ended = None;
+            match ran {
+                Some(Ok(status)) => ended = Some(status),
+                Some(Err(e)) => problems.push(e.to_string()),
+                None => {}
+            }
+            if let Err(e) = reset {
+                if let Some(status) = ended.filter(|status| !status.success()) {
+                    problems.push(format!(
+                        "the wrapped command {}",
+                        super::runner::describe_status(status)
+                    ));
+                }
+                problems.push(e.to_string());
+            }
+            if problems.is_empty() {
+                Ok(ended)
+            } else {
+                Err(Error::GpuLockWrap(problems.join("; ")))
+            }
+        }
+    };
+
+    // Recording stops only now, after the reset: a signal that arrived during
+    // it is recorded too, and the first one recorded is the one bench ends by,
+    // after saying what went wrong. A signal that arrives once the actions
+    // are back waits blocked in this thread meanwhile (the writer thread never
+    // takes one), so none can end bench before the first.
+    watch.end_by_first(|_| {
+        if let Err(e) = &outcome {
+            say(&format!("Error: {e}"));
+        }
+    });
+    // No command ran only when a signal arrived during the lock, and bench
+    // has then ended by it above.
+    let Some(ended) = outcome? else {
+        return Ok(0);
+    };
+    let status = shell_status(ended);
+    if status != 0 {
+        say(&format!(
+            "[bench] gpu-lock: the wrapped command {}; bench exits {status}",
+            super::runner::describe_status(ended)
+        ));
+    }
+    Ok(status)
+}
+
+/// The status a shell gives a command that ended as @p status: its exit
+/// status, or 128 + N when signal N ended it.
+fn shell_status(status: ExitStatus) -> u8 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return u8::try_from(128 + signal).unwrap_or(u8::MAX);
+        }
+    }
+    status.code().map_or(1, |code| (code & 0xff) as u8)
 }
 
 /* ----------------------------- Tests ----------------------------- */
@@ -217,25 +630,20 @@ impl Drop for ClockResetGuard {
 mod tests {
     use super::*;
 
-    /// @test query_max_graphics_clock doesn't panic on any system.
-    #[test]
-    fn query_max_clock_graceful() {
-        // On machines without GPU, returns an error; with GPU, returns a value
-        let result = query_max_graphics_clock(0);
-        match result {
-            Ok(freq) => assert!(freq > 0, "max clock should be positive"),
-            Err(_) => {} // Expected on non-GPU machines
+    /// A lock request for GPU 0 at @p freq, with the default nvidia-smi.
+    fn lock(freq: Option<u32>) -> LockConfig {
+        LockConfig {
+            device: 0,
+            freq,
+            tool: Tool::default(),
         }
     }
 
-    /// @test wrap_command rejects empty command list.
+    /// @test wrap_command rejects empty command list, before it locks.
     #[test]
     fn wrap_empty_command_errors() {
         let cfg = WrapConfig {
-            lock: LockConfig {
-                device: 0,
-                freq: Some(1000),
-            },
+            lock: lock(Some(1000)),
             command: vec![],
         };
         let result = wrap_command(&cfg);
@@ -247,7 +655,7 @@ mod tests {
     fn lock_config_explicit_freq() {
         let cfg = LockConfig {
             device: 2,
-            freq: Some(1500),
+            ..lock(Some(1500))
         };
         assert_eq!(cfg.device, 2);
         assert_eq!(cfg.freq, Some(1500));
@@ -256,18 +664,171 @@ mod tests {
     /// @test LockConfig with None freq means "use max".
     #[test]
     fn lock_config_auto_freq() {
-        let cfg = LockConfig {
-            device: 0,
-            freq: None,
-        };
+        let cfg = lock(None);
         assert!(cfg.freq.is_none());
     }
 
-    /// @test ClockResetGuard doesn't panic on drop (even without GPU).
+    /// @test The default tool is nvidia-smi on PATH, bounded at 30 s.
     #[test]
-    fn reset_guard_drop_graceful() {
-        // Just construct and drop -- should not panic even without GPU
-        let _guard = ClockResetGuard { device: 99 };
-        // Guard drops here
+    fn default_tool_is_nvidia_smi_bounded() {
+        let tool = Tool::default();
+        assert_eq!(tool.program, PathBuf::from("nvidia-smi"));
+        assert_eq!(tool.bound, Duration::from_secs(30));
+    }
+
+    /// @test A bound reads in seconds, whole or not.
+    #[test]
+    fn seconds_states_the_bound() {
+        assert_eq!(seconds(Duration::from_secs(30)), "30 s");
+        assert_eq!(seconds(Duration::from_millis(200)), "0.2 s");
+    }
+
+    /// @test A failed call is told by its stderr, else its stdout, else by
+    /// how it ended.
+    #[test]
+    #[cfg(unix)]
+    fn failure_prefers_stderr_then_stdout_then_status() {
+        use std::os::unix::process::ExitStatusExt;
+        let status = ExitStatus::from_raw(4 << 8);
+        assert_eq!(failure("out\n", "err\n", status), "err");
+        assert_eq!(failure("out\n", "  \n", status), "out");
+        assert_eq!(failure("", "", status), "exited with status 4");
+    }
+
+    /// @test A command's ending is the status a shell reports: its exit
+    /// status, or 128 + N for its signal N.
+    #[test]
+    #[cfg(unix)]
+    fn shell_status_is_the_status_or_128_plus_the_signal() {
+        use std::os::unix::process::ExitStatusExt;
+        assert_eq!(shell_status(ExitStatus::from_raw(0)), 0);
+        assert_eq!(shell_status(ExitStatus::from_raw(3 << 8)), 3);
+        assert_eq!(shell_status(ExitStatus::from_raw(255 << 8)), 255);
+        assert_eq!(shell_status(ExitStatus::from_raw(libc::SIGKILL)), 137);
+        assert_eq!(shell_status(ExitStatus::from_raw(libc::SIGTERM)), 143);
+    }
+
+    /// @test A failure of the wrapper's own part ends bench with
+    /// `WRAPPER_FAILED`, any other error with 1.
+    #[test]
+    fn wrapper_failures_exit_125_and_others_1() {
+        assert_eq!(WRAPPER_FAILED, 125);
+        assert_eq!(Error::GpuLockWrap("x".into()).exit_status(), 125);
+        assert_eq!(Error::GpuLock("x".into()).exit_status(), 1);
+        assert_eq!(Error::InvalidArgs("x".into()).exit_status(), 1);
+    }
+
+    /// @test The three recorded signals are named; any other by its number.
+    #[test]
+    #[cfg(unix)]
+    fn signal_names() {
+        assert_eq!(signal_name(libc::SIGHUP), "SIGHUP");
+        assert_eq!(signal_name(libc::SIGINT), "SIGINT");
+        assert_eq!(signal_name(libc::SIGTERM), "SIGTERM");
+        assert_eq!(
+            signal_name(libc::SIGUSR1),
+            format!("signal {}", libc::SIGUSR1)
+        );
+    }
+
+    /// The signal `start_in_a_process_of_its_own` raises, and the file it
+    /// reports to.
+    #[cfg(target_os = "linux")]
+    const START_SIGNAL_VARIABLE: &str = "VERNIER_GPU_LOCK_START_SIGNAL";
+    #[cfg(target_os = "linux")]
+    const START_REPORT_VARIABLE: &str = "VERNIER_GPU_LOCK_START_REPORT";
+
+    /// Not a test of its own: the body of
+    /// `a_signal_before_the_command_starts_ends_it`, which runs this test
+    /// binary for it in a process of its own, once for each signal; without
+    /// that test's variables it does nothing. The signal is raised where
+    /// `wrap_command` has just found none recorded and the command is not
+    /// started yet (`run_command`'s @p before_spawn); the command, `sleep 2`,
+    /// ends by the signal as it starts if the record reaches it, and after 2 s
+    /// otherwise. The report says how it ended; the process then ends by the
+    /// signal, as bench gpu-lock does.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn start_in_a_process_of_its_own() {
+        let Ok(signal) = std::env::var(START_SIGNAL_VARIABLE) else {
+            return;
+        };
+        let signal: libc::c_int = signal.parse().expect("a signal number");
+        let report = std::env::var(START_REPORT_VARIABLE).expect("the report's path");
+        let watch = owned_run::Watch::start();
+        let ended = run_command("/bin/sleep", &["2".to_string()], &watch, || {
+            // SAFETY: raise only sends @p signal to this thread, whose action
+            // for it is the watch's handler, which only stores to atomics.
+            unsafe { libc::raise(signal) };
+        });
+        let line = match ended {
+            Ok(status) => super::super::runner::describe_status(status),
+            Err(e) => format!("not run: {e}"),
+        };
+        std::fs::write(report, line).expect("write the report");
+        watch.end_by_first(|_| {});
+    }
+
+    /// @test A signal recorded after bench gpu-lock found none, while its
+    /// command is being started, ends the command as it starts: SIGINT and
+    /// SIGHUP, which bench does not pass on, as SIGTERM, which it does. The
+    /// command (`sleep 2`) ends by the signal at once instead of running to
+    /// its end with the clocks locked, and the process ends by it. Each
+    /// signal in a process of its own (this test binary, running
+    /// `start_in_a_process_of_its_own`), with no signal blocked and SIGINT,
+    /// SIGTERM and SIGHUP at their default actions.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_signal_before_the_command_starts_ends_it() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        let dir = super::super::tempfile_dir("gpu_lock_start");
+        let name = format!(
+            "{}::start_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let mut seen = Vec::new();
+        for signal in [libc::SIGINT, libc::SIGHUP, libc::SIGTERM] {
+            let report = dir.join(format!("{signal}.txt"));
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(START_SIGNAL_VARIABLE, signal.to_string())
+                .env(START_REPORT_VARIABLE, &report);
+            // SAFETY: the closure runs in the child between fork and exec and
+            // calls only sigaction and pthread_sigmask, which are
+            // async-signal-safe; zeroed sigaction and sigset_t values are
+            // valid values of the types, given the default handler, and
+            // initialised by sigemptyset.
+            unsafe {
+                command.pre_exec(|| {
+                    let mut none: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut none);
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+                    for watched in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                        let mut action: libc::sigaction = std::mem::zeroed();
+                        action.sa_sigaction = libc::SIG_DFL;
+                        if libc::sigaction(watched, &action, std::ptr::null_mut()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            let out = command.output().expect("run this test binary");
+            let line = std::fs::read_to_string(&report).unwrap_or_default();
+            let expected = format!("was ended by signal {signal}");
+            if out.status.signal() != Some(signal) || line != expected {
+                seen.push(format!(
+                    "{}: ended {:?}, the command {line:?}, expected {expected:?}\n{}{}",
+                    signal_name(signal),
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(seen.is_empty(), "{}", seen.join("\n"));
     }
 }

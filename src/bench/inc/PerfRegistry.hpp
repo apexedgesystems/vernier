@@ -89,6 +89,8 @@ struct PerfRow {
   std::optional<double> transferTimeUs;
   std::optional<size_t> h2dBytes;
   std::optional<size_t> d2hBytes;
+  /// The CPU baseline over this row's wallMedian (a multi-GPU row's: the
+  /// first device's median); empty without a baseline to use.
   std::optional<double> speedupVsCpu;
   // The declared transfers' bytes over their time (empty when a test declares
   // none) and the harness's occupancy estimate (empty without a launch
@@ -101,14 +103,18 @@ struct PerfRow {
   // the run names the readings it did not report.
   std::optional<int> smClockMHz;
   std::optional<bool> throttling;
-  std::optional<double> powerDrawW;  ///< Mean of the power draw sampled at both ends (W)
+  /// The endpoint reading: NVML's power reading at the measured window's end
+  /// (W), not an average over the window; empty for a window shorter than
+  /// 1.5 s (Vernier's rule), which the run states.
+  std::optional<double> powerDrawW;
   std::optional<double> powerLimitW; ///< Configured power limit (W)
   std::optional<int> temperatureC;   ///< End-of-measure GPU core temperature (C)
   std::optional<int>
       temperatureDeltaC; ///< Delta over the measured window (C, positive = warmed up)
 
-  // CUPTI in-process kernel records (empty when CUPTI recorded no launch for
-  // the row: a build without CUPTI, a collector that stood down, or a failure).
+  // CUPTI in-process kernel records of the untimed batch after the row's
+  // timed repeats (empty when CUPTI recorded no launch for the row: a build
+  // without CUPTI, a collector that stood down, or a failure).
   std::optional<std::size_t> cuptiKernelLaunches;
   std::optional<int> cuptiRegistersMedian;
   std::optional<int> cuptiRegistersMax;
@@ -118,7 +124,7 @@ struct PerfRow {
   // Multi-GPU fields
   std::optional<int> deviceId;              ///< Which GPU (0-N), -1 = single-GPU test
   std::optional<int> deviceCount;           ///< Total GPUs used in this test
-  std::optional<double> multiGpuEfficiency; ///< Speedup / N_gpus (ideal=1.0)
+  std::optional<double> multiGpuEfficiency; ///< Not measured: always empty
   std::optional<double> p2pBandwidthGBs;    ///< Peer-to-peer bandwidth
 
   // Unified Memory counters of the measurement's window
@@ -137,6 +143,13 @@ struct PerfRow {
   /// The measurement's label argument. Not a CSV column: it names the row when
   /// its case measures more than once in a test.
   std::string label;
+
+  /// False when the harness did not time the measurement: a row measured
+  /// under an Nsight Compute session, whose instrumentation adds to what host
+  /// timers and CUDA events measure (untimeUnderNcu()). The CSV then leaves
+  /// the cells taken from `stats`, `callsPerSecond` and `stable` empty, and
+  /// the run says why.
+  bool timed{true};
 };
 
 /* ----------------------------- PerfSummaryEntry ----------------------------- */
@@ -149,6 +162,7 @@ struct PerfSummaryEntry {
   double callsPerSecond{};
   bool stable{true};
   double cvThreshold{0.05};
+  bool timed{true}; ///< PerfRow::timed: the table shows no numbers when false
 };
 
 /* ------------------------------ Row Identity ------------------------------ */
@@ -257,7 +271,8 @@ public:
     std::lock_guard<std::mutex> lock(mu_);
     // Accumulate summary for end-of-run table
     summary_.push_back(PerfSummaryEntry{row.testName, row.stats.median, row.stats.cv,
-                                        row.callsPerSecond, row.stable, row.cvThreshold});
+                                        row.callsPerSecond, row.stable, row.cvThreshold,
+                                        row.timed});
     waiting_.push_back(WaitingRow{std::move(row), summary_.size() - 1, std::this_thread::get_id()});
   }
 

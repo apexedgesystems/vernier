@@ -606,6 +606,7 @@ pub(crate) fn run_tool(
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use crate::bench::HeldFifo;
     use std::os::unix::process::ExitStatusExt;
     use std::path::{Path, PathBuf};
 
@@ -617,41 +618,10 @@ mod tests {
         AtomicI32::new(0)
     }
 
-    /// The pid a test script wrote to @p file, waiting for it to appear.
-    fn pid_in(file: &Path) -> u32 {
-        let until = Instant::now() + Duration::from_secs(10);
-        loop {
-            if let Ok(text) = std::fs::read_to_string(file) {
-                if let Ok(pid) = text.trim().parse() {
-                    return pid;
-                }
-            }
-            assert!(
-                Instant::now() < until,
-                "{} was never written",
-                file.display()
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        }
-    }
-
-    /// The state letter of @p pid in /proc, or `None` once it is gone.
-    fn state(pid: u32) -> Option<String> {
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let after = &stat[stat.rfind(')')? + 1..];
-        after.split_whitespace().next().map(str::to_string)
-    }
-
-    /// Whether @p pid has ended: gone, or a zombie no one has reaped yet.
-    fn ended(pid: u32) -> bool {
-        let until = Instant::now() + Duration::from_secs(5);
-        loop {
-            match state(pid).as_deref() {
-                None | Some("Z") | Some("X") => return true,
-                _ if Instant::now() >= until => return false,
-                _ => std::thread::sleep(Duration::from_millis(20)),
-            }
-        }
+    /// A shell loop that runs until @p dir is gone: a process a test script
+    /// starts, which leaves by itself once the test's folder is removed.
+    fn lasting(dir: &Path) -> String {
+        format!("while [ -d '{}' ]; do /bin/sleep 0.05; done", dir.display())
     }
 
     /// Whether @p file appears within @p within.
@@ -675,23 +645,6 @@ mod tests {
                     .find(|path| path.is_file())
             })
             .unwrap_or_else(|| panic!("{program} is not on PATH"))
-    }
-
-    /// Processes a test started, killed when the test ends, after its
-    /// assertions, if they still run then. It ends nothing a test checks.
-    struct Guard(Vec<u32>);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            for &pid in &self.0 {
-                if !matches!(state(pid).as_deref(), None | Some("Z") | Some("X")) {
-                    let _ = std::process::Command::new("/bin/sh")
-                        .arg("-c")
-                        .arg(format!("kill -s KILL {pid}"))
-                        .status();
-                }
-            }
-        }
     }
 
     /// @test A program that is not on PATH is reported as such.
@@ -768,12 +721,20 @@ mod tests {
     }
 
     /// @test On the deadline a launcher and the process it started under
-    /// itself are both stopped, well before the process would have ended.
+    /// itself are both stopped, though that process would have run as long as
+    /// the test. Both hold the FIFO `held` open; it reads its end once both
+    /// have ended.
     #[test]
     fn deadline_stops_the_launcher_and_its_child() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_file = dir.path().join("child.pid");
-        let script = format!("/bin/sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let mut held = HeldFifo::new(&dir.path().join("held"));
+        let child_started = dir.path().join("started");
+        let script = format!(
+            "exec 9<>'{}'; {} & : > '{}'; wait",
+            dir.path().join("held").display(),
+            lasting(dir.path()),
+            child_started.display()
+        );
         let flag = no_interrupt();
         let started = Instant::now();
         let run = run_tool(
@@ -783,11 +744,16 @@ mod tests {
             &Interrupts::from_flag(&flag),
         );
         let returned = started.elapsed();
-        let child = pid_in(&pid_file);
-        let _guard = Guard(vec![child]);
         assert!(matches!(run, ToolRun::TimedOut), "{run:?}");
         assert!(returned < Duration::from_secs(10), "{returned:?}");
-        assert!(ended(child), "the launcher's child {child} still runs");
+        assert!(
+            child_started.exists(),
+            "the launcher never started its child"
+        );
+        assert!(
+            held.ends_within(Duration::from_secs(5)),
+            "the launcher or its child still runs"
+        );
     }
 
     /// @test An interrupt stops a running program and the process under it,
@@ -795,12 +761,21 @@ mod tests {
     #[test]
     fn interrupt_stops_the_launcher_and_its_child() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_file = dir.path().join("child.pid");
-        let script = format!("/bin/sleep 30 & echo $! > '{}'; wait", pid_file.display());
+        let mut held = HeldFifo::new(&dir.path().join("held"));
+        let child_started = dir.path().join("started");
+        let script = format!(
+            "exec 9<>'{}'; {} & : > '{}'; wait",
+            dir.path().join("held").display(),
+            lasting(dir.path()),
+            child_started.display()
+        );
         let flag = no_interrupt();
         let run = std::thread::scope(|scope| {
             scope.spawn(|| {
-                pid_in(&pid_file);
+                assert!(
+                    appears(&child_started, Duration::from_secs(10)),
+                    "the launcher never started its child"
+                );
                 flag.store(15, Ordering::SeqCst);
             });
             run_tool(
@@ -810,13 +785,14 @@ mod tests {
                 &Interrupts::from_flag(&flag),
             )
         });
-        let child = pid_in(&pid_file);
-        let _guard = Guard(vec![child]);
         assert!(
             matches!(run, ToolRun::Interrupted(Interrupt(15))),
             "{run:?}"
         );
-        assert!(ended(child), "the launcher's child {child} still runs");
+        assert!(
+            held.ends_within(Duration::from_secs(5)),
+            "the launcher or its child still runs"
+        );
     }
 
     /// @test Nothing starts once an interrupt has arrived.
@@ -841,8 +817,14 @@ mod tests {
     #[test]
     fn output_held_open_by_a_leftover_process() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_file = dir.path().join("leftover.pid");
-        let script = format!("/bin/sleep 30 & echo $! > '{}'", pid_file.display());
+        let mut held = HeldFifo::new(&dir.path().join("held"));
+        let leftover_started = dir.path().join("started");
+        let script = format!(
+            "exec 9<>'{}'; {} & : > '{}'",
+            dir.path().join("held").display(),
+            lasting(dir.path()),
+            leftover_started.display()
+        );
         let flag = no_interrupt();
         let started = Instant::now();
         let run = run_tool(
@@ -852,13 +834,12 @@ mod tests {
             &Interrupts::from_flag(&flag),
         );
         let returned = started.elapsed();
-        let leftover = pid_in(&pid_file);
-        let _guard = Guard(vec![leftover]);
         assert!(matches!(run, ToolRun::OutputHeldOpen), "{run:?}");
         assert!(returned < Duration::from_secs(5), "{returned:?}");
+        assert!(leftover_started.exists(), "the leftover never started");
         assert!(
-            ended(leftover),
-            "the leftover process {leftover} still runs"
+            held.ends_within(Duration::from_secs(5)),
+            "the leftover process still runs"
         );
     }
 
@@ -868,10 +849,13 @@ mod tests {
     #[test]
     fn ended_launcher_leaves_no_process_behind() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let pid_file = dir.path().join("leftover.pid");
+        let mut held = HeldFifo::new(&dir.path().join("held"));
+        let leftover_started = dir.path().join("started");
         let script = format!(
-            "/bin/sleep 30 > /dev/null 2>&1 & echo $! > '{}'; echo done",
-            pid_file.display()
+            "exec 9<>'{}'; {} > /dev/null 2>&1 & : > '{}'; echo done",
+            dir.path().join("held").display(),
+            lasting(dir.path()),
+            leftover_started.display()
         );
         let flag = no_interrupt();
         let run = run_tool(
@@ -880,16 +864,15 @@ mod tests {
             Duration::from_secs(30),
             &Interrupts::from_flag(&flag),
         );
-        let leftover = pid_in(&pid_file);
-        let _guard = Guard(vec![leftover]);
         let ToolRun::Finished { status, stdout, .. } = run else {
             panic!("{run:?}");
         };
         assert!(status.success());
         assert_eq!(stdout, "done\n");
+        assert!(leftover_started.exists(), "the leftover never started");
         assert!(
-            ended(leftover),
-            "the leftover process {leftover} still runs"
+            held.ends_within(Duration::from_secs(5)),
+            "the leftover process still runs"
         );
     }
 
@@ -899,19 +882,28 @@ mod tests {
     #[test]
     fn interrupt_while_outputs_are_held_ends_the_run_at_once() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let launcher_file = dir.path().join("launcher.pid");
-        let pid_file = dir.path().join("leftover.pid");
+        let mut held = HeldFifo::new(&dir.path().join("held"));
+        // Held by the launcher alone: the leftover starts without it.
+        let mut launcher = HeldFifo::new(&dir.path().join("launcher"));
+        let leftover_started = dir.path().join("started");
         let script = format!(
-            "echo $$ > '{}'; /bin/sleep 30 & echo $! > '{}'",
-            launcher_file.display(),
-            pid_file.display()
+            "exec 8<>'{}'; exec 9<>'{}'; {} 8>&- & : > '{}'",
+            dir.path().join("launcher").display(),
+            dir.path().join("held").display(),
+            lasting(dir.path()),
+            leftover_started.display()
         );
         let flag = no_interrupt();
         let (run, signalled, returned) = std::thread::scope(|scope| {
             let signaller = scope.spawn(|| {
-                let launcher = pid_in(&launcher_file);
-                pid_in(&pid_file);
-                assert!(ended(launcher), "the launcher {launcher} never ended");
+                assert!(
+                    appears(&leftover_started, Duration::from_secs(10)),
+                    "the leftover never started"
+                );
+                assert!(
+                    launcher.ends_within(Duration::from_secs(5)),
+                    "the launcher never ended"
+                );
                 // The run is now waiting for the outputs the leftover holds.
                 std::thread::sleep(Duration::from_millis(200));
                 let at = Instant::now();
@@ -927,8 +919,6 @@ mod tests {
             let returned = Instant::now();
             (run, signaller.join().expect("signaller"), returned)
         });
-        let leftover = pid_in(&pid_file);
-        let _guard = Guard(vec![leftover]);
         assert!(
             matches!(run, ToolRun::Interrupted(Interrupt(15))),
             "{run:?}"
@@ -939,26 +929,29 @@ mod tests {
             "{took:?} after the interrupt"
         );
         assert!(
-            ended(leftover),
-            "the leftover process {leftover} still runs"
+            held.ends_within(Duration::from_secs(5)),
+            "the leftover process still runs"
         );
     }
 
     /// @test Outputs held by a process that left the program's group are
     /// let go when the run ends: the run returns at its bound, nothing is
-    /// left reading them, and that process's next write fails.
+    /// left reading them, and that process's next write fails. The process
+    /// then ends (it holds the FIFO `held`), and it would leave by itself
+    /// once the test's folder is gone.
     #[test]
     fn outputs_held_outside_the_group_are_let_go() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let holder_file = dir.path().join("holder.pid");
+        let mut held = HeldFifo::new(&dir.path().join("held"));
         let released = dir.path().join("released");
         let script = format!(
-            "'{}' /bin/sh -c 'trap \"\" PIPE; echo $$ > \"$0\"; \
-             while :; do echo tick || {{ : > \"$1\"; exit 0; }}; sleep 0.05; done' \
-             '{}' '{}' &",
+            "'{}' /bin/sh -c 'exec 9<>\"$2\"; trap \"\" PIPE; \
+             while [ -d \"$1\" ]; do echo tick || {{ : > \"$0\"; exit 0; }}; sleep 0.05; done' \
+             '{}' '{}' '{}' &",
             which("setsid").display(),
-            holder_file.display(),
-            released.display()
+            released.display(),
+            dir.path().display(),
+            dir.path().join("held").display()
         );
         let flag = no_interrupt();
         let started = Instant::now();
@@ -969,14 +962,16 @@ mod tests {
             &Interrupts::from_flag(&flag),
         );
         let returned = started.elapsed();
-        let holder = pid_in(&holder_file);
-        let _guard = Guard(vec![holder]);
         let let_go = appears(&released, Duration::from_secs(5));
         assert!(matches!(run, ToolRun::OutputHeldOpen), "{run:?}");
         assert!(returned < Duration::from_secs(5), "{returned:?}");
         assert!(
             let_go,
-            "the holder {holder} could still write: its outputs were still being read"
+            "the holder could still write: its outputs were still being read"
+        );
+        assert!(
+            held.ends_within(Duration::from_secs(5)),
+            "the holder still runs after its write failed"
         );
     }
 

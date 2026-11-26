@@ -140,8 +140,9 @@ const std::string& testName() const noexcept;
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
   `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  its CPU and heap captures there at once, without analysis, and the Nsight
+  profiler pops the NVTX range it pushed, so this case and others can capture
+  again
 
 **`contentionRun(worker, label)`**
 
@@ -258,6 +259,10 @@ Memory bandwidth: 9403.3 MB/s (1.0 MB read, 1.0 MB written per call)
 Estimated efficiency: 78.4% of theoretical peak (~12000 MB/s)
 Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 ```
+
+Each line divides by the median call time, so a run under Nsight Compute,
+which is not timed, prints none of them; the returned result keeps its
+`memoryProfile`.
 
 **Interpretation:**
 
@@ -542,7 +547,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures, Nsight pops its range)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
@@ -712,7 +717,17 @@ NVIDIA Nsight Compute integration.
 # nsys and ncu record a process only when they start it: bench run starts the
 # benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
 bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
+# Under ncu, with a section set, sections or metrics, or the replay list
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args replay --cycles 3 --repeats 1
 ```
+
+`--profile ncu` (and nsight's compute route) takes Vernier's supported subset
+of ncu's options, `replay`, `--set NAME`, `--section NAME` and
+`--metrics NAMES`
+([tools/README.md](../../../tools/README.md#run---execute-benchmark-binary));
+the benchmark's readiness check reads the same grammar
+(`parseNsightRequest`, `ProfilerNsightChecks.hpp`).
 
 Run directly with `--profile nsight`, without a tool around it, the run fails
 (exit status 4 when the tests pass) and prints the command that captures it.
@@ -752,9 +767,16 @@ Run directly with `--profile nsight`, without a tool around it, the run fails
 | `hostname`       | string | Machine hostname             |
 | `platform`       | string | Architecture (x86_64, arm64) |
 
+Under Nsight Compute (ncu) no row is timed: every row leaves the `wall*`
+columns, `callsPerSecond` and `stable` empty, since ncu's instrumentation adds
+to what the harness would measure
+([GPU guide](GPU_GUIDE.md#using-nsight-compute)).
+
 ### GPU Columns
 
-Additional columns for GPU tests:
+Additional columns for GPU tests. Under Nsight Compute (ncu) a GPU row also
+leaves `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`,
+`multiGpuEfficiency` and `p2pBandwidthGBs` empty (see CPU Columns).
 
 | Column              | Type   | Description                 |
 | ------------------- | ------ | --------------------------- |
@@ -772,36 +794,45 @@ Additional columns for GPU tests:
 
 ### Power and Thermal Columns
 
-| Column              | Type   | Description                             |
-| ------------------- | ------ | --------------------------------------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) |
+| Column              | Type   | Description                                              |
+| ------------------- | ------ | -------------------------------------------------------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  |
 
-Source: NVML. Populated on every NVIDIA GPU run.
+Source: NVML, read at the measured window's start and end, each cell where
+NVML reports what it needs. `powerDrawW` is the endpoint reading: NVML's power
+reading taken at the window's end, which NVIDIA's NVML reference describes as
+a one-second average on Ampere (except GA100) and newer GPUs and an
+instantaneous reading on GA100 and older; neither is an average over the
+measured window. Vernier publishes it only for a window of at least 1.5 s, a
+rule of its own: a shorter window's cell is empty and the run says why.
 
 ### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                      |
-| ----------------------- | ---- | ------------------------------------------------ |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
+| Column                  | Type | Description                                                  |
+| ----------------------- | ---- | ------------------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                |
 
 Source: CUPTI Activity API. Populated when libcupti is linked at build
-time; no `--profile` flag required.
+time; no `--profile` flag required. After a kernel measurement's timed
+repeats, the harness calls the measured callable `cycles` times more, at most
+1000, untimed, with CUPTI recording kernels, and the five cells describe those
+launches; no timed launch runs while CUPTI records kernels.
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description            |
-| -------------------- | ------ | ---------------------- |
-| `deviceId`           | int    | Primary CUDA device ID |
-| `deviceCount`        | int    | Number of GPUs used    |
-| `multiGpuEfficiency` | double | Parallel efficiency    |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth |
+| Column               | Type   | Description                |
+| -------------------- | ------ | -------------------------- |
+| `deviceId`           | int    | Primary CUDA device ID     |
+| `deviceCount`        | int    | Number of GPUs used        |
+| `multiGpuEfficiency` | double | Not measured: always empty |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
 
 ### Unified Memory Columns
 

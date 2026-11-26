@@ -884,3 +884,51 @@ TEST_F(RaplCaptureTest, ReportFollowsItsDefinitions) {
   EXPECT_NEAR(POWER, ENERGY / DURATION, 1e-6 + POWER * 1e-6) << REPORT;
   EXPECT_NEAR(PER_CALL, POWER * 250.0 * 1e-3, 1e-6 + PER_CALL * 1e-5) << REPORT;
 }
+
+/**
+ * @test Under Nsight Compute the energy per call, the window's power times
+ * the median call time, is not computed, and the median is not reported: the
+ * run's calls are not timed (the harness leaves its rows untimed). The
+ * energy, the duration and the power, which the counter and the window give,
+ * stay; without a session the energy per call and the median are reported.
+ */
+TEST_F(RaplCaptureTest, NsightComputeLeavesTheEnergyPerCallOut) {
+  for (const bool UNDER_NCU : {false, true}) {
+    const vernier::bench::test::ScopedEnv WRAP("VERNIER_EXTERNAL_WRAP", nullptr);
+    const vernier::bench::test::ScopedEnv NSYS("NSYS_PROFILING_SESSION_ID", nullptr);
+    const vernier::bench::test::ScopedEnv NCU("NV_NSIGHT_INJECTION_PORT_BASE",
+                                              UNDER_NCU ? "49152" : nullptr);
+    RAPLProfiler profiler(config(), "RaplCaptureTest.Case", plan());
+    setCounter(1000);
+    profiler.beforeMeasure();
+    setCounter(1000 + 3 * 16384);
+    testing::internal::CaptureStdout();
+    profiler.afterMeasure(window(250.0));
+    const std::string PRINTED = testing::internal::GetCapturedStdout();
+
+    const std::string REPORT = report();
+    const std::size_t WINDOW = REPORT.find("\n--- Window 1 ---\n");
+    ASSERT_NE(WINDOW, std::string::npos) << REPORT;
+    const std::string SECTION = REPORT.substr(WINDOW);
+    EXPECT_EQ(field(SECTION, "Energy consumed"), 3.0) << SECTION;
+    EXPECT_GT(field(SECTION, "Average power"), 0.0) << SECTION;
+    EXPECT_NE(PRINTED.find("Energy consumed:     3.000 Joules\n"), std::string::npos) << PRINTED;
+    if (UNDER_NCU) {
+      EXPECT_NE(SECTION.find("\nEnergy per operation: not computed: Nsight Compute (ncu) profiles "
+                             "this process, so its calls are not timed\n"),
+                std::string::npos)
+          << SECTION;
+      EXPECT_EQ(SECTION.find("Median time per call"), std::string::npos) << SECTION;
+      EXPECT_NE(PRINTED.find("Energy per op:       not computed (Nsight Compute profiles this "
+                             "process)\n"),
+                std::string::npos)
+          << PRINTED;
+      EXPECT_EQ(PRINTED.find("mJ/call"), std::string::npos) << PRINTED;
+    } else {
+      EXPECT_GT(field(SECTION, "Energy per operation"), 0.0) << SECTION;
+      EXPECT_EQ(field(SECTION, "Median time per call"), 250.0) << SECTION;
+      EXPECT_NE(PRINTED.find(" mJ/call (average power x median call time)\n"), std::string::npos)
+          << PRINTED;
+    }
+  }
+}

@@ -656,9 +656,10 @@ the case's CSV rows:
 - `Energy consumed` - energy over the window (J): the counter's delta in units
 - `Duration` - the window's wall-clock duration (s)
 - `Average power` - energy over duration (W)
-- `Energy per operation` - average power x median time per call (mJ/call)
-- `Median time per call`, `Energy unit`, `Start counter`, `End counter`,
-  `Delta counter`
+- `Energy per operation` - average power x median time per call (mJ/call);
+  not computed under Nsight Compute, whose calls are not timed
+- `Median time per call` (not under Nsight Compute)
+- `Energy unit`, `Start counter`, `End counter`, `Delta counter`
 
 The counter is the whole package's, whatever runs on it. Energy stays in this
 file, not in CSV columns: the row's `profileDir` names the folder.
@@ -1056,9 +1057,10 @@ TEST_P(MultiGpuTest, Scaling) {
     .withP2PAccess()
     .measure();
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << deviceCount << " GPUs";
+  // Check that no device lags the others (scaling efficiency is not
+  // measured: GPU_GUIDE.md says how to time it)
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << deviceCount << " GPUs";
 
   // Cleanup
   for (int i = 0; i < deviceCount; ++i) {
@@ -1096,35 +1098,37 @@ Complete GPU-specific CSV columns:
 
 #### Power and Thermal Columns (NVML)
 
-| Column              | Type   | Description                             | Example |
-| ------------------- | ------ | --------------------------------------- | ------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       | 19.79   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      | 80.0    |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) | 2       |
+| Column              | Type   | Description                                              | Example |
+| ------------------- | ------ | -------------------------------------------------------- | ------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) | 62.50   |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       | 80.0    |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  | 49      |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  | 2       |
 
 #### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                       | Example |
-| ----------------------- | ---- | ------------------------------------------------- | ------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches observed in this measure() window | 25000   |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       | 16      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                 | 16      |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  | 0       |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     | 0       |
+| Column                  | Type | Description                                                  | Example |
+| ----------------------- | ---- | ------------------------------------------------------------ | ------- |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats | 1000    |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  | 16      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            | 16      |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             | 0       |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                | 0       |
 
 CUPTI columns populate automatically on every GPU run when libcupti is
-linked at build time; no `--profile` flag required. See
+linked at build time; no `--profile` flag required. They come from an untimed
+batch of the measured callable's launches after the timed repeats: `cycles`
+calls, at most 1000 (the example's test ran 10000 cycles). See
 [demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
 
 #### Multi-GPU Columns
 
-| Column               | Type   | Description               | Present When    |
-| -------------------- | ------ | ------------------------- | --------------- |
-| `deviceId`           | int    | Primary device ID         | Multi-GPU tests |
-| `deviceCount`        | int    | Number of GPUs used       | Multi-GPU tests |
-| `multiGpuEfficiency` | double | Parallel efficiency [0-1] | Multi-GPU tests |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | Peer copy timed |
+| Column               | Type   | Description            | Present When    |
+| -------------------- | ------ | ---------------------- | --------------- |
+| `deviceId`           | int    | Primary device ID      | Multi-GPU tests |
+| `deviceCount`        | int    | Number of GPUs used    | Multi-GPU tests |
+| `multiGpuEfficiency` | double | Not measured           | Never           |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth | Peer copy timed |
 
 #### Unified Memory Columns
 
@@ -1147,11 +1151,11 @@ exits with status 4. See
 
 GPU-specific profilers:
 
-| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                        |
-| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute`), `kernel_replay.ncu-rep` (the printed replay command) |
-| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                               |
-| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                               |
+| Profiler            | Purpose                                          | Requirements                                    | Output                                                                                                                                                                    |
+| ------------------- | ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `nsight`            | Nsight Systems timeline / Compute kernel detail  | nsys (Systems) or ncu (compute modes), under it | `profile.nsys-rep` and the summaries (`bench run`), `kernel_profile.ncu-rep` (`--profile-args compute` or a selection), `kernel_replay.ncu-rep` (`--profile-args replay`) |
+| `compute-sanitizer` | GPU memcheck / racecheck / synccheck / initcheck | compute-sanitizer (CUDA toolkit), under it      | `sanitizer.log`                                                                                                                                                           |
+| `rocprof`           | AMD ROCm GPU profiler                            | rocprof (ROCm), under it                        | `results.{csv,json}`, where rocprof's `-o` says                                                                                                                           |
 
 "Under it" means the process must be started by the tool, as for the CPU
 tools in [Available Profilers](#available-profilers).
@@ -1163,13 +1167,14 @@ tools in [Available Profilers](#available-profilers).
 bench run ./test --profile nsight -- --gtest_filter="*MyKernel"
 # Generates: bench-out/test.nsight/profile.nsys-rep and the nsys stats summaries
 
-# Kernel deep-dive (Compute replay): bench run does not wrap a replay. Run the
-# benchmark directly: it fails, printing the ncu --metrics command to run
-./test --profile nsight --profile-args replay --gtest_filter="*MyKernel"
-# That command writes ./kernel_replay.ncu-rep
+# Kernel deep-dive (Compute replay): bench run starts it under ncu with the
+# replay metric list
+bench run ./test --profile nsight --profile-args replay --cycles 3 --repeats 1 \
+  -- --gtest_filter="*MyKernel"
+# Generates: bench-out/test.nsight/kernel_replay.ncu-rep
 
 # Analyze with Nsight UI
-ncu-ui kernel_replay.ncu-rep
+ncu-ui bench-out/test.nsight/kernel_replay.ncu-rep
 ```
 
 ### GPU Best Practices

@@ -33,6 +33,7 @@ exclude: |
     cmake-build.*|
     dist/|
     out/|
+    tools/rust/target/|
     node_modules/|
     \.git/|
     \.hg/|

@@ -72,6 +72,8 @@ struct RAPLMeasurement {
   double energyJoules = 0.0;
   double durationSeconds = 0.0;
   double avgPowerWatts = 0.0;
+  /// The power times the median call time; NaN, not computed, under Nsight
+  /// Compute, whose run has no timing per call.
   double energyPerOpMillijoules = 0.0;
 };
 

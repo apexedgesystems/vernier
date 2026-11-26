@@ -5,14 +5,24 @@
  * @brief In-process kernel and unified-memory records via the CUPTI Activity API.
  *
  * The GPU harness times kernels with CUDA events. This collector adds what
- * CUPTI's kernel activity records say about the launches in one measured
- * window: how many there were, the registers per thread each launch was
- * allocated, its static and dynamic shared memory, and the kernel's name. It
- * reads no time, launch shape or occupancy from the records. Asked to
- * (collectUnifiedMemory()), the same window also records CUPTI's
- * unified-memory counters: page faults on the GPU and on the host, migrations
- * each way with their bytes and times, and thrashing (UnifiedMemoryProfile
- * says what each record adds).
+ * CUPTI's kernel activity records say about the launches in one window: how
+ * many there were, the registers per thread each launch was allocated, its
+ * static and dynamic shared memory, and the kernel's name. It reads no time,
+ * launch shape or occupancy from the records. A window switches on CUPTI's
+ * CONCURRENT_KERNEL records, under which kernels on different streams still
+ * run at the same time (the KERNEL kind serializes them), but CUPTI's record
+ * keeping still adds time to every launch made while a window is open, most
+ * of it on the host, and once a window has stopped host time to every later
+ * launch of the process, how much depending on the core the launching thread
+ * runs on (GPU_GUIDE.md gives the figures measured on a laptop's performance
+ * and efficiency cores). The harness therefore times no launch in
+ * a kernel-records window: its kernel records come from an untimed batch of
+ * the measured launches after the timed repeats. Asked to
+ * (collectUnifiedMemory()), a window also records CUPTI's unified-memory
+ * counters: page faults on the GPU and on the host, migrations each way with
+ * their bytes and times, and thrashing (UnifiedMemoryProfile says what each
+ * record adds); with kernel records switched off (collectKernelRecords()) it
+ * records the counters alone, at a fraction of the kernel records' cost.
  *
  * Scope: only what the Activity API's kernel records
  * (`CUpti_ActivityKernel*`) and unified-memory counter records
@@ -55,11 +65,11 @@ struct UnifiedMemoryProfile; // PerfGpuStats.hpp
 /* ----------------------------- CuptiKernelStats ----------------------------- */
 
 /**
- * @brief Aggregated kernel-launch metrics over one measured window.
+ * @brief Aggregated kernel-launch metrics over one window.
  *
  * Counts and medians, not per-launch records: the harness times the launches
- * with CUDA events; CUPTI adds their count and resource use over the same
- * window.
+ * with CUDA events; CUPTI adds the count and resource use of the launches of
+ * one window (the harness's untimed batch).
  */
 struct CuptiKernelStats {
   std::size_t kernelLaunches{0};     ///< Number of kernels observed in this window
@@ -92,20 +102,44 @@ public:
   CuptiCollector& operator=(const CuptiCollector&) = delete;
 
   /**
-   * @return true while the collector can collect: this build links CUPTI, the
-   *         decision did not stand it down, CUPTI accepted its callbacks, and
-   *         no start() or stop() has since failed to switch kernel records on
-   *         or off.
+   * @return Whether this collector can collect, as this collector last found
+   *         out: at its construction and at each of its own start() and
+   *         stop() calls, not when another collector fails. True when this
+   *         build links CUPTI, the decision did not stand it down, CUPTI
+   *         accepted its callbacks, and none of its start() or stop() calls
+   *         has since found collection impossible. A stop() of any collector
+   *         of the process whose kernel records did not switch off, or whose
+   *         flush failed, ends collection for all of them (CUPTI's buffers
+   *         and records are the process's, so what CUPTI still holds or
+   *         records would reach a later window); a collector built before
+   *         that still reads true until its next start(), which checks the
+   *         process's state before it enables anything, then reads false
+   *         and collects nothing.
    */
   [[nodiscard]] bool isAvailable() const noexcept { return available_; }
 
   /**
-   * @return Why isAvailable() is false, as a phrase a message can quote (this
-   *         build has no CUPTI; the collector stood down; CUPTI refused its
-   *         callbacks, or to record kernel activity, or to stop recording it,
-   *         with CUPTI's name for the result). Empty while it is available.
+   * @return Why isAvailable() is false, as this collector last found out, in
+   *         a phrase a message can quote (this build has no CUPTI; the
+   *         collector stood down; CUPTI refused its callbacks, or to record
+   *         kernel activity; in a window of this collector or of an earlier
+   *         one in the process, CUPTI did not stop recording kernel activity
+   *         or failed to flush its activity buffers; with CUPTI's name for the
+   *         result). Empty while isAvailable() reads true, which includes a
+   *         collector built before another one ended collection, until its
+   *         next start().
    */
   [[nodiscard]] const std::string& unavailableReason() const noexcept;
+
+  /**
+   * Whether the windows that start from now on record kernel activity
+   * (CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL), and so fill stats(). On by
+   * default. Off, a window switches no kernel kind on, reads no kernel record
+   * CUPTI delivers, and records only the unified-memory counters when they are
+   * asked for (collectUnifiedMemory()), whose cost is a fraction of the kernel
+   * records'.
+   */
+  void collectKernelRecords(bool on) noexcept;
 
   /**
    * Whether the windows that start from now on also record CUPTI's
@@ -121,19 +155,21 @@ public:
   /**
    * Start a window: the last window's stats(), unifiedMemory(),
    * unifiedMemoryRefusal() and windowProblem() are cleared, then kernel
-   * records are switched on and, when asked (collectUnifiedMemory()), the
-   * unified-memory counters are configured and their kind switched on. A no-op
-   * otherwise when isAvailable() is false; a refusal from CUPTI of the kernel
-   * records makes it false, a refusal of the counters is
-   * unifiedMemoryRefusal(). Idempotent.
+   * records are switched on unless switched off (collectKernelRecords()) and,
+   * when asked (collectUnifiedMemory()), the unified-memory counters are
+   * configured and their kind switched on. A no-op otherwise when
+   * isAvailable() is false; a refusal from CUPTI of the kernel records makes it
+   * false, as does collection having ended in this process since the
+   * collector was built; a refusal of the counters is unifiedMemoryRefusal().
+   * Idempotent.
    */
   void start();
 
   /**
-   * Stop collection: flush the activity buffers, then switch the kinds off
-   * (switched off before the flush, the unified-memory kind loses the
-   * window's device-side records), and aggregate into stats() and
-   * unifiedMemory().
+   * Stop collection: flush the activity buffers, then switch off the kinds
+   * the window switched on (switched off before the flush, the
+   * unified-memory kind loses the window's device-side records), and
+   * aggregate into stats() and unifiedMemory().
    */
   void stop();
 
@@ -162,8 +198,8 @@ public:
    *         phrase a message can quote: CUPTI refused to configure them
    *         (CUPTI_ERROR_UM_PROFILING_NOT_SUPPORTED where the platform has
    *         none), refused to record their kind, or did not stop recording
-   *         them after an earlier window, with CUPTI's name for the result.
-   *         Empty otherwise.
+   *         them after an earlier window of this process, with CUPTI's name
+   *         for the result. Empty otherwise.
    */
   [[nodiscard]] const std::string& unifiedMemoryRefusal() const noexcept;
 
@@ -172,12 +208,13 @@ public:
    *         complete, as a phrase a message can quote (the flush failed; CUPTI
    *         dropped records or could not count them; CUPTI could not read all
    *         of its records, with its error's name; CUPTI recorded a
-   *         unified-memory transfer that ends before it starts), or that the
-   *         window had no kernel launch. stats() is empty for such a window,
-   *         and so is unifiedMemory() unless the problem is only the missing
-   *         launch. A problem does not end collection (isAvailable() lists
-   *         what does). Empty when the window's records are complete and it
-   *         had a launch, or when the collector did not collect (see
+   *         unified-memory transfer that ends before it starts), or that a
+   *         window recording kernels had no kernel launch. stats() is empty
+   *         for such a window, and so is unifiedMemory() unless the problem
+   *         is only the missing launch. A failed flush also ends collection
+   *         (isAvailable()); the other problems do not. Empty when the
+   *         window's records are complete and it had a launch or recorded
+   *         the counters alone, or when the collector did not collect (see
    *         unavailableReason()).
    */
   [[nodiscard]] const std::string& windowProblem() const noexcept;

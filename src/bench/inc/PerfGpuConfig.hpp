@@ -44,7 +44,8 @@ struct PerfGpuConfig {
   /// and a caller that sets it makes the same request. Choosing a memory
   /// strategy (memStrategy, --gpu-memory) does not set it. Each measurement
   /// made with this set records CUPTI's unified-memory counters over its
-  /// window (GpuStats::unifiedMemory). Where it cannot (CUPTI refuses them on
+  /// timed window, in a window of the counters alone
+  /// (GpuStats::unifiedMemory). Where it cannot (CUPTI refuses them on
   /// a platform without them, or stood down, or this build has none), or a
   /// window's records are incomplete, the measurement reports the request as
   /// failed, its counters stay empty, and a run whose tests pass exits with
@@ -55,6 +56,10 @@ struct PerfGpuConfig {
   int deviceId = 0;
 
   // ---- Stream configuration ----
+  /// Make the case's stream at the device's greatest priority (true) or at
+  /// the default one. Either way it is a blocking stream: work a measured
+  /// callable puts on the legacy default stream is ordered with it and timed
+  /// (PerfGpuCase::cudaKernel() says what is not).
   bool useHighPriorityStream = true;
 
   // ---- Validation thresholds ----
