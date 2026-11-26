@@ -5,6 +5,8 @@
 
 #include "src/bench/inc/PerfAbi.hpp"
 
+#include "src/bench/src/RunStatusRecord.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -45,6 +47,9 @@ void requireAbiMatch(const char* libraryName, const AbiField* fields, std::size_
   }
   std::fputs(MESSAGE.c_str(), stderr);
   std::fflush(stderr);
+  // Kept for bench run under a wrap that does not pass this status through
+  // (RunStatusRecord.hpp).
+  run_status::record(BENCH_ABI_MISMATCH_EXIT_CODE);
   std::_Exit(BENCH_ABI_MISMATCH_EXIT_CODE);
 }
 

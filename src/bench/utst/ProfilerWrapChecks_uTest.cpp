@@ -795,21 +795,24 @@ TEST(HeaptrackCheck, RouteAndRefusalMatchTheSharedTable) {
 
 /**
  * @test The doctor records /bin/true with heaptrack into a private directory,
- * then runs /bin/false with it into another, and removes both.
+ * then runs /bin/false with it into another, and removes both. A heaptrack
+ * that passes the program's status through, as heaptrack 1.5 does, is READY
+ * with the row's one sentence.
  */
 TEST(HeaptrackCheck, DoctorRecordsTheProbe) {
   for (const std::string MODE : {"ok", "gz"}) {
     FakeToolDir dir;
     ASSERT_TRUE(dir.ok());
-    dir.install("fake_heaptrack.sh", "heaptrack");
+    const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
     const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
         requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
         dir.context({{"FAKE_HEAPTRACK_MODE", MODE}}), "");
     EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << MODE << ": " << RESULT.report.message;
-    EXPECT_NE(RESULT.report.message.find(std::string{"which wrote probe."} +
-                                         (MODE == "gz" ? "gz" : "zst")),
-              std::string::npos)
-        << RESULT.report.message;
+    EXPECT_EQ(RESULT.report.message, "heaptrack records /bin/true (probe: " + TOOL +
+                                         " -o <private directory>/probe /bin/true, which wrote "
+                                         "probe." +
+                                         (MODE == "gz" ? "gz" : "zst") + ")")
+        << MODE;
     const std::vector<std::string> LINES = dir.logLines("heaptrack ");
     ASSERT_EQ(LINES.size(), 2U) << dir.log();
     for (std::size_t i = 0; i < LINES.size(); ++i) {
@@ -848,24 +851,27 @@ TEST(HeaptrackCheck, BrokenSilentOrMissingHeaptrack) {
 
 /**
  * @test A heaptrack that exits 0 whatever the program it runs returns, as
- * heaptrack 1.3's script does, is UNUSABLE: bench run takes heaptrack's exit
- * status for the benchmark's, so a benchmark that failed under it would read
- * as a capture. The row names the cause and a heaptrack that passes the
- * status through.
+ * heaptrack 1.3's script does, is READY: bench run takes the benchmark's exit
+ * status from the record the benchmark writes for it, and the row says so,
+ * after the probe that shows it.
  */
-TEST(HeaptrackCheck, StatusDroppedIsUnusable) {
+TEST(HeaptrackCheck, StatusDroppedIsReady) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
-  dir.install("fake_heaptrack.sh", "heaptrack");
+  const std::string TOOL = dir.install("fake_heaptrack.sh", "heaptrack");
   const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
       requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
       dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
-  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
-  EXPECT_NE(RESULT.report.message.find("heaptrack exits 0 for a program that fails"),
-            std::string::npos)
-      << RESULT.report.message;
-  EXPECT_NE(RESULT.report.hint.find("as heaptrack 1.5.0 does"), std::string::npos)
-      << RESULT.report.hint;
+  EXPECT_EQ(RESULT.cause, ReadinessCause::READY) << RESULT.report.message;
+  EXPECT_EQ(RESULT.report.message,
+            "heaptrack records /bin/true (probe: " + TOOL +
+                " -o <private directory>/probe /bin/true, which wrote probe.zst); it exits 0 for "
+                "a program that fails (probe: " +
+                TOOL +
+                " -o <private directory>/probe /bin/false), so bench run takes the benchmark's "
+                "exit status from the benchmark, which records it in the wrap's folder "
+                "(exit_status.txt), not from heaptrack");
+  EXPECT_EQ(RESULT.report.hint, "") << "a READY row's hint";
 }
 
 /** @test With libtcmalloc in the process, the doctor's heaptrack row is a caveat naming it. */

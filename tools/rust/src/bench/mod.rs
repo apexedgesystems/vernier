@@ -141,6 +141,11 @@ pub enum Error {
     /// A compute-sanitizer run whose report shows errors in the benchmark, or
     /// a benchmark that did not end normally under the tool.
     Sanitizer(SanitizerFailure),
+    /// The benchmark ran under a wrap that does not pass its exit status
+    /// through, and its own record of that status is missing, unreadable or
+    /// another run's, so whether it passed is not known; the cause names
+    /// itself.
+    BenchmarkStatusUnknown(String),
     /// `bench profile-all`: these of `total` profile runs failed.
     ProfileAll {
         failed: Vec<String>,
@@ -177,6 +182,7 @@ impl fmt::Display for Error {
             Error::Benchmark(end) => write!(f, "{end}"),
             Error::Profile(failure) => write!(f, "{failure}"),
             Error::Sanitizer(failure) => write!(f, "{failure}"),
+            Error::BenchmarkStatusUnknown(s) => write!(f, "{s}"),
             Error::ProfileAll { failed, total } => write!(
                 f,
                 "{} of {total} profile runs failed: {}",

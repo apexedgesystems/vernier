@@ -2434,7 +2434,9 @@ fn run_and_doctor_started_with_sigchld_ignored_read_the_status() {
 /// wrapper does not start the benchmark, whose argv is what is under test,
 /// but heaptrack, which runs the program after its `-o` value and ends with
 /// that program's status, as heaptrack 1.5 does (`FAKE_HEAPTRACK=drops-status`
-/// ends with 0 whatever the program returned, as heaptrack 1.3's script does).
+/// ends with 0 whatever the program returned, as heaptrack 1.3's script does,
+/// or, for a program other than `/bin/false`, with `FAKE_HEAPTRACK_EXIT`, as
+/// that script does when its trace compressor fails).
 /// A wrapper writes the output file its arguments name, as the tool would
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
 /// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
@@ -2640,9 +2642,13 @@ fi
 if [ "{name}" = ncu ] && [ "$FAKE_NCU_IMPORT" = gone ]; then /bin/rm -f "$0"; fi
 if [ "{name}" = heaptrack ] && [ "$1" = -o ]; then
   shift 2
+  program="$1"
   "$@"
   status=$?
-  [ "$FAKE_HEAPTRACK" = drops-status ] && exit 0
+  if [ "$FAKE_HEAPTRACK" = drops-status ]; then
+    [ "$program" = /bin/false ] && exit 0
+    exit "${{FAKE_HEAPTRACK_EXIT:-0}}"
+  fi
   exit "$status"
 fi
 "#,
@@ -3361,42 +3367,363 @@ fn failing_bench(rig: &RouteRig) {
     );
 }
 
-/// @test bench run takes heaptrack's exit status for the benchmark's, so a
-/// heaptrack that ends with 0 whatever its program returned, as heaptrack
-/// 1.3's script does, would report a failed benchmark as a capture: bench run
-/// refuses it before anything starts, naming the cause and the remedy. Only
-/// its probe runs, `heaptrack -o <private folder>/probe /bin/false`, and
-/// nothing is created.
-#[test]
-fn run_heaptrack_that_drops_the_status_is_refused() {
-    let rig = route_rig(&["heaptrack"]);
-    failing_bench(&rig);
-    let (rc, stdout, err, log) = run_rig_env(
-        &rig,
-        &["--profile", "heaptrack"],
-        &[("FAKE_HEAPTRACK", "drops-status")],
+/// A token as bench run gives each run, other than any it gives.
+const FOREIGN_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
+/// The rig's stand-in benchmark replaced by one that ends as libbench's
+/// benchmarks do: given VERNIER_EXTERNAL_WRAP_STATUS, the token bench run
+/// gives a run whose wrap drops the benchmark's exit status, it records
+/// `<token> <status>` in `exit_status.txt` in VERNIER_EXTERNAL_WRAP_DIR, and
+/// it exits with its status, `FAKE_BENCH_STATUS` (0 when unset). It logs the
+/// token it was given (`bench token=<token> <args>`). `FAKE_BENCH_RECORD`
+/// changes what it leaves: `none` nothing (a crash, a kill, or a main() that
+/// does not return through finishRun()), `foreign` another run's record,
+/// `malformed` a line that is no record, `unreadable` a folder in the
+/// record's place; `FAKE_BENCH_END=kill` ends it by SIGKILL after that.
+fn recording_bench(rig: &RouteRig) {
+    write_executable(
+        &rig.bench,
+        &format!(
+            r#"#!/bin/sh
+echo "bench token=$VERNIER_EXTERNAL_WRAP_STATUS $*" >> '{log}'
+record="$VERNIER_EXTERNAL_WRAP_DIR/exit_status.txt"
+status="${{FAKE_BENCH_STATUS:-0}}"
+if [ -n "$VERNIER_EXTERNAL_WRAP_STATUS" ]; then
+  case "${{FAKE_BENCH_RECORD:-}}" in
+    none) ;;
+    foreign) echo "{FOREIGN_TOKEN} 0" > "$record" ;;
+    malformed) echo "status: 0" > "$record" ;;
+    unreadable) /bin/mkdir "$record" ;;
+    *) echo "$VERNIER_EXTERNAL_WRAP_STATUS $status" > "$record" ;;
+  esac
+fi
+[ "${{FAKE_BENCH_END:-}}" = kill ] && kill -KILL $$
+exit "$status"
+"#,
+            log = rig.log.display(),
+        ),
     );
+}
+
+/// The token bench run gave the stand-in benchmark, from its log line.
+fn token_given(log: &str) -> String {
+    log.lines()
+        .find_map(|l| l.strip_prefix("bench token="))
+        .and_then(|rest| rest.split(' ').next())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The names in the heaptrack wrap's folder of the rig, sorted.
+fn heaptrack_folder(rig: &RouteRig) -> Vec<String> {
+    let mut names: Vec<String> =
+        std::fs::read_dir(rig.dir.path().join("bench-out/fake_bench.heaptrack"))
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+    names.sort();
+    names
+}
+
+/// `bench run --profile heaptrack` on the rig under a heaptrack that drops
+/// the benchmark's exit status, as heaptrack 1.3's script does, with @p env.
+fn run_heaptrack_dropping(rig: &RouteRig, env: &[(&str, &str)]) -> (i32, String, String, String) {
+    let mut all = vec![("FAKE_HEAPTRACK", "drops-status")];
+    all.extend_from_slice(env);
+    run_rig_env(rig, &["--profile", "heaptrack"], &all)
+}
+
+/// What bench run prints before a run under a heaptrack that drops the
+/// benchmark's exit status.
+const DROPPED_STATUS_NOTE: &str = "[bench] heaptrack does not pass the benchmark's exit status \
+     through (heaptrack -o <private folder>/probe /bin/false exited 0): the benchmark records it \
+     in bench-out/fake_bench.heaptrack/exit_status.txt, and the run takes it from there";
+
+/// @test Under a heaptrack that ends with 0 whatever its program returned, as
+/// heaptrack 1.3's script does, bench run runs the benchmark: its probe,
+/// `heaptrack -o <private folder>/probe /bin/false`, shows what heaptrack
+/// does, bench run says so and gives the benchmark a token, the benchmark
+/// records its status for that token, and a benchmark that passed passes the
+/// run, its trace reported. The folder holds the record beside the trace.
+#[test]
+fn run_heaptrack_that_drops_the_status_takes_the_benchmarks_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, log) = run_heaptrack_dropping(&rig, &[]);
+    assert_eq!(rc, 0, "{stdout}{err}");
+    assert!(stdout.contains(DROPPED_STATUS_NOTE), "{stdout}");
+    assert!(
+        stdout.contains("[bench] heaptrack wrote bench-out/fake_bench.heaptrack/run.gz ("),
+        "{stdout}"
+    );
+    let lines: Vec<&str> = log.lines().collect();
+    assert!(
+        lines[0].starts_with("heaptrack wrap= -o ") && lines[0].ends_with("/probe /bin/false"),
+        "the probe runs first: {log}"
+    );
+    let token = token_given(&log);
+    assert!(
+        token.len() == 32 && token.bytes().all(|b| b.is_ascii_hexdigit()),
+        "the benchmark's token: {log}"
+    );
+    let record = std::fs::read_to_string(
+        rig.dir
+            .path()
+            .join("bench-out/fake_bench.heaptrack/exit_status.txt"),
+    )
+    .expect("the record");
+    assert_eq!(record, format!("{token} 0\n"));
+    assert_eq!(heaptrack_folder(&rig), ["exit_status.txt", "run.gz"]);
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, a failed
+/// test fails the run with the status the benchmark recorded, not reported
+/// as a capture.
+#[test]
+fn run_heaptrack_that_drops_the_status_fails_a_failed_test() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_STATUS", "1")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains("Error: the benchmark exited with status 1"),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, a failed
+/// profile (status 4) fails the run as a profile failure.
+#[test]
+fn run_heaptrack_that_drops_the_status_fails_a_failed_profile() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_STATUS", "4")]);
     assert_eq!(rc, 1, "{stdout}{err}");
     assert!(
         err.contains(
-            "Error: tool not found: heaptrack exits 0 for a program that fails \
-             (heaptrack -o <private folder>/probe /bin/false exited 0), and --profile \
-             heaptrack takes heaptrack's exit status for the benchmark's, so a benchmark \
-             that failed under it would read as a capture. Use a heaptrack that passes the \
-             exit status of the program it runs through, as heaptrack 1.5.0 does"
+            "Error: the requested profile failed (the benchmark's report above says why); \
+             the benchmark exited with status 4"
         ),
         "{err}"
     );
     assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
-    let lines: Vec<&str> = log.lines().collect();
-    assert_eq!(lines.len(), 1, "only the probe may run: {log}");
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, an ABI
+/// mismatch (status 3, which the ABI check records before it exits) fails the
+/// run with that status.
+#[test]
+fn run_heaptrack_that_drops_the_status_fails_an_abi_mismatch() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_STATUS", "3")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
     assert!(
-        lines[0].starts_with("heaptrack wrap= -o ") && lines[0].ends_with("/probe /bin/false"),
-        "{log}"
+        err.contains("Error: the benchmark exited with status 3"),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, a
+/// benchmark killed before it recorded a status fails the run as an end whose
+/// status is not known, naming the record it did not write, heaptrack's own
+/// status, and the trace, which is kept.
+#[test]
+fn run_heaptrack_that_drops_the_status_names_an_end_without_a_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(
+        &rig,
+        &[("FAKE_BENCH_RECORD", "none"), ("FAKE_BENCH_END", "kill")],
+    );
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.lines().any(|line| line
+            == "Error: the benchmark recorded no exit status in \
+                bench-out/fake_bench.heaptrack/exit_status.txt, so whether it passed is not \
+                known: it ended before ProfilerRegistry::finishRun() returned (a crash, a signal, \
+                the profile watchdog, an exit of its own), or its main() does not return through \
+                ProfilerRegistry::finishRun(), as PERF_MAIN() does. heaptrack, which does not pass \
+                the benchmark's exit status through, exited with status 0; heaptrack's trace is \
+                kept: bench-out/fake_bench.heaptrack/run.gz (22 bytes)"),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+    assert_eq!(heaptrack_folder(&rig), ["run.gz"]);
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, a
+/// benchmark whose own main() returns 0 without finishRun(), which records
+/// the status, fails the run, naming finishRun(): nothing says whether it
+/// passed. Under a heaptrack that passes the status through, the same
+/// benchmark passes the run.
+#[test]
+fn run_heaptrack_a_main_that_records_nothing() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_RECORD", "none")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains("Error: the benchmark recorded no exit status in"),
+        "{err}"
     );
     assert!(
-        !rig.dir.path().join("bench-out").exists(),
-        "nothing may be created"
+        err.contains("does not return through ProfilerRegistry::finishRun()"),
+        "{err}"
+    );
+    let (rc, stdout, err, _) = run_rig_env(
+        &rig,
+        &["--profile", "heaptrack"],
+        &[("FAKE_BENCH_RECORD", "none")],
+    );
+    assert_eq!(rc, 0, "a heaptrack that passes the status: {stdout}{err}");
+    assert!(stdout.contains("[bench] heaptrack wrote "), "{stdout}");
+}
+
+/// @test A record a previous run left in the folder is removed before the
+/// run, saying so, and cannot answer for it: a benchmark killed before it
+/// records fails the run.
+#[test]
+fn run_heaptrack_that_drops_the_status_removes_a_previous_runs_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let folder = rig.dir.path().join("bench-out/fake_bench.heaptrack");
+    std::fs::create_dir_all(&folder).expect("the wrap folder");
+    std::fs::write(
+        folder.join("exit_status.txt"),
+        format!("{FOREIGN_TOKEN} 0\n"),
+    )
+    .expect("a previous run's record");
+    let (rc, stdout, err, _) = run_heaptrack_dropping(
+        &rig,
+        &[("FAKE_BENCH_RECORD", "none"), ("FAKE_BENCH_END", "kill")],
+    );
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        stdout.contains(
+            "[bench] removed bench-out/fake_bench.heaptrack/exit_status.txt from a previous run"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        err.contains("Error: the benchmark recorded no exit status in"),
+        "{err}"
+    );
+}
+
+/// @test A record that names another run's token does not answer for this
+/// run: the run fails, naming both tokens.
+#[test]
+fn run_heaptrack_that_drops_the_status_refuses_another_runs_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, log) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_RECORD", "foreign")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    let token = token_given(&log);
+    assert!(
+        err.contains(&format!(
+            "Error: the exit status record bench-out/fake_bench.heaptrack/exit_status.txt is not \
+             this run's: it names run {FOREIGN_TOKEN}, and this run is {token}, so whether the \
+             benchmark passed is not known"
+        )),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test A record that holds no `<token> <status>` line fails the run,
+/// quoting what it holds.
+#[test]
+fn run_heaptrack_that_drops_the_status_names_a_malformed_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_RECORD", "malformed")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains(
+            "Error: the exit status record bench-out/fake_bench.heaptrack/exit_status.txt holds \
+             \"status: 0\\n\", not a token and a status, so whether the benchmark passed is not \
+             known"
+        ),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test A record that cannot be read fails the run, naming why.
+#[test]
+fn run_heaptrack_that_drops_the_status_names_an_unreadable_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_BENCH_RECORD", "unreadable")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains(
+            "Error: the exit status record bench-out/fake_bench.heaptrack/exit_status.txt cannot \
+             be read ("
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("), so whether the benchmark passed is not known"),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test Under a heaptrack that drops the benchmark's exit status, heaptrack's
+/// own failure after a benchmark that recorded 0 fails the run as a failed
+/// collection, naming heaptrack's status.
+#[test]
+fn run_heaptrack_that_drops_the_status_fails_when_heaptrack_fails() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, _) = run_heaptrack_dropping(&rig, &[("FAKE_HEAPTRACK_EXIT", "2")]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains(
+            "Error: --profile heaptrack failed: collection: heaptrack exited with status 2 after \
+             the benchmark recorded status 0"
+        ),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+}
+
+/// @test Under a heaptrack that passes its program's status through, as
+/// heaptrack 1.5 does, nothing changes: the benchmark is given no token, no
+/// record is written or read, the folder holds the trace alone, and the
+/// benchmark's own status decides the run.
+#[test]
+fn run_heaptrack_that_passes_the_status_asks_for_no_record() {
+    let rig = route_rig(&["heaptrack"]);
+    recording_bench(&rig);
+    let (rc, stdout, err, log) = run_rig_env(&rig, &["--profile", "heaptrack"], &[]);
+    assert_eq!(rc, 0, "{stdout}{err}");
+    assert!(
+        !stdout.contains("does not pass the benchmark's exit status"),
+        "{stdout}"
+    );
+    assert!(
+        log.lines().any(|l| l.starts_with("bench token= ")),
+        "the benchmark was given a token: {log}"
+    );
+    assert_eq!(heaptrack_folder(&rig), ["run.gz"]);
+    let (rc, stdout, err, _) = run_rig_env(
+        &rig,
+        &["--profile", "heaptrack"],
+        &[("FAKE_BENCH_STATUS", "1")],
+    );
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains("Error: the benchmark exited with status 1"),
+        "{err}"
     );
 }
 
