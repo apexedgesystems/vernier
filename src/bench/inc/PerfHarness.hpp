@@ -127,6 +127,65 @@ inline void printStatsWithHints(const char* label, const Stats& s, double callsP
   printHints(s, cfg);
 }
 
+/* ----------------------------- Under Nsight Compute ----------------------------- */
+
+/**
+ * @brief Whether Nsight Compute (ncu) profiles this process: bench run's ncu
+ *        route, nsight's compute route or an ncu wrap typed by hand
+ *        (profiler_env::nsightSessionTool()).
+ *
+ * Its instrumentation adds to what host timers and CUDA events measure,
+ * whatever metrics it collects (whether it also replays a launch depends on
+ * them), so neither harness times a measurement under it: a CPU case whose
+ * work launches kernels is slowed as a GPU case is. Nsight Systems is not ncu.
+ *
+ * @note NOT RT-safe (reads the environment); called after a measurement.
+ */
+inline bool profiledByNcu() { return profiler_env::nsightSessionTool() == "ncu"; }
+
+/**
+ * @brief Print the console line of a measurement the harness did not time, in
+ *        place of printStatsWithHints(): `<label>  not timed: ...`.
+ * @note NOT RT-safe (console I/O).
+ */
+inline void printNotTimed(const char* label) {
+  std::printf("%s  not timed: Nsight Compute (ncu) profiles this process\n", label);
+}
+
+/**
+ * @brief Under Nsight Compute (profiledByNcu()), leave @p row's timing cells
+ *        empty and say why, once per process, on stderr; otherwise do nothing.
+ *
+ * The row is marked untimed (PerfRow::timed: its wall*, callsPerSecond and
+ * stable cells stay empty), and the GPU values computed from the timing are
+ * reset. The other cells, and ncu's own measurements in its report, stay.
+ *
+ * @note NOT RT-safe (environment, console I/O); called after a measurement.
+ */
+inline void untimeUnderNcu(PerfRow& row) {
+  if (!profiledByNcu()) {
+    return;
+  }
+  row.timed = false;
+  row.kernelTimeUs.reset();
+  row.transferTimeUs.reset();
+  row.speedupVsCpu.reset();
+  row.memBandwidthGBs.reset();
+  row.multiGpuEfficiency.reset();
+  row.p2pBandwidthGBs.reset();
+  static std::atomic<bool> stated{false};
+  if (!stated.exchange(true)) {
+    std::fprintf(stderr,
+                 "[bench] Nsight Compute (ncu) profiles this process, and its instrumentation "
+                 "adds to what host timers and CUDA events measure, so no measurement is "
+                 "timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, "
+                 "wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay "
+                 "empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, "
+                 "memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own "
+                 "measurements are in its report.\n");
+  }
+}
+
 /**
  * @brief Print progress during long measurement runs.
  *
@@ -928,12 +987,18 @@ public:
     const double CV_THRESHOLD = recommendedCVThreshold(cfg_);
     const bool IS_STABLE = S.cv < CV_THRESHOLD;
 
-    // Print stats with automatic hints
+    // The row, untimed under Nsight Compute; its line, stats with automatic
+    // hints or why there are none.
+    PerfRow row = buildPerfRow(testName_, cfg_, actualWarmup_, /*threadCount=*/1, S, CPS, label);
+    untimeUnderNcu(row);
     const std::string LABEL_STR = "[" + testName_ + "]";
-    printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
+    if (row.timed) {
+      printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
+    } else {
+      printNotTimed(LABEL_STR.c_str());
+    }
 
-    PerfRegistry::instance().set(
-        buildPerfRow(testName_, cfg_, actualWarmup_, /*threadCount=*/1, S, CPS, label));
+    PerfRegistry::instance().set(std::move(row));
 
     if (afterHook_) {
       afterHook_(*this, S);
@@ -971,8 +1036,10 @@ public:
     auto result = measured(loop, std::move(label));
     result.memoryProfile = memProfile;
 
-    // Print bandwidth analysis if provided
-    if (memProfile.has_value()) {
+    // Print bandwidth analysis if provided: every figure in it divides by the
+    // median, so a run under Nsight Compute, which measured() left untimed,
+    // prints none of it. The returned result keeps its numbers.
+    if (memProfile.has_value() && !profiledByNcu()) {
       const double BW = memProfile->bandwidthMBs(result.stats.median);
       std::printf("  Memory bandwidth: %.1f MB/s (%.1f MB read, %.1f MB written per call)\n", BW,
                   memProfile->bytesRead / 1e6, memProfile->bytesWritten / 1e6);
@@ -1098,12 +1165,18 @@ public:
     const double CV_THRESHOLD = recommendedCVThreshold(cfg_);
     const bool IS_STABLE = S.cv < CV_THRESHOLD;
 
-    // Print stats with automatic hints
+    // The row, untimed under Nsight Compute; its line, stats with automatic
+    // hints or why there are none.
+    PerfRow row = buildPerfRow(testName_, cfg_, actualWarmup_, THREAD_COUNT, S, CPS, label);
+    untimeUnderNcu(row);
     const std::string LABEL_STR = "[" + testName_ + "]";
-    printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
+    if (row.timed) {
+      printStatsWithHints(LABEL_STR.c_str(), S, CPS, cfg_, IS_STABLE);
+    } else {
+      printNotTimed(LABEL_STR.c_str());
+    }
 
-    PerfRegistry::instance().set(
-        buildPerfRow(testName_, cfg_, actualWarmup_, THREAD_COUNT, S, CPS, label));
+    PerfRegistry::instance().set(std::move(row));
 
     if (afterHook_) {
       afterHook_(*this, S);

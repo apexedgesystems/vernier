@@ -52,8 +52,8 @@ public:
    * exception: end what beforeMeasure() started, with no analysis and nothing
    * published or recorded, so the collection does not run on past the window
    * and the case can measure again and another case can collect. gperf,
-   * perf, bpftrace, offcpu, and callgrind under a wrap started by hand
-   * override it; the default does nothing.
+   * perf, bpftrace, offcpu, callgrind under a wrap started by hand, and
+   * nsight override it; the default does nothing.
    */
   virtual void abortMeasure() noexcept {}
 

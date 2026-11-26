@@ -8,10 +8,14 @@ captured from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`. The capture predates two later fixes, to how the SAXPY
 example releases what it allocated when a CUDA call fails and to the transfer
 test filling its device buffers before its warmup; neither touches a measured
-path, and three locked runs of Step 1's command after them landed inside the
-ranges this page states. The two `bench compare` outputs were produced from the
-saved CSVs of the runs they show, by the CLI of a later development tree, which
-also reports `bench 1.0.3`.
+path. Steps 1 and 2, the reference CSV, the two `bench compare` outputs and
+every figure this page gives for this rig come from a session of 2026-11-16
+(UTC) on a later development tree at the same version, which has both fixes
+and whose collector records CUPTI's kernels in an untimed batch after the
+measured repeats: sixteen runs of Step 1's command with the clocks locked, the
+reference among the first five, and six with the clocks as found. The discrete
+GPU's figures come from three runs of Step 1's command on 2026-11-17 (UTC), on
+a later development tree at the same version.
 
 ## Overview
 
@@ -115,10 +119,10 @@ and times the launch with no copies declared.
 
 Each test asserts the effect it demonstrates, with a bound well inside what
 this rig measures: the copies of a round trip cost more than 2.5 times the
-kernel (6.60 to 7.00 over sixteen runs with the clocks locked), and the kernel
-alone beats the CPU loop by more than 3x (8.91x to 9.60x over the same runs).
-Both bounds were also checked on a discrete GPU, where the copies cost 234 to
-255 times the kernel and the kernel alone beat the loop roughly 19x to 22x
+kernel (6.52 to 6.82 over sixteen runs with the clocks locked), and the kernel
+alone beats the CPU loop by more than 3x (8.89x to 9.17x over the same runs).
+Both bounds were also checked on a discrete GPU, where the copies cost 294 to
+305 times the kernel and the kernel alone beat the loop roughly 29x to 31x
 (Step 3). The speedup of the round trip with its copies is not asserted,
 because its direction depends on the clocks and on the memory system (below).
 
@@ -143,33 +147,34 @@ lines are trimmed):
 [----------] 3 tests from GpuBasicWorkflow
 [ RUN      ] GpuBasicWorkflow.CpuBaseline
 ...
-[GpuBasicWorkflow.CpuBaseline]  186.248 us/call  CV=0.1%  ~5.4K calls/s  (p10=186.061 p90=186.417 sd=0.159)
-[       OK ] GpuBasicWorkflow.CpuBaseline (20658 ms)
+[GpuBasicWorkflow.CpuBaseline]  187.265 us/call  CV=0.1%  ~5.3K calls/s  (p10=187.134 p90=187.439 sd=0.144)
+[       OK ] GpuBasicWorkflow.CpuBaseline (20782 ms)
 [ RUN      ] GpuBasicWorkflow.GpuWithTransfers
-[GpuBasicWorkflow.GpuWithTransfers]  155.930 us/call  CV=6.3%  ~6.4K calls/s  (p10=152.809 p90=164.007 sd=9.950)
-[       OK ] GpuBasicWorkflow.GpuWithTransfers (2038 ms)
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[GpuBasicWorkflow.GpuWithTransfers]  156.725 us/call  CV=1.6%  ~6.4K calls/s  (p10=155.070 p90=160.120 sd=2.536)
+[       OK ] GpuBasicWorkflow.GpuWithTransfers (2104 ms)
 [ RUN      ] GpuBasicWorkflow.GpuKernelOnly
-[GpuBasicWorkflow.GpuKernelOnly]  20.277 us/call  CV=0.1%  ~49.3K calls/s  (p10=20.266 p90=20.304 sd=0.017)
-[       OK ] GpuBasicWorkflow.GpuKernelOnly (2050 ms)
-[----------] 3 tests from GpuBasicWorkflow (24747 ms total)
+[GpuBasicWorkflow.GpuKernelOnly]  20.580 us/call  CV=0.0%  ~48.6K calls/s  (p10=20.571 p90=20.586 sd=0.006)
+[       OK ] GpuBasicWorkflow.GpuKernelOnly (2102 ms)
+[----------] 3 tests from GpuBasicWorkflow (24989 ms total)
 
 [----------] Global test environment tear-down
-[==========] 3 tests from 1 test suite ran. (24747 ms total)
+[==========] 3 tests from 1 test suite ran. (24989 ms total)
 [  PASSED  ] 3 tests.
 
 ===================================================================================
 Test                                Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------------------------
-GpuBasicWorkflow.CpuBaseline            186.248    0.1%        5.4K  OK
-GpuBasicWorkflow.GpuWithTransfers       155.930    6.3%        6.4K  OK
-GpuBasicWorkflow.GpuKernelOnly           20.277    0.1%       49.3K  OK
+GpuBasicWorkflow.CpuBaseline            187.265    0.1%        5.3K  OK
+GpuBasicWorkflow.GpuWithTransfers       156.725    1.6%        6.4K  OK
+GpuBasicWorkflow.GpuKernelOnly           20.580    0.0%       48.6K  OK
 -----------------------------------------------------------------------------------
 3 tests | 3 stable | 0 unstable
 ```
 
 What to read: the median of each line, then its CV. The round trip with its
-copies reads 155.9 us against 186.2 us for the loop; the kernel alone reads
-20.3 us.
+copies reads 156.7 us against 187.3 us for the loop; the kernel alone reads
+20.6 us.
 
 ## Step 2: Read the GPU Columns
 
@@ -183,9 +188,9 @@ bench summary gpu_basic_workflow.csv
 ```
 Test                                Median (us)       P10       P90        CV       Calls/sec  Stable
 ---------------------------------  ------------  --------  --------  --------  --------------  ------
-GpuBasicWorkflow.CpuBaseline          186.24800  186.06100  186.41700      0.1%            5369  yes
-GpuBasicWorkflow.GpuKernelOnly         20.27680  20.26620  20.30430      0.1%           49317  yes
-GpuBasicWorkflow.GpuWithTransfers     155.93000  152.80900  164.00700      6.3%            6413  yes
+GpuBasicWorkflow.CpuBaseline          187.26500  187.13400  187.43900      0.1%            5340  yes
+GpuBasicWorkflow.GpuKernelOnly         20.58000  20.57110  20.58640      0.0%           48591  yes
+GpuBasicWorkflow.GpuWithTransfers     156.72500  155.07000  160.12000      1.6%            6381  yes
 
   3 tests, sorted by name
 ```
@@ -202,58 +207,59 @@ awk -F, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; print "test kernelTime
 ```
 test                               kernelTimeUs  transferTimeUs  h2dBytes  d2hBytes  speedupVsCpu
 GpuBasicWorkflow.CpuBaseline
-GpuBasicWorkflow.GpuWithTransfers  20.138642     136.160001      8388608   4194304   1.194436
-GpuBasicWorkflow.GpuKernelOnly     20.276845     0.000000        0         0         9.185268
+GpuBasicWorkflow.GpuWithTransfers  20.570557     135.503998      8388608   4194304   1.194866
+GpuBasicWorkflow.GpuKernelOnly     20.580043     0.000000        0         0         9.099344
 ```
 
 The baseline row has no GPU values; its GPU cells are empty, not zero.
 
 ## Step 3: Where the Time Goes
 
-The round trip of `GpuWithTransfers` is its three legs: 136.16 us of copies
-(8 MiB in, `x` and `y`; 4 MiB out, `y`) and 20.14 us of kernel, 156.30 us in
-all, against a wall median of 155.93 us. The two agree without being equal,
+The round trip of `GpuWithTransfers` is its three legs: 135.50 us of copies
+(8 MiB in, `x` and `y`; 4 MiB out, `y`) and 20.57 us of kernel, 156.07 us in
+all, against a wall median of 156.73 us. The two agree without being equal,
 because each is the median of its own ten samples. The copies are 87% of the
 round trip: the kernel is cheap, and moving its data is not.
 
 On this rig the CPU and the GPU share DRAM, so a "transfer" is a copy from one
-place in the same memory to another, at about 92 GB/s here
+place in the same memory to another, at about 93 GB/s here
 (`memBandwidthGBs` in the CSV). **These transfer costs are specific to this
-rig.** A discrete GPU moves the same bytes over PCIe. One pass of this demo
+rig.** A discrete GPU moves the same bytes over PCIe. Three runs of this demo
 on an NVIDIA RTX 5000 Ada laptop GPU (compute capability 8.9), with the clocks
-as found and the laptop busy with other work, so that only its GPU-side figures
-are exact, read: the kernel about 8 us, the copies 1.87 to 2.06 ms, 234 to 255
-times the kernel. The round trip took roughly 11 to 13 times as long as the CPU
-loop there, while the kernel alone was roughly 19x to 22x faster than it.
+as found and the laptop busy with other work (a load average of 5 to 9), so
+that only its GPU-side figures are exact, read: the kernel about 6.6 us, the
+copies 1.91 to 2.00 ms, 294 to 305 times the kernel. The round trip took roughly
+9 to 10 times as long as the CPU loop there, while the kernel alone was roughly
+29x to 31x faster than it.
 
 ## Step 4: The Kernel on Its Own
 
 `GpuKernelOnly` declares no copies, so no transfer is timed: its
-`transferTimeUs` is 0.000000 and its wall time is its kernel time, 20.28 us.
+`transferTimeUs` is 0.000000 and its wall time is its kernel time, 20.58 us.
 With the clocks locked, the reference run reads:
 
 | Test               | `speedupVsCpu`, clocks locked |
 | ------------------ | ----------------------------- |
-| `GpuKernelOnly`    | 9.19x                         |
+| `GpuKernelOnly`    | 9.10x                         |
 | `GpuWithTransfers` | 1.19x                         |
 
 The kernel is nine times faster than the loop; a call that copies its data in
 and out is not. With the clocks left to the governor the kernel alone still
-reads 8.61x to 8.75x (six runs), but the round trip with its copies reads
-0.82x to 0.98x: slower than the CPU loop. Every speedup on this page is stated
+reads 8.54x to 9.06x (six runs), but the round trip with its copies reads
+0.19x to 0.96x: slower than the CPU loop. Every speedup on this page is stated
 with its clock procedure for that reason. The round trip is also the noisiest
 of the three measurements. Across the recorded locked runs, within-run
-round-trip CV reached 8.7%; it was 6.3% in the reference run. A single run can
+round-trip CV reached 28.2%; it was 1.6% in the reference run. A single run can
 therefore land a few percent outside any range stated here.
 
 ## What Should Reproduce
 
-| Reading                            | On this rig                                                                                              | Elsewhere                                                                                           |
-| ---------------------------------- | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| kernel alone vs the CPU loop       | 9.19x, clocks locked (8.91x to 9.60x over sixteen runs)                                                  | the kernel wins by a wide margin: roughly 19x to 22x on the discrete GPU in Step 3                  |
-| round trip with copies vs the loop | 1.19x, clocks locked (1.13x to 1.23x over sixteen runs, wall 153.5 to 163.0 us); 0.82x to 0.98x as found | may go either way: on the discrete GPU in Step 3 it took roughly 11 to 13 times as long as the loop |
-| copies / kernel in one round trip  | 6.76 (6.60 to 7.00, clocks locked)                                                                       | the copies dominate: 234 to 255 over PCIe on the discrete GPU in Step 3                             |
-| absolute times                     | 186.2 / 155.9 / 20.3 us                                                                                  | will differ                                                                                         |
+| Reading                            | On this rig                                                                                              | Elsewhere                                                                                          |
+| ---------------------------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| kernel alone vs the CPU loop       | 9.10x, clocks locked (8.89x to 9.17x over sixteen runs)                                                  | the kernel wins by a wide margin: roughly 29x to 31x on the discrete GPU in Step 3                 |
+| round trip with copies vs the loop | 1.19x, clocks locked (1.13x to 1.21x over sixteen runs, wall 155.8 to 162.6 us); 0.19x to 0.96x as found | may go either way: on the discrete GPU in Step 3 it took roughly 9 to 10 times as long as the loop |
+| copies / kernel in one round trip  | 6.59 (6.52 to 6.82, clocks locked)                                                                       | the copies dominate: 294 to 305 over PCIe on the discrete GPU in Step 3                            |
+| absolute times                     | 187.3 / 156.7 / 20.6 us                                                                                  | will differ                                                                                        |
 
 The demo fails if the copies stop costing 2.5 times the kernel or the kernel
 stops beating the loop by 3x.
@@ -267,22 +273,22 @@ stops beating the loop by 3x.
   ```
   Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
   ---------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-  GpuBasicWorkflow.CpuBaseline          186.24800     183.67100    -2.57700     -1.4%      0.1%      0.1%  neutral
-  GpuBasicWorkflow.GpuKernelOnly         20.27680      21.32940    +1.05260     +5.2%      0.1%      0.1%  REGRESSION
-  GpuBasicWorkflow.GpuWithTransfers     155.93000     188.04500   +32.11500    +20.6%      6.3%     48.5%  REGRESSION
+  GpuBasicWorkflow.CpuBaseline          187.26500     187.21500    -0.05000     -0.0%      0.1%      0.1%  neutral
+  GpuBasicWorkflow.GpuKernelOnly         20.58000      20.66230    +0.08230     +0.4%      0.0%      0.2%  neutral
+  GpuBasicWorkflow.GpuWithTransfers     156.72500     525.27500  +368.55000   +235.2%      1.6%     38.5%  REGRESSION
 
-    2 regression(s)  1 neutral
+    1 regression(s)  2 neutral
 
     Labels compare the median change against the 5.0% threshold.
     They describe the difference between two runs, not a significance test;
     the CV of each run is its own spread, not the spread between the runs.
   ```
 
-  In that run the round trip's own CV was 48.5% (`Cand CV`). Lock the clocks
+  In that run the round trip's own CV was 38.5% (`Cand CV`). Lock the clocks
   as the rig document says and run again. With the clocks locked, a round trip
   a few percent away from the reference is within what this rig produces:
-  across the recorded locked runs, within-run round-trip CV reached 8.7%; it
-  was 6.3% in the reference run.
+  across the recorded locked runs, within-run round-trip CV reached 28.2%; it
+  was 1.6% in the reference run.
 
 - **The speedup check was skipped.** `GpuKernelOnly` takes its speedup from
   `CpuBaseline`, which has to run first in the same process. A run filtered to
@@ -319,9 +325,9 @@ A later run on the same rig, clocks locked:
 ```
 Test                                   Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 ---------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-GpuBasicWorkflow.CpuBaseline          186.24800     186.07800    -0.17000     -0.1%      0.1%      0.1%  neutral
-GpuBasicWorkflow.GpuKernelOnly         20.27680      20.27640    -0.00040     -0.0%      0.1%      0.1%  neutral
-GpuBasicWorkflow.GpuWithTransfers     155.93000     159.18900    +3.25900     +2.1%      6.3%      3.7%  neutral
+GpuBasicWorkflow.CpuBaseline          187.26500     184.35800    -2.90700     -1.6%      0.1%      0.1%  neutral
+GpuBasicWorkflow.GpuKernelOnly         20.58000      20.59260    +0.01260     +0.1%      0.0%      0.0%  neutral
+GpuBasicWorkflow.GpuWithTransfers     156.72500     158.20700    +1.48200     +0.9%      1.6%      1.7%  neutral
 
   3 neutral
 

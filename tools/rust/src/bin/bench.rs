@@ -39,12 +39,20 @@
 //! is missing, or any shown value that is not a finite number of its kind
 //! exits 1 with the cause on stderr and no summary output; `bench summary`
 //! leaves stdout empty, while `run --analyze` preserves run output already
-//! emitted.
+//! emitted. An empty timing cell in a row whose every timing cell is empty,
+//! and whose other numbers are sound, adds that a run under Nsight Compute
+//! leaves a row so, as the benchmark times nothing under it; `run --analyze`
+//! is refused before a run under ncu starts.
 
-use std::{path::PathBuf, process::ExitCode, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    process::ExitCode,
+    time::Duration,
+};
 
 use clap::{Parser, Subcommand};
 use vernier_rust_tools::bench::{self, Error, SortColumn};
+use vernier_rust_tools::lossy_eprintln;
 
 /* ----------------------------- CLI ----------------------------- */
 
@@ -114,16 +122,19 @@ enum Command {
     /// Execute a benchmark binary with optional CPU pinning and profiling
     Run {
         /// Benchmark binary: a full path, or a short name that auto-resolves
-        /// under build/*/bin/{ptests,tests,examples}. The resolver tries the
-        /// name as given, then with `_PTEST` / `_pTest` suffixes, then with
-        /// a `BenchDemo_` prefix.
+        /// under build/*/bin/{ptests,tests,examples}, or where .bench.yaml's
+        /// bin_roots and bin_subdirs (or VERNIER_BENCH_BIN_ROOTS and
+        /// VERNIER_BENCH_BIN_SUBDIRS) say, the first root listed with a match
+        /// deciding. The resolver tries the name as given, then with `_PTEST`
+        /// / `_pTest` suffixes, then with a `BenchDemo_` prefix.
         binary: String,
 
         /// CSV output path (passed to binary as --csv)
         #[arg(long)]
         csv: Option<PathBuf>,
 
-        /// Quick mode (passed to binary as --quick)
+        /// Quick mode (passed to binary as --quick); .bench.yaml's cycles,
+        /// repeats and target_time are then not used
         #[arg(long)]
         quick: bool,
 
@@ -147,8 +158,9 @@ enum Command {
         /// profile bench run wraps it also selects the wrap (massif: pages or
         /// stacks; memcheck: leak-full, track-origins; helgrind: drd;
         /// compute-sanitizer: memcheck, racecheck, synccheck or initcheck;
-        /// nsight: compute), and any other word is refused. May start with
-        /// '-', e.g. "-e cycles" for perf
+        /// nsight: compute; ncu, and nsight's compute route: replay, or
+        /// --set NAME, --section NAME and --metrics NAMES), and any other word
+        /// is refused. May start with '-', e.g. "-e cycles" for perf
         #[arg(long, allow_hyphen_values = true)]
         profile_args: Option<String>,
 
@@ -166,9 +178,11 @@ enum Command {
         profile_test_timeout: Option<u32>,
 
         /// Where wrap-externally backends (massif, memcheck, callgrind,
-        /// heaptrack, compute-sanitizer) write their artifacts. Defaults
-        /// to `bench-out/`. Forwarded to the binary as --profile-output-dir
-        /// so the C++ harness's per-test subdirs land in the same root.
+        /// heaptrack, compute-sanitizer) write their artifacts, from the
+        /// working directory. Defaults to .bench.yaml's profile_output_dir
+        /// (from the file's folder), else `bench-out/`. Forwarded to the
+        /// binary as --profile-output-dir so the C++ harness's per-test
+        /// subdirs land in the same root.
         #[arg(long)]
         profile_output_dir: Option<PathBuf>,
 
@@ -182,7 +196,8 @@ enum Command {
         #[arg(long)]
         profile_analyze: bool,
 
-        /// Auto-run comparison after execution (requires --csv)
+        /// Print the summary of the run's CSV after it ends (requires --csv;
+        /// refused for a run under Nsight Compute, which has no timing)
         #[arg(long)]
         analyze: bool,
 
@@ -251,19 +266,23 @@ enum Command {
 
     /// Run a benchmark binary under each profiler in sequence
     ProfileAll {
-        /// Benchmark binary (full path or short name; auto-resolves under build/*/bin/)
+        /// Benchmark binary (full path or short name, resolved as bench run
+        /// resolves it)
         binary: String,
 
         /// Profilers to run, comma-separated; defaults to gperf,perf,callgrind
         #[arg(long)]
         profilers: Option<String>,
 
-        /// Artifact root; per-profiler subdirs land here. Default: bench-out/
-        /// (--profile-output-dir is accepted as an alias, matching `bench run`)
+        /// Artifact root; per-profiler subdirs land here. Default:
+        /// .bench.yaml's profile_output_dir (from the file's folder), else
+        /// bench-out/ (--profile-output-dir is accepted as an alias, matching
+        /// `bench run`)
         #[arg(long, visible_alias = "profile-output-dir")]
         out: Option<PathBuf>,
 
-        /// --gtest_filter to pass through
+        /// --gtest_filter to pass through; without it, .bench.yaml's
+        /// gtest_filter is passed, as bench run passes it
         #[arg(long)]
         filter: Option<String>,
 
@@ -275,7 +294,7 @@ enum Command {
         #[arg(long)]
         repeats: Option<u32>,
 
-        /// --quick mode
+        /// --quick mode; .bench.yaml's cycles and repeats are then not used
         #[arg(long)]
         quick: bool,
     },
@@ -318,7 +337,8 @@ enum Command {
         force: bool,
     },
 
-    /// Validate a .bench.yaml: types, ranges, unknown keys
+    /// Check a .bench.yaml: each problem run and profile-all stop on (then
+    /// exit 1), and warnings (unknown keys, low repeats)
     ConfigValidate {
         /// Path to the config file (default: walk up from CWD for .bench.yaml)
         path: Option<PathBuf>,
@@ -351,7 +371,10 @@ enum GpuLockAction {
         #[arg(long)]
         freq: Option<u32>,
 
-        /// Command to run while clocks are locked (clocks reset on exit)
+        /// Command to run while the clocks are locked; they are reset once it
+        /// has ended, also when SIGINT, SIGTERM or SIGHUP interrupts the run.
+        /// bench exits with the command's status (128 + N for its signal N),
+        /// or 125 when the lock, the command's start or the reset fails
         #[arg(last = true)]
         command: Vec<String>,
     },
@@ -395,20 +418,65 @@ fn main() -> ExitCode {
     // Before any command starts a child: each stays waitable until the
     // command reaps it, whatever SIGCHLD action this process inherited.
     if let Err(e) = bench::runner::keep_children_waitable() {
-        eprintln!("Error: SIGCHLD could not be given its default action: {e}");
+        lossy_eprintln!("Error: SIGCHLD could not be given its default action: {e}");
         return ExitCode::FAILURE;
     }
 
     match run(args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(status),
         Err(e) => {
-            eprintln!("Error: {e}");
-            ExitCode::FAILURE
+            lossy_eprintln!("Error: {e}");
+            ExitCode::from(e.exit_status())
         }
     }
 }
 
-fn run(args: Args) -> Result<(), Error> {
+/// The project's `.bench.yaml`, the first found from the working directory
+/// up, and the defaults it holds (none without one). A file that cannot be
+/// read or used is the error, before the command starts anything.
+fn project_defaults() -> Result<(Option<PathBuf>, bench::config::Config), Error> {
+    let cwd = std::env::current_dir().map_err(Error::Io)?;
+    let file = bench::config::find(&cwd);
+    let config = match file.as_deref() {
+        Some(path) => bench::config::load(path)?,
+        None => bench::config::Config::default(),
+    };
+    Ok((file, config))
+}
+
+/// The file's `profile_output_dir`, a relative one read from the folder of
+/// @p file, the `.bench.yaml` @p file_cfg was read from.
+fn file_output_dir(file: Option<&Path>, file_cfg: &bench::config::Config) -> Option<PathBuf> {
+    let dir = file_cfg.profile_output_dir.as_deref()?;
+    Some(bench::config::from_folder_of(file?, dir))
+}
+
+/// The run sizes a `.bench.yaml` gives: cycles, repeats and target_time.
+#[derive(Default)]
+struct Sizes {
+    cycles: Option<u32>,
+    repeats: Option<u32>,
+    target_time: Option<String>,
+}
+
+/// The sizes @p file_cfg gives a run; none when the command line gave
+/// `--quick` (@p quick), which takes precedence over the file's sizes, the
+/// benchmark then sizing the run as `--quick` says (beside any size given on
+/// the command line itself).
+fn file_sizes(file_cfg: &bench::config::Config, quick: bool) -> Sizes {
+    if quick {
+        return Sizes::default();
+    }
+    Sizes {
+        cycles: file_cfg.cycles,
+        repeats: file_cfg.repeats,
+        target_time: file_cfg.target_time.clone(),
+    }
+}
+
+/// Run the command @p args name; the status bench exits with, 0 but for a
+/// command gpu-lock wrapped, whose status is passed through.
+fn run(args: Args) -> Result<u8, Error> {
     match args.command {
         Command::Summary { csv, sort, json } => {
             let sort_col: SortColumn = sort.parse()?;
@@ -488,32 +556,41 @@ fn run(args: Args) -> Result<(), Error> {
             analyze,
             extra_args,
         } => {
-            // Accept either a full path or a short name; resolve_binary walks
-            // VERNIER_BENCH_BIN_ROOTS (default build/*) for a match.
-            let resolved = bench::workflow::resolve_binary(&binary)?;
             // Pull defaults from .bench.yaml if one exists; unset CLI flags
-            // win from the file. CLI takes precedence when both are set.
-            let cwd = std::env::current_dir().map_err(Error::Io)?;
-            let file_cfg = bench::config::find(&cwd)
-                .and_then(|p| bench::config::load(&p).ok())
-                .unwrap_or_default();
+            // win from the file. CLI takes precedence when both are set, and
+            // a --quick given here over the file's sizes.
+            let (file, file_cfg) = project_defaults()?;
+            // Accept either a full path or a short name, looked for where
+            // the environment, else the file, else the default says.
+            let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
+            let resolved = bench::workflow::resolve_binary(&binary, &search)?;
+            let sizes = file_sizes(&file_cfg, quick);
             let cfg = bench::runner::RunConfig {
                 binary: resolved,
                 csv: csv.clone(),
                 quick,
-                cycles: cycles.or(file_cfg.cycles),
-                target_time: target_time.or(file_cfg.target_time),
-                repeats: repeats.or(file_cfg.repeats),
+                cycles: cycles.or(sizes.cycles),
+                target_time: target_time.or(sizes.target_time),
+                repeats: repeats.or(sizes.repeats),
                 profile,
                 profile_args,
                 profile_frequency,
                 profile_test_timeout,
-                profile_output_dir: profile_output_dir.or(file_cfg.profile_output_dir),
+                profile_output_dir,
+                // Taken when no folder is given, here or after `--`.
+                default_profile_output_dir: file_output_dir(file.as_deref(), &file_cfg),
                 profile_analyze,
                 taskset,
+                // Given unless a filter follows `--` (runner::configured_filter).
+                gtest_filter: file_cfg.gtest_filter,
                 extra_args,
             };
 
+            // The summary is of the run's timing, which a run under Nsight
+            // Compute does not have: refused before the run starts.
+            if analyze {
+                bench::runner::refuse_analysis_of_capture(&cfg)?;
+            }
             let csv_path = bench::run_benchmark(&cfg)?;
 
             if analyze {
@@ -523,7 +600,7 @@ fn run(args: Args) -> Result<(), Error> {
                     println!("--- Post-run analysis ---");
                     bench::print_summary_table(&rows, SortColumn::Name);
                 } else {
-                    eprintln!("Warning: --analyze requires --csv to produce output");
+                    lossy_eprintln!("Warning: --analyze requires --csv to produce output");
                 }
             }
         }
@@ -534,27 +611,28 @@ fn run(args: Args) -> Result<(), Error> {
                 freq,
                 command,
             } => {
-                let lock_cfg = bench::gpu_lock::LockConfig { device, freq };
+                let lock_cfg = bench::gpu_lock::LockConfig {
+                    device,
+                    freq,
+                    tool: bench::gpu_lock::Tool::default(),
+                };
 
                 if command.is_empty() {
                     // Standalone lock mode
                     bench::gpu_lock::lock_clocks(&lock_cfg)?;
                 } else {
-                    // Wrapper mode: lock -> run -> reset
+                    // Wrapper mode: lock -> run -> reset, then the command's
+                    // status. Interrupted, it ends the process by the signal
+                    // once the clocks are reset.
                     let wrap_cfg = bench::gpu_lock::WrapConfig {
                         lock: lock_cfg,
                         command,
                     };
-                    let exit_code = bench::gpu_lock::wrap_command(&wrap_cfg)?;
-                    if exit_code != 0 {
-                        return Err(Error::InvalidArgs(format!(
-                            "wrapped command exited with code {exit_code}"
-                        )));
-                    }
+                    return bench::gpu_lock::wrap_command(&wrap_cfg);
                 }
             }
             GpuLockAction::Reset { device } => {
-                bench::gpu_lock::reset_clocks(device)?;
+                bench::gpu_lock::reset_clocks(device, &bench::gpu_lock::Tool::default())?;
             }
         },
 
@@ -566,7 +644,7 @@ fn run(args: Args) -> Result<(), Error> {
 
                 if let Some(path) = output {
                     bench::gpu_monitor::save_snapshot(&snapshot, &path)?;
-                    eprintln!("Snapshot saved to {}", path.display());
+                    lossy_eprintln!("Snapshot saved to {}", path.display());
                 } else {
                     println!("{json}");
                 }
@@ -641,7 +719,13 @@ fn run(args: Args) -> Result<(), Error> {
             repeats,
             quick,
         } => {
-            let resolved = bench::workflow::resolve_binary(&binary)?;
+            // .bench.yaml fills in any unset flags (its sizes not beside a
+            // --quick given here), and says where a short name is looked for,
+            // as for bench run.
+            let (file, file_cfg) = project_defaults()?;
+            let search = bench::workflow::BinSearch::new(&file_cfg, file.as_deref());
+            let resolved = bench::workflow::resolve_binary(&binary, &search)?;
+            let sizes = file_sizes(&file_cfg, quick);
             let parsed_profilers = profilers
                 .map(|s| {
                     s.split(',')
@@ -650,18 +734,13 @@ fn run(args: Args) -> Result<(), Error> {
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            // .bench.yaml fills in any unset flags.
-            let cwd = std::env::current_dir().map_err(Error::Io)?;
-            let file_cfg = bench::config::find(&cwd)
-                .and_then(|p| bench::config::load(&p).ok())
-                .unwrap_or_default();
             bench::workflow::profile_all(&bench::workflow::ProfileAllConfig {
                 binary: resolved,
                 profilers: parsed_profilers,
-                artifact_root: out.or(file_cfg.profile_output_dir.clone()),
+                artifact_root: out.or_else(|| file_output_dir(file.as_deref(), &file_cfg)),
                 gtest_filter: filter.or(file_cfg.gtest_filter.clone()),
-                cycles: cycles.or(file_cfg.cycles),
-                repeats: repeats.or(file_cfg.repeats),
+                cycles: cycles.or(sizes.cycles),
+                repeats: repeats.or(sizes.repeats),
                 quick,
             })?;
         }
@@ -701,6 +780,8 @@ fn run(args: Args) -> Result<(), Error> {
             };
             let report = bench::config::validate(&resolved)?;
             bench::config::print_validation(&report);
+            // Ends as run and profile-all would on this file.
+            report.verdict()?;
         }
 
         Command::Flamegraph {
@@ -717,5 +798,5 @@ fn run(args: Args) -> Result<(), Error> {
         }
     }
 
-    Ok(())
+    Ok(0)
 }

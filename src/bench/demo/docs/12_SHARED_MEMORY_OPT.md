@@ -7,20 +7,23 @@
 no shared example has a bank conflict to show
 **Captured:** 2026-09-30 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada figures in
-[What Should Reproduce](#what-should-reproduce) come from one run of the same
-tree in the project's `dev-cuda` container on the same day. The output of
-`bench run --profile ncu` in [If It Does Not Match](#if-it-does-not-match) is
-from a later session on 2026-10-10 (UTC), from a later development tree at
-the same version with the same Nsight Compute; the report's sections under it,
-and every other figure, are from the first.
+reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada counts and
+occupancy in [What Should Reproduce](#what-should-reproduce) come from one
+run of the same tree in the project's `dev-cuda` container on the same day,
+and its time ratios from three runs there on 2026-11-17 (UTC), on a later
+development tree at the same version.
+Steps 1 and 2, the reference CSV, the five locked runs and
+three as found that What Should Reproduce and If It Does Not Match count, and
+the run in Check Against the Reference come from a session of 2026-11-16 (UTC)
+on a later development tree at the same version, whose collector records
+CUPTI's kernels in an untimed batch after the measured repeats.
 
 ## Overview
 
 A matrix transpose three ways: through global memory alone, through a tile
 in shared memory, and through the same tile with each row padded by one
-float. On this rig the tile takes the kernel from 102.9 to 76.5 us per
-launch, and the padding takes it to 40.6 us: 2.5x end to end, 1.9x from one
+float. On this rig the tile takes the kernel from 102.6 to 75.9 us per
+launch, and the padding takes it to 40.8 us: 2.5x end to end, 1.9x from one
 float per row. The timer says the padding mattered; it cannot say why. Nsight
 Compute can: the tiled kernel's reads of one tile column land in one
 shared-memory bank and are served 32 times over, and the padded tile's land
@@ -65,10 +68,10 @@ them into a sentence naming the conflict's degree.
 wrap collects ncu's default sections (launch statistics, occupancy and
 throughput, as walkthrough 11 reads them) into
 `bench-out/<binary>.ncu/kernel_profile.ncu-rep`, and none of them carries a
-bank-conflict figure; `bench run` passes ncu no option of its own and takes
-no `--profile-args` word for it. So this page types the ncu command
-itself, with the sections and metrics it reads, as walkthrough 14 types
-massif's for `--time-unit`. The CSV's `occupancy` column is the harness's
+bank-conflict figure. `bench run` passes ncu the set, sections and metrics
+named with `--profile-args` (`--set`, `--section`, `--metrics`) and no other
+option; this page types the ncu command itself, with the sections and
+metrics it reads. The CSV's `occupancy` column is the harness's
 estimate from the launch shape, the device's limits and the static shared
 memory the demo hands `withLaunchConfig()`; its `cuptiStaticSmemBytes` column
 is CUPTI's reading of the kernel's static shared memory.
@@ -223,34 +226,35 @@ nothing else. Captured output (the reference run):
 [----------] Global test environment set-up.
 [----------] 3 tests from SharedMemoryOpt
 [ RUN      ] SharedMemoryOpt.NaiveGlobalMemory
-[SharedMemoryOpt.NaiveGlobalMemory]  102.912 us/call  CV=0.1%  ~9.7K calls/s  (p10=102.882 p90=102.926 sd=0.064)
-[       OK ] SharedMemoryOpt.NaiveGlobalMemory (10474 ms)
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[SharedMemoryOpt.NaiveGlobalMemory]  102.565 us/call  CV=0.0%  ~9.7K calls/s  (p10=102.556 p90=102.566 sd=0.010)
+[       OK ] SharedMemoryOpt.NaiveGlobalMemory (10559 ms)
 [ RUN      ] SharedMemoryOpt.SharedWithBankConflicts
-[SharedMemoryOpt.SharedWithBankConflicts]  76.548 us/call  CV=0.0%  ~13.1K calls/s  (p10=76.531 p90=76.551 sd=0.010)
-[       OK ] SharedMemoryOpt.SharedWithBankConflicts (7683 ms)
+[SharedMemoryOpt.SharedWithBankConflicts]  75.947 us/call  CV=0.0%  ~13.2K calls/s  (p10=75.941 p90=75.952 sd=0.004)
+[       OK ] SharedMemoryOpt.SharedWithBankConflicts (7704 ms)
 [ RUN      ] SharedMemoryOpt.SharedPadded
-[SharedMemoryOpt.SharedPadded]  40.576 us/call  CV=0.0%  ~24.6K calls/s  (p10=40.557 p90=40.591 sd=0.016)
-[       OK ] SharedMemoryOpt.SharedPadded (4082 ms)
-[----------] 3 tests from SharedMemoryOpt (22240 ms total)
+[SharedMemoryOpt.SharedPadded]  40.808 us/call  CV=0.0%  ~24.5K calls/s  (p10=40.805 p90=40.817 sd=0.006)
+[       OK ] SharedMemoryOpt.SharedPadded (4155 ms)
+[----------] 3 tests from SharedMemoryOpt (22419 ms total)
 
 [----------] Global test environment tear-down
-[==========] 3 tests from 1 test suite ran. (22240 ms total)
+[==========] 3 tests from 1 test suite ran. (22420 ms total)
 [  PASSED  ] 3 tests.
 
 =========================================================================================
 Test                                      Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------------------------------
-SharedMemoryOpt.NaiveGlobalMemory             102.912    0.1%        9.7K  OK
-SharedMemoryOpt.SharedWithBankConflicts        76.548    0.0%       13.1K  OK
-SharedMemoryOpt.SharedPadded                   40.576    0.0%       24.6K  OK
+SharedMemoryOpt.NaiveGlobalMemory             102.565    0.0%        9.7K  OK
+SharedMemoryOpt.SharedWithBankConflicts        75.947    0.0%       13.2K  OK
+SharedMemoryOpt.SharedPadded                   40.808    0.0%       24.5K  OK
 -----------------------------------------------------------------------------------------
 3 tests | 3 stable | 0 unstable
 ```
 
 What to read: the three medians and their CVs. The naive transpose takes
-102.9 us per launch, the tiled one 76.5 us and the padded one 40.6 us, each
-steady within its run (CV 0.1% or less): the tile is worth 1.34x, the
-padding another 1.89x, 2.54x in all.
+102.6 us per launch, the tiled one 75.9 us and the padded one 40.8 us, each
+steady within its run (CV 0.1% or less): the tile is worth 1.35x, the
+padding another 1.86x, 2.51x in all.
 
 ## Step 2: Read the GPU Columns
 
@@ -262,9 +266,9 @@ bench summary shared_memory_opt.csv
 ```
 Test                                      Median (us)       P10       P90        CV       Calls/sec  Stable
 ---------------------------------------  ------------  --------  --------  --------  --------------  ------
-SharedMemoryOpt.NaiveGlobalMemory           102.91200  102.88200  102.92600      0.1%            9717  yes
-SharedMemoryOpt.SharedPadded                 40.57560  40.55690  40.59090      0.0%           24645  yes
-SharedMemoryOpt.SharedWithBankConflicts      76.54810  76.53070  76.55120      0.0%           13064  yes
+SharedMemoryOpt.NaiveGlobalMemory           102.56500  102.55600  102.56600      0.0%            9750  yes
+SharedMemoryOpt.SharedPadded                 40.80820  40.80510  40.81740      0.0%           24505  yes
+SharedMemoryOpt.SharedWithBankConflicts      75.94700  75.94100  75.95190      0.0%           13167  yes
 
   3 tests, sorted by name
 ```
@@ -279,17 +283,18 @@ awk -F, 'NR == 1 { for (i = 1; i <= NF; i++) col[$i] = i; print "test kernelTime
 
 ```
 test                                     kernelTimeUs  occupancy  cuptiStaticSmemBytes  cuptiKernelLaunches
-SharedMemoryOpt.NaiveGlobalMemory        102.912201    0.666667   0                     100000
-SharedMemoryOpt.SharedWithBankConflicts  76.548117     0.666667   4096                  100000
-SharedMemoryOpt.SharedPadded             40.575644     0.666667   4224                  100000
+SharedMemoryOpt.NaiveGlobalMemory        102.564661    0.666667   0                     1000
+SharedMemoryOpt.SharedWithBankConflicts  75.947049     0.666667   4096                  1000
+SharedMemoryOpt.SharedPadded             40.808215     0.666667   4224                  1000
 ```
 
 `kernelTimeUs` is the wall median: these tests declare no transfers, so a
 call is one launch. `cuptiStaticSmemBytes` is what CUPTI read: no shared
 memory in the naive kernel, one 32 x 32 tile of floats (4,096 bytes) in the
 tiled one, 32 rows of 33 (4,224 bytes) in the padded one; the demo hands the
-harness the same numbers. `cuptiKernelLaunches` counts the 100,000 measured
-launches (10,000 cycles by 10 repeats).
+harness the same numbers. `cuptiKernelLaunches` counts the 1,000 launches of
+the untimed batch the harness runs after the measured repeats, one per cycle
+up to its limit of 1,000 (a repeat here is 10,000 cycles).
 
 `occupancy` reads 0.667 for all three, and that is right. A block of 1,024
 threads is 32 warps; an SM on this GPU holds 48 warps but only one such
@@ -321,42 +326,51 @@ kernel cut, and the checkout's path shortened to `...` here and below:
 [----------] Global test environment set-up.
 [----------] 3 tests from SharedMemoryOpt
 [ RUN      ] SharedMemoryOpt.NaiveGlobalMemory
-==PROF== Connected to process 85848 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+==PROF== Connected to process 102237 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
 ==PROF== Profiling "transposeNaive" - 0: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.NaiveGlobalMemory]  1089568.359 us/call  CV=0.0%  ~1 calls/s  (p10=1089568.359 p90=1089568.359 sd=0.000)
-[       OK ] SharedMemoryOpt.NaiveGlobalMemory (20342 ms)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+[SharedMemoryOpt.NaiveGlobalMemory]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.NaiveGlobalMemory (20447 ms)
 [ RUN      ] SharedMemoryOpt.SharedWithBankConflicts
 ==PROF== Profiling "transposeSharedConflict" - 14: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.SharedWithBankConflicts]  1083525.065 us/call  CV=0.0%  ~1 calls/s  (p10=1083525.065 p90=1083525.065 sd=0.000)
-[       OK ] SharedMemoryOpt.SharedWithBankConflicts (15265 ms)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[SharedMemoryOpt.SharedWithBankConflicts]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.SharedWithBankConflicts (15645 ms)
 [ RUN      ] SharedMemoryOpt.SharedPadded
 ==PROF== Profiling "transposeSharedPadded" - 28: 0%....50%....100% - 31 passes
 ...
-[SharedMemoryOpt.SharedPadded]  1093090.007 us/call  CV=0.0%  ~1 calls/s  (p10=1093090.007 p90=1093090.007 sd=0.000)
-[       OK ] SharedMemoryOpt.SharedPadded (15304 ms)
-[----------] 3 tests from SharedMemoryOpt (50912 ms total)
+[gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
+...
+[SharedMemoryOpt.SharedPadded]  not timed: Nsight Compute (ncu) profiles this process
+[       OK ] SharedMemoryOpt.SharedPadded (15319 ms)
+[----------] 3 tests from SharedMemoryOpt (51411 ms total)
 
 [----------] Global test environment tear-down
-[==========] 3 tests from 1 test suite ran. (50913 ms total)
+[==========] 3 tests from 1 test suite ran. (51411 ms total)
 [  PASSED  ] 3 tests.
 
 =========================================================================================
 Test                                      Median (us)     CV%     Calls/s  Status
 -----------------------------------------------------------------------------------------
-SharedMemoryOpt.NaiveGlobalMemory         1089568.359    0.0%           1  OK
-SharedMemoryOpt.SharedWithBankConflicts   1083525.065    0.0%           1  OK
-SharedMemoryOpt.SharedPadded              1093090.007    0.0%           1  OK
+SharedMemoryOpt.NaiveGlobalMemory                   -       -           -  NOT TIMED
+SharedMemoryOpt.SharedWithBankConflicts             -       -           -  NOT TIMED
+SharedMemoryOpt.SharedPadded                        -       -           -  NOT TIMED
 -----------------------------------------------------------------------------------------
-3 tests | 3 stable | 0 unstable
-==PROF== Disconnected from process 85848
+3 tests | 0 stable | 0 unstable | 3 not timed
+==PROF== Disconnected from process 102237
 ==PROF== Report: .../shared_memory_opt.ncu-rep
 ```
 
-The run took 51 seconds for 42 launches at 31 passes each. The times the
-harness prints are ncu's replays, about 1.09 s per launch, not the kernel's:
-the timings are Step 1's. The report is `shared_memory_opt.ncu-rep` in the
+The run took 51 seconds for 42 launches at 31 passes each. The harness prints
+no time under ncu, whose work adds to every measured call: it says why once
+(the `[bench]` line) and prints `not timed` for each test and `NOT TIMED` in
+its table; the timings are Step 1's. The report is `shared_memory_opt.ncu-rep` in the
 working directory. Read it with the same `ncu`:
 
 ```bash
@@ -472,8 +486,8 @@ Tables section:
   ```
 
   Each warp writes 32 floats a whole row apart, so every 32-byte sector it
-  touches carries four useful bytes. That is what the tile fixed (1.34x in
-  Step 1), and the padding then fixed the tile (1.89x).
+  touches carries four useful bytes. That is what the tile fixed (1.35x in
+  Step 1), and the padding then fixed the tile (1.86x).
 
 - **Occupancy is the same for all three, and ncu says why.** Theoretical
   Occupancy 66.67%: `Block Limit Warps 1`, a 1,024-thread block being 32 of
@@ -497,7 +511,7 @@ What not to conclude:
 
 - **That the padded kernel is 32 times faster.** The rule's "Est. Local
   Speedup: 96.88%" is ncu's estimate for the shared loads alone; the kernel
-  also reads and writes global memory, and the padding took 1.89x off its
+  also reads and writes global memory, and the padding took 1.86x off its
   time, not 32x.
 - **That "conflict free" is what the counter reads.** The padded kernel
   still counts a few hundred conflicts per launch, and the counter moves by
@@ -518,7 +532,8 @@ What not to conclude:
   the store side; the tile's store pattern predicts none, and the rule did
   not appear on the tiled kernel's first launch in this session.
 
-- **That the times under ncu mean anything.** They are replays (Step 3).
+- **That a time under ncu means anything.** The harness takes none there
+  (Step 3): ncu's replays add to every measured call.
   ncu also prints, on every launch of the details page, that "Data
   collection happened without fixed GPU frequencies": it did not fix the
   clocks itself. This session had locked them with `jetson_clocks`, and the
@@ -531,22 +546,23 @@ What not to conclude:
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | wavefronts per shared-load request, tiled / padded | 32 / 1, on every one of 14 launches each                                                                   | should match on a GPU with 32 four-byte banks: 32 / 1 on an RTX 5000 Ada laptop GPU                                                |
 | ncu's bank-conflict counter per launch             | 1,016,796 to 1,016,893 / 314 to 375 over 14 launches each; 1,016,826 to 1,016,973 with the clocks as found | the same shape, with a larger extra on the padded kernel: 1,017,170 to 1,017,223 / 3,375 to 3,626 on the RTX 5000 Ada (ncu 2026.2) |
-| padded against tiled, time                         | 1.89x (76.5 against 40.6 us); 1.88x to 1.89x over five locked runs                                         | the padded kernel should be faster; 1.6x on the RTX 5000 Ada                                                                       |
-| tiled against naive                                | 1.34x; 1.34x to 1.35x                                                                                      | depends on the memory system: 2.4x on the RTX 5000 Ada                                                                             |
-| padded against naive                               | 2.54x; 2.53x to 2.54x                                                                                      | 3.9x on the RTX 5000 Ada                                                                                                           |
+| padded against tiled, time                         | 1.86x (75.9 against 40.8 us); 1.86x to 1.88x over five locked runs                                         | the padded kernel should be faster; 1.8x on the RTX 5000 Ada                                                                       |
+| tiled against naive                                | 1.35x; 1.35x in all five                                                                                   | depends on the memory system: 2.5x on the RTX 5000 Ada                                                                             |
+| padded against naive                               | 2.51x; 2.50x to 2.53x                                                                                      | 4.7x on the RTX 5000 Ada                                                                                                           |
 | `occupancy` column                                 | 0.667 for all three                                                                                        | depends on the GPU's block and warp limits; 0.667 for all three on the RTX 5000 Ada                                                |
-| absolute times                                     | 102.9 / 76.5 / 40.6 us                                                                                     | will differ                                                                                                                        |
+| absolute times                                     | 102.6 / 75.9 / 40.8 us                                                                                     | will differ                                                                                                                        |
 
 The wavefronts per request are the reading to carry elsewhere; they depend
 on the code and on the bank width, not on the machine. The five locked runs
 are Step 1's command run five times in one session, the reference among
 them; a range describes those runs, not a bound, and another run of the same
 command can land outside it. The naive kernel is the noisiest measurement on
-this page: CV 0.1% with the clocks locked, 1.0% with them as found. The RTX
-5000 Ada figures are what one run of Step 1's command measured in the
+this page: CV under 0.1% with the clocks locked, 0.9% to 1.0% as found. The RTX
+5000 Ada ratios are what three runs of Step 1's command measured in the
 project's `dev-cuda` container, with the clocks as found and other work
-running on the laptop, and what the check read there (six launches per
-kernel); they are stated for their direction, not their size.
+running on the laptop (a load average of 4 to 14), and its counts what the
+check read there (six launches per kernel); they are stated for their
+direction, not their size.
 
 ## If It Does Not Match
 
@@ -556,13 +572,15 @@ kernel); they are stated for their direction, not their size.
   ```
   ...
   [ RUN      ] SharedMemoryOpt.NaiveGlobalMemory
-  ==PROF== Connected to process 87374 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+  ==PROF== Connected to process 103850 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
   ==ERROR== ERR_NVGPUCTRPERM - The user does not have permission to access NVIDIA GPU Performance Counters on the target device 0. For instructions on enabling permissions and to get more information see https://developer.nvidia.com/ERR_NVGPUCTRPERM
-  [SharedMemoryOpt.NaiveGlobalMemory]  104.992 us/call  CV=0.0%  ~9.5K calls/s  (p10=104.992 p90=104.992 sd=0.000)
-  [       OK ] SharedMemoryOpt.NaiveGlobalMemory (355 ms)
+  ...
+  [bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+  [SharedMemoryOpt.NaiveGlobalMemory]  not timed: Nsight Compute (ncu) profiles this process
+  [       OK ] SharedMemoryOpt.NaiveGlobalMemory (402 ms)
   ...
   [  PASSED  ] 1 test.
-  ==PROF== Disconnected from process 87374
+  ==PROF== Disconnected from process 103850
   ```
 
   Run it as Step 3 does, with `sudo env PATH="$PATH"`.
@@ -574,7 +592,7 @@ kernel); they are stated for their direction, not their size.
   Running: ncu -o bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile -f --target-processes all ./build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt --cycles 1 --repeats 1 --profile ncu --gpu-warmup 1 --gtest_filter=SharedMemoryOpt.SharedPadded
   ...
   [ RUN      ] SharedMemoryOpt.SharedPadded
-  ==PROF== Connected to process 56390 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
+  ==PROF== Connected to process 103898 (.../build/bin/ptests/BenchDemo_Gpu_03_SharedMemoryOpt)
 
   [WARN] Profiler 'ncu': unverified: ncu started this process and writes its report when the process exits; whether it captured the benchmark's GPU work is not checked from inside the process
 
@@ -583,13 +601,14 @@ kernel); they are stated for their direction, not their size.
   ...
   [gpu] in-process CUPTI collection disabled for this run (external Nsight session or VERNIER_DISABLE_CUPTI); CUPTI CSV columns will be empty.
   ...
-  [SharedMemoryOpt.SharedPadded]  876192.139 us/call  CV=0.0%  ~1 calls/s  (p10=876192.139 p90=876192.139 sd=0.000)
-  [       OK ] SharedMemoryOpt.SharedPadded (7292 ms)
+  [SharedMemoryOpt.SharedPadded]  not timed: Nsight Compute (ncu) profiles this process
+  [bench] Nsight Compute (ncu) profiles this process, and its instrumentation adds to what host timers and CUDA events measure, so no measurement is timed: every row's wallMedian, wallP10, wallP90, wallP99, wallP999, wallMin, wallMax, wallMean, wallStddev, wallCV, callsPerSecond and stable cells stay empty, and so do a GPU row's kernelTimeUs, transferTimeUs, speedupVsCpu, memBandwidthGBs, multiGpuEfficiency and p2pBandwidthGBs. ncu's own measurements are in its report.
+  [       OK ] SharedMemoryOpt.SharedPadded (7580 ms)
   ...
   [  PASSED  ] 1 test.
   ...
   ==PROF== Report: .../bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep
-  [bench] ncu wrote bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep (207247 bytes)
+  [bench] ncu wrote bench-out/BenchDemo_Gpu_03_SharedMemoryOpt.ncu/kernel_profile.ncu-rep (206815 bytes)
   ```
 
   The `[WARN]` line is the harness's readiness report for the profiler
@@ -616,16 +635,16 @@ kernel); they are stated for their direction, not their size.
   hours per kernel.
 
 - **The clocks were not locked.** The launches read a few percent slower and
-  the naive kernel's CV rises to 1.0%; the ratios hold (1.85x to 1.86x and
-  2.55x to 2.56x over three runs as found). One of them against the
+  the naive kernel's CV rises to about 1%; the ratios hold (1.88x to 1.89x and
+  2.58x to 2.59x over three runs as found). One of them against the
   reference:
 
   ```
   Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
   ---------------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-  SharedMemoryOpt.NaiveGlobalMemory           102.91200     106.76900    +3.85700     +3.7%      0.1%      1.0%  neutral
-  SharedMemoryOpt.SharedPadded                 40.57560      41.88320    +1.30760     +3.2%      0.0%      0.0%  neutral
-  SharedMemoryOpt.SharedWithBankConflicts      76.54810      77.66450    +1.11640     +1.5%      0.0%      0.0%  neutral
+  SharedMemoryOpt.NaiveGlobalMemory           102.56500     106.33500    +3.77000     +3.7%      0.0%      0.9%  neutral
+  SharedMemoryOpt.SharedPadded                 40.80820      41.13070    +0.32250     +0.8%      0.0%      0.0%  neutral
+  SharedMemoryOpt.SharedWithBankConflicts      75.94700      77.67960    +1.73260     +2.3%      0.0%      0.0%  neutral
 
     3 neutral
 
@@ -650,9 +669,9 @@ A later run in the same session, clocks locked:
 ```
 Test                                         Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 ---------------------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-SharedMemoryOpt.NaiveGlobalMemory           102.91200     103.00900    +0.09700     +0.1%      0.1%      0.1%  neutral
-SharedMemoryOpt.SharedPadded                 40.57560      40.60370    +0.02810     +0.1%      0.0%      0.0%  neutral
-SharedMemoryOpt.SharedWithBankConflicts      76.54810      76.59630    +0.04820     +0.1%      0.0%      0.0%  neutral
+SharedMemoryOpt.NaiveGlobalMemory           102.56500     102.56400    -0.00100     -0.0%      0.0%      0.0%  neutral
+SharedMemoryOpt.SharedPadded                 40.80820      40.96830    +0.16010     +0.4%      0.0%      0.0%  neutral
+SharedMemoryOpt.SharedWithBankConflicts      75.94700      75.95070    +0.00370     +0.0%      0.0%      0.0%  neutral
 
   3 neutral
 
@@ -667,7 +686,7 @@ threshold (5% unless `--threshold` says otherwise) above the reference's,
 labels describe the difference between two runs and are not a significance
 test; the two CV columns are each run's own spread, not the spread between
 the runs. The kernel rows on this page hold still: the widest spread across
-the five locked runs was the naive kernel's, 102.91 to 103.05 us.
+the five locked runs was the padded kernel's, 40.46 to 40.94 us.
 
 The reference CSV is one of five runs of Step 1's command captured with the
 clocks locked: the one whose three medians sit closest to the median of each

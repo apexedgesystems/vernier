@@ -11,6 +11,14 @@
 # relative log name to its working directory before it reads '%' macros,
 # so its log is named whole.
 #
+# ncu (and nsight's compute route) takes Vernier's supported subset of
+# Nsight Compute's options: replay, --set NAME (once), --section NAME and
+# --metrics NAME[,NAME...] (repeatable), also as --option=VALUE, and under
+# nsight the words compute and ncu. bench run passes the set, each section,
+# then one --metrics with every name, after its own options. The replay rows
+# hold the replay metric list, which the Rust route and the C++ backend's
+# REPLAY_METRICS both give.
+#
 # alias   <spelling>  <canonical backend>
 alias	nsys	nsight
 alias	nsight	nsight
@@ -51,6 +59,18 @@ route	nsys	-	nsys	profile -o <dir>/profile -t cuda,nvtx --force-overwrite true <
 route	nsight	compute	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	nsight	ncu	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
 route	ncu	-	ncu	-o <dir>/kernel_profile -f --target-processes all <bin>
+route	ncu	--set full	ncu	-o <dir>/kernel_profile -f --target-processes all --set full <bin>
+route	ncu	--set=detailed	ncu	-o <dir>/kernel_profile -f --target-processes all --set detailed <bin>
+route	ncu	--section LaunchStats --section=Occupancy	ncu	-o <dir>/kernel_profile -f --target-processes all --section LaunchStats --section Occupancy <bin>
+route	ncu	--metrics dram__bytes.sum,lts__t_bytes.sum --metrics=sm__cycles_elapsed.max	ncu	-o <dir>/kernel_profile -f --target-processes all --metrics dram__bytes.sum,lts__t_bytes.sum,sm__cycles_elapsed.max <bin>
+route	ncu	--metrics l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum --section MemoryWorkloadAnalysis_Tables --set basic	ncu	-o <dir>/kernel_profile -f --target-processes all --set basic --section MemoryWorkloadAnalysis_Tables --metrics l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum <bin>
+route	ncu	replay	ncu	-o <dir>/kernel_replay -f --target-processes all --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active,dram__throughput.avg.pct_of_peak_sustained_elapsed,l1tex__throughput.avg.pct_of_peak_sustained_elapsed,lts__throughput.avg.pct_of_peak_sustained_elapsed,smsp__thread_inst_executed_per_inst_executed.pct,smsp__sass_average_branch_targets_threads_uniform.pct,launch__registers_per_thread,smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed <bin>
+route	nsight	replay	ncu	-o <dir>/kernel_replay -f --target-processes all --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active,dram__throughput.avg.pct_of_peak_sustained_elapsed,l1tex__throughput.avg.pct_of_peak_sustained_elapsed,lts__throughput.avg.pct_of_peak_sustained_elapsed,smsp__thread_inst_executed_per_inst_executed.pct,smsp__sass_average_branch_targets_threads_uniform.pct,launch__registers_per_thread,smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed <bin>
+route	nsight	compute,replay	ncu	-o <dir>/kernel_replay -f --target-processes all --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active,dram__throughput.avg.pct_of_peak_sustained_elapsed,l1tex__throughput.avg.pct_of_peak_sustained_elapsed,lts__throughput.avg.pct_of_peak_sustained_elapsed,smsp__thread_inst_executed_per_inst_executed.pct,smsp__sass_average_branch_targets_threads_uniform.pct,launch__registers_per_thread,smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed <bin>
+route	nsys	replay	ncu	-o <dir>/kernel_replay -f --target-processes all --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_active,dram__throughput.avg.pct_of_peak_sustained_elapsed,l1tex__throughput.avg.pct_of_peak_sustained_elapsed,lts__throughput.avg.pct_of_peak_sustained_elapsed,smsp__thread_inst_executed_per_inst_executed.pct,smsp__sass_average_branch_targets_threads_uniform.pct,launch__registers_per_thread,smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed <bin>
+route	nsight	--set full	ncu	-o <dir>/kernel_profile -f --target-processes all --set full <bin>
+route	nsight	compute --section LaunchStats	ncu	-o <dir>/kernel_profile -f --target-processes all --section LaunchStats <bin>
+route	nsight	--metrics dram__bytes.sum compute	ncu	-o <dir>/kernel_profile -f --target-processes all --metrics dram__bytes.sum <bin>
 #
 # escape   <--profile>  <--profile-args>  <--profile-output-dir>  <output option>  <its value in the route>
 # (valgrind's output options, compute-sanitizer's --log-file and the -o of
@@ -87,9 +107,6 @@ unwrapped	rapl
 unwrapped	rocprof
 #
 # refuse   <--profile>  <--profile-args>  <text the refusal contains>
-refuse	nsight	replay	does not wrap a kernel replay
-refuse	ncu	replay	does not wrap a kernel replay
-refuse	nsys	compute,replay	does not wrap a kernel replay
 refuse	massif	pages,stacks	cannot combine pages
 refuse	massif	heap	'heap' is not a mode of massif; its modes are pages, stacks
 refuse	memcheck	leak-summary	'leak-summary' is not a mode of memcheck
@@ -98,7 +115,26 @@ refuse	compute-sanitizer	memcheck,racecheck	runs one tool at a time
 refuse	callgrind	instr	'instr' is not a mode of callgrind, which takes none
 refuse	heaptrack	x	'x' is not a mode of heaptrack, which takes none
 refuse	jemalloc	x	'x' is not a mode of jemalloc, which takes none
-refuse	ncu	compute	'compute' is not a mode of ncu, which takes none
+refuse	ncu	compute	'compute' is not a mode of ncu; it takes replay, --set NAME, --section NAME and --metrics NAMES
+refuse	ncu	full	'full' is not a mode of ncu; it takes replay, --set NAME, --section NAME and --metrics NAMES
+refuse	ncu	set full	'set' is not a mode of ncu; it takes replay, --set NAME, --section NAME and --metrics NAMES
+refuse	nsight	heap	'heap' is not a mode of nsight; it takes compute, ncu, replay, --set NAME, --section NAME and --metrics NAMES
+refuse	nsys	--set full x	'x' is not a mode of nsight; it takes compute, ncu, replay, --set NAME, --section NAME and --metrics NAMES
+refuse	ncu	--kernel-name k	'--kernel-name' is not an option bench run passes to ncu; it passes --set, --section and --metrics (the report, its overwrite and --target-processes are bench run's own)
+refuse	ncu	-c 1	'-c' is not an option bench run passes to ncu; it passes --set, --section and --metrics (the report, its overwrite and --target-processes are bench run's own)
+refuse	nsight	--target-processes all	'--target-processes' is not an option bench run passes to ncu; it passes --set, --section and --metrics (the report, its overwrite and --target-processes are bench run's own)
+refuse	ncu	--set	--set takes one section set's name
+refuse	ncu	--set=	--set takes one section set's name
+refuse	ncu	--section --metrics x	--section takes one section's identifier
+refuse	ncu	--metrics	--metrics takes one or more metric names
+refuse	ncu	--metrics replay	--metrics takes one or more metric names
+refuse	ncu	--set basic --set full	--set is given twice ('basic', 'full'); ncu takes one set
+refuse	ncu	--set Full!	'Full!' is not a section set's name (letters, digits and '_')
+refuse	ncu	--section regex:Memory.*	'regex:Memory.*' is not a section's identifier (letters, digits and '_'); bench run passes ncu no regular expression or metric group
+refuse	ncu	--metrics group:memory__dram_table	'group:memory__dram_table' is not a metric name (letters, digits, '_' and '.'); bench run passes ncu no regular expression or metric group
+refuse	ncu	--metrics breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed	'breakdown:sm__throughput.avg.pct_of_peak_sustained_elapsed' is not a metric name (letters, digits, '_' and '.'); bench run passes ncu no regular expression or metric group
+refuse	ncu	replay --set full	replay collects its own metric list; give replay alone, or name what to collect without it
+refuse	nsight	--metrics dram__bytes.sum replay	replay collects its own metric list; give replay alone, or name what to collect without it
 #
 # refuse-folder   <--profile>  <--profile-output-dir>  <text the refusal contains>
 # (refused before anything starts or is created; the refusal names the folder.

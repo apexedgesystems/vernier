@@ -16,6 +16,9 @@
  *    run, and no backend is built. A backend built directly prints that
  *    command once per test, and its measurement proceeds unprofiled.
  *  - Each measured window is marked with an NVTX range named after the test.
+ *    A window that ends by an exception pops its range at once
+ *    (abortMeasure()), so what runs after the failure is outside it and the
+ *    next window pushes a range of its own.
  *  - Artifact folder: `<artifactRoot>/<Suite.Case>.nsight/` (`.ncu/` for
  *    --profile ncu), or the runner's folder under `bench run`.
  *
@@ -32,6 +35,8 @@
  *    bench run <binary> --profile ncu          # Nsight Compute (kernel analysis)
  *    --profile nsight --profile-args compute   # Compute mode via the nsight name
  *    --profile ncu --profile-args replay       # Compute with the replay metric list
+ *    --profile ncu --profile-args '--set full' # a section set, sections, metrics
+ *                                              # (parseNsightRequest())
  *
  * Notes:
  *  - Both names dispatch to this backend; "ncu" forces Compute mode.
@@ -40,12 +45,9 @@
  *  - Requires NVIDIA Nsight tools to be installed.
  */
 
-#include <filesystem>
-#include <fstream>
+#include <array>
 #include <memory>
 #include <string>
-#include <utility>
-#include <vector>
 
 #include "src/bench/inc/PerfConfig.hpp"
 #include "src/bench/inc/PerfStats.hpp"
@@ -62,58 +64,48 @@ namespace bench {
 enum class NsightMode {
   Systems,      ///< Nsight Systems (nsys) - timeline profiling (default)
   Compute,      ///< Nsight Compute (ncu) - kernel analysis
-  ComputeReplay ///< Nsight Compute with the ReplayMetrics list
+  ComputeReplay ///< Nsight Compute with the REPLAY_METRICS list
 };
 
-/* ----------------------------- ReplayMetrics ----------------------------- */
+/* ----------------------------- Replay Metrics ----------------------------- */
 
 /**
- * @brief The metrics the replay mode's ncu command collects.
+ * @brief The metrics the replay mode's ncu command asks for: the
+ * throughputs, achieved occupancy, warp execution and branch efficiency,
+ * registers per thread and the instruction mix (the ALU, FMA and load/store
+ * pipes). Not every name is one `ncu --query-metrics` lists:
+ * launch__registers_per_thread is a launch attribute, which the query lists
+ * on neither the RTX 5000 Ada nor the Jetson AGX Thor and ncu collects all
+ * the same; and a GPU without a metric gets nothing for it, without a word
+ * from ncu, as the Jetson AGX Thor, which has no dram__ metric, gets no DRAM
+ * throughput. bench run names such a metric after the run. The shared route
+ * table's replay rows pin the list, which bench run's route gives too.
  */
-struct ReplayMetrics {
-  bool collectOccupancy = true;
-  bool collectMemoryBandwidth = true;
-  bool collectWarpEfficiency = true;
-  bool collectBranchEfficiency = true;
-  bool collectRegisterUsage = true;
-  bool collectInstructionMix = true;
-
-  [[nodiscard]] std::string toNcuMetricString() const {
-    std::vector<std::string> metrics;
-
-    if (collectOccupancy) {
-      metrics.push_back("sm__throughput.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("sm__warps_active.avg.pct_of_peak_sustained_active");
-    }
-    if (collectMemoryBandwidth) {
-      metrics.push_back("dram__throughput.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("l1tex__throughput.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("lts__throughput.avg.pct_of_peak_sustained_elapsed");
-    }
-    if (collectWarpEfficiency) {
-      metrics.push_back("smsp__average_warps_issue_stalled_per_issue_active.pct");
-    }
-    if (collectBranchEfficiency) {
-      metrics.push_back("smsp__sass_average_branch_targets_threads_uniform.pct");
-    }
-    if (collectRegisterUsage) {
-      metrics.push_back("launch__registers_per_thread");
-    }
-    if (collectInstructionMix) {
-      metrics.push_back("smsp__inst_executed_pipe_alu_pred_on.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("smsp__inst_executed_pipe_fma_type_fp32.avg.pct_of_peak_sustained_elapsed");
-      metrics.push_back("smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed");
-    }
-
-    std::string result;
-    for (size_t i = 0; i < metrics.size(); ++i) {
-      if (i > 0)
-        result += ",";
-      result += metrics[i];
-    }
-    return result;
-  }
+inline constexpr std::array<const char*, 11> REPLAY_METRICS = {
+    "sm__throughput.avg.pct_of_peak_sustained_elapsed",
+    "sm__warps_active.avg.pct_of_peak_sustained_active",
+    "dram__throughput.avg.pct_of_peak_sustained_elapsed",
+    "l1tex__throughput.avg.pct_of_peak_sustained_elapsed",
+    "lts__throughput.avg.pct_of_peak_sustained_elapsed",
+    "smsp__thread_inst_executed_per_inst_executed.pct",
+    "smsp__sass_average_branch_targets_threads_uniform.pct",
+    "launch__registers_per_thread",
+    "smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed",
+    "smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed",
+    "smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed",
 };
+
+/** @brief REPLAY_METRICS as ncu's --metrics takes them: joined with ','. */
+[[nodiscard]] inline std::string replayMetricList() {
+  std::string out;
+  for (const char* METRIC : REPLAY_METRICS) {
+    if (!out.empty()) {
+      out += ',';
+    }
+    out += METRIC;
+  }
+  return out;
+}
 
 /* ----------------------------- NsightProfiler ----------------------------- */
 
@@ -127,6 +119,7 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+  void abortMeasure() noexcept override;
 
 private:
   /// The command that captures this run in the selected mode, for a run no
@@ -139,10 +132,9 @@ private:
   std::string artifactDir_;
   NsightMode mode_ = NsightMode::Systems;
 
-  ReplayMetrics replayMetrics_{};
-
   // True while the NVTX range pushed by beforeMeasure() is open, so it is
-  // popped exactly once, by afterMeasure() or by the destructor.
+  // popped exactly once: by afterMeasure(), by abortMeasure() when the window
+  // ends by an exception, or by the destructor.
   bool nvtxRangePush_ = false;
 };
 

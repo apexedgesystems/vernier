@@ -10,7 +10,10 @@
 //! Unicode names; the carriage returns matter: `nsys export` draws its progress
 //! bar with them.
 
+use std::collections::BTreeSet;
 use std::fmt;
+
+use crate::bench::csv_loader::record_line;
 
 /* ----------------------------- Types ----------------------------- */
 
@@ -108,12 +111,18 @@ fn lines(text: &str) -> Vec<&str> {
 
 /// The records of a tool's CSV output, each a row keyed by the header.
 fn records(text: &str) -> Result<Vec<Row>, Malformed> {
+    Ok(table(text)?.map(|(_, rows)| rows).unwrap_or_default())
+}
+
+/// The header of a tool's CSV output and its records, each a row keyed by
+/// the header; `None` when the output has no header.
+fn table(text: &str) -> Result<Option<(Vec<String>, Vec<Row>)>, Malformed> {
     let all = lines(text);
     let Some(start) = all
         .iter()
         .position(|line| line.matches(',').count() >= 2 && !line.trim_start().starts_with('#'))
     else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
     let csv_text = all[start..].join("\n");
     let mut reader = csv::ReaderBuilder::new()
@@ -123,7 +132,7 @@ fn records(text: &str) -> Result<Vec<Row>, Malformed> {
     let mut records = reader.records();
     let header: Vec<String> = match records.next() {
         Some(Ok(record)) => record.iter().map(str::to_string).collect(),
-        _ => return Ok(Vec::new()),
+        _ => return Ok(None),
     };
     let mut rows = Vec::new();
     for record in records {
@@ -131,7 +140,11 @@ fn records(text: &str) -> Result<Vec<Row>, Malformed> {
         // cannot fail to read.
         let Ok(record) = record else { continue };
         if record.len() > header.len() {
-            let line = record.position().map_or(0, |p| p.line()) + start as u64;
+            // The line the record starts on, blank lines before it counted.
+            let line = record
+                .position()
+                .map_or(0, |p| record_line(csv_text.as_bytes(), p))
+                + start as u64;
             return Err(Malformed {
                 line,
                 fields: record.len(),
@@ -144,7 +157,7 @@ fn records(text: &str) -> Result<Vec<Row>, Malformed> {
         }
         rows.push(row);
     }
-    Ok(rows)
+    Ok(Some((header, rows)))
 }
 
 /* ----------------------------- API ----------------------------- */
@@ -208,6 +221,25 @@ pub(crate) fn ncu_rows(text: &str) -> Result<Vec<Row>, Malformed> {
             row
         })
         .collect())
+}
+
+/// The metric names in the output of `ncu --print-summary per-kernel`: each
+/// row's `Metric Name`. `None` when the output has no header with that
+/// column. A header without rows is no names: ncu prints it for a report that
+/// holds none of the metrics it was asked for.
+pub(crate) fn ncu_metric_names(text: &str) -> Result<Option<BTreeSet<String>>, Malformed> {
+    let Some((header, rows)) = table(text)? else {
+        return Ok(None);
+    };
+    let Some(column) = header.iter().find(|name| clean_key(name) == "metric_name") else {
+        return Ok(None);
+    };
+    Ok(Some(
+        rows.iter()
+            .filter_map(|row| row.get(column))
+            .map(str::to_string)
+            .collect(),
+    ))
 }
 
 /// An ncu column name as the CSV writes it: trimmed, lower case, spaces as
@@ -287,6 +319,18 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(cells(&rows[0]), [("a", "1"), ("b", ""), ("c", "")]);
         assert_eq!(cells(&rows[1]), [("a", "x, y"), ("b", "5"), ("c", "4")]);
+    }
+
+    /// @test The line named is the one the long record starts on, blank lines
+    /// before it counted.
+    #[test]
+    fn long_record_after_a_blank_line_names_its_own_line() {
+        let text = "Processing...\nTime (%),Total Time (ns),Name\n1.0,2,a\n\n\n1.0,2,b,EXTRA\n";
+        let err = records(text).expect_err("longer than its header");
+        assert_eq!(
+            err.to_string(),
+            "line 6 of its output has 4 fields for 3 columns"
+        );
     }
 
     /// @test A record longer than its header is refused, naming its line.
@@ -440,6 +484,34 @@ mod tests {
         let rows = ncu_rows("Source,Report,Kernel Name\ntool,r,k\n").unwrap();
         assert_eq!(rows[0].get("source"), Some("ncu"));
         assert_eq!(rows[0].get("report"), Some("per_kernel"));
+    }
+
+    /// @test A per-kernel summary's metric names are its rows' Metric Name,
+    /// the metric's own name for one ncu's command line named (on the rig, a
+    /// --metrics list whose second name the GPU does not report), or a
+    /// section's label for its metrics; a header without rows, which ncu
+    /// prints for a report holding none of the metrics asked for, is no
+    /// names; output without that header has none, and a record longer than
+    /// its header is refused.
+    #[test]
+    fn ncu_metric_names_of_a_summary() {
+        let named = |text: &str| ncu_metric_names(text).expect("readable");
+        assert_eq!(
+            named(&fixture("ncu_import_one_metric_missing.out")),
+            Some(BTreeSet::from([
+                "sm__throughput.avg.pct_of_peak_sustained_elapsed".to_string()
+            ]))
+        );
+        assert_eq!(
+            named(&fixture("ncu_import_no_metric_row.out")),
+            Some(BTreeSet::new())
+        );
+        let labels = named(&fixture("ncu_import_per_kernel.out")).expect("a summary");
+        assert!(labels.contains("Theoretical Occupancy"), "{labels:?}");
+        assert_eq!(named(""), None);
+        assert_eq!(named(&fixture("ncu_import_damaged.out")), None);
+        assert_eq!(named("Kernel Name,Section Name,Average\nk,s,1\n"), None);
+        assert!(ncu_metric_names("Kernel Name,Metric Name,Average\nk,m,1,extra\n").is_err());
     }
 
     /// @test ncu's column names are written trimmed, in lower case, with

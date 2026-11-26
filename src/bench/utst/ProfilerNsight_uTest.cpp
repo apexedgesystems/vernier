@@ -37,7 +37,7 @@
 
 using vernier::bench::NsightProfiler;
 using vernier::bench::PerfConfig;
-using vernier::bench::ReplayMetrics;
+using vernier::bench::replayMetricList;
 using vernier::bench::Stats;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -251,13 +251,40 @@ TEST_F(NsightProfilerTest, ComputeModeThroughTheNsightName) {
       << ERR;
 }
 
-/** @test Replay mode starts no process and prints the ncu command with its metric list */
+/**
+ * @test Replay mode starts no process and prints the ncu command with its
+ * metric list, and bench run's, which wraps it
+ */
 TEST_F(NsightProfilerTest, ReplayModePrintsTheMetricList) {
   const std::string ERR = runBackend("ncu", "replay");
 
   EXPECT_EQ(tools_->invocations(), "") << "the backend started a tool";
-  EXPECT_NE(ERR.find("ncu --metrics " + ReplayMetrics{}.toNcuMetricString() + " -o " +
-                     folder("ncu") + "/kernel_replay -f --target-processes all"),
+  EXPECT_NE(ERR.find("ncu -o " + folder("ncu") + "/kernel_replay -f --target-processes all " +
+                     "--metrics " + replayMetricList()),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("or: bench run <this-binary> --profile ncu --profile-args replay --cycles 3 "
+                     "--repeats 1 -- [...]"),
+            std::string::npos)
+      << ERR;
+}
+
+/**
+ * @test A selection is printed as bench run passes it to ncu, after its own
+ * options, and bench run's command repeats the request
+ */
+TEST_F(NsightProfilerTest, SelectionPrintsTheNcuOptions) {
+  const std::string ERR =
+      runBackend("nsight", "--metrics dram__bytes.sum --section LaunchStats --set full");
+
+  EXPECT_EQ(tools_->invocations(), "") << "the backend started a tool";
+  EXPECT_NE(ERR.find("ncu -o " + folder("nsight") + "/kernel_profile -f --target-processes all " +
+                     "--set full --section LaunchStats --metrics dram__bytes.sum \\"),
+            std::string::npos)
+      << ERR;
+  EXPECT_NE(ERR.find("or: bench run <this-binary> --profile nsight --profile-args '--metrics "
+                     "dram__bytes.sum --section LaunchStats --set full' --cycles 3 --repeats 1 "
+                     "-- [...]"),
             std::string::npos)
       << ERR;
 }
@@ -350,13 +377,13 @@ TEST_F(NsightProfilerTest, ReplayWrapKeepsArgumentBoundaries) {
   ASSERT_EQ(tools_->invocations(), "") << "the backend started a tool";
 
   ASSERT_EQ(runPrintedCommand(ERR, "ncu", tools_->dir()), 0) << ERR;
-  const std::vector<std::string> EXPECTED = {"--metrics",
-                                             ReplayMetrics{}.toNcuMetricString(),
-                                             "-o",
+  const std::vector<std::string> EXPECTED = {"-o",
                                              folder("ncu") + "/kernel_replay",
                                              "-f",
                                              "--target-processes",
                                              "all",
+                                             "--metrics",
+                                             replayMetricList(),
                                              BINARY,
                                              "--profile",
                                              "ncu",

@@ -200,7 +200,9 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # PerfGpuHarness_uTest.cu defines pthread_create the same way, to fail a
 # worker's start, except under the address or the thread sanitizer, whose
 # runtime intercepts pthread_create itself: WORKER_START_SANITIZER names the
-# build's sanitizer there, the program defines none and that test skips.
+# build's sanitizer there, the program defines none and that test skips. It
+# defines cuptiActivityEnable and cuptiActivityDisable the same way, to note
+# which CUPTI activity kinds the collector switches, and when.
 # TestBenchNsight: the Nsight backend, and the backends the registry builds
 # for the GPU names once libbench_cuda's registrations replace libbench's;
 # they live in libbench_cuda but make no CUDA call, so they need the toolkit
@@ -208,6 +210,9 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
+  # Its two CUPTI definitions are exported by name: linked with gold or lld,
+  # the program leaves them out of its dynamic symbols (mold and bfd export
+  # them), and libbench_cuda's calls then reach libcupti's, unobserved.
   vernier_add_gtest(
     TARGET
     TestBenchGpu
@@ -218,6 +223,9 @@ if (TARGET bench_cuda)
     bench
     bench_cuda
     ${CMAKE_DL_LIBS}
+    EXPORT_SYMBOLS
+    cuptiActivityEnable
+    cuptiActivityDisable
     LABELS
     benchmarking
     gpu

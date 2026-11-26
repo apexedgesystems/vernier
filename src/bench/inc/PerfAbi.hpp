@@ -74,6 +74,8 @@ namespace bench {
 /// OffCpuProfiler's outcome member.
 /// 5: UnifiedMemoryProfile::h2dBytes and d2hBytes, in GpuStats.
 /// 6: RAPLProfiler's members.
+/// 7: PerfRow::timed and PerfSummaryEntry::timed; NsightProfiler's members
+/// (the replay metric list is one constant, REPLAY_METRICS).
 /// 7: GperfProfiler's members, the same whatever headers a benchmark sees.
 inline constexpr std::uint32_t BENCH_ABI_VERSION = 7;
 

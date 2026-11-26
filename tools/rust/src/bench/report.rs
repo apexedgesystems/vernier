@@ -12,6 +12,19 @@ const YELLOW: &str = "\x1b[93m";
 const BOLD: &str = "\x1b[1m";
 const RESET: &str = "\x1b[0m";
 
+/* ----------------------------- Tables ----------------------------- */
+
+/// The width of a table's test column: its longest name's, at least the
+/// heading's, and at most the widest a format width may be (65535), past
+/// which a longer name runs on beyond its column.
+fn name_column_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names
+        .map(str::len)
+        .max()
+        .unwrap_or(4)
+        .clamp(4, usize::from(u16::MAX))
+}
+
 /* ----------------------------- Comparison Table ----------------------------- */
 
 /// What the labels mean, in the lines a terminal shows them on.
@@ -28,12 +41,7 @@ pub fn print_comparison_table(comparison: &Comparison) {
     let results = &comparison.results;
 
     // Calculate column widths
-    let name_width = results
-        .iter()
-        .map(|r| r.test.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    let name_width = name_column_width(results.iter().map(|r| r.test.as_str()));
 
     // Header
     println!();
@@ -172,12 +180,7 @@ pub fn print_summary_table(rows: &[BenchRow], sort: SortColumn) {
         }),
     }
 
-    let name_width = sorted
-        .iter()
-        .map(|r| r.test.len())
-        .max()
-        .unwrap_or(4)
-        .max(4);
+    let name_width = name_column_width(sorted.iter().map(|r| r.test.as_str()));
 
     println!();
     println!(
@@ -240,6 +243,32 @@ pub fn print_summary_table(rows: &[BenchRow], sort: SortColumn) {
 
 /* ----------------------------- Markdown ----------------------------- */
 
+/// @p name as Markdown text that stays one table cell on its row's line: a
+/// pipe escaped, and a backslash, a CR and an LF written as `\\`, `\r` and
+/// `\n`, as the JSON output writes them.
+fn markdown_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '\r' => out.push_str("\\r"),
+            '\n' => out.push_str("\\n"),
+            '|' => out.push_str("\\|"),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// The names of @p tests, each as `markdown_name` writes it, joined.
+fn markdown_names(tests: &[String]) -> String {
+    tests
+        .iter()
+        .map(|test| markdown_name(test))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Format a comparison as a markdown table with its unmatched tests.
 pub fn to_markdown(comparison: &Comparison) -> String {
     let mut out = String::new();
@@ -256,7 +285,7 @@ pub fn to_markdown(comparison: &Comparison) -> String {
 
         out.push_str(&format!(
             "| {} | {:.5} | {:.5} | {:+.5} | {:+.1}% | {:.1}% | {:.1}% | {} {} |\n",
-            r.test,
+            markdown_name(&r.test),
             r.baseline_median,
             r.candidate_median,
             r.delta_us,
@@ -272,14 +301,14 @@ pub fn to_markdown(comparison: &Comparison) -> String {
         out.push_str(&format!(
             "\nMissing from the candidate ({}): {}\n",
             comparison.baseline_only.len(),
-            comparison.baseline_only.join(", ")
+            markdown_names(&comparison.baseline_only)
         ));
     }
     if !comparison.candidate_only.is_empty() {
         out.push_str(&format!(
             "\nNew in the candidate ({}): {}\n",
             comparison.candidate_only.len(),
-            comparison.candidate_only.join(", ")
+            markdown_names(&comparison.candidate_only)
         ));
     }
 
@@ -461,6 +490,52 @@ mod tests {
             "{md}"
         );
         assert!(md.contains("\nNew in the candidate (1): New\n"), "{md}");
+    }
+
+    /// @test A test name holding a CR, an LF, a CRLF, a pipe or a backslash
+    /// stays one cell on its row's line: the pipe escaped, the others written
+    /// as `\\`, `\r` and `\n`; so does such a name in either list of
+    /// unmatched tests.
+    #[test]
+    fn markdown_keeps_each_name_in_its_cell() {
+        let names = [
+            "Two\rLines",
+            "Two\nLines",
+            "Two\r\nLines",
+            "a|b",
+            "back\\slash",
+        ];
+        let shown = [
+            "Two\\rLines",
+            "Two\\nLines",
+            "Two\\r\\nLines",
+            "a\\|b",
+            "back\\\\slash",
+        ];
+        let mut comparison =
+            make_comparison(names.iter().map(|n| make_result(n, 1.0, 1.0)).collect());
+        comparison.baseline_only = vec!["Gone\nAway".to_string(), "x|y".to_string()];
+        comparison.candidate_only = vec!["New\r\nOne".to_string(), "p|q".to_string()];
+        let md = to_markdown(&comparison);
+        let rows: Vec<&str> = md
+            .split('\n')
+            .filter(|line| line.starts_with("| ") && !line.starts_with("| Test "))
+            .collect();
+        assert_eq!(rows.len(), names.len(), "{md:?}");
+        assert!(!md.contains('\r'), "{md:?}");
+        for (row, name) in rows.iter().zip(shown) {
+            assert!(row.starts_with(&format!("| {name} | ")), "{row:?}");
+            let cells = row.replace("\\\\", "").replace("\\|", "");
+            assert_eq!(cells.matches('|').count(), 9, "{row:?}");
+        }
+        assert!(
+            md.contains("\nMissing from the candidate (2): Gone\\nAway, x\\|y\n"),
+            "{md:?}"
+        );
+        assert!(
+            md.contains("\nNew in the candidate (2): New\\r\\nOne, p\\|q\n"),
+            "{md:?}"
+        );
     }
 
     /// @test JSON carries the results, the threshold and an explicit null p-value.

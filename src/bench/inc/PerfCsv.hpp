@@ -115,10 +115,17 @@ inline void writeCsvRow(std::ofstream& csv, const PerfRow& row, bool includeProf
   csv << "," << row.cycles << "," << row.repeats << "," << row.warmup << "," << row.threads << ","
       << row.msgBytes << "," << (row.console ? "1" : "0") << "," << (row.nonBlocking ? "1" : "0");
   TEXT_CELL(row.minLevel);
-  csv << "," << row.stats.median << "," << row.stats.p10 << "," << row.stats.p90 << ","
-      << row.stats.p99 << "," << row.stats.p999 << "," << row.stats.min << "," << row.stats.max
-      << "," << row.stats.mean << "," << row.stats.stddev << "," << row.stats.cv << ","
-      << row.callsPerSecond << "," << (row.stable ? "1" : "0") << "," << row.cvThreshold;
+  // A measurement the harness did not time (PerfRow::timed) has no timing to
+  // write: its wall*, callsPerSecond and stable cells stay empty.
+  if (row.timed) {
+    csv << "," << row.stats.median << "," << row.stats.p10 << "," << row.stats.p90 << ","
+        << row.stats.p99 << "," << row.stats.p999 << "," << row.stats.min << "," << row.stats.max
+        << "," << row.stats.mean << "," << row.stats.stddev << "," << row.stats.cv << ","
+        << row.callsPerSecond << "," << (row.stable ? "1" : "0");
+  } else {
+    csv << ",,,,,,,,,,,,";
+  }
+  csv << "," << row.cvThreshold;
 
   // Profile columns
   if (includeProfile) {

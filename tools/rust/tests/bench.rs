@@ -36,6 +36,79 @@ fn output_of(command: &mut Command) -> Output {
     child.wait_with_output().expect("wait for bench")
 }
 
+/// `output_of` with stderr a pipe whose read end is already closed: a stderr
+/// no one reads, where every write fails.
+fn output_with_stderr_no_one_reads(command: &mut Command) -> Output {
+    let (reader, writer) = std::io::pipe().expect("a pipe");
+    drop(reader);
+    let child = {
+        let _gate = START_GATE.read().unwrap_or_else(|e| e.into_inner());
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(writer)
+            .spawn()
+            .expect("spawn bench")
+    };
+    child.wait_with_output().expect("wait for bench")
+}
+
+/// Give @p command's process @p holder, a pipe's write end, open without
+/// close-on-exec: that process and every process it starts inherit it, so
+/// the pipe reads its end once all of them have ended (`all_ended`),
+/// whatever their process ids. @p holder must stay open until the process
+/// has started.
+fn inherit(command: &mut Command, holder: &std::io::PipeWriter) {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+
+    let fd = holder.as_raw_fd();
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only fcntl(2), which is async-signal-safe; `fd` is open in the child,
+    // as the caller keeps `holder` open until the spawn has returned.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
+            }
+        });
+    }
+}
+
+/// Whether every process holding @p held's write end has ended within
+/// @p within: the pipe then reads its end.
+fn all_ended(held: &mut std::io::PipeReader, within: std::time::Duration) -> bool {
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+
+    let fd = held.as_raw_fd();
+    // SAFETY: fcntl(2) only reads and sets the flags of a descriptor that
+    // @p held owns and keeps open through the calls.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        assert!(flags >= 0, "F_GETFL: {}", std::io::Error::last_os_error());
+        let set = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        assert!(set >= 0, "F_SETFL: {}", std::io::Error::last_os_error());
+    }
+    let until = std::time::Instant::now() + within;
+    let mut chunk = [0u8; 64];
+    loop {
+        match held.read(&mut chunk) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() >= until {
+                    return false;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => panic!("read the pipe: {e}"),
+        }
+    }
+}
+
 fn run(args: &[&str]) -> (i32, String, String) {
     let out = output_of(Command::new(bin()).args(args));
     let code = out.status.code().unwrap_or(255);
@@ -270,6 +343,227 @@ fn summary_blank_test_name_is_an_error() {
     }
 }
 
+/// @test An error keeps its documented exit status when bench cannot write
+/// its error line: summary refuses a row without a test name with exit 1,
+/// also with a stderr no one reads (a pipe whose read end is closed).
+#[test]
+fn an_error_keeps_its_status_with_a_stderr_no_one_reads() {
+    let out = output_with_stderr_no_one_reads(
+        Command::new(bin()).args(["summary", &fixture("compare_name_empty.csv")]),
+    );
+    assert_eq!(out.status.code(), Some(1), "{:?}", out.status);
+    assert!(out.stdout.is_empty(), "printed a summary");
+}
+
+/// A header and three rows as summary reads them, the third row's test name
+/// empty and the second's wallMedian empty when @p hollow says so, each line
+/// ended by @p end, with @p blanks blank lines before the third row.
+fn rows_text(end: &str, blanks: usize, hollow: bool) -> String {
+    let median = if hollow { "" } else { "0.5" };
+    [
+        "test,wallMedian,wallCV,callsPerSecond".to_string(),
+        "A,0.5,0.1,2".to_string(),
+        format!("B,{median},0.1,2"),
+    ]
+    .into_iter()
+    .chain(std::iter::repeat_n(String::new(), blanks))
+    .chain([",0.5,0.1,2".to_string()])
+    .map(|line| line + end)
+    .collect()
+}
+
+/// @test summary and compare, on either side, name the line a row starts on,
+/// as an editor counts lines: in a file of CRLF line ends, after blank lines
+/// before the row, after a record that spans two lines, and for a byte that
+/// is not UTF-8, whose line is the line it is on.
+#[test]
+fn readers_name_the_line_a_row_starts_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let good = fixture("sample_bench.csv");
+    let two_lines = "test,wallMedian,wallCV,callsPerSecond\n\"Two\nLines\",0.5,0.1,2\n,0.5,0.1,2\n";
+    let mut not_utf8 = b"test,wallMedian,wallCV,callsPerSecond\r\nA,0.5,0.1,2\r\n\r\n".to_vec();
+    not_utf8.extend_from_slice(b"B\xff,0.5,0.1,2\r\n");
+    let files: [(&str, Vec<u8>, &str); 7] = [
+        (
+            "lf.csv",
+            rows_text("\n", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "crlf.csv",
+            rows_text("\r\n", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "cr.csv",
+            rows_text("\r", 0, false).into(),
+            "line 4: the row has no test name",
+        ),
+        (
+            "blank.csv",
+            rows_text("\n", 2, false).into(),
+            "line 6: the row has no test name",
+        ),
+        (
+            "blank_crlf.csv",
+            rows_text("\r\n", 2, false).into(),
+            "line 6: the row has no test name",
+        ),
+        (
+            "two_lines.csv",
+            two_lines.into(),
+            "line 4: the row has no test name",
+        ),
+        ("not_utf8.csv", not_utf8, "line 4: not valid UTF-8"),
+    ];
+    for (name, bytes, said) in files {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let expected = format!("{path}, {said}");
+        for args in [
+            vec!["summary", path.as_str()],
+            vec!["compare", good.as_str(), path.as_str()],
+            vec!["compare", path.as_str(), good.as_str()],
+        ] {
+            let (code, _, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
+    }
+}
+
+/// @test summary and compare, on either side, name the line of a byte that
+/// is not UTF-8 as an editor counts it, after lone CR line ends and after
+/// blank lines (a file of CRLF line ends is in the test above). Every file
+/// is run before the test fails, so each one's line is shown.
+#[test]
+fn a_byte_not_utf8_is_named_on_its_line_after_lone_crs_and_blank_lines() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let good = fixture("sample_bench.csv");
+    let files: [(&str, &[u8], &str); 2] = [
+        (
+            "not_utf8_cr.csv",
+            b"test,wallMedian,wallCV,callsPerSecond\rA,0.5,0.1,2\rB\xff,0.5,0.1,2\r",
+            "line 3: not valid UTF-8",
+        ),
+        (
+            "not_utf8_blank.csv",
+            b"test,wallMedian,wallCV,callsPerSecond\nA,0.5,0.1,2\n\n\nB\xff,0.5,0.1,2\n",
+            "line 5: not valid UTF-8",
+        ),
+    ];
+    let mut wrong = Vec::new();
+    for (name, bytes, said) in files {
+        let path = dir.path().join(name);
+        std::fs::write(&path, bytes).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let expected = format!("{path}, {said}");
+        for args in [
+            vec!["summary", path.as_str()],
+            vec!["compare", good.as_str(), path.as_str()],
+            vec!["compare", path.as_str(), good.as_str()],
+        ] {
+            let (code, _, err) = run(&args);
+            if code != 1 || !err.contains(&expected) {
+                wrong.push(format!("{args:?}: exit {code}: {err}"));
+            }
+        }
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+/// @test A row a caller needs a value of names the line it starts on, after
+/// blank lines and in a file of CRLF line ends.
+#[test]
+fn a_needed_value_names_the_line_its_row_starts_on() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    for (name, end) in [("blank.csv", "\n"), ("crlf.csv", "\r\n")] {
+        // B, the row with no wallMedian, on line 4: a blank line before it.
+        let text = rows_text(end, 0, true).replacen(
+            &format!("A,0.5,0.1,2{end}"),
+            &format!("A,0.5,0.1,2{end}{end}"),
+            1,
+        );
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).expect("write the file");
+        let path = path.to_string_lossy().into_owned();
+        let (code, _, err) = run(&["summary", &path]);
+        assert_eq!(code, 1, "{name}: {err}");
+        assert!(
+            err.contains(&format!(
+                "{path}, line 4: test 'B' has no wallMedian value: the field is empty"
+            )),
+            "{name}: {err}"
+        );
+    }
+}
+
+/// @test summary's and compare's tables print a test name longer than the
+/// widest a format width may be (65535) whole, and exit 0.
+#[test]
+fn tables_print_a_test_name_of_any_length() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("long.csv");
+    let name = "T".repeat(70_000);
+    std::fs::write(
+        &path,
+        format!("test,wallMedian,wallCV,callsPerSecond\n{name},0.5,0.1,2\nShort,0.5,0.1,2\n"),
+    )
+    .expect("write the file");
+    let path = path.to_string_lossy().into_owned();
+    for args in [
+        vec!["summary", path.as_str()],
+        vec!["compare", path.as_str(), path.as_str()],
+    ] {
+        let (code, out, err) = run(&args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+        assert!(out.contains(&name), "{args:?}: the name is printed whole");
+    }
+}
+
+/// @test summary reads a quoted name holding a CR, an LF, a CRLF, a doubled
+/// quote, a comma, a NUL or spaces at both edges as written, each row with
+/// its own median: the bytes bench-plot's tests read (test_bench_plot.py).
+#[test]
+fn summary_reads_a_quoted_name_as_written() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("names.csv");
+    let path_text = path.to_string_lossy().into_owned();
+    for name in [
+        "Two\rLines",
+        "Two\nLines",
+        "Two\r\nLines",
+        "say \"x\"",
+        "a,b",
+        "a\0b",
+        " Padded ",
+    ] {
+        let field = format!("\"{}\"", name.replace('"', "\"\""));
+        std::fs::write(
+            &path,
+            format!(
+                "test,wallMedian,wallCV,callsPerSecond,wallMin,wallP10,wallP90,wallMax\r\n\
+                 {field},10,0.1,100000,8,9,11,12\r\nOther,20,0.1,50000,18,19,21,22\r\n"
+            ),
+        )
+        .expect("write the file");
+        let (code, out, err) = run(&["summary", &path_text, "--json"]);
+        assert_eq!(code, 0, "{name:?}: {err}");
+        let rows: serde_json::Value = serde_json::from_str(&out).expect("valid JSON");
+        let read: Vec<(&str, f64)> = rows
+            .as_array()
+            .expect("an array")
+            .iter()
+            .map(|row| {
+                let test = row["test"].as_str().expect("a name");
+                (test, row["wall_median"].as_f64().expect("a median"))
+            })
+            .collect();
+        assert_eq!(read, [(name, 10.0), ("Other", 20.0)], "{name:?}");
+    }
+}
+
 /// @test A test name with spaces around it is kept as written in summary.
 #[test]
 fn summary_keeps_a_padded_test_name() {
@@ -297,6 +591,40 @@ fn missing_test_column_is_an_error() {
             err.contains(&format!("missing required column 'test' in {csv}")),
             "{args:?}: {err}"
         );
+    }
+}
+
+/// @test summary and compare refuse the rows of a run under Nsight Compute,
+/// as text and as JSON, saying what such a run leaves: from bench run's
+/// route, whose file has profile columns, and from ncu started by hand
+/// without --profile, whose file has none (rows such a run wrote on a
+/// GPU).
+#[test]
+fn summary_and_compare_name_an_ncu_capture() {
+    let good = fixture("sample_bench.csv");
+    for (file, test) in [
+        ("summary_ncu_capture.csv", "Saxpy.EndToEnd"),
+        ("summary_ncu_capture_typed.csv", "NsightProfiler.G1"),
+    ] {
+        let csv = fixture(file);
+        let (csv, good) = (csv.as_str(), good.as_str());
+        let expected = format!(
+            "{csv}, line 2: test '{test}' has no wallMedian value: the field is empty; every \
+             timing cell of the row is empty, as in a run under Nsight Compute (ncu), which the \
+             benchmark does not time; if the run was under ncu, time the benchmark in a run \
+             without it"
+        );
+        for args in [
+            vec!["summary", csv],
+            vec!["summary", csv, "--json"],
+            vec!["compare", good, csv],
+            vec!["compare", csv, good, "--json", "--fail-on-regression"],
+        ] {
+            let (code, out, err) = run(&args);
+            assert_eq!(code, 1, "{args:?}: {err}");
+            assert!(out.is_empty(), "{args:?}: {out}");
+            assert!(err.contains(&expected), "{args:?}: {err}");
+        }
     }
 }
 
@@ -1500,6 +1828,33 @@ fn gpu_monitor_snapshot_to_stdout() {
     }
 }
 
+/// @test With a stderr no one reads, gpu-monitor snapshot -o loses its
+/// "Snapshot saved" line and nothing else: the snapshot is written and the
+/// run exits 0. A stand-in nvidia-smi, alone on PATH, reports one GPU.
+#[test]
+fn gpu_monitor_snapshot_to_a_file_keeps_its_status_with_a_stderr_no_one_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let tools = dir.path().join("tools");
+    std::fs::create_dir_all(&tools).expect("create tools dir");
+    write_executable(
+        &tools.join("nvidia-smi"),
+        "#!/bin/sh\ncase \"$1\" in\n  --query-gpu) echo '0, Stand-in GPU, 40, 50.5, 100, 1000, \
+         2000, 1500, 10, 100, 0, 0, N/A, P8' ;;\n  --query-gpu=*) echo 'Not Active' ;;\nesac\n",
+    );
+    let path = dir.path().join("snapshot.json");
+    let out = output_with_stderr_no_one_reads(
+        Command::new(bin())
+            .args(["gpu-monitor", "snapshot", "-o"])
+            .arg(&path)
+            .env("PATH", &tools),
+    );
+    assert_eq!(out.status.code(), Some(0), "{:?}", out.status);
+    let snapshot: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("the snapshot"))
+            .expect("the snapshot is JSON");
+    assert_eq!(snapshot["devices"][0]["name"], "Stand-in GPU");
+}
+
 #[test]
 fn gpu_monitor_snapshot_to_file_and_diff() {
     // Create a snapshot, save it, then diff it with itself
@@ -2061,7 +2416,13 @@ fn run_and_doctor_started_with_sigchld_ignored_read_the_status() {
 /// in `nsys_stats.pid` and `nsys_started.pid`). valgrind reads its output option's value as valgrind does
 /// (valgrind 3.18.1, recorded runs): `%%` is one `%`, `%p` its process id,
 /// and any other `%` is refused with status 1. compute-sanitizer is
-/// `SANITIZER_STAND_IN`.
+/// `SANITIZER_STAND_IN`. ncu's report holds the list its `--metrics` was
+/// given, and `ncu --import` prints the per-kernel summary in ncu's columns,
+/// a row for each name of that list but those `FAKE_NCU_LACKS` names (a comma
+/// list), which ncu leaves out without a word; `FAKE_NCU_IMPORT=fail` fails
+/// as ncu does for a file it cannot open, `no-summary` prints nothing,
+/// `garbled` a record longer than its header, and `gone` has the capture
+/// remove ncu, so the import cannot start.
 struct RouteRig {
     dir: tempfile::TempDir,
     log: std::path::PathBuf,
@@ -2162,15 +2523,35 @@ if [ "{name}" = callgrind_annotate ]; then
   echo "fake annotation of $2"
   exit 0
 fi
+if [ "{name}" = ncu ] && [ "$1" = --import ]; then
+  case "$FAKE_NCU_IMPORT" in
+    fail) echo "==ERROR== The file does not exist or is not a regular file." >&2; exit 1 ;;
+    no-summary) exit 0 ;;
+    garbled) printf '"ID","Kernel Name","Metric Name"\n"0","k","m","extra"\n'; exit 0 ;;
+  esac
+  echo '"ID","Kernel Name","Section Name","Metric Name","Metric Unit","Minimum","Maximum","Average"'
+  list=""
+  while IFS= read -r line; do
+    case "$line" in metrics=*) list="${{line#metrics=}}" ;; esac
+  done < "$2"
+  IFS=,
+  for m in $list; do
+    case ",$FAKE_NCU_LACKS," in *",$m,"*) continue ;; esac
+    echo "\"0\",\"k(int)\",\"Command line profiler metrics\",\"$m\",\"%\",\"1.00\",\"1.00\",\"1.00\""
+  done
+  exit 0
+fi
 [ "$FAKE_WRITE" = none ] && exit 0
 out=""
 prev=""
+metrics=""
 for a in "$@"; do
   case "$a" in
     --callgrind-out-file=*|--massif-out-file=*|--log-file=*) out="${{a#*=}}" ;;
   esac
   case "$prev" in
     --log-file) out="$a" ;;
+    --metrics) metrics="$a" ;;
     -o) case "{name}" in nsys) out="$a.nsys-rep" ;; ncu) out="$a.ncu-rep" ;; heaptrack) out="$a.gz" ;; esac ;;
   esac
   prev="$a"
@@ -2224,8 +2605,10 @@ if [ "{name}" = heaptrack ] && [ -n "$out" ]; then
   /bin/mkdir -p "${{out%/*}}"
 fi
 if [ -n "$out" ]; then
-  if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi
+  if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi || exit
+  if [ -n "$metrics" ] && [ "$FAKE_WRITE" != empty ]; then echo "metrics=$metrics" >> "$out"; fi
 fi
+if [ "{name}" = ncu ] && [ "$FAKE_NCU_IMPORT" = gone ]; then /bin/rm -f "$0"; fi
 "#,
             log = log.display()
         );
@@ -2511,18 +2894,234 @@ fn run_nsight_compute_mode_uses_ncu() {
     );
 }
 
-/// @test A mode bench run does not wrap, a word the tool does not take and a
-/// combination the tool cannot run are refused before anything starts or is
-/// created.
+/// The metrics a kernel replay collects, as ncu is given them.
+const REPLAY_METRICS: &str = "sm__throughput.avg.pct_of_peak_sustained_elapsed,\
+     sm__warps_active.avg.pct_of_peak_sustained_active,\
+     dram__throughput.avg.pct_of_peak_sustained_elapsed,\
+     l1tex__throughput.avg.pct_of_peak_sustained_elapsed,\
+     lts__throughput.avg.pct_of_peak_sustained_elapsed,\
+     smsp__thread_inst_executed_per_inst_executed.pct,\
+     smsp__sass_average_branch_targets_threads_uniform.pct,\
+     launch__registers_per_thread,\
+     smsp__inst_executed_pipe_alu.avg.pct_of_peak_sustained_elapsed,\
+     smsp__inst_executed_pipe_fma.avg.pct_of_peak_sustained_elapsed,\
+     smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed";
+
+/// @test ncu is given what the request selects after bench run's own
+/// options (the set, each section, then one --metrics with every name), and
+/// the benchmark the request as given; a selection under nsight runs ncu
+/// into nsight's folder; a kernel replay runs ncu with the replay metrics
+/// into kernel_replay, whose report bench run checks and names. A request
+/// that names metrics then has its report read back once, with the summary
+/// bench nsight-parse reads, and without the wrap's variable; one that names
+/// none (sections alone) has not.
 #[test]
-fn run_refuses_replay_and_unknown_modes() {
-    for (profile, args, expected) in [
+fn run_ncu_passes_the_selection_and_runs_a_replay() {
+    for (profile, args, folder, report, options, reads_back) in [
+        (
+            "ncu",
+            "--metrics dram__bytes.sum,lts__t_bytes.sum --section LaunchStats --set full",
+            "ncu",
+            "kernel_profile",
+            "--set full --section LaunchStats --metrics dram__bytes.sum,lts__t_bytes.sum"
+                .to_string(),
+            true,
+        ),
         (
             "nsight",
-            "replay",
-            "bench run does not wrap a kernel replay",
+            "--section=Occupancy",
+            "nsight",
+            "kernel_profile",
+            "--section Occupancy".to_string(),
+            false,
         ),
-        ("ncu", "replay", "bench run does not wrap a kernel replay"),
+        (
+            "ncu",
+            "replay",
+            "ncu",
+            "kernel_replay",
+            format!("--metrics {REPLAY_METRICS}"),
+            true,
+        ),
+        (
+            "nsight",
+            "compute,replay",
+            "nsight",
+            "kernel_replay",
+            format!("--metrics {REPLAY_METRICS}"),
+            true,
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, log) =
+            run_rig_env(&rig, &["--profile", profile, "--profile-args", args], &[]);
+        assert_eq!(code, 0, "{profile} {args}: {err}");
+        let rep = format!("bench-out/fake_bench.{folder}/{report}");
+        let mut expected = format!(
+            "ncu wrap={profile} -o {rep} -f --target-processes all {options} {} --profile \
+             {profile} --profile-args {args}\n",
+            rig.bench.display(),
+        );
+        if reads_back {
+            expected +=
+                &format!("ncu wrap= --import {rep}.ncu-rep --csv --print-summary per-kernel\n");
+        }
+        assert_eq!(log, expected, "{profile} {args}");
+        assert!(
+            stdout.contains(&format!("[bench] {profile} wrote {rep}.ncu-rep (")),
+            "{profile} {args}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("[bench] the report"),
+            "{profile} {args}: the report holds every metric: {stdout}"
+        );
+    }
+}
+
+/// The lines of @p stdout after the one naming the report @p profile's wrap
+/// wrote.
+fn lines_after_the_report(stdout: &str, profile: &str) -> Vec<String> {
+    stdout
+        .lines()
+        .skip_while(|line| !line.starts_with(&format!("[bench] {profile} wrote ")))
+        .skip(1)
+        .map(str::to_string)
+        .collect()
+}
+
+/// @test After a run under ncu that names metrics, bench run names each one
+/// asked for that the report holds nothing for, one line each after the line
+/// naming the report, in the order asked and each once: one the GPU does not
+/// report (the replay's DRAM throughput, as on the Jetson AGX Thor), two, a
+/// name of the user's own --metrics that ncu does not know, which reads the
+/// same, and the only name asked for, which leaves the summary no row; none
+/// when the report holds every one. The check reads the report, not a list of
+/// the chip's metrics: the launch attribute among the replay's metrics is not
+/// named while the report holds it.
+#[test]
+fn run_names_each_metric_the_report_holds_nothing_for() {
+    let dram = "dram__throughput.avg.pct_of_peak_sustained_elapsed";
+    let lsu = "smsp__inst_executed_pipe_lsu.avg.pct_of_peak_sustained_elapsed";
+    let made_up = "vernier__no_such_metric.sum";
+    let own = format!("--metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,{made_up}");
+    let alone = format!("--metrics {made_up},{made_up}");
+    for (profile, args, lacks, named) in [
+        ("ncu", "replay", dram.to_string(), vec![dram]),
+        ("nsight", "replay", format!("{lsu},{dram}"), vec![dram, lsu]),
+        ("ncu", own.as_str(), made_up.to_string(), vec![made_up]),
+        ("ncu", alone.as_str(), made_up.to_string(), vec![made_up]),
+        ("ncu", "replay", String::new(), vec![]),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, _) = run_rig_env(
+            &rig,
+            &["--profile", profile, "--profile-args", args],
+            &[("FAKE_NCU_LACKS", &lacks)],
+        );
+        assert_eq!(code, 0, "{args} lacking {lacks}: {err}");
+        let expected: Vec<String> = named
+            .iter()
+            .map(|metric| {
+                format!(
+                    "[bench] the report holds nothing for {metric}: ncu reported nothing for it \
+                     on this GPU"
+                )
+            })
+            .collect();
+        let after = lines_after_the_report(&stdout, profile);
+        assert_eq!(after, expected, "{args} lacking {lacks}: {stdout}");
+        assert!(
+            !after
+                .iter()
+                .any(|line| line.contains("launch__registers_per_thread")),
+            "{args} lacking {lacks}: {stdout}"
+        );
+    }
+}
+
+/// @test A report bench run cannot read back gets one line saying that the
+/// metrics asked for were not checked, and why: ncu failing to read it, ncu
+/// gone, no summary, a summary that cannot be read. The run ends with the
+/// status it ends with when the check is made (0), and the report stays.
+#[test]
+fn run_says_when_the_report_was_not_checked() {
+    for (how, why) in [
+        (
+            "fail",
+            "ncu --import exited with status 1: ==ERROR== The file does not exist or is not a \
+             regular file.",
+        ),
+        ("gone", "ncu could not be started: "),
+        (
+            "no-summary",
+            "ncu printed no per-kernel summary (no output)",
+        ),
+        (
+            "garbled",
+            "its summary cannot be read: line 2 of its output has 4 fields for 3 columns",
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, stdout, err, _) = run_rig_env(
+            &rig,
+            &["--profile", "ncu", "--profile-args", "replay"],
+            &[("FAKE_NCU_IMPORT", how)],
+        );
+        assert_eq!(code, 0, "{how}: {err}");
+        let after = lines_after_the_report(&stdout, "ncu");
+        assert_eq!(after.len(), 1, "{how}: {stdout}");
+        assert!(
+            after[0].starts_with(&format!(
+                "[bench] the report was not checked for the metrics asked for: {why}"
+            )),
+            "{how}: {stdout}"
+        );
+        assert!(
+            rig.dir
+                .path()
+                .join("bench-out/fake_bench.ncu/kernel_replay.ncu-rep")
+                .is_file(),
+            "{how}"
+        );
+    }
+}
+
+/// @test A word the tool does not take, a combination the tool cannot run,
+/// an ncu option outside the supported subset and a malformed ncu list are
+/// refused before anything starts or is created.
+#[test]
+fn run_refuses_unknown_modes_and_ncu_options() {
+    for (profile, args, expected) in [
+        (
+            "ncu",
+            "--kernel-name k",
+            "'--kernel-name' is not an option bench run passes to ncu; it passes --set, \
+             --section and --metrics (the report, its overwrite and --target-processes are \
+             bench run's own)",
+        ),
+        (
+            "nsight",
+            "heap",
+            "'heap' is not a mode of nsight; it takes compute, ncu, replay, --set NAME, \
+             --section NAME and --metrics NAMES",
+        ),
+        (
+            "ncu",
+            "--metrics",
+            "--metrics takes one or more metric names",
+        ),
+        (
+            "ncu",
+            "--section regex:Memory.*",
+            "'regex:Memory.*' is not a section's identifier (letters, digits and '_'); bench \
+             run passes ncu no regular expression or metric group",
+        ),
+        (
+            "ncu",
+            "replay --set full",
+            "replay collects its own metric list; give replay alone, or name what to collect \
+             without it",
+        ),
         (
             "massif",
             "heap",
@@ -2559,6 +3158,64 @@ fn run_refuses_replay_and_unknown_modes() {
             "{profile} {args}: a folder was created"
         );
     }
+}
+
+/// @test bench run --analyze is refused before anything starts or is
+/// created for a run under Nsight Compute, whichever way the request reaches
+/// ncu (after `--` too); under Nsight Systems the run starts under nsys, and
+/// --analyze without --csv only warns.
+#[test]
+fn run_analyze_is_refused_under_ncu() {
+    for (args, request) in [
+        (
+            &["--profile", "ncu", "--csv", "out.csv", "--analyze"][..],
+            "--profile ncu",
+        ),
+        (
+            &[
+                "--profile",
+                "nsight",
+                "--profile-args",
+                "replay",
+                "--analyze",
+            ],
+            "--profile nsight --profile-args 'replay'",
+        ),
+        (
+            &[
+                "--analyze",
+                "--",
+                "--profile",
+                "ncu",
+                "--profile-args",
+                "--set full",
+            ],
+            "--profile ncu --profile-args '--set full'",
+        ),
+    ] {
+        let rig = route_rig(&["nsys", "ncu"]);
+        let (code, err, log) = run_rig(&rig, args);
+        assert_eq!(code, 1, "{args:?}: {err}");
+        assert!(
+            err.contains(&format!(
+                "Error: invalid arguments: --analyze summarises the run's timing, and {request} \
+                 runs the benchmark under Nsight Compute (ncu), a profiling capture that leaves \
+                 the timing cells empty; drop --analyze, or time the benchmark in a run without \
+                 ncu"
+            )),
+            "{args:?}: {err}"
+        );
+        assert_eq!(log, "", "{args:?}: something was started");
+        assert!(
+            !rig.dir.path().join("bench-out").exists(),
+            "{args:?}: a folder was created"
+        );
+    }
+    let rig = route_rig(&["nsys", "ncu"]);
+    let (code, err, log) = run_rig(&rig, &["--profile", "nsight", "--analyze"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(log.starts_with("nsys wrap=nsight profile "), "{log}");
+    assert!(err.contains("--analyze requires --csv"), "{err}");
 }
 
 /// @test --profile-args may start with a hyphen, and reaches the benchmark
@@ -2767,6 +3424,68 @@ fn run_nsight_stats_leaving_a_process() {
                     .join(format!("bench-out/fake_bench.nsight/{report}.txt"))
             )
             .unwrap_or_default(),
+            "fake summary\n",
+            "{report}"
+        );
+    }
+}
+
+/// @test With a stderr no one reads, bench run's notes on the way are lost
+/// and nothing else changes: a short name that two builds match runs the
+/// first, `--analyze` without `--csv` still runs the benchmark, and what
+/// `nsys stats` leaves running is still ended, every summary written. Each
+/// run exits 0, as its benchmark does.
+#[test]
+fn run_keeps_its_status_with_a_stderr_no_one_reads() {
+    let rig = route_rig(&["nsys"]);
+    for tree in ["a", "b"] {
+        let dir = rig.dir.path().join(format!("build/{tree}/bin/ptests"));
+        std::fs::create_dir_all(&dir).expect("create a build tree");
+        write_executable(
+            &dir.join("Short_PTEST"),
+            &format!("#!/bin/sh\necho \"{tree} $*\" >> '{}'\n", rig.log.display()),
+        );
+    }
+    let bench = rig.bench.to_string_lossy().into_owned();
+    let start = |args: &[&str]| {
+        let mut command = Command::new(bin());
+        command
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path());
+        command
+    };
+    let mut nsight = start(&["run", &bench, "--profile", "nsight"]);
+    nsight.env("FAKE_NSYS_STATS", "leave");
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    inherit(&mut nsight, &holder);
+    for mut command in [
+        start(&["run", "Short"]),
+        start(&["run", "build/a/bin/ptests/Short_PTEST", "--analyze"]),
+        nsight,
+    ] {
+        let out = output_with_stderr_no_one_reads(&mut command);
+        assert_eq!(out.status.code(), Some(0), "{command:?}: {:?}", out.status);
+    }
+    drop(holder);
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    assert!(log.starts_with("a \na \n"), "{log}");
+    assert!(
+        all_ended(&mut held, std::time::Duration::from_secs(20)),
+        "a process the nsight run started still runs"
+    );
+    for report in [
+        "cuda_gpu_kern_sum",
+        "cuda_api_sum",
+        "cuda_gpu_mem_size_sum",
+        "cuda_gpu_mem_time_sum",
+    ] {
+        let summary = rig
+            .dir
+            .path()
+            .join(format!("bench-out/fake_bench.nsight/{report}.txt"));
+        assert_eq!(
+            std::fs::read_to_string(summary).unwrap_or_default(),
             "fake summary\n",
             "{report}"
         );
@@ -3675,6 +4394,523 @@ fn doctor_starts_the_benchmark_as_bench_run_would() {
     assert_eq!(record, "", "the benchmark was started");
 }
 
+/* ----------------------------- Run: Project Defaults ----------------------------- */
+
+/// Write @p text as the `.bench.yaml` of the folder bench runs from in @p rig.
+fn bench_yaml(rig: &RouteRig, text: &str) {
+    std::fs::write(rig.dir.path().join(".bench.yaml"), text).expect("write .bench.yaml");
+}
+
+/// Fail unless no folder above @p dir holds a `.bench.yaml`: bench looks for
+/// one from the working directory up, and a stray one there would decide
+/// what these tests check.
+fn no_bench_yaml_above(dir: &Path) {
+    let found = vernier_rust_tools::bench::config::find(dir);
+    assert!(
+        found.is_none(),
+        "{found:?} would be read as this test's .bench.yaml; move it away to run these tests"
+    );
+}
+
+/// @test bench run gives the benchmark the project's default filter, once.
+#[test]
+fn run_passes_the_configured_filter() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --gtest_filter=Join.*\n");
+}
+
+/// @test A filter given after `--` takes precedence over the configured one,
+/// which the benchmark is then not given at all.
+#[test]
+fn run_command_line_filter_takes_precedence() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let (code, err, log) = run_rig(&rig, &["--", "--gtest_filter=Other.*"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --gtest_filter=Other.*\n");
+}
+
+/// @test The configured filter goes after the profile request and before
+/// the arguments after `--`, which the file's other defaults precede too, and
+/// the Running line shows it.
+#[test]
+fn run_configured_filter_goes_before_the_forwarded_arguments() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "cycles: 7\ngtest_filter: \"Join.*\"\n");
+    let (code, out, err, log) =
+        run_rig_env(&rig, &["--profile", "perf", "--", "--repeats", "2"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --cycles 7 --profile perf --gtest_filter=Join.* --repeats 2\n"
+    );
+    assert!(
+        out.contains(" --profile perf --gtest_filter=Join.* --repeats 2"),
+        "{out}"
+    );
+}
+
+/// @test Without a configured filter, no file or a file without the key,
+/// bench run gives the benchmark none.
+#[test]
+fn run_without_a_configured_filter_passes_none() {
+    let rig = route_rig(&[]);
+    no_bench_yaml_above(rig.dir.path());
+    let (code, err, _) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    bench_yaml(&rig, "cycles: 7\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= \nbench wrap= --cycles 7\n");
+}
+
+/// @test bench run gives the benchmark the file's target_time, as written,
+/// when --target-time is not given, and the command line's when it is.
+#[test]
+fn run_passes_the_configured_target_time() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "target_time: 250ms\n");
+    let (code, err, _) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(&rig, &["--target-time", "1s"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --target-time 250ms\nbench wrap= --target-time 1s\n"
+    );
+}
+
+/// @test A --quick given to bench run takes precedence over the file's
+/// cycles, repeats and target_time: the benchmark gets --quick and none of
+/// them, while the file's filter, which is no size, still applies. A
+/// --cycles given beside --quick on the command line reaches the benchmark
+/// too, which then runs that many cycles and quick's other sizes.
+#[test]
+fn run_quick_takes_precedence_over_the_files_sizes() {
+    let rig = route_rig(&[]);
+    bench_yaml(
+        &rig,
+        "cycles: 10000\nrepeats: 10\ntarget_time: 100ms\ngtest_filter: \"Join.*\"\n",
+    );
+    let (code, err, _) = run_rig(&rig, &["--quick"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(&rig, &["--quick", "--cycles", "7"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        "bench wrap= --quick --gtest_filter=Join.*\n\
+         bench wrap= --quick --cycles 7 --gtest_filter=Join.*\n"
+    );
+}
+
+/// @test The file's profile_output_dir is a default: bench run gives it to
+/// the benchmark when no output folder is given, and an output folder given
+/// after `--` (here as the binary's --artifact-root, which bench run takes
+/// as if given to it) takes precedence over it, once, instead of being
+/// refused as a second value.
+#[test]
+fn run_output_folder_after_the_separator_takes_precedence_over_the_files() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "profile_output_dir: from-yaml\n");
+    let (code, err, _) = run_rig(&rig, &["--profile", "perf"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, err, log) = run_rig(
+        &rig,
+        &["--profile", "perf", "--", "--artifact-root", "other"],
+    );
+    assert_eq!(code, 0, "{err}");
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
+    assert_eq!(
+        log,
+        format!(
+            "bench wrap= --profile perf --profile-output-dir {}/from-yaml\n\
+             bench wrap= --profile perf --profile-output-dir other\n",
+            project.display()
+        )
+    );
+}
+
+/// `bench <args>` run from @p dir with @p rig's stand-ins on PATH; returns
+/// the exit status and stderr.
+fn bench_in(rig: &RouteRig, dir: &Path, args: &[&str]) -> (i32, String) {
+    let out = output_of(
+        Command::new(bin())
+            .args(args)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(dir),
+    );
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// @test A relative profile_output_dir is read from the folder of the
+/// .bench.yaml that names it, wherever bench run runs from below it; a
+/// folder given on the command line is read from the working directory.
+#[test]
+fn run_reads_the_files_output_folder_from_the_files_folder() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "profile_output_dir: bench-out\n");
+    let sub = rig.dir.path().join("sub");
+    std::fs::create_dir(&sub).expect("the subfolder");
+    let bench = rig.bench.display().to_string();
+    for (dir, extra) in [
+        (&sub, &[][..]),
+        (&rig.dir.path().to_path_buf(), &[][..]),
+        (&sub, &["--profile-output-dir", "mine"][..]),
+    ] {
+        let args = [&["run", &bench, "--profile", "perf"][..], extra].concat();
+        let (code, err) = bench_in(&rig, dir, &args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+    }
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench wrap= --profile perf --profile-output-dir {0}/bench-out\n\
+             bench wrap= --profile perf --profile-output-dir {0}/bench-out\n\
+             bench wrap= --profile perf --profile-output-dir mine\n",
+            project.display()
+        )
+    );
+}
+
+/// @test profile-all reads the file's relative profile_output_dir from the
+/// file's folder too, and an --out given on the command line from the
+/// working directory.
+#[test]
+fn profile_all_reads_the_files_output_folder_from_the_files_folder() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "profile_output_dir: bench-out\n");
+    let sub = rig.dir.path().join("sub");
+    std::fs::create_dir(&sub).expect("the subfolder");
+    let bench = rig.bench.display().to_string();
+    for extra in [&[][..], &["--out", "mine"][..]] {
+        let args = [&["profile-all", &bench, "--profilers", "perf"][..], extra].concat();
+        let (code, err) = bench_in(&rig, &sub, &args);
+        assert_eq!(code, 0, "{args:?}: {err}");
+    }
+    let project = rig_file(&rig).parent().expect("a folder").to_path_buf();
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench --profile perf --profile-output-dir {}/bench-out/perf\n\
+             bench --profile perf --profile-output-dir mine/perf\n",
+            project.display()
+        )
+    );
+}
+
+/// @test config-validate knows target_time: it is no unrecognized key.
+#[test]
+fn config_validate_knows_target_time() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(".bench.yaml");
+    std::fs::write(&path, "target_time: 250ms\n").expect("write .bench.yaml");
+    let (code, out, err) = run(&["config-validate", &path.display().to_string()]);
+    assert_eq!(code, 0, "{err}");
+    assert!(
+        !out.contains("unrecognized") && !out.contains("target_time"),
+        "{out}"
+    );
+}
+
+/// `bench config-validate` run in @p dir, which finds its file from there
+/// up; returns the exit status, stdout and stderr.
+fn config_validate_in(dir: &Path) -> (i32, String, String) {
+    let out = output_of(Command::new(bin()).arg("config-validate").current_dir(dir));
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// The `.bench.yaml` of @p rig as bench names it: in the folder the working
+/// directory resolves to.
+fn rig_file(rig: &RouteRig) -> PathBuf {
+    std::fs::canonicalize(rig.dir.path())
+        .expect("the rig's folder")
+        .join(".bench.yaml")
+}
+
+/// @test A .bench.yaml holding a value of the wrong kind stops bench run
+/// before anything starts, naming the file and, for each problem, its line,
+/// the key and what the key takes. config-validate lists the same problems,
+/// and ends with the same error.
+#[test]
+fn run_stops_on_a_bench_yaml_it_cannot_use() {
+    let rig = route_rig(&[]);
+    bench_yaml(
+        &rig,
+        "cycles: many\ngtest_filter: \"Join.*\"\nbin_roots: out\n",
+    );
+    let expected = format!(
+        "Error: {} cannot be used: line 1: cycles: expected a whole number greater than 0, \
+         got 'many'; line 3: bin_roots: expected a list ([\"a\", \"b\"], or one '- item' line \
+         each), got 'out'\n",
+        rig_file(&rig).display()
+    );
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(err, expected);
+    assert_eq!(log, "", "the benchmark was started");
+
+    let (code, out, err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 1, "{out}{err}");
+    assert_eq!(err, expected);
+    for line in [
+        "  [FAIL] line 1: cycles: expected a whole number greater than 0, got 'many'\n",
+        "  [FAIL] line 3: bin_roots: expected a list ([\"a\", \"b\"], or one '- item' line each), \
+         got 'out'\n",
+        "  2 fail(s).\n",
+    ] {
+        assert!(out.contains(line), "{line:?} not in {out}");
+    }
+}
+
+/// @test A .bench.yaml that cannot be read stops bench run before anything
+/// starts, and config-validate, with the same error naming the file.
+#[test]
+fn run_stops_on_a_bench_yaml_it_cannot_read() {
+    let rig = route_rig(&[]);
+    std::fs::write(rig.dir.path().join(".bench.yaml"), b"cycles: \xff\n")
+        .expect("write .bench.yaml");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert!(
+        err.starts_with(&format!(
+            "Error: {} cannot be read: ",
+            rig_file(&rig).display()
+        )),
+        "{err}"
+    );
+    assert_eq!(log, "", "the benchmark was started");
+    let (code, out, validate_err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(validate_err, err);
+}
+
+/// @test profile-all stops on a .bench.yaml it cannot use as bench run does:
+/// no profile run starts and its output folder is not made.
+#[test]
+fn profile_all_stops_on_a_bench_yaml_it_cannot_use() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "repeats: 0\n");
+    let (code, err, log) = run_profile_all(&rig, "perf", None, &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(
+        err,
+        format!(
+            "Error: {} cannot be used: line 1: repeats: expected a whole number greater than \
+             0, got '0'\n",
+            rig_file(&rig).display()
+        )
+    );
+    assert_eq!(log, "", "a profile run was started");
+    assert!(
+        !rig.dir.path().join("out").exists(),
+        "the output folder was made"
+    );
+}
+
+/// @test What config-validate only warns about does not stop a run: a key
+/// the project adds, and low repeats. config-validate exits 0 on them.
+#[test]
+fn a_bench_yaml_with_only_warnings_is_used() {
+    let rig = route_rig(&[]);
+    bench_yaml(&rig, "repeats: 2\nowner: team-a\n");
+    let (code, err, log) = run_rig(&rig, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "bench wrap= --repeats 2\n");
+    let (code, out, err) = config_validate_in(rig.dir.path());
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(out.contains("  [WARN] repeats=2 is low"), "{out}");
+    assert!(
+        out.contains("  [WARN] unrecognized keys preserved as extras: [\"owner\"]"),
+        "{out}"
+    );
+    assert!(!out.contains("[FAIL]"), "{out}");
+}
+
+/// A project folder whose `.bench.yaml` names `bin_roots: ["out/*"]` and
+/// `bin_subdirs: ["bin/ptests"]`, with a stand-in `out/x/bin/ptests/Short_PTEST`
+/// that logs "found <args>", and a working folder `sub` below it holding a
+/// decoy `out/x/bin/ptests/Short_PTEST` (logs "decoy <args>"), which a root
+/// read relative to the working folder would find, and
+/// `alt/y/bin/ptests/Short_PTEST` (logs "env <args>").
+struct RootsRig {
+    dir: tempfile::TempDir,
+    log: PathBuf,
+}
+
+fn roots_rig() -> RootsRig {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("argv.log");
+    for (place, mark) in [
+        ("out/x/bin/ptests", "found"),
+        ("sub/out/x/bin/ptests", "decoy"),
+        ("sub/alt/y/bin/ptests", "env"),
+    ] {
+        let folder = dir.path().join(place);
+        std::fs::create_dir_all(&folder).expect("the folder");
+        write_executable(
+            &folder.join("Short_PTEST"),
+            &format!("#!/bin/sh\necho \"{mark} $*\" >> '{}'\n", log.display()),
+        );
+    }
+    std::fs::write(
+        dir.path().join(".bench.yaml"),
+        "bin_roots: [\"out/*\"]\nbin_subdirs: [\"bin/ptests\"]\n",
+    )
+    .expect("write .bench.yaml");
+    RootsRig { dir, log }
+}
+
+/// `bench <args>` run from the rig's `sub` folder, with the lookup's two
+/// environment variables unset unless @p env sets them; returns the exit
+/// status, stderr and the stand-ins' log.
+fn run_in_sub(rig: &RootsRig, args: &[&str], env: &[(&str, &str)]) -> (i32, String, String) {
+    let mut command = Command::new(bin());
+    command
+        .args(args)
+        .current_dir(rig.dir.path().join("sub"))
+        .env_remove("VERNIER_BENCH_BIN_ROOTS")
+        .env_remove("VERNIER_BENCH_BIN_SUBDIRS");
+    for (k, v) in env {
+        command.env(k, v);
+    }
+    let out = output_of(&mut command);
+    (
+        out.status.code().unwrap_or(255),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+    )
+}
+
+/// @test A short name is looked for under .bench.yaml's bin_roots, in its
+/// bin_subdirs, a relative root being relative to the file's folder: run
+/// from a folder below the file, bench run starts the binary under the
+/// file's root, not the decoy under the working folder.
+#[test]
+fn run_finds_a_short_name_under_the_configured_roots() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(&rig, &["run", "Short"], &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "found \n");
+}
+
+/// @test VERNIER_BENCH_BIN_ROOTS takes precedence over the file's
+/// bin_roots, read relative to the working folder, while the file's
+/// bin_subdirs still apply.
+#[test]
+fn run_environment_roots_take_precedence_over_the_files() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(
+        &rig,
+        &["run", "Short"],
+        &[("VERNIER_BENCH_BIN_ROOTS", "alt/*")],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "env \n");
+}
+
+/// @test profile-all looks a short name up as bench run does.
+#[test]
+fn profile_all_finds_a_short_name_as_run_does() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(
+        &rig,
+        &["profile-all", "Short", "--profilers", "perf", "--out", "o"],
+        &[],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(log, "found --profile perf --profile-output-dir o/perf\n");
+}
+
+/// @test A short name found nowhere is an error naming the roots and the
+/// subfolders searched, and where each came from.
+#[test]
+fn run_names_where_it_looked_for_a_short_name() {
+    let rig = roots_rig();
+    let (code, err, log) = run_in_sub(&rig, &["run", "Missing"], &[]);
+    assert_eq!(code, 1, "{err}");
+    assert_eq!(log, "", "something was started");
+    let project = std::fs::canonicalize(rig.dir.path()).expect("the project folder");
+    let file = project.join(".bench.yaml");
+    assert!(
+        err.contains(&format!(
+            "no binary matching 'Missing' under {}/out/* (bin_roots of {}), in bin/ptests \
+             (bin_subdirs of {})",
+            project.display(),
+            file.display(),
+            file.display()
+        )),
+        "{err}"
+    );
+}
+
+/// @test bench run takes a short name from the first root bin_roots lists
+/// with a match, saying nothing of the later roots; among several matches
+/// under one root it takes the first in sorted order, and says so.
+#[test]
+fn run_takes_a_short_name_from_the_first_listed_root_with_one() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let log = dir.path().join("argv.log");
+    for (place, name) in [
+        ("rel", "Short_PTEST"),
+        ("dbg", "Short_PTEST"),
+        ("dbg", "Twice_PTEST"),
+        ("out/a", "Twice_PTEST"),
+        ("out/b", "Twice_PTEST"),
+    ] {
+        let folder = dir.path().join(place).join("bin/ptests");
+        std::fs::create_dir_all(&folder).expect("the folder");
+        write_executable(
+            &folder.join(name),
+            &format!("#!/bin/sh\necho \"{place} $*\" >> '{}'\n", log.display()),
+        );
+    }
+    std::fs::write(
+        dir.path().join(".bench.yaml"),
+        "bin_roots: [\"rel\", \"out/*\", \"dbg\"]\nbin_subdirs: [\"bin/ptests\"]\n",
+    )
+    .expect("write .bench.yaml");
+    let project = std::fs::canonicalize(dir.path()).expect("the project folder");
+    let mut said = Vec::new();
+    for name in ["Short", "Twice"] {
+        let out = output_of(
+            Command::new(bin())
+                .args(["run", name])
+                .current_dir(dir.path())
+                .env_remove("VERNIER_BENCH_BIN_ROOTS")
+                .env_remove("VERNIER_BENCH_BIN_SUBDIRS"),
+        );
+        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+        assert_eq!(out.status.code(), Some(0), "{name}: {err}");
+        said.push(err);
+    }
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap_or_default(),
+        "rel \nout/a \n"
+    );
+    assert!(!said[0].contains("matched"), "{}", said[0]);
+    assert!(
+        said[1].contains(&format!(
+            "[bench] 'Twice' matched 2 binaries under {}/out/*; picking '{}/out/a/bin/ptests/\
+             Twice_PTEST'",
+            project.display(),
+            project.display()
+        )),
+        "{}",
+        said[1]
+    );
+}
+
 /* ----------------------------- Profile-all ----------------------------- */
 
 /// A route rig whose stand-in benchmark logs its argv and ends with the status
@@ -3731,6 +4967,86 @@ fn run_profile_all(
     )
 }
 
+/// @test A --quick given to profile-all takes precedence over the file's
+/// cycles and repeats, as for bench run; a --cycles given beside it reaches
+/// each run too.
+#[test]
+fn profile_all_quick_takes_precedence_over_the_files_sizes() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "cycles: 10000\nrepeats: 10\n");
+    let out = rig.dir.path().join("out");
+    for extra in [&["--quick"][..], &["--quick", "--cycles", "7"][..]] {
+        let given = output_of(
+            Command::new(bin())
+                .arg("profile-all")
+                .arg(&rig.bench)
+                .args(["--profilers", "perf", "--out"])
+                .arg(&out)
+                .args(extra)
+                .env("PATH", rig.dir.path().join("tools"))
+                .current_dir(rig.dir.path()),
+        );
+        assert!(
+            given.status.success(),
+            "{extra:?}: {}",
+            String::from_utf8_lossy(&given.stderr)
+        );
+    }
+    let perf = out.join("perf");
+    assert_eq!(
+        std::fs::read_to_string(&rig.log).unwrap_or_default(),
+        format!(
+            "bench --quick --profile perf --profile-output-dir {}\n\
+             bench --quick --cycles 7 --profile perf --profile-output-dir {}\n",
+            perf.display(),
+            perf.display()
+        )
+    );
+}
+
+/// @test With a stderr no one reads, profile-all's progress, failure and
+/// summary lines are lost and nothing else changes: every profiler runs in
+/// turn, and profile-all exits 0 when each completes and 1 when one fails.
+#[test]
+fn profile_all_keeps_its_status_with_a_stderr_no_one_reads() {
+    let rig = profile_all_rig();
+    for (fail, expected) in [("0", 0), ("4", 1)] {
+        let out = output_with_stderr_no_one_reads(
+            Command::new(bin())
+                .arg("profile-all")
+                .arg(&rig.bench)
+                .args(["--profilers", "gperf,perf", "--out", "out"])
+                .env("PATH", rig.dir.path().join("tools"))
+                .env("FAKE_EXIT_perf", fail)
+                .current_dir(rig.dir.path()),
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(expected),
+            "perf exiting {fail}: {:?}",
+            out.status
+        );
+    }
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    let runs: Vec<&str> = log
+        .lines()
+        .map(|line| {
+            line.split_once(" --profile-output-dir")
+                .map_or(line, |(run, _)| run)
+        })
+        .collect();
+    assert_eq!(
+        runs,
+        [
+            "bench --profile gperf",
+            "bench --profile perf",
+            "bench --profile gperf",
+            "bench --profile perf"
+        ],
+        "{log}"
+    );
+}
+
 /// The lines of profile-all's summary, one per run, as printed.
 fn profile_all_summary(stderr: &str) -> Vec<String> {
     stderr
@@ -3770,6 +5086,51 @@ fn profile_all_all_succeed() {
     assert!(
         log.contains("valgrind wrap=callgrind --tool=callgrind"),
         "{log}"
+    );
+}
+
+/// @test profile-all gives each run the filter as bench run gives it: the
+/// file's `gtest_filter` without `--filter`, and `--filter` over the file's.
+#[test]
+fn profile_all_takes_the_filter_as_run_does() {
+    let rig = profile_all_rig();
+    bench_yaml(&rig, "gtest_filter: \"Join.*\"\n");
+    let out = rig.dir.path().join("out");
+    let (code, err, log) = run_profile_all(&rig, "gperf,perf", None, &[]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(
+        log,
+        format!(
+            "bench --profile gperf --profile-output-dir {} --gtest_filter=Join.*\n\
+             bench --profile perf --profile-output-dir {} --gtest_filter=Join.*\n",
+            out.join("gperf").display(),
+            out.join("perf").display()
+        )
+    );
+    let given = output_of(
+        Command::new(bin())
+            .arg("profile-all")
+            .arg(&rig.bench)
+            .args(["--profilers", "perf", "--filter", "Cli.*", "--out"])
+            .arg(&out)
+            .env("PATH", rig.dir.path().join("tools"))
+            .current_dir(rig.dir.path()),
+    );
+    assert!(
+        given.status.success(),
+        "{}",
+        String::from_utf8_lossy(&given.stderr)
+    );
+    let log = std::fs::read_to_string(&rig.log).unwrap_or_default();
+    assert_eq!(
+        log.lines().last(),
+        Some(
+            format!(
+                "bench --profile perf --profile-output-dir {} --gtest_filter=Cli.*",
+                out.join("perf").display()
+            )
+            .as_str()
+        )
     );
 }
 
@@ -4398,6 +5759,34 @@ fn doctor_json_require_is_one_document() {
             serde_json::from_str(&out).expect("stdout parses as one JSON document");
         assert_eq!(parsed["backends"][0]["name"], "perf");
         assert!(err.contains(verdict), "--require {require}: {err}");
+    }
+}
+
+/// @test With a stderr no one reads, doctor --json --require loses its
+/// verdict lines and nothing else: stdout is the binary's document, and the
+/// status is 0 when the requirements are met and 1 when they are not.
+#[test]
+fn doctor_json_require_keeps_its_status_with_a_stderr_no_one_reads() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bench = doctor_stand_in(dir.path(), DOCTOR_DOC);
+    for (require, code) in [("perf", 0), ("perf,offcpu", 1)] {
+        let mut command = Command::new(bin());
+        command
+            .arg("doctor")
+            .arg(&bench)
+            .args(["--json", "--require", require]);
+        let out = output_with_stderr_no_one_reads(&mut command);
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "--require {require}: {:?}",
+            out.status
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            DOCTOR_DOC,
+            "--require {require}"
+        );
     }
 }
 

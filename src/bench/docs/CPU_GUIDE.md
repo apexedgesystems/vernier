@@ -414,6 +414,8 @@ Estimated efficiency: 78.4% of theoretical peak (~12000 MB/s)
 Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 ```
 
+A run under Nsight Compute is not timed, and prints none of these lines.
+
 **Interpretation:**
 
 - **Efficiency < 10%:** CPU-bound - optimize algorithms

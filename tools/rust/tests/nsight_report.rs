@@ -4,8 +4,10 @@
 //! every call.
 
 use std::fs;
+use std::io::{PipeReader, PipeWriter, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -21,10 +23,15 @@ const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/nsig
 /// "unwritten"; ends its export by SIGKILL for one named "killed"; fails
 /// `cuda_api_sum` for one named "failing_summary" and prints a record longer
 /// than its header there for one named "long_record"; and for one named
-/// "slow" starts a long `sleep` under itself and waits for it, as a launcher
-/// waits for the tool it started.
+/// "slow" starts a process under itself and waits for it, as a launcher waits
+/// for the tool it started. That process runs until its process group is
+/// killed and leaves by itself once the test's folder is gone; the fake
+/// creates `started` once it runs.
 const FAKE_NSYS: &str = r#"#!/bin/sh
 echo "nsys $*" >> "$NSIGHT_FAKE_LOG"
+lasting() {
+  while [ -d "$NSIGHT_CASE" ]; do "$SLEEP" 0.05; done
+}
 cmd=$1
 shift
 if [ "$cmd" = export ]; then
@@ -40,7 +47,7 @@ if [ "$cmd" = export ]; then
   case "$rep" in *broken*) echo "fake nsys: cannot read $rep" >&2; exit 1 ;; esac
   case "$rep" in *unwritten*) echo "fake nsys: exported nothing"; exit 0 ;; esac
   case "$rep" in *killed*) kill -s KILL $$ ;; esac
-  case "$rep" in *slow*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; wait; exit 0 ;; esac
+  case "$rep" in *slow*) lasting & : > "$NSIGHT_FAKE_STARTED"; wait; exit 0 ;; esac
   : > "$out"
   exit 0
 fi
@@ -74,13 +81,22 @@ exit 2
 "#;
 
 /// ncu as the reference rig's printed it: it fails without `--import` and on a
-/// report named "damaged"; for one named "slow" it starts a long `sleep` under
+/// report named "damaged"; for one named "slow" it starts a process under
 /// itself and waits, as the launcher on PATH runs the real binary. For one
-/// named "leftover" it starts a long `sleep` that keeps its outputs and exits
-/// at once, writing its own pid too; for one named "detached" it starts one
-/// with its outputs elsewhere and then prints the recorded import.
+/// named "leftover" it starts a process that keeps its outputs and exits at
+/// once; for one named "detached" it starts one with its outputs elsewhere
+/// and then prints the recorded import. Each such process runs until its
+/// process group is killed and leaves by itself once the test's folder is
+/// gone; the fake creates `started` once it runs. A "leftover" fake holds the
+/// test's FIFO `launcher` open, when the test has made one, and the process it
+/// leaves does not, so that FIFO tells when the fake itself has ended. A
+/// process started with redirections runs in a subshell: dash keeps a copy of
+/// each redirected descriptor in a function call it puts in the background.
 const FAKE_NCU: &str = r#"#!/bin/sh
 echo "ncu $*" >> "$NSIGHT_FAKE_LOG"
+lasting() {
+  while [ -d "$NSIGHT_CASE" ]; do "$SLEEP" 0.05; done
+}
 rep=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -93,9 +109,12 @@ if [ -z "$rep" ]; then
   exit 1
 fi
 case "$rep" in *damaged*) "$CAT" "$NSIGHT_FIXTURES/ncu_import_damaged.out"; exit 1 ;; esac
-case "$rep" in *slow*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; wait; exit 0 ;; esac
-case "$rep" in *leftover*) "$SLEEP" 30 & echo $! > "$NSIGHT_FAKE_PIDS"; echo $$ > "$NSIGHT_FAKE_LAUNCHER"; exit 0 ;; esac
-case "$rep" in *detached*) "$SLEEP" 30 > /dev/null 2>&1 & echo $! > "$NSIGHT_FAKE_PIDS" ;; esac
+case "$rep" in *slow*) lasting & : > "$NSIGHT_FAKE_STARTED"; wait; exit 0 ;; esac
+case "$rep" in *leftover*)
+  [ -p "$NSIGHT_LAUNCHER_FIFO" ] && exec 9<>"$NSIGHT_LAUNCHER_FIFO"
+  ( lasting ) 9>&- & : > "$NSIGHT_FAKE_STARTED"; exit 0 ;;
+esac
+case "$rep" in *detached*) ( lasting ) > /dev/null 2>&1 & : > "$NSIGHT_FAKE_STARTED" ;; esac
 "$CAT" "$NSIGHT_FIXTURES/ncu_import_per_kernel.out"
 exit 0
 "#;
@@ -110,8 +129,8 @@ struct Run {
 }
 
 /// A scratch area for one test: the temporary directory `bench` is given in
-/// `tmp/`, the working directory `work/`, and the fakes' call log and pid
-/// files.
+/// `tmp/`, the working directory `work/`, and the fakes' call log and
+/// markers.
 struct Case {
     dir: tempfile::TempDir,
 }
@@ -213,8 +232,9 @@ impl Case {
             .env("PATH", fakes())
             .env("TMPDIR", self.path("tmp"))
             .env("NSIGHT_FAKE_LOG", self.path("calls.log"))
-            .env("NSIGHT_FAKE_PIDS", self.path("tool.pid"))
-            .env("NSIGHT_FAKE_LAUNCHER", self.path("launcher.pid"))
+            .env("NSIGHT_CASE", self.dir.path())
+            .env("NSIGHT_FAKE_STARTED", self.path("started"))
+            .env("NSIGHT_LAUNCHER_FIFO", self.path("launcher"))
             .env("NSIGHT_FIXTURES", FIXTURES)
             .env("CAT", which("cat"))
             .env("SLEEP", which("sleep"));
@@ -256,44 +276,64 @@ impl Case {
         fs::read(self.path("work").join(name)).expect("the CSV")
     }
 
-    /// The pid of the `sleep` a fake started, once it has started.
-    fn tool_pid(&self) -> u32 {
-        self.pid_in("tool.pid")
+    /// Run @p command (bench, from `command` or `command_with`) to its end as
+    /// this test's child holding the write end of a pipe (`Owned`): what it
+    /// printed and how it ended, and the pipe's read end, which reads its end
+    /// once every process bench started has ended.
+    fn run_held(&self, mut command: Command) -> (Run, PipeReader) {
+        command.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let (held, holder) = std::io::pipe().expect("a pipe");
+        let mut owned = Owned::start(command, holder);
+        let stdout = read_in_background(owned.bench.stdout.take());
+        let stderr = read_in_background(owned.bench.stderr.take());
+        let status = wait_for_exit(&mut owned.bench, Duration::from_secs(60));
+        let run = Run {
+            status,
+            stdout: stdout.join().expect("read bench's stdout"),
+            stderr: stderr.join().expect("read bench's stderr"),
+        };
+        (run, held)
     }
 
-    /// The pid of the fake that started a "leftover" `sleep`, once written.
-    fn launcher_pid(&self) -> u32 {
-        self.pid_in("launcher.pid")
+    /// `bench nsight-parse <args>`, as `run_held` runs it.
+    fn parse_held(&self, args: &[&str]) -> (Run, PipeReader) {
+        let mut all = vec![COMMAND];
+        all.extend_from_slice(args);
+        self.run_held(self.command(&all))
     }
 
-    fn pid_in(&self, name: &str) -> u32 {
-        let until = Instant::now() + Duration::from_secs(20);
-        loop {
-            if let Some(pid) = fs::read_to_string(self.path(name))
-                .ok()
-                .and_then(|text| text.trim().parse().ok())
-            {
-                return pid;
-            }
-            assert!(Instant::now() < until, "the fake never wrote {name}");
-            std::thread::sleep(Duration::from_millis(10));
-        }
+    /// Make the FIFO @p name in this case's folder and open it for reading,
+    /// without waiting: a fake that opens it too holds it while it runs
+    /// (`all_ended` reads its end once no process holds it).
+    fn fifo(&self, name: &str) -> fs::File {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let path = self.path(name);
+        let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("a path");
+        // SAFETY: mkfifo(3) only reads the path, a NUL-terminated string that
+        // lives through the call.
+        let made = unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(made, 0, "mkfifo: {}", std::io::Error::last_os_error());
+        fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&path)
+            .expect("open the FIFO")
     }
 }
 
-/// Whether @p pid has ended: gone, or a zombie no one has reaped yet, within
-/// 5 s.
-fn ended(pid: u32) -> bool {
-    let until = Instant::now() + Duration::from_secs(5);
-    loop {
-        if ended_now(pid) {
-            return true;
+/// Read @p pipe to its end on a thread of its own; nothing for none.
+fn read_in_background<R: Read + Send + 'static>(
+    pipe: Option<R>,
+) -> std::thread::JoinHandle<String> {
+    std::thread::spawn(move || {
+        let mut text = String::new();
+        if let Some(mut pipe) = pipe {
+            let _ = pipe.read_to_string(&mut text);
         }
-        if Instant::now() >= until {
-            return false;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
+        text
+    })
 }
 
 /// Send @p signal (a name for `kill -s`) to the process @p pid alone.
@@ -304,39 +344,6 @@ fn send_signal(pid: u32, signal: &str) {
         .status()
         .expect("run kill");
     assert!(status.success(), "kill -s {signal} {pid}");
-}
-
-/// End a process a failed test left running, by its pid.
-fn end(pid: u32) {
-    let _ = Command::new("/bin/sh")
-        .arg("-c")
-        .arg(format!("kill -s KILL {pid}"))
-        .status();
-}
-
-/// Processes a test started, ended when the test ends, after its assertions,
-/// if they still run then. It ends nothing a test checks.
-struct Guard(Vec<u32>);
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        for &pid in &self.0 {
-            if !ended_now(pid) {
-                end(pid);
-            }
-        }
-    }
-}
-
-/// Whether @p pid is gone or a zombie, without waiting.
-fn ended_now(pid: u32) -> bool {
-    let state = fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| {
-            let after = &stat[stat.rfind(')')? + 1..];
-            after.split_whitespace().next().map(str::to_string)
-        });
-    matches!(state.as_deref(), None | Some("Z") | Some("X"))
 }
 
 /// Wait at most @p within for @p child to exit.
@@ -351,6 +358,119 @@ fn wait_for_exit(child: &mut std::process::Child, within: Duration) -> ExitStatu
             panic!("bench did not end within {within:?}");
         }
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// `bench`, started by a test as its own child, holding the write end of a
+/// pipe whose read end the test keeps: bench and every process it starts
+/// inherit that end, so the pipe reads its end once all of them have ended
+/// (`all_ended`), whatever their process ids. Dropped, it ends bench by its
+/// handle, which signals nothing once bench has been reaped; the processes
+/// bench started are left to end by themselves (the slow fake's process
+/// leaves once its case's folder is gone). Nothing is signalled by a process
+/// id read from a file.
+struct Owned {
+    bench: std::process::Child,
+}
+
+impl Owned {
+    /// Start @p command with @p holder, a pipe's write end, open in its
+    /// process without close-on-exec; this test's copies of it are closed
+    /// once the process has started. The process gets it as a descriptor
+    /// numbered 10 or more, which no redirection of the fakes (`sh` takes
+    /// 0 to 9) replaces in a process bench starts.
+    fn start(mut command: Command, holder: PipeWriter) -> Self {
+        use std::os::fd::{FromRawFd, OwnedFd};
+
+        // SAFETY: fcntl(2) F_DUPFD_CLOEXEC only duplicates the descriptor
+        // `holder` owns, onto the lowest free number from 10.
+        let raised = unsafe { libc::fcntl(holder.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 10) };
+        assert!(
+            raised >= 10,
+            "F_DUPFD_CLOEXEC: {}",
+            std::io::Error::last_os_error()
+        );
+        // SAFETY: fcntl has just returned `raised`, which nothing else owns.
+        let raised = unsafe { OwnedFd::from_raw_fd(raised) };
+        drop(holder);
+        let fd = raised.as_raw_fd();
+        // SAFETY: the closure runs in the child between fork and exec and
+        // calls only fcntl(2), which is async-signal-safe; `fd` is open in the
+        // child, as `raised` lives until the spawn has returned.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == 0 {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::last_os_error())
+                }
+            });
+        }
+        let bench = command.spawn().expect("spawn bench");
+        drop(raised);
+        Self { bench }
+    }
+
+    /// Wait at most 20 s for the fake to start its process (it then creates
+    /// `started`); a run that ends first fails the test.
+    fn wait_for_start(&mut self, case: &Case) {
+        let until = Instant::now() + Duration::from_secs(20);
+        while !case.path("started").exists() {
+            if let Some(status) = self.bench.try_wait().expect("wait") {
+                panic!("bench ended before its tool started: {status:?}");
+            }
+            assert!(Instant::now() < until, "the fake never started");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// What bench wrote to its stderr, once it has ended, when it was piped.
+    fn stderr(&mut self) -> String {
+        let mut text = String::new();
+        if let Some(mut stderr) = self.bench.stderr.take() {
+            stderr
+                .read_to_string(&mut text)
+                .expect("read bench's stderr");
+        }
+        text
+    }
+}
+
+impl Drop for Owned {
+    fn drop(&mut self) {
+        // By its handle: a bench already reaped is not signalled again, and
+        // one not yet reaped still has its own process id.
+        let _ = self.bench.kill();
+        let _ = self.bench.wait();
+    }
+}
+
+/// Whether every process holding @p held's write end has ended within
+/// @p within: the pipe then reads its end.
+fn all_ended(held: &mut (impl Read + AsRawFd), within: Duration) -> bool {
+    let fd = held.as_raw_fd();
+    // SAFETY: fcntl(2) only reads and sets the flags of a descriptor that
+    // @p held owns and keeps open through the calls.
+    unsafe {
+        let flags = libc::fcntl(fd, libc::F_GETFL);
+        assert!(flags >= 0, "F_GETFL: {}", std::io::Error::last_os_error());
+        let set = libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        assert!(set >= 0, "F_SETFL: {}", std::io::Error::last_os_error());
+    }
+    let until = Instant::now() + within;
+    let mut chunk = [0u8; 64];
+    loop {
+        match held.read(&mut chunk) {
+            Ok(0) => return true,
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if Instant::now() >= until {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => panic!("read the pipe: {e}"),
+        }
     }
 }
 
@@ -468,6 +588,40 @@ fn summary_without_data_is_a_warning() {
         run.stdout,
         format!("[{COMMAND}] wrote 12 rows to out.csv\n")
     );
+}
+
+/// @test With a stderr no one reads, the warning and error lines are lost
+/// and nothing else changes: the CSV is written, stdout says so, and the
+/// run exits 0 after a warning and 1 after an error.
+#[test]
+fn lines_no_one_reads_change_nothing_else() {
+    for (report, rows, status) in [
+        ("no_kernels.nsys-rep", 12, 0),
+        ("failing_summary.nsys-rep", 5, 1),
+    ] {
+        let case = Case::new();
+        case.report(report);
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        let out = case
+            .command(&[COMMAND, report, "--csv", "out.csv"])
+            .stdin(Stdio::null())
+            .stderr(writer)
+            .output()
+            .expect("run bench");
+        assert_eq!(
+            out.status.code(),
+            Some(status),
+            "{report}: {:?}",
+            out.status
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            format!("[{COMMAND}] wrote {rows} rows to out.csv\n"),
+            "{report}"
+        );
+        assert!(!case.csv("out.csv").is_empty(), "{report}: no CSV");
+    }
 }
 
 /// @test A failing summary is an error naming it; the other summaries' rows
@@ -877,22 +1031,24 @@ fn usage_errors_exit_two() {
 /* ----------------------------- Bounded runs ----------------------------- */
 
 /// @test A tool that runs past --timeout is stopped with the process it
-/// started under itself, well before that process would have ended, and the
-/// run says so.
+/// started under itself, which would otherwise have run as long as the test,
+/// and the run says so.
 #[test]
 fn timeout_stops_the_tool_and_what_it_started() {
     let case = Case::new();
     case.report("slow.ncu-rep");
     let started = Instant::now();
 
-    let run = case.parse(&["slow.ncu-rep", "--csv", "out.csv", "--timeout", "1"]);
+    let (run, mut held) = case.parse_held(&["slow.ncu-rep", "--csv", "out.csv", "--timeout", "1"]);
 
-    let tool = case.tool_pid();
-    let stopped = ended(tool);
-    if !stopped {
-        end(tool);
-    }
-    assert!(stopped, "the tool's own process {tool} still runs");
+    assert!(
+        case.path("started").exists(),
+        "the tool never started its process"
+    );
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the tool, or the process it started, still runs"
+    );
     assert!(started.elapsed() < Duration::from_secs(20));
     assert_eq!(run.status.code(), Some(1));
     assert_eq!(
@@ -911,14 +1067,16 @@ fn timeout_removes_the_private_export() {
     let case = Case::new();
     case.report("slow.nsys-rep");
 
-    let run = case.parse(&["slow.nsys-rep", "--csv", "out.csv", "--timeout", "1"]);
+    let (run, mut held) = case.parse_held(&["slow.nsys-rep", "--csv", "out.csv", "--timeout", "1"]);
 
-    let tool = case.tool_pid();
-    let stopped = ended(tool);
-    if !stopped {
-        end(tool);
-    }
-    assert!(stopped, "the tool's own process {tool} still runs");
+    assert!(
+        case.path("started").exists(),
+        "the tool never started its process"
+    );
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the tool, or the process it started, still runs"
+    );
     assert_eq!(run.status.code(), Some(1));
     assert!(run
         .stderr
@@ -926,70 +1084,154 @@ fn timeout_removes_the_private_export() {
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
 }
 
-/// Start a run on a slow export with @p signal at its default action, send it
-/// that signal once its tool runs, and check that the tool, the private
-/// export and the CSV are all gone and that the run ended by that signal.
-fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: &str) {
-    let case = Case::new();
-    case.report("slow.nsys-rep");
-    let mut child = case
-        .command_with(
-            Start::Default(signal),
-            &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bench");
-    let tool = case.tool_pid();
-
-    send_signal(child.id(), signal);
-
-    let until = Instant::now() + Duration::from_secs(30);
-    let status = loop {
-        if let Some(status) = child.try_wait().expect("wait") {
-            break status;
-        }
-        if Instant::now() >= until {
-            let _ = child.kill();
-            end(tool);
-            panic!("bench did not end after {signal}");
-        }
-        std::thread::sleep(Duration::from_millis(20));
+/// Start a run on @p report in @p case with @p signal at its default action,
+/// send it that signal once its tool runs, and check that the tool and what
+/// it started, the private export and the CSV are all gone and that the run
+/// ended by that signal. With @p name, stderr is the line naming the signal;
+/// without, stderr is a pipe no one reads (its read end closed). With
+/// @p path, bench's PATH is that folder instead of the fakes'.
+///
+/// bench is this test's child (`Owned`): it is signalled before it is reaped
+/// and, if it outlasts the bound, ended by its handle. Whether the tool and
+/// what it started have ended is read from the pipe they inherit from bench,
+/// not from a process id; the slow fake's process leaves by itself once the
+/// case's folder is gone, so a run that fails leaves nothing behind.
+fn interrupt(
+    case: &Case,
+    report: &str,
+    signal: &'static str,
+    number: i32,
+    name: Option<&str>,
+    path: Option<&Path>,
+) {
+    let stderr = if name.is_some() {
+        Stdio::piped()
+    } else {
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        writer.into()
     };
-    let out = child.wait_with_output().expect("output");
-    let stopped = ended(tool);
-    if !stopped {
-        end(tool);
-    }
-    assert_eq!(status.signal(), Some(number), "{status:?}");
-    assert!(stopped, "the tool's own process {tool} still runs");
-    assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
-        format!("[{COMMAND}] stopped by {name}; nothing was written\n")
+    let mut command = case.command_with(
+        Start::Default(signal),
+        &[COMMAND, report, "--csv", "out.csv"],
     );
+    command.stdout(Stdio::null()).stderr(stderr);
+    if let Some(path) = path {
+        command.env("PATH", path);
+    }
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(case);
+
+    send_signal(run.bench.id(), signal);
+
+    let status = wait_for_exit(&mut run.bench, Duration::from_secs(30));
+    let stderr = run.stderr();
+    let stopped = all_ended(&mut held, Duration::from_secs(5));
+    assert_eq!(status.signal(), Some(number), "{status:?}");
+    assert!(stopped, "the tool, or a process it started, still runs");
+    if let Some(name) = name {
+        assert_eq!(
+            stderr,
+            format!("[{COMMAND}] stopped by {name}; nothing was written\n")
+        );
+    }
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
     assert!(!case.path("work").join("out.csv").exists());
+}
+
+/// `interrupt` on a slow export, with the fakes on PATH.
+fn interrupted_run_cleans_up(signal: &'static str, number: i32, name: Option<&str>) {
+    let case = Case::new();
+    case.report("slow.nsys-rep");
+    interrupt(&case, "slow.nsys-rep", signal, number, name, None);
 }
 
 /// @test SIGINT stops the tool and what it started, removes the private
 /// export, writes nothing, and ends the run by SIGINT.
 #[test]
 fn sigint_cleans_up() {
-    interrupted_run_cleans_up("INT", 2, "SIGINT");
+    interrupted_run_cleans_up("INT", 2, Some("SIGINT"));
 }
 
 /// @test SIGTERM does the same and ends the run by SIGTERM.
 #[test]
 fn sigterm_cleans_up() {
-    interrupted_run_cleans_up("TERM", 15, "SIGTERM");
+    interrupted_run_cleans_up("TERM", 15, Some("SIGTERM"));
 }
 
 /// @test SIGHUP, which a terminal's hangup sends to bench and not to the
 /// tool's own process group, does the same and ends the run by SIGHUP.
 #[test]
 fn sighup_cleans_up() {
-    interrupted_run_cleans_up("HUP", 1, "SIGHUP");
+    interrupted_run_cleans_up("HUP", 1, Some("SIGHUP"));
+}
+
+/// @test With a stderr no one reads, the line naming the signal is lost and
+/// nothing else changes: SIGINT still stops the tool, removes the private
+/// export, writes nothing, and ends the run by SIGINT.
+#[test]
+fn sigint_with_a_stderr_no_one_reads_cleans_up() {
+    interrupted_run_cleans_up("INT", 2, None);
+}
+
+/// @test No process is signalled by a process id read from a file. tool.pid
+/// names a live process of this test's own (a sentinel, kept unreaped, so
+/// that its id stays its own); an interruption run whose tool is not on PATH,
+/// or ends at once, then leaves the sentinel running, whether the run's
+/// checks pass or fail.
+#[test]
+fn a_recorded_process_id_is_never_signalled() {
+    for (report, unavailable) in [("slow.nsys-rep", true), ("unwritten.nsys-rep", false)] {
+        let mut sentinel = Command::new(which("sleep"))
+            .arg("60")
+            .stdin(Stdio::null())
+            .spawn()
+            .expect("start the sentinel");
+        let case = Case::new();
+        case.report(report);
+        fs::write(case.path("tool.pid"), sentinel.id().to_string()).expect("a stale tool.pid");
+        let empty = case.path("empty-bin");
+        let path = unavailable.then_some(empty.as_path());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            interrupt(&case, report, "INT", 2, Some("SIGINT"), path);
+        }));
+        let state = sentinel.try_wait().expect("the sentinel's state");
+        let _ = sentinel.kill();
+        let _ = sentinel.wait();
+        assert_eq!(
+            state, None,
+            "{report}: the process tool.pid names was signalled"
+        );
+    }
+}
+
+/// @test A run that fails while the slow fake runs leaves nothing behind.
+/// bench, ended by its handle as a failed check ends it, does not stop its
+/// tool's process group: the fake and what it started keep running, and
+/// leave by themselves once the case's folder is gone.
+#[test]
+fn a_failed_run_leaves_nothing_behind() {
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let case = Case::new();
+    case.report("slow.nsys-rep");
+    let mut command = case.command_with(
+        Start::Default("INT"),
+        &[COMMAND, "slow.nsys-rep", "--csv", "out.csv"],
+    );
+    command.stdout(Stdio::null()).stderr(Stdio::null());
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(&case);
+    drop(run);
+    assert!(
+        !all_ended(&mut held, Duration::from_millis(300)),
+        "the fake ended with bench"
+    );
+    drop(case);
+    assert!(
+        all_ended(&mut held, Duration::from_secs(20)),
+        "the fake outlived its case's folder"
+    );
 }
 
 /// Start a run on a slow export with @p signal ignored, send it that signal
@@ -999,38 +1241,38 @@ fn sighup_cleans_up() {
 fn ignored_signal_stays_ignored(signal: &'static str) {
     let case = Case::new();
     case.report("slow.nsys-rep");
-    let mut child = case
-        .command_with(
-            Start::Ignoring(signal),
-            &[
-                COMMAND,
-                "slow.nsys-rep",
-                "--csv",
-                "out.csv",
-                "--timeout",
-                "2",
-            ],
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bench");
-    let tool = case.tool_pid();
-    let _guard = Guard(vec![tool]);
+    let mut command = case.command_with(
+        Start::Ignoring(signal),
+        &[
+            COMMAND,
+            "slow.nsys-rep",
+            "--csv",
+            "out.csv",
+            "--timeout",
+            "2",
+        ],
+    );
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(&case);
 
-    send_signal(child.id(), signal);
+    send_signal(run.bench.id(), signal);
 
-    let status = wait_for_exit(&mut child, Duration::from_secs(30));
-    let out = child.wait_with_output().expect("output");
+    let status = wait_for_exit(&mut run.bench, Duration::from_secs(30));
+    let stderr = run.stderr();
     assert_eq!(status.code(), Some(1), "{status:?}");
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
+        stderr,
         format!(
             "[{COMMAND}] error: nsys export failed for slow.nsys-rep: nsys did not finish \
              within 2 s and was stopped\n"
         )
     );
-    assert!(ended(tool), "the tool's own process {tool} still runs");
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the tool, or the process it started, still runs"
+    );
     assert!(case.leftovers().is_empty(), "{:?}", case.leftovers());
 }
 
@@ -1058,11 +1300,10 @@ fn leftover_holding_the_output_is_stopped() {
     case.report("leftover.ncu-rep");
     let started = Instant::now();
 
-    let run = case.parse(&["leftover.ncu-rep", "--csv", "out.csv", "--timeout", "30"]);
+    let (run, mut held) =
+        case.parse_held(&["leftover.ncu-rep", "--csv", "out.csv", "--timeout", "30"]);
 
     let took = started.elapsed();
-    let leftover = case.tool_pid();
-    let _guard = Guard(vec![leftover]);
     assert_eq!(run.status.code(), Some(1));
     assert_eq!(
         run.stderr,
@@ -1073,8 +1314,12 @@ fn leftover_holding_the_output_is_stopped() {
     );
     assert!(took < Duration::from_secs(10), "{took:?}");
     assert!(
-        ended(leftover),
-        "the process the tool left {leftover} still runs"
+        case.path("started").exists(),
+        "the tool never started its process"
+    );
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the process the tool left still runs"
     );
 }
 
@@ -1085,43 +1330,44 @@ fn leftover_holding_the_output_is_stopped() {
 fn signal_while_a_leftover_holds_the_output_ends_at_once() {
     let case = Case::new();
     case.report("leftover.ncu-rep");
-    let mut child = case
-        .command_with(
-            Start::Default("TERM"),
-            &[
-                COMMAND,
-                "leftover.ncu-rep",
-                "--csv",
-                "out.csv",
-                "--timeout",
-                "30",
-            ],
-        )
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn bench");
-    let leftover = case.tool_pid();
-    let _guard = Guard(vec![leftover]);
-    let tool = case.launcher_pid();
-    assert!(ended(tool), "the tool {tool} never ended");
+    // Held by the tool alone: the process it leaves starts without it.
+    let mut tool = case.fifo("launcher");
+    let mut command = case.command_with(
+        Start::Default("TERM"),
+        &[
+            COMMAND,
+            "leftover.ncu-rep",
+            "--csv",
+            "out.csv",
+            "--timeout",
+            "30",
+        ],
+    );
+    command.stdout(Stdio::null()).stderr(Stdio::piped());
+    let (mut held, holder) = std::io::pipe().expect("a pipe");
+    let mut run = Owned::start(command, holder);
+    run.wait_for_start(&case);
+    assert!(
+        all_ended(&mut tool, Duration::from_secs(5)),
+        "the tool never ended"
+    );
     // The run is now waiting for the output the leftover holds.
     std::thread::sleep(Duration::from_millis(200));
 
     let signalled = Instant::now();
-    send_signal(child.id(), "TERM");
+    send_signal(run.bench.id(), "TERM");
 
-    let status = wait_for_exit(&mut child, Duration::from_secs(40));
+    let status = wait_for_exit(&mut run.bench, Duration::from_secs(40));
     let took = signalled.elapsed();
-    let out = child.wait_with_output().expect("output");
+    let stderr = run.stderr();
     assert_eq!(status.signal(), Some(15), "{status:?}");
     assert!(took < Duration::from_secs(1), "{took:?} after SIGTERM");
     assert!(
-        ended(leftover),
-        "the process the tool left {leftover} still runs"
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the process the tool left still runs"
     );
     assert_eq!(
-        String::from_utf8_lossy(&out.stderr),
+        stderr,
         format!("[{COMMAND}] stopped by SIGTERM; nothing was written\n")
     );
     assert!(!case.path("work").join("out.csv").exists());
@@ -1134,15 +1380,17 @@ fn process_left_by_a_finished_tool_is_stopped() {
     let case = Case::new();
     case.report("detached.ncu-rep");
 
-    let run = case.parse(&["detached.ncu-rep", "--csv", "ncu.csv"]);
+    let (run, mut held) = case.parse_held(&["detached.ncu-rep", "--csv", "ncu.csv"]);
 
-    let leftover = case.tool_pid();
-    let _guard = Guard(vec![leftover]);
     assert_eq!(run.status.code(), Some(0), "{}", run.stderr);
     assert_eq!(case.csv("ncu.csv"), fixture("expected_ncu_metrics.csv"));
     assert!(
-        ended(leftover),
-        "the process the tool left {leftover} still runs"
+        case.path("started").exists(),
+        "the tool never started its process"
+    );
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the process the tool left still runs"
     );
 }
 
@@ -1152,30 +1400,18 @@ fn process_left_by_a_finished_tool_is_stopped() {
 fn ignored_child_signal_does_not_hide_the_tools_end() {
     let case = Case::new();
     case.report("leftover.ncu-rep");
-    let run = {
-        let out = case
-            .command_with(
-                Start::Ignoring("CHLD"),
-                &[
-                    COMMAND,
-                    "leftover.ncu-rep",
-                    "--csv",
-                    "out.csv",
-                    "--timeout",
-                    "1",
-                ],
-            )
-            .output()
-            .expect("run bench");
-        Run {
-            status: out.status,
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-        }
-    };
+    let (run, mut held) = case.run_held(case.command_with(
+        Start::Ignoring("CHLD"),
+        &[
+            COMMAND,
+            "leftover.ncu-rep",
+            "--csv",
+            "out.csv",
+            "--timeout",
+            "1",
+        ],
+    ));
 
-    let leftover = case.tool_pid();
-    let _guard = Guard(vec![leftover]);
     assert_eq!(run.status.code(), Some(1), "{}", run.stderr);
     assert_eq!(
         run.stderr,
@@ -1185,8 +1421,12 @@ fn ignored_child_signal_does_not_hide_the_tools_end() {
         )
     );
     assert!(
-        ended(leftover),
-        "the process the tool left {leftover} still runs"
+        case.path("started").exists(),
+        "the tool never started its process"
+    );
+    assert!(
+        all_ended(&mut held, Duration::from_secs(5)),
+        "the process the tool left still runs"
     );
 }
 

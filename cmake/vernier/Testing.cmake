@@ -54,6 +54,7 @@ include_guard(GLOBAL)
 #   TIMING_TESTS    <names...>       optional
 #   TIMING_PATTERNS <regex...>       optional
 #   REQUIRES_THREADS <n>             optional (min hardware threads required)
+#   EXPORT_SYMBOLS  <names...>       optional (exported from the program by name)
 # ------------------------------------------------------------------------------
 function (vernier_add_gtest)
   # Skip on bare-metal
@@ -67,7 +68,7 @@ function (vernier_add_gtest)
     GT
     "TIMING_ALL;NO_COVERAGE;NO_REGISTER;_PLAIN_PROGRAM;_COMPONENT"
     "TARGET;INC;WORKING_DIR;RESOURCE_LOCK;COVERAGE_FOR;REQUIRES_THREADS;CLASS"
-    "SOURCES;WORKER_SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS"
+    "SOURCES;WORKER_SOURCES;CUDA;LINK;LABELS;TIMING_TESTS;TIMING_PATTERNS;COMPONENT_PATTERNS;RIG_PATTERNS;EXPORT_SYMBOLS"
     ${ARGN}
   )
   vernier_require(GT_TARGET GT_SOURCES)
@@ -147,6 +148,12 @@ function (vernier_add_gtest)
   endif ()
 
   target_link_libraries(${GT_TARGET} PRIVATE ${_gtest_libs} ${GT_LINK})
+
+  # Each name in EXPORT_SYMBOLS goes into the program's dynamic symbols, so a
+  # shared library the program links reaches the program's definition.
+  foreach (_symbol IN LISTS GT_EXPORT_SYMBOLS)
+    target_link_options(${GT_TARGET} PRIVATE "LINKER:--export-dynamic-symbol=${_symbol}")
+  endforeach ()
 
   set(_out_dir "tests")
   if (GT__COMPONENT)
@@ -437,6 +444,7 @@ endfunction ()
 #   COVERAGE_FOR    <lib_target>     optional (overrides auto-detection)
 #   INC             <dir>            optional
 #   NO_COVERAGE                      optional flag (skip coverage)
+#   EXPORT_SYMBOLS  <names...>       optional (exported from the program by name)
 # ------------------------------------------------------------------------------
 function (vernier_add_test_program)
   vernier_add_gtest(${ARGN} NO_REGISTER _PLAIN_PROGRAM)

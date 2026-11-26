@@ -25,8 +25,10 @@
 #include "src/bench/inc/PerfGpuConfig.hpp"
 #include "src/bench/inc/PerfGpuStats.hpp"
 #include "src/bench/inc/PerfStats.hpp"
+#include "src/bench/inc/PerfRegistry.hpp"
 #include "src/bench/inc/ProfilerGperf.hpp"
 #include "src/bench/inc/ProfilerJemalloc.hpp"
+#include "src/bench/inc/ProfilerNsight.hpp"
 #include "src/bench/inc/ProfilerRAPL.hpp"
 
 #include <gtest/gtest.h>
@@ -43,8 +45,11 @@ using vernier::bench::BENCH_ABI_VERSION;
 using vernier::bench::checkBenchAbi;
 using vernier::bench::GperfProfiler;
 using vernier::bench::JemallocProfiler;
+using vernier::bench::NsightProfiler;
 using vernier::bench::PerfConfig;
 using vernier::bench::PerfGpuConfig;
+using vernier::bench::PerfRow;
+using vernier::bench::PerfSummaryEntry;
 using vernier::bench::RAPLProfiler;
 using vernier::bench::Stats;
 using vernier::bench::UnifiedMemoryProfile;
@@ -105,6 +110,9 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 // Stats and PerfGpuConfig keep version 2's layout.
 // Version 6 changed RAPLProfiler's members. No table here describes those
 // profilers' members; RAPLProfiler's size is pinned with the structs' sizes.
+// Version 7 appended PerfRow::timed and PerfSummaryEntry::timed, the rows the
+// libraries publish through PerfRegistry, and dropped NsightProfiler's replay
+// toggles; their sizes are pinned with the others.
 // Version 7 made GperfProfiler's members the same whatever headers a
 // benchmark is compiled with; its size is pinned with the others.
 static_assert(BENCH_ABI_VERSION == 7,
@@ -203,6 +211,22 @@ TEST(PerfConfigLayoutTest, SizesOfThisAbiVersion) {
   // the new size.
   EXPECT_EQ(sizeof(GperfProfiler), 400U);
   EXPECT_EQ(gperfProfilerSize(), sizeof(GperfProfiler));
+  // The rows libbench and libbench_cuda publish through PerfRegistry, which
+  // header code builds and reads, and the Nsight backend, which a benchmark
+  // can construct as it can a RAPLProfiler. Version 7 appended `timed` to both
+  // rows and dropped the backend's replay toggles.
+  EXPECT_EQ(sizeof(PerfRow), 856U);
+  EXPECT_EQ(sizeof(PerfSummaryEntry), 80U);
+  EXPECT_EQ(sizeof(NsightProfiler), 320U);
+}
+
+/** @test The rows end with `timed`, version 7's member, true unless set otherwise */
+TEST(PerfRowLayoutTest, TimedIsTheLastMemberAndDefaultsToTrue) {
+  EXPECT_EQ(offsetof(PerfRow, timed), offsetof(PerfRow, label) + sizeof(std::string));
+  EXPECT_EQ(offsetof(PerfSummaryEntry, timed),
+            offsetof(PerfSummaryEntry, cvThreshold) + sizeof(double));
+  EXPECT_TRUE(PerfRow{}.timed);
+  EXPECT_TRUE(PerfSummaryEntry{}.timed);
 }
 
 /** @test On 64-bit libstdc++ the library-read members sit at the offsets measured in 1.0.3 */

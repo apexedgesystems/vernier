@@ -130,13 +130,21 @@ struct ClockSpeedProfile {
  * the CSV cells built from these fields are then empty and the run says why.
  */
 struct PowerThermalProfile {
-  double powerDrawWStart{}; ///< Instantaneous power draw at measure start (W)
-  double powerDrawWEnd{};   ///< Instantaneous power draw at measure end (W)
-  double powerLimitW{};     ///< Configured power limit (W)
-  int temperatureCStart{};  ///< GPU core temperature at start (Celsius)
-  int temperatureCEnd{};    ///< GPU core temperature at end (Celsius)
+  /// NVML's power reading at the measured window's start (W). By NVIDIA's
+  /// NVML reference it is a one-second average on Ampere (except GA100) and
+  /// newer GPUs and an instantaneous reading on GA100 and older: either way
+  /// it is taken before the window's work.
+  double powerDrawWStart{};
+  /// NVML's power reading at the window's end (W), the endpoint reading: the
+  /// same kind of reading as the start's, not an average over the window.
+  /// The CSV's powerDrawW carries it for a window of at least 1.5 s, a rule
+  /// of Vernier's own.
+  double powerDrawWEnd{};
+  double powerLimitW{};    ///< Configured power limit (W)
+  int temperatureCStart{}; ///< GPU core temperature at start (Celsius)
+  int temperatureCEnd{};   ///< GPU core temperature at end (Celsius)
 
-  /** Average of start/end samples; near enough for a single short measurement. */
+  /** The mean of the two readings: not an average over the window, which no mean of them is. */
   [[nodiscard]] double avgPowerDrawW() const { return (powerDrawWStart + powerDrawWEnd) * 0.5; }
 
   /** Temperature delta over the measure window (positive = warmed up). */
@@ -150,11 +158,17 @@ struct PowerThermalProfile {
  */
 struct MultiGpuMetrics {
   int deviceCount = 1;
-  double scalingEfficiency = 0.0; ///< Speedup / N_gpus (ideal=1.0)
-  double loadImbalance = 0.0;     ///< Max/Min device time ratio (ideal=1.0)
+  /// Not measured: always 0. A scaling efficiency needs one device's time on
+  /// the whole job, which a multi-GPU measurement does not take; the field
+  /// keeps its place in the layout, so a check against it fails rather than
+  /// pass on another number.
+  double scalingEfficiency = 0.0;
+  double loadImbalance = 0.0; ///< Max/Min device time ratio (ideal=1.0)
   bool p2pEnabled = false;
   double p2pBandwidthGBs = 0.0;
 
+  /// The mean of min(1, scalingEfficiency) and the balance score: with the
+  /// efficiency not measured (0), at most 0.5 and only the balance moves it.
   [[nodiscard]] double scalingQuality() const {
     const double EFFICIENCY_SCORE = std::min(1.0, scalingEfficiency);
     const double BALANCE_SCORE = 1.0 / std::max(1.0, loadImbalance);
@@ -254,7 +268,10 @@ struct GpuStats {
   OccupancyMetrics occupancy{};
   ClockSpeedProfile clocks{};
   PowerThermalProfile powerThermal{};
-  CuptiKernelStats cupti{}; ///< In-process kernel metrics; zeroed when CUPTI unavailable
+  /// In-process kernel metrics of the untimed batch that follows a kernel
+  /// measurement's timed repeats (PerfGpuCase::cudaKernel()); zeroed when
+  /// CUPTI is unavailable.
+  CuptiKernelStats cupti{};
 
   double kernelTimeMedianUs{};
   double transferTimeMedianUs{};

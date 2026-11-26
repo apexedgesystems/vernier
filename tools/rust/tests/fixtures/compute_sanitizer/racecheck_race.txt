@@ -1,0 +1,9 @@
+========= COMPUTE-SANITIZER
+========= Error: Race reported between Write access at racy(int *)+0x80 in racy.cu:15
+=========     and Read access at racy(int *)+0x40 in racy.cu:15 [20 hazards]
+=========     and Write access at racy(int *)+0x80 in racy.cu:15 [256 hazards]
+=========
+========= Error: Race reported between Read access at racy(int *)+0x40 in racy.cu:15
+=========     and Write access at racy(int *)+0x50 in racy.cu:11 [8 hazards]
+=========
+========= RACECHECK SUMMARY: 2 hazards displayed (2 errors, 0 warnings)
