@@ -3,14 +3,11 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), its result shared between threads, plus a deliberately racy addition private to the demo
-**Captured:** 2026-09-28 (UTC), step 4 and the job section 2026-09-29 (UTC);
-written for the Vernier 1.0.4 release; captured from the development tree at
-project version 1.0.3, whose CLI reported `bench 1.0.3`; valgrind 3.24.0. The
-console output of step 2, the doctor's row and the `--profile-args drd` run
-come from 2026-10-03 (UTC), a later tree at the same version; step 4's console
-output and log, the job section and helgrind's cost come from 2026-11-23
-(UTC), a later tree at the same version, whose wraps ask valgrind for its fair
-scheduler.
+**Captured:** 2026-09-28 (UTC); written for the Vernier 1.0.4 release;
+captured from the development tree at project version 1.0.3, whose CLI
+reported `bench 1.0.3`; valgrind 3.24.0. The console output of step 2, the
+doctor's row and the `--profile-args drd` run come from 2026-10-03 (UTC), a
+later tree at the same version.
 
 ## Overview
 
@@ -46,14 +43,13 @@ has no order to get wrong: the race is what it shows.
 - **Best for:** data races, locks taken in inconsistent orders, misuse of the
   POSIX threads API.
 - **Overhead:** large. Under helgrind, `Helgrind.LockedTotal`'s result line
-  read from 13.7 to 14.6 ms per call over the eight runs of it for this page,
-  step 4's among them, against 22.1 us in step 1: hundreds of times as long.
-  Valgrind runs one thread at a time, and `bench run` asks it for its fair
-  scheduler, which takes the threads in turn. Without it, eight runs in the
-  same session read from 77.3 to 541.6 ms per call, seven times apart: under
-  valgrind's default scheduler a thread that computes can keep the others
-  waiting. Run one test at a time under it, with few cycles, and never read
-  its timings as measurements.
+  read from 13.7 to 14.6 ms per call over eight runs on this rig, step 4's
+  among them, against 22.1 us in step 1: hundreds of times as long. Valgrind
+  runs one thread at a time, and `bench run` asks it for its fair scheduler,
+  which takes the threads in turn. Without it, eight runs read from 77.3 to
+  541.6 ms per call, seven times apart: under valgrind's default scheduler a
+  thread that computes can keep the others waiting. Run one test at a time
+  under it, with few cycles, and never read its timings as measurements.
 - **Not for:** time (perf, gperftools and callgrind, walkthroughs
   [02](02_PERF_PROFILER.md), [03](03_GPERF_PROFILER.md) and
   [07](07_CALLGRIND_PROFILER.md)), where threads block and for how long
@@ -278,7 +274,7 @@ bench run ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind \
 Captured output:
 
 ```
-Running: valgrind --tool=helgrind --fair-sched=try --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
+Running: valgrind --tool=helgrind --log-file=helgrind-racy/BenchDemo_14_HelgrindProfiler.helgrind/helgrind.log ./build/bin/ptests/BenchDemo_14_HelgrindProfiler --profile helgrind --profile-output-dir helgrind-racy --gtest_filter=Helgrind.RacyTotal
 Note: Google Test filter = Helgrind.RacyTotal
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.

@@ -516,7 +516,7 @@ ms_print bench-out/BenchDemo_11_MassifProfiler.massif/massif.out
 Captured output of the first command:
 
 ```
-Running: valgrind --tool=massif --fair-sched=try --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
+Running: valgrind --tool=massif --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
 ==156225== Massif, a heap profiler
 ==156225== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
 ==156225== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info

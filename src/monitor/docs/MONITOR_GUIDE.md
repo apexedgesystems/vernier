@@ -35,7 +35,7 @@ publishes a table reads it whole. On x86-64 that load is an ordinary `mov`.
 On Arm cores it is a load-acquire instruction (`ldar`): on a Jetson AGX
 Thor, in a loop that did nothing but record scopes, it made each record
 10.3 to 13.0 ns slower with one threshold set and 18.9 to 29.4 ns slower
-with eight, 12.6 to 26.2% of a record, over all six sessions to date,
+with eight, 12.6 to 26.2% of a record, over six separate measurements of
 nine rounds each. Those are what that loop showed on that board; cache,
 memory, scheduling and the work around a record can change them in an
 application. This guide quotes no other per-sample time,

@@ -5,9 +5,6 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads))
 **Captured:** 2026-09-26, written for the Vernier 1.0.4 release; captured from
 the development tree at project version 1.0.3, whose CLI reported `bench 1.0.3`.
-Steps 2, 3 and 5, and under If It Does Not Match the run quoted first and the
-count for a wrap started by hand, come from 2026-11-23 (UTC), a later tree at
-the same version.
 
 ## Overview
 
