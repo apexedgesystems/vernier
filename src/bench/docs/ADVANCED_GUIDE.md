@@ -518,6 +518,8 @@ is created in the working directory, and the folder `bench run` creates,
 `<binary>.<profiler>/`, in `bench-out/`; `--profile-output-dir` moves either
 root. **Cost** is what a walkthrough measured, on the rig it names; it depends
 on the code and the machine, so time one profiled call before sizing a run.
+Under Nsight Compute (`ncu`, and `nsight` on its compute route) no row of the
+run is timed ([Using Nsight Compute](GPU_GUIDE.md#using-nsight-compute)).
 
 | Profiler             | Layer | Purpose                                                             | Requirements                                                                          | Writes                                                                                                                                                                                       | Cost                                                                                                                     |
 | -------------------- | ----- | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -533,14 +535,15 @@ on the code and the machine, so time one profiled call before sizing a run.
 | `heaptrack`          | CPU   | Heap allocations and their call stacks                              | heaptrack, under the tool                                                             | `<binary>.heaptrack/run.zst` (or `run.gz`)                                                                                                                                                   | 1.4x to 1.5x and 4.2x to 4.3x, growing with the allocation rate, Pi 4 ([21](../demo/docs/21_HEAPTRACK_PROFILER.md))      |
 | `jemalloc`           | CPU   | jemalloc's sampling heap profiler                                   | jemalloc built with `--enable-prof`, preloaded                                        | `<binary>.jemalloc/jeprof.<pid>.<n>.f.heap`                                                                                                                                                  | 1.01x and 1.73x, growing with the bytes allocated, Pi 4 ([22](../demo/docs/22_JEMALLOC_PROFILER.md#what-sampling-costs)) |
 | `nsight` (or `nsys`) | GPU   | Nsight Systems / Compute (auto stats)                               | nsys (Systems) or ncu (the compute modes), under the tool                             | `<binary>.nsight/profile.nsys-rep` and the nsys summaries; `kernel_profile.ncu-rep` there with `--profile-args compute` or a selection, `kernel_replay.ncu-rep` with `--profile-args replay` | none seen: 3,367 against 3,439 us a call, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                |
-| `ncu`                | GPU   | Nsight Compute per-kernel counters                                  | ncu, under the tool; the GPU's performance counters, which a driver can keep for root | `<binary>.ncu/kernel_profile.ncu-rep`                                                                                                                                                        | about a second a profiled launch, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                        |
+| `ncu`                | GPU   | Nsight Compute per-kernel counters                                  | ncu, under the tool; the GPU's performance counters, which a driver can keep for root | `<binary>.ncu/kernel_profile.ncu-rep`; `kernel_replay.ncu-rep` there with `--profile-args replay`                                                                                            | about a second a profiled launch, Thor ([11](../demo/docs/11_NSIGHT_PROFILER.md))                                        |
 | `compute-sanitizer`  | GPU   | GPU memcheck / racecheck / synccheck / initcheck                    | compute-sanitizer (CUDA toolkit), under the tool                                      | `<binary>.compute-sanitizer/sanitizer.log`                                                                                                                                                   | 54x to 55x, Thor; about 148x, RTX 5000 Ada laptop ([17](../demo/docs/17_COMPUTE_SANITIZER.md))                           |
 | `rocprof`            | GPU   | AMD ROCm GPU profiler, not validated on AMD hardware                | rocprof (ROCm), under the tool; never reported ready                                  | rocprof's files, where its `-o` says                                                                                                                                                         | not measured ([18](../demo/docs/18_ROCPROF_PROFILER.md))                                                                 |
 
-CUPTI activity counters (per-launch register count, static + dynamic shared
-memory, kernel count) populate the GPU CSV section on every `PERF_GPU_*`
-test without requiring `--profile` -- spawning external `ncu` is unnecessary
-for those metrics.
+CUPTI's kernel metrics (registers per thread, static and dynamic shared
+memory, the launch count) fill five CSV columns of a GPU benchmark's rows
+without `--profile` and without running `ncu`, except where CUPTI is
+unavailable or nsys or ncu profiles the process; those cells then stay empty
+([CUPTI In-Process Kernel Metrics](API_REFERENCE.md#cupti-in-process-kernel-metrics)).
 
 ### Window sizing without the guesswork
 

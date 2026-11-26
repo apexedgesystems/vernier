@@ -846,10 +846,10 @@ runs under another tool than the requested one fails the same way, naming
 both (`--profile ncu needs ncu, and this process runs under nsys`).
 
 **Fix:** run it as the line says: `bench run <binary> --profile <name>`
-starts the binary under the tool (every name above but `rocprof`, and every
-mode but an Nsight kernel replay), or start it yourself with the printed
-command. Under the tool, the valgrind tools and heaptrack are confirmed from
-the process's own memory map. nsys, ncu, compute-sanitizer and rocprof cannot
+starts the binary under the tool (every name above but `rocprof`, a kernel
+replay included), or start it yourself with the printed command. Under the
+tool, the valgrind tools and heaptrack are confirmed from the process's own
+memory map. nsys, ncu, compute-sanitizer and rocprof cannot
 be confirmed from inside the process: the run proceeds with a `[WARN] ...
 unverified:` line that says so, and the tool's report is the evidence.
 

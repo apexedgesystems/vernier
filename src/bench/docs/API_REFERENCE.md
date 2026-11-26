@@ -717,7 +717,8 @@ NVIDIA Nsight Compute integration.
 
 ```bash
 # nsys and ncu record a process only when they start it: bench run starts the
-# benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
+# benchmark under nsys (under ncu for --profile ncu, and for --profile-args
+# compute, replay or a selection of ncu's options)
 bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
 # Under ncu, with a section set, sections or metrics, or the replay list
 bench run ./MyGpuTest_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
@@ -939,7 +940,7 @@ a run whose tests pass exits with status 4. See the GPU guide's
 | Flag                     | Type   | Default | Description                                                                                                                                                                                                                                 |
 | ------------------------ | ------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `--profile TOOL`         | string | -       | Profiler: perf\|gperf\|bpftrace\|rapl\|callgrind\|massif\|memcheck\|helgrind\|offcpu\|heaptrack\|jemalloc\|nsight\|ncu\|compute-sanitizer\|rocprof; `nsys` is another name for `nsight`                                                     |
-| `--profile-args ARGS`    | string | -       | The profile's mode, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))                                                                         |
+| `--profile-args ARGS`    | string | -       | The profile's mode, or for `ncu` and nsight's compute route a set, sections and metrics, read by its backend (and by `bench run` for the tools it wraps; see [tools/README.md](../../../tools/README.md#run---execute-benchmark-binary))    |
 | `--profile-output-dir`   | path   | -       | Where backend artifacts land (alias of `--artifact-root`)                                                                                                                                                                                   |
 | `--profile-test-timeout` | int    | 300     | Watchdog seconds for each measured loop (`measured()`, `throughputLoop()`) under `--profile`; 0 turns it off, and a value that is not a whole number from 0 exits 2. `contentionRun()` and GPU measurements are not covered                 |
 | `--target-time DUR`      | string | -       | Auto-size cycles so one repeat spans ~DUR (`500us`, `100ms`, `2s`; bare number = ms). Calibrates from a timed batch of calls, doubled until ~1 ms; floor of one cycle. `throughputLoop`/`contentionRun` only; `measured()` keeps `--cycles` |

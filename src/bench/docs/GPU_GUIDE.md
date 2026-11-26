@@ -191,7 +191,11 @@ A value the run could not read stays an empty CSV cell, and the run says why on
 stderr: once per process for what holds for the whole run (no CUPTI in the
 build, NVML not reporting a reading) and for a window too short for
 `powerDrawW` (under 1.5 s), and for the test when its measured window or its
-CUPTI batch lost it.
+CUPTI batch lost it. Under Nsight Compute no measurement is timed: the row
+leaves its timing cells and `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`
+and `memBandwidthGBs` empty, the run says why once, and the result a test
+reads in its code keeps its values
+([Using Nsight Compute](#using-nsight-compute)).
 
 ### PerfGpuResult Structure
 
@@ -952,9 +956,10 @@ bytes and directions.
 configuration, and under an Nsight Systems or Nsight Compute session, with
 `VERNIER_DISABLE_CUPTI=1` or in a build without CUPTI the collector records
 nothing. There the request fails as a `--profile` request that cannot collect
-does: the tests still run, timed as without it, and their rows are written
-with the five cells empty, but the first measurement reports the request with
-the device and the reason, and a run whose tests pass exits with status 4
+does: the tests still run as they would without it (under Nsight Compute,
+untimed), and their rows are written with the five cells empty, but the first
+measurement reports the request with the device and the reason, and a run
+whose tests pass exits with status 4
 ([troubleshooting](TROUBLESHOOTING.md#--profile--failed-and-exit-status-4)).
 On the Thor:
 
