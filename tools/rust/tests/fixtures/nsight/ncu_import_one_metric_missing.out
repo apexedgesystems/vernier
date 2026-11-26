@@ -1,0 +1,2 @@
+"Process ID","Process Name","Host Name","Kernel Name","Block Size","Grid Size","Device","CC","Invocations","Section Name","Metric Name","Metric Unit","Minimum","Maximum","Average"
+"129721","BenchDemo_Gpu_02_NsightProfiler","127.0.0.1","unnamed>::saxpyKernel(float, const float *, float *, unsigned long)","(256, 1, 1)","(4096, 1, 1)","0","11.0","12","Command line profiler metrics","sm__throughput.avg.pct_of_peak_sustained_elapsed","%","25.21","26.76","26.14"

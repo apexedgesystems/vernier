@@ -709,39 +709,41 @@ mod tests {
         );
     }
 
-    /// Shell that waits, 5 s at the most, until the process `$!` leads a
-    /// session of its own, as setsid makes it: only then has it left the
-    /// group the script runs in.
-    #[cfg(target_os = "linux")]
-    const UNTIL_ITS_OWN_SESSION: &str = "i=0; while read -r s < /proc/$!/stat && set -- $s && \
-        [ \"$6\" != \"$!\" ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;";
-
     /// @test The held-pipe control: a process that leaves the tool's group
     /// (setsid) and keeps its output open is not the probe's: the probe
     /// neither ends it nor waits on it, and returns with what the tool wrote.
     /// The tool exits only once that process has left its group, which a
     /// background start may take longer to do than the probe takes to see
-    /// the tool exit.
+    /// the tool exit: the process creates `ready` once it has left the group
+    /// and opened the FIFO `outside`, which it holds until it leaves, once
+    /// the test's folder is gone.
     #[test]
     #[cfg(target_os = "linux")]
     fn version_probe_does_not_wait_on_a_process_outside_its_group() {
         let dir = tempfile::tempdir().expect("tempdir");
-        let outside = dir.path().join("outside.pid");
+        let (fifo, ready) = (dir.path().join("outside"), dir.path().join("ready"));
+        let mut outside = crate::bench::HeldFifo::new(&fifo);
         let (run, took) = probe_sh(
             &format!(
-                "echo 'tool 4.5.6'; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; {} exit 0",
-                outside.display(),
-                UNTIL_ITS_OWN_SESSION
+                "echo 'tool 4.5.6'; /usr/bin/setsid /bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; \
+                 while [ -d \"$2\" ]; do /bin/sleep 0.05; done' '{}' '{}' '{}' & \
+                 i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done; \
+                 exit 0",
+                fifo.display(),
+                ready.display(),
+                dir.path().display(),
+                ready.display()
             ),
             Duration::from_secs(30),
         );
-        let outside = written_pid(&outside);
-        let outside_runs = still_runs(outside);
-        // This test started that process, through the script, and ends it.
-        let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill -KILL {outside}")])
-            .status();
+        let outside_runs = outside.held();
+        drop(dir);
+        let outside_left = outside.ends_within(Duration::from_secs(5));
         assert!(outside_runs, "a process outside the tool's group was ended");
+        assert!(
+            outside_left,
+            "the process outside the tool's group outlived the test's folder"
+        );
         assert!(
             took < Duration::from_secs(5),
             "the probe waited on a pipe held outside its group: {took:?}"

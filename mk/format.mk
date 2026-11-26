@@ -21,8 +21,11 @@ PC_SCOPE ?= .
 # keeps environments in the project) and under any PC_SCOPE: its files are
 # installed packages, which the fixers would rewrite in place. The same rule
 # is .pre-commit-config.yaml's exclude, for runs that bypass this search.
+# tools/rust/target is cargo's build folder when cargo runs in tools/rust
+# itself: it holds build output, and the scripts tests leave there.
 PRECOMMIT_FIND := find $(PC_SCOPE) \
   \( -path ./build -o -path './cmake-build*' -o -path ./dist -o -path ./out \
+     -o -path ./tools/rust/target \
      -o -path ./node_modules -o -path ./.git -o -path ./.hg \
      -o -type d -name .venv \
      -o -path ./.mypy_cache -o -path ./.pytest_cache -o -path ./.ruff_cache \

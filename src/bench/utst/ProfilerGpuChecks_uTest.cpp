@@ -46,7 +46,9 @@ using vernier::bench::checkNsightRequest;
 using vernier::bench::checkNsightRequestWith;
 using vernier::bench::NsightMode;
 using vernier::bench::nsightModeTool;
+using vernier::bench::NsightSelection;
 using vernier::bench::parseNsightMode;
+using vernier::bench::parseNsightRequest;
 using vernier::bench::parseSanitizerTool;
 using vernier::bench::PerfConfig;
 using vernier::bench::Profiler;
@@ -57,6 +59,7 @@ using vernier::bench::ReadinessRequest;
 using vernier::bench::ReadinessResult;
 using vernier::bench::ReadinessScope;
 using vernier::bench::ReadinessStage;
+using vernier::bench::replayMetricList;
 using vernier::bench::test::FakeToolDir;
 using vernier::bench::test::ScopedEnv;
 using vernier::bench::test::StderrCapture;
@@ -134,31 +137,59 @@ TEST(NsightModes, ParserSelectsTheModeAndItsTool) {
   EXPECT_STREQ(nsightModeTool(NsightMode::ComputeReplay), "ncu");
 }
 
-/** @test A word a mode does not take is refused, naming the words it takes. */
+/** @test A word a mode does not take is refused, naming what it takes. */
 TEST(NsightModes, UnknownWordsAreRefused) {
   NsightMode mode = NsightMode::Compute;
   const auto HEAP = parseNsightMode("nsight", "heap", mode);
   ASSERT_TRUE(HEAP.has_value());
   EXPECT_EQ(HEAP->cause, ReadinessCause::CONFIGURATION);
   EXPECT_EQ(HEAP->report.message,
-            "configuration: 'heap' is not a mode of nsight; its modes are compute, ncu, replay");
+            "configuration: 'heap' is not a mode of nsight; it takes compute, ncu, replay, --set "
+            "NAME, --section NAME and --metrics NAMES");
   EXPECT_EQ(mode, NsightMode::Systems);
   const auto COMPUTE = parseNsightMode("ncu", "compute", mode);
   ASSERT_TRUE(COMPUTE.has_value());
   EXPECT_EQ(COMPUTE->report.message,
-            "configuration: 'compute' is not a mode of ncu; its modes are replay");
+            "configuration: 'compute' is not a mode of ncu; it takes replay, --set NAME, "
+            "--section NAME and --metrics NAMES");
   // The words it takes still select the mode, for a backend built directly.
   const auto QUOTED = parseNsightMode("ncu", "replay it's", mode);
   ASSERT_TRUE(QUOTED.has_value());
   EXPECT_EQ(QUOTED->report.message,
-            "configuration: 'it's' is not a mode of ncu; its modes are replay");
+            "configuration: 'it's' is not a mode of ncu; it takes replay, --set NAME, --section "
+            "NAME and --metrics NAMES");
   EXPECT_EQ(mode, NsightMode::ComputeReplay);
 }
 
 /**
+ * @test The request's selection: a set, sections and metrics under Compute,
+ * in ncu's order, a metric list running on through further words, and the
+ * replay list for replay; a selection under nsight asks for Compute.
+ */
+TEST(NsightModes, SelectionsNameWhatNcuCollects) {
+  NsightSelection selection;
+  ASSERT_FALSE(
+      parseNsightRequest("nsight", "--metrics=a.sum,b.avg c --section X", selection).has_value());
+  EXPECT_EQ(selection.mode, NsightMode::Compute);
+  EXPECT_EQ(selection.ncuOptions(),
+            (std::vector<std::string>{"--section", "X", "--metrics", "a.sum,b.avg,c"}));
+  EXPECT_STREQ(selection.ncuReport(), "kernel_profile");
+  EXPECT_EQ(selection.describe(), "--section X --metrics a.sum,b.avg,c");
+  ASSERT_FALSE(parseNsightRequest("ncu", "replay", selection).has_value());
+  EXPECT_EQ(selection.ncuOptions(), (std::vector<std::string>{"--metrics", replayMetricList()}));
+  EXPECT_STREQ(selection.ncuReport(), "kernel_replay");
+  EXPECT_EQ(selection.describe(), "the replay metrics (11)");
+  ASSERT_FALSE(parseNsightRequest("nsight", "", selection).has_value());
+  EXPECT_EQ(selection.mode, NsightMode::Systems);
+  EXPECT_TRUE(selection.ncuOptions().empty());
+  EXPECT_EQ(selection.describe(), "");
+}
+
+/**
  * @test The routes `bench run` starts for nsight, nsys and ncu are the tools
- * these modes need, and every word it refuses is refused here too, but for a
- * kernel replay, which the benchmark itself prints the ncu command for.
+ * these requests need, and under ncu the report and the options are the
+ * ones parsed here (the replay rows hold REPLAY_METRICS); every request
+ * it refuses is refused here, with the same text.
  */
 TEST(NsightModes, RoutesMatchTheSharedTable) {
   int routes = 0;
@@ -167,23 +198,35 @@ TEST(NsightModes, RoutesMatchTheSharedTable) {
       continue;
     }
     const std::string BACKEND = ROW[1] == "ncu" ? "ncu" : "nsight";
-    EXPECT_STREQ(nsightModeTool(modeOf(BACKEND, ROW[2])), ROW[3].c_str())
-        << ROW[1] << " '" << ROW[2] << "'";
+    NsightSelection selection;
+    const auto REFUSED = parseNsightRequest(BACKEND, ROW[2], selection);
+    ASSERT_FALSE(REFUSED.has_value())
+        << ROW[1] << " '" << ROW[2] << "': " << REFUSED->report.message;
+    EXPECT_STREQ(nsightModeTool(selection.mode), ROW[3].c_str()) << ROW[1] << " '" << ROW[2] << "'";
+    if (ROW[3] == "ncu") {
+      std::string expected =
+          std::string{"-o <dir>/"} + selection.ncuReport() + " -f --target-processes all";
+      for (const std::string& OPTION : selection.ncuOptions()) {
+        expected += " " + OPTION;
+      }
+      EXPECT_EQ(ROW[4], expected + " <bin>") << ROW[1] << " '" << ROW[2] << "'";
+    }
     ++routes;
   }
-  EXPECT_EQ(routes, 5) << "the table lost its Nsight routes";
+  EXPECT_GE(routes, 17) << "the table lost its Nsight routes";
   int refusals = 0;
   for (const auto& ROW : sharedTableRows("refuse")) {
-    if ((ROW[1] != "nsight" && ROW[1] != "nsys" && ROW[1] != "ncu") ||
-        ROW[2].find("replay") != std::string::npos) {
+    if (ROW[1] != "nsight" && ROW[1] != "nsys" && ROW[1] != "ncu") {
       continue;
     }
-    NsightMode mode = NsightMode::Systems;
-    EXPECT_TRUE(parseNsightMode(ROW[1] == "ncu" ? "ncu" : "nsight", ROW[2], mode).has_value())
-        << ROW[1] << " '" << ROW[2] << "' was accepted";
+    NsightSelection selection;
+    const auto REFUSED = parseNsightRequest(ROW[1] == "ncu" ? "ncu" : "nsight", ROW[2], selection);
+    ASSERT_TRUE(REFUSED.has_value()) << ROW[1] << " '" << ROW[2] << "' was accepted";
+    EXPECT_EQ(REFUSED->cause, ReadinessCause::CONFIGURATION) << ROW[2];
+    EXPECT_EQ(REFUSED->report.message, "configuration: " + ROW[3]) << ROW[1] << " '" << ROW[2];
     ++refusals;
   }
-  EXPECT_GE(refusals, 1);
+  EXPECT_GE(refusals, 20) << "the table lost its Nsight refusals";
 }
 
 /** @test compute-sanitizer runs one tool, memcheck by default. */
@@ -240,7 +283,10 @@ TEST(SanitizerTools, RoutesMatchTheSharedTable) {
 
 /* ----------------------------- Doctor ----------------------------- */
 
-/** @test The doctor probes only the selected mode's tool, and a tool that runs is unverified. */
+/**
+ * @test The doctor probes only the selected mode's tool, and a tool that runs
+ * is unverified; an Nsight Compute row says the run's timing cells stay empty.
+ */
 TEST(GpuDoctorRows, EachModeProbesOnlyItsTool) {
   FakeToolDir dir;
   ASSERT_TRUE(dir.ok());
@@ -260,14 +306,45 @@ TEST(GpuDoctorRows, EachModeProbesOnlyItsTool) {
   EXPECT_EQ(dir.logLines("nsys --version").size(), 1U) << dir.log();
 
   const std::string NCU = dir.install("fake_nvidia_tool.sh", "ncu");
+  const std::string UNTIMED = "; no row of the run is timed: its timing cells stay empty, as "
+                              "ncu's instrumentation adds to what the benchmark measures";
   const ReadinessResult NCU_ROW =
       checkNsightRequest(request("ncu", "", ReadinessScope::DEFAULT_INVENTORY), CTX);
   EXPECT_EQ(NCU_ROW.report.message,
             "unverified: " + NCU +
-                " runs here (Version 2026.2.0.0 (build 37790515) (public-release)); whether it "
-                "captures the benchmark's GPU work is not checked before the run");
+                " runs here (Version 2026.2.0.0 (build 37790515) (public-release))" + UNTIMED +
+                "; whether it captures the benchmark's GPU work is not checked before the run");
   EXPECT_EQ(dir.logLines("ncu --version").size(), 1U) << dir.log();
   EXPECT_EQ(dir.logLines("nsys --version").size(), 1U) << "ncu's row ran nsys:\n" << dir.log();
+
+  // What the request collects is named; a selection under nsight is ncu's.
+  const std::string VERSION = " runs here (Version 2026.2.0.0 (build 37790515) (public-release))";
+  const std::string AFTER = "; whether it captures the benchmark's GPU work is not checked before "
+                            "the run";
+  EXPECT_EQ(checkNsightRequest(request("nsight", "--set full", ReadinessScope::PREFLIGHT), CTX)
+                .report.message,
+            "unverified: " + NCU + VERSION + "; the request collects --set full" + UNTIMED + AFTER);
+  EXPECT_EQ(
+      checkNsightRequest(request("ncu", "replay", ReadinessScope::PREFLIGHT), CTX).report.message,
+      "unverified: " + NCU + VERSION + "; the request collects the replay metrics (11)" + UNTIMED +
+          AFTER);
+}
+
+/**
+ * @test A word the request does not take is refused through the check
+ * itself, as `bench doctor --profile nsight --profile-args heap` asks it.
+ */
+TEST(GpuDoctorRows, UnknownWordIsRefusedByTheCheck) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_nvidia_tool.sh", "nsys");
+  const ReadinessResult HEAP =
+      checkNsightRequest(request("nsight", "heap", ReadinessScope::PREFLIGHT), dir.context({}, 0));
+  EXPECT_EQ(HEAP.cause, ReadinessCause::CONFIGURATION);
+  EXPECT_EQ(HEAP.report.message,
+            "configuration: 'heap' is not a mode of nsight; it takes compute, ncu, replay, --set "
+            "NAME, --section NAME and --metrics NAMES");
+  EXPECT_EQ(dir.log(), "") << "a refused request probed a tool";
 }
 
 /** @test A tool that does not run is unusable, with its own words; a missing one is missing. */
@@ -354,15 +431,20 @@ TEST(GpuRuntime, UnwrappedRequestFailsWithTheCommand) {
             "run it with bench run --profile ncu --cycles 3 --repeats 1, which wraps it.");
   const ReadinessResult REPLAY =
       checkNsightRequest(request("nsight", "replay", ReadinessScope::RUNTIME), CTX);
-  EXPECT_NE(
-      REPLAY.report.hint.find("ncu --metrics sm__throughput.avg.pct_of_peak_sustained_elapsed,"),
-      std::string::npos)
-      << REPLAY.report.hint;
-  EXPECT_NE(REPLAY.report.hint.find("<this-binary> --profile nsight --profile-args replay "
-                                    "--cycles 3 --repeats 1 [...]; bench run does not wrap a "
-                                    "kernel replay."),
-            std::string::npos)
-      << REPLAY.report.hint;
+  EXPECT_EQ(REPLAY.report.hint,
+            "Wrap it, with few launches (ncu replays each one): ncu -o ./kernel_replay -f "
+            "--target-processes all --metrics " +
+                replayMetricList() +
+                " <this-binary> --profile nsight --profile-args replay --cycles 3 --repeats 1 "
+                "[...]; or run it with bench run --profile nsight --profile-args replay --cycles "
+                "3 --repeats 1, which wraps it.");
+  const ReadinessResult SELECTED =
+      checkNsightRequest(request("ncu", "--set full", ReadinessScope::RUNTIME), CTX);
+  EXPECT_EQ(SELECTED.report.hint,
+            "Wrap it, with few launches (ncu replays each one): ncu -o ./kernel_profile -f "
+            "--target-processes all --set full <this-binary> --profile ncu --profile-args "
+            "'--set full' --cycles 3 --repeats 1 [...]; or run it with bench run --profile ncu "
+            "--profile-args '--set full' --cycles 3 --repeats 1, which wraps it.");
   EXPECT_EQ(dir.log(), "") << "a run's check started a tool";
 
   FakeToolDir empty;
@@ -518,6 +600,16 @@ TEST(GpuRuntime, AnalysisIsNotTheBackends) {
             "capture still runs and its report is kept");
   EXPECT_EQ(NSIGHT.report.hint, "Read the report with nsys stats (an ncu report with ncu --import) "
                                 "after the process exits, and drop --profile-analyze.");
+  const ReadinessResult NCU =
+      checkNsightRequest(request("ncu", "--set full", ReadinessScope::RUNTIME, /*analyze=*/true),
+                         snapshot({{"VERNIER_EXTERNAL_WRAP", "ncu"}}));
+  EXPECT_EQ(NCU.stage, ReadinessStage::ANALYSIS);
+  EXPECT_TRUE(NCU.collectionReady());
+  EXPECT_EQ(NCU.report.message,
+            "analysis: unsupported: --profile-analyze: ncu has no analysis of its own; the "
+            "capture still runs and its report is kept");
+  EXPECT_EQ(NCU.report.hint, "Read the report with ncu --import after the process exits, and drop "
+                             "--profile-analyze.");
   const ReadinessResult SANITIZER = checkComputeSanitizerRequestWithMaps(
       request("compute-sanitizer", "", ReadinessScope::RUNTIME, /*analyze=*/true),
       snapshot({{"VERNIER_EXTERNAL_WRAP", "compute-sanitizer"}}), "");

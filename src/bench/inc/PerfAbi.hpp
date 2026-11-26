@@ -74,7 +74,9 @@ namespace bench {
 /// OffCpuProfiler's outcome member.
 /// 5: UnifiedMemoryProfile::h2dBytes and d2hBytes, in GpuStats.
 /// 6: RAPLProfiler's members.
-inline constexpr std::uint32_t BENCH_ABI_VERSION = 6;
+/// 7: PerfRow::timed and PerfSummaryEntry::timed; NsightProfiler's members
+/// (the replay metric list is one constant, REPLAY_METRICS).
+inline constexpr std::uint32_t BENCH_ABI_VERSION = 7;
 
 /// Exit status of a process ended by a failed check.
 inline constexpr int BENCH_ABI_MISMATCH_EXIT_CODE = 3;

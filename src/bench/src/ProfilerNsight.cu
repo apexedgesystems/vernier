@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "src/bench/inc/Nvtx.hpp"
 #include "src/bench/inc/ProfilerEnv.hpp"
@@ -107,23 +108,23 @@ void NsightProfiler::printWrapCommand() const {
   }
 
   // ncu replays every kernel launch many times, so the command keeps the
-  // launch count small; a full-length run takes hours.
-  const bool REPLAY = (mode_ == NsightMode::ComputeReplay);
-  const std::string METRICS =
-      REPLAY ? " --metrics " + shellQuote(replayMetrics_.toNcuMetricString()) : "";
-  const std::string OUTPUT =
-      shellQuote(artifactDir_ + (REPLAY ? "/kernel_replay" : "/kernel_profile"));
+  // launch count small; a full-length run takes hours. It names what the
+  // request selects, as bench run passes it, which starts it the same way.
+  NsightSelection selection;
+  (void)parseNsightRequest(cfg_.profileTool == "ncu" ? "ncu" : "nsight", cfg_.profileArgs,
+                           selection);
+  std::string options;
+  for (const std::string& OPTION : selection.ncuOptions()) {
+    options += " " + shellQuote(OPTION);
+  }
+  const std::string OUTPUT = shellQuote(artifactDir_ + "/" + selection.ncuReport());
   std::fprintf(stderr,
                "\n[nsight] No ncu session: ncu cannot attach to a running process, so this\n"
                "[nsight] run is not captured. Start the binary under ncu, with few launches:\n"
-               "[nsight]   ncu%s -o %s -f --target-processes all \\\n"
-               "[nsight]       <this-binary> %s --cycles 3 --repeats 1 [...]\n",
-               METRICS.c_str(), OUTPUT.c_str(), flags.c_str());
-  if (!REPLAY) {
-    std::fprintf(stderr,
-                 "[nsight] or: bench run <this-binary> --profile ncu --cycles 3 --repeats 1 "
-                 "-- [...]\n");
-  }
+               "[nsight]   ncu -o %s -f --target-processes all%s \\\n"
+               "[nsight]       <this-binary> %s --cycles 3 --repeats 1 [...]\n"
+               "[nsight] or: bench run <this-binary> %s --cycles 3 --repeats 1 -- [...]\n",
+               OUTPUT.c_str(), options.c_str(), flags.c_str(), flags.c_str());
   std::fprintf(stderr, "[nsight] Reading GPU performance counters needs root on some systems, "
                        "Jetson included.\n\n");
 }

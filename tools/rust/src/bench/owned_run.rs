@@ -1,6 +1,7 @@
 //! A helper program a bench command owns until it returns: bench run's
-//! annotator and `nsys stats` (`run_owned`), and bench validate's version
-//! probes (`validate::run_version`), each with its own caller policy. The
+//! annotator and `nsys stats` (`run_owned`), bench validate's version
+//! probes (`validate::run_version`) and bench gpu-lock's nvidia-smi calls
+//! (`gpu_lock`), each with its own caller policy. The
 //! program runs in a process group of its own, made when it is spawned, so
 //! the processes it starts stay in that group after it exits. When the
 //! program exits, outruns its bound or the command is interrupted, the whole
@@ -20,12 +21,22 @@
 //!   or SA_NOCLDWAIT cannot have the system reap it as it exits. A program
 //!   whose end cannot be observed (another wait in this process took it) is
 //!   not the run's any more: its group is not signalled.
-//! - The signal handler only stores the signal's number in an atomic.
+//! - The signal handler only stores to lock-free atomics: the latest signal,
+//!   the first one (a compare-and-swap, so a later signal cannot replace it)
+//!   and a bit for each signal that arrived.
+//! - A stopped watch (`Watch::stop`) blocks SIGINT, SIGTERM and SIGHUP in its
+//!   thread before it puts their actions back, and `end_by` raises the first
+//!   signal while it is blocked and then unblocks it alone, so that no later
+//!   one can end the process before it; a thread started under
+//!   `with_watched_blocked` never takes one of them.
+//! - A program started under `end_if_already_signalled` reads the record it
+//!   inherited, the watch's at the moment the child was created, in the child
+//!   before exec, with only async-signal-safe calls.
 //! - Only the read ends of the program's own pipes are made non-blocking.
 
 use std::io::{self, Read};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -320,36 +331,113 @@ fn running_in_group(group: u32) -> Vec<u32> {
         .collect()
 }
 
-/// The signal a `Watch` recorded; 0 for none.
+/// The signal a `Watch` recorded last; 0 for none.
 static PENDING: AtomicI32 = AtomicI32::new(0);
+
+/// The first signal a `Watch` recorded; 0 for none. Set once, by a
+/// compare-and-swap, so a later signal cannot replace it.
+static FIRST: AtomicI32 = AtomicI32::new(0);
+
+/// One bit per signal number a `Watch` recorded since its last look
+/// (`Watch::arrivals`). Arrivals are not counted: one signal arriving twice
+/// between two looks is one, as the kernel keeps one pending instance of it.
+static ARRIVED: AtomicU32 = AtomicU32::new(0);
+
+/// The signals a `Watch` records.
+#[cfg(unix)]
+const WATCHED: [libc::c_int; 3] = [libc::SIGINT, libc::SIGTERM, libc::SIGHUP];
 
 #[cfg(unix)]
 extern "C" fn record(signal: libc::c_int) {
+    // The first is settled before the arrival can be seen.
+    let _ = FIRST.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
+    if (0..32).contains(&signal) {
+        ARRIVED.fetch_or(1 << signal, Ordering::SeqCst);
+    }
     PENDING.store(signal, Ordering::SeqCst);
 }
 
-/// While it lives, SIGINT, SIGTERM and SIGHUP are recorded for the run to
-/// end its group: the group is not the terminal's foreground group, so a
-/// Ctrl-C reaches the bench command alone. A signal whose action is not the
-/// default (ignored, as under nohup, or handled) is left as it is.
-/// Dropping it restores each action it replaced.
+/// While it lives, SIGINT, SIGTERM and SIGHUP are recorded for the bench
+/// command to act on: an owned run ends its group, which is not the
+/// terminal's foreground group, so a Ctrl-C reaches the bench command alone;
+/// bench gpu-lock resets the clocks once its command, which stays in the
+/// terminal's group, has ended. A signal whose action is not the default
+/// (ignored, as under nohup, or handled) is left as it is. Dropping it
+/// restores each action it replaced; stopping it (`stop`) does too, and
+/// keeps the first signal recorded ahead of any that follows.
 pub(crate) struct Watch {
     #[cfg(unix)]
     replaced: Vec<(libc::c_int, libc::sigaction)>,
 }
 
 impl Watch {
+    /// Forget what an earlier watch recorded, and record SIGINT, SIGTERM and
+    /// SIGHUP where their action is the default.
     pub(crate) fn start() -> Self {
         PENDING.store(0, Ordering::SeqCst);
+        FIRST.store(0, Ordering::SeqCst);
+        ARRIVED.store(0, Ordering::SeqCst);
         Self {
             #[cfg(unix)]
             replaced: record_signals(),
         }
     }
 
-    /// The flag the recorded signal's number is stored in.
+    /// The flag the latest recorded signal's number is stored in.
     pub(crate) fn flag(&self) -> &'static AtomicI32 {
         &PENDING
+    }
+
+    /// The first signal recorded since the watch started, if one was.
+    pub(crate) fn first(&self) -> Option<i32> {
+        match FIRST.load(Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        }
+    }
+
+    /// The signals recorded since the last look, or since the start, lowest
+    /// number first; a signal that arrived more than once in between is
+    /// reported once.
+    pub(crate) fn arrivals(&self) -> Vec<i32> {
+        let bits = ARRIVED.swap(0, Ordering::SeqCst);
+        (0..32).filter(|signal| bits & (1 << signal) != 0).collect()
+    }
+
+    /// Stop recording (`stop`); then, if a signal was recorded, call
+    /// @p before with it and end the process by it (`end_by`). A signal that
+    /// arrives once the actions are back, @p before running included, is
+    /// held blocked meanwhile, so none can end the process before the first.
+    /// With none recorded, returns once any signal held meanwhile has taken
+    /// its own action.
+    pub(crate) fn end_by_first(self, before: impl FnOnce(i32)) {
+        let stopped = self.stop();
+        if let Some(signal) = stopped.first() {
+            before(signal);
+            end_by(signal);
+        }
+    }
+
+    /// Stop recording: block SIGINT, SIGTERM and SIGHUP in this thread, put
+    /// back each action the watch replaced, then read the first signal
+    /// recorded. A signal that arrives before the block is recorded; one that
+    /// arrives after is held, blocked, and takes its own action once the
+    /// returned `Stopped` is dropped, so none is lost; or never, if `end_by`
+    /// ends the process by the first signal before, which then no later one
+    /// can preempt.
+    fn stop(mut self) -> Stopped {
+        #[cfg(unix)]
+        let blocked = Blocked::watched();
+        #[cfg(unix)]
+        restore_signals(&std::mem::take(&mut self.replaced));
+        Stopped {
+            first: match FIRST.load(Ordering::SeqCst) {
+                0 => None,
+                signal => Some(signal),
+            },
+            #[cfg(unix)]
+            _blocked: blocked,
+        }
     }
 }
 
@@ -360,15 +448,118 @@ impl Drop for Watch {
     }
 }
 
-/// Record SIGINT, SIGTERM and SIGHUP in `PENDING` where their action is
-/// the default; returns each replaced action.
+/// A stopped `Watch` (`Watch::stop`): the actions it replaced are back, and
+/// SIGINT, SIGTERM and SIGHUP stay blocked in the thread that stopped it
+/// until it is dropped.
+struct Stopped {
+    first: Option<i32>,
+    #[cfg(unix)]
+    _blocked: Blocked,
+}
+
+impl Stopped {
+    /// The first signal the watch recorded, if one was.
+    fn first(&self) -> Option<i32> {
+        self.first
+    }
+}
+
+/// While it lives, SIGINT, SIGTERM and SIGHUP are blocked in the thread
+/// that made it; dropping it puts that thread's signal mask back.
+#[cfg(unix)]
+struct Blocked {
+    before: libc::sigset_t,
+}
+
+#[cfg(unix)]
+impl Blocked {
+    fn watched() -> Self {
+        // SAFETY: zeroed sigset_t values are valid values of the type, and
+        // sigemptyset initialises `watched`; pthread_sigmask only reads
+        // `watched` and writes `before`, both owned here.
+        unsafe {
+            let mut watched: libc::sigset_t = std::mem::zeroed();
+            let mut before: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut watched);
+            for signal in WATCHED {
+                libc::sigaddset(&mut watched, signal);
+            }
+            libc::pthread_sigmask(libc::SIG_BLOCK, &watched, &mut before);
+            Self { before }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for Blocked {
+    fn drop(&mut self) {
+        // SAFETY: pthread_sigmask only reads `before`, this thread's mask
+        // from before the block.
+        unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, &self.before, std::ptr::null_mut()) };
+    }
+}
+
+/// Run @p start with SIGINT, SIGTERM and SIGHUP blocked in this thread, then
+/// put this thread's mask back. A thread @p start starts keeps them blocked
+/// for good, so it never takes one: they reach the thread that acts on them,
+/// where a `Stopped` can hold them.
+pub(crate) fn with_watched_blocked<T>(start: impl FnOnce() -> T) -> T {
+    #[cfg(unix)]
+    let _blocked = Blocked::watched();
+    start()
+}
+
+/// Have @p command, started while a `Watch` records, end by a watched signal
+/// recorded before it was created: in the child, before exec, it puts back
+/// the default action of each watched signal it does not ignore and, when
+/// the record it inherited holds a first signal, raises that signal on
+/// itself. Its record is the watch's at the moment the child was created.
+/// On Linux a signal sent to the process group is either handled before
+/// that moment (a fork that meets a pending signal is restarted after the
+/// handler has run) or delivered to the child as well, so a Ctrl-C that
+/// reaches bench as its command starts ends the command once, either way.
+#[cfg(unix)]
+pub(crate) fn end_if_already_signalled(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure runs in the child between fork and exec and calls
+    // only sigaction, raise and _exit, which are async-signal-safe, and loads
+    // an atomic; zeroed sigaction values are valid values of the type.
+    unsafe {
+        command.pre_exec(|| {
+            for signal in WATCHED {
+                let mut now: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(signal, std::ptr::null(), &mut now) == 0
+                    && now.sa_sigaction != libc::SIG_IGN
+                {
+                    let mut default: libc::sigaction = std::mem::zeroed();
+                    default.sa_sigaction = libc::SIG_DFL;
+                    libc::sigaction(signal, &default, std::ptr::null_mut());
+                }
+            }
+            let first = FIRST.load(Ordering::SeqCst);
+            if first != 0 {
+                libc::raise(first);
+                // raise returns only when the signal is blocked: end with
+                // the status a shell gives a program the signal ended.
+                libc::_exit(128 + first);
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn end_if_already_signalled(_command: &mut Command) {}
+
+/// Record SIGINT, SIGTERM and SIGHUP (`record`) where their action is the
+/// default; returns each replaced action.
 #[cfg(unix)]
 fn record_signals() -> Vec<(libc::c_int, libc::sigaction)> {
     let mut replaced = Vec::new();
-    for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+    for signal in WATCHED {
         // SAFETY: zeroed sigaction values are valid values of the type;
         // sigaction only reads `action` and writes `old`, both owned here;
-        // the handler installed only stores to an atomic.
+        // the handler installed only stores to lock-free atomics.
         unsafe {
             let mut old: libc::sigaction = std::mem::zeroed();
             if libc::sigaction(signal, std::ptr::null(), &mut old) != 0
@@ -398,16 +589,25 @@ fn restore_signals(replaced: &[(libc::c_int, libc::sigaction)]) {
 }
 
 /// End the bench command by @p signal, after the `Watch` that recorded it
-/// is dropped (its default action restored), so whoever sent it sees the
-/// command ended by it.
+/// is dropped or stopped (its default action restored), so whoever sent it
+/// sees the command ended by it. Under a `Stopped`, which blocks it, @p
+/// signal is raised and then unblocked alone: it ends the process as it is
+/// unblocked, and the other signals held there stay blocked, so none of them
+/// can end it first.
 pub(crate) fn end_by(signal: i32) -> ! {
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let _ = std::io::stderr().flush();
     #[cfg(unix)]
-    // SAFETY: raise only sends @p signal to this process.
+    // SAFETY: raise only sends @p signal to this thread; a zeroed sigset_t is
+    // a valid value of the type, initialised by sigemptyset; pthread_sigmask
+    // only reads `only`, which holds @p signal alone, owned here.
     unsafe {
         libc::raise(signal);
+        let mut only: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut only);
+        libc::sigaddset(&mut only, signal);
+        libc::pthread_sigmask(libc::SIG_UNBLOCK, &only, std::ptr::null_mut());
     }
     std::process::exit(128 + signal)
 }
@@ -415,6 +615,8 @@ pub(crate) fn end_by(signal: i32) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::bench::HeldFifo;
     use crate::bench::{owned_run, tempfile_dir};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -558,47 +760,58 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Shell that waits, 5 s at the most, until the process `$!` leads a
-    /// session of its own, as setsid makes it: only then has it left the
-    /// group the script runs in.
+    /// Shell that starts, in a session of its own (setsid), a process that
+    /// holds the script's output and the FIFO @p fifo open and runs until
+    /// @p dir is gone; it waits, 5 s at the most, until that process has
+    /// created @p ready, which it does once it has left the script's group
+    /// and opened the FIFO.
     #[cfg(target_os = "linux")]
-    const UNTIL_ITS_OWN_SESSION: &str = "i=0; while read -r s < /proc/$!/stat && set -- $s && \
-        [ \"$6\" != \"$!\" ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;";
+    fn outside_the_group(fifo: &Path, ready: &Path, dir: &Path) -> String {
+        format!(
+            "/usr/bin/setsid /bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; \
+             while [ -d \"$2\" ]; do /bin/sleep 0.05; done' '{}' '{}' '{}' & \
+             i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done;",
+            fifo.display(),
+            ready.display(),
+            dir.display(),
+            ready.display()
+        )
+    }
 
     /// @test A process that leaves the program's group (setsid) is not
     /// owned: the run neither ends it nor waits on the output it holds open,
     /// and keeps what the program wrote. The program exits only once that
     /// process has left its group, which a background start may take longer
-    /// to do than the run takes to see the program exit.
+    /// to do than the run takes to see the program exit. That process holds
+    /// the FIFO `outside` and leaves once the test's folder is gone.
     #[test]
     #[cfg(target_os = "linux")]
     fn owned_run_does_not_wait_on_a_process_outside_its_group() {
-        let dir = tempfile_dir("owned_run_outside");
-        let outside = dir.join("outside.pid");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("outside");
+        let mut outside = HeldFifo::new(&fifo);
         let (run, took) = owned_sh(
             &format!(
-                "echo out; /usr/bin/setsid /bin/sleep 60 & echo $! > '{}'; {} exit 0",
-                outside.display(),
-                UNTIL_ITS_OWN_SESSION
+                "echo out; {} exit 0",
+                outside_the_group(&fifo, &dir.path().join("ready"), dir.path())
             ),
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicI32::new(0),
         );
-        let outside = written_pid(&outside);
-        let outside_runs = still_runs(outside);
-        // This test started that process, through the script, and ends it,
-        // with SIGKILL: the process keeps an ignored SIGTERM it inherited.
-        let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill -KILL {outside}")])
-            .status();
+        let outside_runs = outside.held();
+        drop(dir);
+        let outside_left = outside.ends_within(std::time::Duration::from_secs(5));
         assert!(
             took < std::time::Duration::from_secs(5),
             "the run waited on a pipe held outside its group: {took:?}"
         );
         assert!(outside_runs, "a process outside the group was ended");
+        assert!(
+            outside_left,
+            "the process outside the group outlived its folder"
+        );
         assert_eq!(run.left_running, 0);
         assert_eq!(run.stdout, "out\n");
-        let _ = fs::remove_dir_all(&dir);
     }
 
     /// @test Output larger than a pipe holds is read whole from both pipes.
@@ -674,13 +887,22 @@ mod tests {
         }
         let before = sigchld_setting();
         let dir = tempfile_dir(&format!("owned_run_policy_{policy}"));
-        let left = dir.join("left.pid");
+        // The process the program leaves holds it open while it runs, and
+        // creates `ready` once it does; the program exits only then (5 s at
+        // the most), so the FIFO's end, read after the run, is that process's
+        // end and not a start still to come.
+        let mut left = HeldFifo::new(&dir.join("left"));
+        let ready = dir.join("ready");
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
             &format!(
-                "echo out; /bin/sleep 60 & echo $! > '{}'; exit 3",
-                left.display()
+                "echo out; /bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; exec /bin/sleep 60' '{}' '{}' & \
+                 i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done; \
+                 exit 3",
+                dir.join("left").display(),
+                ready.display(),
+                ready.display()
             ),
         ]);
         let run = owned_run::spawn(&mut command).and_then(|child| {
@@ -690,14 +912,8 @@ mod tests {
                 &std::sync::atomic::AtomicI32::new(0),
             )
         });
-        let left = written_pid(&left);
-        let left_runs = still_runs(left);
-        if left_runs {
-            // This test started that process, through the script, and ends it.
-            let _ = Command::new("/bin/sh")
-                .args(["-c", &format!("kill -KILL {left}")])
-                .status();
-        }
+        let left_held = ready.exists();
+        let left_runs = left.held();
         let line = match run {
             Ok(run) => {
                 let ending = match run.ending {
@@ -707,7 +923,7 @@ mod tests {
                 };
                 format!(
                     "before: {before}; {ending}; stdout {:?}; left running {}; the process left \
-                     still runs: {left_runs}; after: {}",
+                     held its FIFO: {left_held}; still runs: {left_runs}; after: {}",
                     run.stdout,
                     run.left_running,
                     sigchld_setting()
@@ -773,7 +989,7 @@ mod tests {
             let line = fs::read_to_string(&report).unwrap_or_default();
             let expected = format!(
                 "before: {before}; exited Some(3); stdout \"out\\n\"; left running 1; the process \
-                 left still runs: false; after: default"
+                 left held its FIFO: true; still runs: false; after: default"
             );
             if !out.status.success() || line != expected {
                 seen.push(format!(
@@ -793,18 +1009,28 @@ mod tests {
     /// it could not observe the end. Here the program leaves a process in its
     /// group, which keeps the group's id from passing to another group: a
     /// signal to the group would end that process, and it still runs after
-    /// the run (the test then ends it).
+    /// the run. That process holds the FIFO `left` and leaves once the test's
+    /// folder is gone.
     #[test]
     #[cfg(target_os = "linux")]
     fn owned_run_does_not_signal_a_group_it_no_longer_owns() {
-        let dir = tempfile_dir("owned_run_reaped_elsewhere");
-        let left = dir.join("left.pid");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fifo = dir.path().join("left");
+        let mut left = HeldFifo::new(&fifo);
+        let ready = dir.path().join("ready");
         let mut command = Command::new("/bin/sh");
         command.args([
             "-c",
             &format!(
-                "/bin/sleep 60 > /dev/null 2>&1 & echo $! > '{}'; exit 0",
-                left.display()
+                "/bin/sh -c 'exec 9<>\"$0\"; : > \"$1\"; \
+                 while [ -d \"$2\" ]; do /bin/sleep 0.05; done' '{}' '{}' '{}' \
+                 > /dev/null 2>&1 & \
+                 i=0; while [ ! -e '{}' ] && [ $i -lt 500 ]; do sleep 0.01; i=$((i + 1)); done; \
+                 exit 0",
+                fifo.display(),
+                ready.display(),
+                dir.path().display(),
+                ready.display()
             ),
         ]);
         let child = owned_run::spawn(&mut command).expect("start sh");
@@ -828,16 +1054,16 @@ mod tests {
             std::time::Duration::from_secs(30),
             &std::sync::atomic::AtomicI32::new(0),
         );
-        let left = written_pid(&left);
-        let left_runs = still_runs(left);
-        // This test started that process, through the script, and ends it.
-        let _ = Command::new("/bin/sh")
-            .args(["-c", &format!("kill -KILL {left}")])
-            .status();
-        let _ = fs::remove_dir_all(&dir);
+        let left_runs = left.held();
+        drop(dir);
+        let left_ended = left.ends_within(std::time::Duration::from_secs(5));
         assert!(
             left_runs,
             "the run signalled the group of a program another wait had reaped"
+        );
+        assert!(
+            left_ended,
+            "the process the program left outlived the test's folder"
         );
         let Err(error) = run else {
             panic!("the run reported an end it could not observe");
@@ -846,5 +1072,318 @@ mod tests {
             error.to_string().contains("could not be observed"),
             "{error}"
         );
+    }
+
+    /* ----------------------------- Watch ----------------------------- */
+
+    /// The file `watch_keeps_the_first_signal`'s process of its own writes
+    /// what its watch recorded to.
+    #[cfg(target_os = "linux")]
+    const WATCH_REPORT_VARIABLE: &str = "VERNIER_WATCH_REPORT";
+
+    /// Whether SIGINT, SIGTERM and SIGHUP all have their default action.
+    #[cfg(target_os = "linux")]
+    fn watched_signals_at_default() -> bool {
+        [libc::SIGINT, libc::SIGTERM, libc::SIGHUP]
+            .iter()
+            .all(|&signal| {
+                // SAFETY: a zeroed sigaction is a valid value of the type;
+                // with a null new action, sigaction only writes the current
+                // one into `now`, owned here.
+                unsafe {
+                    let mut now: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(signal, std::ptr::null(), &mut now) == 0
+                        && now.sa_sigaction == libc::SIG_DFL
+                }
+            })
+    }
+
+    /// Not a test of its own: the body of `watch_keeps_the_first_signal`,
+    /// which runs this test binary for it in a process of its own, since a
+    /// signal's action is the process's; without that test's variable it
+    /// does nothing. raise() runs the handler before it returns, so the
+    /// signals are recorded in the order they are raised.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_in_a_process_of_its_own() {
+        let Ok(report) = std::env::var(WATCH_REPORT_VARIABLE) else {
+            return;
+        };
+        let raise = |signal: libc::c_int| {
+            // SAFETY: raise only sends @p signal to this thread, whose action
+            // for it is the watch's handler, which only stores to atomics.
+            unsafe { libc::raise(signal) };
+        };
+        let watch = Watch::start();
+        raise(libc::SIGTERM);
+        raise(libc::SIGINT);
+        raise(libc::SIGTERM);
+        let arrived = watch.arrivals();
+        raise(libc::SIGHUP);
+        let then = watch.arrivals();
+        let latest = watch.flag().load(Ordering::SeqCst);
+        let first = watch.first();
+        let stopped = watch.stop().first();
+        let line = format!(
+            "first {first:?}; arrived {arrived:?}; then {then:?}; latest {latest}; stopped \
+             {stopped:?}; defaults back {}",
+            watched_signals_at_default()
+        );
+        fs::write(report, line).expect("write the report");
+    }
+
+    /// @test A watch keeps the first signal it records, whatever arrives
+    /// after it (it also stores the latest); reports each signal that arrived
+    /// since its last look once, however often it arrived; and on stopping
+    /// puts the default actions back and still returns the first. In a
+    /// process of its own (this test binary, running
+    /// `watch_in_a_process_of_its_own`), with SIGINT, SIGTERM and SIGHUP at
+    /// their default actions, raised in the order SIGTERM, SIGINT, SIGTERM,
+    /// SIGHUP.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_keeps_the_first_signal() {
+        use std::os::unix::process::CommandExt;
+
+        let dir = tempfile_dir("watch_first");
+        let report = dir.join("report.txt");
+        let name = format!(
+            "{}::watch_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+        command
+            .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+            .env(WATCH_REPORT_VARIABLE, &report);
+        // SAFETY: the closure runs in the child between fork and exec and
+        // calls only sigaction, which is async-signal-safe; a zeroed sigaction
+        // given the default handler is a valid value of the type.
+        unsafe {
+            command.pre_exec(|| {
+                for signal in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
+                    let mut action: libc::sigaction = std::mem::zeroed();
+                    action.sa_sigaction = libc::SIG_DFL;
+                    if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                }
+                Ok(())
+            });
+        }
+        let out = command.output().expect("run this test binary");
+        let line = fs::read_to_string(&report).unwrap_or_default();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            out.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            line,
+            format!(
+                "first Some({term}); arrived [{int}, {term}]; then [{hup}]; latest {hup}; \
+                 stopped Some({term}); defaults back true",
+                term = libc::SIGTERM,
+                int = libc::SIGINT,
+                hup = libc::SIGHUP
+            )
+        );
+    }
+
+    /// The case `watch_stop_in_a_process_of_its_own` runs.
+    #[cfg(target_os = "linux")]
+    const STOP_CASE_VARIABLE: &str = "VERNIER_WATCH_STOP_CASE";
+
+    /// What this thread does with SIGINT, SIGTERM and SIGHUP: each one's
+    /// action, and those it blocks.
+    #[cfg(target_os = "linux")]
+    fn watched_signals_state() -> String {
+        let actions: Vec<&str> = WATCHED
+            .iter()
+            .map(|&signal| {
+                // SAFETY: a zeroed sigaction is a valid value of the type;
+                // with a null new action, sigaction only writes the current
+                // one into `now`, owned here.
+                let now = unsafe {
+                    let mut now: libc::sigaction = std::mem::zeroed();
+                    libc::sigaction(signal, std::ptr::null(), &mut now);
+                    now
+                };
+                match now.sa_sigaction {
+                    libc::SIG_DFL => "default",
+                    libc::SIG_IGN => "ignored",
+                    _ => "handled",
+                }
+            })
+            .collect();
+        // SAFETY: a zeroed sigset_t is a valid value of the type; with a null
+        // set, pthread_sigmask only writes this thread's mask into `mask`,
+        // owned here, which sigismember only reads.
+        let blocked: Vec<i32> = unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::pthread_sigmask(libc::SIG_BLOCK, std::ptr::null(), &mut mask);
+            WATCHED
+                .iter()
+                .copied()
+                .filter(|&signal| libc::sigismember(&mask, signal) == 1)
+                .collect()
+        };
+        format!("actions {actions:?}; blocked {blocked:?}")
+    }
+
+    /// Not a test of its own: the body of
+    /// `watch_stop_ends_by_the_first_signal_whatever_follows`, which runs this
+    /// test binary for it in a process of its own, once for each case;
+    /// without that test's variables it does nothing. raise() sends a signal
+    /// to this thread alone, so one this thread blocks waits here, whatever
+    /// the test harness's other threads do.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_stop_in_a_process_of_its_own() {
+        let Ok(case) = std::env::var(STOP_CASE_VARIABLE) else {
+            return;
+        };
+        let report =
+            PathBuf::from(std::env::var(WATCH_REPORT_VARIABLE).expect("the report's path"));
+        let raise = |signal: libc::c_int| {
+            // SAFETY: raise only sends @p signal to this thread.
+            unsafe { libc::raise(signal) };
+        };
+        let watch = Watch::start();
+        if case == "first" {
+            // SIGTERM recorded; then, where bench gpu-lock says what went
+            // wrong (`end_by_first`'s @p before), the actions being back and
+            // the first not raised again yet, a second signal whose default
+            // action would end the process by it at once.
+            raise(libc::SIGTERM);
+            watch.end_by_first(|first| {
+                let line = format!("first {first}; {}", watched_signals_state());
+                fs::write(&report, line).expect("write the report");
+                raise(libc::SIGINT);
+            });
+            return;
+        }
+        let stopped = watch.stop();
+        let line = format!("first {:?}; {}", stopped.first(), watched_signals_state());
+        fs::write(&report, &line).expect("write the report");
+        if case == "none" {
+            // None recorded: a signal arriving now is held, and takes its own
+            // action once the stopped watch is dropped.
+            raise(libc::SIGHUP);
+            drop(stopped);
+        } else {
+            // Nothing arrives: dropping the stopped watch puts the mask back.
+            drop(stopped);
+            fs::write(&report, format!("{line}; then {}", watched_signals_state()))
+                .expect("write the report");
+        }
+    }
+
+    /// @test Stopping a watch keeps the first signal it recorded ahead of
+    /// any that follows, through putting the actions back and ending by it,
+    /// and puts everything back when none was recorded. Each case runs in a
+    /// process of its own (this test binary, running
+    /// `watch_stop_in_a_process_of_its_own`), started with no signal blocked,
+    /// SIGTERM and SIGHUP at their default actions, and SIGINT at its default
+    /// or ignored:
+    /// - first: SIGTERM recorded; a SIGINT raised in `end_by_first`'s
+    ///   @p before (where bench gpu-lock says what went wrong), the actions
+    ///   being back and SIGINT's default action ending the process at once,
+    ///   waits blocked, and the process ends by SIGTERM;
+    /// - none: nothing recorded; a SIGHUP raised once the actions are back
+    ///   is not lost: the process ends by it once the stopped watch is
+    ///   dropped;
+    /// - clean: nothing raised, SIGINT ignored by the parent: while stopped
+    ///   the three are blocked, the actions are back and SIGINT is still
+    ///   ignored; once dropped, nothing is blocked.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn watch_stop_ends_by_the_first_signal_whatever_follows() {
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+
+        let dir = tempfile_dir("watch_stop");
+        let name = format!(
+            "{}::watch_stop_in_a_process_of_its_own",
+            module_path!().split_once("::").map_or("", |(_, path)| path)
+        );
+        let defaults = "actions [\"default\", \"default\", \"default\"]";
+        let int_ignored = "actions [\"ignored\", \"default\", \"default\"]";
+        let all = format!(
+            "blocked [{}, {}, {}]",
+            libc::SIGINT,
+            libc::SIGTERM,
+            libc::SIGHUP
+        );
+        let cases = [
+            (
+                "first",
+                libc::SIG_DFL,
+                Some(libc::SIGTERM),
+                format!("first {}; {defaults}; {all}", libc::SIGTERM),
+            ),
+            (
+                "none",
+                libc::SIG_DFL,
+                Some(libc::SIGHUP),
+                format!("first None; {defaults}; {all}"),
+            ),
+            (
+                "clean",
+                libc::SIG_IGN,
+                None,
+                format!("first None; {int_ignored}; {all}; then {int_ignored}; blocked []"),
+            ),
+        ];
+        let mut seen = Vec::new();
+        for (case, int_action, ended_by, expected) in cases {
+            let report = dir.join(format!("{case}.txt"));
+            let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+            command
+                .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+                .env(STOP_CASE_VARIABLE, case)
+                .env(WATCH_REPORT_VARIABLE, &report);
+            // SAFETY: the closure runs in the child between fork and exec and
+            // calls only sigaction and pthread_sigmask, which are
+            // async-signal-safe; zeroed sigaction and sigset_t values are
+            // valid values of the types, given the default or the ignore
+            // handler, and initialised by sigemptyset.
+            unsafe {
+                command.pre_exec(move || {
+                    let mut none: libc::sigset_t = std::mem::zeroed();
+                    libc::sigemptyset(&mut none);
+                    libc::pthread_sigmask(libc::SIG_SETMASK, &none, std::ptr::null_mut());
+                    for (signal, handler) in [
+                        (libc::SIGINT, int_action),
+                        (libc::SIGTERM, libc::SIG_DFL),
+                        (libc::SIGHUP, libc::SIG_DFL),
+                    ] {
+                        let mut action: libc::sigaction = std::mem::zeroed();
+                        action.sa_sigaction = handler;
+                        if libc::sigaction(signal, &action, std::ptr::null_mut()) != 0 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                    }
+                    Ok(())
+                });
+            }
+            let out = command.output().expect("run this test binary");
+            let line = fs::read_to_string(&report).unwrap_or_default();
+            let ended_as_expected = match ended_by {
+                Some(signal) => out.status.signal() == Some(signal),
+                None => out.status.success(),
+            };
+            if !ended_as_expected || line != expected {
+                seen.push(format!(
+                    "{case}: ended {:?}, expected by {ended_by:?}; reported {line:?}, expected \
+                     {expected:?}\n{}{}",
+                    out.status,
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                ));
+            }
+        }
+        let _ = fs::remove_dir_all(&dir);
+        assert!(seen.is_empty(), "{}", seen.join("\n"));
     }
 }

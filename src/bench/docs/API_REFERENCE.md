@@ -262,6 +262,10 @@ Estimated efficiency: 78.4% of theoretical peak (~12000 MB/s)
 Hint: High bandwidth utilization -> Memory-bound (consider memory layout)
 ```
 
+Each line divides by the median call time, so a run under Nsight Compute,
+which is not timed, prints none of them; the returned result keeps its
+`memoryProfile`.
+
 **Interpretation:**
 
 - **Efficiency < 10%:** CPU-bound (algorithm optimization needed)
@@ -715,7 +719,17 @@ NVIDIA Nsight Compute integration.
 # nsys and ncu record a process only when they start it: bench run starts the
 # benchmark under nsys (under ncu for --profile ncu or --profile-args compute)
 bench run ./MyGpuTest_PTEST --profile nsight -- --gtest_filter="*Kernel"
+# Under ncu, with a section set, sections or metrics, or the replay list
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args '--set full' --cycles 3 --repeats 1
+bench run ./MyGpuTest_PTEST --profile ncu --profile-args replay --cycles 3 --repeats 1
 ```
+
+`--profile ncu` (and nsight's compute route) takes Vernier's supported subset
+of ncu's options, `replay`, `--set NAME`, `--section NAME` and
+`--metrics NAMES`
+([tools/README.md](../../../tools/README.md#run---execute-benchmark-binary));
+the benchmark's readiness check reads the same grammar
+(`parseNsightRequest`, `ProfilerNsightChecks.hpp`).
 
 Run directly with `--profile nsight`, without a tool around it, the run fails
 (exit status 4 when the tests pass) and prints the command that captures it.
@@ -782,6 +796,11 @@ is the first device's time per launch in that repeat.
 | `stable`                 | 0/1    | 1 when `wallCV` is below `cvThreshold`                                                                                                           |
 | `cvThreshold`            | double | 0.20 for `msgBytes` under 64, 0.10 under 256, 0.05 under 1024, else 0.03; under `--quick` 1.5 times that, at most 0.30                           |
 
+Under Nsight Compute (ncu) no row is timed: every row leaves the `wall*`
+columns, `callsPerSecond` and `stable` empty, since ncu's instrumentation adds
+to what the harness would measure
+([GPU guide](GPU_GUIDE.md#using-nsight-compute)).
+
 ### Profile Columns
 
 Only in a run given `--profile`:
@@ -805,7 +824,9 @@ Only in a run given `--profile`:
 What each holds in a single-device measurement's row; the GPU guide defines
 them ([Understanding GPU Metrics](GPU_GUIDE.md#understanding-gpu-metrics)),
 and [walkthrough 19](../demo/docs/19_CUPTI_KERNEL_METRICS.md) reads them in
-a run:
+a run. Under Nsight Compute (ncu) a GPU row also leaves `kernelTimeUs`,
+`transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`, `multiGpuEfficiency` and
+`p2pBandwidthGBs` empty ([Base Columns](#base-columns)).
 
 | Column              | Type   | Description                                                                                                                     |
 | ------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------- |

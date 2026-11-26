@@ -13,6 +13,8 @@ Trailing blanks are removed; nothing else is edited.
 | `nsys_stats_no_kernels.out`           | the same for `cuda_gpu_kern_sum`, on a report that holds no kernel (exit 0)                                                                                       |
 | `nsys_stats_beside_runner_export.err` | `nsys stats --report cuda_gpu_kern_sum --format csv profile.nsys-rep` with the export `bench run` left beside the report: the refusal (stderr, exit 1)            |
 | `ncu_import_per_kernel.out`           | `ncu --import kernel_profile.ncu-rep --csv --print-summary per-kernel` for `bench run --profile ncu` on the two kernel tests                                      |
+| `ncu_import_one_metric_missing.out`   | the same with `--profile-args '--metrics <sm>,<dram>'`, the SM and DRAM throughput metrics, on one test: the GPU has no `dram__` metric                           |
+| `ncu_import_no_metric_row.out`        | the same for an `ncu --metrics <dram>` typed by hand on that test: the header, and no row                                                                         |
 | `ncu_without_import.out`              | `ncu --csv --print-summary per-kernel kernel_profile.ncu-rep`, without `--import` (stdout, exit 1)                                                                |
 | `ncu_import_damaged.out`              | what `ncu --import` printed for a truncated copy of that report (exit 1)                                                                                          |
 
