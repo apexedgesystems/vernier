@@ -729,6 +729,12 @@ run, for example
 [gpu] NVML reported no power limit (Not Supported): powerLimitW stays empty.
 ```
 
+A line saying that Vernier publishes NVML's endpoint power reading only for a
+measured window of 1.5 s or more is not one of these: NVML reported the
+reading, the window was shorter, and `powerDrawW` stays empty by Vernier's
+own rule ([Power and Thermal Columns](API_REFERENCE.md#power-and-thermal-columns));
+a window of 1.5 s or more fills it.
+
 **Impact:**
 
 - Non-fatal - tests still run

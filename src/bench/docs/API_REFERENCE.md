@@ -754,9 +754,10 @@ order the measurements completed.
 the operations it ran (`cycles`, or `cycles` times `threads` in
 `contentionRun()`), in microseconds. `wallMedian` to `wallStddev` describe the
 `repeats` samples, not single calls, and `wallCV` is their standard deviation
-over their mean. In a GPU row each sample is one repeat's round trip: its
-copies in, one launch and its copies out (the GPU guide's
-[What Gets Measured?](GPU_GUIDE.md#what-gets-measured)).
+over their mean. In a single-device GPU row each sample is one repeat's
+round trip: its copies in, one launch and its copies out (the GPU guide's
+[What Gets Measured?](GPU_GUIDE.md#what-gets-measured)); in a multi-GPU row it
+is the first device's time per launch in that repeat.
 
 ### Base Columns
 
@@ -855,8 +856,10 @@ measured callable `cycles` times more, at most 1000, untimed, with CUPTI
 recording kernels, and the five cells describe those launches; no timed launch
 runs while CUPTI records kernels. The cells stay empty where the collector
 cannot or must not run (a build without CUPTI, `VERNIER_DISABLE_CUPTI=1`, an
-nsys or ncu session) and for a measured window whose records are not known to
-be complete, and the run says why on stderr
+nsys or ncu session, CUPTI refusing the collector, or a CUPTI window of the
+process that did not stop recording kernels or flush its records) and
+for a batch whose records are not known to be complete, and the run says why
+on stderr
 ([CUPTI in-process kernel metrics](GPU_GUIDE.md#cupti-in-process-kernel-metrics)).
 
 ### Multi-GPU Columns

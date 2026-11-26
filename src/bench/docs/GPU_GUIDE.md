@@ -68,8 +68,7 @@ PERF_GPU_TEST(VectorAdd, Basic) {
 
   // Inputs first: the kernel reads both. They are queued on the case's
   // stream, the one the warmup launches on, so the warmup starts only after
-  // both copies finish. (A plain cudaMemcpy goes to the default stream,
-  // which the case's non-blocking stream does not wait for.) The copies
+  // both copies finish (see Launch on the Stream You Are Given). The copies
   // declared below repeat this in every measured repeat.
   cudaMemcpyAsync(d_a, h_a.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
   cudaMemcpyAsync(d_b, h_b.data(), SIZE, cudaMemcpyHostToDevice, perf.stream());
@@ -189,8 +188,9 @@ medians can add up to more than the round trip
 
 A value the run could not read stays an empty CSV cell, and the run says why on
 stderr: once per process for what holds for the whole run (no CUPTI in the
-build, NVML not reporting a reading), and for the test when one measured
-window lost it.
+build, NVML not reporting a reading) and for a window too short for
+`powerDrawW` (under 1.5 s), and for the test when its measured window or its
+CUPTI batch lost it.
 
 ### PerfGpuResult Structure
 
@@ -603,7 +603,7 @@ The harness's estimate counts the block size and the dynamic shared memory a
 launch declares; it leaves out the kernel's registers and static shared
 memory, among other things (see [Occupancy](#occupancy)). The CSV's CUPTI
 columns give the registers per thread and the static and dynamic shared
-memory of the launches it measured
+memory of the kernel's launches in the untimed batch after the timed repeats
 ([CUPTI in-process kernel metrics](#cupti-in-process-kernel-metrics)), and
 the CUDA runtime's `cudaOccupancyMaxActiveBlocksPerMultiprocessor()` gives
 how many blocks of a kernel an SM can hold at once for a block size and
@@ -1214,8 +1214,12 @@ whenever the header can be included.
 CUPTI's Activity API fills per-launch register count, static + dynamic shared
 memory, and launch count into the GPU CSV section on every GPU run, with no
 `--profile` flag, except where the collector cannot or must not run: a build
-without CUPTI, `VERNIER_DISABLE_CUPTI=1`, or an nsys or ncu session (below).
-There the cells stay empty and the run says why. The columns:
+without CUPTI, `VERNIER_DISABLE_CUPTI=1`, an nsys or ncu session (below),
+CUPTI refusing the collector, or a CUPTI window of the process that did not
+stop recording kernels or flush its records, which ends collection for the
+rest of the process. There the cells stay empty and the run says why,
+as it does for a test whose batch's records are not known to be complete. The
+columns:
 
 | Column                  | Meaning                                                 |
 | ----------------------- | ------------------------------------------------------- |
