@@ -144,6 +144,12 @@ fn summary_prints_table() {
     assert!(out.contains("Queue.Throughput"), "should contain test name");
     assert!(out.contains("Queue.Latency"), "should contain all tests");
     assert!(out.contains("3 tests"), "should show test count");
+    // Queue.Latency's row of sample_bench.csv: median, P10 and P90 (us), CV,
+    // calls per second and the stable verdict, each in its column.
+    assert_eq!(
+        table_row(&out, "Queue.Latency"),
+        "Queue.Latency 0.01200 0.01100 0.01300 8.3% 83333333 yes"
+    );
 }
 
 #[test]
@@ -662,6 +668,13 @@ fn compare_labels_both_directions() {
     assert!(out.contains("1 regression(s)"), "{out}");
     assert!(out.contains("1 improvement(s)"), "{out}");
     assert!(out.contains("1 neutral"), "{out}");
+    // Queue.Latency's row: baseline and candidate medians (us), their
+    // difference and its percentage, both CVs and the label, each in its
+    // column.
+    assert_eq!(
+        table_row(&out, "Queue.Latency"),
+        "Queue.Latency 0.01200 0.02400 +0.01200 +100.0% 8.3% 8.3% REGRESSION"
+    );
 }
 
 /// @test The table shows both CV values and no p-value.
@@ -746,6 +759,19 @@ fn strip_ansi(text: &str) -> String {
         }
     }
     plain
+}
+
+/// The one row of a summary or comparison table whose first cell is @p name,
+/// as a reader sees it: ANSI colour sequences stripped, every run of spaces
+/// one space, none at either end.
+fn table_row(out: &str, name: &str) -> String {
+    let rows: Vec<String> = strip_ansi(out)
+        .lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|row| row.split(' ').next() == Some(name))
+        .collect();
+    assert_eq!(rows.len(), 1, "one row for {name}: {out}");
+    rows[0].clone()
 }
 
 /// Each test's label, as JSON, the table and the Markdown table print it.
