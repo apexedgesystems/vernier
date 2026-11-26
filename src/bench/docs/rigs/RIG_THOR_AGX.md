@@ -176,10 +176,8 @@ taskset -c 13 ./build/bin/ptests/<Test> --repeats 10 --csv out.csv
 BENCH_SUDO=1 bench doctor build/bin/ptests/BenchmarkGPU_PTEST
 ```
 
-Expected on this rig, captured 2026-10-24 (UTC) from the development tree at
-project version 1.0.3 (`bench 1.0.3`), the binary's readiness section above
-it left out; the `ncu` row is from a session of 2026-11-16 (UTC) on a later
-development tree at the same version:
+Expected on this rig, the binary's readiness section above
+it left out:
 
 ```
 === Profiler Backend Doctor (default mode of each backend) ===

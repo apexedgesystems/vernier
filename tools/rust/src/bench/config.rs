@@ -142,9 +142,10 @@ pub fn from_folder_of(file: &Path, path: &Path) -> PathBuf {
 /// followed by `- item` lines, and `# comment` lines -- and avoids pulling in
 /// a YAML crate so this tool keeps its build tree small. A file that cannot be
 /// read, or that holds a problem (`parse`), is refused whole, each problem
-/// named by line, key and what was expected: `bench run` and
-/// `bench profile-all` stop on it before anything starts, and
-/// `bench config-validate` reports the same problems (`validate`).
+/// named by its line and what was expected, and also by its key for a value
+/// of the wrong kind, a quote left open in a value and a key given twice:
+/// `bench run` and `bench profile-all` stop on it before anything starts,
+/// and `bench config-validate` reports the same problems (`validate`).
 pub fn load(path: &Path) -> Result<Config, Error> {
     let (config, problems) = parse(&read(path)?);
     refuse(path, &problems)?;

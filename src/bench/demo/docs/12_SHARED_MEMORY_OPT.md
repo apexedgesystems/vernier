@@ -11,17 +11,12 @@ reported `bench 1.0.3`; Nsight Compute 2025.3.1. The RTX 5000 Ada counts and
 occupancy in [What Should Reproduce](#what-should-reproduce) come from one
 run of the same tree in the project's `dev-cuda` container on the same day,
 and its time ratios from three runs there on 2026-11-17 (UTC), on a later
-development tree at the same version. The console
-output of Step 3, and of the run without root and `bench run --profile ncu`
-in [If It Does Not Match](#if-it-does-not-match), is from a later session on
-2026-11-16 (UTC), from a later development tree at the same version with the
-same Nsight Compute; the report's sections are from the first. Steps 1 and 2,
-the reference CSV, the five locked runs and
+development tree at the same version.
+Steps 1 and 2, the reference CSV, the five locked runs and
 three as found that What Should Reproduce and If It Does Not Match count, and
 the run in Check Against the Reference come from a session of 2026-11-16 (UTC)
 on a later development tree at the same version, whose collector records
-CUPTI's kernels in an untimed batch after the measured repeats; every other
-figure is from the first.
+CUPTI's kernels in an untimed batch after the measured repeats.
 
 ## Overview
 

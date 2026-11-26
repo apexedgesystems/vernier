@@ -5,17 +5,15 @@
 **Example:** `saxpy` (see [Shared Examples](../README.md#shared-examples))
 **Captured:** 2026-09-24 (UTC). Written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
-reported `bench 1.0.3`. Steps 2, 3 and 4 come from one later session,
+reported `bench 1.0.3`. Steps 2 and 3 come from one later session,
 2026-09-29 (UTC), of a later development tree at the same version, with the
 clocks locked as in Step 1. The two `bench compare` outputs were produced from
 the saved CSVs of the runs they show, by the CLI of a later development tree,
-which also reports `bench 1.0.3`. The console output of Step 2, and the two
-runs quoted first under If It Does Not Match, come from a session of
+which also reports `bench 1.0.3`. The console output of Step 2, and the
+two runs quoted first under If It Does Not Match, come from a session of
 2026-10-03 (UTC) on a later development tree at the same version, with Step 1's
-command run just before them and the clocks locked the same way; Step 4's comes
-from a session of 2026-11-16 (UTC), run the same way on a later development
-tree at the same version. The reports and summaries those steps show are the
-2026-09-29 session's. Step 1's output,
+command run just before them and the clocks locked the same way; the reports
+and summaries those steps show are the 2026-09-29 session's. Step 1's output,
 the reference CSV, the first `bench compare` output that closes If It Does
 Not Match and the six runs with the clocks locked that What Should Reproduce
 counts come from a session of 2026-11-16 (UTC), and the four runs with the
