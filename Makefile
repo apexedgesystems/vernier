@@ -156,6 +156,7 @@ help:
 	@printf '%s\n' "Quality:"
 	@printf '  %-28s %s\n' "make format" "Auto-fix formatting issues"
 	@printf '  %-28s %s\n' "make format-check" "Check formatting (no fixes)"
+	@printf '  %-28s %s\n' "make lint-rust" "Lint the Rust tools with clippy (warnings are errors)"
 	@printf '  %-28s %s\n' "make verify" "Run a pull request's CI lanes locally, no GPU (pre-PR gate)"
 	@printf '  %-28s %s\n' "make coverage" "Generate code coverage report"
 	@printf '  %-28s %s\n' "make static" "Run static analysis (scan-build)"

@@ -6,9 +6,9 @@
 # the registry cache_from sources), whatever changed: CI runs a job only when
 # its files change. The lanes run the unit tests; the component tests run in
 # the nightly workflow (mk/checks.mk), which verify does not run. A branch is
-# not "verified" until this is green; the target exists because ad-hoc local
-# checks kept missing lanes (cargo build compiles no test modules, and ninja
-# does not invoke cargo at all unless the stamp is dirty).
+# not "verified" until this is green: ad-hoc local checks miss lanes (cargo
+# build compiles no test modules, and ninja does not invoke cargo at all
+# unless the stamp is dirty).
 #
 #   Format  make format-check in dev (vernier.dev.cpu): the formatters and
 #           linters, Rust's included, find nothing to change.
@@ -21,8 +21,9 @@
 #   CUDA    make cuda-check in ci-build-cuda (vernier.build.cuda), no GPU:
 #           every CUDA target compiles and links, and the unit cases that need
 #           no device pass.
-#   Rust    make test-rust in ci-build (vernier.build.cpu): the tools' Rust
-#           tests pass.
+#   Rust    make test-rust and lint-rust in ci-build (vernier.build.cpu): the
+#           tools' Rust tests pass, and clippy, every warning an error, finds
+#           nothing in any of their targets.
 #   Python  make test-py in ci-build: the tools' Python tests pass.
 #
 # What no lane proves, and where it is proven:
@@ -46,8 +47,8 @@
 # when a pull request changes their inputs (a gate image's, or
 # docker/dev/cuda.Dockerfile for the CUDA tier); verify does not, so such a
 # change is proven by the hosted run, not here. A stale local dev image fails
-# configure on the baked /opt/vernier-deps tier (observed), which is why the
-# prelude mirrors CI's image steps before any lane.
+# configure on the baked /opt/vernier-deps tier, which is why the prelude
+# mirrors CI's image steps before any lane.
 #
 # The C++ and Python lanes run with POETRY_VIRTUALENVS_IN_PROJECT=false, as
 # ci.yml's cpp and python jobs do. A host tools build can leave tools/py/.venv
@@ -78,8 +79,9 @@ verify:
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make debug CMAKE_EXTRA_ARGS="-DVERNIER_BUILD_GPU=OFF"
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make testp
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false dev make test-heap
-	$(call log,verify,Rust lane [ci-build])
+	$(call log,verify,Rust lane: tests and clippy [ci-build])
 	@$(_CI_COMPOSE) run --rm -T ci-build make test-rust
+	@$(_CI_COMPOSE) run --rm -T ci-build make lint-rust
 	$(call log,verify,Python lane [ci-build])
 	@$(_CI_COMPOSE) run --rm -T -e POETRY_VIRTUALENVS_IN_PROJECT=false ci-build make test-py
 	$(call log,verify,Tools lane: the debug build made every CLI tool [dev])

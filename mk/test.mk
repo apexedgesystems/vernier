@@ -50,6 +50,10 @@ TEST_SLOWEST ?= 10
 PY_TOOLS_DIR := tools/py
 PY_LIB_DIR   := $(BUILD_DIR)/lib/python
 
+# Rust tools: the cargo target folder test-rust and lint-rust share, so the
+# lint reuses what the tests built
+RUST_TARGET_DIR ?= $(CURDIR)/$(BUILD_DIR)/rust-test-target
+
 # Heap-profiling lanes: the debug preset with tcmalloc linked, in a tree of its
 # own. It is the one configuration where gperf captures the CPU and the heap at
 # once and where heaptrack's doctor row names tcmalloc. Its two lanes run every
@@ -368,12 +372,20 @@ test-py:
 # artifacts still isolate to the per-build target dir.
 test-rust:
 	$(call log,test,Running Rust tools tests)
-	@cd tools/rust && cargo test --target-dir "$(CURDIR)/$(BUILD_DIR)/rust-test-target"
+	@cd tools/rust && cargo test --target-dir "$(RUST_TARGET_DIR)"
+
+# Rust tools lint: clippy over every target (the library, the binary and the
+# tests) with the default features, every warning an error, the lockfile
+# kept, in test-rust's target folder. ci.yml's Rust job runs it after the
+# tests, and so does make verify.
+lint-rust:
+	$(call log,lint,Running clippy over the Rust tools (warnings are errors))
+	@cd tools/rust && cargo clippy --locked --all-targets --target-dir "$(RUST_TARGET_DIR)" -- -D warnings
 
 # ------------------------------------------------------------------------------
 # Phony Declarations
 # ------------------------------------------------------------------------------
 
-.PHONY: test testp test-component test-rig test-heap test-heap-component test-py test-rust
+.PHONY: test testp test-component test-rig test-heap test-heap-component test-py test-rust lint-rust
 
 endif  # TEST_MK_GUARD

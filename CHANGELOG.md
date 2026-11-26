@@ -355,6 +355,9 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
 - The nightly workflow also runs `make tsan` and `make ubsan`, so a data race
   or undefined behaviour in a unit test's path fails a run on main.
   ([#74](https://github.com/apexedgesystems/vernier/pull/74))
+- `make lint-rust` runs clippy over the Rust tools, every warning an error;
+  the Rust CI job and `make verify` run it after the Rust tests.
+  ([#74](https://github.com/apexedgesystems/vernier/pull/74))
 
 ### Fixed
 
