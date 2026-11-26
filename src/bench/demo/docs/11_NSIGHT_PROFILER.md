@@ -497,8 +497,8 @@ What it says:
   The harness's `occupancy` column in Step 1 is the theoretical figure (0.5
   and 1.0); the achieved figure is `ncu`'s measurement.
 
-The fix is `G1`'s launch shape: in Step 1 the same kernel took 20.2 us at 256
-threads per block against 2,994 us at one.
+The fix is `G1`'s launch shape: in Step 1 the same kernel took 20.7 us at 256
+threads per block against 2,990 us at one.
 
 ## Step 5: Confirm the Fix (Nsight Systems on G1)
 
