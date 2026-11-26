@@ -500,7 +500,7 @@ fn a_needed_value_names_the_line_its_row_starts_on() {
 }
 
 /// @test summary's and compare's tables print a test name longer than the
-/// widest a format width may be (65535), where they stopped with a panic.
+/// widest a format width may be (65535) whole, and exit 0.
 #[test]
 fn tables_print_a_test_name_of_any_length() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -3038,7 +3038,8 @@ fn run_refuses_unknown_modes_and_ncu_options() {
 
 /// @test bench run --analyze is refused before anything starts or is
 /// created for a run under Nsight Compute, whichever way the request reaches
-/// ncu (after `--` too); under Nsight Systems the run starts as before.
+/// ncu (after `--` too); under Nsight Systems the run starts under nsys, and
+/// --analyze without --csv only warns.
 #[test]
 fn run_analyze_is_refused_under_ncu() {
     for (args, request) in [

@@ -67,8 +67,8 @@ except ImportError:
 
 
 # The columns besides the timing that the plots read as numbers. Text in one of
-# them reads as no number, as pandas's default missing markers did; an infinity
-# stays one.
+# them reads as no number (NaN), and a number, an infinity included, as that
+# number.
 PLOTTED_OTHER_NUMBERS = ("msgBytes", "kernelTimeUs", "transferTimeUs", "speedupVsCpu", "occupancy")
 
 # The columns bench-plot shows or copies as text: the test names label the
@@ -963,8 +963,8 @@ def generate_report(df: pd.DataFrame, output_dir: Path):
     # Summary stats CSV. Python before 3.11 writes a NUL, which a test name may
     # hold, only when an escape character is set; one no name holds is never
     # written. Python before 3.12 quotes a name holding a CR only when the line
-    # end holds one: such a file's lines end in CRLF, every other file's as
-    # before.
+    # end holds one: such a file's lines end in CRLF, every other file's in
+    # pandas's default line end, the platform's (os.linesep).
     summary = df[["test", "wallMedian", "wallP10", "wallP90", "wallCV", "callsPerSecond"]].copy()
     names = "".join(summary["test"])
     escape = absent_character(names) if "\x00" in names else None

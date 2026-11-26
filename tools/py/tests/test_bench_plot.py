@@ -409,8 +409,8 @@ def test_a_test_named_as_a_missing_marker_keeps_its_name(
 
 def test_the_other_plotted_numbers_read_text_as_no_number(tmp_path):
     """msgBytes and the GPU columns hold numbers after loading: an empty field
-    or any text in one is no number, and a number stays one, an infinity
-    included, as pandas's default reading gave them."""
+    or any text in one is no number, and a number, an infinity included, reads
+    as that number."""
     rows = [
         TIMED_ROW.replace(",64,", ",n/a,").replace(",0.1,,,", ",0.1,RTX,NULL,0.5"),
         TIMED_ROW.replace(",0.1,,,", ",0.1,RTX,12.5,garbage"),

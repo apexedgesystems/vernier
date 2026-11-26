@@ -611,8 +611,8 @@ TEST_F(CsvListenerTest, NsightComputeLeavesACasesTimingCellsEmpty) {
  * @test The memory-profile throughput loop, through each public overload,
  *       prints its bandwidth, efficiency and hint from the timing only where
  *       the run is timed: under Nsight Compute none of them, the result it
- *       returns keeping its numbers; without a session and under Nsight
- *       Systems all of them, as before.
+ *       returns holding its numbers; without a session and under Nsight
+ *       Systems all of them.
  */
 TEST_F(CsvListenerTest, NsightComputeLeavesTheMemoryBandwidthUnprinted) {
   PerfConfig caseCfg = global_;
