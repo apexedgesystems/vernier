@@ -113,9 +113,9 @@ template <std::size_t N> void expectContiguousFromZero(const Member (&members)[N
 // Version 7 appended PerfRow::timed and PerfSummaryEntry::timed, the rows the
 // libraries publish through PerfRegistry, and dropped NsightProfiler's replay
 // toggles; their sizes are pinned with the others.
-// Version 7 made GperfProfiler's members the same whatever headers a
+// Version 8 made GperfProfiler's members the same whatever headers a
 // benchmark is compiled with; its size is pinned with the others.
-static_assert(BENCH_ABI_VERSION == 7,
+static_assert(BENCH_ABI_VERSION == 8,
               "BENCH_ABI_VERSION changed: update the member bindings, tables and sizes in this "
               "file to the layout of the new version, then update this assertion");
 

@@ -437,7 +437,7 @@ compute-sanitizer|nsight|ncu|jemalloc` the benchmark no longer creates an
   `bench summary`, `bench compare` and `bench doctor` say so, and `--analyze`
   is refused under ncu. **Action needed:** measure performance in a run
   without ncu, and rebuild benchmarks against these headers
-  (`BENCH_ABI_VERSION` is 7).
+  (`BENCH_ABI_VERSION` is 8).
   ([#73](https://github.com/apexedgesystems/vernier/pull/73))
 - The CSV tools keep test names as written: `bench summary` and
   `bench compare` name the line a refused row starts on, as an editor counts
@@ -994,7 +994,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   and a test that measures once keeps its name. **Migration:** re-record a
   baseline taken from a test that measured more than once, since
   `bench compare --fail-on-regression` reports its single old row missing, and
-  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 7).
+  rebuild benchmarks against these headers (`BENCH_ABI_VERSION` is 8).
 - **The end-of-run table counts rows and tests apart** -- when a test published
   more than one row the footer reads like
   `17 rows from 8 tests | 15 stable | 2 unstable`, the stable and unstable
@@ -1087,7 +1087,7 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   missing. ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 - A benchmark compiled without gperftools' headers lays out `GperfProfiler` as
   libbench does. **Action needed:** rebuild benchmarks against these headers
-  (`BENCH_ABI_VERSION` is 7).
+  (`BENCH_ABI_VERSION` is 8).
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
