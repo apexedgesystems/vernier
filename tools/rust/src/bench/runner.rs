@@ -28,7 +28,8 @@ use std::process::{Command, ExitStatus, Stdio};
 
 use super::workflow::canonical_backend;
 use super::{
-    find_in_path, lookup_in_path, BenchmarkExit, Error, InPath, ProfileFailure, SanitizerFailure,
+    find_in_path, lookup_in_path, BenchmarkExit, Error, InPath, PrivateDir, ProfileFailure,
+    SanitizerFailure,
 };
 
 /// Exit status of a benchmark whose tests passed and whose requested profile
@@ -150,6 +151,19 @@ pub fn run_benchmark(cfg: &RunConfig) -> Result<Option<PathBuf>, Error> {
         }),
         lookup_in_path,
     )?;
+
+    // heaptrack's exit status stands for the benchmark's (`benchmark_exit`):
+    // a heaptrack that drops it is refused before anything is created or
+    // started.
+    if let Some(ref r) = route {
+        if r.program == "heaptrack" {
+            if let Some(refusal) =
+                heaptrack_status_refusal(&request_text(&r.tool, cfg.profile_args.as_deref()))?
+            {
+                return Err(Error::ToolNotFound(refusal));
+            }
+        }
+    }
 
     // The route's folder exists and holds none of the files this run's wrap
     // will write, so what is there after the run is this run's. The
@@ -719,9 +733,10 @@ pub(crate) fn describe_status(status: ExitStatus) -> String {
 
 /// How a finished benchmark ended, or `None` when it succeeded.
 ///
-/// For a wrapped run this is the wrap's status; valgrind (memcheck with
-/// `--error-exitcode=0`), heaptrack and taskset pass the benchmark's own
-/// status through.
+/// For a wrapped run this is the wrap's status: valgrind (memcheck with
+/// `--error-exitcode=0`) and taskset pass the benchmark's own status
+/// through, and so does a heaptrack that `heaptrack_status_refusal` lets
+/// run.
 fn benchmark_exit(status: ExitStatus) -> Option<BenchmarkExit> {
     if status.success() {
         return None;
@@ -1558,6 +1573,55 @@ fn jemalloc_preload_refusal() -> Result<Option<String>, Error> {
         Ok(OwnedEnd::TimedOut) => Err(Error::ToolNotFound(format!(
             "{what} did not end within {} s, so whether the loader preloads it is not known",
             PRELOAD_CHECK_BOUND.as_secs()
+        ))),
+        Err(OwnedError::Start(e) | OwnedError::Wait(e)) => Err(Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("{what}: {e}"),
+        ))),
+    }
+}
+
+/// How long heaptrack's status probe may take.
+const HEAPTRACK_PROBE_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The refusal of the heaptrack on PATH when it does not pass the exit status
+/// of the program it runs through, or None when it does. `run_benchmark`
+/// takes heaptrack's status for the benchmark's, and heaptrack 1.3's script
+/// ends with its trace compressor's status instead (1.5 passes the program's
+/// through), so a benchmark that failed under it would read as a capture.
+/// The probe, an owned run, is `heaptrack -o <private folder>/probe
+/// /bin/false`, which must not exit 0; the folder goes with the probe. A
+/// probe that ends otherwise is left to the run, which reports a heaptrack
+/// that cannot run. @p request names the request in the refusal.
+fn heaptrack_status_refusal(request: &str) -> Result<Option<String>, Error> {
+    let folder = PrivateDir::create("heaptrack-probe").map_err(|e| {
+        Error::Io(std::io::Error::new(
+            e.kind(),
+            format!("a private folder for heaptrack's status probe: {e}"),
+        ))
+    })?;
+    let mut command = Command::new("heaptrack");
+    command
+        .arg("-o")
+        .arg(folder.path().join("probe"))
+        .arg("/bin/false");
+    let what = "heaptrack -o <private folder>/probe /bin/false";
+    let end = run_owned(&mut command, what, HEAPTRACK_PROBE_BOUND);
+    drop(folder);
+    match end {
+        Ok(OwnedEnd::Exited(status, _, _)) if status.success() => Ok(Some(format!(
+            "heaptrack exits 0 for a program that fails ({what} exited 0), and {request} \
+             takes heaptrack's exit status for the benchmark's, so a benchmark that failed \
+             under it would read as a capture. Use a heaptrack that passes the exit status of \
+             the program it runs through, as heaptrack 1.5.0 does (1.3's script exits with its \
+             trace compressor's), or run the benchmark under heaptrack by hand and read whether \
+             it passed in its own output; bench doctor <binary> --profile heaptrack checks it"
+        ))),
+        Ok(OwnedEnd::Exited(..)) => Ok(None),
+        Ok(OwnedEnd::TimedOut) => Err(Error::ToolNotFound(format!(
+            "{what} did not end within {} s, so whether heaptrack passes the benchmark's exit \
+             status through is not known",
+            HEAPTRACK_PROBE_BOUND.as_secs()
         ))),
         Err(OwnedError::Start(e) | OwnedError::Wait(e)) => Err(Error::Io(std::io::Error::new(
             e.kind(),

@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -49,7 +50,57 @@ ReadinessResult heaptrackMissing() {
                          "apt install heaptrack (and optionally heaptrack-gui).");
 }
 
-/** @brief The doctor's probe: heaptrack records /bin/true into a private directory. */
+/**
+ * @brief The doctor's status probe: @p tool, the heaptrack the first probe
+ * ran, runs /bin/false into a private directory. bench run takes heaptrack's
+ * exit status for the benchmark's, so a heaptrack that exits 0 for a program
+ * that fails (heaptrack 1.3's script ends with its trace compressor's status;
+ * 1.5 passes the program's through) is UNUSABLE, and so is one whose end
+ * cannot be read; nothing when it ends otherwise.
+ */
+std::optional<ReadinessResult> heaptrackStatusRefusal(const std::string& tool,
+                                                      const ReadinessContext& ctx) {
+  const auto FALSE_PROGRAM = resolveExecutable("/bin/false", ctx);
+  if (!FALSE_PROGRAM || !FALSE_PROGRAM->executable) {
+    return readinessResult(ReadinessCause::MISSING_HELPER,
+                           "/bin/false, the program heaptrack's status probe runs, is missing",
+                           "Restore /bin/false (coreutils).");
+  }
+  const ProbeScratch SCRATCH(ctx);
+  if (!SCRATCH.ok()) {
+    return readinessResult(ReadinessCause::INTERNAL,
+                           "no private directory could be created for heaptrack's status probe",
+                           "Check that TMPDIR (or /tmp) is writable.");
+  }
+  const std::vector<std::string> ARGV{tool, "-o", SCRATCH.path() + "/probe", FALSE_PROGRAM->path};
+  const std::string COMMAND = tool + " -o <private directory>/probe " + FALSE_PROGRAM->path;
+  const ProbeResult PROBE = runBoundedProbe(ARGV, HEAPTRACK_PROBE_TIMEOUT_MS, ctx);
+  if (auto unseen = unobservedProbe("heaptrack's status probe, " + COMMAND, PROBE)) {
+    return unseen;
+  }
+  if (PROBE.succeeded()) {
+    return readinessResult(
+        ReadinessCause::UNUSABLE,
+        "heaptrack exits 0 for a program that fails (" + COMMAND +
+            " exited 0), so a benchmark that failed under it would read as a capture",
+        "Use a heaptrack that passes the exit status of the program it runs through, as "
+        "heaptrack 1.5.0 does (1.3's script exits with its trace compressor's), or run the "
+        "benchmark under heaptrack by hand and read whether it passed in its own output.");
+  }
+  if (!PROBE.started || PROBE.timedOut) {
+    return readinessResult(ReadinessCause::UNUSABLE,
+                           "heaptrack's status probe did not run to its end: " + COMMAND + ": " +
+                               PROBE.describe(),
+                           "Run heaptrack /bin/false by hand to see why.");
+  }
+  return std::nullopt;
+}
+
+/**
+ * @brief The doctor's probes: heaptrack records /bin/true into a private
+ * directory, then passes the status of a program that fails through
+ * (heaptrackStatusRefusal()).
+ */
 ReadinessResult probeHeaptrack(const ReadinessContext& ctx) {
   const auto TOOL = resolveExecutable("heaptrack", ctx);
   if (!TOOL) {
@@ -90,6 +141,9 @@ ReadinessResult probeHeaptrack(const ReadinessContext& ctx) {
   for (const char* SUFFIX : {".zst", ".gz"}) {
     std::error_code ec;
     if (std::filesystem::file_size(OUTPUT + SUFFIX, ec) > 0 && !ec) {
+      if (auto refusal = heaptrackStatusRefusal(TOOL->path, ctx)) {
+        return *refusal;
+      }
       return readinessResult(ReadinessCause::READY,
                              "heaptrack records /bin/true (probe: " + COMMAND +
                                  ", which wrote probe" + SUFFIX + ")",

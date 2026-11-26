@@ -420,6 +420,14 @@ there has two entries, 997 per call under `joinV0` and 998 under
   `[FAIL] heaptrack  missing: heaptrack not found on PATH`. Install the package
   from the rig document's one-time setup.
 
+- **`bench run` stops before the test starts, saying heaptrack exits 0 for a
+  program that fails.** That heaptrack does not pass the benchmark's exit
+  status through: heaptrack 1.3's script, Ubuntu 22.04's, exits with its trace
+  compressor's status, so a benchmark that failed under it would read as a
+  capture. The doctor's heaptrack row reports it unusable for the same reason.
+  Use heaptrack 1.5 (Ubuntu 24.04's, and this rig's), or run the benchmark
+  under heaptrack by hand and read whether it passed in its own output.
+
 - **The counts do not divide into a whole number per call.** The run made a
   different number of calls: one for the check, the warmup (one call by
   default), then `--cycles` times `--repeats`. `--target-time` chooses

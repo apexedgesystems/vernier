@@ -2405,7 +2405,10 @@ fn run_and_doctor_started_with_sigchld_ignored_read_the_status() {
 /// A private PATH holding recording stand-ins for wrapper programs, and a
 /// stand-in benchmark. Every stand-in appends one line to `log` -- its name,
 /// the wrap variable it was given, and its arguments -- and exits 0; a
-/// wrapper does not start the benchmark, whose argv is what is under test.
+/// wrapper does not start the benchmark, whose argv is what is under test,
+/// but heaptrack, which runs the program after its `-o` value and ends with
+/// that program's status, as heaptrack 1.5 does (`FAKE_HEAPTRACK=drops-status`
+/// ends with 0 whatever the program returned, as heaptrack 1.3's script does).
 /// A wrapper writes the output file its arguments name, as the tool would
 /// (`FAKE_WRITE=none` writes nothing, `FAKE_WRITE=empty` an empty file), and
 /// `nsys stats` prints a summary line (`FAKE_NSYS_STATS=fail` fails instead),
@@ -2541,7 +2544,7 @@ if [ "{name}" = ncu ] && [ "$1" = --import ]; then
   done
   exit 0
 fi
-[ "$FAKE_WRITE" = none ] && exit 0
+[ "$FAKE_WRITE" = none ] && [ "{name}" != heaptrack ] && exit 0
 out=""
 prev=""
 metrics=""
@@ -2604,11 +2607,18 @@ if [ "{name}" = heaptrack ] && [ -n "$out" ]; then
   done
   /bin/mkdir -p "${{out%/*}}"
 fi
-if [ -n "$out" ]; then
+if [ -n "$out" ] && [ "$FAKE_WRITE" != none ]; then
   if [ "$FAKE_WRITE" = empty ]; then : > "$out"; else echo "fake {name} output" > "$out"; fi || exit
   if [ -n "$metrics" ] && [ "$FAKE_WRITE" != empty ]; then echo "metrics=$metrics" >> "$out"; fi
 fi
 if [ "{name}" = ncu ] && [ "$FAKE_NCU_IMPORT" = gone ]; then /bin/rm -f "$0"; fi
+if [ "{name}" = heaptrack ] && [ "$1" = -o ]; then
+  shift 2
+  "$@"
+  status=$?
+  [ "$FAKE_HEAPTRACK" = drops-status ] && exit 0
+  exit "$status"
+fi
 "#,
             log = log.display()
         );
@@ -3310,6 +3320,82 @@ fn run_heaptrack_output_is_found_by_suffix() {
     assert!(
         stdout.contains("[bench] heaptrack wrote bench-out/fake_bench.heaptrack/run.gz ("),
         "{stdout}"
+    );
+}
+
+/// The rig's stand-in benchmark replaced by one that logs its arguments and
+/// exits 4, as a benchmark whose tests passed and whose profile failed does.
+fn failing_bench(rig: &RouteRig) {
+    write_executable(
+        &rig.bench,
+        &format!(
+            "#!/bin/sh\necho \"bench $*\" >> '{}'\nexit 4\n",
+            rig.log.display()
+        ),
+    );
+}
+
+/// @test bench run takes heaptrack's exit status for the benchmark's, so a
+/// heaptrack that ends with 0 whatever its program returned, as heaptrack
+/// 1.3's script does, would report a failed benchmark as a capture: bench run
+/// refuses it before anything starts, naming the cause and the remedy. Only
+/// its probe runs, `heaptrack -o <private folder>/probe /bin/false`, and
+/// nothing is created.
+#[test]
+fn run_heaptrack_that_drops_the_status_is_refused() {
+    let rig = route_rig(&["heaptrack"]);
+    failing_bench(&rig);
+    let (rc, stdout, err, log) = run_rig_env(
+        &rig,
+        &["--profile", "heaptrack"],
+        &[("FAKE_HEAPTRACK", "drops-status")],
+    );
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains(
+            "Error: tool not found: heaptrack exits 0 for a program that fails \
+             (heaptrack -o <private folder>/probe /bin/false exited 0), and --profile \
+             heaptrack takes heaptrack's exit status for the benchmark's, so a benchmark \
+             that failed under it would read as a capture. Use a heaptrack that passes the \
+             exit status of the program it runs through, as heaptrack 1.5.0 does"
+        ),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 1, "only the probe may run: {log}");
+    assert!(
+        lines[0].starts_with("heaptrack wrap= -o ") && lines[0].ends_with("/probe /bin/false"),
+        "{log}"
+    );
+    assert!(
+        !rig.dir.path().join("bench-out").exists(),
+        "nothing may be created"
+    );
+}
+
+/// @test A heaptrack that passes its program's status through, as heaptrack
+/// 1.5 does, passes the probe and runs the benchmark: a benchmark that exits 4
+/// under it fails the run with that status, and its trace is not reported as
+/// a capture.
+#[test]
+fn run_heaptrack_passes_the_benchmarks_status_on() {
+    let rig = route_rig(&["heaptrack"]);
+    failing_bench(&rig);
+    let (rc, stdout, err, log) = run_rig_env(&rig, &["--profile", "heaptrack"], &[]);
+    assert_eq!(rc, 1, "{stdout}{err}");
+    assert!(
+        err.contains(
+            "Error: the requested profile failed (the benchmark's report above says why); \
+             the benchmark exited with status 4"
+        ),
+        "{err}"
+    );
+    assert!(!stdout.contains("heaptrack wrote"), "{stdout}");
+    assert!(
+        log.lines()
+            .any(|l| l.starts_with("bench --profile heaptrack")),
+        "the benchmark did not run: {log}"
     );
 }
 

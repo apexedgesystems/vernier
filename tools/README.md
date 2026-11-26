@@ -332,7 +332,13 @@ before it reads the macros, so `bench run` gives it the folder named whole,
 from the working directory, as its `Running:` line shows. heaptrack replaces `%h` and `%p` in its `-o` with the host name and
 its process id and has no escape for them, so `bench run` refuses a heaptrack
 folder holding either before anything starts; any other `%` reaches
-heaptrack as it is. After the benchmark exits 0, the file must exist and hold
+heaptrack as it is. heaptrack's exit status stands for the benchmark's, so
+before a heaptrack run `bench run` runs `heaptrack -o <a private
+folder>/probe /bin/false` once and refuses, before anything starts, a
+heaptrack that exits 0 for it: heaptrack 1.3's script exits with its trace
+compressor's status, and a benchmark that failed under it would read as a
+capture; heaptrack 1.5.0 passes the program's status through. After the
+benchmark exits 0, the file must exist and hold
 something: the run prints `[bench] <tool> wrote <file> (<n> bytes)`, and
 otherwise fails with `completion: <file> was not written` (or `is empty`).
 When the run under ncu named metrics (a replay, or `--metrics`), `bench run`
@@ -459,9 +465,10 @@ report that never fails on them.
 
 **What the doctor runs, and what it costs.** To say whether each profiler can
 run here, the doctor starts most of the tools once, one after another: each
-valgrind tool and heaptrack on `/bin/true`, a short `perf stat` of its own
-process, the bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu
-and compute-sanitizer. Those starts take most of its time, which depends on
+valgrind tool and heaptrack on `/bin/true` (heaptrack also on `/bin/false`,
+which it must not exit 0 for), a short `perf stat` of its own process, the
+bpftrace and off-CPU probe scripts, and `--version` of nsys, ncu and
+compute-sanitizer. Those starts take most of its time, which depends on
 the machine and on the tools installed; no time is promised. One run of this
 release's `bench doctor build/bin/ptests/BenchmarkCPU_PTEST` on each rig,
 timed on core 3 after one untimed run: on the

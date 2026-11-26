@@ -1089,6 +1089,12 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   libbench does. **Action needed:** rebuild benchmarks against these headers
   (`BENCH_ABI_VERSION` is 8).
   ([#77](https://github.com/apexedgesystems/vernier/pull/77))
+- `bench run --profile heaptrack` refuses, before anything starts, a heaptrack
+  that exits 0 for a program that fails, as heaptrack 1.3's script does,
+  instead of reporting a failed benchmark as a capture; the doctor reports that
+  heaptrack unusable. **Action needed:** on a host with heaptrack 1.3 (Ubuntu
+  22.04), use heaptrack 1.5, or run the benchmark under heaptrack by hand.
+  ([#77](https://github.com/apexedgesystems/vernier/pull/77))
 
 ## v1.0.3 - 2026-06-28
 

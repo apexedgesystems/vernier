@@ -793,7 +793,10 @@ TEST(HeaptrackCheck, RouteAndRefusalMatchTheSharedTable) {
   EXPECT_EQ(refusals, 1);
 }
 
-/** @test The doctor records /bin/true with heaptrack into a private directory, which it removes. */
+/**
+ * @test The doctor records /bin/true with heaptrack into a private directory,
+ * then runs /bin/false with it into another, and removes both.
+ */
 TEST(HeaptrackCheck, DoctorRecordsTheProbe) {
   for (const std::string MODE : {"ok", "gz"}) {
     FakeToolDir dir;
@@ -808,14 +811,17 @@ TEST(HeaptrackCheck, DoctorRecordsTheProbe) {
               std::string::npos)
         << RESULT.report.message;
     const std::vector<std::string> LINES = dir.logLines("heaptrack ");
-    ASSERT_EQ(LINES.size(), 1U) << dir.log();
-    const std::size_t AT = LINES.front().find(" -o ");
-    ASSERT_NE(AT, std::string::npos) << LINES.front();
-    const std::string OUTPUT =
-        LINES.front().substr(AT + 4, LINES.front().find(' ', AT + 4) - AT - 4);
-    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(OUTPUT).parent_path()))
-        << "the probe's directory was left behind: " << OUTPUT;
-    EXPECT_EQ(LINES.front().substr(LINES.front().size() - 10), " /bin/true") << LINES.front();
+    ASSERT_EQ(LINES.size(), 2U) << dir.log();
+    for (std::size_t i = 0; i < LINES.size(); ++i) {
+      const std::string& LINE = LINES[i];
+      const std::size_t AT = LINE.find(" -o ");
+      ASSERT_NE(AT, std::string::npos) << LINE;
+      const std::string OUTPUT = LINE.substr(AT + 4, LINE.find(' ', AT + 4) - AT - 4);
+      EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(OUTPUT).parent_path()))
+          << "the probe's directory was left behind: " << OUTPUT;
+      const std::string PROGRAM = (i == 0) ? " /bin/true" : " /bin/false";
+      EXPECT_EQ(LINE.substr(LINE.size() - PROGRAM.size()), PROGRAM) << LINE;
+    }
   }
 }
 
@@ -838,6 +844,28 @@ TEST(HeaptrackCheck, BrokenSilentOrMissingHeaptrack) {
   EXPECT_EQ(SILENT.cause, ReadinessCause::UNUSABLE);
   EXPECT_NE(SILENT.report.message.find("wrote no trace"), std::string::npos)
       << SILENT.report.message;
+}
+
+/**
+ * @test A heaptrack that exits 0 whatever the program it runs returns, as
+ * heaptrack 1.3's script does, is UNUSABLE: bench run takes heaptrack's exit
+ * status for the benchmark's, so a benchmark that failed under it would read
+ * as a capture. The row names the cause and a heaptrack that passes the
+ * status through.
+ */
+TEST(HeaptrackCheck, StatusDroppedIsUnusable) {
+  FakeToolDir dir;
+  ASSERT_TRUE(dir.ok());
+  dir.install("fake_heaptrack.sh", "heaptrack");
+  const ReadinessResult RESULT = vernier::bench::checkHeaptrackRequestWithMaps(
+      requestFor("heaptrack", ReadinessScope::DEFAULT_INVENTORY),
+      dir.context({{"FAKE_HEAPTRACK_MODE", "drops-status"}}), "");
+  EXPECT_EQ(RESULT.cause, ReadinessCause::UNUSABLE) << RESULT.report.message;
+  EXPECT_NE(RESULT.report.message.find("heaptrack exits 0 for a program that fails"),
+            std::string::npos)
+      << RESULT.report.message;
+  EXPECT_NE(RESULT.report.hint.find("as heaptrack 1.5.0 does"), std::string::npos)
+      << RESULT.report.hint;
 }
 
 /** @test With libtcmalloc in the process, the doctor's heaptrack row is a caveat naming it. */
