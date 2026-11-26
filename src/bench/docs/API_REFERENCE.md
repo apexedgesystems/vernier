@@ -886,12 +886,12 @@ on stderr
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description                |
-| -------------------- | ------ | -------------------------- |
-| `deviceId`           | int    | Primary CUDA device ID     |
-| `deviceCount`        | int    | Number of GPUs used        |
-| `multiGpuEfficiency` | double | Not measured: always empty |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
+| Column               | Type   | Description                                                                                                                                     |
+| -------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deviceId`           | int    | In a single-device row, the device named with `withDeviceId()`, empty when the case's own device (`--gpu-device`) ran it; -1 in a multi-GPU row |
+| `deviceCount`        | int    | Number of GPUs used                                                                                                                             |
+| `multiGpuEfficiency` | double | Not measured: always empty                                                                                                                      |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth                                                                                                                          |
 
 ### Unified Memory Columns
 
