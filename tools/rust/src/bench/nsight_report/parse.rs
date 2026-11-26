@@ -32,6 +32,10 @@ pub(crate) struct Malformed {
     columns: usize,
 }
 
+/// A tool's CSV output as a table: its header, and its records, each a row
+/// keyed by the header.
+type Table = (Vec<String>, Vec<Row>);
+
 /* ----------------------------- Helpers ----------------------------- */
 
 impl Row {
@@ -116,7 +120,7 @@ fn records(text: &str) -> Result<Vec<Row>, Malformed> {
 
 /// The header of a tool's CSV output and its records, each a row keyed by
 /// the header; `None` when the output has no header.
-fn table(text: &str) -> Result<Option<(Vec<String>, Vec<Row>)>, Malformed> {
+fn table(text: &str) -> Result<Option<Table>, Malformed> {
     let all = lines(text);
     let Some(start) = all
         .iter()

@@ -13,12 +13,12 @@ use super::{find_in_path, CheckResult, CheckStatus};
 
 /// Run all GPU environment checks. Returns a list of results.
 pub fn run_checks() -> Vec<CheckResult> {
-    let mut results = Vec::new();
-
-    results.push(check_nvidia_smi());
-    results.push(check_nvidia_driver());
-    results.push(check_cuda_toolkit());
-    results.push(check_nsys_trace_compat());
+    let mut results = vec![
+        check_nvidia_smi(),
+        check_nvidia_driver(),
+        check_cuda_toolkit(),
+        check_nsys_trace_compat(),
+    ];
     results.extend(check_gpu_devices());
     results.push(check_persistence_mode());
     results.push(check_clock_state());
