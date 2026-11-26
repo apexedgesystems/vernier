@@ -49,6 +49,8 @@ namespace {
 /// both paths.
 constexpr const char* DEMO_BINARY = VERNIER_DEMO_04_BINARY;
 constexpr const char* UNGUARDED_SOURCE = VERNIER_DEMO_04_UNGUARDED_SOURCE;
+/// Where the build puts the bench CLI; the file exists only where it builds it.
+constexpr const char* BENCH_CLI = VERNIER_DEMO_04_BENCH_CLI;
 
 /// The demo's case that runs past the end, and the one the checks run as the
 /// control.
@@ -65,9 +67,13 @@ constexpr const char* EXPECTED_THREAD = "by thread (255,0,0) in block (4095,0,0)
 constexpr long EXPECTED_BYTES_AFTER = 1;
 constexpr long EXPECTED_ALLOCATION_BYTES = 1048575L * 4L;
 
-/// What the tool exits with when it reported an error: not 1, which is also
-/// what a failed test exits with.
-constexpr int SANITIZER_ERROR_EXIT = 99;
+/// What bench run exits with when the report counts errors: it fails the
+/// run, naming the report.
+constexpr int BENCH_FINDINGS_EXIT = 1;
+
+/// The exit status bench run's wrap gives the tool for findings, which its
+/// verdict quotes.
+constexpr const char* TOOL_FINDINGS_STATUS = "(the tool exited with status 5)";
 
 /// What a run whose tests pass ends with when its profiler request failed:
 /// the demo run plainly with --profile compute-sanitizer.
@@ -77,6 +83,14 @@ constexpr int REQUEST_FAILED_EXIT = 4;
 std::string demoPath() {
   std::error_code ec;
   const fs::path PATH = fs::canonical(DEMO_BINARY, ec);
+  return ec ? std::string() : PATH.string();
+}
+
+/// The bench CLI's canonical path, or an empty string where it is not built
+/// (VERNIER_BUILD_TOOLS off, or no cargo).
+std::string benchPath() {
+  std::error_code ec;
+  const fs::path PATH = fs::canonical(BENCH_CLI, ec);
   return ec ? std::string() : PATH.string();
 }
 
@@ -115,28 +129,35 @@ std::string reasonNotToRunAKernel() {
 
 /**
  * @test memcheck reports SaxpyUnguarded's read past the end, at the
- *       unguarded line, by the one thread past the end.
+ *       unguarded line, by the one thread past the end, and bench run fails
+ *       the run for it.
  *
- * Runs the demo binary under compute-sanitizer's memcheck as `bench run
- * --profile compute-sanitizer` wraps it, plus an exit code for errors.
- * SaxpyUnguarded must run to its end and pass (it launches once and reports
- * what the device said); the report must hold exactly one invalid access,
- * the one launch's one thread past the end, and that one must be a read of
- * four bytes in the unguarded kernel at the unguarded statement's line, by
- * thread (255,0,0) in block (4095,0,0), out of bounds, one byte after an
- * allocation of the vectors' size; the summary must count it, and the tool
- * must exit with the error status it was given.
+ * Runs the demo binary through `bench run --profile compute-sanitizer`, as
+ * walkthrough 17's step 2 does. SaxpyUnguarded must run to its end and pass
+ * (it launches once and reports what the device said); bench run must read
+ * errors from the report's summary, fail the run (exit 1) naming the report
+ * and the tool's status for findings; the report must hold exactly one
+ * invalid access, the one launch's one thread past the end, and that one
+ * must be a read of four bytes in the unguarded kernel at the unguarded
+ * statement's line, by thread (255,0,0) in block (4095,0,0), out of bounds,
+ * one byte after an allocation of the vectors' size.
  *
  * Skipped only in a build with the address or the thread sanitizer (where the
  * demo does not run, as the check support says), where compute-sanitizer is
- * not on PATH, or where the runtime sees no device, all decided before
- * anything runs. Any other way of not reaching the case fails, with what the
- * run printed.
+ * not on PATH, where the runtime sees no device, or where the bench CLI is
+ * not built, all decided before anything runs. Any other way of not reaching
+ * the case fails, with what the run printed.
  */
 TEST(ComputeSanitizer, FindsTheUnguardedRead) {
   const std::string CANNOT = reasonNotToRunAKernel();
   if (!CANNOT.empty()) {
     GTEST_SKIP() << CANNOT;
+  }
+  const std::string BENCH = benchPath();
+  if (BENCH.empty()) {
+    GTEST_SKIP() << "the bench CLI is not built (" << BENCH_CLI
+                 << "; VERNIER_BUILD_TOOLS on, with cargo, builds it): this test runs the demo "
+                    "through bench run";
   }
   const std::string DEMO = demoPath();
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
@@ -148,26 +169,25 @@ TEST(ComputeSanitizer, FindsTheUnguardedRead) {
   const fs::path DIR = scratchDir();
   ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
 
-  const check::SanitizerRun RUN =
-      check::runUnderSanitizer(DEMO, UNGUARDED_CASE, {}, DIR, SANITIZER_ERROR_EXIT);
+  const check::BenchRun RUN = check::runThroughBench(BENCH, DEMO, UNGUARDED_CASE, {}, DIR);
   ASSERT_TRUE(vg::testsStarted(RUN.output))
-      << "SaxpyUnguarded did not start under compute-sanitizer: the tool " << vg::describe(RUN.end)
+      << "SaxpyUnguarded did not start through bench run: bench run " << vg::describe(RUN.end)
       << " (its output is in " << DIR << "). The run printed:\n"
-      << vg::lastLines(RUN.log + RUN.output, 40);
+      << vg::lastLines(RUN.output, 40);
   ASSERT_TRUE(vg::testPassed(RUN.output, UNGUARDED_CASE) && vg::oneTestPassed(RUN.output))
       << "SaxpyUnguarded did not run to its end under compute-sanitizer (its output is in " << DIR
       << "):\n"
       << vg::lastLines(RUN.output);
 
   const std::vector<check::InvalidAccess> ACCESSES = check::invalidAccesses(RUN.log);
-  const long SUMMARY = check::errorSummary(RUN.log);
+  const long REPORTED = check::benchReportedErrors(RUN.output);
   std::printf("[ComputeSanitizer.FindsTheUnguardedRead]  SaxpyUnguarded: %zu invalid access(es) "
-              "read, ERROR SUMMARY %ld, looking for %s\n",
-              ACCESSES.size(), SUMMARY, LOCATION.c_str());
+              "read, bench run reported %ld, looking for %s\n",
+              ACCESSES.size(), REPORTED, LOCATION.c_str());
   ASSERT_FALSE(ACCESSES.empty())
       << "compute-sanitizer reported no invalid access for SaxpyUnguarded: the unguarded kernel "
-         "has stopped running past the end (log "
-      << DIR / "sanitizer.log" << ")";
+         "has stopped running past the end (report "
+      << RUN.report << ")";
   EXPECT_EQ(ACCESSES.size(), 1u)
       << "one launch with one thread past the end was expected to give one access:\n"
       << ACCESSES[1].text;
@@ -180,14 +200,20 @@ TEST(ComputeSanitizer, FindsTheUnguardedRead) {
   EXPECT_NE(READ.address.find("is out of bounds"), std::string::npos) << READ.text;
   EXPECT_EQ(check::bytesAfterAllocation(READ), EXPECTED_BYTES_AFTER) << READ.text;
   EXPECT_EQ(check::allocationSize(READ), EXPECTED_ALLOCATION_BYTES) << READ.text;
-  EXPECT_GE(SUMMARY, 1) << "the summary does not count the read (log " << DIR / "sanitizer.log"
-                        << ")";
-  EXPECT_TRUE(vg::exitedWith(RUN.end, SANITIZER_ERROR_EXIT))
-      << "the tool " << vg::describe(RUN.end) << ", not the --error-exitcode "
-      << SANITIZER_ERROR_EXIT << " it was given for a run with errors";
+  EXPECT_GE(REPORTED, 1) << "bench run did not report the report's errors:\n"
+                         << vg::lastLines(RUN.output);
+  EXPECT_NE(RUN.output.find(TOOL_FINDINGS_STATUS), std::string::npos)
+      << "bench run did not quote the tool's status for findings:\n"
+      << vg::lastLines(RUN.output);
+  EXPECT_NE(RUN.output.find(RUN.report.filename().string()), std::string::npos)
+      << "bench run did not name the report:\n"
+      << vg::lastLines(RUN.output);
+  EXPECT_TRUE(vg::exitedWith(RUN.end, BENCH_FINDINGS_EXIT))
+      << "bench run " << vg::describe(RUN.end) << ", not " << BENCH_FINDINGS_EXIT
+      << ", for a run whose report counts errors";
 
   if (HasFailure()) {
-    std::printf("compute-sanitizer output kept in %s\n", DIR.c_str());
+    std::printf("bench run output kept in %s\n", DIR.c_str());
     return;
   }
   std::error_code ec;
@@ -196,49 +222,58 @@ TEST(ComputeSanitizer, FindsTheUnguardedRead) {
 
 /**
  * @test memcheck reports nothing for SaxpyKernel: the shared kernel, its
- *       guard included, stays inside its buffers.
+ *       guard included, stays inside its buffers, and bench run passes the
+ *       run.
  *
- * Runs the measured case under the same wrap with one cycle and one repeat
- * (the harness's warmup launches and one measured launch): it must run to
- * its end and pass, the report must hold no invalid access and count no
- * error, and the tool must exit 0. Skipped where FindsTheUnguardedRead
- * skips.
+ * Runs the measured case through the same bench run with one cycle and one
+ * repeat (the harness's warmup launches, one measured launch and the CUPTI
+ * batch's one, where CUPTI collects under the tool): it must run to its end
+ * and pass, the report must hold no invalid access, bench run must report
+ * no error and exit 0. Skipped where FindsTheUnguardedRead skips.
  */
 TEST(ComputeSanitizer, KernelReportsNothing) {
   const std::string CANNOT = reasonNotToRunAKernel();
   if (!CANNOT.empty()) {
     GTEST_SKIP() << CANNOT;
   }
+  const std::string BENCH = benchPath();
+  if (BENCH.empty()) {
+    GTEST_SKIP() << "the bench CLI is not built (" << BENCH_CLI
+                 << "; VERNIER_BUILD_TOOLS on, with cargo, builds it): this test runs the demo "
+                    "through bench run";
+  }
   const std::string DEMO = demoPath();
   ASSERT_FALSE(DEMO.empty()) << "the demo binary is missing: " << DEMO_BINARY;
   const fs::path DIR = scratchDir();
   ASSERT_FALSE(DIR.empty()) << "cannot create a temporary directory";
 
-  const check::SanitizerRun RUN = check::runUnderSanitizer(
-      DEMO, KERNEL_CASE, {"--cycles", "1", "--repeats", "1"}, DIR, SANITIZER_ERROR_EXIT);
+  const check::BenchRun RUN =
+      check::runThroughBench(BENCH, DEMO, KERNEL_CASE, {"--cycles", "1", "--repeats", "1"}, DIR);
   ASSERT_TRUE(vg::testsStarted(RUN.output))
-      << "SaxpyKernel did not start under compute-sanitizer: the tool " << vg::describe(RUN.end)
+      << "SaxpyKernel did not start through bench run: bench run " << vg::describe(RUN.end)
       << " (its output is in " << DIR << "). The run printed:\n"
-      << vg::lastLines(RUN.log + RUN.output, 40);
+      << vg::lastLines(RUN.output, 40);
   const std::vector<check::InvalidAccess> ACCESSES = check::invalidAccesses(RUN.log);
-  const long SUMMARY = check::errorSummary(RUN.log);
+  const long REPORTED = check::benchReportedErrors(RUN.output);
   std::printf("[ComputeSanitizer.KernelReportsNothing]  SaxpyKernel: %zu invalid access(es) "
-              "read, ERROR SUMMARY %ld\n",
-              ACCESSES.size(), SUMMARY);
+              "read, bench run reported %ld\n",
+              ACCESSES.size(), REPORTED);
   EXPECT_TRUE(vg::testPassed(RUN.output, KERNEL_CASE) && vg::oneTestPassed(RUN.output))
       << "SaxpyKernel did not run to its end under compute-sanitizer:\n"
       << vg::lastLines(RUN.output);
+  EXPECT_FALSE(RUN.log.empty()) << "the run left no report at " << RUN.report;
   EXPECT_TRUE(ACCESSES.empty()) << "compute-sanitizer reported an invalid access for the shared "
-                                   "kernel (log "
-                                << DIR / "sanitizer.log" << "):\n"
+                                   "kernel (report "
+                                << RUN.report << "):\n"
                                 << (ACCESSES.empty() ? std::string() : ACCESSES.front().text);
-  EXPECT_EQ(SUMMARY, 0) << "the summary counts errors for the shared kernel (log "
-                        << DIR / "sanitizer.log" << ")";
+  EXPECT_EQ(REPORTED, -1) << "bench run reported errors for the shared kernel:\n"
+                          << vg::lastLines(RUN.output);
   EXPECT_TRUE(vg::exitedWith(RUN.end, 0))
-      << "the tool " << vg::describe(RUN.end) << " for a run without errors";
+      << "bench run " << vg::describe(RUN.end) << " for a run without errors:\n"
+      << vg::lastLines(RUN.output);
 
   if (HasFailure()) {
-    std::printf("compute-sanitizer output kept in %s\n", DIR.c_str());
+    std::printf("bench run output kept in %s\n", DIR.c_str());
     return;
   }
   std::error_code ec;
@@ -480,7 +515,9 @@ void expectHintRunsAsPrinted(const std::string& demo, const fs::path& dir,
                                << FILLED << "\n"
                                << BY_HAND;
   EXPECT_TRUE(vg::testPassed(BY_HAND, KERNEL_CASE) && vg::oneTestPassed(BY_HAND)) << BY_HAND;
-  EXPECT_EQ(check::errorSummary(LOG_TEXT), 0) << LOG_TEXT;
+  EXPECT_TRUE(check::invalidAccesses(LOG_TEXT).empty()) << LOG_TEXT;
+  // The command gives the tool an exit status for findings: 0 is a run
+  // without errors.
   EXPECT_TRUE(vg::exitedWith(END, 0)) << vg::describe(END) << "\n" << BY_HAND;
 }
 

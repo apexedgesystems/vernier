@@ -336,6 +336,19 @@ PERF_GPU_TEST(MyKernel, Basic) {
 }
 ```
 
+### Launch on the Stream You Are Given
+
+The callable gets the stream to launch on, and the harness times that stream
+with CUDA events, so queue the measured work there. The case's stream is a
+blocking stream (with `PerfGpuConfig::useHighPriorityStream`, the default, and
+without it): work that lands on the legacy default stream, such as a launch
+without a stream, `cudaMemset`, or a library call left on its default stream,
+is ordered with it and timed too. Work on any other stream is not timed unless
+the callable joins it back to the stream it was given (records an event there
+and has the given stream wait for it), and work on the per-thread default
+stream, in code built with `--default-stream per-thread`, is not ordered with
+the case's stream at all: the events do not time it.
+
 ### Comparing Implementations
 
 ```cpp
@@ -623,15 +636,13 @@ PERF_GPU_TEST(MyKernel, MultiGpu) {
                 result.perDevice[i].kernelTimeUs / 1000.0);
   }
 
-  // Aggregated metrics
-  std::printf("\nScaling efficiency: %.1f%%\n",
-              result.aggregatedStats.multiGpu->scalingEfficiency * 100);
-  std::printf("Total speedup: %.2fx vs single GPU\n",
-              result.totalSpeedupVsCpu);
+  // Aggregated metrics: the devices against each other
+  std::printf("\nLoad imbalance: %.2f (slowest over fastest device)\n",
+              result.aggregatedStats.multiGpu->loadImbalance);
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << DEVICE_COUNT << " GPUs";
+  // Check that no device lags the others
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << DEVICE_COUNT << " GPUs";
 
   // Cleanup
   for (int i = 0; i < DEVICE_COUNT; ++i) {
@@ -643,13 +654,20 @@ PERF_GPU_TEST(MyKernel, MultiGpu) {
 
 ### Understanding Scaling Efficiency
 
-Scaling efficiency measures how well your code utilizes multiple GPUs:
+Scaling efficiency measures how well your code uses multiple GPUs. The harness
+does not measure it: it needs the time one device takes on the whole job, and
+a multi-GPU measurement times each device on its own share only, so
+`MultiGpuMetrics::scalingEfficiency` stays 0 and the CSV's `multiGpuEfficiency`
+cell stays empty. Time the whole job on one device in a case of its own and
+compare its median with the multi-GPU row's `wallMedian`:
 
 ```
-scalingEfficiency = (speedup / num_devices) * 100%
-
-where speedup = single_gpu_time / multi_gpu_time
+scaling efficiency = single_gpu_time / (num_devices * multi_gpu_time) * 100%
 ```
+
+A multi-GPU row's `speedupVsCpu` is the CPU baseline over the row's own
+`wallMedian` (the first device's median), as a kernel row's is over its own;
+`MultiGpuResult::totalSpeedupVsCpu` is the devices' speedups summed.
 
 **Interpretation:**
 
@@ -703,7 +721,7 @@ Additional columns when using multi-GPU:
 | Column               | Type   | Description                          |
 | -------------------- | ------ | ------------------------------------ |
 | `deviceCount`        | int    | Number of GPUs used                  |
-| `multiGpuEfficiency` | double | Scaling efficiency [0-1]             |
+| `multiGpuEfficiency` | double | Not measured: always empty           |
 | `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth (if measured) |
 
 ---
@@ -829,9 +847,14 @@ cells stay empty. A failed test keeps its own status.
 **What the request costs.** Switching the counters on before the timed
 repeats, and flushing and switching them off after them, adds about 45 ms to
 each measurement on the laptop GPU, outside the timed interval. While the
-repeats run, CUPTI records every migration and fault; on that GPU the
+repeats run, CUPTI records every migration and fault and no kernel record
+(the CUPTI cells come from a batch after the repeats); on that GPU the
 sample's kernel medians with and without the request agreed within their
-run-to-run spread, but compare timings from runs made the same way.
+run-to-run spread, and a 16 x 256 store through a one-device multi-GPU
+measurement read 1.76 against 1.85 us a launch with the request and without
+on a performance core, and 2.80 against 2.90 us on an efficiency core
+(medians of 20 alternating runs each, every run pinned to one CPU), but
+compare timings from runs made the same way.
 
 `--gpu-memory unified` asks for no counters. It selects managed memory for
 the tests that allocate by the selected strategy, such as
@@ -975,7 +998,13 @@ refuses `--analyze` for a run under ncu before it starts.
 
 `PERF_GPU_GUARD` auto-attaches profiler hooks; whichever backend is
 selected by `--profile X` fires around the measured window. No manual
-`attachGpuProfilerHooks` call required.
+`attachGpuProfilerHooks` call required. A measurement that ends by an
+exception (a refused launch, a device's thread that failed, a callable that
+throws) calls the backend's `abortMeasure()` at once, with nothing analyzed or
+published. Only a backend that implements it ends what it started this way,
+gperf and Nsight today: gperf stops its capture and Nsight pops the window's
+NVTX range, so the case and other cases then measure under a capture or range
+of their own.
 
 ```cpp
 PERF_GPU_TEST(MyKernel, WithProfiling) {
@@ -1053,21 +1082,67 @@ CUPTI's Activity API populates per-launch register count, static + dynamic
 shared memory, and launch count into the GPU CSV section on every GPU run
 -- no `--profile` flag required. New columns:
 
-| Column                  | Meaning                                                   |
-| ----------------------- | --------------------------------------------------------- |
-| `cuptiKernelLaunches`   | Number of kernel launches observed in the measured window |
-| `cuptiRegistersMedian`  | Median registers per thread across launches               |
-| `cuptiRegistersMax`     | Max registers per thread observed                         |
-| `cuptiStaticSmemBytes`  | Median static `__shared__` allocation                     |
-| `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch             |
+| Column                  | Meaning                                                 |
+| ----------------------- | ------------------------------------------------------- |
+| `cuptiKernelLaunches`   | Number of kernel launches in the untimed batch (below)  |
+| `cuptiRegistersMedian`  | Median registers per thread across the batch's launches |
+| `cuptiRegistersMax`     | Max registers per thread observed                       |
+| `cuptiStaticSmemBytes`  | Median static `__shared__` allocation                   |
+| `cuptiDynamicSmemBytes` | Median dynamic shared memory passed at launch           |
+
+**Where CUPTI collects.** No timed launch runs while CUPTI records kernels:
+its record keeping adds host time to every launch made while it records,
+which a kernel shorter than the host's interval between two launches
+carries in full; on the laptop a 16 x 256 store took about 0.6 us more a
+launch with the launching thread on a performance core (1.35x) and about
+2 us more on an efficiency core (1.8x). After a kernel measurement's timed
+repeats the harness calls the measured callable
+`cycles` times more, at most 1000, untimed, with CUPTI recording kernels, and
+the five cells describe those launches: `cuptiKernelLaunches` counts the
+batch's launches (20 for a test at `--cycles 20`, 40 if each call launches
+two kernels), not the timed ones. The callable runs `cycles x repeats` times
+timed and those calls more, so a callable with side effects sees them all. No
+batch runs where the collector does not collect (an nsys or ncu session,
+`VERNIER_DISABLE_CUPTI=1`, a build without CUPTI, CUPTI refusing the
+collector), so a tool that holds CUPTI sees no extra launch. What the batch
+adds to one measurement on the laptop's RTX 5000 Ada, at 1000 cycles: a few
+milliseconds for a 16 x 256 store (a microsecond kernel; 4.2 ms with the
+launching thread on a performance core and 3.3 ms on an efficiency core,
+medians of five rounds that spread by several milliseconds) and 1.0 s for a
+1 ms kernel, whose 1000 calls run once more; less in proportion at fewer
+cycles.
+
+**What CUPTI still leaves on the timed launches.** Host time, which reaches
+only kernels shorter than the host's launch interval, and how much depends
+on the core the launching thread runs on. The collector's registration with
+CUPTI, at a case's construction, leaves none the measurements could tell
+from their run-to-run spread: with the collector on and stood down, a
+16 x 256 store at 200 cycles read 1.84 against 1.80 us a launch on a
+performance core and 2.73 against 2.43 us on an efficiency core (medians of
+20 alternating runs; the differences per pair of runs spread from -0.7 to
++1.1 us), and over 100 fresh processes on each core the median difference
+between the two was 0.02 us or less. Once a CUPTI batch has run in the
+process, a launch takes more, because a stopped CUPTI window leaves host cost
+on every later launch of the process: about 0.3 us more on a performance core
+(1.98 against 1.72 us) and about 0.9 us more on an efficiency core (3.48
+against 2.57 us). Kernels longer than the launch interval (walkthroughs 10
+and 19's SAXPY over 1 Mi floats, a 1 ms spin) read within 1.5% of their time
+with the collector stood down on either core (medians over the rounds), as
+long as the host keeps the GPU fed: on a busy core the launch interval grows,
+and so does the set of kernels that host time reaches. Every figure here is a
+median of runs pinned to one CPU, a process each, the settings alternating;
+`GpuCollectorCost`
+([`GpuCollectorCost_pTest.cu`](../ptst/gpu/GpuCollectorCost_pTest.cu)) takes
+them on another machine. For the shortest kernels, compare runs made
+the same way, on the same kind of core, or set `VERNIER_DISABLE_CUPTI=1`.
 
 Removes the need to spawn `ncu` as an external process for the metrics it
 captures (which is fragile inside container PID namespaces). For the
 metrics CUPTI Activity doesn't expose (achieved occupancy, warp efficiency,
 cache hit rates), use `bench run --profile ncu --profile-args replay`, or name
 the sections and metrics ncu collects (`--profile-args '--set full'`). Under `--capture-um` the same collector also records
-CUPTI's unified-memory counters over each measured window
-([Unified-Memory Counters](#unified-memory-counters)).
+CUPTI's unified-memory counters over each measured window, in a window of the
+counters alone ([Unified-Memory Counters](#unified-memory-counters)).
 
 CUPTI allows a single client per process, so this in-process collector and an
 external nsys / ncu session cannot both hold it. When you wrap with nsys / ncu,
@@ -1361,6 +1436,18 @@ if (err != cudaSuccess) {
 
 CUDA_CHECK(cudaMalloc(&d_data, SIZE));
 ```
+
+**A launch the runtime refuses fails the measurement.** A launch with a
+block larger than the device allows, or more shared memory than it has, does
+not run, and the runtime reports it only through `cudaGetLastError()`. The
+harness reads it after each batch of launches: `measure()` and `cudaWarmup()`
+throw `std::runtime_error` naming the test and the error, and no row is
+published. A measurement also refuses to start while an earlier CUDA call's
+error is waiting in `cudaGetLastError()`, and names it; read that error where
+the call was made. A multi-GPU measurement rethrows the first device's error
+once every device's thread has ended. A measurement and `cudaWarmup()` make the
+case's device current while they launch, and the caller's device current
+again afterwards.
 
 ---
 

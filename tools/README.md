@@ -395,9 +395,11 @@ fail the run, and the count printed is the summary's: the
 `ERROR SUMMARY: N errors were not printed` line the print limit adds after
 it), or racecheck's `RACECHECK SUMMARY: H hazards displayed (E errors, W
 warnings)`, whose errors count and whose warnings do not. With no errors
-counted, the status is the benchmark's own, 5 included. A report that holds
-only the tool's own `Error:` line fails the run as `collection:`, a missing
-report or one without its summary as `completion:`, and nothing is counted.
+counted, the status is the benchmark's own, 5 included. A report without its
+summary fails the run as `collection:` when it holds the tool's own `Error:`
+line (racecheck's findings, `Error: Race reported between ...`, are not that
+line), and as `completion:` otherwise, as a missing report does; nothing is
+counted.
 
 Unset `--cycles` / `--repeats` / `--target-time` are filled in from `.bench.yaml` (see `init`).
 Its `gtest_filter` is passed to the binary as `--gtest_filter=<filter>`,

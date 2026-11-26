@@ -14,7 +14,11 @@
  * program gets WORKER_START_SANITIZER, naming that sanitizer, from the build's
  * SANITIZER setting: a definition here would start every thread past the
  * runtime, so the file then defines none and that test skips, naming the
- * sanitizer. Without a device every test skips.
+ * sanitizer. The cases on where CUPTI records note each activity kind the
+ * collector switches on or off, and the measured callable's calls by then,
+ * through the cuptiActivityEnable and cuptiActivityDisable this file defines:
+ * the order shows which launches a window spanned, with no clock. Without a
+ * device every test skips.
  *
  * Each test uses a test-name prefix of its own where process-wide state is
  * involved (the per-suite CPU baseline, the probe backend's call log), so the
@@ -25,10 +29,12 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -36,7 +42,9 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <ostream>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -45,6 +53,7 @@
 #include <utility>
 #include <vector>
 
+#include <cupti.h>
 #include <dlfcn.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -74,11 +83,35 @@ __global__ void saxpyKernel(float a, const float* x, float* y, int n) {
   }
 }
 
+/** @brief The GPU's global timer, in nanoseconds. */
+__device__ unsigned long long globalTimerNs() {
+  unsigned long long now = 0;
+  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
+  return now;
+}
+
+/**
+ * @brief Busy-waits until @p durationNs have passed on the GPU's timer: a
+ *        kernel of a known length, however fast the GPU runs.
+ */
+__global__ void spinKernel(unsigned long long durationNs) {
+  const unsigned long long START = globalTimerNs();
+  while (globalTimerNs() - START < durationNs) {
+  }
+}
+
 /** @brief A distinct suite name per call, so process-wide state never leaks between tests. */
 std::string uniqueSuite(const char* stem) {
   static std::atomic<int> counter{0};
   return std::string(stem) + std::to_string(counter.fetch_add(1));
 }
+
+/**
+ * @brief Calls of the measured callable in the harness's untimed CUPTI batch,
+ *        which the cupti* cells describe, for a case of @p cycles: the cycles,
+ *        at most 1000 (PerfGpuCase::cudaKernel()).
+ */
+std::size_t batchCalls(int cycles) { return static_cast<std::size_t>(std::min(cycles, 1000)); }
 
 /** @brief Device and host buffers for one measurement. */
 class SaxpyFixtureData {
@@ -278,6 +311,128 @@ TEST_F(PerfGpuHarnessTest, KernelOnlyRecordsNoTransferTime) {
   EXPECT_DOUBLE_EQ(*ROW.transferTimeUs, 0.0);
 }
 
+/* ----------------------------- Independent Values ----------------------------- */
+
+namespace {
+
+/// A spin of this many nanoseconds of the GPU's timer, the known length the time pins measure.
+constexpr unsigned long long PIN_SPIN_NS = 200'000;
+
+/**
+ * @brief Pinned host and device buffers of @p h2d and @p d2h bytes, freed however the test
+ *        leaves, those allocated before a failed one included; ok() once all four are.
+ */
+struct CopyBuffers {
+  std::size_t h2dBytes;
+  std::size_t d2hBytes;
+  void* hostIn = nullptr;
+  void* hostOut = nullptr;
+  void* deviceIn = nullptr;
+  void* deviceOut = nullptr;
+  bool allocated = false; ///< All four allocations succeeded
+  CopyBuffers(std::size_t h2d, std::size_t d2h) : h2dBytes(h2d), d2hBytes(d2h) {
+    // A failed allocation stops the ones after it; each one made before it
+    // stays set, for the destructor to free.
+    allocated = cudaMallocHost(&hostIn, h2d) == cudaSuccess &&
+                cudaMallocHost(&hostOut, d2h) == cudaSuccess &&
+                cudaMalloc(&deviceIn, h2d) == cudaSuccess &&
+                cudaMalloc(&deviceOut, d2h) == cudaSuccess;
+    if (!allocated) {
+      static_cast<void>(cudaGetLastError());
+    }
+  }
+  ~CopyBuffers() {
+    cudaFreeHost(hostIn);
+    cudaFreeHost(hostOut);
+    cudaFree(deviceIn);
+    cudaFree(deviceOut);
+  }
+  CopyBuffers(const CopyBuffers&) = delete;
+  CopyBuffers& operator=(const CopyBuffers&) = delete;
+  [[nodiscard]] bool ok() const { return allocated; }
+};
+
+/** @brief A launch of a 1 us spin: a kernel the copies around it dwarf. */
+void shortSpin(cudaStream_t s) { spinKernel<<<1, 1, 0, s>>>(1'000); }
+
+} // namespace
+
+/**
+ * @test kernelTimeUs is one launch's time: a 200 us spin on the GPU's timer
+ *       reads 0.9x to 1.5x of 200 us at 4 and at 16 cycles, so a time per
+ *       repeat, not per launch, reads 4x or 16x and a spin cut short less
+ */
+TEST_F(PerfGpuHarnessTest, AKernelTimeIsItsSpinAtTwoCycleCounts) {
+  const double SPIN_US = static_cast<double>(PIN_SPIN_NS) / 1000.0;
+  for (const int CYCLES : {4, 16}) {
+    ub::PerfConfig cfg = cfg_;
+    cfg.cycles = CYCLES;
+    cfg.repeats = 5;
+    ub::PerfGpuCase perf{uniqueSuite("GpuPinSpin") + ".Spin", cfg};
+    const ub::PerfGpuCase::KernelFn LAUNCH = [](cudaStream_t s) {
+      spinKernel<<<1, 1, 0, s>>>(PIN_SPIN_NS);
+    };
+    perf.cudaWarmup(LAUNCH);
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(LAUNCH, "spin").measure();
+    static_cast<void>(lastRow());
+    EXPECT_GE(RESULT.kernelTimeUs, 0.9 * SPIN_US) << CYCLES << " cycles";
+    EXPECT_LE(RESULT.kernelTimeUs, 1.5 * SPIN_US) << CYCLES << " cycles";
+  }
+}
+
+/**
+ * @test transferTimeUs is the sum of the two declared legs, and the device to
+ *       host leg, four times the bytes of the other, takes the longer time
+ */
+TEST_F(PerfGpuHarnessTest, TheTransferTimeIsBothDeclaredLegs) {
+  const CopyBuffers COPIES(std::size_t{4} << 20, std::size_t{16} << 20);
+  ASSERT_TRUE(COPIES.ok()) << "pinned or device allocation failed";
+  ub::PerfGpuCase perf{uniqueSuite("GpuPinLegs") + ".Copies", cfg_};
+  perf.cudaWarmup(shortSpin);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(shortSpin, "legs")
+          .withHostToDevice(COPIES.hostIn, COPIES.deviceIn, COPIES.h2dBytes)
+          .withDeviceToHost(COPIES.deviceOut, COPIES.hostOut, COPIES.d2hBytes)
+          .measure();
+  static_cast<void>(lastRow());
+  const double H2D = RESULT.stats.transfers.h2dTimeUs;
+  const double D2H = RESULT.stats.transfers.d2hTimeUs;
+  EXPECT_DOUBLE_EQ(RESULT.transferTimeUs, H2D + D2H);
+  EXPECT_GT(D2H, H2D) << "16 MiB back took no longer than 4 MiB out";
+}
+
+/**
+ * @test With declared copies that dwarf the kernel, speedupVsCpu is the CPU
+ *       baseline over the round trip (totalTimeUs), and far from the baseline
+ *       over the kernel alone
+ */
+TEST_F(PerfGpuHarnessTest, TheSpeedupIsTheBaselineOverTheRoundTrip) {
+  const CopyBuffers COPIES(std::size_t{8} << 20, std::size_t{8} << 20);
+  ASSERT_TRUE(COPIES.ok()) << "pinned or device allocation failed";
+  ub::PerfGpuCase perf{uniqueSuite("GpuPinSpeedup") + ".Copies", cfg_};
+  std::vector<float> values(1 << 16, 1.0F);
+  const ub::PerfResult CPU = perf.cpuBaseline([&values] {
+    for (float& v : values) {
+      v = v * 1.0001F + 0.5F;
+    }
+  });
+  static_cast<void>(lastRow());
+  perf.cudaWarmup(shortSpin);
+  const ub::PerfGpuResult RESULT =
+      perf.cudaKernel(shortSpin, "speedup")
+          .withHostToDevice(COPIES.hostIn, COPIES.deviceIn, COPIES.h2dBytes)
+          .withDeviceToHost(COPIES.deviceOut, COPIES.hostOut, COPIES.d2hBytes)
+          .measure();
+  static_cast<void>(lastRow());
+  const double BASELINE = CPU.stats.median;
+  ASSERT_GT(RESULT.totalTimeUs, 2.0 * RESULT.kernelTimeUs) << "the copies must dominate";
+  EXPECT_NEAR(RESULT.speedupVsCpu, BASELINE / RESULT.totalTimeUs,
+              1e-9 * BASELINE / RESULT.totalTimeUs);
+  EXPECT_GT(std::abs(RESULT.speedupVsCpu - BASELINE / RESULT.kernelTimeUs),
+            0.5 * BASELINE / RESULT.totalTimeUs)
+      << "the speedup is the baseline over the kernel alone";
+}
+
 /* ----------------------------- Speedup ----------------------------- */
 
 /**
@@ -326,8 +481,12 @@ TEST_F(PerfGpuHarnessTest, SpeedupCellIsEmptyWithoutBaseline) {
 }
 
 /**
- * @test The multi-GPU path reads the same suite baseline, so its speedup and
- *       scaling efficiency are the measured ones.
+ * @test The multi-GPU path reads the same suite baseline: each device's
+ *       speedup is the baseline over its time, the result's total is their
+ *       sum, and the row's speedupVsCpu is the baseline over the row's own
+ *       wallMedian. No scaling efficiency is measured: the field stays 0 and
+ *       the multiGpuEfficiency cell empty. With one device the sum and the
+ *       row's quotient agree; with more the row's stays the quotient
  */
 TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   const std::string SUITE = uniqueSuite("GpuMultiBaseline");
@@ -353,11 +512,36 @@ TEST_F(PerfGpuHarnessTest, MultiGpuScalingUsesTheSuiteBaseline) {
   const double DEVICE_TIME = RESULT.perDevice[0].kernelTimeUs;
   EXPECT_NEAR(RESULT.totalSpeedupVsCpu, CPU.stats.median / DEVICE_TIME, 1e-9);
   ASSERT_TRUE(RESULT.aggregatedStats.multiGpu.has_value());
-  EXPECT_NEAR(RESULT.aggregatedStats.multiGpu->scalingEfficiency, RESULT.totalSpeedupVsCpu, 1e-9);
+  EXPECT_EQ(RESULT.aggregatedStats.multiGpu->scalingEfficiency, 0.0)
+      << "a scaling efficiency was computed from the CPU speedups";
 
   const ub::PerfRow ROW = lastRow();
   ASSERT_TRUE(ROW.speedupVsCpu.has_value());
-  EXPECT_DOUBLE_EQ(*ROW.speedupVsCpu, RESULT.totalSpeedupVsCpu);
+  EXPECT_NEAR(*ROW.speedupVsCpu, CPU.stats.median / ROW.stats.median,
+              1e-9 * CPU.stats.median / ROW.stats.median);
+  EXPECT_FALSE(ROW.multiGpuEfficiency.has_value())
+      << "multiGpuEfficiency " << ROW.multiGpuEfficiency.value_or(-1.0);
+}
+
+/**
+ * @test A multi-GPU row without a CPU baseline has neither a speedup nor a
+ *       multiGpuEfficiency cell: no scaling efficiency is measured, and 0 is
+ *       not an unknown
+ */
+TEST_F(PerfGpuHarnessTest, AMultiGpuRowWithoutABaselineHasNoEfficiencyCell) {
+  SaxpyFixtureData data;
+  ub::PerfGpuCase gpuCase{uniqueSuite("GpuMultiNoBaseline") + ".MultiGpu", cfg_};
+  const ub::PerfGpuCase::KernelFn LAUNCH = data.launch();
+  const ub::MultiGpuResult RESULT =
+      gpuCase.cudaKernelMultiGpu(1, [&LAUNCH](int, cudaStream_t s) { LAUNCH(s); }).measure();
+  ASSERT_TRUE(RESULT.aggregatedStats.multiGpu.has_value());
+  EXPECT_EQ(RESULT.aggregatedStats.multiGpu->scalingEfficiency, 0.0);
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_FALSE(ROW.speedupVsCpu.has_value());
+  EXPECT_FALSE(ROW.multiGpuEfficiency.has_value())
+      << "multiGpuEfficiency " << ROW.multiGpuEfficiency.value_or(-1.0);
+  ASSERT_TRUE(ROW.deviceCount.has_value());
+  EXPECT_EQ(*ROW.deviceCount, 1);
 }
 
 /**
@@ -613,16 +797,57 @@ std::map<std::string, std::string>& probeCalls() {
   return calls;
 }
 
-/** @brief A backend that records its hook calls: the registry path the GPU guard takes. */
+/**
+ * @brief The test whose probe capture runs, empty while none does: one
+ *        capture at a time in the process, as gperftools runs its CPU profile.
+ */
+std::string& probeCaptureOwner() {
+  static std::string owner;
+  return owner;
+}
+
+/**
+ * @brief A backend that records its hook calls, 'b' before, 'a' after, 'x'
+ *        abort and 'r' for a start refused because another capture runs, and
+ *        holds the process's one capture from its before hook to its after or
+ *        abort hook: the registry path the GPU guard takes.
+ */
 class GpuHookProbe final : public ub::Profiler {
 public:
   explicit GpuHookProbe(std::string testName) : testName_(std::move(testName)) {}
   std::string toolName() const noexcept override { return "gpu-hook-probe"; }
   std::string artifactDir() const noexcept override { return "probe-dir/" + testName_; }
-  void beforeMeasure() override { probeCalls()[testName_] += 'b'; }
-  void afterMeasure(const ub::Stats& /*s*/) override { probeCalls()[testName_] += 'a'; }
+
+  void beforeMeasure() override {
+    if (!probeCaptureOwner().empty()) {
+      probeCalls()[testName_] += 'r';
+      return;
+    }
+    probeCaptureOwner() = testName_;
+    probeCalls()[testName_] += 'b';
+  }
+
+  void afterMeasure(const ub::Stats& /*s*/) override {
+    endCapture();
+    probeCalls()[testName_] += 'a';
+  }
+
+  void abortMeasure() noexcept override {
+    endCapture();
+    try {
+      probeCalls()[testName_] += 'x';
+    } catch (...) {
+      // Unrecorded: the missing 'x' fails the test that looks for it.
+    }
+  }
 
 private:
+  void endCapture() noexcept {
+    if (probeCaptureOwner() == testName_) {
+      probeCaptureOwner().clear();
+    }
+  }
+
   std::string testName_;
 };
 
@@ -770,7 +995,7 @@ TEST_F(PerfGpuHarnessTest, CuptiCollectsWithoutASessionWhateverTheSpelling) {
   if (PLAIN == 0) {
     GTEST_SKIP() << "this build collects no CUPTI records";
   }
-  EXPECT_EQ(PLAIN, static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats);
+  EXPECT_EQ(PLAIN, batchCalls(cfg_.cycles));
   for (const char* tool : {"nsight", "nsys", "ncu"}) {
     EXPECT_EQ(cuptiLaunches(uniqueSuite("GpuCuptiSpelling"), tool, data), PLAIN)
         << "--profile " << tool << " without a session";
@@ -1017,6 +1242,216 @@ TEST_F(PerfGpuHarnessTest, CollectorAppliesTheSharedDecision) {
   }
 }
 
+/* ----------------------------- CUPTI's Activity Kinds ----------------------------- */
+
+namespace {
+
+/// CUPTI's kernel records, the kind the collector records kernels with.
+constexpr CUpti_ActivityKind KERNEL_RECORDS = CUPTI_ACTIVITY_KIND_CONCURRENT_KERNEL;
+/// CUPTI's unified-memory counters.
+constexpr CUpti_ActivityKind UM_COUNTERS = CUPTI_ACTIVITY_KIND_UNIFIED_MEMORY_COUNTER;
+
+/** @brief A CUPTI activity kind switched on or off after the measured callable's first calls. */
+struct KindSwitch {
+  bool on{};
+  CUpti_ActivityKind kind{};
+  long afterCalls{}; ///< The measured callable's calls made before the switch
+
+  bool operator==(const KindSwitch&) const = default;
+};
+
+/** @brief "kind 10 on after 30 calls", for a failed comparison. */
+void PrintTo(const KindSwitch& s, std::ostream* os) {
+  *os << "kind " << static_cast<int>(s.kind) << (s.on ? " on" : " off") << " after " << s.afterCalls
+      << " calls";
+}
+
+/**
+ * @brief What the program's cuptiActivityEnable and cuptiActivityDisable
+ *        (below) note while a KindSwitches records. Never destroyed: CUPTI may
+ *        switch a kind until the process exits.
+ */
+struct KindSwitchState {
+  std::mutex mtx;
+  bool recording{false};
+  std::vector<KindSwitch> switches;
+  std::atomic<long> calls{0};
+};
+
+KindSwitchState& kindSwitchState() {
+  static KindSwitchState* const STATE = new KindSwitchState;
+  return *STATE;
+}
+
+/** @brief Notes one switch, while a KindSwitches records. */
+void noteKindSwitch(bool on, CUpti_ActivityKind kind) {
+  KindSwitchState& state = kindSwitchState();
+  const std::lock_guard<std::mutex> GUARD(state.mtx);
+  if (state.recording) {
+    state.switches.push_back({on, kind, state.calls.load()});
+  }
+}
+
+/**
+ * @brief For its scope, the CUPTI activity kinds the process switches on and
+ *        off, in order, each with the count of countCall() calls made by then:
+ *        the measured callable calls countCall() once per call, so a switch's
+ *        count says which launches came before it, without a clock.
+ */
+class KindSwitches {
+public:
+  KindSwitches() {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    state.switches.clear();
+    state.calls.store(0);
+    state.recording = true;
+  }
+
+  ~KindSwitches() {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    state.recording = false;
+  }
+
+  KindSwitches(const KindSwitches&) = delete;
+  KindSwitches& operator=(const KindSwitches&) = delete;
+
+  /** @brief Counts one call of the measured callable. */
+  static void countCall() { kindSwitchState().calls.fetch_add(1); }
+
+  /** @brief The callable's calls so far. */
+  [[nodiscard]] long calls() const { return kindSwitchState().calls.load(); }
+
+  /** @brief The switches so far. */
+  [[nodiscard]] std::vector<KindSwitch> switches() const {
+    KindSwitchState& state = kindSwitchState();
+    const std::lock_guard<std::mutex> GUARD(state.mtx);
+    return state.switches;
+  }
+};
+
+/** @brief libcupti's @p name, the one the program's definition passes on to. */
+template <typename Fn> Fn nextCupti(const char* name) {
+  void* next = dlsym(RTLD_NEXT, name);
+  if (next == nullptr) {
+    std::fprintf(stderr, "PerfGpuHarness_uTest: no %s after the test program's\n", name);
+    std::abort();
+  }
+  return reinterpret_cast<Fn>(next);
+}
+
+} // namespace
+
+// The program's cuptiActivityEnable and cuptiActivityDisable. libbench_cuda
+// imports them from libcupti, and the dynamic linker binds an import to the
+// program's own definition before any library's, so the collector's switches
+// arrive here; each is noted while a KindSwitches records and passed on to
+// libcupti's. The harness has no hook for this.
+extern "C" __attribute__((visibility("default"))) CUptiResult CUPTIAPI
+cuptiActivityEnable(CUpti_ActivityKind kind) {
+  using Fn = CUptiResult(CUPTIAPI*)(CUpti_ActivityKind);
+  static const Fn REAL = nextCupti<Fn>("cuptiActivityEnable");
+  noteKindSwitch(true, kind);
+  return REAL(kind);
+}
+
+extern "C" __attribute__((visibility("default"))) CUptiResult CUPTIAPI
+cuptiActivityDisable(CUpti_ActivityKind kind) {
+  using Fn = CUptiResult(CUPTIAPI*)(CUpti_ActivityKind);
+  static const Fn REAL = nextCupti<Fn>("cuptiActivityDisable");
+  noteKindSwitch(false, kind);
+  return REAL(kind);
+}
+
+/* ----------------------------- CUPTI and Concurrent Kernels ----------------------------- */
+
+namespace {
+
+/// How long each of the fork/join launch's two kernels spins on the GPU.
+constexpr unsigned long long FORK_SPIN_NS = 200'000;
+
+/**
+ * @brief A launch that forks the stream it is given onto a second stream,
+ *        spins one kernel on each and joins back: it takes one spin when the
+ *        two kernels overlap and two when they run one after the other. Owns
+ *        the second stream and the two events.
+ */
+class ForkJoinLaunch {
+public:
+  ForkJoinLaunch() {
+    cudaStreamCreateWithFlags(&side_, cudaStreamNonBlocking);
+    cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming);
+    cudaEventCreateWithFlags(&join_, cudaEventDisableTiming);
+  }
+
+  ~ForkJoinLaunch() {
+    cudaEventDestroy(join_);
+    cudaEventDestroy(fork_);
+    cudaStreamDestroy(side_);
+  }
+
+  ForkJoinLaunch(const ForkJoinLaunch&) = delete;
+  ForkJoinLaunch& operator=(const ForkJoinLaunch&) = delete;
+
+  /** @brief The measured launch. */
+  [[nodiscard]] ub::PerfGpuCase::KernelFn launch() const {
+    return [side = side_, fork = fork_, join = join_](cudaStream_t s) {
+      cudaEventRecord(fork, s);
+      cudaStreamWaitEvent(side, fork, 0);
+      spinKernel<<<1, 1, 0, s>>>(FORK_SPIN_NS);
+      spinKernel<<<1, 1, 0, side>>>(FORK_SPIN_NS);
+      cudaEventRecord(join, side);
+      cudaStreamWaitEvent(s, join, 0);
+    };
+  }
+
+private:
+  cudaStream_t side_ = nullptr;
+  cudaEvent_t fork_ = nullptr;
+  cudaEvent_t join_ = nullptr;
+};
+
+} // namespace
+
+/**
+ * @test Kernels a launch runs on two streams at once are recorded with CUPTI's
+ *       CONCURRENT_KERNEL kind, under which they still run at the same time
+ *       (the KERNEL kind would serialize them, cupti_activity.h), and only in
+ *       the batch: for a fork/join of two spins the kind is switched on after
+ *       the timed calls and off after the batch, whose records hold both
+ *       kernels of each of its calls. No timed launch runs under kernel
+ *       records, so none is timed one kernel after the other
+ */
+TEST_F(PerfGpuHarnessTest, AForkJoinIsRecordedWithTheConcurrentKind) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 5;
+  const ForkJoinLaunch FORK_JOIN;
+  const ub::PerfGpuCase::KernelFn LAUNCH = FORK_JOIN.launch();
+  ub::PerfGpuCase perf{uniqueSuite("GpuCuptiConcurrent") + ".ForkJoin", cfg};
+  perf.cudaWarmup(LAUNCH);
+  const KindSwitches SWITCHES;
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                           [&LAUNCH](cudaStream_t s) {
+                                             KindSwitches::countCall();
+                                             LAUNCH(s);
+                                           },
+                                           "fork_join")
+                                       .measure();
+  static_cast<void>(lastRow());
+  const long TIMED = static_cast<long>(cfg.cycles) * cfg.repeats;
+  const long BATCH = static_cast<long>(batchCalls(cfg.cycles));
+  EXPECT_EQ(SWITCHES.switches(), (std::vector<KindSwitch>{{true, KERNEL_RECORDS, TIMED},
+                                                          {false, KERNEL_RECORDS, TIMED + BATCH}}));
+  EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, 2 * batchCalls(cfg.cycles))
+      << "the collector's batch did not record both kernels of each of its calls";
+}
+
 /* ----------------------------- CUPTI Statements ----------------------------- */
 
 namespace {
@@ -1071,8 +1506,8 @@ constexpr const char* CUPTI_CELLS = "cuptiKernelLaunches, cuptiRegistersMedian, 
 } // namespace
 
 /**
- * @test A measured window in which CUPTI recorded no kernel launch is said for
- *       its test, naming the cells it leaves empty, and they are empty
+ * @test A CUPTI batch in which CUPTI recorded no kernel launch is said for its
+ *       test, naming the cells it leaves empty, and they are empty
  */
 TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
   const YieldEnvCleared CLEARED;
@@ -1091,7 +1526,7 @@ TEST_F(PerfGpuHarnessTest, AWindowWithoutAKernelRecordIsStatedForItsTest) {
   EXPECT_FALSE(ROW.cuptiKernelLaunches.has_value());
   EXPECT_FALSE(ROW.cuptiRegistersMedian.has_value());
   const std::string LINE = "[gpu] CUPTI recorded no kernel launch in " + NAME +
-                           "'s measured window, so its " + CUPTI_CELLS + " stay empty.";
+                           "'s CUPTI batch, so its " + CUPTI_CELLS + " stay empty.";
   EXPECT_NE(captured.find(LINE), std::string::npos) << "stderr said:\n" << captured;
 }
 
@@ -1642,13 +2077,6 @@ TEST_F(PerfGpuHarnessTest, ManagedBufferCountersAreObserved) {
 
 namespace {
 
-/** @brief The GPU's global timer, in nanoseconds. */
-__device__ unsigned long long globalTimerNs() {
-  unsigned long long now = 0;
-  asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(now));
-  return now;
-}
-
 /**
  * @brief Adds one to one int per page until @p durationNs have passed on the
  *        GPU's timer: the kernel side of a host and a kernel writing the same
@@ -1882,6 +2310,155 @@ TEST_F(PerfGpuHarnessTest, TheSelectedStrategyReachesTheCase) {
   }
 }
 
+/* ----------------------------- Where CUPTI Records ----------------------------- */
+
+namespace {
+
+/// The blocks of the kernel these cases launch: 16 x 256 stores.
+constexpr int STORE_BLOCKS = 16;
+
+/** @brief Writes 1 to each of its threads' elements of @p out. */
+__global__ void storeKernel(float* out) { out[blockIdx.x * blockDim.x + threadIdx.x] = 1.0F; }
+
+/** @brief Device floats, freed however the test leaves. */
+struct DeviceFloats {
+  float* data = nullptr;
+  explicit DeviceFloats(int count) {
+    if (cudaMalloc(&data, static_cast<std::size_t>(count) * sizeof(float)) != cudaSuccess) {
+      data = nullptr;
+    }
+  }
+  ~DeviceFloats() { cudaFree(data); }
+  DeviceFloats(const DeviceFloats&) = delete;
+  DeviceFloats& operator=(const DeviceFloats&) = delete;
+};
+
+} // namespace
+
+/**
+ * @test measure() calls the callable cycles x repeats times in its timed
+ *       repeats and, with the collector on, min(cycles, 1000) times more in an
+ *       untimed batch, whose launches the cupti* cells count. No timed launch
+ *       runs while CUPTI records kernels: the kernel records are switched on
+ *       after the last timed call and off after the batch, and no other kind
+ *       is switched. With the collector stood down there is no batch and no
+ *       switch
+ */
+TEST_F(PerfGpuHarnessTest, TheCuptiCellsComeFromABatchAfterTheRepeats) {
+  const YieldEnvCleared CLEARED;
+  if (!ub::CuptiCollector(false).isAvailable()) {
+    GTEST_SKIP() << "this build collects no CUPTI records";
+  }
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  const struct {
+    int cycles;
+    int repeats;
+    bool collectorOff;
+    long batch;
+  } RUNS[] = {{10, 3, false, 10}, {1200, 2, false, 1000}, {10, 3, true, 0}};
+  for (const auto& RUN : RUNS) {
+    SCOPED_TRACE("cycles " + std::to_string(RUN.cycles) +
+                 (RUN.collectorOff ? ", collector off" : ", collector on"));
+    ub::PerfConfig cfg = cfg_;
+    cfg.cycles = RUN.cycles;
+    cfg.repeats = RUN.repeats;
+    std::optional<ScopedEnv> off;
+    if (RUN.collectorOff) {
+      off.emplace("VERNIER_DISABLE_CUPTI", "1");
+    }
+    ub::PerfGpuCase perf{uniqueSuite("GpuCuptiBatch") + ".Case", cfg};
+    const KindSwitches SWITCHES;
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                             [out](cudaStream_t s) {
+                                               KindSwitches::countCall();
+                                               storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                                             },
+                                             "store")
+                                         .measure();
+    static_cast<void>(lastRow());
+    const long TIMED = static_cast<long>(RUN.cycles) * RUN.repeats;
+    EXPECT_EQ(SWITCHES.calls(), TIMED + RUN.batch);
+    EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, static_cast<std::size_t>(RUN.batch));
+    const std::vector<KindSwitch> BATCH_ONLY{{true, KERNEL_RECORDS, TIMED},
+                                             {false, KERNEL_RECORDS, TIMED + RUN.batch}};
+    EXPECT_EQ(SWITCHES.switches(), RUN.collectorOff ? std::vector<KindSwitch>{} : BATCH_ONLY);
+  }
+}
+
+/**
+ * @test Under --capture-um the counters' window spans the timed repeats and
+ *       records no kernel: measure() switches the unified-memory counters on
+ *       before its first timed call and off after its last, and the kernel
+ *       records only over the batch after them
+ */
+TEST_F(PerfGpuHarnessTest, TheCountersWindowOverTheRepeatsRecordsNoKernel) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 3;
+  ub::PerfGpuCase perf{uniqueSuite("GpuCountersWindow") + ".Kernel", cfg};
+  const KindSwitches SWITCHES;
+  const ub::PerfGpuResult RESULT = perf.cudaKernel(
+                                           [out](cudaStream_t s) {
+                                             KindSwitches::countCall();
+                                             storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                                           },
+                                           "store")
+                                       .measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(SWITCHES.switches(), (std::vector<KindSwitch>{{true, UM_COUNTERS, 0},
+                                                          {false, UM_COUNTERS, 30},
+                                                          {true, KERNEL_RECORDS, 30},
+                                                          {false, KERNEL_RECORDS, 40}}));
+  EXPECT_TRUE(RESULT.stats.unifiedMemory.has_value()) << "the window recorded no counters";
+  EXPECT_EQ(RESULT.stats.cupti.kernelLaunches, 10U);
+}
+
+/**
+ * @test A multi-GPU measurement under --capture-um records the counters
+ *       alone: it switches the unified-memory counters on before its devices'
+ *       first launch and off after their last, and never switches the kernel
+ *       records on
+ */
+TEST_F(PerfGpuHarnessTest, AMultiGpuCountersWindowRecordsNoKernel) {
+  const YieldEnvCleared CLEARED;
+  const std::string REFUSED = unifiedMemoryRefusedHere();
+  if (!REFUSED.empty()) {
+    GTEST_SKIP() << REFUSED;
+  }
+  const ScopedGpuConfig CAPTURE(parsedGpuFlags({"--capture-um"}));
+  const DeviceFloats OUT(STORE_BLOCKS * BLOCK);
+  ASSERT_NE(OUT.data, nullptr);
+  float* out = OUT.data;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 10;
+  cfg.repeats = 3;
+  ub::PerfGpuCase perf{uniqueSuite("GpuCountersWindow") + ".MultiGpu", cfg};
+  const KindSwitches SWITCHES;
+  const ub::MultiGpuResult RESULT =
+      perf.cudaKernelMultiGpu(1,
+                              [out](int, cudaStream_t s) {
+                                KindSwitches::countCall();
+                                storeKernel<<<STORE_BLOCKS, BLOCK, 0, s>>>(out);
+                              })
+          .measure();
+  static_cast<void>(lastRow());
+  EXPECT_EQ(SWITCHES.switches(),
+            (std::vector<KindSwitch>{{true, UM_COUNTERS, 0}, {false, UM_COUNTERS, 30}}));
+  EXPECT_TRUE(RESULT.aggregatedStats.unifiedMemory.has_value())
+      << "the window recorded no counters";
+}
+
 /* ----------------------------- Bandwidth and Occupancy Cells ----------------------------- */
 
 namespace {
@@ -1922,7 +2499,13 @@ TEST_F(PerfGpuHarnessTest, BandwidthCellOnlyWhenBytesMoved) {
   ASSERT_EQ(MOVED.stats.transfers.h2dBytes + MOVED.stats.transfers.d2hBytes,
             2 * SaxpyFixtureData::bytes());
   ASSERT_TRUE(TRANSFERRING.memBandwidthGBs.has_value());
-  EXPECT_DOUBLE_EQ(*TRANSFERRING.memBandwidthGBs, MOVED.stats.transfers.bandwidthGBs());
+  // The rate from the bytes and the two legs' times, computed here: GB/s is
+  // bytes per microsecond over 1000.
+  const double LEGS_US = MOVED.stats.transfers.h2dTimeUs + MOVED.stats.transfers.d2hTimeUs;
+  const double RATE = static_cast<double>(2 * SaxpyFixtureData::bytes()) / LEGS_US / 1e3;
+  EXPECT_NEAR(*TRANSFERRING.memBandwidthGBs, RATE, 1e-9 * RATE);
+  EXPECT_GT(*TRANSFERRING.memBandwidthGBs, 1.0) << "slower than any PCIe link";
+  EXPECT_LT(*TRANSFERRING.memBandwidthGBs, 1000.0) << "faster than any host link";
 }
 
 /**
@@ -2198,7 +2781,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceMeasuresThere) {
 TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   FillOnDevice fill(currentDevice());
   {
     ub::PerfGpuCase perf{uniqueSuite("GpuThrowDefault") + ".Kernel", cfg_};
@@ -2220,7 +2803,7 @@ TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
     EXPECT_EQ(fill.firstWrong(), -1);
     if (COUNTS) {
       EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-          << "the case's next window counted the failed window's launches";
+          << "the case's next CUPTI batch counted launches it did not make";
     }
   }
 
@@ -2244,7 +2827,7 @@ TEST_F(PerfGpuHarnessTest, ThrowingCallbackLeavesTheNextWindowClean) {
 TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackThrows) {
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   ub::PerfGpuCase perf{uniqueSuite("GpuThrowOwn") + ".Kernel", cfg_};
   const int OWN = perf.gpuConfig().deviceId;
   const int CALLER = currentDevice();
@@ -2275,7 +2858,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdRestoresTheCallersDeviceWhenTheCallbackTh
   EXPECT_EQ(currentDevice(), CALLER);
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-        << "the case's next window counted the failed window's launches";
+        << "the case's next CUPTI batch counted launches it did not make";
   }
 }
 
@@ -2293,7 +2876,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   }
   const YieldEnvCleared CLEARED;
   const bool COUNTS = ub::CuptiCollector(false).isAvailable();
-  const std::size_t LAUNCHES = static_cast<std::size_t>(cfg_.cycles) * cfg_.repeats;
+  const std::size_t LAUNCHES = batchCalls(cfg_.cycles);
   ub::PerfGpuCase perf{uniqueSuite("GpuThrowOther") + ".Kernel", cfg_};
   const int OWN = perf.gpuConfig().deviceId;
   const int OTHER = (OWN + 1) % count;
@@ -2325,7 +2908,7 @@ TEST_F(PerfGpuHarnessTest, WithDeviceIdOnAnotherDeviceRestoresWhenTheCallbackThr
   EXPECT_EQ(currentDevice(), OWN);
   if (COUNTS) {
     EXPECT_EQ(NEXT.stats.cupti.kernelLaunches, LAUNCHES)
-        << "the case's next window counted the failed window's launches";
+        << "the case's next CUPTI batch counted launches it did not make";
   }
 }
 
@@ -3044,6 +3627,51 @@ TEST_F(PerfGpuHarnessTest, P2PCellIsEmptyWithoutAPeerCopy) {
       << "the cell holds " << ROW.p2pBandwidthGBs.value_or(-1.0);
 }
 
+/* ----------------------------- Multi-GPU Speedup ----------------------------- */
+
+/**
+ * @test On two devices a multi-GPU row's speedupVsCpu is still the baseline
+ *       over the row's own wallMedian, its first device's median, and not
+ *       the devices' speedups summed. Under the emulated second device,
+ *       device 0 spins 20 us a launch and device 1 80 us: wallMedian is
+ *       device 0's median and the row's speedup the baseline over it, while
+ *       totalSpeedupVsCpu sums both devices' quotients; the sum, the mean or
+ *       device 1's quotient in the row's place would each differ
+ */
+TEST_F(PerfGpuHarnessTest, TheRowsSpeedupOnTwoDevicesIsTheBaselineOverItsOwnTime) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string SUITE = uniqueSuite("GpuMultiSpeedup");
+  const double BASELINE_US = recordBaseline(SUITE, "CpuBaseline", 1);
+  ASSERT_GT(BASELINE_US, 0.0);
+  ub::PerfGpuCase perf{SUITE + ".TwoDevices", cfg_};
+  // Device 0 spins 20 us a launch, device 1 80 us.
+  const auto UNEQUAL = [](int deviceId, cudaStream_t s) {
+    spinKernel<<<1, 1, 0, s>>>(deviceId == 0 ? 20'000ULL : 80'000ULL);
+  };
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(0);
+  const ub::MultiGpuResult RESULT = perf.cudaKernelMultiGpu(2, UNEQUAL).measure();
+  const ub::PerfRow ROW = lastRow();
+  EXPECT_EQ(recording.stop().refusedCalls, 0);
+
+  ASSERT_EQ(RESULT.perDevice.size(), 2U);
+  const double FIRST = RESULT.perDevice[0].stats.cpuStats.median;
+  const double SECOND = RESULT.perDevice[1].stats.cpuStats.median;
+  ASSERT_GT(FIRST, 0.0);
+  ASSERT_GT(SECOND, 0.0);
+  ASSERT_NE(FIRST, SECOND) << "the two devices' spins measured the same";
+  EXPECT_NEAR(RESULT.totalSpeedupVsCpu, BASELINE_US / FIRST + BASELINE_US / SECOND,
+              1e-9 * RESULT.totalSpeedupVsCpu);
+  EXPECT_EQ(ROW.stats.median, FIRST) << "the row's wallMedian is not its first device's median";
+  ASSERT_TRUE(ROW.speedupVsCpu.has_value());
+  EXPECT_NEAR(*ROW.speedupVsCpu, BASELINE_US / FIRST, 1e-9 * BASELINE_US / FIRST)
+      << "the devices' summed speedups are " << RESULT.totalSpeedupVsCpu;
+  ASSERT_TRUE(ROW.deviceCount.has_value());
+  EXPECT_EQ(*ROW.deviceCount, 2);
+}
+
 /* ----------------------------- Recorder Forwarding ----------------------------- */
 
 namespace {
@@ -3125,5 +3753,292 @@ TEST_F(PerfGpuHarnessTest, CudaHandleRecorderForwardsTheSymbolTheHarnessCalls) {
     EXPECT_FALSE(CALL.forwardFile.empty());
     EXPECT_NE(CALL.forwardFile, CALL.definedIn)
         << "the forward found the recorder's own definition";
+  }
+}
+
+/* ----------------------------- Refused Launches ----------------------------- */
+
+namespace {
+
+/** @brief A launch every device refuses: a block of 2048 threads, above the 1024 they allow. */
+void refusedLaunch(cudaStream_t s) { spinKernel<<<1, 2048, 0, s>>>(0); }
+
+/** @brief The runtime's answer to refusedLaunch(), from a launch of the test's own. */
+cudaError_t refusalError() {
+  refusedLaunch(nullptr);
+  return cudaGetLastError();
+}
+
+/** @brief The message of the std::runtime_error @p measure throws; empty when it throws none. */
+template <typename Measure> std::string runtimeErrorOf(Measure measure) {
+  try {
+    measure();
+  } catch (const std::runtime_error& e) {
+    return e.what();
+  }
+  return {};
+}
+
+} // namespace
+
+/**
+ * @test A launch the runtime refuses fails the measurement: measure() throws
+ *       naming the test and the runtime's error, no row is published, the
+ *       after hook does not run, and cudaGetLastError() has nothing left to
+ *       report; the same launch in cudaWarmup() throws the same way
+ */
+TEST_F(PerfGpuHarnessTest, ARefusedLaunchFailsTheMeasurement) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string NAME = uniqueSuite("GpuRefusedLaunch") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  const std::string MEASURED = runtimeErrorOf(
+      [&] { static_cast<void>(perf.cudaKernel(refusedLaunch, "refused").measure()); });
+  EXPECT_NE(MEASURED.find(NAME), std::string::npos) << "measure() threw: '" << MEASURED << "'";
+  EXPECT_NE(MEASURED.find(cudaGetErrorName(REFUSAL)), std::string::npos) << MEASURED;
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a refused launch";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "a refused launch published a row";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess) << "the refusal was left for the caller's next check";
+
+  const std::string WARMED = runtimeErrorOf([&] { perf.cudaWarmup(refusedLaunch); });
+  EXPECT_NE(WARMED.find(NAME), std::string::npos) << "cudaWarmup() threw: '" << WARMED << "'";
+  EXPECT_NE(WARMED.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WARMED;
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess) << "the warmup's refusal was left for the caller";
+}
+
+/**
+ * @test A launch the runtime refuses in a multi-GPU worker fails the
+ *       measurement once the worker has ended: measure() throws naming the
+ *       test, the device and the runtime's error, no row is published, the
+ *       after hook does not run, and the caller's cudaGetLastError() has
+ *       nothing to report
+ */
+TEST_F(PerfGpuHarnessTest, ARefusedLaunchInAMultiGpuWorkerFailsTheMeasurement) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string NAME = uniqueSuite("GpuRefusedWorker") + ".MultiGpu";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+
+  const std::string WHAT = runtimeErrorOf([&] {
+    static_cast<void>(
+        perf.cudaKernelMultiGpu(1, [](int, cudaStream_t s) { refusedLaunch(s); }).measure());
+  });
+  EXPECT_NE(WHAT.find(NAME), std::string::npos) << "measure() threw: '" << WHAT << "'";
+  EXPECT_NE(WHAT.find("device 0"), std::string::npos) << WHAT;
+  EXPECT_NE(WHAT.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WHAT;
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a refused launch";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+      << "a refused launch published a row";
+  EXPECT_EQ(cudaGetLastError(), cudaSuccess);
+}
+
+/**
+ * @test A measurement that starts while an earlier CUDA call's error waits in
+ *       cudaGetLastError() is refused with a message of its own, before its
+ *       profiler window opens: no hook runs, no row is published, and the
+ *       error stays for its owner to read. Once it is read, the case measures
+ */
+TEST_F(PerfGpuHarnessTest, AMeasurementWithAnErrorWaitingIsRefused) {
+  SaxpyFixtureData data;
+  const std::string NAME = uniqueSuite("GpuErrorWaiting") + ".Kernel";
+  ub::PerfGpuCase perf{NAME, cfg_};
+  perf.cudaWarmup(data.launch());
+  HookLog log;
+  installLoggingHooks(perf, log);
+  const cudaError_t WAITING = refusalError();
+  refusedLaunch(nullptr); // left waiting this time
+  ASSERT_EQ(cudaPeekAtLastError(), WAITING);
+
+  const std::string WHAT =
+      runtimeErrorOf([&] { static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure()); });
+  EXPECT_NE(WHAT.find(NAME), std::string::npos) << "measure() threw: '" << WHAT << "'";
+  EXPECT_NE(WHAT.find("an earlier CUDA call left"), std::string::npos) << WHAT;
+  EXPECT_NE(WHAT.find(cudaGetErrorName(WAITING)), std::string::npos) << WHAT;
+  EXPECT_EQ(log.calls, "") << "the refused measurement opened a profiler window";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value());
+  EXPECT_EQ(cudaGetLastError(), WAITING) << "the earlier error was not left for its owner";
+
+  static_cast<void>(perf.cudaKernel(data.launch(), "saxpy").measure());
+  static_cast<void>(lastRow());
+  EXPECT_EQ(log.calls, "ba");
+}
+
+/**
+ * @test A CUDA call that fails in a multi-GPU worker (its stream, which the
+ *       recorder fails) ends that worker's measurement: the error reaches the
+ *       caller once the worker has ended, instead of ending the process, the
+ *       worker leaves no stream or event, and no row is published
+ */
+TEST_F(PerfGpuHarnessTest, AFailingMultiGpuWorkerIsJoinedAndRethrown) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  const std::string INJECTED = cudaGetErrorString(bt::injectedCudaError());
+  ub::PerfGpuCase perf{uniqueSuite("GpuWorkerFails") + ".MultiGpu", cfg_};
+  HookLog log;
+  installLoggingHooks(perf, log);
+  ScopedRecording recording(bt::CudaSetupFailure::FirstStream, bt::CudaDevices::Real);
+
+  const std::string WHAT =
+      runtimeErrorOf([&] { static_cast<void>(perf.cudaKernelMultiGpu(1, noKernel).measure()); });
+  const bt::CudaHandleCounts COUNTS = recording.stop();
+  EXPECT_EQ(WHAT, INJECTED) << "the worker's failure did not reach the caller as it was";
+  EXPECT_EQ(COUNTS.streamsMade, 0);
+  EXPECT_EQ(COUNTS.eventsMade, 0) << "the worker went on past its failed stream";
+  EXPECT_EQ(COUNTS.streamsLeft, 0);
+  EXPECT_EQ(COUNTS.eventsLeft, 0);
+  EXPECT_EQ(log.calls, "b") << "the after hook ran for a failed measurement";
+  EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value());
+}
+
+/**
+ * @test cudaWarmup() and a measurement that names no device run with the
+ *       case's device current, whichever device the caller made current, and
+ *       the caller's is current again afterwards. With the case on device 0
+ *       and the recorder's emulated device 1 the caller's, the launch sees
+ *       device 0 both times and fills its buffer, and nothing is refused
+ */
+TEST_F(PerfGpuHarnessTest, TheCasesDeviceIsCurrentWhileItLaunches) {
+  if (!bt::cudaHandleRecorderAvailable()) {
+    GTEST_SKIP() << bt::cudaHandleRecorderUnavailableReason();
+  }
+  ub::PerfGpuCase perf{uniqueSuite("GpuCaseDevice") + ".Kernel", cfg_};
+  const int OWN = perf.gpuConfig().deviceId;
+  ASSERT_EQ(OWN, 0) << "the emulated device is device 1";
+  FillOnDevice fill(OWN);
+  ScopedRecording recording(bt::CudaSetupFailure::None, bt::CudaDevices::EmulatedPeer);
+  const CallerDevice CALLER(1);
+  ASSERT_EQ(currentDevice(), 1);
+
+  perf.cudaWarmup(fill.launch());
+  EXPECT_EQ(fill.seenDevice(), OWN) << "the warmup ran with the caller's device current";
+  EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again after the warmup";
+
+  static_cast<void>(perf.cudaKernel(fill.launch(), "fill").measure());
+  static_cast<void>(lastRow());
+  EXPECT_EQ(fill.seenDevice(), OWN) << "the measurement ran with the caller's device current";
+  EXPECT_EQ(currentDevice(), 1) << "the caller's device is not current again";
+  EXPECT_EQ(fill.firstWrong(), -1);
+  EXPECT_EQ(recording.stop().refusedCalls, 0);
+}
+
+/**
+ * @test A measurement that ends by an exception after the selected profiler
+ *       started ends that profiler's capture at once, through its
+ *       abortMeasure() and with no after hook, while the failed case stays
+ *       alive: a refused launch, a refused launch in a multi-GPU worker, and a
+ *       CPU baseline whose callable throws once the capture runs. The caller
+ *       gets the measurement's own exception and no row is published; another
+ *       case's profiler then starts its capture, ends it through its after
+ *       hook and stamps that case's row
+ */
+TEST_F(PerfGpuHarnessTest, AnExceptionalExitEndsTheProfilersCapture) {
+  const cudaError_t REFUSAL = refusalError();
+  ASSERT_NE(REFUSAL, cudaSuccess) << "the runtime accepted a block of 2048 threads";
+  const std::string BASELINE_FAILED = "the baseline's callable threw in its measured window";
+  ub::PerfConfig cfg = cfg_;
+  cfg.profileTool = "gpu-hook-probe";
+  SaxpyFixtureData data;
+  struct Path {
+    const char* name;
+    std::function<void(ub::PerfGpuCase&)> measure;
+    bool namesTheRefusal; ///< The exception names the test and the runtime's error
+    const char* alsoNamed;
+  };
+  const Path PATHS[] = {
+      {"a refused launch",
+       [](ub::PerfGpuCase& perf) {
+         static_cast<void>(perf.cudaKernel(refusedLaunch, "refused").measure());
+       },
+       true, ""},
+      {"a refused launch in a multi-GPU worker",
+       [](ub::PerfGpuCase& perf) {
+         static_cast<void>(
+             perf.cudaKernelMultiGpu(1, [](int, cudaStream_t s) { refusedLaunch(s); }).measure());
+       },
+       true, "device 0"},
+      {"a CPU baseline that throws in its window",
+       [&BASELINE_FAILED](ub::PerfGpuCase& perf) {
+         const std::string OWNER = perf.testName();
+         static_cast<void>(perf.cpuBaseline([&] {
+           if (probeCaptureOwner() == OWNER) {
+             throw std::runtime_error(BASELINE_FAILED);
+           }
+         }));
+       },
+       false, ""},
+  };
+  for (const Path& path : PATHS) {
+    SCOPED_TRACE(path.name);
+    // A capture a failed check leaves running would refuse the next path's.
+    struct CaptureCleared {
+      ~CaptureCleared() { probeCaptureOwner().clear(); }
+    } const CLEARED;
+    const std::string FAILING = uniqueSuite("GpuProfilerAbort") + ".Failing";
+    ub::PerfGpuCase failing{FAILING, cfg};
+    ub::attachGpuProfilerHooks(failing, cfg);
+
+    const std::string WHAT = runtimeErrorOf([&] { path.measure(failing); });
+    if (path.namesTheRefusal) {
+      EXPECT_NE(WHAT.find(FAILING), std::string::npos) << "the caller got: '" << WHAT << "'";
+      EXPECT_NE(WHAT.find(cudaGetErrorName(REFUSAL)), std::string::npos) << WHAT;
+      EXPECT_NE(WHAT.find(path.alsoNamed), std::string::npos) << WHAT;
+    } else {
+      EXPECT_EQ(WHAT, BASELINE_FAILED);
+    }
+    EXPECT_EQ(probeCalls()[FAILING], "bx")
+        << "the capture did not end through abortMeasure() alone";
+    EXPECT_TRUE(probeCaptureOwner().empty())
+        << "the failed measurement left " << probeCaptureOwner() << "'s capture running";
+    EXPECT_FALSE(ub::PerfRegistry::instance().take().has_value())
+        << "the failed measurement published a row";
+
+    // The failed case is still alive: another case measures under its own capture.
+    const std::string NEXT = uniqueSuite("GpuProfilerAbort") + ".Next";
+    ub::PerfGpuCase next{NEXT, cfg};
+    ub::attachGpuProfilerHooks(next, cfg);
+    next.cudaWarmup(data.launch());
+    static_cast<void>(next.cudaKernel(data.launch(), "saxpy").measure());
+    EXPECT_EQ(probeCalls()[NEXT], "ba") << "another case's profiler could not take the capture";
+    EXPECT_TRUE(probeCaptureOwner().empty());
+    const ub::PerfRow ROW = lastRow();
+    ASSERT_TRUE(ROW.profileTool.has_value()) << "the after hook did not stamp the row";
+    EXPECT_EQ(*ROW.profileTool, "gpu-hook-probe");
+    ASSERT_TRUE(ROW.profileDir.has_value());
+    EXPECT_EQ(*ROW.profileDir, "probe-dir/" + NEXT);
+  }
+}
+
+/* ----------------------------- Legacy Default Stream ----------------------------- */
+
+/**
+ * @test Work a measured callable puts on the legacy default stream is timed:
+ *       a 200 us spin launched without a stream reads at least 180 us a launch
+ *       on the case's high-priority stream and on its plain one
+ */
+TEST_F(PerfGpuHarnessTest, LegacyDefaultStreamWorkIsTimed) {
+  constexpr unsigned long long SPIN_NS = 200'000;
+  ub::PerfConfig cfg = cfg_;
+  cfg.cycles = 4;
+  cfg.repeats = 3;
+  const auto ON_STREAM_ZERO = [](cudaStream_t) { spinKernel<<<1, 1>>>(SPIN_NS); };
+  for (const bool HIGH_PRIORITY : {true, false}) {
+    SCOPED_TRACE(HIGH_PRIORITY ? "the high-priority stream" : "the plain stream");
+    const StreamPriorityRule RULE(HIGH_PRIORITY);
+    ub::PerfGpuCase perf{uniqueSuite("GpuLegacyStream") + ".Spin", cfg};
+    perf.cudaWarmup(ON_STREAM_ZERO);
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    const ub::PerfGpuResult RESULT = perf.cudaKernel(ON_STREAM_ZERO, "spin").measure();
+    static_cast<void>(lastRow());
+    // Spins the events did not wait for are still running: they end first.
+    ASSERT_EQ(cudaDeviceSynchronize(), cudaSuccess);
+    EXPECT_GE(RESULT.kernelTimeUs, 0.9 * static_cast<double>(SPIN_NS) / 1000.0)
+        << "a 200 us spin on the legacy default stream read " << RESULT.kernelTimeUs << " us";
   }
 }

@@ -1057,9 +1057,10 @@ TEST_P(MultiGpuTest, Scaling) {
     .withP2PAccess()
     .measure();
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << deviceCount << " GPUs";
+  // Check that no device lags the others (scaling efficiency is not
+  // measured: GPU_GUIDE.md says how to time it)
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << deviceCount << " GPUs";
 
   // Cleanup
   for (int i = 0; i < deviceCount; ++i) {
@@ -1097,35 +1098,37 @@ Complete GPU-specific CSV columns:
 
 #### Power and Thermal Columns (NVML)
 
-| Column              | Type   | Description                             | Example |
-| ------------------- | ------ | --------------------------------------- | ------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       | 19.79   |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      | 80.0    |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) | 49      |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) | 2       |
+| Column              | Type   | Description                                              | Example |
+| ------------------- | ------ | -------------------------------------------------------- | ------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) | 62.50   |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       | 80.0    |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  | 49      |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  | 2       |
 
 #### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                       | Example |
-| ----------------------- | ---- | ------------------------------------------------- | ------- |
-| `cuptiKernelLaunches`   | int  | Kernel launches observed in this measure() window | 25000   |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches       | 16      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                 | 16      |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch  | 0       |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch     | 0       |
+| Column                  | Type | Description                                                  | Example |
+| ----------------------- | ---- | ------------------------------------------------------------ | ------- |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats | 1000    |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  | 16      |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            | 16      |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             | 0       |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                | 0       |
 
 CUPTI columns populate automatically on every GPU run when libcupti is
-linked at build time; no `--profile` flag required. See
+linked at build time; no `--profile` flag required. They come from an untimed
+batch of the measured callable's launches after the timed repeats: `cycles`
+calls, at most 1000 (the example's test ran 10000 cycles). See
 [demo/docs/19_CUPTI_KERNEL_METRICS.md](../demo/docs/19_CUPTI_KERNEL_METRICS.md).
 
 #### Multi-GPU Columns
 
-| Column               | Type   | Description               | Present When    |
-| -------------------- | ------ | ------------------------- | --------------- |
-| `deviceId`           | int    | Primary device ID         | Multi-GPU tests |
-| `deviceCount`        | int    | Number of GPUs used       | Multi-GPU tests |
-| `multiGpuEfficiency` | double | Parallel efficiency [0-1] | Multi-GPU tests |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth    | Peer copy timed |
+| Column               | Type   | Description            | Present When    |
+| -------------------- | ------ | ---------------------- | --------------- |
+| `deviceId`           | int    | Primary device ID      | Multi-GPU tests |
+| `deviceCount`        | int    | Number of GPUs used    | Multi-GPU tests |
+| `multiGpuEfficiency` | double | Not measured           | Never           |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth | Peer copy timed |
 
 #### Unified Memory Columns
 

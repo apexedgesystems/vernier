@@ -140,8 +140,9 @@ const std::string& testName() const noexcept;
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
   `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  its CPU and heap captures there at once, without analysis, and the Nsight
+  profiler pops the NVTX range it pushed, so this case and others can capture
+  again
 
 **`contentionRun(worker, label)`**
 
@@ -546,7 +547,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures, Nsight pops its range)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
@@ -793,36 +794,45 @@ leaves `kernelTimeUs`, `transferTimeUs`, `speedupVsCpu`, `memBandwidthGBs`,
 
 ### Power and Thermal Columns
 
-| Column              | Type   | Description                             |
-| ------------------- | ------ | --------------------------------------- |
-| `powerDrawW`        | double | Average GPU package power (watts)       |
-| `powerLimitW`       | double | Configured power-cap limit (watts)      |
-| `temperatureC`      | int    | Peak GPU temperature during the run (C) |
-| `temperatureDeltaC` | int    | Temperature delta from start to end (C) |
+| Column              | Type   | Description                                              |
+| ------------------- | ------ | -------------------------------------------------------- |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) |
+| `powerLimitW`       | double | Configured power-cap limit (watts)                       |
+| `temperatureC`      | int    | GPU temperature at the window's end (C)                  |
+| `temperatureDeltaC` | int    | Temperature delta from start to end (C)                  |
 
-Source: NVML. Populated on every NVIDIA GPU run.
+Source: NVML, read at the measured window's start and end, each cell where
+NVML reports what it needs. `powerDrawW` is the endpoint reading: NVML's power
+reading taken at the window's end, which NVIDIA's NVML reference describes as
+a one-second average on Ampere (except GA100) and newer GPUs and an
+instantaneous reading on GA100 and older; neither is an average over the
+measured window. Vernier publishes it only for a window of at least 1.5 s, a
+rule of its own: a shorter window's cell is empty and the run says why.
 
 ### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                      |
-| ----------------------- | ---- | ------------------------------------------------ |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
+| Column                  | Type | Description                                                  |
+| ----------------------- | ---- | ------------------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                |
 
 Source: CUPTI Activity API. Populated when libcupti is linked at build
-time; no `--profile` flag required.
+time; no `--profile` flag required. After a kernel measurement's timed
+repeats, the harness calls the measured callable `cycles` times more, at most
+1000, untimed, with CUPTI recording kernels, and the five cells describe those
+launches; no timed launch runs while CUPTI records kernels.
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description            |
-| -------------------- | ------ | ---------------------- |
-| `deviceId`           | int    | Primary CUDA device ID |
-| `deviceCount`        | int    | Number of GPUs used    |
-| `multiGpuEfficiency` | double | Parallel efficiency    |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth |
+| Column               | Type   | Description                |
+| -------------------- | ------ | -------------------------- |
+| `deviceId`           | int    | Primary CUDA device ID     |
+| `deviceCount`        | int    | Number of GPUs used        |
+| `multiGpuEfficiency` | double | Not measured: always empty |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
 
 ### Unified Memory Columns
 

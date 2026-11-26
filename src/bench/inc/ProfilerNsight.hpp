@@ -16,6 +16,9 @@
  *    run, and no backend is built. A backend built directly prints that
  *    command once per test, and its measurement proceeds unprofiled.
  *  - Each measured window is marked with an NVTX range named after the test.
+ *    A window that ends by an exception pops its range at once
+ *    (abortMeasure()), so what runs after the failure is outside it and the
+ *    next window pushes a range of its own.
  *  - Artifact folder: `<artifactRoot>/<Suite.Case>.nsight/` (`.ncu/` for
  *    --profile ncu), or the runner's folder under `bench run`.
  *
@@ -116,6 +119,7 @@ public:
 
   void beforeMeasure() override;
   void afterMeasure(const Stats& s) override;
+  void abortMeasure() noexcept override;
 
 private:
   /// The command that captures this run in the selected mode, for a run no
@@ -129,7 +133,8 @@ private:
   NsightMode mode_ = NsightMode::Systems;
 
   // True while the NVTX range pushed by beforeMeasure() is open, so it is
-  // popped exactly once, by afterMeasure() or by the destructor.
+  // popped exactly once: by afterMeasure(), by abortMeasure() when the window
+  // ends by an exception, or by the destructor.
   bool nvtxRangePush_ = false;
 };
 

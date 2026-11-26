@@ -25,6 +25,7 @@
 
 #include "src/bench/inc/PerfGpuStats.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdio>
 #include <iterator>
@@ -62,15 +63,40 @@ struct WindowReadings {
   Sample end;
   Reading<int> maxSmClockMHz;  ///< Read with the start sample
   Reading<double> powerLimitW; ///< Read with the start sample
+  /// When the start and the end sample were taken (the host's clock): how
+  /// long the window lasted, which decides whether powerDrawW is published.
+  std::chrono::steady_clock::time_point startReadAt{};
+  std::chrono::steady_clock::time_point endReadAt{};
 };
+
+/// The shortest window whose endpoint reading powerDrawW carries: Vernier's
+/// own rule, not NVML's. The endpoint reading is NVML's power reading at the
+/// window's end; by NVIDIA's NVML reference (nvmlDeviceGetPowerUsage) it is a
+/// one-second average on Ampere (except GA100) and newer GPUs and an
+/// instantaneous reading on GA100 and older, and neither is an average over
+/// the window. 1.5 s is long enough for a one-second average at the end to
+/// fall within the window with one refresh to spare (the laptop's RTX 5000
+/// Ada was seen to refresh it every 500 ms); a shorter window's cell stays
+/// empty. The reading at the start comes from before the window, so no mean
+/// of the two ends is published.
+inline constexpr double POWER_WINDOW_MIN_SECONDS = 1.5;
+
+/** @brief Seconds from @p w's start sample to its end sample. */
+inline double windowSeconds(const WindowReadings& w) {
+  return std::chrono::duration<double>(w.endReadAt - w.startReadAt).count();
+}
 
 /* ----------------------------- Cells ----------------------------- */
 
-/** @brief The CSV cells NVML fills; each is empty unless NVML reported every reading it needs. */
+/**
+ * @brief The CSV cells NVML fills; each is empty unless NVML reported every
+ *        reading it needs, and powerDrawW also unless the window lasted
+ *        POWER_WINDOW_MIN_SECONDS or more.
+ */
 struct Cells {
   std::optional<int> smClockMHz;        ///< The end sample's SM clock
   std::optional<bool> throttling;       ///< The SM clock at both ends and the maximum SM clock
-  std::optional<double> powerDrawW;     ///< Mean of the power draw at both ends
+  std::optional<double> powerDrawW;     ///< The endpoint reading, for a window of 1.5 s or more
   std::optional<double> powerLimitW;    ///< The power limit
   std::optional<int> temperatureC;      ///< The end sample's GPU temperature
   std::optional<int> temperatureDeltaC; ///< The GPU temperature at both ends: end minus start
@@ -89,8 +115,8 @@ inline Cells cellsOf(const WindowReadings& w) {
     clocks.boostClockMHz = *w.maxSmClockMHz.value;
     cells.throttling = clocks.isThrottling();
   }
-  if (w.start.powerDrawW.value && w.end.powerDrawW.value) {
-    cells.powerDrawW = (*w.start.powerDrawW.value + *w.end.powerDrawW.value) * 0.5;
+  if (w.end.powerDrawW.value && windowSeconds(w) >= POWER_WINDOW_MIN_SECONDS) {
+    cells.powerDrawW = *w.end.powerDrawW.value;
   }
   if (w.powerLimitW.value) {
     cells.powerLimitW = *w.powerLimitW.value;
@@ -183,7 +209,9 @@ inline std::string missingReadingsStatement(const WindowReadings& w) {
   if (!CELLS.throttling) {
     empty.emplace_back("throttling");
   }
-  if (!CELLS.powerDrawW) {
+  // A short window empties the cell with the endpoint reading reported:
+  // shortWindowStatement() says so.
+  if (!CELLS.powerDrawW && !w.end.powerDrawW.value) {
     empty.emplace_back("powerDrawW");
   }
   if (!CELLS.powerLimitW) {
@@ -214,7 +242,7 @@ inline std::string missingReadingsStatement(const WindowReadings& w) {
   };
   NOTE("SM clock", w.start.smClockMHz.failure, w.end.smClockMHz.failure);
   NOTE("maximum SM clock", w.maxSmClockMHz.failure);
-  NOTE("power draw", w.start.powerDrawW.failure, w.end.powerDrawW.failure);
+  NOTE("power draw", w.end.powerDrawW.failure);
   NOTE("power limit", w.powerLimitW.failure);
   NOTE("GPU temperature", w.start.temperatureC.failure, w.end.temperatureC.failure);
 
@@ -231,6 +259,20 @@ inline std::string missingReadingsStatement(const WindowReadings& w) {
     text += " (" + missing.front().failure + ")";
   }
   return text + ": " + emptyColumns(empty);
+}
+
+/**
+ * @brief The statement for a window shorter than POWER_WINDOW_MIN_SECONDS
+ *        whose endpoint reading NVML reported: Vernier publishes that
+ *        reading only for a window of at least that length, so powerDrawW
+ *        stays empty; "" otherwise. The same for every such window of a run.
+ */
+inline std::string shortWindowStatement(const WindowReadings& w) {
+  if (!w.end.powerDrawW.value || windowSeconds(w) >= POWER_WINDOW_MIN_SECONDS) {
+    return {};
+  }
+  return "[gpu] Vernier publishes NVML's endpoint power reading only for a measured window of "
+         "1.5 s or more; this run measured a shorter one, so its powerDrawW stays empty.";
 }
 
 /* ----------------------------- Session ----------------------------- */
@@ -311,6 +353,7 @@ public:
       return;
     }
     w.start = sample();
+    w.startReadAt = std::chrono::steady_clock::now();
 #if COMPAT_NVML_AVAILABLE
     unsigned maxClock = 0;
     const nvmlReturn_t MAX_CLOCK = nvmlDeviceGetMaxClockInfo(device_, NVML_CLOCK_SM, &maxClock);
@@ -327,6 +370,7 @@ public:
       return;
     }
     w.end = sample();
+    w.endReadAt = std::chrono::steady_clock::now();
   }
 
 private:

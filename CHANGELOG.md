@@ -1016,6 +1016,31 @@ summary`, `bench compare` and `bench run --analyze` now exit 1 on such a
   stretch a sample. ([#65](https://github.com/apexedgesystems/vernier/pull/65))
 - Correct GPU peer-copy timing and cleanup; leave unmeasured bandwidth empty.
   ([#71](https://github.com/apexedgesystems/vernier/pull/71))
+- CUPTI recording preserves concurrent GPU kernel execution.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- GPU timings no longer carry CUPTI's record keeping: the `cupti*` cells come
+  from an untimed batch after the timed repeats, and `cuptiKernelLaunches`
+  counts its launches.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- GPU measurements leave incomplete or stale CUPTI results empty and report why.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- Refused CUDA launches fail GPU measurements and warmup; worker errors reach
+  the caller. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- A gperf or Nsight profiler attached to a GPU case ends its capture or NVTX
+  range when the measurement fails, so the next measurement starts its own.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- GPU timing includes legacy-default-stream work under both priority settings.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `multiGpuEfficiency` stays empty: the harness measures no scaling efficiency.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- A multi-GPU row's `speedupVsCpu` is the CPU baseline over its own
+  `wallMedian`, not a sum over its devices.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `powerDrawW` is NVML's power reading at the end of a measured window of at
+  least 1.5 s; a shorter window leaves it empty and the run says why.
+  ([#75](https://github.com/apexedgesystems/vernier/pull/75))
+- `bench run --profile compute-sanitizer` identifies truncated racecheck reports
+  as incomplete. ([#75](https://github.com/apexedgesystems/vernier/pull/75))
 
 ## v1.0.3 - 2026-06-28
 
