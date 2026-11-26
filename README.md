@@ -248,7 +248,8 @@ request).
 | `rocprof`           | GPU   | AMD ROCm rocprof                              |
 
 CUPTI kernel metrics populate the GPU CSV section automatically on every
-GPU benchmark; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
+GPU benchmark, from an untimed batch of the measured launches after the
+timed repeats; NVTX annotations are available via `BENCH_NVTX_SCOPE`.
 
 ```bash
 bench summary results.csv

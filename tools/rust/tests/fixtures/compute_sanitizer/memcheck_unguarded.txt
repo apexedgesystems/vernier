@@ -1,0 +1,54 @@
+========= COMPUTE-SANITIZER
+========= Invalid __global__ read of size 4 bytes
+=========     at vernier::bench::demo::sanitizer_demo::<unnamed>::saxpyUnguarded(float, const float *, float *)+0xc0 in 04_ComputeSanitizerProfiler_Unguarded.cu:31
+=========     by thread (255,0,0) in block (4095,0,0)
+=========     Access to 0x703a3e5ffffc is out of bounds
+=========     and is 1 bytes after the nearest allocation at 0x703a3e200000 of size 4194300 bytes
+=========     Saved host backtrace up to driver entry point at kernel launch time
+=========         Host Frame: ComputeSanitizer_SaxpyUnguarded_Test::TestBody() [0x12280] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========         Host Frame: void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) [0x71128] in libgtest.so.1.16.0
+=========         Host Frame: testing::Test::Run() [0x53ab7] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestInfo::Run() [0x54a58] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestSuite::Run() [0x55974] in libgtest.so.1.16.0
+=========         Host Frame: testing::internal::UnitTestImpl::RunAllTests() [0x66cc9] in libgtest.so.1.16.0
+=========         Host Frame: bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) [0x71e88] in libgtest.so.1.16.0
+=========         Host Frame: testing::UnitTest::Run() [0x66839] in libgtest.so.1.16.0
+=========         Host Frame: main [0x1492a] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========
+========= Program hit cudaErrorLaunchFailure (error 719) due to "unspecified launch failure" on CUDA API call to cudaDeviceSynchronize.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: ComputeSanitizer_SaxpyUnguarded_Test::TestBody() [0x12300] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========         Host Frame: void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) [0x71128] in libgtest.so.1.16.0
+=========         Host Frame: testing::Test::Run() [0x53ab7] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestInfo::Run() [0x54a58] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestSuite::Run() [0x55974] in libgtest.so.1.16.0
+=========         Host Frame: testing::internal::UnitTestImpl::RunAllTests() [0x66cc9] in libgtest.so.1.16.0
+=========         Host Frame: bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) [0x71e88] in libgtest.so.1.16.0
+=========         Host Frame: testing::UnitTest::Run() [0x66839] in libgtest.so.1.16.0
+=========         Host Frame: main [0x1492a] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========
+========= Program hit cudaErrorLaunchFailure (error 719) due to "unspecified launch failure" on CUDA API call to cudaFree.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: ComputeSanitizer_SaxpyUnguarded_Test::TestBody() [0x12337] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========         Host Frame: void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) [0x71128] in libgtest.so.1.16.0
+=========         Host Frame: testing::Test::Run() [0x53ab7] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestInfo::Run() [0x54a58] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestSuite::Run() [0x55974] in libgtest.so.1.16.0
+=========         Host Frame: testing::internal::UnitTestImpl::RunAllTests() [0x66cc9] in libgtest.so.1.16.0
+=========         Host Frame: bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) [0x71e88] in libgtest.so.1.16.0
+=========         Host Frame: testing::UnitTest::Run() [0x66839] in libgtest.so.1.16.0
+=========         Host Frame: main [0x1492a] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========
+========= Program hit cudaErrorLaunchFailure (error 719) due to "unspecified launch failure" on CUDA API call to cudaFree.
+=========     Saved host backtrace up to driver entry point at error
+=========         Host Frame: ComputeSanitizer_SaxpyUnguarded_Test::TestBody() [0x12341] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========         Host Frame: void testing::internal::HandleExceptionsInMethodIfSupported<testing::Test, void>(testing::Test*, void (testing::Test::*)(), char const*) [0x71128] in libgtest.so.1.16.0
+=========         Host Frame: testing::Test::Run() [0x53ab7] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestInfo::Run() [0x54a58] in libgtest.so.1.16.0
+=========         Host Frame: testing::TestSuite::Run() [0x55974] in libgtest.so.1.16.0
+=========         Host Frame: testing::internal::UnitTestImpl::RunAllTests() [0x66cc9] in libgtest.so.1.16.0
+=========         Host Frame: bool testing::internal::HandleExceptionsInMethodIfSupported<testing::internal::UnitTestImpl, bool>(testing::internal::UnitTestImpl*, bool (testing::internal::UnitTestImpl::*)(), char const*) [0x71e88] in libgtest.so.1.16.0
+=========         Host Frame: testing::UnitTest::Run() [0x66839] in libgtest.so.1.16.0
+=========         Host Frame: main [0x1492a] in BenchDemo_Gpu_04_ComputeSanitizerProfiler
+=========
+========= ERROR SUMMARY: 4 errors

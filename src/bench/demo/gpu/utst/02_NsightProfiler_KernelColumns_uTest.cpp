@@ -11,11 +11,12 @@
  *    transferTimeUs, h2dBytes and d2hBytes are 0.
  *  - occupancy: the harness's estimate for the row's launch shape, taken from a
  *    measurement of the kernel in that shape in this process.
- *  - cupti*: CUPTI's records of the measured launches: one per launch (cycles
- *    times repeats; the warmup is outside the window), a median and a maximum
- *    register count that agree and read as one of the two forms recorded for
- *    this kernel (isRegisterForm), the kernel's static shared memory and no
- *    dynamic. In a build without CUPTI the five cells are empty and the run
+ *  - cupti*: CUPTI's records of the untimed batch after the measured
+ *    launches: one per call of the batch (the cycles, at most 1000; the
+ *    warmup and the timed repeats are outside its window), a median and a
+ *    maximum register count that agree and read as one of the two forms
+ *    recorded for this kernel (isRegisterForm), the kernel's static shared
+ *    memory and no dynamic. In a build without CUPTI the five cells are empty and the run
  *    says so.
  *  - The cells the run states empty are empty; the NVML cells it does not state
  *    are readings; the cells these cases have nothing for (speedupVsCpu,
@@ -410,17 +411,17 @@ TEST_F(KernelColumns, MatchTheirSources) {
         << "occupancy '" << cell(row, "occupancy") << "'";
     EXPECT_NEAR(*number(row, "occupancy"), ESTIMATE->achievedOccupancy, 1e-6);
 
-    // CUPTI's records of the measured launches.
+    // CUPTI's records of the batch after the measured launches.
     if (VERNIER_DEMO_02_HAS_CUPTI != 0) {
       const int COMPILED = attributes.numRegs;
-      EXPECT_EQ(cell(row, "cuptiKernelLaunches"), std::to_string(CYCLES * REPEATS));
+      EXPECT_EQ(cell(row, "cuptiKernelLaunches"), std::to_string(CYCLES));
       for (const char* COLUMN : {"cuptiRegistersMedian", "cuptiRegistersMax"}) {
         EXPECT_TRUE(isRegisterForm(cell(row, COLUMN), COMPILED))
             << COLUMN << " is '" << cell(row, COLUMN) << "'; compiled to " << COMPILED
             << " registers, the kernel reads " << COMPILED << " or " << roundedUpTo8(COMPILED);
       }
       EXPECT_EQ(cell(row, "cuptiRegistersMax"), cell(row, "cuptiRegistersMedian"))
-          << "the measured launches are one kernel in one shape";
+          << "the batch's launches are one kernel in one shape";
       EXPECT_EQ(cell(row, "cuptiStaticSmemBytes"), std::to_string(attributes.sharedSizeBytes));
       EXPECT_EQ(cell(row, "cuptiDynamicSmemBytes"), "0");
     } else {

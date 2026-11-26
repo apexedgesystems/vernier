@@ -42,6 +42,8 @@ struct PerfGpuResult {
 struct MultiGpuResult {
   std::vector<PerfGpuResult> perDevice;
   GpuStats aggregatedStats{};
+  /// The devices' speedups (perDevice[i].speedupVsCpu), summed; not the row's
+  /// speedupVsCpu, which is the CPU baseline over the row's own wallMedian.
   double totalSpeedupVsCpu{};
   std::string label;
 };
@@ -78,6 +80,17 @@ public:
    */
   inline CudaKernelBuilder& withDeviceId(int deviceId);
 
+  /**
+   * @brief Run the measurement, with its device current, and publish its row.
+   *
+   * Throws std::runtime_error naming the test when the CUDA runtime refused a
+   * launch of the measured repeats (a block larger than the device allows,
+   * more shared memory than it has): the error is read from
+   * cudaGetLastError(), which then reports nothing. Also throws, before the
+   * before hook, when an earlier CUDA call left an error waiting in
+   * cudaGetLastError(); that error stays there. Either way no row is
+   * published and the after hook does not run.
+   */
   PerfGpuResult measure();
 
 private:
@@ -136,6 +149,14 @@ public:
    */
   inline MultiGpuKernelBuilder& measureP2PBandwidth(int srcDevice, int dstDevice, size_t bytes);
 
+  /**
+   * @brief Measure every device in a thread of its own and publish the row.
+   *
+   * An error in a device's thread (a launch the runtime refused, a CUDA call
+   * that failed) ends that device's measurement. Once every thread has ended,
+   * the first such error, by device, is rethrown here, no row is published
+   * and the after hook does not run.
+   */
   MultiGpuResult measure();
 
 private:
@@ -164,6 +185,7 @@ public:
   using MultiGpuKernelFn = std::function<void(int deviceId, cudaStream_t stream)>;
   using BeforeHook = std::function<void(const PerfGpuCase&)>;
   using AfterHook = std::function<void(const PerfGpuCase&, const GpuStats&)>;
+  using AbortHook = std::function<void(const PerfGpuCase&)>;
 
   PerfGpuCase(std::string testName, PerfConfig cpuCfg);
   ~PerfGpuCase();
@@ -185,12 +207,44 @@ public:
    * @note NOT RT-safe (runs a measurement, records the result).
    */
   PerfResult cpuBaseline(CpuFn fn, std::string label = "cpu_baseline");
+
+  /**
+   * @brief A kernel measurement of @p kernel, configured on the builder and
+   *        run by its measure().
+   *
+   * @p kernel gets the stream to launch on and must queue its work there: the
+   * harness times that stream with CUDA events. The case's stream is a
+   * blocking stream, so work the callable puts on the legacy default stream
+   * (a launch without a stream, cudaMemset(), a library left on its default
+   * stream) is ordered with it and timed too. Work on any other stream is not
+   * timed unless the callable joins it back to the stream it was given (an
+   * event recorded there, waited for on the given stream), and work on the
+   * per-thread default stream (code built with --default-stream per-thread)
+   * is not ordered with it either.
+   *
+   * measure() calls @p kernel cycles x repeats times in its timed repeats.
+   * Where the in-process CUPTI collector collects, it then calls @p kernel
+   * min(cycles, 1000) times more, untimed, and the cupti* cells describe
+   * those launches: no timed launch carries CUPTI's record keeping.
+   */
   CudaKernelBuilder cudaKernel(KernelFn kernel, std::string label = "cuda_kernel");
 
-  // Multi-GPU support
+  /**
+   * @brief A measurement across @p deviceCount devices, run by the builder's
+   *        measure(): @p kernel gets each device's id and a stream of that
+   *        device to launch on, a blocking stream, under cudaKernel()'s
+   *        contract.
+   */
   MultiGpuKernelBuilder cudaKernelMultiGpu(int deviceCount, MultiGpuKernelFn kernel,
                                            std::string label = "multi_gpu_kernel");
 
+  /**
+   * @brief Run @p kernel on the case's stream once and wait, then
+   *        PerfGpuConfig::gpuWarmup times more and wait, with the case's
+   *        device current. Throws std::runtime_error naming the test when the
+   *        runtime refused a launch, or when an earlier CUDA call left an
+   *        error waiting in cudaGetLastError().
+   */
   void cudaWarmup(KernelFn kernel);
 
   /**
@@ -204,6 +258,23 @@ public:
    */
   void setBeforeMeasureHook(BeforeHook h);
   void setAfterMeasureHook(AfterHook h);
+
+  /**
+   * @brief The hook a measurement runs in place of the after hook when it ends
+   * by an exception after its before hook ran (a refused launch, a device's
+   * thread that failed, a callable that threw), before the exception leaves
+   * measure() or cpuBaseline(): it ends what the before hook started, with
+   * nothing summarized or published, so the case, kept or not, and other
+   * cases can measure again. An exception it throws is dropped, so the caller
+   * gets the measurement's own. attachGpuProfilerHooks() installs the
+   * profiler's abortMeasure() here.
+   *
+   * @note Compatibility: a benchmark built with this header needs a library
+   * that has this member, which attachGpuProfilerHooks() (inline, below)
+   * calls; one built with an earlier header behaves as before on a library
+   * that has it: no abort hook is installed.
+   */
+  void setAbortMeasureHook(AbortHook h);
 
   [[nodiscard]] int cycles() const noexcept;
   [[nodiscard]] int repeats() const noexcept;
@@ -282,7 +353,11 @@ MultiGpuKernelBuilder::measureP2PBandwidth(int srcDevice, int dstDevice, size_t 
  *
  * Dispatches through the registry so any GPU-aware backend
  * (nsight, compute-sanitizer, future additions) plugs in automatically
- * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here.
+ * via VERNIER_REGISTER_PROFILER_BACKEND. No backend special-cases here. The
+ * profiler lives through the before, after and abort hooks: a measurement
+ * that ends by an exception calls its abortMeasure(), which ends what the
+ * before hook started in a backend that implements it: gperf stops its
+ * capture, Nsight pops the window's NVTX range.
  */
 inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
   auto prof = std::shared_ptr<Profiler>(Profiler::make(cfg, pc.testName()).release());
@@ -293,6 +368,8 @@ inline void attachGpuProfilerHooks(PerfGpuCase& pc, const PerfConfig& cfg) {
     prof->afterMeasure(s.cpuStats);
     PerfRegistry::instance().updateProfileMeta(prof->toolName(), prof->artifactDir());
   });
+
+  pc.setAbortMeasureHook([prof](const PerfGpuCase&) { prof->abortMeasure(); });
 }
 
 } // namespace bench

@@ -6,12 +6,18 @@
 **Captured:** 2026-09-30 (UTC), written for the Vernier 1.0.4 release;
 captured from the development tree at project version 1.0.3, whose CLI
 reported `bench 1.0.3`; compute-sanitizer 2025.3.1 (CUDA 13.0). The doctor's
-row, the readiness report under the wrap, the output of the `bench run` steps
-(2 and 4) and the plain run with `--profile compute-sanitizer` in
-[If It Does Not Match](#if-it-does-not-match) are from a later session on
-2026-10-10 (UTC), from a later development tree at the same version with the
-same tool; the report in Step 3, the job commands and every other figure are
-from the first.
+row, the readiness report under the wrap and the output of the `bench run`
+steps (2 and 4) are from a later session on 2026-10-10 (UTC), from a later
+development tree at the same version with the same tool. Step 1's output, the
+reference CSV, the run in Check Against the Reference, the five runs What
+Should Reproduce counts and the three runs each way at 100 launches per repeat
+in Step 4 come from a session of 2026-11-16 (UTC) on a later development tree
+at the same version with the same tool, whose collector records CUPTI's
+kernels in an untimed batch after the measured repeats, and the plain run with
+`--profile compute-sanitizer` in [If It Does Not Match](#if-it-does-not-match)
+from a later session that day; the RTX 5000 Ada timings are from three runs
+each way on 2026-11-17 (UTC). The report in Step 3, the job commands and every
+other figure are from the first.
 
 ## Overview
 
@@ -181,23 +187,24 @@ checkout's path in the skip line shortened to `...`:
 [----------] Global test environment set-up.
 [----------] 2 tests from ComputeSanitizer
 [ RUN      ] ComputeSanitizer.SaxpyKernel
-[ComputeSanitizer.SaxpyKernel]  20.473 us/call  CV=0.1%  ~48.8K calls/s  (p10=20.438 p90=20.507 sd=0.030)
-[       OK ] ComputeSanitizer.SaxpyKernel (2228 ms)
+[gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
+[ComputeSanitizer.SaxpyKernel]  20.572 us/call  CV=0.1%  ~48.6K calls/s  (p10=20.554 p90=20.581 sd=0.012)
+[       OK ] ComputeSanitizer.SaxpyKernel (2273 ms)
 [ RUN      ] ComputeSanitizer.SaxpyUnguarded
 .../src/bench/demo/gpu/04_ComputeSanitizerProfiler_Demo.cu:165: Skipped
 this case launches a kernel past the end of its buffers for Compute Sanitizer to find, so it runs only under it: run this binary under `compute-sanitizer --tool=memcheck`, or through `bench run --profile compute-sanitizer`
 
 [  SKIPPED ] ComputeSanitizer.SaxpyUnguarded (0 ms)
-[----------] 2 tests from ComputeSanitizer (2229 ms total)
+[----------] 2 tests from ComputeSanitizer (2273 ms total)
 
 [----------] Global test environment tear-down
-[==========] 2 tests from 1 test suite ran. (2229 ms total)
+[==========] 2 tests from 1 test suite ran. (2273 ms total)
 [  PASSED  ] 1 test.
 [  SKIPPED ] 1 test, listed below:
 [  SKIPPED ] ComputeSanitizer.SaxpyUnguarded
 ```
 
-What to read: the kernel's median, 20.473 us, and its CV.
+What to read: the kernel's median, 20.572 us, and its CV.
 `ComputeSanitizer.SaxpyUnguarded` reports `SKIPPED` with the helper's
 message, because the run is not under the tool. The CSV holds the one
 timing row.
@@ -370,11 +377,11 @@ the harness's collector is refused; this rig's NVML reads no clocks or
 power. The last line is `bench run`'s check that the run left its report.
 `ERROR SUMMARY: 0 errors`: the tool watched every launch of the guarded
 kernel and found nothing to report, and the run exits 0. The result line is
-one launch under the tool, 1149.5 us against step 1's 20.473 us; it says what
+one launch under the tool, 1149.5 us against step 1's 20.572 us; it says what
 the tool costs, not how fast the kernel is. Measured with more launches
 (`--cycles 100 --repeats 3`, three runs each way), the kernel read
-20.10 to 20.93 us plainly and 1135.3 to 1136.4 us under
-the tool: 54 to 57 times as long.
+20.58 to 21.00 us plainly and 1135.9 to 1137.3 us under
+the tool: 54 to 55 times as long.
 
 ## Failing a Job on a Memory Error
 
@@ -438,16 +445,16 @@ exit 0
 | errors counted                 | 4: the read and three failed calls after the context ended                                                                                                                     | 4 with the tool's default context policy; more calls after the read count more                                                                                                                                 |
 | what the shared kernel reports | `0 errors`, in every run for this page                                                                                                                                         | should match                                                                                                                                                                                                   |
 | the plain run                  | `SaxpyKernel` OK, `SaxpyUnguarded` skipped, exit 0                                                                                                                             | the same anywhere: the case skips before any CUDA call                                                                                                                                                         |
-| the kernel's time              | 20.473 us; 20.406 to 20.497 us over the session's five runs                                                                                                                    | will differ; about 8.7 us on the RTX 5000 Ada                                                                                                                                                                  |
-| the tool's cost                | 54 to 57 times the kernel's time at 100 launches per repeat                                                                                                                    | tens to hundreds of times; about 116 times on the RTX 5000 Ada at 100 launches per repeat (8.746 us plainly, 1017.1 us under the tool), one run each way with the clocks as found and other work on the laptop |
+| the kernel's time              | 20.572 us; 20.570 to 20.598 us over the session's five runs                                                                                                                    | will differ; about 6.5 us on the RTX 5000 Ada                                                                                                                                                                  |
+| the tool's cost                | 54 to 55 times the kernel's time at 100 launches per repeat                                                                                                                    | tens to hundreds of times; about 148 times on the RTX 5000 Ada at 100 launches per repeat (6.43 to 6.45 us plainly, 956 to 957 us under the tool), three runs each way, clocks as found, other work running    |
 
 The five runs are step 1's command run five times in one session on this
 rig, the reference capture among them. That range describes those runs; it
 is not a bound a run has to meet, and another run of the same command can
 land outside it. The kernel's time is the noisiest reading on this page:
-0.4% across the five runs, and 4% across the three plain runs at 100
-launches per repeat in step 4 (20.10 to 20.93 us), which is what moves the
-tool's cost between 54 and 57 times. The tool's lines are the readings to
+0.1% across the five runs, and 2% across the three plain runs at 100
+launches per repeat in step 4 (20.58 to 21.00 us), which is what moves the
+tool's cost between 54 and 55 times. The tool's lines are the readings to
 carry elsewhere.
 
 ## If It Does Not Match
@@ -489,7 +496,7 @@ carry elsewhere.
   status 4 and names the wrap.** Nothing started it under the tool, so the
   request cannot check anything: the tests run and pass, and the report names
   the command that wraps the binary in the tool, and `bench run`, which does.
-  The run as this page's later session printed it, with the working
+  The run as the later session of 2026-11-16 printed it, with the working
   directory shortened to `...`:
 
   ```
@@ -500,8 +507,8 @@ carry elsewhere.
      Nothing is collected for this request; the run will fail (exit status 4 if the tests pass).
 
   [gpu] NVML reported no SM clock, maximum SM clock, power draw, power limit or GPU temperature (Not Supported): smClockMHz, throttling, powerDrawW, powerLimitW, temperatureC and temperatureDeltaC stay empty.
-  [ComputeSanitizer.SaxpyKernel]  21.856 us/call  CV=0.0%  ~45.8K calls/s  (p10=21.856 p90=21.856 sd=0.000)
-  [       OK ] ComputeSanitizer.SaxpyKernel (180 ms)
+  [ComputeSanitizer.SaxpyKernel]  28.736 us/call  CV=0.0%  ~34.8K calls/s  (p10=28.736 p90=28.736 sd=0.000)
+  [       OK ] ComputeSanitizer.SaxpyKernel (192 ms)
   ...
   [profile] --profile compute-sanitizer failed; the run exits with status 4:
   [profile]   compute-sanitizer: missing: compute-sanitizer checks a process only when it starts it, and it did not start this one
@@ -548,7 +555,7 @@ A later run on the same rig, clocks locked:
 ```
 Test                              Baseline     Candidate       Delta         %   Base CV   Cand CV        Result
 ----------------------------  ------------  ------------  ----------  --------  --------  --------  ------------
-ComputeSanitizer.SaxpyKernel      20.47330      20.24260    -0.23070     -1.1%      0.1%      0.2%  neutral
+ComputeSanitizer.SaxpyKernel      20.57150      20.56890    -0.00260     -0.0%      0.1%      0.0%  neutral
 
   1 neutral
 
@@ -576,15 +583,18 @@ Three things check what this page shows, and all fail loudly:
 
 - `TestDemoComputeSanitizer`, a test program of its own beside the demo
   ([`04_ComputeSanitizerProfiler_uTest.cpp`](../gpu/utst/04_ComputeSanitizerProfiler_uTest.cpp)),
-  runs the demo binary under compute-sanitizer as `bench run` wraps it, with
-  its own exit code for errors. `ComputeSanitizer.FindsTheUnguardedRead` fails
-  unless the unguarded case runs to its end, the report holds exactly one
-  invalid access, a read of four bytes in `saxpyUnguarded` at the line of
-  its statement (found in the source), by thread (255,0,0) in block
-  (4095,0,0), one byte after an allocation of the vectors' size, and the
-  tool exits with the code it was given; a copy given its guard fails it.
-  `ComputeSanitizer.KernelReportsNothing` fails on any access or error for
-  the shared kernel. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
+  runs the demo binary through `bench run --profile compute-sanitizer`, as
+  step 2 does. `ComputeSanitizer.FindsTheUnguardedRead` fails unless the
+  unguarded case runs to its end, `bench run` fails the run (status 1)
+  reporting the report's errors, naming the report and quoting the tool's
+  status for findings, and the report holds exactly one invalid access, a
+  read of four bytes in `saxpyUnguarded` at the line of its statement (found
+  in the source), by thread (255,0,0) in block (4095,0,0), one byte after an
+  allocation of the vectors' size; a copy given its guard fails it.
+  `ComputeSanitizer.KernelReportsNothing` fails on any access in the report
+  or any error `bench run` reports for the shared kernel, and unless
+  `bench run` exits 0. Both skip, saying so, where the `bench` CLI is not
+  built. `ComputeSanitizer.UnguardedSkipsOutsideTheTool` holds
   the plain run to its skip; `ComputeSanitizer.PlainRunIsNotWrapped` the
   binary run by hand with `--profile compute-sanitizer` to its refusal
   (status 4 after its test passed, no wrap reported where there is none, the
