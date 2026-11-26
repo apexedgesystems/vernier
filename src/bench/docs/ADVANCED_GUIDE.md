@@ -1034,9 +1034,10 @@ TEST_P(MultiGpuTest, Scaling) {
     .withP2PAccess()
     .measure();
 
-  // Check scaling efficiency
-  EXPECT_GT(result.aggregatedStats.multiGpu->scalingEfficiency, 0.8)
-    << "Poor scaling with " << deviceCount << " GPUs";
+  // Check that no device lags the others (scaling efficiency is not
+  // measured: GPU_GUIDE.md says how to time it)
+  EXPECT_LT(result.aggregatedStats.multiGpu->loadImbalance, 1.2)
+    << "Uneven work across " << deviceCount << " GPUs";
 
   // Cleanup
   for (int i = 0; i < deviceCount; ++i) {

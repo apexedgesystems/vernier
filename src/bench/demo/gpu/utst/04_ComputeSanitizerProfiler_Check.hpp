@@ -4,10 +4,13 @@
  * @file 04_ComputeSanitizerProfiler_Check.hpp
  * @brief The tool runs and report reading of demo 04's check
  *
- * The compute-sanitizer checks run the demo binary under the tool as a
- * child and read the report each run left: every invalid access memcheck
- * reported, with its kind, its frame, the thread and block that made it, the
- * address and the allocation it lies past, and the error summary. Starting
+ * The compute-sanitizer checks run the demo binary through `bench run
+ * --profile compute-sanitizer` as a child, as walkthrough 17's steps do:
+ * bench run builds the wrap, reads the report's summary and fails the run
+ * for errors, and the checks read the report it left for what bench run
+ * does not read: every invalid access memcheck reported, with its kind, its
+ * frame, the thread and block that made it, and the address and the
+ * allocation it lies past. Starting
  * the child, reading its files and GoogleTest's lines are walkthrough 15's
  * check support (12_MemcheckProfiler_Check.hpp), used as it is;
  * 04_ComputeSanitizerProfiler_uTest.cpp keeps what the checks assert and
@@ -95,46 +98,62 @@ inline const char* reasonNotToRunTheDemo() {
 
 /* ----------------------------- Tool Runs ----------------------------- */
 
-/// What a run under compute-sanitizer left.
-struct SanitizerRun {
-  vg::ChildExit end;  ///< How the tool ended
-  std::string output; ///< What the program wrote to stdout and stderr
-  std::string log;    ///< The tool's report, the file --log-file names
+/// What a run through bench run left.
+struct BenchRun {
+  vg::ChildExit end;  ///< How bench run ended
+  std::string output; ///< What bench run and the program wrote to stdout and stderr
+  fs::path report;    ///< Where bench run's wrap writes the tool's report
+  std::string log;    ///< The report's text; empty when the run left none
 };
 
 /**
- * @brief Run @p demo under compute-sanitizer's memcheck on the test
- *        @p testFilter selects, the way `bench run --profile
- *        compute-sanitizer` wraps it (the report in a file), plus an exit
- *        code for errors.
- * @param extraArgs      More arguments for the program, after the filter.
- * @param dir            Where the run's files go: program.txt and sanitizer.log.
- * @param errorExitCode  What the tool exits with when it reported an error.
+ * @brief Run @p demo through `bench run <demo> --profile compute-sanitizer`
+ *        on the test @p testFilter selects, as walkthrough 17's steps do:
+ *        bench run starts the tool around the program with an exit status
+ *        for findings and the report in the run's folder, reads the report's
+ *        summary, and fails the run, naming the report, when it counts errors.
+ * @param bench     The bench CLI.
+ * @param extraArgs More arguments for the program, after the filter.
+ * @param dir       Where the run's files go: run.txt and the profile folder out/.
  */
-inline SanitizerRun runUnderSanitizer(const std::string& demo, const std::string& testFilter,
-                                      const std::vector<std::string>& extraArgs,
-                                      const fs::path& dir, int errorExitCode) {
+inline BenchRun runThroughBench(const std::string& bench, const std::string& demo,
+                                const std::string& testFilter,
+                                const std::vector<std::string>& extraArgs, const fs::path& dir) {
   std::error_code ec;
   fs::create_directories(dir, ec);
-  const fs::path LOG = dir / "sanitizer.log";
-  const fs::path OUTPUT = dir / "program.txt";
-  // The tool expands %p, %q{VAR} and %% in the log's name; "%%" is a literal.
-  std::vector<std::string> args = {"compute-sanitizer",
-                                   "--tool=memcheck",
-                                   "--error-exitcode",
-                                   std::to_string(errorExitCode),
-                                   "--log-file",
-                                   vg::escapePercent(LOG.string()),
+  const fs::path OUT = dir / "out";
+  const fs::path OUTPUT = dir / "run.txt";
+  std::vector<std::string> args = {bench,
+                                   "run",
                                    demo,
+                                   "--profile",
+                                   "compute-sanitizer",
+                                   "--profile-output-dir",
+                                   OUT.string(),
+                                   "--",
                                    "--gtest_filter=" + testFilter,
                                    "--gtest_print_time=0"};
   args.insert(args.end(), extraArgs.begin(), extraArgs.end());
 
-  SanitizerRun run;
+  BenchRun run;
   run.end = vg::runLogged(args, OUTPUT);
   run.output = vg::readText(OUTPUT);
-  run.log = vg::readText(LOG);
+  run.report = OUT / (fs::path(demo).filename().string() + ".compute-sanitizer") / "sanitizer.log";
+  run.log = vg::readText(run.report);
   return run;
+}
+
+/// The count of bench run's verdict line, "compute-sanitizer reported N
+/// error(s) in the benchmark; the report is ...": what bench run read from
+/// the report's summary. -1 when bench run printed no such line.
+inline long benchReportedErrors(const std::string& output) {
+  static const std::string VERDICT = "compute-sanitizer reported ";
+  const std::size_t AT = output.find(VERDICT);
+  if (AT == std::string::npos) {
+    return -1;
+  }
+  long errors = -1;
+  return std::sscanf(output.c_str() + AT + VERDICT.size(), "%ld error", &errors) == 1 ? errors : -1;
 }
 
 /* ----------------------------- Reading the Report ----------------------------- */
@@ -210,21 +229,6 @@ inline std::vector<InvalidAccess> invalidAccesses(const std::string& log) {
     }
   }
   return accesses;
-}
-
-/// The total of the report's first "ERROR SUMMARY: N errors" line, or -1
-/// when the log has none. A second such line, when the print limit was
-/// reached, counts what was not printed and is not the total.
-inline long errorSummary(const std::string& log) {
-  std::istringstream in(log);
-  std::string line;
-  while (std::getline(in, line)) {
-    long errors = 0;
-    if (std::sscanf(payload(line).c_str(), "ERROR SUMMARY: %ld error", &errors) == 1) {
-      return errors;
-    }
-  }
-  return -1;
 }
 
 /// How far past the end of an allocation the access lies, from "and is N

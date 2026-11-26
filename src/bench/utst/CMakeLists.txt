@@ -7,7 +7,7 @@
 include(vernier/All)
 
 # ------------------------------------------------------------------------------
-# Sources (24 files)
+# Sources (23 files)
 # ------------------------------------------------------------------------------
 
 set(UNIT_TEST_SOURCES
@@ -27,7 +27,6 @@ set(UNIT_TEST_SOURCES
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerRAPL_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadiness_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerReadinessChecks_uTest.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerPerfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfLifecycle_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerGperfSampling_uTest.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/ProfilerWrapChecks_uTest.cpp"
@@ -40,6 +39,12 @@ set(UNIT_TEST_SOURCES
 # ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
+# COVERAGE_FOR names bench, the one library the program's coverage reports:
+# bench_test_support (Readiness Fixtures, below) is a test-only interface
+# target with no library of its own. RaplRunTest's cases are component: the
+# registry, the profiler and its factory decide on this machine's
+# /proc/cpuinfo and msr device, which no context can replace.
+# ------------------------------------------------------------------------------
 
 vernier_add_gtest(
   TARGET
@@ -48,8 +53,13 @@ vernier_add_gtest(
   ${UNIT_TEST_SOURCES}
   LINK
   bench
+  bench_test_support
+  COVERAGE_FOR
+  bench
   LABELS
   benchmarking
+  COMPONENT_PATTERNS
+  "^RaplRunTest\\."
   TIMING_PATTERNS
   "^PerfCaseTargetTimeTest\\."
 )
@@ -139,20 +149,22 @@ target_include_directories(TestBenchNvmlAbsent BEFORE PRIVATE "${PROJECT_SOURCE_
 target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 
 # ------------------------------------------------------------------------------
-# GPU Unit Tests (4 files)
+# GPU Tests (4 files)
 # ------------------------------------------------------------------------------
 # TestBenchGpu: what the GPU harness measures and publishes. Its tests run a
 # kernel, so they need the CUDA toolkit (to build) and a device (to run; they
-# skip without one). Its CudaHandleRecorder.cpp defines, in the program, the
-# CUDA runtime calls that choose, pair and describe devices, make and release
-# streams, events and device memory, record, copy and time on them, and read
-# the last error: libbench_cuda's calls reach them before libcudart's, so a
-# test can count what the harness makes, fail one step, and let the one GPU
-# stand in for two.
+# skip without one): component tests, labelled rig. Its CudaHandleRecorder.cpp
+# defines, in the program, the CUDA runtime calls that choose, pair and
+# describe devices, make and release streams, events and device memory,
+# record, copy and time on them, and read the last error: libbench_cuda's
+# calls reach them before libcudart's, so a test can count what the harness
+# makes, fail one step, and let the one GPU stand in for two.
 # PerfGpuHarness_uTest.cu defines pthread_create the same way, to fail a
 # worker's start, except under the address or the thread sanitizer, whose
 # runtime intercepts pthread_create itself: WORKER_START_SANITIZER names the
-# build's sanitizer there, the program defines none and that test skips.
+# build's sanitizer there, the program defines none and that test skips. It
+# defines cuptiActivityEnable and cuptiActivityDisable the same way, to note
+# which CUPTI activity kinds the collector switches, and when.
 # TestBenchNsight: the Nsight backend, and the backends the registry builds
 # for the GPU names once libbench_cuda's registrations replace libbench's;
 # they live in libbench_cuda but make no CUDA call, so they need the toolkit
@@ -160,6 +172,9 @@ target_compile_definitions(TestBenchNvmlAbsent PRIVATE COMPAT_NVML_AVAILABLE=0)
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda)
+  # Its two CUPTI definitions are exported by name: linked with gold or lld,
+  # the program leaves them out of its dynamic symbols (mold and bfd export
+  # them), and libbench_cuda's calls then reach libcupti's, unobserved.
   vernier_add_gtest(
     TARGET
     TestBenchGpu
@@ -170,9 +185,15 @@ if (TARGET bench_cuda)
     bench
     bench_cuda
     ${CMAKE_DL_LIBS}
+    EXPORT_SYMBOLS
+    cuptiActivityEnable
+    cuptiActivityDisable
     LABELS
     benchmarking
     gpu
+    rig
+    CLASS
+    component
     TIMING_ALL
   )
   if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)
@@ -222,7 +243,7 @@ vernier_add_gtest(
 # before anything calls NVTX, as Nsight Systems names its own. Built where
 # libbench_cuda and the toolkit's nvtx3 headers are: without the headers the
 # backend's push and pop compile to nothing, and there is no range to record.
-# Its GPU cases skip without a device.
+# Its GPU cases skip without a device: component tests, labelled rig.
 # ------------------------------------------------------------------------------
 
 if (TARGET bench_cuda AND TARGET CUDA::nvtx3)
@@ -243,6 +264,10 @@ if (TARGET bench_cuda AND TARGET CUDA::nvtx3)
     benchmarking
     gpu
     nsight
+    COMPONENT_PATTERNS
+    "^NsightRangeGpuTest\\."
+    RIG_PATTERNS
+    "^NsightRangeGpuTest\\."
   )
   target_compile_definitions(
     TestBenchNsightRange PRIVATE VERNIER_NVTX_RECORDER_PATH="$<TARGET_FILE:NvtxRangeRecorder>"
@@ -276,17 +301,18 @@ target_compile_options(
 # ------------------------------------------------------------------------------
 # Build Logic Tests (2)
 # ------------------------------------------------------------------------------
-# Script-mode tests of configure logic; they need no toolkit and no GPU, so they
-# run on every lane, including CPU-only ones: the CUDA architecture rules, and
-# what vernier_add_gtest's NO_REGISTER registers (a scratch project is
-# configured with this build's generator and compiler; nothing is built).
+# Script-mode tests of configure logic; they need no toolkit and no GPU, so
+# every configuration has them, CPU-only ones included: the CUDA architecture
+# rules (unit), and what vernier_add_gtest's NO_REGISTER registers (component:
+# a scratch project is configured with this build's generator and compiler,
+# once per case, and one plain program in it is built and run).
 # ------------------------------------------------------------------------------
 
 add_test(NAME CudaArchitecturesResolveTest
          COMMAND "${CMAKE_COMMAND}" -P
                  "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/CudaArchitectures_test.cmake"
 )
-set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake")
+set_tests_properties(CudaArchitecturesResolveTest PROPERTIES LABELS "benchmarking;cmake;unit")
 
 add_test(
   NAME AddGtestNoRegisterTest
@@ -296,24 +322,34 @@ add_test(
     -DCXX_COMPILER=${CMAKE_CXX_COMPILER} -P
     "${PROJECT_SOURCE_DIR}/cmake/vernier/utst/AddGtestNoRegister_test.cmake"
 )
-set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake")
+set_tests_properties(AddGtestNoRegisterTest PROPERTIES LABELS "benchmarking;cmake;component")
 
 # ------------------------------------------------------------------------------
 # Readiness Fixtures
 # ------------------------------------------------------------------------------
 # Fake tools (POSIX sh templates) that stand in for sudo, kill and the
 # profilers' own tools, so the readiness policy, its routing and its error
-# reports are tested without privileges or the real tools. The unit tests copy
-# them into a private directory and hand the checks a context whose PATH is it;
-# the command-line tests run a fixture benchmark with that PATH. The bpftrace
-# tests also read the bundled scripts, where the library looks them up.
+# reports are tested without privileges or the real tools. The unit and
+# component tests copy them into a private directory and hand the checks a
+# context whose PATH is it; the command-line tests run a fixture benchmark with
+# that PATH. The bpftrace tests also read the bundled scripts, where the
+# library looks them up. Both directories belong to bench_test_support, which
+# TestBench and TestBenchComponent (../dtst) link for the helpers here they
+# share (ReadinessFixtures.hpp, StderrCapture.hpp, ZombieChildren.hpp).
 # ------------------------------------------------------------------------------
 
+add_library(bench_test_support INTERFACE)
+target_compile_definitions(
+  bench_test_support
+  INTERFACE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
+            VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
+)
+target_link_libraries(
+  bench_test_support
+  INTERFACE bench
+)
+
 if (TARGET TestBench)
-  target_compile_definitions(
-    TestBench PRIVATE VERNIER_READINESS_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/readiness"
-                      VERNIER_BUNDLED_BPF_DIR="${PROJECT_SOURCE_DIR}/src/bench/bpf"
-  )
   # Tables both languages are tested against (the Rust tools read them in
   # place), e.g. the profile aliases and the profile-failed exit status.
   target_compile_definitions(
@@ -441,7 +477,7 @@ if (TARGET CallgrindWindowProbe)
         "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowProbe_test.cmake"
     )
     set_tests_properties(
-      CallgrindWindow${_case}Test PROPERTIES LABELS "benchmarking;callgrind"
+      CallgrindWindow${_case}Test PROPERTIES LABELS "benchmarking;callgrind;component"
                                              SKIP_REGULAR_EXPRESSION "-- SKIPPED: "
     )
   endforeach ()
@@ -464,7 +500,7 @@ add_test(
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_totals -P
     "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowTotals_test.cmake"
 )
-set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;callgrind")
+set_tests_properties(CallgrindWindowTotalsTest PROPERTIES LABELS "benchmarking;callgrind;unit")
 
 # ------------------------------------------------------------------------------
 # Callgrind Window Probe, Reader Assertion (1 test)
@@ -484,7 +520,9 @@ add_test(
     -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/callgrind_window_reader_assertion -P
     "${CMAKE_CURRENT_LIST_DIR}/CallgrindWindowReaderAssertion_test.cmake"
 )
-set_tests_properties(CallgrindWindowReaderAssertionTest PROPERTIES LABELS "benchmarking;callgrind")
+set_tests_properties(
+  CallgrindWindowReaderAssertionTest PROPERTIES LABELS "benchmarking;callgrind;unit"
+)
 
 # ------------------------------------------------------------------------------
 # Callgrind Window Probe, Startup Fault (1 test)
@@ -544,7 +582,7 @@ if (TARGET CallgrindWindowProbeStartupFault)
     CallgrindWindowStartupFaultTest
     PROPERTIES
       LABELS
-      "benchmarking;callgrind"
+      "benchmarking;callgrind;component"
       PASS_REGULAR_EXPRESSION
       "StartupFaultUnderValgrind: aborting before the tests start, as intended.*CMake Error at [^\n]*\\(message\\):[ \n]+CallgrindWindowProbe[ \n]+\\(hint\\):[ \n]+the[ \n]+probe's[ \n]+tests[ \n]+did[ \n]+not[ \n]+start[ \n]+under[ \n]+valgrind"
       SKIP_REGULAR_EXPRESSION
@@ -575,6 +613,8 @@ vernier_add_gtest(
   LABELS
   benchmarking
   helgrind
+  CLASS
+  component
 )
 
 if (SANITIZER MATCHES "^(asan|tsan)$" AND NOT CMAKE_CROSSCOMPILING)

@@ -11,6 +11,9 @@ include(vernier/All)
 # ------------------------------------------------------------------------------
 # Unit Tests
 # ------------------------------------------------------------------------------
+# FilterBranchTest's cases count branch misses with the machine's hardware
+# counters, skipping where they cannot: component tests, labelled rig.
+# ------------------------------------------------------------------------------
 
 vernier_add_gtest(
   TARGET
@@ -21,4 +24,8 @@ vernier_add_gtest(
   demo_example_filter
   LABELS
   demo
+  COMPONENT_PATTERNS
+  "^FilterBranchTest\\."
+  RIG_PATTERNS
+  "^FilterBranchTest\\."
 )

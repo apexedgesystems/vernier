@@ -58,7 +58,8 @@ NsightProfiler::~NsightProfiler() { popRange(); }
 void NsightProfiler::beforeMeasure() {
   // Name the measured window after the test: a labeled range in the nsys
   // timeline, and a range ncu's --nvtx filters can select. Popped in
-  // afterMeasure(); never pushed twice.
+  // afterMeasure(), or in abortMeasure() when the window ends by an
+  // exception; never pushed twice.
 #if VERNIER_NVTX_USABLE
   if (!nvtxRangePush_) {
     ::nvtxRangePushA(testName_.c_str());
@@ -68,6 +69,11 @@ void NsightProfiler::beforeMeasure() {
 }
 
 void NsightProfiler::afterMeasure(const Stats& /*s*/) { popRange(); }
+
+// The window ended by an exception: its range closes now rather than when the
+// case goes away, so recovery work and a second case are not attributed to
+// the failed window, and the next window pushes a range of its own.
+void NsightProfiler::abortMeasure() noexcept { popRange(); }
 
 void NsightProfiler::popRange() noexcept {
 #if VERNIER_NVTX_USABLE

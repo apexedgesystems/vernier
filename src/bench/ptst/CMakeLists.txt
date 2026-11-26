@@ -34,7 +34,7 @@ set(CPU_PTEST_SOURCES
 )
 
 # ------------------------------------------------------------------------------
-# GPU Performance Test Sources (9 files)
+# GPU Performance Test Sources (10 files)
 # ------------------------------------------------------------------------------
 
 set(GPU_PTEST_SOURCES
@@ -47,6 +47,7 @@ set(GPU_PTEST_SOURCES
     gpu/GpuMemoryCoalescing_pTest.cu
     gpu/GpuSharedMemory_pTest.cu
     gpu/GpuProfilers_pTest.cu
+    gpu/GpuCollectorCost_pTest.cu
 )
 
 # ------------------------------------------------------------------------------

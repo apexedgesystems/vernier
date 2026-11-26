@@ -140,8 +140,9 @@ const std::string& testName() const noexcept;
   is published, and the exception reaches you unchanged; the case can measure
   again. With `attachProfilerHooks()`, the abort hook calls the profiler's
   `abortMeasure()`, which does nothing by default; the gperf profiler stops
-  its CPU and heap captures there at once, without analysis, so this case and
-  others can capture again
+  its CPU and heap captures there at once, without analysis, and the Nsight
+  profiler pops the NVTX range it pushed, so this case and others can capture
+  again
 
 **`contentionRun(worker, label)`**
 
@@ -542,7 +543,7 @@ public:
   virtual std::string artifactDir() const noexcept = 0;
   virtual void beforeMeasure() {}
   virtual void afterMeasure(const Stats& s) {}
-  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures)
+  virtual void abortMeasure() noexcept {} // the measured window threw; no-op (gperf stops its captures, Nsight pops its range)
 
   // Factory: returns a concrete profiler or no-op based on cfg.profileTool
   static std::unique_ptr<Profiler> make(const PerfConfig& cfg, const std::string& testName);
@@ -823,40 +824,49 @@ a run:
 
 | Column              | Type   | Description                                              |
 | ------------------- | ------ | -------------------------------------------------------- |
-| `powerDrawW`        | double | Mean of the power draw at the window's start and end (W) |
+| `powerDrawW`        | double | NVML's power at the end of a window of 1.5 s or more (W) |
 | `powerLimitW`       | double | The power limit (W)                                      |
 | `temperatureC`      | int    | GPU temperature at the window's end (C)                  |
 | `temperatureDeltaC` | int    | Temperature at the end minus at the start (C)            |
 
 Source: NVML, at the measured window's start and end. A cell stays empty when
 NVML did not report the readings it needs (on the Jetson AGX Thor it reports
-none of them), and the run names the missing readings on stderr.
+none of them), and the run names the missing readings on stderr. `powerDrawW`
+is the endpoint reading: NVML's power reading taken at the window's end, which
+NVIDIA's NVML reference describes as a one-second average on Ampere (except
+GA100) and newer GPUs and an instantaneous reading on GA100 and older; neither
+is an average over the measured window. Vernier publishes it only for a window
+of at least 1.5 s, a rule of its own: a shorter window's cell is empty and the
+run says why.
 
 ### CUPTI In-Process Kernel Metrics
 
-| Column                  | Type | Description                                      |
-| ----------------------- | ---- | ------------------------------------------------ |
-| `cuptiKernelLaunches`   | int  | Kernel launches in the measure() window          |
-| `cuptiRegistersMedian`  | int  | Median registers per thread across launches      |
-| `cuptiRegistersMax`     | int  | Max registers per thread observed                |
-| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch |
-| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch    |
+| Column                  | Type | Description                                                  |
+| ----------------------- | ---- | ------------------------------------------------------------ |
+| `cuptiKernelLaunches`   | int  | Kernel launches in the untimed batch after the timed repeats |
+| `cuptiRegistersMedian`  | int  | Median registers per thread across launches                  |
+| `cuptiRegistersMax`     | int  | Max registers per thread observed                            |
+| `cuptiStaticSmemBytes`  | int  | Median static `__shared__` allocation per launch             |
+| `cuptiDynamicSmemBytes` | int  | Median dynamic shared memory passed at launch                |
 
 Source: CUPTI's Activity API, in every GPU run; no `--profile` flag is
-needed. The cells stay empty where the collector cannot or must not run (a
-build without CUPTI, `VERNIER_DISABLE_CUPTI=1`, an nsys or ncu session) and
-for a measured window whose records are not known to be complete, and the run
-says why on stderr
+needed. After a kernel measurement's timed repeats, the harness calls the
+measured callable `cycles` times more, at most 1000, untimed, with CUPTI
+recording kernels, and the five cells describe those launches; no timed launch
+runs while CUPTI records kernels. The cells stay empty where the collector
+cannot or must not run (a build without CUPTI, `VERNIER_DISABLE_CUPTI=1`, an
+nsys or ncu session) and for a measured window whose records are not known to
+be complete, and the run says why on stderr
 ([CUPTI in-process kernel metrics](GPU_GUIDE.md#cupti-in-process-kernel-metrics)).
 
 ### Multi-GPU Columns
 
-| Column               | Type   | Description            |
-| -------------------- | ------ | ---------------------- |
-| `deviceId`           | int    | Primary CUDA device ID |
-| `deviceCount`        | int    | Number of GPUs used    |
-| `multiGpuEfficiency` | double | Parallel efficiency    |
-| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth |
+| Column               | Type   | Description                |
+| -------------------- | ------ | -------------------------- |
+| `deviceId`           | int    | Primary CUDA device ID     |
+| `deviceCount`        | int    | Number of GPUs used        |
+| `multiGpuEfficiency` | double | Not measured: always empty |
+| `p2pBandwidthGBs`    | double | Peer-to-peer bandwidth     |
 
 ### Unified Memory Columns
 

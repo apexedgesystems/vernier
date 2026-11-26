@@ -39,7 +39,7 @@
  *     }
  *   ).measure();
  *
- *   EXPECT_GT(results.aggregatedStats.multiGpu->scalingEfficiency, 0.8);
+ *   EXPECT_LT(results.aggregatedStats.multiGpu->loadImbalance, 1.2);
  * }
  * @endcode
  */
