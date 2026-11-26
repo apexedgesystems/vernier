@@ -1036,10 +1036,13 @@ sudo env PATH="$PATH" bench run ./test --profile ncu --cycles 3 --repeats 1 -- \
 sudo chown -R "$(id -u):$(id -g)" bench-out
 ```
 
-If you only need per-kernel metrics, the in-process CUPTI columns (kernel time,
-registers, shared memory, launch count) populate automatically with no nsys
-required; for occupancy / warp stalls / cache / roofline, use `ncu` (see
-`GPU_GUIDE.md`).
+If you need only a kernel's registers, shared memory and launch count, the
+in-process CUPTI columns hold them without nsys or ncu, where CUPTI is
+available
+([CUPTI In-Process Kernel Metrics](API_REFERENCE.md#cupti-in-process-kernel-metrics));
+the kernel's time is the harness's `kernelTimeUs`, from CUDA events. For
+occupancy, warp stalls, cache and roofline, use `ncu`
+([Using Nsight Compute](GPU_GUIDE.md#using-nsight-compute)).
 
 ---
 
