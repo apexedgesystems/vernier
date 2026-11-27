@@ -14,12 +14,16 @@ comments. Rules:
   measured under as settings of the run: the clocks locked or left to the
   governor, the pinned core, other work running.
 - The page explains current use and says nothing of its own making: no
-  date or time of a run, no account of which run or which code a block
-  came from, and none of who ran what or of how the page is kept. Those
-  belong in the notes of the work that captured it.
-- Name in **Tools:** the tools whose output the page shows, at the version
-  their output prints or the rig page records; leave the line out when
-  every block is Vernier's own output.
+  date or time of a run, no account of when or from which code a block was
+  captured, and none of who ran what or of how the page is kept. Those
+  belong in the notes of the work that captured it. A label that names the
+  command, the step or the run a block shows (step 1's `run1.csv`, the
+  reference run) is not that history: keep it.
+- Name in **Tools:** the third-party tools whose output the page reads, at
+  the version their output prints or the rig page records; leave the line
+  out when every block is Vernier's own output. A generic utility whose
+  version does not change what the page reads (awk, cut, od) needs no
+  entry.
 - The test must assert the effect it demonstrates, so the walkthrough
   fails loudly when it stops being true. Name the test and the command or
   `ctest` label that runs it.
