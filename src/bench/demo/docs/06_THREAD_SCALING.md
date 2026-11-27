@@ -3,9 +3,6 @@
 **Reference rig:** [Raspberry Pi 4](../../docs/rigs/RIG_PI4.md)
 **Build:** Release
 **Example:** [`join`](../examples/join/inc/Join.hpp), called from several threads at once (see [Shared Workloads](../README.md#5-shared-workloads))
-**Captured:** 2026-09-28 (UTC), written for the Vernier 1.0.4 release; captured
-from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`
 
 ## Overview
 
@@ -321,8 +318,8 @@ no-sharing test's repeats waited one tick instead: its `p10` is 4.0 ms. Repeats
 this short are uneven, and the harness marks three of the four results
 `[UNSTABLE]`, for CVs of 17.8% to 27.6%; here the unevenness is what is being
 shown. One thread needs the spare core as well: the same one-call command with
-`--threads 1`, run in the same session, took 72 and 74 us per repeat on cores 2
-and 3, and 8.0 ms on core 3 alone.
+`--threads 1` took 72 and 74 us per repeat on cores 2 and 3, and 8.0 ms on
+core 3 alone.
 
 The wait comes at the start of every repeat, so its weight depends on how long
 the repeat is. Next to step 2's repeats, 626 ms with the lock and 215 ms
@@ -338,10 +335,9 @@ without, 8 ms is 1% and 4%.
 | a repeat of one call per thread                           | 195 and 151 us with a core to spare; 8.0 and 7.9 ms without              | without a spare core, a wait that depends on the kernel's scheduler; whole ticks are this Pi's observation, not a guarantee |
 | absolute times                                            | 19.0 and 18.8 us per call in step 1, 20.9 and 7.2 us in step 2           | will differ                                                                                                                 |
 
-The ranges come from one session on this rig: step 1's and step 2's commands
-ten times each, alternating, then step 2's once more for the reference, then
-both again as this page's steps 1 and 2, eleven runs of step 1's command and
-twelve of step 2's in all. They describe those runs; they are not a bound a run
+The ranges cover eleven runs of step 1's command and twelve of step 2's on this
+rig, the two commands alternating, with the reference and this page's steps 1
+and 2 among them. They describe those runs; they are not a bound a run
 has to meet, and another run of the same command can land outside them. The
 x86 figure comes from three runs on a laptop's efficiency cores with other work
 running; it says the direction holds, not how far.
@@ -402,14 +398,13 @@ running; it says the direction holds, not how far.
 
 ## Check Against the Reference
 
-A capture from this rig is committed with the demo:
+A reference CSV from this rig ships with the demo:
 
 ```bash
 bench compare src/bench/demo/reference/pi4/06_thread_scaling.csv three.csv
 ```
 
-Output for step 2's `three.csv`, printed by the `bench` CLI built from the tree
-this page ships in (`bench 1.0.3`):
+Captured output, for step 2's `three.csv`:
 
 ```
 
@@ -425,20 +420,17 @@ ThreadScaling.NoSharing        6.60145       7.16320    +0.56175     +8.5%      
   the CV of each run is its own spread, not the spread between the runs.
 ```
 
-The reference is step 2's command run once more by the same binary on this
-board, in the same session, just before this page's steps 1 and 2: its rows'
-timestamps are twelve and thirteen seconds before `three.csv`'s. Nothing
-changed between the two runs, yet the version that shares nothing came out
+The reference is a run of step 2's command by the same binary on this board.
+Nothing changed between the two runs, yet the version that shares nothing came out
 8.5% slower, past the 5% threshold, so its row reads `REGRESSION`; the lock's
 moved 0.5% and reads `neutral`. That is this pair of runs, not a property of
-the code. The CSVs' `hostname` column records the name visible to the process
-that captured each: this reference and `three.csv` were captured in the rig's
-ordinary session, not in a UTS namespace named `pi4` as some of the rig's other
-references were, so both record the board's host name, `raspberrypi`. As the
+the code. The CSVs' `hostname` column records the host name the writing
+process saw: this reference and `three.csv` both record the board's,
+`raspberrypi`. As the
 note under the table says, a label compares two runs' medians; it is not a
 significance test, and `Base CV` and `Cand CV` are each run's own spread, which
 says nothing about the spread between runs: 2.2% and 2.9% for the version that
-shares nothing here. Over the session's twelve runs of step 2's command, that
+shares nothing here. Over the twelve runs of step 2's command, that
 version's median ranged from 6.5 to 7.4 us, 13.6%, and the lock's from 20.6 to
 21.2 us, 2.5%, with nothing changed: the no-sharing median is the noisiest
 measurement on this page, and a run of unchanged code can land on either side
@@ -466,10 +458,7 @@ ctest --test-dir build -L demo
 ```
 
 The demo's two timing tests are not registered: what they measure belongs to
-the machine they run on. This repository has no continuous-integration lane on
-the reference board, so before a release the page's commands are run on the
-rig by hand, and the page and its reference CSV are re-captured when what they
-show changes.
+the machine they run on; run them on the rig with the page's commands.
 
 ## See Also
 
