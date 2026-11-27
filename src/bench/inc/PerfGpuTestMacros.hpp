@@ -2,9 +2,9 @@
 #define VERNIER_PERFGPUTESTMACROS_HPP
 /**
  * @file PerfGpuTestMacros.hpp
- * @brief Test declaration macros for GPU benchmarks with multi-GPU support.
- *
- * Added GPU flag parsing to PERF_MAIN macro
+ * @brief Test declaration macros for GPU benchmarks with multi-GPU support,
+ *        and PERF_GPU_MAIN(), which parses the GPU flags as well as the
+ *        common ones.
  */
 
 #include <string>
