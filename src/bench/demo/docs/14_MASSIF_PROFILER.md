@@ -6,8 +6,6 @@
 **Captured:** 2026-09-28 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
 `bench 1.0.3`; valgrind 3.24.0.
-The console output under Letting bench run Do the Wrap comes from 2026-10-03
-(UTC), a later tree at the same version.
 
 ## Overview
 
@@ -516,34 +514,34 @@ ms_print bench-out/BenchDemo_11_MassifProfiler.massif/massif.out
 Captured output of the first command:
 
 ```
-Running: valgrind --tool=massif --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
-==156225== Massif, a heap profiler
-==156225== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
-==156225== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==156225== Command: ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
-==156225==
+Running: valgrind --tool=massif --fair-sched=try --massif-out-file=bench-out/BenchDemo_11_MassifProfiler.massif/massif.out ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
+==130917== Massif, a heap profiler
+==130917== Copyright (C) 2003-2024, and GNU GPL'd, by Nicholas Nethercote et al.
+==130917== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==130917== Command: ./build/bin/ptests/BenchDemo_11_MassifProfiler --cycles 1 --repeats 1 --profile massif --gtest_filter=Massif.JoinV0
+==130917==
 Note: Google Test filter = Massif.JoinV0
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Massif
 [ RUN      ] Massif.JoinV0
-[Massif.JoinV0]  1031979.000 us/call  CV=0.0%  ~1 calls/s  (p10=1031979.000 p90=1031979.000 sd=0.000)
-[       OK ] Massif.JoinV0 (3336 ms)
-[----------] 1 test from Massif (3342 ms total)
+[Massif.JoinV0]  1022566.182 us/call  CV=0.0%  ~1 calls/s  (p10=1022566.182 p90=1022566.182 sd=0.000)
+[       OK ] Massif.JoinV0 (3376 ms)
+[----------] 1 test from Massif (3392 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (3387 ms total)
+[==========] 1 test from 1 test suite ran. (3433 ms total)
 [  PASSED  ] 1 test.
-==156225==
-[bench] massif wrote bench-out/BenchDemo_11_MassifProfiler.massif/massif.out (48330 bytes)
+==130917==
+[bench] massif wrote bench-out/BenchDemo_11_MassifProfiler.massif/massif.out (96993 bytes)
 ```
 
 `bench run` builds the same wrap and prints it on its first line, without
 `--time-unit=B`, which it has no option to pass: its graph's axis is
 instructions. Its last line comes after valgrind exited: `bench run` checks
 that the profile was written and names its size, and fails the run when it
-was not. The peak's owners and their byte counts are the ones in step 2;
-the total is 16 bytes more.
+was not. The peak's owners are the ones in step 2; the total is 5,552
+bytes more.
 The profile goes to `bench-out/BenchDemo_11_MassifProfiler.massif/massif.out`,
 one file for the binary, not one per test, and no per-test folder is created
 ([Troubleshooting](../../docs/TROUBLESHOOTING.md#profile-artifacts-land-in-cwd-move-immediately)
@@ -563,12 +561,13 @@ different `--profile-output-dir` gives a run a file of its own.
 
 The byte counts are the reading this page checks. The check counts exactly,
 and its counts repeat: every run of it on this rig printed the same
-`Massif.JoinPeakHeap` line. Massif's peak is approximate (step 3). The four
-profiles of V0 behind this page held the same entries for the join and the
-input, with totals within 16 bytes, but that describes those runs, not a
-bound: another run can take its peak snapshot at a slightly different moment
-of the call, and its entries then differ within massif's 1%, about 14,700 of
-V0's 1,470,720 bytes, with the same owners and lines.
+`Massif.JoinPeakHeap` line. Massif's peak is approximate (step 3). Step 2's
+profile and the one `bench run` wrote name the same owners and lines and the
+same 640,000 bytes for the input, with totals 5,552 bytes apart, but that
+describes those two runs, not a bound: another run can take its peak snapshot
+at a slightly different moment of the call, and its entries then differ
+within massif's 1%, about 14,700 of V0's 1,470,720 bytes, with the same
+owners and lines.
 
 The times vary more. Over the twelve step 1 runs behind this page, V0's median
 ranged from 384.6 to 395.8 ms and V1's from 469.4 to 513.7 us, and V0 was 764 to
