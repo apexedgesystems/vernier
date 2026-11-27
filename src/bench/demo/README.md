@@ -42,9 +42,9 @@ taskset -c 3 ./build/bin/ptests/BenchDemo_01_BasicWorkflow \
 bench summary run1.csv
 ```
 
-Captured on the Raspberry Pi 4 rig, 2026-09-28 (UTC), Release build. The two
-result lines, without GoogleTest's framing, the harness's calibration lines
-and the end-of-run table:
+Captured on the [Raspberry Pi 4 rig](../docs/rigs/RIG_PI4.md), Release build.
+The two result lines, without GoogleTest's framing, the harness's calibration
+lines and the end-of-run table:
 
 ```
 [BasicWorkflow.JoinV0]  1000.531 us/call  CV=0.1%  ~999 calls/s  (p10=999.845 p90=1001.631 sd=0.879)
@@ -184,10 +184,10 @@ Code a walkthrough teaches from lives in its own directory, as
 `examples/<name>/{inc,src,utst}` with a `CMakeLists.txt` of its own: a small
 library the demo links, and unit tests that hold the example's versions to
 the same answers, registered under the `demo` label
-(`ctest --test-dir build -L demo`). An example's performance tests, run by
-hand on the rig and never registered, are in its `ptst` directory. The first
-is [examples/join](examples/join/inc/Join.hpp), and the table below names the
-walkthroughs whose demos use each example.
+(`ctest --test-dir build -L demo`). An example's performance tests are in its
+`ptst` directory; CTest does not register them, so run them on the rig
+yourself. The first is [examples/join](examples/join/inc/Join.hpp), and the
+table below names the walkthroughs whose demos use each example.
 
 | Example                                  | Versions                                                                                                                                           | Used In (walkthroughs)                             |
 | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------- |
@@ -248,8 +248,9 @@ Walkthroughs are numbered by their file name in `docs/`.
 
 A walkthrough names the machine its output was captured on, in a
 `Reference rig` line at its top, and links the rig document instead of
-repeating the setup. A walkthrough without that line has not been captured
-on a rig. See [docs/rigs/README.md](../docs/rigs/README.md).
+repeating the setup. A walkthrough whose `Reference rig` line names no rig
+names the machine its output comes from instead. See
+[docs/rigs/README.md](../docs/rigs/README.md).
 
 | Rig                                                    | Walkthroughs |
 | ------------------------------------------------------ | ------------ |
