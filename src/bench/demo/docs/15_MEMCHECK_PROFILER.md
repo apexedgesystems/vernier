@@ -5,9 +5,8 @@
 **Example:** [`join`](../examples/join/inc/Join.hpp) (see [Shared Workloads](../README.md#5-shared-workloads)), plus a deliberately wrong join private to the demo
 **Captured:** 2026-09-27 (UTC), written for the Vernier 1.0.4 release; captured
 from the development tree at project version 1.0.3, whose CLI reported
-`bench 1.0.3`; valgrind 3.24.0. The doctor's rows and the console output of
-steps 2 and 4 come from 2026-10-03 (UTC), a later tree at the same version;
-the reports of steps 3 and 4 are the first session's.
+`bench 1.0.3`; valgrind 3.24.0. The doctor's rows come from 2026-10-03
+(UTC), a later tree at the same version.
 
 ## Overview
 
@@ -36,8 +35,8 @@ what the program still held and whether anything still pointed at it.
   uninitialised values that decide a branch or reach a system call, and
   leaks: memory nothing points at any more.
 - **Overhead:** large, and it depends on what the code does. In step 4 one
-  call of `joinV1` took 2.4 ms under memcheck against 21 us in step 1, about
-  115 times as long. Run one test at a time under it, with few cycles, and
+  call of `joinV1` took 2.3 ms under memcheck against 21 us in step 1, about
+  110 times as long. Run one test at a time under it, with few cycles, and
   never read its timings as measurements.
 - **Not for:** time (perf, gperftools and callgrind, walkthroughs
   [02](02_PERF_PROFILER.md), [03](03_GPERF_PROFILER.md) and
@@ -231,22 +230,22 @@ bench run ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck \
 Captured output:
 
 ```
-Running: valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
+Running: valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
 Note: Google Test filter = Memcheck.JoinOffByOne
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinOffByOne
-[       OK ] Memcheck.JoinOffByOne (56 ms)
-[----------] 1 test from Memcheck (65 ms total)
+[       OK ] Memcheck.JoinOffByOne (55 ms)
+[----------] 1 test from Memcheck (69 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (141 ms total)
+[==========] 1 test from 1 test suite ran. (146 ms total)
 [  PASSED  ] 1 test.
 
 [profile] --profile memcheck: no case that ran was built with the profiler guard; the memcheck wrap still recorded the whole process.
 
-[bench] memcheck wrote memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log (7530 bytes)
+[bench] memcheck wrote memcheck-offbyone/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log (7402 bytes)
 ```
 
 The `Running:` line is the wrap `bench run` built. The case ran, because
@@ -277,51 +276,51 @@ and marked `...`, the vector's template arguments are shortened to
 `std::vector<...>`, and the binary's directory to `...`:
 
 ```
-==124554== Memcheck, a memory error detector
-==124554== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
-==124554== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==124554== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
-==124554== Parent PID: 124553
-==124554==
-==124554== Invalid write of size 1
-==124554==    at 0x11C424: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)
-==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==130935== Memcheck, a memory error detector
+==130935== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
+==130935== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==130935== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --profile memcheck --profile-output-dir memcheck-offbyone --gtest_filter=Memcheck.JoinOffByOne
+==130935== Parent PID: 130934
+==130935==
+==130935== Invalid write of size 1
+==130935==    at 0x122784: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:32)
+==130935==    by 0x111337: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==124554==  Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd
-==124554==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
-==124554==    by 0x11C3EB: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
-==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==130935==  Address 0x4fe51b2 is 0 bytes after a block of size 7,490 alloc'd
+==130935==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
+==130935==    by 0x12274B: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
+==130935==    by 0x111337: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==124554==
-==124554== Invalid read of size 1
-==124554==    at 0x488E764: strlen (vg_replace_strmem.c:505)
-==124554==    by 0x11C433: length (char_traits.h:391)
-==124554==    by 0x11C433: basic_string<> (basic_string.h:653)
-==124554==    by 0x11C433: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:36)
-==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==130935==
+==130935== Invalid read of size 1
+==130935==    at 0x488E764: strlen (vg_replace_strmem.c:505)
+==130935==    by 0x122793: length (char_traits.h:391)
+==130935==    by 0x122793: basic_string<> (basic_string.h:653)
+==130935==    by 0x122793: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:36)
+==130935==    by 0x111337: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==124554==  Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd
-==124554==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
-==124554==    by 0x11C3EB: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
-==124554==    by 0x10FE9B: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
+==130935==  Address 0x4fe51b2 is 0 bytes after a block of size 7,490 alloc'd
+==130935==    at 0x488722C: operator new[](unsigned long) (vg_replace_malloc.c:729)
+==130935==    by 0x12274B: vernier::bench::demo::memcheck_demo::joinOffByOne(std::vector<...> const&, char) (12_MemcheckProfiler_OffByOne.cpp:25)
+==130935==    by 0x111337: Memcheck_JoinOffByOne_Test::TestBody() (in .../BenchDemo_12_MemcheckProfiler)
 ...
-==124554==
-==124554==
-==124554== HEAP SUMMARY:
-==124554==     in use at exit: 72 bytes in 1 blocks
-==124554==   total heap usage: 260 allocs, 259 frees, 209,812 bytes allocated
-==124554==
-==124554== LEAK SUMMARY:
-==124554==    definitely lost: 0 bytes in 0 blocks
-==124554==    indirectly lost: 0 bytes in 0 blocks
-==124554==      possibly lost: 0 bytes in 0 blocks
-==124554==    still reachable: 72 bytes in 1 blocks
-==124554==         suppressed: 0 bytes in 0 blocks
-==124554== Reachable blocks (those to which a pointer was found) are not shown.
-==124554== To see them, rerun with: --leak-check=full --show-leak-kinds=all
-==124554==
-==124554== For lists of detected and suppressed errors, rerun with: -s
-==124554== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 0 from 0)
+==130935==
+==130935==
+==130935== HEAP SUMMARY:
+==130935==     in use at exit: 72 bytes in 1 blocks
+==130935==   total heap usage: 343 allocs, 342 frees, 216,624 bytes allocated
+==130935==
+==130935== LEAK SUMMARY:
+==130935==    definitely lost: 0 bytes in 0 blocks
+==130935==    indirectly lost: 0 bytes in 0 blocks
+==130935==      possibly lost: 0 bytes in 0 blocks
+==130935==    still reachable: 72 bytes in 1 blocks
+==130935==         suppressed: 0 bytes in 0 blocks
+==130935== Reachable blocks (those to which a pointer was found) are not shown.
+==130935== To see them, rerun with: --leak-check=full --show-leak-kinds=all
+==130935==
+==130935== For lists of detected and suppressed errors, rerun with: -s
+==130935== ERROR SUMMARY: 6 errors from 2 contexts (suppressed: 0 from 0)
 ```
 
 Every line begins with the process id. Two errors are reported, each with
@@ -332,7 +331,7 @@ the stack that made it and the stack that allocated the block it touched:
 | `Invalid write of size 1`                                           | a one-byte store to memory the program may not touch                                                                                                  |
 | `at ... joinOffByOne(...) (12_MemcheckProfiler_OffByOne.cpp:32)`    | the store, and its source line: `*at = '\0';`                                                                                                         |
 | `by ... Memcheck_JoinOffByOne_Test::TestBody()`                     | who called it; the frames cut below it are GoogleTest's                                                                                               |
-| `Address 0x4f23ab2 is 0 bytes after a block of size 7,490 alloc'd`  | where the byte is: right after a heap block of 7,490 bytes, the joined string's length                                                                |
+| `Address 0x4fe51b2 is 0 bytes after a block of size 7,490 alloc'd`  | where the byte is: right after a heap block of 7,490 bytes, the joined string's length                                                                |
 | `at ... operator new[](unsigned long) (vg_replace_malloc.c:729)`    | the block came from `new[]`, memcheck's own                                                                                                           |
 | `by ... joinOffByOne(...) (12_MemcheckProfiler_OffByOne.cpp:25)`    | and the line that asked for it: `char* buf = new char[total];`                                                                                        |
 | `Invalid read of size 1`, `at ... strlen (vg_replace_strmem.c:505)` | the second error: `strlen`, memcheck's replacement of the C library's, read the same byte back for `std::string out(buf);` on line 36                 |
@@ -353,7 +352,7 @@ What not to conclude:
   `All heap blocks were freed -- no leaks are possible` and prints no
   `LEAK SUMMARY` at all. What every run prints is the `ERROR SUMMARY` line:
   read that one.
-- **That the addresses mean anything.** `0x11C424`, `0x4f23ab2` and the rest
+- **That the addresses mean anything.** `0x122784`, `0x4fe51b2` and the rest
   belong to this build and this run.
 - **That the line numbers travel.** They are this revision's
   `12_MemcheckProfiler_OffByOne.cpp`; a build of an edited file names other
@@ -370,18 +369,18 @@ cat memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log
 Captured output of the run:
 
 ```
-Running: valgrind --tool=memcheck --leak-check=full --error-exitcode=0 --log-file=memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
+Running: valgrind --tool=memcheck --fair-sched=try --leak-check=full --error-exitcode=0 --log-file=memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
 Note: Google Test filter = Memcheck.JoinV1
 [==========] Running 1 test from 1 test suite.
 [----------] Global test environment set-up.
 [----------] 1 test from Memcheck
 [ RUN      ] Memcheck.JoinV1
-[Memcheck.JoinV1]  2466.000 us/call  CV=0.0%  ~406 calls/s  (p10=2466.000 p90=2466.000 sd=0.000)
-[       OK ] Memcheck.JoinV1 (448 ms)
-[----------] 1 test from Memcheck (457 ms total)
+[Memcheck.JoinV1]  2288.290 us/call  CV=0.0%  ~437 calls/s  (p10=2288.290 p90=2288.290 sd=0.000)
+[       OK ] Memcheck.JoinV1 (560 ms)
+[----------] 1 test from Memcheck (590 ms total)
 
 [----------] Global test environment tear-down
-[==========] 1 test from 1 test suite ran. (532 ms total)
+[==========] 1 test from 1 test suite ran. (666 ms total)
 [  PASSED  ] 1 test.
 [bench] memcheck wrote memcheck-v1/BenchDemo_12_MemcheckProfiler.memcheck/memcheck.log (1188 bytes)
 ```
@@ -389,34 +388,34 @@ Note: Google Test filter = Memcheck.JoinV1
 and of the log:
 
 ```
-==124558== Memcheck, a memory error detector
-==124558== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
-==124558== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
-==124558== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
-==124558== Parent PID: 124557
-==124558==
-==124558==
-==124558== HEAP SUMMARY:
-==124558==     in use at exit: 72 bytes in 1 blocks
-==124558==   total heap usage: 272 allocs, 271 frees, 189,627 bytes allocated
-==124558==
-==124558== LEAK SUMMARY:
-==124558==    definitely lost: 0 bytes in 0 blocks
-==124558==    indirectly lost: 0 bytes in 0 blocks
-==124558==      possibly lost: 0 bytes in 0 blocks
-==124558==    still reachable: 72 bytes in 1 blocks
-==124558==         suppressed: 0 bytes in 0 blocks
-==124558== Reachable blocks (those to which a pointer was found) are not shown.
-==124558== To see them, rerun with: --leak-check=full --show-leak-kinds=all
-==124558==
-==124558== For lists of detected and suppressed errors, rerun with: -s
-==124558== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
+==130949== Memcheck, a memory error detector
+==130949== Copyright (C) 2002-2024, and GNU GPL'd, by Julian Seward et al.
+==130949== Using Valgrind-3.24.0 and LibVEX; rerun with -h for copyright info
+==130949== Command: ./build/bin/ptests/BenchDemo_12_MemcheckProfiler --cycles 1 --repeats 1 --profile memcheck --profile-output-dir memcheck-v1 --gtest_filter=Memcheck.JoinV1
+==130949== Parent PID: 130948
+==130949==
+==130949==
+==130949== HEAP SUMMARY:
+==130949==     in use at exit: 72 bytes in 1 blocks
+==130949==   total heap usage: 813 allocs, 812 frees, 294,866 bytes allocated
+==130949==
+==130949== LEAK SUMMARY:
+==130949==    definitely lost: 0 bytes in 0 blocks
+==130949==    indirectly lost: 0 bytes in 0 blocks
+==130949==      possibly lost: 0 bytes in 0 blocks
+==130949==    still reachable: 72 bytes in 1 blocks
+==130949==         suppressed: 0 bytes in 0 blocks
+==130949== Reachable blocks (those to which a pointer was found) are not shown.
+==130949== To see them, rerun with: --leak-check=full --show-leak-kinds=all
+==130949==
+==130949== For lists of detected and suppressed errors, rerun with: -s
+==130949== ERROR SUMMARY: 0 errors from 0 contexts (suppressed: 0 from 0)
 ```
 
 `ERROR SUMMARY: 0 errors from 0 contexts`: memcheck watched three calls of
 `joinV1` (the check of the answer, the warmup, one measured call) and found
 nothing to report. The 72 reachable bytes are the profiler library's, as
-above. The result line is one call under memcheck, 2.4 ms against step 1's
+above. The result line is one call under memcheck, 2.3 ms against step 1's
 20.8 us; it says what memcheck costs, not how fast `joinV1` is.
 
 ## Failing a Job on a Memory Error
@@ -483,7 +482,7 @@ which is 0 in both cases here.
 | errors and contexts      | 6 errors from 2 contexts                                                                                             | 6 errors; 6 contexts where the compiler unrolled the case's loop (clang 21 on x86-64 did), because each call is then its own call site                                                                                                                    |
 | what `joinV1` reports    | 0 errors from 0 contexts, in every run for this page and in five more taken for it                                   | should match; [If It Does Not Match](#if-it-does-not-match) has one report that is not the program's                                                                                                                                                      |
 | `joinV0` / `joinV1` time | 44x here; 44.2x to 48.3x over the session's twelve runs of step 1                                                    | tens of times in an optimized build                                                                                                                                                                                                                       |
-| memcheck's cost          | one call of `joinV1` 115 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                                                                                                                                         |
+| memcheck's cost          | one call of `joinV1` 110 times its time without memcheck                                                             | tens to hundreds of times; depends on the machine                                                                                                                                                                                                         |
 | absolute times           | 921.2 and 20.8 us/call in step 1; 915.8 to 1013.0 and 19.8 to 21.1 over twelve runs                                  | will differ                                                                                                                                                                                                                                               |
 
 The twelve runs are step 1's command run twelve times in one session on
