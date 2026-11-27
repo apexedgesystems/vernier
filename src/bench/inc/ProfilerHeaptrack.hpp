@@ -8,7 +8,7 @@
  * every call with its call stack. The program otherwise runs natively and
  * pays per allocation, so the slowdown grows with the allocation rate: on a
  * Raspberry Pi 4 the join example's faster version, about 50,000 allocations
- * a second, took 1.5 times as long, and its slower one, about 2 million, 4.2
+ * a second, took 1.4 times as long, and its slower one, about 2 million, 4.3
  * times. Massif runs every instruction under valgrind, so its cost follows
  * the instructions instead: 6.2 and 2.3 times for the same two versions
  * (walkthrough 14). Neither is cheaper for every program. The trade-off is

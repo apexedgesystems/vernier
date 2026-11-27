@@ -709,7 +709,7 @@ valgrind --tool=massif --fair-sched=try --time-unit=B --massif-out-file=run.mass
     ./MyComponent_PTEST --profile massif --cycles 1
 ms_print run.massif | head -40
 
-# Allocation sites; the same two versions took 4.2 and 1.5 times as long
+# Allocation sites; the same two versions took 4.3 and 1.4 times as long
 # (walkthrough 21's steps, Pi 4). heaptrack writes run.heaptrack.zst or .gz
 heaptrack -o run.heaptrack ./MyComponent_PTEST --profile heaptrack
 heaptrack_print run.heaptrack.* | head -40
@@ -749,9 +749,10 @@ Detect data races and lock-order violations in multi-threaded code. Run after
 a concurrency change or when a contention test shows non-deterministic results.
 `--profile helgrind` uses valgrind's helgrind tool; pass `--profile-args drd` to
 switch to DRD, which reports the same race classes with a smaller memory
-footprint. Run one test with a single cycle: helgrind's slowdown is large and
-changes from run to run (thousands of times, and five times apart between runs
-of one command, in [walkthrough 20](../demo/docs/20_HELGRIND_PROFILER.md)).
+footprint. Run one test with a single cycle: helgrind's slowdown is large,
+hundreds of times in [walkthrough 20](../demo/docs/20_HELGRIND_PROFILER.md)
+with valgrind's fair scheduler, which `bench run` asks for, and thousands of
+times, seven times apart between runs, without it.
 
 ```bash
 valgrind --tool=helgrind --fair-sched=try --log-file=run.helgrind \

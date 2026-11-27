@@ -12,7 +12,7 @@
  *  - Mismatched malloc/new and free/delete
  *
  * Not a perf profiler: valgrind runs every instruction, and the slowdown
- * depends on the code (the join example's faster version took about 115 times
+ * depends on the code (the join example's faster version took about 110 times
  * as long on a Raspberry Pi 4; walkthrough 15). The value is running memcheck
  * alongside benchmarks to catch correctness regressions introduced by an
  * optimization pass.

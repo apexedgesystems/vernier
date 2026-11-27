@@ -147,8 +147,8 @@ vcgencmd get_throttled                    # unchanged, or distrust the run
   measurement. Use a supply that holds 5 V under load and a heat sink or
   fan; this rig idles at 36 C.
 - **Valgrind tools.** On this board the walkthroughs' profiled calls ran
-  2.3 and 6.2 times as long under massif, 50 and 94 times under callgrind,
-  about 115 times under memcheck and thousands of times under helgrind
+  2.3 and 6.2 times as long under massif, 51 and 94 times under callgrind,
+  about 110 times under memcheck and hundreds of times under helgrind
   (walkthroughs [14](../../demo/docs/14_MASSIF_PROFILER.md),
   [07](../../demo/docs/07_CALLGRIND_PROFILER.md),
   [15](../../demo/docs/15_MEMCHECK_PROFILER.md) and
