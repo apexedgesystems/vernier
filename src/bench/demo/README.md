@@ -258,9 +258,9 @@ on a rig. See [docs/rigs/README.md](../docs/rigs/README.md).
 
 A walkthrough meets this contract:
 
-- **A named rig and a Release build.** Commands were run as written and
-  output blocks are pasted from that run, with the capture date and the
-  Vernier version.
+- **A named rig and a Release build.** Commands are run as written, and
+  output blocks are pasted from those runs; the header names the third-party
+  tools whose output the page reads, at their versions.
 - **A test that asserts its own effect.** A test fails if the slow and
   fast variants stop differing in what the walkthrough shows: the demo's
   own performance test, or the unit tests of the example it measures when
@@ -268,9 +268,8 @@ A walkthrough meets this contract:
   walkthrough names its test, and cannot drift silently.
 - **A statement of what reproduces.** Ratios and the profiler's finding
   should match on the same rig; absolute times differ elsewhere.
-- **Something runs it.** A walkthrough is re-run on its rig before every
-  release, and on the rig's CI lane where one exists. A failing assertion
-  blocks the release. An assertion nothing runs protects nothing.
+- **Something runs it.** The walkthrough names its test and the command or
+  `ctest` label that runs it. An assertion nothing runs protects nothing.
 
 New walkthroughs start from [docs/TEMPLATE.md](docs/TEMPLATE.md).
 
